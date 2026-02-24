@@ -316,7 +316,54 @@ This is distinct from the shared context store (Layer 3), which is designed for 
 
 ---
 
-## 6. Development Roadmap
+## 6. Applications: Rebuilding Real Systems on DAN
+
+The lego architecture is general enough to express existing complex systems as graph configurations. Two concrete targets validate this.
+
+### 6.1 Coding Assistant (Cursor-like)
+
+Cursor's agentic workflow decomposes into ~15 node types and a handful of graph templates.
+
+**Node catalog:**
+
+| Category | Nodes |
+|----------|-------|
+| Operators (atomic) | `LLMOperator`, `ToolOperator` (read_file, edit_file, search, shell, web_search, web_fetch, etc.), `ContextRetriever` (symbol search + ripgrep + ranking + budget), `DiffGenerator`, `CheckpointOperator` |
+| Control nodes | `Router` (LLM-powered tool dispatch), `WhileLoop` (ReAct), `FanOut`/`Reduce` (parallel subagents), `Conditional` |
+| Special nodes | `HumanNode` (blocking user I/O), `MCPBridge` (external tool servers) |
+| Hyperedges | `Skill` (knowledge/capability), `Rule` (constraint/override) |
+
+**Every mode is a graph template:**
+
+| Mode | Graph Structure |
+|------|----------------|
+| Ask | `[Human] → [Context] → [LLM (read-only tools)] → [Human]` |
+| Agent | `[Human] → [Context] → [ReAct while-loop (all tools)] → [Human]` |
+| Debug | `[Human] → [Diagnostics] → [Hypothesize] → [Test] → [Fix] → [Human]` |
+| Plan | `[Human] → [Decompose] → [Tree search] → [Outline] → [Human]` |
+| Background | Agent graph with HumanNodes removed, CheckpointOperator every N steps |
+| Parallel | `[Planner] → [Classifier] → [FanOut] → [Agent×N] → [Reduce]` |
+
+Mode switching is not a feature — it's activating a different graph template. The four top-level agents (Ask, Agent, Debug, Plan) are independent DAN networks sharing a common context layer (see architecture.md, "Four Top-Level Agents Architecture").
+
+**What's hard (not the graph):** Context retrieval quality (codebase indexing, ranking), prompt engineering, streaming UX, and editor integration. The graph itself is ~10% of the work. But building it on DAN makes the workflow portable — same graph runs behind CLI, web app, VS Code extension, or notebook.
+
+### 6.2 Research IDE (science-cursor)
+
+The science-cursor project (Scholar IDE) has three engines and an orchestrator that map directly to DAN agents:
+
+| science-cursor Component | DAN Agent | Internal Operators |
+|--------------------------|-----------|-------------------|
+| `LiteratureEngine` | `literature-agent` | `pdf-ingest`, `embed-chunk`, `rag-retrieve`, `citation-format` |
+| `DataScientistEngine` | `execution-agent` | `python-exec`, `stata-exec`, `jupyter-run`, `figure-export` |
+| `WritingEngine` | `writing-agent` | `section-draft`, `latex-compile`, `tikz-generate`, `bibtex-build` |
+| `PaperOrchestrator` | DAN network | Composes the three agents above with control flow |
+
+The paper-writing workflow already in `development-plan.md` Section 1 is the target DAN network. Skills as hyperedges replace the skill-loader system (scoped to relevant nodes, not injected into a monolithic prompt). Rules as hyperedges replace the rules-loader (guardrails, style constraints, tool overrides).
+
+**Rebuild strategy:** Extract the workflow layer into a standalone DAN-based Python package. The VS Code extension becomes a thin rendering client that resolves HumanNode I/O and displays graph execution. The sidecar remains as a communication bridge, but orchestration logic moves into the DAN graph.
+
+## 7. Development Roadmap
 
 | Phase | Milestone | Deliverable | Status |
 |-------|-----------|-------------|--------|
@@ -331,7 +378,7 @@ This is distinct from the shared context store (Layer 3), which is designed for 
 
 ---
 
-## 7. References
+## 8. References
 
 1. AgentNet: Decentralized Evolutionary Coordination for LLM-based Multi-Agent Systems. NeurIPS 2025. [Paper](https://neurips.cc/virtual/2025/poster/115584) | [GitHub](https://github.com/zoe-yyx/AgentNet)
 2. AFlow: Automating Agentic Workflow Generation. ICLR 2025 Oral. [Paper](https://arxiv.org/abs/2410.10762) | [GitHub](https://github.com/foundationagents/aflow)
