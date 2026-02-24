@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useGraphStore } from "../store/useGraphStore";
 import Spinner from "./Spinner";
 import RunInputsDialog from "./RunInputsDialog";
+import * as api from "../lib/api";
 
 const STATUS_COLORS: Record<string, string> = {
   running: "bg-yellow-400",
@@ -24,10 +25,14 @@ export default function EditorToolbar() {
   const resumeRun = useGraphStore((s) => s.resumeRun);
   const disconnectRun = useGraphStore((s) => s.disconnectRun);
   const applyAutoLayout = useGraphStore((s) => s.applyAutoLayout);
+  const danGraph = useGraphStore((s) => s.danGraph);
+  const addToast = useGraphStore((s) => s.addToast);
+  const loadGraphList = useGraphStore((s) => s.loadGraphList);
 
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
   const [showRunInputs, setShowRunInputs] = useState(false);
+  const importInputRef = useRef<HTMLInputElement>(null);
 
   const handleCreate = () => {
     const name = newName.trim();
@@ -35,6 +40,53 @@ export default function EditorToolbar() {
     createGraph(name);
     setNewName("");
     setShowNew(false);
+  };
+
+  const handleExport = () => {
+    if (!danGraph) return;
+    const json = JSON.stringify(danGraph, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${danGraph.metadata?.name || graphId || "graph"}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    addToast({ type: "success", message: "Graph exported" });
+  };
+
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!parsed.version || !parsed.version.startsWith("dan_graph")) {
+        addToast({ type: "error", message: "Invalid graph JSON: missing format version" });
+        return;
+      }
+      const importId = `import_${Date.now()}`;
+      const { data } = await api.createGraph(importId, parsed as Record<string, unknown>);
+      const store = useGraphStore.getState();
+      store.loadGraph(importId);
+      useGraphStore.setState({
+        _history: { past: [], future: [] },
+        layerStack: [],
+        logs: [],
+        nodeStatuses: {},
+        nodeTimings: {},
+        runId: null,
+        runStatus: null,
+        clipboard: { nodes: [], edges: [] },
+        inputNodeValues: {},
+      });
+      await loadGraphList();
+      addToast({ type: "success", message: `Imported "${parsed.metadata?.name || importId}"` });
+    } catch (err: unknown) {
+      addToast({ type: "error", message: `Import failed: ${(err as Error).message}` });
+    } finally {
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
   };
 
   return (
@@ -152,6 +204,30 @@ export default function EditorToolbar() {
       >
         Layout
       </button>
+
+      <button
+        onClick={handleExport}
+        disabled={!danGraph}
+        className="px-2 py-1 text-[11px] rounded border border-gray-300 text-gray-500 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+        title="Export graph as JSON"
+      >
+        Export
+      </button>
+
+      <button
+        onClick={() => importInputRef.current?.click()}
+        className="px-2 py-1 text-[11px] rounded border border-gray-300 text-gray-500 hover:bg-gray-100"
+        title="Import graph from JSON"
+      >
+        Import
+      </button>
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json"
+        onChange={handleImport}
+        className="hidden"
+      />
 
       {/* Far right: status badge */}
       {runStatus && (

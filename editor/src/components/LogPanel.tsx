@@ -68,6 +68,7 @@ const EVENT_ICON: Record<string, (cls: string) => JSX.Element> = {
   tool_call_started: (cls) => <WrenchIcon className={cls} />,
   tool_call_result: (cls) => <WrenchIcon className={cls} />,
   code_output: (cls) => <TerminalIcon className={cls} />,
+  intermediate_text: (cls) => <TerminalIcon className={cls} />,
   node_failed: (cls) => <XCircleIcon className={cls} />,
   run_failed: (cls) => <XCircleIcon className={cls} />,
 };
@@ -86,6 +87,9 @@ const EVENT_COLORS: Record<string, string> = {
   node_completed: "text-green-500",
   node_skipped: "text-gray-400",
   node_output: "text-indigo-500",
+  iteration_started: "text-orange-500",
+  iteration_completed: "text-orange-400",
+  human_input_needed: "text-cyan-600",
 };
 
 const CATEGORY_LABEL: Record<string, string> = {
@@ -137,6 +141,10 @@ function dataPreview(entry: LogEntry): string | null {
       if (stdout) parts.push(stdout.slice(0, 200));
       if (stderr) parts.push(`stderr: ${stderr.slice(0, 200)}`);
       return parts.join("\n") || null;
+    }
+    case "intermediate_text": {
+      const text = d.text as string | undefined;
+      return text ? text.slice(-200) : null;
     }
     case "node_failed":
     case "run_failed":

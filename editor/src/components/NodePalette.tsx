@@ -12,23 +12,28 @@ import {
   PREDEFINED_AGENT_TEMPLATES,
   type PaletteTemplate,
 } from "../lib/paletteTemplates";
+import type { GraphListItem } from "../lib/api";
 
 type NodeCatalogItem = (typeof NODE_TYPE_CATALOG)[number];
 
 const CATEGORY_ORDER = [
+  "io",
   "operator",
   "control",
   "template",
   "mcp",
   "composite",
+  "workflow",
 ] as const;
 
 const CATEGORY_LABELS: Record<string, string> = {
+  io: "Input / Output",
   operator: "Operators",
   control: "Control Flow",
   template: "Pre-defined Agents",
   mcp: "MCP / Wrapped Agents",
   composite: "Composite",
+  workflow: "Saved Workflows",
 };
 
 const MCP_PLACEHOLDERS = [
@@ -48,6 +53,8 @@ export default function NodePalette() {
   const addTemplateNode = useGraphStore((s) => s.addTemplateNode);
   const selectedEdgeType = useGraphStore((s) => s.selectedEdgeType);
   const setSelectedEdgeType = useGraphStore((s) => s.setSelectedEdgeType);
+  const graphList = useGraphStore((s) => s.graphList);
+  const currentGraphId = useGraphStore((s) => s.graphId);
 
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
@@ -65,6 +72,11 @@ export default function NodePalette() {
     e.dataTransfer.effectAllowed = "move";
   };
 
+  const handleWorkflowDragStart = (e: React.DragEvent, graphId: string) => {
+    e.dataTransfer.setData("application/dan-node-type", `workflow:${graphId}`);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
   const categorized = NODE_TYPE_CATALOG.reduce<Record<string, NodeCatalogItem[]>>(
     (acc, item) => {
       if (!acc[item.category]) acc[item.category] = [];
@@ -79,7 +91,8 @@ export default function NodePalette() {
   type CategoryEntry =
     | { key: string; type: "catalog"; items: NodeCatalogItem[] }
     | { key: string; type: "template"; items: PaletteTemplate[] }
-    | { key: string; type: "mcp"; items: typeof MCP_PLACEHOLDERS };
+    | { key: string; type: "mcp"; items: typeof MCP_PLACEHOLDERS }
+    | { key: string; type: "workflow"; items: GraphListItem[] };
 
   const filteredCategories: CategoryEntry[] = CATEGORY_ORDER.map(
     (cat): CategoryEntry | null => {
@@ -97,6 +110,17 @@ export default function NodePalette() {
           (m) => !q || m.label.toLowerCase().includes(q),
         );
         return items.length ? { key: cat, type: "mcp", items } : null;
+      }
+      if (cat === "workflow") {
+        const items = graphList
+          .filter((g) => g.graph_id !== currentGraphId)
+          .filter(
+            (g) =>
+              !q ||
+              g.name.toLowerCase().includes(q) ||
+              g.graph_id.toLowerCase().includes(q),
+          );
+        return items.length ? { key: cat, type: "workflow", items } : null;
       }
       const items = (categorized[cat] ?? []).filter(
         (item) =>
@@ -218,6 +242,26 @@ export default function NodePalette() {
                         className="px-2.5 py-1.5 bg-gray-100 rounded border border-gray-200 text-xs text-gray-400 cursor-not-allowed opacity-60 select-none"
                       >
                         {m.label}
+                      </div>
+                    ))}
+
+                  {/* Saved Workflows */}
+                  {type === "workflow" &&
+                    (items as GraphListItem[]).map((g) => (
+                      <div
+                        key={g.graph_id}
+                        draggable
+                        onDragStart={(e) =>
+                          handleWorkflowDragStart(e, g.graph_id)
+                        }
+                        onClick={() => {
+                          const store = useGraphStore.getState();
+                          store.addGraphAsNode(g.graph_id, { x: 200, y: 200 });
+                        }}
+                        title={`Import "${g.name}" as a reusable node`}
+                        className="px-2.5 py-1.5 bg-emerald-50 rounded border border-emerald-200 text-xs cursor-grab hover:border-emerald-400 hover:shadow-sm transition-all select-none text-emerald-700"
+                      >
+                        {g.name || g.graph_id}
                       </div>
                     ))}
                 </div>

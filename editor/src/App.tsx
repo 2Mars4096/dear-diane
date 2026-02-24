@@ -11,6 +11,8 @@ import BreadcrumbBar from "./components/BreadcrumbBar";
 import PortMappingOverlay from "./components/PortMappingOverlay";
 import ToastContainer from "./components/ToastContainer";
 import ExecutionTimeline from "./components/ExecutionTimeline";
+import CommandPalette from "./components/CommandPalette";
+import HumanInputDialog from "./components/HumanInputDialog";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 type BottomTab = "logs" | "output";
@@ -113,6 +115,8 @@ export default function App() {
         </div>
 
         <ToastContainer />
+        <CommandPalette />
+        <HumanInputDialog />
       </div>
     </ReactFlowProvider>
   );
