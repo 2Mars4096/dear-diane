@@ -49,6 +49,12 @@ deep-agent-network/
       tool.py                    # ToolExecutor + ToolRegistry — function dispatch
       code.py                    # CodeExecutor — sandboxed Python exec
       control_flow.py            # IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop
+    builder/                     # Phase 1.5 — fluent workflow builder DSL
+      __init__.py                # Public API: workflow(), WorkflowBuilder, NodeRef, PortRef, decompile()
+      refs.py                    # NodeRef, PortRef — compile-time proxies with __format__, __rshift__, __getitem__
+      builder.py                 # WorkflowBuilder — node creation, edge registration, context managers
+      compiler.py                # Compile builder state -> Graph model (marker resolution, port/edge generation)
+      decompiler.py              # Graph -> Python builder code string (for visual editor round-trip)
     server/                      # Phase 2 — FastAPI backend for visual editor
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
@@ -74,11 +80,12 @@ deep-agent-network/
       components/CompositePreview.tsx # Read-only sub-graph modal
       components/GraphSwitcher.tsx   # Graph list/create/delete header
       App.tsx                    # Main layout: palette + canvas + panels
-  tests/                         # pytest suite
+  tests/                         # pytest suite (243 tests)
     test_models/                 # Unit tests for all model types
     test_validation/             # Validation logic tests
     test_examples/               # Paper-writing motivating example
     test_engine/                 # Engine unit + integration tests
+    test_builder/                # Builder DSL unit + integration tests
     test_server/                 # Server API, run manager, and event tests
   graphs/                        # Saved graph JSON files (filesystem persistence)
   pyproject.toml                 # Pydantic v2 + OpenAI SDK + FastAPI + uvicorn + pytest
@@ -159,6 +166,152 @@ Every composite/loop node declares:
 - **Compaction**: configurable per composite node (sliding window, summarization gate, diff-based)
 - **Failure exits**: `max_iterations`, `stagnation`, `timeout`
 
+### Context Scoping Across Agent Boundaries
+
+The four-layer context model describes *what kinds* of context exist. Context *scoping* describes *where* context is visible when agents are nested (agents containing sub-agents containing sub-sub-agents).
+
+Four scopes govern visibility at every nesting level:
+
+| Scope | Analogy | Direction | What It Holds |
+|-------|---------|-----------|---------------|
+| **global** | Global variable | Everywhere (read by all layers) | Codebase index, conversation history, workspace config, rules |
+| **local** | Local variable | Stays at current layer | Working memory, retry counts, loop counters, chain-of-thought |
+| **pass_down** | Function arguments | Parent → child | Task description, relevant files, constraints, plan |
+| **emit_up** | Return value | Child → parent | Result summary, status, discovered signals |
+
+**`pass_down` is explicit, not inherited.** A parent doesn't dump its local context to children. Each child declares an input schema — only what it needs crosses the boundary. This prevents context pollution.
+
+**`emit_up` is explicit, not leaked.** A child returns a structured output, not its entire working memory. The parent decides what to do with it. This prevents noise.
+
+**`global` is read-heavy, write-careful.** Most nodes only read global context. Writes need declaration and conflict resolution (especially during parallel fan-out).
+
+**`local` is invisible outside.** Bulk of working memory. Dies when the agent finishes.
+
+#### Upward Signals
+
+Not everything emitted upward has the same semantics:
+
+- **Results** — the expected structured output. Schema-validated. Consumed by the immediate parent.
+- **Signals** — unexpected discoveries that higher layers should know about. Two sub-types:
+  - **Sticky signals** — written to global context (everyone should know). Example: "this codebase uses pnpm, not npm."
+  - **Non-sticky signals** — propagate up one layer. The parent decides whether to act, relay further, or discard. Example: "circular import detected in module X."
+
+#### Agent Boundary Contract (revised)
+
+Every agent (composite node) formalizes its boundary:
+
+```python
+agent PaperWriter:
+  accepts:       { topic: str, papers: Paper[], data: Dataset }   # pass_down schema
+  returns:       { draft: LaTeX, figures: Fig[], bib: BibTeX }    # emit_up schema
+  reads_global:  [codebase_index, style_rules]                    # global dependencies
+  writes_global: []                                               # global mutations
+  signals:       [quality_warning, missing_data, style_violation] # possible upward signals
+```
+
+This supersedes the earlier composite node contract for cross-layer communication. The original `external_input_schema` / `external_output_schema` / `read_set` / `write_set` still apply for the within-graph four-layer model; the boundary contract adds `signals` and clarifies directional semantics.
+
+### Hyperedges: Skills and Rules
+
+Standard edges connect two nodes. **Hyperedges** connect an arbitrary subset of nodes simultaneously. Skills and rules are modeled as hyperedges — graph-level constructs that apply to multiple nodes at once.
+
+```
+            ┌──────────────────────────────────┐
+            │  "INFORMS Style Guide" (skill)   │  ← hyperedge
+            └──┬──────────┬───────────┬────────┘
+               ↓          ↓           ↓
+         [section-draft] [citation-fmt] [latex-compile]
+```
+
+#### Hyperedge Types
+
+| Type | Semantics | Execution Hook | Example |
+|------|-----------|----------------|---------|
+| **Skill** | Adds knowledge/capability to attached nodes | `pre_prompt` — injected into LLM context | "Scientific writing conventions" |
+| **Rule (guardrail)** | Constrains behavior | `post_output` + `validation` — checks output | "Never use GPT-3.5 for final output" |
+| **Rule (style)** | Enforces consistency | `pre_prompt` — style context injected | "APA 7th edition citations" |
+| **Rule (override)** | Intercepts/rewrites | `tool_call` — modifies or blocks tool invocations | "All shell commands require approval" |
+
+#### Attachment Scope
+
+Hyperedges attach to nodes by:
+
+- **Node ID** — specific node (`attach_to: ["section-draft-1"]`)
+- **Node type** — all nodes of a type (`attach_to_type: "llm_operator"`)
+- **Tags** — user-defined labels (`attach_to_tags: ["writing", "review"]`)
+- **Subgraph** — all nodes within a composite (`attach_to_subgraph: "paper-writer"`)
+
+Inheritance: hyperedges on a parent graph propagate to sub-graphs unless explicitly excluded.
+
+#### Precedence
+
+When multiple hyperedges attach to the same node, they compose in order: `policy > rule > skill`. Within the same type, more specific scope wins (node ID > tag > type > subgraph).
+
+#### Why Hyperedges, Not Context Edges
+
+Context edges (Layer 3) carry *data* — key-value pairs that nodes read/write. Hyperedges carry *behavior modifiers* — they change how nodes execute, not what data they consume. A skill doesn't add a key to the shared context store; it modifies the prompt of every node it's attached to. This is a fundamentally different concern.
+
+### HumanNode (Generalized)
+
+The Human-in-the-Loop control-flow primitive is generalized into a first-class node type: `HumanNode`. The human is not outside the graph talking *to* it — the human is a node *in* the graph.
+
+**Interface:** Same as any other node — typed input schema (what to show the human) and typed output schema (what the human provides).
+
+**Behavior:** Execution pauses at a HumanNode. The rendering layer (chat panel, web UI, CLI) presents the input and collects the output. Execution resumes.
+
+**Implications:**
+
+- **Chat is rendering.** The chat panel is a view that renders whichever HumanNode is currently active. Message appears → human types → output flows to the next node.
+- **Adjustable autonomy is topology.** Full autopilot = no HumanNodes in the graph. Careful oversight = HumanNode between every agent. Approve only final output = one HumanNode at the end. This is a graph design decision, not a mode switch.
+- **Background mode = zero HumanNodes.** A background agent is just a graph with no human nodes. "Check in every N steps" is a HumanNode inside a while-loop with a counter-based conditional.
+- **Multi-point interaction.** Different HumanNodes ask different things. One asks "which papers?", another asks "approve this figure?", another asks "accept this draft?". The rendering layer sequences them.
+- **Rendering is decoupled.** The same graph runs behind a CLI, a web app, a VS Code extension, or a Jupyter notebook. The rendering surface resolves HumanNode I/O; everything else is identical.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    DAN Graph                             │
+│                                                          │
+│  Nodes:   [Human] [LLM Operator] [Tool Op] [Agent]     │
+│  Edges:   data ──→  control ──→  context ──→            │
+│  Hyperedges:  ═══ skills ═══  ═══ rules ═══             │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+         ↕ render                    ↕ render
+   ┌────────────┐            ┌──────────────┐
+   │ Chat Panel  │            │ React Flow    │
+   │ (human I/O) │            │ (graph viz)   │
+   └────────────┘            └──────────────┘
+```
+
+### Four Top-Level Agents Architecture
+
+For application-level systems (coding assistants, research IDEs), a practical architecture is four independent top-level agents sharing a common context layer:
+
+```
+┌───────────────────────────────────────────────────────┐
+│              Shared Context Layer                      │
+│  (codebase index, conversation history, file state,   │
+│   linter output, workspace config, rules, skills)     │
+├─────────────┬─────────────┬────────────┬──────────────┤
+│  Ask Agent  │ Agent Mode  │Debug Agent │ Plan Agent   │
+│  (Q&A       │ (ReAct +    │(hypothesis │ (tree search │
+│   graph)    │  tools +    │ driven +   │  + outline   │
+│             │  fan-out)   │ auto-diag) │  generation) │
+└─────────────┴─────────────┴────────────┴──────────────┘
+     each is a complex DAN sub-graph internally
+```
+
+The shared context layer is **not** part of any graph. It's a read/write store that all four agents access. Each agent internally is a full DAN network with its own working memory and control flow.
+
+**Why four:** These represent fundamentally different control-flow patterns (linear Q&A vs. ReAct loop vs. hypothesis-driven diagnosis vs. tree search), different tool sets, and different stopping conditions.
+
+**Mode switching:** Serialize the active agent's relevant outputs to the shared context layer → activate the new agent → it reads from shared context on startup. The conversation history carries over; the internal working memory does not.
+
+**Context model:**
+- **Global** (shared context layer) — codebase index, conversation history, workspace config, session state. All agents read; writes are declared.
+- **Local** (within each agent) — the agent's DAN sub-graph manages its own working memory, loop state, intermediate results. Private. Dies when the agent finishes or the user switches modes. Only durable outputs (file changes, conversation messages, plan artifacts) persist to global.
+- **pass_down / emit_up** — standard directional scoping within each agent's internal sub-graph.
+
 ## Execution Engine (Phase 1)
 
 ### Engine API
@@ -206,9 +359,48 @@ result = await engine.resume(graph, run_id="abc123")
 - Checkpoint written after each topological level completes
 - `Engine.resume()` loads checkpoint and continues from pending nodes
 
-## Workflow Builder API (Phase 1.5 — not yet built)
+## Workflow Builder API (Phase 1.5)
 
-A fluent Python DSL (`dan.builder`) for defining workflows in code. Compiles to `dan_graph_v1` JSON and round-trips losslessly with the visual editor. Code is the primary authoring interface — the visual editor is a second interface over the same graph JSON. See `development-plan.md` Section 5 for the full design rationale and API sketch.
+### Builder DSL
+
+```python
+from dan.builder import workflow, decompile
+
+paper = workflow("paper_writing")
+ideas = paper.llm("idea_gen", model="claude-opus-4", prompt="Generate ideas about {topic}")
+outline = paper.llm("planner", prompt=f"Create outline for: {ideas}")
+ideas >> outline
+graph = paper.build()  # -> validated Graph (dan_graph_v1)
+code = decompile(graph)  # -> executable Python that reconstructs the graph
+```
+
+### Four Connection Mechanisms
+
+1. **f-string magic**: `prompt=f"Use: {ideas}"` — `NodeRef.__format__` emits a compile-time marker `<<dan:node_id:port>>`. The compiler parses prompts, creates DataEdges, and replaces markers with sanitized input port aliases.
+2. **`>>` operator**: `a >> b` — DataEdge from default output to default input. Chainable: `a >> b >> c`.
+3. **PortRef passing**: `items=node["port"]` — subscript on NodeRef returns PortRef, resolved at compile time.
+4. **Explicit edge**: `wf.edge(a["out"], b["in"])` — fully explicit port-to-port wiring.
+
+Builder also supports typed non-data edges: `wf.control_edge(...)` and `wf.context_edge(...)`, plus graph-level artifacts via `wf.artifact_ref(...)`.
+
+### Sub-Graph Context Managers
+
+```python
+with wf.while_loop("loop", condition="x < 5", max_iterations=10) as body:
+    body.llm("step", ...)
+with wf.for_each("fan", items=node["items"], parallelism=4) as body:
+    body.code("proc", ...)
+with wf.composite("block") as sub:
+    sub.llm("inner", ...)
+```
+
+### Node-Type Output Contract Map
+
+Each node type has a known default output port matching the runtime executor (e.g., `llm_operator` -> `text`, `for_each` -> `results`, `if_else` -> `branch`). The compiler uses this map for `>>` wiring and f-string marker resolution.
+
+### Decompiler
+
+`decompile(graph: Graph) -> str` produces an executable Python module string. Topological sort with deterministic ordering, chain detection for `>>` sugar, context managers for sub-graph nodes, `NodeRef` wrappers for sub-graph edge wiring. Preserves `ui`, `metadata`, `shared_context`, and all edge types.
 
 ## Visual Editor Backend (Phase 2)
 
