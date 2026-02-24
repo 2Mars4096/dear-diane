@@ -10,10 +10,13 @@ from typing import Any, Awaitable, Callable
 
 from dan.engine.checkpoint import CheckpointStore, FileSystemCheckpointStore
 from dan.engine.context_runtime import ArtifactStore, LocalStateManager, SharedContextStore
+from dan.engine.events import EngineEvent, EventType
 from dan.engine.executor import EngineConfig, ExecutionContext, ExecutorRegistry, NodeResult
 from dan.engine.state import ExecutionState, NodeStatus
 from dan.models.edges import ControlEdge, ContextEdge, DataEdge
 from dan.models.graph import Graph
+
+EventCallback = Callable[[EngineEvent], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +94,12 @@ class Engine:
         executor_registry: ExecutorRegistry | None = None,
         checkpoint_store: CheckpointStore | None = None,
         human_input_callback: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+        event_callback: EventCallback | None = None,
     ) -> None:
         self.config = config or EngineConfig()
         self.executor_registry = executor_registry or ExecutorRegistry()
         self.human_input_callback = human_input_callback
+        self.event_callback = event_callback
 
         if checkpoint_store is not None:
             self.checkpoint_store: CheckpointStore | None = checkpoint_store
@@ -134,6 +139,13 @@ class Engine:
         for node_type, executor in defaults:
             if not self.executor_registry.has(node_type):
                 self.executor_registry.register(node_type, executor)
+
+    async def _emit(self, event: EngineEvent) -> None:
+        if self.event_callback is not None:
+            try:
+                await self.event_callback(event)
+            except Exception:
+                logger.debug("Event callback failed for %s", event.event_type)
 
     # ------------------------------------------------------------------
     # Public API
@@ -237,6 +249,12 @@ class Engine:
         local_state: LocalStateManager,
     ) -> RunResult:
         """Core scheduling loop: dispatch ready nodes, checkpoint, repeat."""
+        await self._emit(EngineEvent(
+            event_type=EventType.RUN_STARTED,
+            run_id=state.run_id,
+            data={"node_count": len(graph.nodes)},
+        ))
+
         context = self._make_context(
             state, shared_context, artifacts, local_state, graph
         )
@@ -262,7 +280,14 @@ class Engine:
                     state, shared_context, artifacts, local_state
                 )
 
-        return self._build_result(graph, state)
+        result = self._build_result(graph, state)
+        evt_type = EventType.RUN_COMPLETED if result.success else EventType.RUN_FAILED
+        await self._emit(EngineEvent(
+            event_type=evt_type,
+            run_id=state.run_id,
+            data={"success": result.success, "errors": result.errors},
+        ))
+        return result
 
     async def _execute_node(
         self,
@@ -276,13 +301,28 @@ class Engine:
         if node is None:
             state.mark(node_id, NodeStatus.FAILED)
             state.node_errors[node_id] = f"Node '{node_id}' not found in graph"
+            await self._emit(EngineEvent(
+                event_type=EventType.NODE_FAILED, run_id=state.run_id,
+                node_id=node_id, data={"error": state.node_errors[node_id]},
+            ))
             return
+
+        node_type_str = getattr(node, "node_type", None)
 
         if self._should_skip(node_id, graph, state):
             state.mark(node_id, NodeStatus.SKIPPED)
+            await self._emit(EngineEvent(
+                event_type=EventType.NODE_SKIPPED, run_id=state.run_id,
+                node_id=node_id, node_type=node_type_str,
+            ))
             return
 
         state.mark(node_id, NodeStatus.RUNNING)
+        await self._emit(EngineEvent(
+            event_type=EventType.NODE_STARTED, run_id=state.run_id,
+            node_id=node_id, node_type=node_type_str,
+        ))
+
         inputs = state.port_data.resolve_inputs(node_id, graph)
 
         virtual_src = f"__input__{node_id}"
@@ -292,13 +332,17 @@ class Engine:
 
         self._read_context_edges(node_id, graph, context, inputs)
 
-        node_type = getattr(node, "node_type", None)
-        if node_type is None or not self.executor_registry.has(node_type):
+        if node_type_str is None or not self.executor_registry.has(node_type_str):
             state.mark(node_id, NodeStatus.FAILED)
-            state.node_errors[node_id] = f"No executor for node_type '{node_type}'"
+            state.node_errors[node_id] = f"No executor for node_type '{node_type_str}'"
+            await self._emit(EngineEvent(
+                event_type=EventType.NODE_FAILED, run_id=state.run_id,
+                node_id=node_id, node_type=node_type_str,
+                data={"error": state.node_errors[node_id]},
+            ))
             return
 
-        executor = self.executor_registry.get(node_type)
+        executor = self.executor_registry.get(node_type_str)
 
         try:
             result: NodeResult = await executor.execute(node, inputs, context)
@@ -320,6 +364,25 @@ class Engine:
             state.port_data.set(node_id, port_name, value)
 
         self._write_context_edges(node_id, graph, context, result.outputs)
+
+        if result.status == NodeStatus.FAILED:
+            await self._emit(EngineEvent(
+                event_type=EventType.NODE_FAILED, run_id=state.run_id,
+                node_id=node_id, node_type=node_type_str,
+                data={"error": result.error or ""},
+            ))
+        elif result.status == NodeStatus.COMPLETED:
+            await self._emit(EngineEvent(
+                event_type=EventType.NODE_COMPLETED, run_id=state.run_id,
+                node_id=node_id, node_type=node_type_str,
+                data={"metadata": result.metadata},
+            ))
+            if result.outputs:
+                await self._emit(EngineEvent(
+                    event_type=EventType.NODE_OUTPUT, run_id=state.run_id,
+                    node_id=node_id, node_type=node_type_str,
+                    data={"outputs": result.outputs},
+                ))
 
     def _should_skip(
         self, node_id: str, graph: Graph, state: ExecutionState
