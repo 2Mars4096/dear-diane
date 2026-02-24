@@ -1,0 +1,680 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "paper_writing",
+    "description": "Multi-agent paper writing with literature survey, parallel section writing, and iterative review-revise.",
+    "created_at": null,
+    "updated_at": null,
+    "tags": [
+      "paper-writing",
+      "multi-agent",
+      "demo"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "idea_gen",
+      "name": "idea_gen",
+      "description": "",
+      "input_ports": [],
+      "output_ports": [
+        {
+          "name": "text",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "llm_operator",
+      "model": "",
+      "prompt_template": "You are a research AI. Generate a compelling research idea about: {topic}\n\nOutput a 2-3 paragraph description of the research idea, including its novelty and potential impact.",
+      "system_prompt": "",
+      "temperature": 0.7,
+      "max_tokens": null,
+      "output_json_schema": null
+    },
+    {
+      "id": "lit_survey",
+      "name": "lit_survey",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "idea_gen",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "llm_operator",
+      "model": "",
+      "prompt_template": "You are a literature review specialist.\n\nSurvey relevant literature for the following research idea:\n\n{idea_gen}\n\nIdentify 5-7 relevant papers/topics and explain how they relate. Include key findings and gaps the research idea could address.",
+      "system_prompt": "",
+      "temperature": 0.7,
+      "max_tokens": null,
+      "output_json_schema": null
+    },
+    {
+      "id": "outline_planner",
+      "name": "outline_planner",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "idea_gen",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "lit_survey",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "abstract",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "sections",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "title",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "llm_operator",
+      "model": "",
+      "prompt_template": "You are an expert academic paper planner.\n\nResearch Idea:\n{idea_gen}\n\nLiterature Background:\n{lit_survey}\n\nCreate a detailed paper outline. Output valid JSON with keys:\n  {\"title\": \"paper title\", \"abstract\": \"150-word abstract\", \"sections\": [\"Introduction\", \"Related Work\", ...]}",
+      "system_prompt": "",
+      "temperature": 0.7,
+      "max_tokens": null,
+      "output_json_schema": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "abstract": {
+            "type": "string"
+          },
+          "sections": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "title",
+          "abstract",
+          "sections"
+        ]
+      }
+    },
+    {
+      "id": "section_writers",
+      "name": "section_writers",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "items",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "results",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "for_each",
+      "body_graph": "section_writers_body",
+      "parallelism": 3,
+      "merge_strategy": "append",
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "read_set": [],
+      "write_set": [],
+      "compaction_rule": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "timeout_seconds": null,
+        "stagnation_threshold": null
+      },
+      "projections": []
+    },
+    {
+      "id": "assembler",
+      "name": "assembler",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "results",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "title",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "abstract",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "draft",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "verdict",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "feedback",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "code_operator",
+      "code": "sections_content = []\nfor section_result in results:\n    text = section_result.get('text', str(section_result))\n    sections_content.append(text)\n\nbody = '\\n\\n'.join(sections_content)\ndraft = '# ' + str(title) + '\\n\\n## Abstract\\n\\n' + str(abstract) + '\\n\\n' + body\nresult = {'draft': draft, 'verdict': 'pending', 'feedback': 'Initial draft, no previous feedback.'}\n",
+      "language": "python",
+      "sandbox_config": {}
+    },
+    {
+      "id": "review_loop",
+      "name": "review_loop",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "draft",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "verdict",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "feedback",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "draft",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "verdict",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "feedback",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "while_loop",
+      "condition": "verdict != 'accept'",
+      "body_graph": "review_loop_body",
+      "max_iterations": 2,
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "read_set": [],
+      "write_set": [],
+      "compaction_rule": {
+        "strategy": "sliding_window",
+        "window_size": 2,
+        "max_tokens": null
+      },
+      "failure_policy": {
+        "max_iterations": 2,
+        "timeout_seconds": null,
+        "stagnation_threshold": 2
+      },
+      "projections": []
+    },
+    {
+      "id": "format_output",
+      "name": "format_output",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "draft",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "title",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "content",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "title",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "code_operator",
+      "code": "result = {'content': draft, 'title': title}\n",
+      "language": "python",
+      "sandbox_config": {}
+    },
+    {
+      "id": "save_paper",
+      "name": "save_paper",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "content",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "title",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "saved_path",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "title",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "tool_operator",
+      "tool_id": "save_paper",
+      "tool_config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_section_writers__assembler_0",
+      "source_node_id": "section_writers",
+      "source_port": "results",
+      "target_node_id": "assembler",
+      "target_port": "results",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_outline_planner__assembler_1",
+      "source_node_id": "outline_planner",
+      "source_port": "title",
+      "target_node_id": "assembler",
+      "target_port": "title",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_outline_planner__assembler_2",
+      "source_node_id": "outline_planner",
+      "source_port": "abstract",
+      "target_node_id": "assembler",
+      "target_port": "abstract",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_assembler__review_loop_3",
+      "source_node_id": "assembler",
+      "source_port": "draft",
+      "target_node_id": "review_loop",
+      "target_port": "draft",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_assembler__review_loop_4",
+      "source_node_id": "assembler",
+      "source_port": "verdict",
+      "target_node_id": "review_loop",
+      "target_port": "verdict",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_assembler__review_loop_5",
+      "source_node_id": "assembler",
+      "source_port": "feedback",
+      "target_node_id": "review_loop",
+      "target_port": "feedback",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_review_loop__format_output_6",
+      "source_node_id": "review_loop",
+      "source_port": "draft",
+      "target_node_id": "format_output",
+      "target_port": "draft",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_outline_planner__format_output_7",
+      "source_node_id": "outline_planner",
+      "source_port": "title",
+      "target_node_id": "format_output",
+      "target_port": "title",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_format_output__save_paper_8",
+      "source_node_id": "format_output",
+      "source_port": "content",
+      "target_node_id": "save_paper",
+      "target_port": "content",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_format_output__save_paper_9",
+      "source_node_id": "format_output",
+      "source_port": "title",
+      "target_node_id": "save_paper",
+      "target_port": "title",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_idea_gen__lit_survey_10",
+      "source_node_id": "idea_gen",
+      "source_port": "text",
+      "target_node_id": "lit_survey",
+      "target_port": "idea_gen",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_idea_gen__outline_planner_11",
+      "source_node_id": "idea_gen",
+      "source_port": "text",
+      "target_node_id": "outline_planner",
+      "target_port": "idea_gen",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_lit_survey__outline_planner_12",
+      "source_node_id": "lit_survey",
+      "source_port": "text",
+      "target_node_id": "outline_planner",
+      "target_port": "lit_survey",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_outline_planner__section_writers_13",
+      "source_node_id": "outline_planner",
+      "source_port": "sections",
+      "target_node_id": "section_writers",
+      "target_port": "items",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    }
+  ],
+  "sub_graphs": {
+    "section_writers_body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "section_writers_body",
+        "description": "",
+        "created_at": null,
+        "updated_at": null,
+        "tags": []
+      },
+      "nodes": [
+        {
+          "id": "write_section",
+          "name": "write_section",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "item",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "index",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "llm_operator",
+          "model": "",
+          "prompt_template": "Write a detailed section for an academic paper.\n\nSection title: {item}\n\nWrite 3-5 paragraphs of substantive content. Use formal academic tone with clear topic sentences.",
+          "system_prompt": "",
+          "temperature": 0.7,
+          "max_tokens": null,
+          "output_json_schema": null
+        }
+      ],
+      "edges": [],
+      "sub_graphs": {},
+      "entry_points": [
+        "write_section"
+      ],
+      "exit_points": [
+        "write_section"
+      ],
+      "shared_context": [],
+      "artifact_refs": []
+    },
+    "review_loop_body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "review_loop_body",
+        "description": "",
+        "created_at": null,
+        "updated_at": null,
+        "tags": []
+      },
+      "nodes": [
+        {
+          "id": "review_and_revise",
+          "name": "review_and_revise",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "draft",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "feedback",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "llm_operator",
+          "model": "",
+          "prompt_template": "You are a rigorous academic paper reviewer and skilled reviser.\n\nCurrent draft:\n{draft}\n\nPrevious feedback: {feedback}\n\nTasks:\n1. Review the draft critically for clarity, argument structure, evidence, and writing quality.\n2. Revise the draft to address all issues you identified.\n3. If the draft is now publication-ready, set verdict to 'accept'. Otherwise, set to 'revise'.\n\nYou MUST output valid JSON with exactly these keys:\n  {{\"verdict\": \"accept\" or \"revise\", \"feedback\": \"your review comments\", \"draft\": \"the full revised paper text\"}}",
+          "system_prompt": "",
+          "temperature": 0.7,
+          "max_tokens": null,
+          "output_json_schema": {
+            "type": "object",
+            "properties": {
+              "verdict": {
+                "type": "string",
+                "enum": [
+                  "accept",
+                  "revise"
+                ]
+              },
+              "feedback": {
+                "type": "string"
+              },
+              "draft": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "verdict",
+              "feedback",
+              "draft"
+            ]
+          }
+        }
+      ],
+      "edges": [],
+      "sub_graphs": {},
+      "entry_points": [
+        "review_and_revise"
+      ],
+      "exit_points": [
+        "review_and_revise"
+      ],
+      "shared_context": [],
+      "artifact_refs": []
+    }
+  },
+  "entry_points": [
+    "idea_gen"
+  ],
+  "exit_points": [
+    "save_paper"
+  ],
+  "shared_context": [],
+  "artifact_refs": []
+}
