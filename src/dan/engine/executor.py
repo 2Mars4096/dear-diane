@@ -47,7 +47,7 @@ class ExecutionContext:
         shared_context: SharedContextStore,
         artifacts: ArtifactStore,
         local_state: LocalStateManager,
-        human_input_callback: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+        human_input_callback: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
         run_subgraph: Callable[..., Awaitable[dict[str, Any]]] | None = None,
         # -- 5-3: Rich logging --------------------------------------------------
         event_callback: Callable[[Any], Awaitable[None]] | None = None,
@@ -97,6 +97,7 @@ class ExecutionContext:
         sub_graph_key: str,
         inputs: dict[str, Any],
         parent_node_id: str | None = None,
+        targeted_inputs: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Execute a named sub-graph and return its outputs.
 
@@ -107,7 +108,7 @@ class ExecutionContext:
         """
         if self._run_subgraph is None:
             raise RuntimeError("Sub-graph execution not available in this context")
-        return await self._run_subgraph(sub_graph_key, inputs, parent_node_id)
+        return await self._run_subgraph(sub_graph_key, inputs, parent_node_id, targeted_inputs)
 
 
 @runtime_checkable

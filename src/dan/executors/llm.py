@@ -78,7 +78,7 @@ class LLMExecutor:
         last_error: str | None = None
         for attempt in range(1 + max_norm_retries):
             raw_text, api_error = await self._call_llm(
-                client, model, messages, node
+                client, model, messages, node, context=context, attempt=attempt
             )
             if api_error:
                 last_error = api_error
@@ -124,6 +124,8 @@ class LLMExecutor:
         model: str,
         messages: list[dict[str, str]],
         node: LLMOperator,
+        context: ExecutionContext | None = None,
+        attempt: int = 0,
     ) -> tuple[str, str | None]:
         """Call the LLM with retry on transient API errors.
 
@@ -133,7 +135,7 @@ class LLMExecutor:
         max_retries = 3
         backoff = 1.0
 
-        for attempt in range(max_retries):
+        for retry in range(max_retries):
             try:
                 kwargs: dict[str, Any] = {
                     "model": model,
@@ -143,15 +145,41 @@ class LLMExecutor:
                 if node.max_tokens is not None:
                     kwargs["max_tokens"] = node.max_tokens
 
-                resp = await client.chat.completions.create(**kwargs)
-                content = resp.choices[0].message.content or ""
-                return content, None
+                try:
+                    kwargs["stream"] = True
+                    stream = await client.chat.completions.create(**kwargs)
+                    accumulated = ""
+                    chunk_count = 0
+                    async for chunk in stream:
+                        delta = chunk.choices[0].delta.content or ""
+                        accumulated += delta
+                        chunk_count += 1
+                        if context and chunk_count % 5 == 0:
+                            await context.emit_event(
+                                event_type="intermediate_text",
+                                node_id=node.id,
+                                node_type="llm_operator",
+                                data={"delta": delta, "text": accumulated, "attempt": attempt},
+                            )
+                    if context and accumulated:
+                        await context.emit_event(
+                            event_type="intermediate_text",
+                            node_id=node.id,
+                            node_type="llm_operator",
+                            data={"delta": "", "text": accumulated, "attempt": attempt, "done": True},
+                        )
+                    return accumulated, None
+                except Exception:
+                    kwargs.pop("stream", None)
+                    resp = await client.chat.completions.create(**kwargs)
+                    content = resp.choices[0].message.content or ""
+                    return content, None
 
             except (RateLimitError, APITimeoutError) as exc:
-                if attempt < max_retries - 1:
+                if retry < max_retries - 1:
                     logger.warning(
                         "Transient API error (attempt %d/%d): %s",
-                        attempt + 1, max_retries, exc,
+                        retry + 1, max_retries, exc,
                     )
                     await asyncio.sleep(backoff)
                     backoff *= 2

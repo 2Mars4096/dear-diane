@@ -93,7 +93,7 @@ class Engine:
         config: EngineConfig | None = None,
         executor_registry: ExecutorRegistry | None = None,
         checkpoint_store: CheckpointStore | None = None,
-        human_input_callback: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+        human_input_callback: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
         event_callback: EventCallback | None = None,
     ) -> None:
         self.config = config or EngineConfig()
@@ -115,6 +115,7 @@ class Engine:
         from dan.executors.llm import LLMExecutor
         from dan.executors.tool import ToolExecutor
         from dan.executors.code import CodeExecutor
+        from dan.executors.input import InputExecutor
         from dan.executors.control_flow import (
             CompositeExecutor,
             ForEachExecutor,
@@ -129,6 +130,7 @@ class Engine:
             ("llm_operator", LLMExecutor()),
             ("tool_operator", ToolExecutor()),
             ("code_operator", CodeExecutor()),
+            ("input", InputExecutor()),
             ("if_else", IfElseExecutor()),
             ("while_loop", WhileLoopExecutor()),
             ("for_each", ForEachExecutor()),
@@ -456,12 +458,13 @@ class Engine:
             sub_graph_key: str,
             inputs: dict[str, Any],
             parent_node_id: str | None = None,
+            targeted_inputs: dict[str, dict[str, Any]] | None = None,
         ) -> dict[str, Any]:
             child_layer = layer_path + ((parent_node_id,) if parent_node_id else ())
             return await self._run_subgraph(
                 sub_graph_key, inputs, graph, state,
                 shared_context, artifacts, local_state,
-                child_layer,
+                child_layer, targeted_inputs,
             )
 
         return ExecutionContext(
@@ -487,6 +490,7 @@ class Engine:
         artifacts: ArtifactStore,
         local_state: LocalStateManager,
         layer_path: tuple[str, ...] = (),
+        targeted_inputs: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Execute a named sub-graph and return its outputs."""
         sub_graph = parent_graph.sub_graphs.get(sub_graph_key)
@@ -507,6 +511,11 @@ class Engine:
                             sub_state.port_data.set(
                                 f"__input__{entry_id}", port.name, inputs[port.name]
                             )
+
+        if targeted_inputs:
+            for node_id, port_values in targeted_inputs.items():
+                for port_name, value in port_values.items():
+                    sub_state.port_data.set(f"__input__{node_id}", port_name, value)
 
         levels = _topological_levels(sub_graph)
         for level in levels:

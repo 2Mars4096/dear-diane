@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+import uuid as _uuid
 from typing import Any
 
 from dan.engine.conditions import ConditionError, evaluate_condition
@@ -97,6 +98,13 @@ class WhileLoopExecutor:
         for iteration in range(max_iter):
             scope["iteration"] = iteration
 
+            await context.emit_event(
+                event_type="iteration_started",
+                node_id=node.id,
+                node_type="while_loop",
+                data={"iteration": iteration, "max_iterations": max_iter, "condition": node.condition},
+            )
+
             condition_vars = {**working_data, "iteration": iteration}
             try:
                 should_continue = evaluate_condition(node.condition, condition_vars)
@@ -116,6 +124,13 @@ class WhileLoopExecutor:
 
             scope["history"].append(body_output)
             working_data = {**working_data, **body_output}
+
+            await context.emit_event(
+                event_type="iteration_completed",
+                node_id=node.id,
+                node_type="while_loop",
+                data={"iteration": iteration, "max_iterations": max_iter},
+            )
 
             self._apply_compaction(node, scope)
 
@@ -221,8 +236,21 @@ class ForEachExecutor:
 
         async def run_item(index: int, item: Any) -> dict[str, Any]:
             async with semaphore:
+                await context.emit_event(
+                    event_type="iteration_started",
+                    node_id=node.id,
+                    node_type="for_each",
+                    data={"index": index, "total": len(items)},
+                )
                 item_input = {"item": item, "index": index}
-                return await context.run_subgraph(node.body_graph, item_input, parent_node_id=node.id)
+                result = await context.run_subgraph(node.body_graph, item_input, parent_node_id=node.id)
+                await context.emit_event(
+                    event_type="iteration_completed",
+                    node_id=node.id,
+                    node_type="for_each",
+                    data={"index": index, "total": len(items)},
+                )
+                return result
 
         tasks = [run_item(i, item) for i, item in enumerate(items)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -397,16 +425,29 @@ class HumanInTheLoopExecutor:
                 error="HumanInTheLoop requires a human_input_callback but none was provided",
             )
 
-        prompt = node.prompt or f"Human input needed for node '{node.name}':"
+        dynamic_prompt = inputs.get("user_prompt") or inputs.get("prompt")
+        if isinstance(dynamic_prompt, str) and dynamic_prompt.strip():
+            prompt = dynamic_prompt
+        else:
+            prompt = node.prompt or f"Human input needed for node '{node.name}':"
 
+        request_id = str(_uuid.uuid4())
+        await context.emit_event(
+            event_type="human_input_needed",
+            node_id=node.id,
+            node_type="human_in_the_loop",
+            data={"prompt": prompt, "request_id": request_id},
+        )
+
+        request_meta = {"node_id": node.id, "prompt": prompt, "request_id": request_id}
         try:
             if node.timeout_seconds is not None:
                 response = await asyncio.wait_for(
-                    context.human_input_callback(prompt),
+                    context.human_input_callback(request_meta),
                     timeout=node.timeout_seconds,
                 )
             else:
-                response = await context.human_input_callback(prompt)
+                response = await context.human_input_callback(request_meta)
         except asyncio.TimeoutError:
             if node.default_action is not None:
                 return NodeResult(
@@ -461,26 +502,44 @@ class CompositeExecutor:
         assert isinstance(node, CompositeNode)
 
         if node.input_mappings:
-            mapped_inputs = {
-                node.input_mappings[k]: v
-                for k, v in inputs.items()
-                if k in node.input_mappings
-            }
+            broadcast_inputs: dict[str, Any] = {}
+            targeted_inputs: dict[str, dict[str, Any]] = {}
             for k, v in inputs.items():
-                if k not in node.input_mappings:
-                    mapped_inputs[k] = v
+                if k in node.input_mappings:
+                    target = node.input_mappings[k]
+                    if "::" in target:
+                        target_node_id, port_name = target.split("::", 1)
+                        targeted_inputs.setdefault(target_node_id, {})[port_name] = v
+                    else:
+                        broadcast_inputs[target] = v
+                else:
+                    broadcast_inputs[k] = v
+            mapped_inputs = broadcast_inputs
         else:
             mapped_inputs = dict(inputs)
+            targeted_inputs = {}
 
-        body_output = await context.run_subgraph(node.body_graph, mapped_inputs, parent_node_id=node.id)
+        body_output = await context.run_subgraph(
+            node.body_graph, mapped_inputs,
+            parent_node_id=node.id,
+            targeted_inputs=targeted_inputs if targeted_inputs else None,
+        )
 
         if node.output_mappings:
             mapped_outputs: dict[str, Any] = {}
-            for inner_port, outer_port in node.output_mappings.items():
-                if inner_port in body_output:
-                    mapped_outputs[outer_port] = body_output[inner_port]
+            mapped_inner_keys: set[str] = set()
+            for inner_key, outer_port in node.output_mappings.items():
+                if "::" in inner_key:
+                    _, port_name = inner_key.split("::", 1)
+                    if port_name in body_output:
+                        mapped_outputs[outer_port] = body_output[port_name]
+                        mapped_inner_keys.add(port_name)
+                else:
+                    if inner_key in body_output:
+                        mapped_outputs[outer_port] = body_output[inner_key]
+                        mapped_inner_keys.add(inner_key)
             for k, v in body_output.items():
-                if k not in node.output_mappings:
+                if k not in mapped_inner_keys:
                     mapped_outputs[k] = v
         else:
             mapped_outputs = body_output

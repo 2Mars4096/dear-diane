@@ -29,6 +29,10 @@ class EventType(str, Enum):
     TOOL_CALL_RESULT = "tool_call_result"
     CODE_OUTPUT = "code_output"
     INTERMEDIATE_TEXT = "intermediate_text"
+    # -- 6-6: Execution UX event types -----------------------------------------
+    ITERATION_STARTED = "iteration_started"
+    ITERATION_COMPLETED = "iteration_completed"
+    HUMAN_INPUT_NEEDED = "human_input_needed"
 
 
 @dataclass(frozen=True)
