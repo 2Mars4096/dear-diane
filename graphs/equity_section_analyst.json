@@ -1,0 +1,919 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "section_analyst",
+    "description": "Fetch data and iteratively draft one report section",
+    "created_at": null,
+    "updated_at": null,
+    "tags": [
+      "equity-research",
+      "section"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "entry",
+      "name": "entry",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "section_name",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "ticker",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "section_name",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "ticker",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "code_operator",
+      "code": "result = {'section_name': section_name, 'ticker': ticker}\n",
+      "language": "python",
+      "sandbox_config": {}
+    },
+    {
+      "id": "data_gatherer",
+      "name": "data_gatherer",
+      "description": "Route a data request to SEC, market, or news source",
+      "input_ports": [
+        {
+          "name": "section_name",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "ticker",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "clean_data",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "route",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "composite",
+      "body_graph": "data_gatherer_body",
+      "is_blackbox": false,
+      "input_mappings": {
+        "section_name": "wf_data_gatherer__entry::section_name",
+        "ticker": "wf_data_gatherer__entry::ticker"
+      },
+      "output_mappings": {
+        "wf_data_gatherer__normalize::clean_data": "clean_data",
+        "wf_data_gatherer__source_router::route": "route"
+      },
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "read_set": [],
+      "write_set": [],
+      "compaction_rule": null,
+      "projections": []
+    },
+    {
+      "id": "init_review",
+      "name": "init_review",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "clean_data",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "section_name",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "clean_data",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "section_name",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "accuracy_score",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "feedback",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "code_operator",
+      "code": "result = {\n    'clean_data': clean_data,\n    'section_name': section_name,\n    'accuracy_score': 0.0,\n    'feedback': 'Initial draft needed.',\n}\n",
+      "language": "python",
+      "sandbox_config": {}
+    },
+    {
+      "id": "draft_review",
+      "name": "draft_review",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "clean_data",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "section_name",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "accuracy_score",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "feedback",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "polished_section",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "accuracy_score",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "feedback",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "node_type": "while_loop",
+      "condition": "accuracy_score < 0.85",
+      "body_graph": "draft_review_body",
+      "max_iterations": 3,
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "read_set": [],
+      "write_set": [],
+      "compaction_rule": {
+        "strategy": "sliding_window",
+        "window_size": 2,
+        "max_tokens": null
+      },
+      "failure_policy": {
+        "max_iterations": 3,
+        "timeout_seconds": null,
+        "stagnation_threshold": 2
+      },
+      "projections": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_entry__data_gatherer_0",
+      "source_node_id": "entry",
+      "source_port": "section_name",
+      "target_node_id": "data_gatherer",
+      "target_port": "section_name",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_entry__data_gatherer_1",
+      "source_node_id": "entry",
+      "source_port": "ticker",
+      "target_node_id": "data_gatherer",
+      "target_port": "ticker",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_data_gatherer__init_review_2",
+      "source_node_id": "data_gatherer",
+      "source_port": "clean_data",
+      "target_node_id": "init_review",
+      "target_port": "clean_data",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_entry__init_review_3",
+      "source_node_id": "entry",
+      "source_port": "section_name",
+      "target_node_id": "init_review",
+      "target_port": "section_name",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_init_review__draft_review_4",
+      "source_node_id": "init_review",
+      "source_port": "clean_data",
+      "target_node_id": "draft_review",
+      "target_port": "clean_data",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_init_review__draft_review_5",
+      "source_node_id": "init_review",
+      "source_port": "section_name",
+      "target_node_id": "draft_review",
+      "target_port": "section_name",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_init_review__draft_review_6",
+      "source_node_id": "init_review",
+      "source_port": "accuracy_score",
+      "target_node_id": "draft_review",
+      "target_port": "accuracy_score",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_init_review__draft_review_7",
+      "source_node_id": "init_review",
+      "source_port": "feedback",
+      "target_node_id": "draft_review",
+      "target_port": "feedback",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    }
+  ],
+  "sub_graphs": {
+    "data_gatherer_body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "data_gatherer",
+        "description": "Route a data request to SEC, market, or news source",
+        "created_at": null,
+        "updated_at": null,
+        "tags": [
+          "equity-research",
+          "data"
+        ]
+      },
+      "nodes": [
+        {
+          "id": "wf_data_gatherer__entry",
+          "name": "entry",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "section_name",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "ticker",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "section_name",
+              "json_schema": {},
+              "description": ""
+            },
+            {
+              "name": "ticker",
+              "json_schema": {},
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "code_operator",
+          "code": "result = {'section_name': section_name, 'ticker': ticker}\n",
+          "language": "python",
+          "sandbox_config": {}
+        },
+        {
+          "id": "wf_data_gatherer__source_router",
+          "name": "source_router",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "section_name",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "route",
+              "json_schema": {},
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "router",
+          "model": "gpt-4o-mini",
+          "route_descriptions": {
+            "sec_edgar": "Financial Analysis, Risk Factors, or Business Overview — needs SEC filings",
+            "market_data": "Valuation or Price Target — needs stock prices and multiples",
+            "news": "Competitive Landscape or Executive Summary — needs recent news"
+          }
+        },
+        {
+          "id": "wf_data_gatherer__fetch_sec",
+          "name": "fetch_sec",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "ticker",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "route",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "raw_data",
+              "json_schema": {},
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "tool_operator",
+          "tool_id": "fetch_sec_filing",
+          "tool_config": {}
+        },
+        {
+          "id": "wf_data_gatherer__fetch_market",
+          "name": "fetch_market",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "ticker",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "route",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "raw_data",
+              "json_schema": {},
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "tool_operator",
+          "tool_id": "fetch_market_data",
+          "tool_config": {}
+        },
+        {
+          "id": "wf_data_gatherer__fetch_news",
+          "name": "fetch_news",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "ticker",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "route",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "raw_data",
+              "json_schema": {},
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "tool_operator",
+          "tool_id": "fetch_news_articles",
+          "tool_config": {}
+        },
+        {
+          "id": "wf_data_gatherer__normalize",
+          "name": "normalize",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "sec_data",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "market_data",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "news_data",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "clean_data",
+              "json_schema": {},
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "code_operator",
+          "code": "parts = []\nfor raw in [sec_data, market_data, news_data]:\n    if raw:\n        parts.append(str(raw))\nclean = '\\n'.join(parts) if parts else 'No data retrieved.'\nresult = {'clean_data': clean[:8000]}\n",
+          "language": "python",
+          "sandbox_config": {}
+        }
+      ],
+      "edges": [
+        {
+          "id": "wf_data_gatherer__edge_entry__source_router_0",
+          "source_node_id": "wf_data_gatherer__entry",
+          "source_port": "section_name",
+          "target_node_id": "wf_data_gatherer__source_router",
+          "target_port": "section_name",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "wf_data_gatherer__edge_entry__fetch_sec_1",
+          "source_node_id": "wf_data_gatherer__entry",
+          "source_port": "ticker",
+          "target_node_id": "wf_data_gatherer__fetch_sec",
+          "target_port": "ticker",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "wf_data_gatherer__edge_entry__fetch_market_2",
+          "source_node_id": "wf_data_gatherer__entry",
+          "source_port": "ticker",
+          "target_node_id": "wf_data_gatherer__fetch_market",
+          "target_port": "ticker",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "wf_data_gatherer__edge_entry__fetch_news_3",
+          "source_node_id": "wf_data_gatherer__entry",
+          "source_port": "ticker",
+          "target_node_id": "wf_data_gatherer__fetch_news",
+          "target_port": "ticker",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "wf_data_gatherer__edge_source_router__fetch_sec_4",
+          "source_node_id": "wf_data_gatherer__source_router",
+          "source_port": "route",
+          "target_node_id": "wf_data_gatherer__fetch_sec",
+          "target_port": "route",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "control",
+          "condition": "route == 'sec_edgar'"
+        },
+        {
+          "id": "wf_data_gatherer__edge_source_router__fetch_market_5",
+          "source_node_id": "wf_data_gatherer__source_router",
+          "source_port": "route",
+          "target_node_id": "wf_data_gatherer__fetch_market",
+          "target_port": "route",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "control",
+          "condition": "route == 'market_data'"
+        },
+        {
+          "id": "wf_data_gatherer__edge_source_router__fetch_news_6",
+          "source_node_id": "wf_data_gatherer__source_router",
+          "source_port": "route",
+          "target_node_id": "wf_data_gatherer__fetch_news",
+          "target_port": "route",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "control",
+          "condition": "route == 'news'"
+        },
+        {
+          "id": "wf_data_gatherer__edge_fetch_sec__normalize_7",
+          "source_node_id": "wf_data_gatherer__fetch_sec",
+          "source_port": "raw_data",
+          "target_node_id": "wf_data_gatherer__normalize",
+          "target_port": "sec_data",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "wf_data_gatherer__edge_fetch_market__normalize_8",
+          "source_node_id": "wf_data_gatherer__fetch_market",
+          "source_port": "raw_data",
+          "target_node_id": "wf_data_gatherer__normalize",
+          "target_port": "market_data",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "wf_data_gatherer__edge_fetch_news__normalize_9",
+          "source_node_id": "wf_data_gatherer__fetch_news",
+          "source_port": "raw_data",
+          "target_node_id": "wf_data_gatherer__normalize",
+          "target_port": "news_data",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        }
+      ],
+      "sub_graphs": {},
+      "entry_points": [
+        "wf_data_gatherer__entry"
+      ],
+      "exit_points": [
+        "wf_data_gatherer__source_router",
+        "wf_data_gatherer__normalize"
+      ],
+      "shared_context": [],
+      "artifact_refs": []
+    },
+    "draft_review_body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "draft_review_body",
+        "description": "",
+        "created_at": null,
+        "updated_at": null,
+        "tags": []
+      },
+      "nodes": [
+        {
+          "id": "loop_state",
+          "name": "loop_state",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "clean_data",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "section_name",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "accuracy_score",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "feedback",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "clean_data",
+              "json_schema": {},
+              "description": ""
+            },
+            {
+              "name": "section_name",
+              "json_schema": {},
+              "description": ""
+            },
+            {
+              "name": "accuracy_score",
+              "json_schema": {},
+              "description": ""
+            },
+            {
+              "name": "feedback",
+              "json_schema": {},
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "code_operator",
+          "code": "result = {\n    'clean_data': clean_data,\n    'section_name': section_name,\n    'accuracy_score': accuracy_score,\n    'feedback': feedback,\n}\n",
+          "language": "python",
+          "sandbox_config": {}
+        },
+        {
+          "id": "section_writer",
+          "name": "section_writer",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "clean_data",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "section_name",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "feedback",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "text",
+              "json_schema": {},
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "llm_operator",
+          "model": "",
+          "prompt_template": "You are an equity research analyst writing the '{section_name}' section of a professional report.\n\nSource data:\n{clean_data}\n\nPrevious reviewer feedback:\n{feedback}\n\nWrite an institutional-quality section. Cite specific numbers and sources.",
+          "system_prompt": "",
+          "temperature": 0.7,
+          "max_tokens": null,
+          "output_json_schema": null
+        },
+        {
+          "id": "fact_checker",
+          "name": "fact_checker",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "draft",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "clean_data",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "node_type": "llm_operator",
+          "model": "",
+          "prompt_template": "You are a senior equity research reviewer. Fact-check this section against the source data.\n\nSection draft:\n{draft}\n\nSource data:\n{clean_data}\n\nScore accuracy from 0.0 to 1.0. If below 0.85, provide specific revision feedback and a revised draft. Return valid JSON.",
+          "system_prompt": "",
+          "temperature": 0.7,
+          "max_tokens": null,
+          "output_json_schema": {
+            "type": "object",
+            "properties": {
+              "polished_section": {
+                "type": "string"
+              },
+              "accuracy_score": {
+                "type": "number"
+              },
+              "feedback": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "polished_section",
+              "accuracy_score",
+              "feedback"
+            ]
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge_loop_state__section_writer_0",
+          "source_node_id": "loop_state",
+          "source_port": "clean_data",
+          "target_node_id": "section_writer",
+          "target_port": "clean_data",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "edge_loop_state__section_writer_1",
+          "source_node_id": "loop_state",
+          "source_port": "section_name",
+          "target_node_id": "section_writer",
+          "target_port": "section_name",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "edge_loop_state__section_writer_2",
+          "source_node_id": "loop_state",
+          "source_port": "feedback",
+          "target_node_id": "section_writer",
+          "target_port": "feedback",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "edge_section_writer__fact_checker_3",
+          "source_node_id": "section_writer",
+          "source_port": "text",
+          "target_node_id": "fact_checker",
+          "target_port": "draft",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "edge_loop_state__fact_checker_4",
+          "source_node_id": "loop_state",
+          "source_port": "clean_data",
+          "target_node_id": "fact_checker",
+          "target_port": "clean_data",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        }
+      ],
+      "sub_graphs": {},
+      "entry_points": [
+        "loop_state"
+      ],
+      "exit_points": [
+        "fact_checker"
+      ],
+      "shared_context": [],
+      "artifact_refs": []
+    }
+  },
+  "entry_points": [
+    "entry"
+  ],
+  "exit_points": [
+    "draft_review"
+  ],
+  "shared_context": [],
+  "artifact_refs": []
+}
