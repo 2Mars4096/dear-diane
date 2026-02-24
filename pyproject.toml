@@ -5,12 +5,14 @@ description = "Deep Agent Network — typed graph orchestration for multi-agent 
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
+    "openai>=1.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
+    "pytest-asyncio",
 ]
 
 [build-system]
