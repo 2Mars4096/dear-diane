@@ -64,7 +64,7 @@ class LLMExecutor:
             event_type="llm_thinking",
             node_id=node.id,
             node_type="llm_operator",
-            data={"model": model, "prompt_preview": rendered_prompt[:200]},
+            data={"model": model, "prompt_preview": rendered_prompt[:2000]},
         )
 
         messages: list[dict[str, str]] = []

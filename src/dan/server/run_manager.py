@@ -68,7 +68,7 @@ class RunManager:
         self._runs: dict[str, RunRecord] = {}
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._max_event_buffer = 2000
+        self._max_event_buffer = 10000
         self._pending_human_inputs: dict[str, asyncio.Event] = {}
         self._human_input_responses: dict[str, dict[str, Any]] = {}
 

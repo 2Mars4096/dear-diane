@@ -68,7 +68,7 @@ class ToolExecutor:
             event_type="tool_call_started",
             node_id=node.id,
             node_type="tool_operator",
-            data={"tool_id": node.tool_id, "args": {k: str(v)[:100] for k, v in merged_args.items()}},
+            data={"tool_id": node.tool_id, "args": {k: str(v)[:2000] for k, v in merged_args.items()}},
         )
 
         try:
@@ -88,7 +88,7 @@ class ToolExecutor:
             node_type="tool_operator",
             data={
                 "tool_id": node.tool_id,
-                "result": str(result)[:500] if not isinstance(result, dict) else {k: str(v)[:200] for k, v in result.items()},
+                "result": str(result)[:5000] if not isinstance(result, dict) else {k: str(v)[:2000] for k, v in result.items()},
             },
         )
 
