@@ -4,11 +4,12 @@ import {
   Background,
   Controls,
   MiniMap,
+  useReactFlow,
   type NodeTypes,
 } from "@xyflow/react";
 import DanNode from "./DanNode";
 import { useGraphStore } from "../store/useGraphStore";
-import { createDefaultNode, danNodeToReactFlow } from "../lib/graphAdapter";
+import { createDefaultNode } from "../lib/graphAdapter";
 import type { NodeTypeString } from "../types/graph";
 
 const nodeTypes: NodeTypes = {
@@ -24,7 +25,7 @@ export default function GraphCanvas() {
   const setSelectedNode = useGraphStore((s) => s.setSelectedNode);
   const setSelectedEdge = useGraphStore((s) => s.setSelectedEdge);
   const addNode = useGraphStore((s) => s.addNode);
-  const deleteSelected = useGraphStore((s) => s.deleteSelected);
+  const { screenToFlowPosition } = useReactFlow();
 
   const onDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -37,30 +38,14 @@ export default function GraphCanvas() {
       const nodeType = e.dataTransfer.getData("application/dan-node-type") as NodeTypeString;
       if (!nodeType) return;
 
-      const bounds = (e.target as HTMLElement).closest(".react-flow")?.getBoundingClientRect();
-      if (!bounds) return;
-
-      const position = {
-        x: e.clientX - bounds.left,
-        y: e.clientY - bounds.top,
-      };
-
+      const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       addNode(createDefaultNode(nodeType, position));
     },
-    [addNode],
-  );
-
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
-      if (e.key === "Delete" || e.key === "Backspace") {
-        deleteSelected();
-      }
-    },
-    [deleteSelected],
+    [addNode, screenToFlowPosition],
   );
 
   return (
-    <div className="flex-1 h-full" onKeyDown={onKeyDown} tabIndex={0}>
+    <div className="flex-1 h-full">
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -73,6 +58,7 @@ export default function GraphCanvas() {
         onDragOver={onDragOver}
         onDrop={onDrop}
         nodeTypes={nodeTypes}
+        deleteKeyCode={["Delete", "Backspace"]}
         fitView
         proOptions={{ hideAttribution: true }}
       >

@@ -8,6 +8,8 @@ const CATEGORY_LABELS: Record<string, string> = {
   composite: "Composite",
 };
 
+type NodeCatalogItem = (typeof NODE_TYPE_CATALOG)[number];
+
 export default function NodePalette() {
   const addNode = useGraphStore((s) => s.addNode);
 
@@ -16,7 +18,16 @@ export default function NodePalette() {
     e.dataTransfer.effectAllowed = "move";
   };
 
-  const categories = Object.groupBy(NODE_TYPE_CATALOG, (n) => n.category);
+  const categories = NODE_TYPE_CATALOG.reduce<Record<string, NodeCatalogItem[]>>(
+    (acc, item) => {
+      if (!acc[item.category]) {
+        acc[item.category] = [];
+      }
+      acc[item.category].push(item);
+      return acc;
+    },
+    {},
+  );
 
   return (
     <div className="w-52 bg-gray-50 border-r border-gray-200 p-3 overflow-y-auto">

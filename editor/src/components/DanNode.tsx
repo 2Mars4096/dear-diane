@@ -31,7 +31,11 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   const status = nodeStatuses[id];
   const ringClass = STATUS_RING[status] ?? "";
 
-  const hasBodyGraph = "body_graph" in d && !!(d as Record<string, unknown>).body_graph;
+  const hasBodyGraph =
+    (d.node_type === "while_loop" ||
+      d.node_type === "for_each" ||
+      d.node_type === "composite") &&
+    !!d.body_graph;
 
   return (
     <div

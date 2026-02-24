@@ -27,7 +27,12 @@ export default function CompositePreview({ onClose }: Props) {
     if (!node) return null;
 
     const d = node.data as unknown as DanNodeType;
-    const bodyGraphKey = (d as Record<string, unknown>).body_graph as string | undefined;
+    const bodyGraphKey =
+      d.node_type === "while_loop" ||
+      d.node_type === "for_each" ||
+      d.node_type === "composite"
+        ? d.body_graph
+        : undefined;
     if (!bodyGraphKey) return null;
 
     const subGraph = danGraph.sub_graphs?.[bodyGraphKey] as DanGraph | undefined;

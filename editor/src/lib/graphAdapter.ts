@@ -102,14 +102,11 @@ export function reactFlowToDanGraph(
 
 // -- Default node factory ----------------------------------------------------
 
-let _counter = 0;
-
 export function createDefaultNode(
   nodeType: NodeTypeString,
   position: { x: number; y: number },
 ): DanNode {
-  _counter += 1;
-  const id = `${nodeType}_${_counter}`;
+  const id = `${nodeType}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
   const base = {
     id,
     name: nodeType.replace(/_/g, " "),

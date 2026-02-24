@@ -21,7 +21,6 @@ import {
   danGraphToReactFlow,
   danNodeToReactFlow,
   reactFlowToDanGraph,
-  portHandleId,
 } from "../lib/graphAdapter";
 import * as api from "../lib/api";
 
@@ -81,18 +80,6 @@ interface GraphState {
   // -- Actions: event handling
   handleRunEvent: (event: Record<string, unknown>) => void;
 }
-
-const EMPTY_GRAPH: DanGraph = {
-  version: "dan_graph_v1",
-  metadata: { name: "" },
-  nodes: [],
-  edges: [],
-  sub_graphs: {},
-  entry_points: [],
-  exit_points: [],
-  shared_context: [],
-  artifact_refs: [],
-};
 
 export const useGraphStore = create<GraphState>((set, get) => ({
   graphId: null,
@@ -162,15 +149,16 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   onConnect: (conn) => {
+    const edgeId = `e-${conn.source}-${conn.target}-${Date.now()}`;
     set((s) => ({
       edges: addEdge(
         {
           ...conn,
-          id: `e-${conn.source}-${conn.target}-${Date.now()}`,
+          id: edgeId,
           type: "smoothstep",
           data: {
             danEdge: {
-              id: `e-${conn.source}-${conn.target}-${Date.now()}`,
+              id: edgeId,
               edge_type: "data",
               source_node_id: conn.source,
               source_port: conn.sourceHandle?.replace("port:", "") ?? "",

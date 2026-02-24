@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useGraphStore } from "./store/useGraphStore";
 import GraphSwitcher from "./components/GraphSwitcher";
@@ -24,12 +24,17 @@ export default function App() {
     loadGraphList();
   }, [loadGraphList]);
 
-  const hasBodyGraph = useCallback(() => {
+  const hasBodyGraph = useMemo(() => {
     if (!selectedNodeId) return false;
     const node = nodes.find((n) => n.id === selectedNodeId);
     if (!node) return false;
     const d = node.data as unknown as DanNode;
-    return "body_graph" in d && !!(d as Record<string, unknown>).body_graph;
+    return (
+      (d.node_type === "while_loop" ||
+        d.node_type === "for_each" ||
+        d.node_type === "composite") &&
+      !!d.body_graph
+    );
   }, [selectedNodeId, nodes]);
 
   return (
@@ -76,7 +81,7 @@ export default function App() {
                 >
                   Output
                 </button>
-                {hasBodyGraph() && (
+                {hasBodyGraph && (
                   <>
                     <div className="flex-1" />
                     <button
