@@ -18,8 +18,8 @@ deep-agent-network/
     todo.md                      # High-level task list, links to plan files
     bugs.md                      # Known issues and failed approaches
     plans/                       # Numbered detailed plans (just-in-time)
-  src/dan/                       # Python package — the formal type system
-    models/
+  src/dan/                       # Python package
+    models/                      # Phase 0 — formal type system
       ports.py                   # InputPort, OutputPort
       context.py                 # NodeLocalState, SharedContextDeclaration, ArtifactRef, ContextProjection, policies
       nodes.py                   # NodeBase, LLMOperator, ToolOperator, CodeOperator
@@ -30,11 +30,27 @@ deep-agent-network/
       schema.py                  # Port schema compatibility (MVP structural check)
       graph.py                   # Graph well-formedness validation
     registry.py                  # NodeTypeRegistry — maps node_type strings to classes
-  tests/                         # pytest suite (75 tests)
+    engine/                      # Phase 1 — async execution engine
+      __init__.py                # Public API: Engine, EngineConfig, RunResult, etc.
+      state.py                   # NodeStatus, PortDataStore, ExecutionState
+      context_runtime.py         # SharedContextStore, ArtifactStore, LocalStateManager (Layers 2-4)
+      executor.py                # EngineConfig, NodeExecutor protocol, ExecutionContext, ExecutorRegistry
+      conditions.py              # Safe expression evaluator for IfElse/WhileLoop conditions
+      normalizer.py              # OutputNormalizer — JSON extraction, schema validation, re-prompt
+      checkpoint.py              # CheckpointStore protocol, FileSystemCheckpointStore
+      scheduler.py               # Topological sort, parallel dispatch, Engine.run()/resume()
+    executors/                   # Phase 1 — built-in node executors
+      llm.py                     # LLMExecutor — OpenAI-compatible (vectorengine.ai default)
+      tool.py                    # ToolExecutor + ToolRegistry — function dispatch
+      code.py                    # CodeExecutor — sandboxed Python exec
+      control_flow.py            # IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop
+  tests/                         # pytest suite (140 tests)
     test_models/                 # Unit tests for all model types
     test_validation/             # Validation logic tests
     test_examples/               # Paper-writing motivating example
-  pyproject.toml                 # Pydantic v2 + pytest
+    test_engine/                 # Engine unit + integration tests
+  pyproject.toml                 # Pydantic v2 + OpenAI SDK + pytest
+  .env.example                   # Environment variable template
   .cursor/rules/                 # AI agent rules
 ```
 
@@ -110,6 +126,53 @@ Every composite/loop node declares:
 - **Parallel merge**: fan-out branches must specify merge rules (append, last-write-wins, or reducer node)
 - **Compaction**: configurable per composite node (sliding window, summarization gate, diff-based)
 - **Failure exits**: `max_iterations`, `stagnation`, `timeout`
+
+## Execution Engine (Phase 1)
+
+### Engine API
+
+```python
+from dan.engine import Engine, EngineConfig
+
+config = EngineConfig(
+    llm_base_url="https://api.vectorengine.ai/v1",
+    llm_api_key="...",
+    llm_default_model="claude-sonnet-4-6",
+)
+engine = Engine(config)
+result = await engine.run(graph, inputs={"idea": "..."})
+result = await engine.resume(graph, run_id="abc123")
+```
+
+### Scheduling
+
+- Async-first: `Engine.run()` is async; parallel fan-out uses `asyncio.gather()`
+- Kahn's algorithm groups nodes into topological levels; nodes in the same level execute concurrently
+- Sub-graph execution is recursive: WhileLoop/ForEach/Composite executors call back into the scheduler
+
+### Executor Protocol
+
+- `NodeExecutor` is a `Protocol` with `async execute(node, inputs, context) -> NodeResult`
+- `ExecutorRegistry` maps `node_type` strings to executor instances; users can register custom executors
+- Built-in executors for all 10 node types auto-registered on Engine creation
+
+### LLM Integration
+
+- Default executor uses `openai.AsyncOpenAI(base_url=...)` — supports any OpenAI-compatible endpoint
+- Output normalization built into LLM executor: extract JSON -> validate against schema -> re-prompt with error -> retry
+- Transient API errors (rate limits, timeouts) retried with exponential backoff
+
+### Condition Evaluation
+
+- IfElse/WhileLoop `condition` strings evaluated as Python expressions via restricted `eval()`
+- No `__builtins__`; whitelist of safe functions (len, min, max, all, any, etc.)
+- Variables populated from upstream port data
+
+### Checkpointing
+
+- `CheckpointStore` protocol with filesystem default (`FileSystemCheckpointStore`)
+- Checkpoint written after each topological level completes
+- `Engine.resume()` loads checkpoint and continues from pending nodes
 
 ## Key Decisions
 

@@ -4,7 +4,7 @@
 - [x] [1-phase-0-formal-spec](plans/1-phase-0-formal-spec.md) — formal spec as Python types + versioned graph JSON contract
 
 ## Phase 1 — Python Orchestration Library
-- [ ] 2: Core engine — define and execute graphs with typed nodes, typed edges, while-loops, fan-out/fan-in, checkpointing/resumability → (not yet planned)
+- [x] [2-phase-1-orchestration-engine](plans/2-phase-1-orchestration-engine.md) — async execution engine with typed nodes, while-loops, fan-out/fan-in, checkpointing/resumability
 
 ## Phase 2 — Visual Editor
 - [ ] 3: React Flow-based visual editor — drag/drop authoring, edge wiring, config panels, run controls/status → (not yet planned)
