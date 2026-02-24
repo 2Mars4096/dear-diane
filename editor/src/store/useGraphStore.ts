@@ -624,7 +624,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   disconnectRun: () => {
     get().ws?.close();
-    set({ ws: null });
+    set({ ws: null, runStatus: "disconnected" });
   },
 
   recoverActiveRun: async () => {

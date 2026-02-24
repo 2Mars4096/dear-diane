@@ -350,6 +350,61 @@ with wf.composite(
     s1 >> s2
 ```
 
+### 5d. Import Workflow as Composite Node
+
+```python
+# Build a standalone workflow
+inner_wf = workflow("data_fetcher")
+inner_wf.tool("search", tool_id="web_search", input_ports=[{"name": "query"}],
+              output_ports=[{"name": "results"}])
+inner_graph = inner_wf.build()
+
+# Import it as a single node in another workflow
+outer_wf = workflow("pipeline")
+fetcher = outer_wf.import_workflow("fetcher", inner_graph)
+
+# Wire it like any other node
+source = outer_wf.llm("gen_query", prompt="Generate search for {topic}")
+outer_wf.edge(source["text"], fetcher["query"])
+```
+
+**`wf.import_workflow(node_id, graph, ...)`** takes a pre-built `Graph` and embeds it as a composite node. Internal node IDs are auto-namespaced to avoid collisions.
+
+| Parameter | Type | Default | Purpose |
+|---|---|---|---|
+| `node_id` | `str` | *(required)* | Unique ID for the composite node |
+| `graph` | `Graph` | *(required)* | Pre-built graph to embed |
+| `input_mappings` | `dict[str, str]` | auto-derived | outer_port → inner node::port |
+| `output_mappings` | `dict[str, str]` | auto-derived | inner node::port → outer_port |
+| `input_ports` | `list[dict]` | auto-derived | Override outer input ports |
+| `output_ports` | `list[dict]` | auto-derived | Override outer output ports |
+| `name` | `str` | graph name | Display name |
+| `description` | `str` | graph description | Description |
+
+**Auto-derivation:** When ports/mappings are omitted, they are derived from the imported graph's entry-point input ports and exit-point output ports (matching the editor's `graphAsCompositeNode()` convention).
+
+**Progressive wrapping:** Build Workflow A, import it into Workflow B, then import B into C — each call to `import_workflow()` namespaces the inner graph's IDs, so nested imports compose cleanly.
+
+```python
+level1 = build_simple_workflow().build()
+level2_wf = workflow("mid")
+level2_wf.import_workflow("inner", level1)
+# ... add more nodes ...
+level2 = level2_wf.build()
+
+level3_wf = workflow("outer")
+level3_wf.import_workflow("mid_block", level2)   # level1 is nested two levels deep
+```
+
+**Utility functions** (advanced use):
+
+```python
+from dan.builder import namespace_graph, derive_ports
+
+namespaced = namespace_graph(graph, prefix="my_prefix__")
+input_ports, output_ports, in_map, out_map = derive_ports(namespaced)
+```
+
 ---
 
 ## 6. Shared Context and Artifacts
@@ -757,6 +812,30 @@ wf.tool("fetch_data", tool_id="query_db",
         output_ports=[{"name": "rows"}, {"name": "count"}])
 ```
 
+### Progressive Workflow Wrapping
+
+Build standalone workflows and import each as a node in the next level:
+
+```python
+# Level 1: standalone
+dg_wf = workflow("data_gatherer")
+# ... add nodes ...
+dg_graph = dg_wf.build()
+
+# Level 2: imports Level 1
+sa_wf = workflow("section_analyst")
+sa_wf.import_workflow("data_gatherer", dg_graph)
+# ... add more nodes around it ...
+sa_graph = sa_wf.build()
+
+# Level 3: imports Level 2 inside a ForEach
+report_wf = workflow("report")
+with report_wf.for_each("sections", items=planner["sections"]) as body:
+    body.import_workflow("analyst", sa_graph)
+```
+
+See `examples/equity_research.py` for a full 3-level example using all edge types.
+
 ### Referencing Composite Node Outputs
 
 When wiring edges from `for_each` or `while_loop` nodes, create a `NodeRef` manually:
@@ -774,7 +853,7 @@ wf.edge(ref["results"], downstream["input"])
 
 ```python
 # Builder
-from dan.builder import workflow, decompile, WorkflowBuilder, NodeRef, PortRef, BuildError
+from dan.builder import workflow, decompile, WorkflowBuilder, NodeRef, PortRef, BuildError, namespace_graph, derive_ports
 
 # Engine
 from dan.engine import (

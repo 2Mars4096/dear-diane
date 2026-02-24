@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-02-24 (import_workflow + equity research example)
+- [feat] `wf.import_workflow(node_id, graph)` — Python builder method to embed a pre-built Graph as a composite node, enabling progressive workflow wrapping (build A, import into B, import B into C)
+- [feat] `namespace_graph(graph, prefix)` — prefixes all internal IDs to avoid collisions when importing
+- [feat] `derive_ports(graph)` — auto-derives composite input/output ports from entry/exit nodes, using `node_id::port_name` mapping format (matches editor's `graphAsCompositeNode()`)
+- [feat] New file `src/dan/builder/importer.py` with import utilities
+- [feat] `examples/equity_research.py` — 3-level progressive wrapping demo (Data Gatherer → Section Analyst → Report Orchestrator) using all 3 edge types and most node types
+- [docs] Updated `docs/llm-api-guide.md` with `import_workflow` API, progressive wrapping pattern, and import map
+- [docs] Updated `docs/architecture.md` with new `importer.py` file
+
 ## 2026-02-24 (6-8 patch-up implementation)
 - [feat] Loop feedback arrows: `drillIn` injects synthetic dashed edges from exit-point output ports back to entry-point input ports (name-matched), with generic fallback arrow when names don't match; edges tagged `data.synthetic=true`
 - [fix] Save-leak prevention: `saveGraph()` filters out `edge.data?.synthetic` edges before passing to `reactFlowToDanGraph()`, preventing phantom edges from persisting when saving while drilled into a loop body

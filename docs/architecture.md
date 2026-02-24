@@ -51,10 +51,11 @@ deep-agent-network/
       code.py                    # CodeExecutor — sandboxed Python exec
       control_flow.py            # IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop
     builder/                     # Phase 1.5 — fluent workflow builder DSL
-      __init__.py                # Public API: workflow(), WorkflowBuilder, NodeRef, PortRef, decompile()
+      __init__.py                # Public API: workflow(), WorkflowBuilder, NodeRef, PortRef, decompile(), namespace_graph, derive_ports
       refs.py                    # NodeRef, PortRef — compile-time proxies with __format__, __rshift__, __getitem__
-      builder.py                 # WorkflowBuilder — node creation, edge registration, context managers
+      builder.py                 # WorkflowBuilder — node creation, edge registration, context managers, import_workflow()
       compiler.py                # Compile builder state -> Graph model (marker resolution, port/edge generation)
+      importer.py                # namespace_graph(), derive_ports() — import pre-built Graph as composite node
       decompiler.py              # Graph -> Python builder code string (for visual editor round-trip)
     server/                      # Phase 2 — FastAPI backend for visual editor
       __init__.py
