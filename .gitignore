@@ -48,6 +48,10 @@ htmlcov/
 # Logs
 *.log
 
+# Runtime artifacts
+output/
+checkpoints/
+
 # JavaScript / TypeScript artifacts (future editor)
 node_modules/
 npm-debug.log*
