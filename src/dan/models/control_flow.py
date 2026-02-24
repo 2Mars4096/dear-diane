@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from dan.models.context import (
     CompactionRule,
@@ -21,6 +21,31 @@ from dan.models.context import (
     NodeLocalState,
 )
 from dan.models.nodes import NodeBase
+
+
+# ---------------------------------------------------------------------------
+# Input node — pre-run configuration surface for workflow inputs
+# ---------------------------------------------------------------------------
+
+
+class InputVariable(BaseModel):
+    """A single typed variable declared on an InputNode."""
+
+    name: str
+    type: Literal["string", "number", "boolean"] = "string"
+    default: Any = None
+    description: str = ""
+
+
+class InputNode(NodeBase):
+    """Visual entry point for workflow inputs.
+
+    Each variable becomes an output port whose value is provided
+    before the run starts (on the canvas UI or via the API).
+    """
+
+    node_type: Literal["input"] = "input"
+    variables: list[InputVariable] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
