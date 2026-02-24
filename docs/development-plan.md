@@ -118,19 +118,67 @@ Some systems already tackle the paper-writing use case specifically:
 | 4 | **Fragility at scale is structural.** Both tools were designed for simple chatbot flows and grew organically. Complex pipelines hit their architectural limits, not just bugs. | Moderate |
 | 5 | **The research gives you an intellectual edge.** AFlow's abstraction model, G-Designer's topology insights, and EvoFlow's heterogeneity principle can inform your design from day one. Existing tools don't incorporate any of this. | Moderate |
 
-### Recommendation
+### Recommendation (and what we did)
 
 **Don't build a general-purpose visual agent builder from scratch on day one.** Use a phased approach:
 
-- **Start with a Python-first orchestration core** that implements typed nodes, typed edges, control-flow primitives, and formal graph serialization.
-- **Immediately after the core engine works, build a full visual editor baseline** (React Flow + TypeScript) so workflows can be authored and tested through a UI early.
-- **Then validate with the paper-writing workflow**, followed by deeper composability and advanced debugging overlays.
+- ~~**Start with a Python-first orchestration core** that implements typed nodes, typed edges, control-flow primitives, and formal graph serialization.~~ **Done** — Phases 0-1.
+- ~~**Immediately after the core engine works, build a full visual editor baseline** (React Flow + TypeScript) so workflows can be authored and tested through a UI early.~~ **Done** — Phase 2.
+- **Next: validate with the paper-writing workflow**, followed by deeper composability and advanced debugging overlays.
 
-This preserves early backend validation while still moving quickly to a practical Langflow/Flowise-like user experience.
+This approach preserved early backend validation while moving quickly to a practical Langflow/Flowise-like user experience.
 
 ---
 
 ## 5. Design Decisions
+
+### Workflows as Code (first-class principle)
+
+Every workflow, agent, and operator must be definable in Python code — not just through the visual editor. Code is the primary authoring interface. The visual editor renders and edits the same underlying graph, but code comes first.
+
+**Why this matters:**
+
+- **Vibe-codeable** — an LLM (Cursor, Claude Code, etc.) can generate, modify, and debug workflows by writing Python. This is how most power users will build workflows.
+- **Version-controllable** — code diffs are readable; visual graph diffs are not.
+- **Testable** — workflows can be unit tested, parameterized, and CI'd.
+- **Documentable** — a workflow definition IS its own documentation. Hardcode a workflow and it's immediately readable.
+- **Composable** — import workflow definitions as Python modules. `from my_workflows import review_revise_loop`.
+
+**What this requires:** a high-level builder API / DSL on top of the raw Pydantic models. Constructing `Graph`, `Node`, `Edge` objects by hand is possible but verbose. The builder should make common patterns readable:
+
+```python
+from dan.builder import workflow, llm, code, for_each, while_loop
+
+paper = workflow("paper_writing")
+
+# Chain operators
+ideas = paper.llm("idea_gen", model="opus", prompt="Generate ideas about {topic}")
+outline = paper.llm("planner", prompt="Create outline for: {ideas}")
+
+# Parallel fan-out over sections
+sections = paper.for_each(
+    "write_sections",
+    items=outline["sections"],
+    body=lambda s: paper.llm("writer", prompt="Write section: {s}"),
+    max_concurrency=4,
+)
+draft = paper.reduce("assemble", inputs=sections, strategy="concatenate")
+
+# Review-revise loop
+final = paper.while_loop(
+    "review_revise",
+    body=[
+        paper.llm("reviewer", model="opus", prompt="Review: {draft}"),
+        paper.llm("reviser", prompt="Revise based on: {comments}"),
+    ],
+    exit_when="verdict == 'accept' or iteration >= 5",
+)
+
+# Compile to Graph (same JSON the visual editor uses)
+graph = paper.build()
+```
+
+This compiles down to the same `dan_graph_v1` JSON that the visual editor reads. Round-trip: code → Graph JSON → visual editor → Graph JSON → code. No information loss.
 
 ### The Block: Two-Level Abstraction (inspired by AFlow)
 
@@ -241,7 +289,7 @@ Every composite/loop node formalizes:
 | `read_set` / `write_set` | Declared dependencies on shared context store |
 | `compaction_rule` | How local history is summarized between iterations (sliding window, summarization gate, or diff-based) |
 
-### Policies (to be defined in Phase 0)
+### Policies (defined in Phase 0)
 
 - **Mutation policy**: which nodes can write shared context; default is read-only unless declared
 - **Parallel merge policy**: for fan-out branches, define deterministic merge rules — append, last-write-wins, or explicit reducer node
@@ -270,15 +318,16 @@ This is distinct from the shared context store (Layer 3), which is designed for 
 
 ## 6. Development Roadmap
 
-| Phase | Milestone | Deliverable | Est. Effort |
-|-------|-----------|-------------|-------------|
-| **0** | Solidify abstraction model | Formal spec: node types, edge types, schema format | 1-2 weeks |
-| **1** | Python orchestration library | Core engine: define and execute graphs with typed nodes, typed edges, while-loops, fan-out/fan-in, checkpointing/resumability | 3-4 weeks |
-| **2** | Visual editor baseline | React Flow-based editor: drag/drop nodes, wire edges, edit configs, run controls and status updates | 4-6 weeks |
-| **3** | Paper-writing proof of concept | End-to-end paper-writing workflow running on engine + editor | 2-3 weeks |
-| **4** | Composite nodes | Nest sub-graphs inside nodes, zoom-in/zoom-out | 2-3 weeks |
-| **5** | Advanced execution visualization | Debugging overlays, run timeline, and richer data-flow inspection | 2-3 weeks |
-| **6** | Shareable blocks / marketplace | Publish and import reusable agent-blocks | TBD |
+| Phase | Milestone | Deliverable | Status |
+|-------|-----------|-------------|--------|
+| **0** | Solidify abstraction model | Formal spec: node types, edge types, schema format (91 tests) | **Done** |
+| **1** | Python orchestration library | Async engine: typed nodes, while-loops, fan-out/fan-in, checkpointing (140 tests) | **Done** |
+| **1.5** | Workflow builder API | Fluent Python DSL (`dan.builder`) compiling to `dan_graph_v1` JSON | Not started |
+| **2** | Visual editor baseline | FastAPI + React Flow: CRUD, live streaming execution, composite preview (167 tests) | **Done** |
+| **3** | Paper-writing proof of concept | End-to-end paper-writing workflow running on engine + editor + code | Not started |
+| **4** | Composite nodes | Nest sub-graphs inside nodes, zoom-in/zoom-out | Not started |
+| **5** | Advanced execution visualization | Debugging overlays, run timeline, and richer data-flow inspection | Not started |
+| **6** | Shareable blocks / marketplace | Publish and import reusable agent-blocks | Not started |
 
 ---
 

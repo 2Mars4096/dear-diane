@@ -1,6 +1,72 @@
 # Changelog
 
-## 2026-02-24
+## 2026-02-24 (docs review fixes)
+- [docs] `architecture.md`: moved "Workflows as Code" out of Phase 1 section into its own "Phase 1.5 — not yet built" section (was misleading — `dan.builder` doesn't exist yet)
+- [docs] `architecture.md`: fixed checkpointing description — "per topological level" not "per node"; removed stale "Targeted for Phase 1"
+- [docs] `architecture.md`: removed duplicate frontend tech stack subsection (already in top-level Tech Stack)
+- [docs] `architecture.md`: added missing files to directory tree (`__init__.py` files, `editor/package.json`, `vite.config.ts`, `tsconfig.json`)
+- [docs] `architecture.md`: removed hardcoded test count from directory tree
+- [docs] `changelog.md`: reordered to consistent newest-first (Phase 0 was at top despite being oldest)
+- [docs] `development-plan.md`: fixed stale "Policies (to be defined in Phase 0)" → "(defined in Phase 0)"
+- [docs] `development-plan.md`: updated Section 4 recommendation — struck through completed items, changed tense to past
+- [docs] `bugs.md`: moved Node.js version warning and `Object.groupBy` from "Open Bugs" to "Known Limitations" (environment notes, not code bugs)
+- [docs] `todo.md`: renumbered Phase 1.5 plan ID from `8:` to `1-5:` so future plan file sorts correctly between Phases 0 and 1
+
+## 2026-02-24 (post-Phase 2 docs sync)
+- [docs] Updated `architecture.md` tech stack — added FastAPI, Zustand, Tailwind CSS, pytest/httpx to explicitly list all dependencies
+- [docs] Updated `development-plan.md` roadmap table — replaced "Est. Effort" with "Status" column, marked Phases 0/1/2 as Done with test counts
+- [docs] Populated `bugs.md` — added Node.js version warning, `Object.groupBy` ES2024 requirement, known limitations (no editor-side validation, single-user, no undo/redo)
+
+## 2026-02-24 (Phase 2)
+- [feat] Phase 2 — Visual Editor full-stack implementation:
+  - Engine event system: 9 typed events (`EngineEvent`, `EventType`), opt-in `event_callback` on `Engine`, backward compatible
+  - Run manager (`server/run_manager.py`): background task execution, event pubsub via async queues, catch-up snapshots on subscriber reconnect
+  - FastAPI backend (`server/app.py`): graph CRUD (list, create, get, update, delete), run endpoints (start, resume, status, list), WebSocket live event stream
+  - Graph store (`server/graph_store.py`): filesystem-based JSON persistence in `./graphs/`, `last_opened` tracking
+  - CLI entry point: `dan-serve` / `python -m dan.server` starts backend on localhost:8000
+  - React Flow editor (`editor/`): Vite + React + TypeScript + React Flow v12 + Zustand + Tailwind CSS v4
+  - Bidirectional DAN <-> React Flow adapter (`graphAdapter.ts`): port handles, edge type colors, node factory for all 10 types
+  - Custom `DanNode` component: per-type color coding, port labels, execution status rings
+  - `NodePalette`: draggable + click-to-add for all 10 node types grouped by category
+  - `ConfigPanel`: dynamic form-based editing of all node/edge properties
+  - `GraphCanvas`: React Flow canvas with drag-and-drop from palette, minimap, controls
+  - `RunPanel`: save, run, resume, disconnect controls with live status badge
+  - `LogPanel`: scrolling timestamped event log with color-coded event types
+  - `OutputPreview`: per-node output viewer for selected node
+  - `CompositePreview`: read-only sub-graph modal for body_graph-backed nodes
+  - `GraphSwitcher`: graph list dropdown, create new, delete, auto-load last opened
+- [infra] Added `fastapi`, `uvicorn[standard]`, `websockets`, `httpx` dependencies to `pyproject.toml`; bumped version to 0.2.0
+- [infra] Added `dan-serve` script entry point in `pyproject.toml`
+- [infra] Vite proxy config: `/api` routes to backend at localhost:8000 during development
+- [fix] Replaced `assert _run_manager` in API endpoints with proper `_require_run_manager()` returning HTTP 503
+- [test] 27 new tests (167 total): server API integration tests (CRUD + runs), run manager unit tests, engine event instrumentation tests
+- [docs] Created `docs/plans/3-phase-2-visual-editor.md` with full task breakdown
+- [docs] Updated `architecture.md` with Phase 2 modules, server architecture, API endpoints, frontend layout
+- [docs] Updated `todo.md` Phase 2 line with plan link
+
+## 2026-02-24 (Phase 1)
+- [feat] Phase 1 complete — async execution engine built on Phase 0 type system:
+  - `engine/state.py`: NodeStatus enum, PortDataStore (port data routing), ExecutionState (run-level aggregate)
+  - `engine/context_runtime.py`: SharedContextStore (Layer 3), ArtifactStore (Layer 4, immutable versioning), LocalStateManager (Layer 2, scoped to composites)
+  - `engine/executor.py`: EngineConfig, NodeExecutor protocol, ExecutionContext (scoped access for executors), ExecutorRegistry
+  - `engine/conditions.py`: safe Python expression evaluator with restricted builtins for IfElse/WhileLoop conditions
+  - `engine/normalizer.py`: OutputNormalizer pipeline — JSON extraction (fenced/inline), schema validation, re-prompt message builder
+  - `engine/checkpoint.py`: CheckpointStore protocol, FileSystemCheckpointStore, NullCheckpointStore
+  - `engine/scheduler.py`: Kahn's topological sort with parallel-level detection, asyncio.gather dispatch, sub-graph recursion, Engine.run()/resume() public API
+  - `executors/llm.py`: LLMExecutor using AsyncOpenAI SDK (vectorengine.ai default, claude-sonnet-4-6), output normalization loop, transient API retry with backoff
+  - `executors/tool.py`: ToolRegistry + ToolExecutor for function-based dispatch
+  - `executors/code.py`: CodeExecutor with sandboxed Python exec and restricted builtins
+  - `executors/control_flow.py`: IfElseExecutor, WhileLoopExecutor (with compaction + stagnation detection), ForEachExecutor (semaphore-based parallelism), ReduceExecutor, RouterExecutor (LLM-powered), HumanInTheLoopExecutor (callback-based with timeout)
+- [infra] Added `openai>=1.0` and `pytest-asyncio` dependencies to `pyproject.toml`
+- [infra] Added `.env` and `.env.example` for LLM provider config (vectorengine.ai endpoint)
+- [test] 49 new engine tests (140 total): unit tests for state stores, expression evaluator, normalizer; integration tests for linear chain, IfElse branching, WhileLoop with condition exit, ForEach parallel fan-out, checkpoint/resume
+- [docs] Added `docs/plans/2-phase-1-orchestration-engine.md` with full task breakdown
+- [docs] Updated `architecture.md` with engine module layout and execution engine section
+- [docs] Marked Phase 1 complete in `todo.md`
+- [docs] Added "Workflows as Code" as first-class design principle — every workflow must be definable in Python code, not just visually. Added to `development-plan.md` Section 5, `architecture.md`, and key decisions.
+- [docs] Added Phase 1.5 (Workflow Builder API) to roadmap — fluent Python DSL (`dan.builder`) that compiles to `dan_graph_v1` JSON, round-trips with visual editor. Inserted before Phase 2 in `todo.md` and `development-plan.md`.
+
+## 2026-02-24 (Phase 0 + project setup)
 - [docs] Created project tracking structure: `docs/` directory with `architecture.md`, `changelog.md`, `todo.md`, `bugs.md`, and `plans/`
 - [docs] Moved `development-plan.md` from project root to `docs/`
 - [docs] Scaffolded `architecture.md` from development plan sections 4–5
@@ -36,23 +102,3 @@
 - [fix] Model: added `control_state_schema` to `ForEachNode` and `CompositeNode` to match composite-node contract in docs
 - [fix] Registry docstring corrected — registry is for programmatic discovery, not JSON deserialization (which uses Pydantic discriminated union)
 - [test] Test suite expanded from 75 to 91 tests: added edge endpoint tests (all edge types), context permission enforcement, empty schema warnings, registry discovery
-
-## 2026-02-24 (Phase 1)
-- [feat] Phase 1 complete — async execution engine built on Phase 0 type system:
-  - `engine/state.py`: NodeStatus enum, PortDataStore (port data routing), ExecutionState (run-level aggregate)
-  - `engine/context_runtime.py`: SharedContextStore (Layer 3), ArtifactStore (Layer 4, immutable versioning), LocalStateManager (Layer 2, scoped to composites)
-  - `engine/executor.py`: EngineConfig, NodeExecutor protocol, ExecutionContext (scoped access for executors), ExecutorRegistry
-  - `engine/conditions.py`: safe Python expression evaluator with restricted builtins for IfElse/WhileLoop conditions
-  - `engine/normalizer.py`: OutputNormalizer pipeline — JSON extraction (fenced/inline), schema validation, re-prompt message builder
-  - `engine/checkpoint.py`: CheckpointStore protocol, FileSystemCheckpointStore, NullCheckpointStore
-  - `engine/scheduler.py`: Kahn's topological sort with parallel-level detection, asyncio.gather dispatch, sub-graph recursion, Engine.run()/resume() public API
-  - `executors/llm.py`: LLMExecutor using AsyncOpenAI SDK (vectorengine.ai default, claude-sonnet-4-6), output normalization loop, transient API retry with backoff
-  - `executors/tool.py`: ToolRegistry + ToolExecutor for function-based dispatch
-  - `executors/code.py`: CodeExecutor with sandboxed Python exec and restricted builtins
-  - `executors/control_flow.py`: IfElseExecutor, WhileLoopExecutor (with compaction + stagnation detection), ForEachExecutor (semaphore-based parallelism), ReduceExecutor, RouterExecutor (LLM-powered), HumanInTheLoopExecutor (callback-based with timeout)
-- [infra] Added `openai>=1.0` and `pytest-asyncio` dependencies to `pyproject.toml`
-- [infra] Added `.env` and `.env.example` for LLM provider config (vectorengine.ai endpoint)
-- [test] 49 new engine tests (140 total): unit tests for state stores, expression evaluator, normalizer; integration tests for linear chain, IfElse branching, WhileLoop with condition exit, ForEach parallel fan-out, checkpoint/resume
-- [docs] Added `docs/plans/2-phase-1-orchestration-engine.md` with full task breakdown
-- [docs] Updated `architecture.md` with engine module layout and execution engine section
-- [docs] Marked Phase 1 complete in `todo.md`

@@ -6,8 +6,11 @@
 ## Phase 1 — Python Orchestration Library
 - [x] [2-phase-1-orchestration-engine](plans/2-phase-1-orchestration-engine.md) — async execution engine with typed nodes, while-loops, fan-out/fan-in, checkpointing/resumability
 
+## Phase 1.5 — Workflow Builder API
+- [ ] 1-5: Fluent Python DSL (`dan.builder`) for defining workflows in code. Compiles to `dan_graph_v1` JSON. Round-trips with visual editor. → (not yet planned)
+
 ## Phase 2 — Visual Editor
-- [ ] 3: React Flow-based visual editor — drag/drop authoring, edge wiring, config panels, run controls/status → (not yet planned)
+- [x] [3-phase-2-visual-editor](plans/3-phase-2-visual-editor.md) — full-stack visual editor (FastAPI + React Flow) with live streaming execution
 
 ## Phase 3 — Paper-Writing Proof of Concept
 - [ ] 4: End-to-end paper-writing workflow running on engine + editor → (not yet planned)
@@ -22,7 +25,7 @@
 - [ ] 7: Publish and import reusable agent-blocks → (not yet planned)
 
 ## Backlog (unphased)
-- [ ] Investigate React Flow for graph rendering
+- [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
 - [ ] Survey EvoAgentX for reusable multi-agent patterns
 - [ ] Memory system for long chains — short-term vs. long-term memory modeled after human cognition (encoding, consolidation, retrieval). For very long workflows: how nodes recall distant context, how completed sub-graph results are compressed into retrievable memory, how relevance-based recall replaces brute-force context passing. Research: MemGPT, AgentNet's RAG-based adaptive learning, hippocampal indexing analogies.
 - [ ] Dynamic model selection — `model_policy` field on operators. Budget-aware selection (read `context.token_budget`, pick model tier accordingly). Learned assignment (track model performance per task type across runs, auto-assign optimal model). Strategies 1-4 (static, fallback, router, cascade) already work via composition; this covers the edge cases that are too verbose to express with existing primitives.
