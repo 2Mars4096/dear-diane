@@ -23,6 +23,7 @@ const DEFAULT_PANEL_HEIGHT = 176;
 
 export default function App() {
   const loadGraphList = useGraphStore((s) => s.loadGraphList);
+  const recoverActiveRun = useGraphStore((s) => s.recoverActiveRun);
   const [bottomTab, setBottomTab] = useState<BottomTab>("logs");
   const [panelHeight, setPanelHeight] = useState(DEFAULT_PANEL_HEIGHT);
   const dragging = useRef(false);
@@ -50,8 +51,8 @@ export default function App() {
   }, [panelHeight]);
 
   useEffect(() => {
-    loadGraphList();
-  }, [loadGraphList]);
+    loadGraphList().then(() => recoverActiveRun());
+  }, [loadGraphList, recoverActiveRun]);
 
   return (
     <ReactFlowProvider>

@@ -120,6 +120,7 @@ interface GraphState {
   startRun: (inputs?: Record<string, unknown>) => Promise<void>;
   resumeRun: () => Promise<void>;
   disconnectRun: () => void;
+  recoverActiveRun: () => Promise<void>;
 
   // -- Actions: event handling
   handleRunEvent: (event: Record<string, unknown>) => void;
@@ -589,6 +590,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       if (!saved) return;
       const { run_id } = await api.startRun(graphId, finalInputs);
       set({ runId: run_id, runStatus: "running", nodeStatuses: {}, nodeOutputs: {}, nodeTimings: {}, activeExecutionPath: new Set(), logs: [] });
+      try { sessionStorage.setItem("dan_active_run", JSON.stringify({ runId: run_id, graphId })); } catch { /* quota */ }
       get().addToast({ type: "info", message: `Run started (${run_id.slice(0, 8)})` });
       const ws = api.connectRunEvents(
         run_id,
@@ -607,6 +609,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     try {
       await api.resumeRun(runId, graphId);
       set({ runStatus: "running", nodeStatuses: {}, nodeTimings: {}, activeExecutionPath: new Set(), logs: [] });
+      try { sessionStorage.setItem("dan_active_run", JSON.stringify({ runId, graphId })); } catch { /* quota */ }
       get().addToast({ type: "info", message: "Run resumed" });
       const ws = api.connectRunEvents(
         runId,
@@ -622,6 +625,55 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   disconnectRun: () => {
     get().ws?.close();
     set({ ws: null });
+  },
+
+  recoverActiveRun: async () => {
+    let stored: { runId: string; graphId: string } | null = null;
+    try {
+      const raw = sessionStorage.getItem("dan_active_run");
+      if (raw) stored = JSON.parse(raw);
+    } catch { /* corrupt */ }
+    if (!stored) return;
+
+    try {
+      const info = await api.getRun(stored.runId);
+      if (info.status !== "pending" && info.status !== "running") {
+        sessionStorage.removeItem("dan_active_run");
+        if (stored.graphId !== get().graphId) {
+          await get().loadGraph(stored.graphId);
+        }
+        set({
+          runId: stored.runId,
+          runStatus: info.status,
+          nodeStatuses: info.node_statuses ?? {},
+          nodeOutputs: info.outputs ? { _final: info.outputs } : {},
+        });
+        const label = info.status === "completed" ? "completed" : "failed";
+        get().addToast({ type: info.status === "completed" ? "success" : "error", message: `Previous run ${stored.runId.slice(0, 8)} ${label}` });
+        return;
+      }
+      if (stored.graphId !== get().graphId) {
+        await get().loadGraph(stored.graphId);
+      }
+      set({
+        runId: stored.runId,
+        runStatus: info.status,
+        nodeStatuses: info.node_statuses ?? {},
+        nodeOutputs: {},
+        nodeTimings: {},
+        activeExecutionPath: new Set(Object.keys(info.node_statuses ?? {})),
+        logs: [],
+      });
+      const ws = api.connectRunEvents(
+        stored.runId,
+        (event) => get().handleRunEvent(event),
+        () => set({ ws: null }),
+      );
+      set({ ws });
+      get().addToast({ type: "info", message: `Reconnected to run ${stored.runId.slice(0, 8)}` });
+    } catch {
+      sessionStorage.removeItem("dan_active_run");
+    }
   },
 
   // -- 5-3: Rich logging -----------------------------------------------------
@@ -682,8 +734,14 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       if (nodeId && eventType === "node_output" && data.outputs) {
         newOutputs[nodeId] = data.outputs as Record<string, unknown>;
       }
-      if (eventType === "run_completed") newRunStatus = "completed";
-      if (eventType === "run_failed") newRunStatus = "failed";
+      if (eventType === "run_completed") {
+        newRunStatus = "completed";
+        try { sessionStorage.removeItem("dan_active_run"); } catch { /* ignore */ }
+      }
+      if (eventType === "run_failed") {
+        newRunStatus = "failed";
+        try { sessionStorage.removeItem("dan_active_run"); } catch { /* ignore */ }
+      }
 
       // -- 5-2: Track node timings
       if (nodeId && eventType === "node_started") {
@@ -739,7 +797,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         nodeTimings: newTimings,
         activeExecutionPath: new Set(Object.keys(newStatuses)),
         runStatus: newRunStatus,
-        logs: [...s.logs.slice(-499), logMsg],
+        logs: [...s.logs.slice(-4999), logMsg],
         nodeIterations: newIterations,
         streamingOutputs: newStreaming,
         pendingHumanInput: newPendingHuman,

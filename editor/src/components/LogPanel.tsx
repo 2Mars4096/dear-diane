@@ -115,7 +115,7 @@ function getEventIcon(eventType: string): JSX.Element {
   return factory ? factory(color) : <CircleIcon className={color} />;
 }
 
-function dataPreview(entry: LogEntry): string | null {
+function dataContent(entry: LogEntry): string | null {
   const d = entry.data;
   if (!d) return null;
   switch (entry.event_type) {
@@ -132,19 +132,19 @@ function dataPreview(entry: LogEntry): string | null {
     }
     case "tool_call_result": {
       const result = d.result;
-      return typeof result === "string" ? result.slice(0, 200) : result ? JSON.stringify(result).slice(0, 200) : null;
+      return typeof result === "string" ? result : result ? JSON.stringify(result, null, 2) : null;
     }
     case "code_output": {
       const stdout = d.stdout as string | undefined;
       const stderr = d.stderr as string | undefined;
       const parts: string[] = [];
-      if (stdout) parts.push(stdout.slice(0, 200));
-      if (stderr) parts.push(`stderr: ${stderr.slice(0, 200)}`);
+      if (stdout) parts.push(stdout);
+      if (stderr) parts.push(`stderr: ${stderr}`);
       return parts.join("\n") || null;
     }
     case "intermediate_text": {
       const text = d.text as string | undefined;
-      return text ? text.slice(-200) : null;
+      return text ?? null;
     }
     case "node_failed":
     case "run_failed":
@@ -160,20 +160,32 @@ function dataPreview(entry: LogEntry): string | null {
 
 function LogEntryRow({ entry, onClick }: { entry: LogEntry; onClick?: () => void }) {
   const color = EVENT_COLORS[entry.event_type] ?? "text-gray-500";
-  const preview = dataPreview(entry);
+  const content = dataContent(entry);
+  const [expanded, setExpanded] = useState(false);
+  const isLong = content ? content.length > 120 : false;
 
   return (
     <div
-      className={`flex items-start gap-1.5 py-0.5 text-[11px] font-mono leading-tight group ${onClick ? "cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50" : ""}`}
-      onClick={onClick}
+      className={`py-0.5 text-[11px] font-mono leading-tight group ${onClick ? "cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800/50" : ""}`}
     >
-      <span className="shrink-0 mt-px">{getEventIcon(entry.event_type)}</span>
-      <span className="text-gray-400 shrink-0">{formatTime(entry.timestamp)}</span>
-      <span className={`shrink-0 ${color}`}>{entry.event_type}</span>
-      {preview && (
-        <span className="text-gray-500 truncate ml-1" title={preview}>
-          {preview}
-        </span>
+      <div className="flex items-start gap-1.5" onClick={onClick}>
+        <span className="shrink-0 mt-px">{getEventIcon(entry.event_type)}</span>
+        <span className="text-gray-400 shrink-0">{formatTime(entry.timestamp)}</span>
+        <span className={`shrink-0 ${color}`}>{entry.event_type}</span>
+        {content && !expanded && (
+          <span className="text-gray-500 truncate ml-1">{content.slice(0, 120)}{isLong ? "…" : ""}</span>
+        )}
+        {isLong && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+            className="shrink-0 ml-auto text-[10px] text-indigo-500 hover:text-indigo-700 px-1"
+          >
+            {expanded ? "▾ less" : "▸ more"}
+          </button>
+        )}
+      </div>
+      {expanded && content && (
+        <pre className="ml-8 mt-0.5 text-[10px] text-gray-600 bg-gray-50 dark:bg-gray-800/50 rounded px-2 py-1 whitespace-pre-wrap break-words max-h-80 overflow-auto border border-gray-100 dark:border-gray-700">{content}</pre>
       )}
     </div>
   );
