@@ -65,5 +65,3 @@ pnpm-debug.log*
 .cursor/
 
 /tests
-/docs/plans
-/docs/todo.md
