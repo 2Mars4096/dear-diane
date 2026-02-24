@@ -1,59 +1,231 @@
-import { NODE_TYPE_CATALOG, type NodeTypeString } from "../types/graph";
-import { createDefaultNode } from "../lib/graphAdapter";
+// -- 5-4: Build palette — searchable categorized sidebar ---------------------
+
+import { useState } from "react";
+import {
+  NODE_TYPE_CATALOG,
+  NODE_DESCRIPTIONS,
+  type NodeTypeString,
+} from "../types/graph";
+import { createDefaultNode, EDGE_COLORS } from "../lib/graphAdapter";
 import { useGraphStore } from "../store/useGraphStore";
+import {
+  PREDEFINED_AGENT_TEMPLATES,
+  type PaletteTemplate,
+} from "../lib/paletteTemplates";
+
+type NodeCatalogItem = (typeof NODE_TYPE_CATALOG)[number];
+
+const CATEGORY_ORDER = [
+  "operator",
+  "control",
+  "template",
+  "mcp",
+  "composite",
+] as const;
 
 const CATEGORY_LABELS: Record<string, string> = {
   operator: "Operators",
   control: "Control Flow",
+  template: "Pre-defined Agents",
+  mcp: "MCP / Wrapped Agents",
   composite: "Composite",
 };
 
-type NodeCatalogItem = (typeof NODE_TYPE_CATALOG)[number];
+const MCP_PLACEHOLDERS = [
+  { id: "mcp_tool", label: "MCP Tool" },
+  { id: "custom_wrapper", label: "Custom Wrapper" },
+  { id: "api_adapter", label: "API Adapter" },
+];
+
+const EDGE_TYPES = ["data", "control", "context"] as const;
+
+function tooltipText(desc: { description: string; inputs: string[]; outputs: string[] }): string {
+  return `${desc.description}\nIn: ${desc.inputs.join(", ")}  →  Out: ${desc.outputs.join(", ")}`;
+}
 
 export default function NodePalette() {
   const addNode = useGraphStore((s) => s.addNode);
+  const addTemplateNode = useGraphStore((s) => s.addTemplateNode);
+  const selectedEdgeType = useGraphStore((s) => s.selectedEdgeType);
+  const setSelectedEdgeType = useGraphStore((s) => s.setSelectedEdgeType);
+
+  const [search, setSearch] = useState("");
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  const toggleCategory = (cat: string) =>
+    setCollapsed((prev) => ({ ...prev, [cat]: !prev[cat] }));
 
   const handleDragStart = (e: React.DragEvent, nodeType: NodeTypeString) => {
     e.dataTransfer.setData("application/dan-node-type", nodeType);
     e.dataTransfer.effectAllowed = "move";
   };
 
-  const categories = NODE_TYPE_CATALOG.reduce<Record<string, NodeCatalogItem[]>>(
+  const handleTemplateDragStart = (e: React.DragEvent, templateId: string) => {
+    e.dataTransfer.setData("application/dan-node-type", `template:${templateId}`);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const categorized = NODE_TYPE_CATALOG.reduce<Record<string, NodeCatalogItem[]>>(
     (acc, item) => {
-      if (!acc[item.category]) {
-        acc[item.category] = [];
-      }
+      if (!acc[item.category]) acc[item.category] = [];
       acc[item.category].push(item);
       return acc;
     },
     {},
   );
 
+  const q = search.toLowerCase().trim();
+
+  type CategoryEntry =
+    | { key: string; type: "catalog"; items: NodeCatalogItem[] }
+    | { key: string; type: "template"; items: PaletteTemplate[] }
+    | { key: string; type: "mcp"; items: typeof MCP_PLACEHOLDERS };
+
+  const filteredCategories: CategoryEntry[] = CATEGORY_ORDER.map(
+    (cat): CategoryEntry | null => {
+      if (cat === "template") {
+        const items = PREDEFINED_AGENT_TEMPLATES.filter(
+          (t) =>
+            !q ||
+            t.label.toLowerCase().includes(q) ||
+            t.description.toLowerCase().includes(q),
+        );
+        return items.length ? { key: cat, type: "template", items } : null;
+      }
+      if (cat === "mcp") {
+        const items = MCP_PLACEHOLDERS.filter(
+          (m) => !q || m.label.toLowerCase().includes(q),
+        );
+        return items.length ? { key: cat, type: "mcp", items } : null;
+      }
+      const items = (categorized[cat] ?? []).filter(
+        (item) =>
+          !q ||
+          item.label.toLowerCase().includes(q) ||
+          item.type.toLowerCase().includes(q),
+      );
+      return items.length ? { key: cat, type: "catalog", items } : null;
+    },
+  ).filter((c): c is CategoryEntry => c !== null);
+
   return (
-    <div className="w-52 bg-gray-50 border-r border-gray-200 p-3 overflow-y-auto">
-      <h2 className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-3">
-        Node Palette
-      </h2>
-      {Object.entries(categories).map(([cat, items]) => (
-        <div key={cat} className="mb-4">
-          <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1.5">
-            {CATEGORY_LABELS[cat] ?? cat}
-          </h3>
-          <div className="flex flex-col gap-1">
-            {(items ?? []).map((item) => (
-              <div
-                key={item.type}
-                draggable
-                onDragStart={(e) => handleDragStart(e, item.type)}
-                onClick={() => addNode(createDefaultNode(item.type, { x: 200, y: 200 }))}
-                className="px-2.5 py-1.5 bg-white rounded border border-gray-200 text-xs cursor-grab hover:border-indigo-400 hover:shadow-sm transition-all select-none"
-              >
-                {item.label}
-              </div>
-            ))}
-          </div>
+    <div className="w-52 bg-gray-50 border-r border-gray-200 flex flex-col min-h-0">
+      {/* Header: title + edge selector + search */}
+      <div className="p-3 space-y-2 flex-shrink-0">
+        <h2 className="text-xs font-bold text-gray-500 uppercase tracking-wider">
+          Node Palette
+        </h2>
+
+        {/* Edge type selector */}
+        <div className="flex gap-1">
+          {EDGE_TYPES.map((et) => (
+            <button
+              key={et}
+              onClick={() => setSelectedEdgeType(et)}
+              className={`flex-1 px-1.5 py-1 text-[10px] font-medium rounded border transition-all capitalize ${
+                selectedEdgeType === et
+                  ? "text-white border-transparent"
+                  : "bg-white text-gray-500 border-gray-200 hover:border-gray-300"
+              }`}
+              style={
+                selectedEdgeType === et
+                  ? { backgroundColor: EDGE_COLORS[et] }
+                  : undefined
+              }
+            >
+              {et}
+            </button>
+          ))}
         </div>
-      ))}
+
+        {/* Search input */}
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search nodes…"
+          className="w-full px-2.5 py-1.5 text-xs bg-white border border-gray-200 rounded focus:outline-none focus:border-indigo-400 focus:ring-1 focus:ring-indigo-200 transition-all"
+        />
+      </div>
+
+      {/* Scrollable categories */}
+      <div className="flex-1 overflow-y-auto px-3 pb-3">
+        {filteredCategories.map(({ key, type, items }) => {
+          const isCollapsed = !q && (collapsed[key] ?? false);
+          return (
+            <div key={key} className="mb-3">
+              <button
+                onClick={() => toggleCategory(key)}
+                className="flex items-center gap-1 w-full text-[11px] font-semibold text-gray-400 uppercase mb-1.5 hover:text-gray-600 transition-colors"
+              >
+                <span className="text-[9px]">{isCollapsed ? "▸" : "▾"}</span>
+                {CATEGORY_LABELS[key] ?? key}
+                {type === "mcp" && (
+                  <span className="ml-auto text-[9px] font-normal normal-case text-amber-500 bg-amber-50 px-1 rounded">
+                    soon
+                  </span>
+                )}
+              </button>
+
+              {!isCollapsed && (
+                <div className="flex flex-col gap-1">
+                  {/* Catalog node types */}
+                  {type === "catalog" &&
+                    (items as NodeCatalogItem[]).map((item) => {
+                      const desc = NODE_DESCRIPTIONS[item.type];
+                      return (
+                        <div
+                          key={item.type}
+                          draggable
+                          onDragStart={(e) => handleDragStart(e, item.type)}
+                          onClick={() =>
+                            addNode(
+                              createDefaultNode(item.type, { x: 200, y: 200 }),
+                            )
+                          }
+                          title={desc ? tooltipText(desc) : item.label}
+                          className="px-2.5 py-1.5 bg-white rounded border border-gray-200 text-xs cursor-grab hover:border-indigo-400 hover:shadow-sm transition-all select-none"
+                        >
+                          {item.label}
+                        </div>
+                      );
+                    })}
+
+                  {/* Pre-defined agent templates */}
+                  {type === "template" &&
+                    (items as PaletteTemplate[]).map((tpl) => (
+                      <div
+                        key={tpl.id}
+                        draggable
+                        onDragStart={(e) =>
+                          handleTemplateDragStart(e, tpl.id)
+                        }
+                        onClick={() =>
+                          addTemplateNode(tpl.id, { x: 200, y: 200 })
+                        }
+                        title={`${tpl.description}\nPre-built sub-graph template`}
+                        className="px-2.5 py-1.5 bg-indigo-50 rounded border border-indigo-200 text-xs cursor-grab hover:border-indigo-400 hover:shadow-sm transition-all select-none text-indigo-700"
+                      >
+                        {tpl.label}
+                      </div>
+                    ))}
+
+                  {/* MCP / Wrapped Agents placeholders */}
+                  {type === "mcp" &&
+                    (items as typeof MCP_PLACEHOLDERS).map((m) => (
+                      <div
+                        key={m.id}
+                        className="px-2.5 py-1.5 bg-gray-100 rounded border border-gray-200 text-xs text-gray-400 cursor-not-allowed opacity-60 select-none"
+                      >
+                        {m.label}
+                      </div>
+                    ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }

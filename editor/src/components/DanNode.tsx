@@ -2,6 +2,7 @@ import { memo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { portHandleId } from "../lib/graphAdapter";
 import { useGraphStore } from "../store/useGraphStore";
+import { NodeIcon } from "../lib/nodeIcons";
 import type { DanNode } from "../types/graph";
 
 const TYPE_COLORS: Record<string, string> = {
@@ -26,11 +27,29 @@ const STATUS_RING: Record<string, string> = {
 
 function DanNodeComponent({ id, data, selected }: NodeProps) {
   const nodeStatuses = useGraphStore((s) => s.nodeStatuses);
+  const runStatus = useGraphStore((s) => s.runStatus);
+  const nodeTimings = useGraphStore((s) => s.nodeTimings);
   const d = data as unknown as DanNode;
   const color = TYPE_COLORS[d.node_type] ?? "#94a3b8";
   const status = nodeStatuses[id];
   const ringClass = STATUS_RING[status] ?? "";
 
+  // -- 5-2: Live execution viz
+  const animClass =
+    status === "node_started"
+      ? "dan-node-active"
+      : status === "node_completed"
+        ? "dan-node-complete-flash"
+        : "";
+  const dimmed = runStatus === "running" && !status;
+  const timing = nodeTimings[id];
+  let durationLabel: string | null = null;
+  if (status === "node_completed" && timing?.end != null) {
+    const ms = (timing.end - timing.start) * 1000;
+    durationLabel = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+  }
+
+  const isBlackbox = !!(d as Record<string, unknown>).is_blackbox;
   const hasBodyGraph =
     (d.node_type === "while_loop" ||
       d.node_type === "for_each" ||
@@ -39,17 +58,22 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
 
   return (
     <div
-      className={`rounded-lg shadow-md bg-white border-2 min-w-[160px] ${ringClass}`}
+      className={`rounded-lg shadow-md bg-white border-2 min-w-[160px] ${ringClass} ${animClass} ${dimmed ? "opacity-40" : ""}`}
       style={{ borderColor: selected ? "#2563eb" : color }}
     >
       {/* Header */}
       <div
-        className="px-3 py-1.5 rounded-t-md text-white text-xs font-semibold flex items-center justify-between"
+        className="px-3 py-1.5 rounded-t-md text-white text-xs font-semibold flex items-center gap-1.5"
         style={{ backgroundColor: color }}
       >
+        <NodeIcon type={d.node_type} className="text-white/90 shrink-0" />
         <span className="truncate">{d.name || d.node_type}</span>
-        {hasBodyGraph && (
-          <span className="ml-1 text-[10px] opacity-80" title="Has sub-graph">&#x25B6;</span>
+        {/* 5-1: show lock for blackbox, play icon for drillable */}
+        {hasBodyGraph && isBlackbox && (
+          <span className="ml-1 text-[10px] opacity-80" title="Blackbox — no drill-in">&#x1F512;</span>
+        )}
+        {hasBodyGraph && !isBlackbox && (
+          <span className="ml-1 text-[10px] opacity-80" title="Double-click to drill in">&#x25B6;</span>
         )}
       </div>
 
@@ -83,10 +107,15 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
         </div>
       </div>
 
-      {/* Status indicator */}
+      {/* Status indicator + 5-2 duration badge */}
       {status && (
-        <div className="px-2 pb-1 text-[10px] text-gray-400">
-          {status.replace("node_", "")}
+        <div className="px-2 pb-1 text-[10px] text-gray-400 flex items-center justify-between">
+          <span>{status.replace("node_", "")}</span>
+          {durationLabel && (
+            <span className="bg-gray-100 text-gray-500 px-1 rounded">
+              {durationLabel}
+            </span>
+          )}
         </div>
       )}
     </div>

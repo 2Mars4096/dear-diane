@@ -7,12 +7,15 @@ const SKIP_FIELDS = new Set([
   "local_state", "control_state_schema", "external_input_schema", "external_output_schema",
 ]);
 
+const LARGE_TEXT_FIELDS = new Set(["prompt_template", "code", "system_prompt"]);
+
 export default function ConfigPanel() {
   const selectedNodeId = useGraphStore((s) => s.selectedNodeId);
   const selectedEdgeId = useGraphStore((s) => s.selectedEdgeId);
   const nodes = useGraphStore((s) => s.nodes);
   const edges = useGraphStore((s) => s.edges);
   const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const updateEdgeData = useGraphStore((s) => s.updateEdgeData);
 
   if (selectedNodeId) {
     const node = nodes.find((n) => n.id === selectedNodeId);
@@ -54,13 +57,13 @@ export default function ConfigPanel() {
                   className="border rounded px-2 py-1 text-xs"
                 />
               ) : typeof value === "string" ? (
-                value.length > 60 || key === "prompt_template" || key === "code" || key === "system_prompt" ? (
+                value.length > 120 || LARGE_TEXT_FIELDS.has(key) ? (
                   <textarea
                     value={value}
                     onChange={(e) =>
                       updateNodeData(d.id, { [key]: e.target.value } as Partial<DanNode>)
                     }
-                    className="border rounded px-2 py-1 text-xs font-mono h-20 resize-y"
+                    className="border rounded px-2 py-1 text-xs font-mono min-h-32 resize-y"
                   />
                 ) : (
                   <input
@@ -100,7 +103,8 @@ export default function ConfigPanel() {
   if (selectedEdgeId) {
     const edge = edges.find((e) => e.id === selectedEdgeId);
     if (!edge) return null;
-    const danEdge = edge.data?.danEdge as Record<string, unknown> | undefined;
+    const danEdge = (edge.data?.danEdge ?? {}) as Record<string, unknown>;
+    const edgeType = (danEdge.edge_type as string) ?? "data";
 
     return (
       <div className="w-72 bg-gray-50 border-l border-gray-200 p-3 overflow-y-auto">
@@ -110,9 +114,66 @@ export default function ConfigPanel() {
         <div className="text-[11px] text-gray-400 mb-3">
           {edge.source} &rarr; {edge.target}
         </div>
-        <pre className="text-[10px] bg-white border rounded p-2 overflow-auto max-h-60">
-          {JSON.stringify(danEdge ?? {}, null, 2)}
-        </pre>
+        <div className="flex flex-col gap-2">
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">edge_type</span>
+            <select
+              value={edgeType}
+              onChange={(e) => updateEdgeData(edge.id, { edge_type: e.target.value })}
+              className="border rounded px-2 py-1 text-xs"
+            >
+              <option value="data">data</option>
+              <option value="control">control</option>
+              <option value="context">context</option>
+            </select>
+          </label>
+
+          {edgeType === "control" && (
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[11px] font-medium text-gray-500">condition</span>
+              <input
+                type="text"
+                value={(danEdge.condition as string) ?? ""}
+                onChange={(e) => updateEdgeData(edge.id, { condition: e.target.value || null })}
+                placeholder="e.g. output.success == true"
+                className="border rounded px-2 py-1 text-xs font-mono"
+              />
+            </label>
+          )}
+
+          {edgeType === "context" && (
+            <>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">context_key</span>
+                <input
+                  type="text"
+                  value={(danEdge.context_key as string) ?? ""}
+                  onChange={(e) => updateEdgeData(edge.id, { context_key: e.target.value })}
+                  className="border rounded px-2 py-1 text-xs"
+                />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">mode</span>
+                <select
+                  value={(danEdge.mode as string) ?? "read"}
+                  onChange={(e) => updateEdgeData(edge.id, { mode: e.target.value })}
+                  className="border rounded px-2 py-1 text-xs"
+                >
+                  <option value="read">read</option>
+                  <option value="write">write</option>
+                  <option value="append">append</option>
+                </select>
+              </label>
+            </>
+          )}
+
+          <div className="mt-2">
+            <span className="text-[11px] font-medium text-gray-500">Raw JSON</span>
+            <pre className="text-[10px] bg-white border rounded p-2 overflow-auto max-h-40 mt-0.5">
+              {JSON.stringify(danEdge, null, 2)}
+            </pre>
+          </div>
+        </div>
       </div>
     );
   }
