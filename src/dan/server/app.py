@@ -6,8 +6,14 @@ import asyncio
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -15,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from dan.engine.executor import EngineConfig
+from dan.executors.tool import ToolRegistry
 from dan.models.graph import Graph
 from dan.server.graph_store import GraphStore
 from dan.server.run_manager import RunManager
@@ -42,10 +49,35 @@ def _get_engine_config() -> EngineConfig:
     )
 
 
+# -- Built-in tools available to all server-side runs -------------------------
+
+def _slugify(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:80]
+
+
+async def _save_paper(content: str, title: str, **kwargs: Any) -> dict[str, str]:
+    """Save the final paper as a markdown file."""
+    output_dir = Path("output")
+    output_dir.mkdir(exist_ok=True)
+    slug = _slugify(title)
+    md_path = output_dir / f"{slug}.md"
+    md_path.write_text(content, encoding="utf-8")
+    return {"saved_path": str(md_path), "title": title}
+
+
+def _build_tool_registry() -> ToolRegistry:
+    registry = ToolRegistry()
+    registry.register("save_paper", _save_paper)
+    return registry
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _run_manager
-    _run_manager = RunManager(engine_config=_get_engine_config())
+    _run_manager = RunManager(
+        engine_config=_get_engine_config(),
+        tool_registry=_build_tool_registry(),
+    )
     yield
 
 

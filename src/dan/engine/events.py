@@ -23,6 +23,12 @@ class EventType(str, Enum):
     NODE_SKIPPED = "node_skipped"
     NODE_OUTPUT = "node_output"
     LOG = "log"
+    # -- 5-3: Rich logging event types -----------------------------------------
+    LLM_THINKING = "llm_thinking"
+    TOOL_CALL_STARTED = "tool_call_started"
+    TOOL_CALL_RESULT = "tool_call_result"
+    CODE_OUTPUT = "code_output"
+    INTERMEDIATE_TEXT = "intermediate_text"
 
 
 @dataclass(frozen=True)

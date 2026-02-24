@@ -116,6 +116,7 @@ class Engine:
         from dan.executors.tool import ToolExecutor
         from dan.executors.code import CodeExecutor
         from dan.executors.control_flow import (
+            CompositeExecutor,
             ForEachExecutor,
             HumanInTheLoopExecutor,
             IfElseExecutor,
@@ -134,6 +135,7 @@ class Engine:
             ("reduce", ReduceExecutor()),
             ("router", RouterExecutor()),
             ("human_in_the_loop", HumanInTheLoopExecutor()),
+            ("composite", CompositeExecutor()),
         ]
 
         for node_type, executor in defaults:
@@ -448,13 +450,18 @@ class Engine:
         artifacts: ArtifactStore,
         local_state: LocalStateManager,
         graph: Graph,
+        layer_path: tuple[str, ...] = (),
     ) -> ExecutionContext:
         async def run_subgraph(
-            sub_graph_key: str, inputs: dict[str, Any]
+            sub_graph_key: str,
+            inputs: dict[str, Any],
+            parent_node_id: str | None = None,
         ) -> dict[str, Any]:
+            child_layer = layer_path + ((parent_node_id,) if parent_node_id else ())
             return await self._run_subgraph(
                 sub_graph_key, inputs, graph, state,
                 shared_context, artifacts, local_state,
+                child_layer,
             )
 
         return ExecutionContext(
@@ -465,6 +472,9 @@ class Engine:
             local_state=local_state,
             human_input_callback=self.human_input_callback,
             run_subgraph=run_subgraph,
+            event_callback=self.event_callback,
+            run_id=state.run_id,
+            layer_path=layer_path,
         )
 
     async def _run_subgraph(
@@ -476,15 +486,16 @@ class Engine:
         shared_context: SharedContextStore,
         artifacts: ArtifactStore,
         local_state: LocalStateManager,
+        layer_path: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         """Execute a named sub-graph and return its outputs."""
         sub_graph = parent_graph.sub_graphs.get(sub_graph_key)
         if sub_graph is None:
             raise RuntimeError(f"Sub-graph '{sub_graph_key}' not found")
 
-        sub_state = ExecutionState(sub_graph)
+        sub_state = ExecutionState(sub_graph, run_id=parent_state.run_id)
         sub_context = self._make_context(
-            sub_state, shared_context, artifacts, local_state, sub_graph
+            sub_state, shared_context, artifacts, local_state, sub_graph, layer_path
         )
 
         if inputs:

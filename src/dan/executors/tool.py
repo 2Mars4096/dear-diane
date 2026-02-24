@@ -63,6 +63,14 @@ class ToolExecutor:
         fn = self.registry.get(node.tool_id)
         merged_args = {**node.tool_config, **inputs}
 
+        # -- 5-3: Rich logging -------------------------------------------------
+        await context.emit_event(
+            event_type="tool_call_started",
+            node_id=node.id,
+            node_type="tool_operator",
+            data={"tool_id": node.tool_id, "args": {k: str(v)[:100] for k, v in merged_args.items()}},
+        )
+
         try:
             result = await fn(**merged_args)
         except Exception as exc:
@@ -72,6 +80,17 @@ class ToolExecutor:
                 status=NodeStatus.FAILED,
                 error=f"Tool '{node.tool_id}' failed: {exc}",
             )
+
+        # -- 5-3: Rich logging -------------------------------------------------
+        await context.emit_event(
+            event_type="tool_call_result",
+            node_id=node.id,
+            node_type="tool_operator",
+            data={
+                "tool_id": node.tool_id,
+                "result": str(result)[:500] if not isinstance(result, dict) else {k: str(v)[:200] for k, v in result.items()},
+            },
+        )
 
         if isinstance(result, dict):
             outputs = result

@@ -49,6 +49,10 @@ class ExecutionContext:
         local_state: LocalStateManager,
         human_input_callback: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
         run_subgraph: Callable[..., Awaitable[dict[str, Any]]] | None = None,
+        # -- 5-3: Rich logging --------------------------------------------------
+        event_callback: Callable[[Any], Awaitable[None]] | None = None,
+        run_id: str = "",
+        layer_path: tuple[str, ...] = (),
     ) -> None:
         self.state = state
         self.config = config
@@ -57,20 +61,53 @@ class ExecutionContext:
         self.local_state = local_state
         self.human_input_callback = human_input_callback
         self._run_subgraph = run_subgraph
+        self._event_callback = event_callback
+        self._run_id = run_id
+        self.layer_path = layer_path
+
+    # -- 5-3: Rich logging -----------------------------------------------------
+    async def emit_event(
+        self,
+        event_type: str,
+        node_id: str,
+        node_type: str | None = None,
+        data: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit a structured event to the event callback."""
+        if self._event_callback is None:
+            return
+        from dan.engine.events import EngineEvent, EventType
+        enriched = dict(data or {})
+        if self.layer_path:
+            enriched["layer_path"] = list(self.layer_path)
+        event = EngineEvent(
+            event_type=EventType(event_type),
+            run_id=self._run_id,
+            node_id=node_id,
+            node_type=node_type,
+            data=enriched,
+        )
+        try:
+            await self._event_callback(event)
+        except Exception:
+            pass
 
     async def run_subgraph(
         self,
         sub_graph_key: str,
         inputs: dict[str, Any],
+        parent_node_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a named sub-graph and return its outputs.
 
         Delegates to the engine's internal sub-graph runner, which handles
         scoped state, recursive scheduling, and checkpoint integration.
+        *parent_node_id* is threaded into the child layer_path for event
+        disambiguation.
         """
         if self._run_subgraph is None:
             raise RuntimeError("Sub-graph execution not available in this context")
-        return await self._run_subgraph(sub_graph_key, inputs)
+        return await self._run_subgraph(sub_graph_key, inputs, parent_node_id)
 
 
 @runtime_checkable

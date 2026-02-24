@@ -59,6 +59,14 @@ class LLMExecutor:
 
         rendered_prompt = _render_template(node.prompt_template, inputs)
 
+        # -- 5-3: Rich logging -------------------------------------------------
+        await context.emit_event(
+            event_type="llm_thinking",
+            node_id=node.id,
+            node_type="llm_operator",
+            data={"model": model, "prompt_preview": rendered_prompt[:200]},
+        )
+
         messages: list[dict[str, str]] = []
         if node.system_prompt:
             messages.append({"role": "system", "content": node.system_prompt})

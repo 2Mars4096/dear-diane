@@ -13,8 +13,9 @@ from enum import Enum
 from typing import Any
 
 from dan.engine.events import EngineEvent, EventType
-from dan.engine.executor import EngineConfig
+from dan.engine.executor import EngineConfig, ExecutorRegistry
 from dan.engine.scheduler import Engine, RunResult
+from dan.executors.tool import ToolExecutor, ToolRegistry
 from dan.models.graph import Graph
 
 logger = logging.getLogger(__name__)
@@ -57,8 +58,13 @@ class RunRecord:
 class RunManager:
     """Manages background engine runs and fans out events to subscribers."""
 
-    def __init__(self, engine_config: EngineConfig | None = None) -> None:
+    def __init__(
+        self,
+        engine_config: EngineConfig | None = None,
+        tool_registry: ToolRegistry | None = None,
+    ) -> None:
         self._config = engine_config or EngineConfig()
+        self._tool_registry = tool_registry or ToolRegistry()
         self._runs: dict[str, RunRecord] = {}
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -147,8 +153,9 @@ class RunManager:
         run_id = event.run_id
         record = self._runs.get(run_id)
         if record is not None:
-            if len(record.events) < self._max_event_buffer:
-                record.events.append(event_dict)
+            record.events.append(event_dict)
+            if len(record.events) > self._max_event_buffer:
+                record.events = record.events[-self._max_event_buffer:]
             if event.node_id and event.event_type in (
                 EventType.NODE_STARTED, EventType.NODE_COMPLETED,
                 EventType.NODE_FAILED, EventType.NODE_SKIPPED,
@@ -161,6 +168,11 @@ class RunManager:
             except asyncio.QueueFull:
                 logger.warning("Subscriber queue full for run %s", run_id)
 
+    def _make_executor_registry(self) -> ExecutorRegistry:
+        reg = ExecutorRegistry()
+        reg.register("tool_operator", ToolExecutor(self._tool_registry))
+        return reg
+
     async def _run_task(
         self,
         record: RunRecord,
@@ -170,6 +182,7 @@ class RunManager:
         record.status = RunStatus.RUNNING
         engine = Engine(
             config=self._config,
+            executor_registry=self._make_executor_registry(),
             event_callback=self._event_callback,
         )
         try:
@@ -192,6 +205,7 @@ class RunManager:
         record.status = RunStatus.RUNNING
         engine = Engine(
             config=self._config,
+            executor_registry=self._make_executor_registry(),
             event_callback=self._event_callback,
         )
         try:

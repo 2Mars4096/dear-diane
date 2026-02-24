@@ -144,6 +144,10 @@ class CompositeNode(NodeBase):
     node_type: Literal["composite"] = "composite"
 
     body_graph: str = Field(description="Key into Graph.sub_graphs")
+    is_blackbox: bool = Field(
+        default=False,
+        description="When true, node is opaque — no drill-in or sub-graph preview (used for marketplace/imported blocks)",
+    )
     input_mappings: dict[str, str] = Field(
         default_factory=dict,
         description="outer_port_name → inner_entry_port_name",

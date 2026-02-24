@@ -1,4 +1,4 @@
-"""Control-flow executors — IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop."""
+"""Control-flow executors — IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop, Composite."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from dan.engine.conditions import ConditionError, evaluate_condition
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
 from dan.models.control_flow import (
+    CompositeNode,
     ForEachNode,
     HumanInTheLoopNode,
     IfElseNode,
@@ -110,7 +111,7 @@ class WhileLoopExecutor:
                 break
 
             body_output = await context.run_subgraph(
-                node.body_graph, working_data
+                node.body_graph, working_data, parent_node_id=node.id
             )
 
             scope["history"].append(body_output)
@@ -221,7 +222,7 @@ class ForEachExecutor:
         async def run_item(index: int, item: Any) -> dict[str, Any]:
             async with semaphore:
                 item_input = {"item": item, "index": index}
-                return await context.run_subgraph(node.body_graph, item_input)
+                return await context.run_subgraph(node.body_graph, item_input, parent_node_id=node.id)
 
         tasks = [run_item(i, item) for i, item in enumerate(items)]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -434,4 +435,57 @@ class HumanInTheLoopExecutor:
             outputs=outputs,
             status=NodeStatus.COMPLETED,
             metadata={"source": "human"},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Composite
+# ---------------------------------------------------------------------------
+
+
+class CompositeExecutor:
+    """Runs a named sub-graph once with port-mapped inputs/outputs.
+
+    Unlike WhileLoop/ForEach, Composite does not iterate — it is a single
+    "call" to the sub-graph, with input_mappings renaming outer port names
+    to inner entry-point port names and output_mappings renaming inner
+    exit-point port names back to outer port names.
+    """
+
+    async def execute(
+        self,
+        node: NodeBase,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        assert isinstance(node, CompositeNode)
+
+        if node.input_mappings:
+            mapped_inputs = {
+                node.input_mappings[k]: v
+                for k, v in inputs.items()
+                if k in node.input_mappings
+            }
+            for k, v in inputs.items():
+                if k not in node.input_mappings:
+                    mapped_inputs[k] = v
+        else:
+            mapped_inputs = dict(inputs)
+
+        body_output = await context.run_subgraph(node.body_graph, mapped_inputs, parent_node_id=node.id)
+
+        if node.output_mappings:
+            mapped_outputs: dict[str, Any] = {}
+            for inner_port, outer_port in node.output_mappings.items():
+                if inner_port in body_output:
+                    mapped_outputs[outer_port] = body_output[inner_port]
+            for k, v in body_output.items():
+                if k not in node.output_mappings:
+                    mapped_outputs[k] = v
+        else:
+            mapped_outputs = body_output
+
+        return NodeResult(
+            outputs=mapped_outputs,
+            status=NodeStatus.COMPLETED,
         )
