@@ -419,5 +419,14 @@
 - [docs] Updated `architecture.md` — added `graphImporter.ts` to directory structure, updated NodePalette description
 - [docs] Plan 6-7 marked in-progress; tasks 2 (palette UX), 3 (import utility), and 4-4 (canvas drop) checked off. Remaining: store action `addGraphAsNode` (4-1–4-3, 4-5–4-6), validation/tests (6), docs sync (7)
 
+## 2026-02-24 (Fix: log truncation + run recovery on refresh)
+- [fix] Backend: raised event truncation limits — LLM prompt preview 200→2000 chars, tool args 100→2000, tool result 500→5000/2000 (`llm.py`, `tool.py`)
+- [fix] Backend: raised `RunManager` event buffer 2000→10000 (`run_manager.py`)
+- [feat] Frontend: `LogPanel` rows now expandable — click "more" to reveal full content; removed hard `.slice(0,200)` previews in `dataContent`
+- [fix] Frontend: store log buffer raised 500→5000 entries (`useGraphStore.ts`)
+- [feat] Frontend: persist active run to `localStorage` on start/resume; clear on terminal state (`run_completed`/`run_failed`)
+- [feat] Frontend: `recoverActiveRun()` action — on page load, reads `localStorage`, validates run via `api.getRun()`, reconnects WebSocket with `_catchup` replay if still running
+- [feat] `App.tsx` calls `recoverActiveRun()` after `loadGraphList()` on mount
+
 ## 2026-02-24 (Phase 4 memory policy defaults)
 - [docs] `todo.md`: expanded Phase 4 defaults with an explicit future-tuning policy — current memory budgets/thresholds/TTLs/reducer choices are baseline defaults to be iteratively tuned using telemetry, retrieval quality, and cost/latency trade-offs
