@@ -1,15 +1,15 @@
-"""End-to-end paper-writing workflow using the DAN builder DSL.
+"""INFORMS-oriented paper-writing workflow using the DAN builder DSL.
 
-Demonstrates all core node types:
-  - LLMOperator (5 nodes) with structured and unstructured outputs
-  - ForEach parallel section writing with APPEND merge
-  - WhileLoop iterative review-revise cycle
-  - CodeOperator for assembly and formatting
-  - ToolOperator with custom ToolRegistry wiring
+This example intentionally exercises complex graph features:
+  - Real internet-grounded literature survey via ToolOperator + Semantic Scholar
+  - Parallel fan-out for literature aspects and section writing
+  - Human-in-the-loop interview loop before drafting
+  - Multi-role review panel with iterative revise loop
+  - LaTeX assembly, pdflatex/bibtex compilation, and submission packaging
 
 Usage:
     python examples/paper_writing.py "supply chain resilience"
-    python examples/paper_writing.py --topic "deep learning optimization" --max-review 5
+    python examples/paper_writing.py --topic "platform operations" --max-review 5
 """
 
 from __future__ import annotations
@@ -19,7 +19,13 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -42,234 +48,2259 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 
-# ── Tool functions ────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Tool helpers
+# ---------------------------------------------------------------------------
 
 
 def _slugify(text: str) -> str:
-    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:80]
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:80] or "paper"
 
 
-async def save_paper(content: str, title: str, **kwargs: Any) -> dict[str, str]:
-    """Save the final paper as a markdown file."""
-    output_dir = Path("output")
-    output_dir.mkdir(exist_ok=True)
-    slug = _slugify(title)
-    md_path = output_dir / f"{slug}.md"
-    md_path.write_text(content, encoding="utf-8")
-    return {"saved_path": str(md_path), "title": title}
+def _http_get_json(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    req_data = None
+    req_headers = dict(headers or {})
+    if payload is not None:
+        req_data = json.dumps(payload).encode("utf-8")
+        req_headers.setdefault("Content-Type", "application/json")
+    req = urllib.request.Request(url, data=req_data, headers=req_headers, method=method)
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8", errors="replace")
+    return json.loads(raw)
 
 
-# ── Code snippets executed by CodeOperator nodes ─────────────────────
+async def _fetch_json(
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    return await asyncio.to_thread(
+        _http_get_json,
+        url,
+        headers=headers,
+        method=method,
+        payload=payload,
+        timeout=timeout,
+    )
 
-ASSEMBLE_CODE = """\
-sections_content = []
-for section_result in results:
-    text = section_result.get('text', str(section_result))
-    sections_content.append(text)
 
-body = '\\n\\n'.join(sections_content)
-draft = '# ' + str(title) + '\\n\\n## Abstract\\n\\n' + str(abstract) + '\\n\\n' + body
-result = {'draft': draft, 'verdict': 'pending', 'feedback': 'Initial draft, no previous feedback.'}
-"""
+async def _run_command(cmd: list[str], cwd: Path) -> tuple[int, str]:
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        cwd=str(cwd),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    stdout, _ = await proc.communicate()
+    out = stdout.decode("utf-8", errors="replace") if stdout else ""
+    return proc.returncode, out
 
-FORMAT_CODE = """\
-# Extract title from the revised draft (review loop may change it)
-final_title = title
-for line in draft.strip().split('\\n'):
-    if line.startswith('# '):
-        final_title = line.lstrip('# ').strip()
-        break
-result = {'content': draft, 'title': final_title}
-"""
 
-REVIEW_PROMPT = (
-    "You are a rigorous academic paper reviewer and skilled reviser.\n\n"
-    "Current draft:\n{draft}\n\n"
-    "Previous feedback: {feedback}\n\n"
-    "Tasks:\n"
-    "1. Review the draft critically for clarity, argument structure, evidence, and writing quality.\n"
-    "2. Revise the draft to address all issues you identified.\n"
-    "3. If the draft is now publication-ready, set verdict to 'accept'. Otherwise, set to 'revise'.\n\n"
-    "You MUST output valid JSON with exactly these keys:\n"
-    '  {{"verdict": "accept" or "revise", "feedback": "your review comments", "draft": "the full revised paper text"}}'
+INFORMS3_CLS_URLS = (
+    "https://raw.githubusercontent.com/dengfaheng/latex-INFORMS-journals-template/main/ts/informs3.cls",
 )
 
-# ── Schemas ───────────────────────────────────────────────────────────
+_CITE_PATTERN = re.compile(
+    r"\\cite[a-zA-Z*]*\s*(?:\[[^\]]*\]\s*)?(?:\[[^\]]*\]\s*)?\{([^}]*)\}"
+)
+_BIB_ENTRY_PATTERN = re.compile(r"@\w+\s*\{\s*([^,\s]+)\s*,", re.IGNORECASE)
+
+
+def _extract_citation_keys(tex_content: str) -> set[str]:
+    keys: set[str] = set()
+    for raw in _CITE_PATTERN.findall(tex_content or ""):
+        for part in raw.split(","):
+            key = part.strip()
+            if key:
+                keys.add(key)
+    return keys
+
+
+def _extract_bib_keys(bibtex: str) -> set[str]:
+    return {m.strip() for m in _BIB_ENTRY_PATTERN.findall(bibtex or "") if m.strip()}
+
+
+def _build_placeholder_bib_entries(keys: list[str]) -> str:
+    entries: list[str] = []
+    for key in keys:
+        entries.append(
+            "\n".join(
+                [
+                    f"@misc{{{key},",
+                    "  author = {Unknown},",
+                    f"  title = {{Placeholder reference for {key}}},",
+                    "  year = {2024},",
+                    "  note = {Auto-generated by compile_latex for missing citation key}",
+                    "}",
+                ]
+            )
+        )
+    return "\n\n".join(entries)
+
+
+def _normalize_latex_content(content: str) -> str:
+    normalized = content or ""
+    normalized = normalized.replace(
+        r"\bibliographystyle{informs2014}",
+        r"\bibliographystyle{plainnat}",
+    )
+
+    if r"\usepackage{hyperref}" not in normalized:
+        if r"\usepackage{natbib}" in normalized:
+            normalized = normalized.replace(
+                r"\usepackage{natbib}",
+                r"\usepackage{natbib}" + "\n" + r"\usepackage{hyperref}",
+                1,
+            )
+        elif r"\begin{document}" in normalized:
+            normalized = normalized.replace(
+                r"\begin{document}",
+                r"\usepackage{hyperref}" + "\n" + r"\begin{document}",
+                1,
+            )
+
+    if r"\providecommand{\newblock}{}" not in normalized:
+        if r"\usepackage{hyperref}" in normalized:
+            normalized = normalized.replace(
+                r"\usepackage{hyperref}",
+                r"\usepackage{hyperref}" + "\n" + r"\providecommand{\newblock}{}",
+                1,
+            )
+        elif r"\usepackage{natbib}" in normalized:
+            normalized = normalized.replace(
+                r"\usepackage{natbib}",
+                r"\usepackage{natbib}" + "\n" + r"\providecommand{\newblock}{}",
+                1,
+            )
+        elif r"\begin{document}" in normalized:
+            normalized = normalized.replace(
+                r"\begin{document}",
+                r"\providecommand{\newblock}{}" + "\n" + r"\begin{document}",
+                1,
+            )
+    return normalized
+
+
+async def _ensure_informs3_cls(output_dir: Path) -> tuple[bool, str]:
+    target = output_dir / "informs3.cls"
+    if target.exists():
+        return True, "informs3.cls found in output/"
+
+    project_copy = Path.cwd() / "informs3.cls"
+    if project_copy.exists():
+        shutil.copy2(project_copy, target)
+        return True, "Copied informs3.cls from project root"
+
+    last_error = ""
+    for url in INFORMS3_CLS_URLS:
+        try:
+            def _download() -> str:
+                req = urllib.request.Request(
+                    url,
+                    headers={"User-Agent": "deep-agent-network/0.1"},
+                )
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    return resp.read().decode("utf-8", errors="replace")
+
+            content = await asyncio.to_thread(_download)
+            if "informs3" not in content.lower():
+                raise RuntimeError("Downloaded content does not look like informs3.cls")
+            target.write_text(content, encoding="utf-8")
+            return True, f"Downloaded informs3.cls from {url}"
+        except Exception as exc:
+            last_error = str(exc)
+
+    return False, f"Could not fetch informs3.cls automatically ({last_error})"
+
+
+# ---------------------------------------------------------------------------
+# Tool functions used by ToolOperator nodes
+# ---------------------------------------------------------------------------
+
+
+async def check_latex_deps(template_dir: str = "output", **kwargs: Any) -> dict[str, Any]:
+    """Check pdflatex/bibtex and INFORMS template availability."""
+    missing_cmds: list[str] = []
+    for cmd in ("pdflatex", "bibtex"):
+        if shutil.which(cmd) is None:
+            missing_cmds.append(cmd)
+
+    template_candidates = [Path.cwd(), Path(template_dir)]
+    has_cls = any((p / "informs3.cls").exists() for p in template_candidates)
+
+    missing_templates: list[str] = []
+    if not has_cls:
+        missing_templates.append("informs3.cls")
+
+    # informs3.cls can be auto-fetched in compile_latex(), so deps_ok only
+    # requires local TeX executables.
+    deps_ok = not missing_cmds
+    msg_lines: list[str] = []
+    if missing_cmds:
+        msg_lines.append(f"Missing commands: {', '.join(missing_cmds)}")
+    if missing_templates:
+        msg_lines.append(
+            "informs3.cls missing locally; compile_latex will attempt automatic download."
+        )
+    if deps_ok:
+        msg_lines.append("LaTeX dependencies are ready.")
+
+    return {
+        "deps_ok": deps_ok,
+        "missing_commands": missing_cmds,
+        "missing_templates": missing_templates,
+        "dependency_message": " ".join(msg_lines).strip(),
+    }
+
+
+async def search_web(
+    query: str,
+    model: str = "perplexity/sonar-pro-search",
+    max_tokens: int = 900,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Fallback web search via OpenRouter/Perplexity Sonar."""
+    api_key = os.getenv("OPENROUTER_API_KEY", "")
+    if not api_key:
+        return {
+            "query": query,
+            "source": "openrouter",
+            "available": False,
+            "answer": "",
+            "citations": [],
+            "error": "OPENROUTER_API_KEY not set",
+        }
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "You are a research assistant. Return concise factual findings and "
+                    "cite sources when possible."
+                ),
+            },
+            {"role": "user", "content": query},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.0,
+    }
+    headers = {"Authorization": f"Bearer {api_key}"}
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    try:
+        data = await _fetch_json(url, headers=headers, method="POST", payload=payload, timeout=40)
+        choices = data.get("choices", [])
+        answer = ""
+        if choices and isinstance(choices[0], dict):
+            msg = choices[0].get("message", {})
+            if isinstance(msg, dict):
+                answer = str(msg.get("content", ""))
+        citations = data.get("citations", [])
+        if not isinstance(citations, list):
+            citations = []
+        return {
+            "query": query,
+            "source": "openrouter",
+            "available": True,
+            "answer": answer,
+            "citations": citations,
+            "error": "",
+        }
+    except Exception as exc:
+        return {
+            "query": query,
+            "source": "openrouter",
+            "available": False,
+            "answer": "",
+            "citations": [],
+            "error": f"OpenRouter request failed: {exc}",
+        }
+
+
+async def search_papers(
+    query: str,
+    num_results: int = 8,
+    aspect: str = "",
+    allow_web_fallback: bool = True,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Search Semantic Scholar for real paper metadata."""
+    fields = "title,year,venue,authors,citationCount,externalIds,paperId,abstract"
+    params = urllib.parse.urlencode(
+        {"query": query, "limit": max(1, min(int(num_results), 20)), "fields": fields}
+    )
+    url = f"https://api.semanticscholar.org/graph/v1/paper/search?{params}"
+    headers = {"User-Agent": "deep-agent-network/0.1"}
+
+    papers: list[dict[str, Any]] = []
+    error_text = ""
+    try:
+        data = await _fetch_json(url, headers=headers, timeout=30)
+        for row in data.get("data", []):
+            if not isinstance(row, dict):
+                continue
+            ext = row.get("externalIds") or {}
+            if not isinstance(ext, dict):
+                ext = {}
+            authors = row.get("authors") or []
+            author_names = []
+            if isinstance(authors, list):
+                for a in authors[:8]:
+                    if isinstance(a, dict) and a.get("name"):
+                        author_names.append(str(a["name"]))
+            papers.append(
+                {
+                    "title": str(row.get("title", "")),
+                    "year": row.get("year"),
+                    "venue": str(row.get("venue", "")),
+                    "abstract": str(row.get("abstract", "")),
+                    "citation_count": int(row.get("citationCount", 0) or 0),
+                    "paper_id": str(row.get("paperId", "")),
+                    "doi": str(ext.get("DOI", "")),
+                    "authors": author_names,
+                }
+            )
+    except Exception as exc:
+        error_text = f"Semantic Scholar failed: {exc}"
+
+    fallback_answer = ""
+    fallback_citations: list[Any] = []
+    if (not papers) and allow_web_fallback:
+        web = await search_web(query)
+        fallback_answer = str(web.get("answer", ""))
+        raw_cites = web.get("citations", [])
+        if isinstance(raw_cites, list):
+            fallback_citations = raw_cites
+
+    return {
+        "aspect": aspect,
+        "query": query,
+        "papers": papers,
+        "paper_count": len(papers),
+        "source": "semantic_scholar",
+        "error": error_text,
+        "fallback_answer": fallback_answer,
+        "fallback_citations": fallback_citations,
+    }
+
+
+async def citation_verifier(key_papers: list[Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+    """Verify key-paper citations are resolvable and de-duplicate near duplicates."""
+    rows = key_papers if isinstance(key_papers, list) else []
+    seen_titles: set[str] = set()
+    verified: list[dict[str, Any]] = []
+    invalid: list[dict[str, Any]] = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            invalid.append({"paper": str(row), "reason": "Not an object"})
+            continue
+
+        title = str(row.get("title", "")).strip()
+        if not title:
+            invalid.append({"paper": row, "reason": "Missing title"})
+            continue
+
+        key = re.sub(r"\s+", " ", title.lower())
+        if key in seen_titles:
+            continue
+        seen_titles.add(key)
+
+        doi = str(row.get("doi", "")).strip()
+        paper_id = str(row.get("paper_id", "")).strip() or str(row.get("paperId", "")).strip()
+
+        # Fast-path: has stable identifiers already
+        if doi or paper_id:
+            verified.append(
+                {
+                    "title": title,
+                    "year": row.get("year"),
+                    "venue": row.get("venue", ""),
+                    "doi": doi,
+                    "paper_id": paper_id,
+                    "status": "verified_by_identifier",
+                }
+            )
+            continue
+
+        # Slow path: online title lookup
+        try:
+            params = urllib.parse.urlencode(
+                {"query": title, "limit": 1, "fields": "title,year,venue,externalIds,paperId"}
+            )
+            url = f"https://api.semanticscholar.org/graph/v1/paper/search?{params}"
+            data = await _fetch_json(url, headers={"User-Agent": "deep-agent-network/0.1"}, timeout=20)
+            hit = None
+            if isinstance(data.get("data"), list) and data["data"]:
+                candidate = data["data"][0]
+                if isinstance(candidate, dict):
+                    hit = candidate
+            if not hit:
+                invalid.append({"paper": row, "reason": "No matching paper found online"})
+                continue
+            ext = hit.get("externalIds") or {}
+            if not isinstance(ext, dict):
+                ext = {}
+            verified.append(
+                {
+                    "title": str(hit.get("title", title)),
+                    "year": hit.get("year"),
+                    "venue": str(hit.get("venue", row.get("venue", ""))),
+                    "doi": str(ext.get("DOI", "")),
+                    "paper_id": str(hit.get("paperId", "")),
+                    "status": "verified_by_title_search",
+                }
+            )
+        except Exception as exc:
+            invalid.append({"paper": row, "reason": f"Lookup failed: {exc}"})
+
+    note = (
+        f"Verified {len(verified)} paper(s), flagged {len(invalid)} paper(s)."
+    )
+    return {
+        "verified_papers": verified,
+        "invalid_citations": invalid,
+        "verification_notes": note,
+    }
+
+
+async def compile_latex(
+    content: str,
+    title: str,
+    bibtex: str = "",
+    output_dir: str = "output",
+    basename: str | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Compile LaTeX with pdflatex/bibtex and return compile logs."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(exist_ok=True, parents=True)
+
+    slug = _slugify(basename or title or "paper")
+    tex_filename = f"{slug}.tex"
+    tex_path = out_dir / tex_filename
+    notes: list[str] = []
+
+    template_ok, template_note = await _ensure_informs3_cls(out_dir)
+    notes.append(template_note)
+    if not template_ok:
+        notes.append(
+            "Compile may fail if informs3.cls is unavailable in your TeX installation."
+        )
+
+    normalized_content = _normalize_latex_content(content)
+    tex_path.write_text(normalized_content, encoding="utf-8")
+
+    bib_path = out_dir / f"{slug}.bib"
+    references_bib_path = out_dir / "references.bib"
+    cited_keys = _extract_citation_keys(normalized_content)
+    existing_keys = _extract_bib_keys(bibtex)
+    missing_keys = sorted(cited_keys - existing_keys)
+    effective_bibtex = bibtex.strip()
+    if missing_keys:
+        placeholders = _build_placeholder_bib_entries(missing_keys)
+        effective_bibtex = (
+            f"{effective_bibtex}\n\n{placeholders}" if effective_bibtex else placeholders
+        )
+        notes.append(
+            "Auto-added placeholder BibTeX entries for missing keys: "
+            + ", ".join(missing_keys[:20])
+            + (" ..." if len(missing_keys) > 20 else "")
+        )
+    if effective_bibtex:
+        bib_path.write_text(effective_bibtex, encoding="utf-8")
+        references_bib_path.write_text(effective_bibtex, encoding="utf-8")
+
+    if shutil.which("pdflatex") is None:
+        return {
+            "compile_success": False,
+            "pdf_path": "",
+            "compile_log": "\n".join(notes + ["pdflatex not found on PATH."]),
+            "tex_path": str(tex_path),
+            "bib_path": str(bib_path) if bib_path.exists() else "",
+        }
+
+    log_parts: list[str] = []
+    compile_success = True
+
+    # Pass 1
+    rc, out = await _run_command(
+        ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", tex_filename],
+        out_dir,
+    )
+    log_parts.append(f"$ pdflatex pass1\n{out}")
+    if rc != 0:
+        compile_success = False
+
+    # BibTeX pass
+    if compile_success and bibtex.strip() and shutil.which("bibtex") is not None:
+        rc, out = await _run_command(["bibtex", slug], out_dir)
+        log_parts.append(f"$ bibtex\n{out}")
+        if rc != 0:
+            compile_success = False
+
+    # Passes 2 and 3
+    if compile_success:
+        rc, out = await _run_command(
+            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", tex_filename],
+            out_dir,
+        )
+        log_parts.append(f"$ pdflatex pass2\n{out}")
+        if rc != 0:
+            compile_success = False
+    if compile_success:
+        rc, out = await _run_command(
+            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", tex_filename],
+            out_dir,
+        )
+        log_parts.append(f"$ pdflatex pass3\n{out}")
+        if rc != 0:
+            compile_success = False
+
+    pdf_path = out_dir / f"{slug}.pdf"
+    if not pdf_path.exists():
+        compile_success = False
+
+    return {
+        "compile_success": compile_success,
+        "pdf_path": str(pdf_path) if pdf_path.exists() else "",
+        "compile_log": ("\n".join(notes) + "\n\n" + "\n\n".join(log_parts))[-20000:],
+        "tex_path": str(tex_path),
+        "bib_path": str(bib_path) if bib_path.exists() else "",
+        "autofilled_bib_keys": missing_keys,
+    }
+
+
+async def save_paper(
+    content: str,
+    title: str,
+    bibtex: str = "",
+    pdf_path: str = "",
+    compile_log: str = "",
+    verdict: str = "",
+    output_dir: str = "output",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Save final manuscript artifacts as .tex/.bib/.pdf."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(exist_ok=True, parents=True)
+    slug = _slugify(title)
+
+    tex_path = out_dir / f"{slug}.tex"
+    bib_path = out_dir / f"{slug}.bib"
+    log_path = out_dir / f"{slug}.compile.log.txt"
+
+    tex_path.write_text(content, encoding="utf-8")
+    bib_path.write_text(bibtex, encoding="utf-8")
+    log_path.write_text(compile_log or "", encoding="utf-8")
+
+    final_pdf_path = out_dir / f"{slug}.pdf"
+    if pdf_path and Path(pdf_path).exists():
+        source = Path(pdf_path)
+        if source.resolve() != final_pdf_path.resolve():
+            shutil.copy2(source, final_pdf_path)
+
+    summary_path = out_dir / f"{slug}.summary.json"
+    summary_payload = {
+        "title": title,
+        "saved_at": datetime.now(timezone.utc).isoformat(),
+        "verdict": verdict,
+        "tex_path": str(tex_path),
+        "bib_path": str(bib_path),
+        "pdf_path": str(final_pdf_path) if final_pdf_path.exists() else "",
+    }
+    summary_path.write_text(json.dumps(summary_payload, indent=2), encoding="utf-8")
+
+    saved_path = str(final_pdf_path) if final_pdf_path.exists() else str(tex_path)
+    return {
+        "saved_path": saved_path,
+        "title": title,
+        "tex_path": str(tex_path),
+        "bib_path": str(bib_path),
+        "pdf_path": str(final_pdf_path) if final_pdf_path.exists() else "",
+        "compile_log_path": str(log_path),
+        "summary_path": str(summary_path),
+        "verdict": verdict,
+    }
+
+
+async def package_submission(
+    title: str,
+    tex_path: str,
+    bib_path: str,
+    pdf_path: str = "",
+    compile_log_path: str = "",
+    summary_path: str = "",
+    output_dir: str = "output",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Package manuscript artifacts into a submission zip bundle."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(exist_ok=True, parents=True)
+    slug = _slugify(title)
+    bundle_path = out_dir / f"{slug}-submission.zip"
+
+    manifest = {
+        "title": title,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "files": [],
+    }
+    files = [tex_path, bib_path, pdf_path, compile_log_path, summary_path]
+    with zipfile.ZipFile(bundle_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for fp in files:
+            if not fp:
+                continue
+            p = Path(fp)
+            if not p.exists():
+                continue
+            zf.write(p, arcname=p.name)
+            manifest["files"].append(p.name)
+        manifest_path = out_dir / f"{slug}.manifest.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        zf.write(manifest_path, arcname=manifest_path.name)
+
+    return {
+        "bundle_path": str(bundle_path),
+        "saved_path": str(bundle_path),
+        "title": title,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Code snippets executed by CodeOperator nodes
+# ---------------------------------------------------------------------------
+
+BUILD_ASPECT_TASKS_CODE = """\
+tasks = []
+for idx, aspect in enumerate(aspects or []):
+    if isinstance(aspect, dict):
+        name = str(aspect.get("name", f"aspect_{idx+1}"))
+        queries = aspect.get("search_queries") or []
+    else:
+        name = str(aspect)
+        queries = []
+    if not queries:
+        queries = [f"{idea} {name}".strip()]
+    for q in queries:
+        tasks.append({"aspect": name, "query": str(q), "num_results": 8})
+result = {"aspect_tasks": tasks}
+"""
+
+UNPACK_ASPECT_TASK_CODE = """\
+if isinstance(item, dict):
+    aspect = str(item.get("aspect", "general"))
+    query = str(item.get("query", aspect))
+    num_results = int(item.get("num_results", 8))
+else:
+    aspect = str(item)
+    query = str(item)
+    num_results = 8
+result = {"aspect": aspect, "query": query, "num_results": num_results}
+"""
+
+INIT_INTERVIEW_STATE_CODE = """\
+result = {
+    "refined_idea": idea,
+    "refined_literature": literature_review,
+    "refined_outline": outline,
+    "conversation_history": "",
+    "has_questions": True,
+    "is_clarification": False,
+    "substantive_rounds": 0,
+    "max_rounds": 5,
+}
+"""
+
+PACK_OUTLINE_CODE = """\
+result = {
+    "outline": {
+        "title": title,
+        "abstract": abstract,
+        "keywords": keywords,
+        "journal": journal,
+        "paper_type": paper_type,
+        "sections": sections,
+    }
+}
+"""
+
+INTERVIEW_LOOP_INPUTS_CODE = """\
+result = {
+    "refined_idea": refined_idea,
+    "refined_literature": refined_literature,
+    "refined_outline": refined_outline,
+    "conversation_history": conversation_history,
+    "has_questions": has_questions,
+    "is_clarification": is_clarification,
+    "substantive_rounds": substantive_rounds,
+    "max_rounds": max_rounds,
+}
+"""
+
+BUILD_INTERVIEW_PROMPT_CODE = """\
+q = question if isinstance(question, str) else str(question)
+result = {"user_prompt": "Research interview question:\\n\\n" + q}
+"""
+
+UPDATE_INTERVIEW_STATE_CODE = """\
+history = conversation_history or ""
+q = question if isinstance(question, str) else str(question)
+a = response if isinstance(response, str) else str(response)
+entry = "Q: " + q + "\\nA: " + a + "\\nSummary: " + str(round_summary) + "\\n\\n"
+new_rounds = int(substantive_rounds or 0)
+if not bool(is_clarification):
+    new_rounds += 1
+result = {
+    "refined_idea": refined_idea,
+    "refined_literature": refined_literature,
+    "refined_outline": refined_outline,
+    "conversation_history": history + entry,
+    "has_questions": bool(has_questions),
+    "is_clarification": bool(is_clarification),
+    "substantive_rounds": new_rounds,
+    "max_rounds": int(max_rounds or 5),
+}
+"""
+
+BUILD_RESULTS_ARTIFACTS_CODE = """\
+artifacts = []
+sections = []
+if isinstance(refined_outline, dict):
+    sections = refined_outline.get("sections", [])
+for idx, sec in enumerate(sections):
+    if isinstance(sec, dict):
+        sid = str(sec.get("id", f"sec_{idx+1}"))
+        title = str(sec.get("title", f"Section {idx+1}"))
+    else:
+        sid = f"sec_{idx+1}"
+        title = str(sec)
+    artifacts.append(
+        {
+            "section_id": sid,
+            "artifact_type": "table",
+            "label": f"tab:{sid}",
+            "caption": f"Summary metrics supporting {title}.",
+        }
+    )
+result = {"results_artifacts": artifacts}
+"""
+
+BUILD_SECTION_TASKS_CODE = """\
+sections = []
+if isinstance(refined_outline, dict):
+    sections = refined_outline.get("sections", [])
+tasks = []
+for idx, sec in enumerate(sections):
+    if isinstance(sec, dict):
+        sid = str(sec.get("id", f"sec_{idx+1}"))
+        title = str(sec.get("title", f"Section {idx+1}"))
+        purpose = str(sec.get("purpose", ""))
+        points = sec.get("key_points", [])
+    else:
+        sid = f"sec_{idx+1}"
+        title = str(sec)
+        purpose = ""
+        points = []
+    section_artifacts = []
+    for art in results_artifacts or []:
+        if isinstance(art, dict) and str(art.get("section_id", "")) == sid:
+            section_artifacts.append(art)
+    tasks.append(
+        {
+            "section_id": sid,
+            "section_title": title,
+            "purpose": purpose,
+            "key_points": points,
+            "idea": refined_idea,
+            "literature": refined_literature,
+            "artifact_notes": section_artifacts,
+        }
+    )
+result = {"section_tasks": tasks}
+"""
+
+UNPACK_SECTION_TASK_CODE = """\
+if isinstance(item, dict):
+    result = {
+        "section_id": str(item.get("section_id", "")),
+        "section_title": str(item.get("section_title", "")),
+        "purpose": str(item.get("purpose", "")),
+        "key_points": item.get("key_points", []),
+        "idea": str(item.get("idea", "")),
+        "literature": str(item.get("literature", "")),
+        "artifact_notes": item.get("artifact_notes", []),
+    }
+else:
+    result = {
+        "section_id": "section",
+        "section_title": str(item),
+        "purpose": "",
+        "key_points": [],
+        "idea": "",
+        "literature": "",
+        "artifact_notes": [],
+    }
+"""
+
+BUILD_SECTIONS_MAP_CODE = """\
+sections_map = {}
+for row in results or []:
+    if not isinstance(row, dict):
+        continue
+    sid = str(row.get("section_id", "")) or f"sec_{len(sections_map) + 1}"
+    sections_map[sid] = {
+        "title": str(row.get("section_title", sid)),
+        "latex": str(row.get("latex", "")),
+    }
+result = {"sections_map": sections_map}
+"""
+
+ASSEMBLE_LATEX_CODE = """\
+paper_title = "Untitled Paper"
+journal = "mnsc"
+abstract = ""
+keywords = []
+sections = []
+if isinstance(outline, dict):
+    paper_title = str(outline.get("title", paper_title))
+    journal = str(outline.get("journal", "mnsc") or "mnsc")
+    abstract = str(outline.get("abstract", ""))
+    keywords = outline.get("keywords", [])
+    sections = outline.get("sections", [])
+if title:
+    paper_title = str(title)
+
+section_ids = []
+for idx, sec in enumerate(sections):
+    if isinstance(sec, dict):
+        section_ids.append(str(sec.get("id", f"sec_{idx+1}")))
+    else:
+        section_ids.append(f"sec_{idx+1}")
+
+section_blocks = []
+for sid in section_ids:
+    block = sections_map.get(sid, {}) if isinstance(sections_map, dict) else {}
+    latex = str(block.get("latex", ""))
+    if latex:
+        section_blocks.append(latex)
+if not section_blocks and isinstance(sections_map, dict):
+    for sid, block in sections_map.items():
+        latex = ""
+        if isinstance(block, dict):
+            latex = str(block.get("latex", ""))
+        if latex:
+            section_blocks.append(latex)
+
+kw = "; ".join([str(k) for k in keywords]) if keywords else "operations management; multi-agent systems"
+body = "\\n\\n".join(section_blocks)
+doc = "\\n".join(
+    [
+        f"\\\\documentclass[{journal},blindrev]{{informs3}}",
+        "\\\\usepackage{natbib}",
+        "\\\\usepackage{amsmath,amssymb,amsfonts}",
+        "\\\\usepackage{booktabs}",
+        "\\\\usepackage{graphicx}",
+        "\\\\usepackage{tikz}",
+        "\\\\usepackage{hyperref}",
+        "\\\\providecommand{\\\\newblock}{}",
+        "\\\\TITLE{" + paper_title + "}",
+        "\\\\ARTICLEAUTHORS{",
+        "\\\\AUTHOR{Anonymous}",
+        "\\\\AFF{Anonymous Institution, \\\\EMAIL{anonymous@example.com}}",
+        "}",
+        "\\\\ABSTRACT{" + abstract + "}",
+        "\\\\KEYWORDS{" + kw + "}",
+        "\\\\begin{document}",
+        "\\\\maketitle",
+        body,
+        "\\\\begin{APPENDICES}",
+        "\\\\section{Additional Proofs and Technical Details}",
+        "Additional derivations and robustness details are provided here.",
+        "\\\\end{APPENDICES}",
+        "\\\\bibliographystyle{plainnat}",
+        "\\\\bibliography{references}",
+        "\\\\end{document}",
+    ]
+)
+result = {
+    "draft_tex": doc,
+    "title": paper_title,
+    "sections_map": sections_map,
+    "outline": outline,
+    "bibtex": bibtex,
+    "verdict": "revise_sections",
+    "feedback": "Initial draft prepared for review.",
+    "evidence_gate_pass": bool(evidence_gate_pass),
+    "verified_papers": verified_papers,
+}
+"""
+
+BUILD_REVISION_TASKS_CODE = """\
+tasks = []
+feedback_rows = section_feedback if isinstance(section_feedback, list) else []
+for row in feedback_rows:
+    if not isinstance(row, dict):
+        continue
+    sid = str(row.get("section_id", "")).strip()
+    if not sid:
+        continue
+    section_obj = sections_map.get(sid, {}) if isinstance(sections_map, dict) else {}
+    current_content = ""
+    section_title = sid
+    if isinstance(section_obj, dict):
+        current_content = str(section_obj.get("latex", ""))
+        section_title = str(section_obj.get("title", sid))
+    tasks.append(
+        {
+            "section_id": sid,
+            "section_title": section_title,
+            "current_content": current_content,
+            "feedback": str(row.get("feedback", "")),
+            "action": str(row.get("action", "revise")),
+        }
+    )
+
+if not tasks and verdict != "accept" and isinstance(sections_map, dict):
+    for sid, section_obj in sections_map.items():
+        if not isinstance(section_obj, dict):
+            continue
+        tasks.append(
+            {
+                "section_id": str(sid),
+                "section_title": str(section_obj.get("title", sid)),
+                "current_content": str(section_obj.get("latex", "")),
+                "feedback": "Apply targeted revisions for clarity and evidence strength.",
+                "action": "revise",
+            }
+        )
+
+working_outline = outline
+if verdict == "restructure" and isinstance(revised_outline, dict) and revised_outline:
+    working_outline = revised_outline
+
+result = {
+    "revision_tasks": tasks,
+    "working_outline": working_outline,
+    "base_sections_map": sections_map,
+}
+"""
+
+UNPACK_REVISION_TASK_CODE = """\
+if isinstance(item, dict):
+    result = {
+        "section_id": str(item.get("section_id", "")),
+        "section_title": str(item.get("section_title", "")),
+        "current_content": str(item.get("current_content", "")),
+        "feedback": str(item.get("feedback", "")),
+        "action": str(item.get("action", "revise")),
+    }
+else:
+    result = {
+        "section_id": "section",
+        "section_title": str(item),
+        "current_content": "",
+        "feedback": "",
+        "action": "revise",
+    }
+"""
+
+APPLY_REVISIONS_CODE = """\
+updated = dict(base_sections_map or {}) if isinstance(base_sections_map, dict) else {}
+for row in revision_results or []:
+    if not isinstance(row, dict):
+        continue
+    sid = str(row.get("section_id", "")).strip()
+    if not sid:
+        continue
+    action = str(row.get("action", "revise"))
+    if action == "remove":
+        if sid in updated:
+            del updated[sid]
+        continue
+    prev = updated.get(sid, {}) if isinstance(updated.get(sid, {}), dict) else {}
+    updated[sid] = {
+        "title": str(row.get("section_title", prev.get("title", sid))),
+        "latex": str(row.get("latex", prev.get("latex", ""))),
+    }
+result = {"sections_map": updated, "outline": working_outline}
+"""
+
+REVIEW_STATE_UPDATE_CODE = """\
+accept_ready = bool(gate_pass) and bool(compile_success) and str(verdict) == "accept"
+if accept_ready:
+    next_verdict = "accept"
+else:
+    if str(verdict) == "restructure":
+        next_verdict = "restructure"
+    else:
+        next_verdict = "revise_sections"
+
+unsupported = unsupported_claims if isinstance(unsupported_claims, list) else []
+notes = []
+if overall_feedback:
+    notes.append(str(overall_feedback))
+if unsupported:
+    notes.append("Unsupported claims: " + "; ".join([str(x) for x in unsupported]))
+if compile_log:
+    notes.append("Compile notes: " + str(compile_log)[:1200])
+
+result = {
+    "draft_tex": draft_tex,
+    "title": title,
+    "sections_map": sections_map,
+    "outline": outline,
+    "bibtex": bibtex,
+    "verdict": next_verdict,
+    "feedback": "\\n\\n".join(notes),
+    "evidence_gate_pass": bool(gate_pass),
+    "verified_papers": verified_papers,
+    "compile_success": bool(compile_success),
+    "compile_log": compile_log,
+    "pdf_path": pdf_path,
+}
+"""
+
+REVIEW_LOOP_INPUTS_CODE = """\
+result = {
+    "draft_tex": draft_tex,
+    "title": title,
+    "sections_map": sections_map,
+    "outline": outline,
+    "bibtex": bibtex,
+    "verdict": verdict,
+    "feedback": feedback,
+    "evidence_gate_pass": evidence_gate_pass,
+    "verified_papers": verified_papers,
+    "compile_success": compile_success,
+    "compile_log": compile_log,
+    "pdf_path": pdf_path,
+}
+"""
+
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+ASPECT_PLAN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "aspects": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string"},
+                    "search_queries": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["name"],
+            },
+        }
+    },
+    "required": ["aspects"],
+}
+
+SURVEY_ASPECT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "aspect": {"type": "string"},
+        "summary": {"type": "string"},
+        "key_findings": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["aspect", "summary", "key_findings"],
+}
+
+LIT_SYNTHESIS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "literature_review": {"type": "string"},
+        "identified_gaps": {"type": "array", "items": {"type": "string"}},
+        "key_papers": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "year": {"type": ["integer", "null"]},
+                    "venue": {"type": "string"},
+                    "doi": {"type": "string"},
+                    "paper_id": {"type": "string"},
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    "required": ["literature_review", "identified_gaps", "key_papers"],
+}
+
+CLAIM_GATE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "gate_pass": {"type": "boolean"},
+        "coverage_score": {"type": "number"},
+        "unsupported_claims": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["gate_pass", "coverage_score", "unsupported_claims"],
+}
 
 OUTLINE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "title": {"type": "string"},
         "abstract": {"type": "string"},
-        "sections": {"type": "array", "items": {"type": "string"}},
+        "keywords": {"type": "array", "items": {"type": "string"}},
+        "journal": {"type": "string", "enum": ["mnsc", "opre", "msom"]},
+        "paper_type": {
+            "type": "string",
+            "enum": ["analytical", "empirical", "behavioral", "structural", "ml"],
+        },
+        "sections": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "purpose": {"type": "string"},
+                    "key_points": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["id", "title"],
+            },
+        },
     },
-    "required": ["title", "abstract", "sections"],
+    "required": ["title", "abstract", "keywords", "journal", "paper_type", "sections"],
 }
 
-REVIEW_SCHEMA: dict[str, Any] = {
+INTERVIEWER_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "verdict": {"type": "string", "enum": ["accept", "revise"]},
-        "feedback": {"type": "string"},
-        "draft": {"type": "string"},
+        "question": {"type": "string"},
+        "has_questions": {"type": "boolean"},
+        "is_clarification": {"type": "boolean"},
     },
-    "required": ["verdict", "feedback", "draft"],
+    "required": ["question", "has_questions", "is_clarification"],
+}
+
+INTERVIEW_REFINER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "refined_idea": {"type": "string"},
+        "refined_literature": {"type": "string"},
+        "refined_outline": {"type": "object"},
+        "round_summary": {"type": "string"},
+        "has_questions": {"type": "boolean"},
+        "is_clarification": {"type": "boolean"},
+    },
+    "required": [
+        "refined_idea",
+        "refined_literature",
+        "refined_outline",
+        "round_summary",
+        "has_questions",
+        "is_clarification",
+    ],
+}
+
+SECTION_DRAFT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "section_id": {"type": "string"},
+        "section_title": {"type": "string"},
+        "latex": {"type": "string"},
+    },
+    "required": ["section_id", "section_title", "latex"],
+}
+
+BIBTEX_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {"bibtex": {"type": "string"}},
+    "required": ["bibtex"],
+}
+
+REVIEWER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "feedback": {"type": "string"},
+        "recommendation": {"type": "string", "enum": ["accept", "revise_sections", "restructure"]},
+        "section_feedback": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "section_id": {"type": "string"},
+                    "action": {"type": "string", "enum": ["revise", "rewrite", "remove", "new"]},
+                    "feedback": {"type": "string"},
+                },
+                "required": ["section_id", "action", "feedback"],
+            },
+        },
+    },
+    "required": ["feedback", "recommendation", "section_feedback"],
+}
+
+REVIEW_MERGER_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "verdict": {"type": "string", "enum": ["accept", "revise_sections", "restructure"]},
+        "overall_feedback": {"type": "string"},
+        "section_feedback": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "section_id": {"type": "string"},
+                    "action": {"type": "string", "enum": ["revise", "rewrite", "remove", "new"]},
+                    "feedback": {"type": "string"},
+                },
+                "required": ["section_id", "action", "feedback"],
+            },
+        },
+        "revised_outline": {"type": "object"},
+    },
+    "required": ["verdict", "overall_feedback", "section_feedback", "revised_outline"],
+}
+
+REVISED_SECTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "section_id": {"type": "string"},
+        "section_title": {"type": "string"},
+        "action": {"type": "string", "enum": ["revise", "rewrite", "remove", "new"]},
+        "latex": {"type": "string"},
+    },
+    "required": ["section_id", "section_title", "action", "latex"],
 }
 
 
-# ── Workflow definition ───────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Prompts
+# ---------------------------------------------------------------------------
+
+ASPECT_PLANNER_PROMPT = (
+    "You are a literature search strategist.\n\n"
+    "Research idea:\n{idea}\n\n"
+    "Design 4-6 parallel literature survey aspects. For each aspect, provide 2-3 "
+    "high-value search queries.\n\n"
+    "Return valid JSON with key 'aspects'."
+)
+
+SURVEY_ASPECT_PROMPT = (
+    "You are writing one aspect of a grounded literature survey.\n\n"
+    "Aspect: {aspect}\n"
+    "Search query: {query}\n"
+    "Semantic Scholar papers:\n{papers}\n"
+    "Web fallback findings (if any):\n{fallback_answer}\n\n"
+    "Summarize key findings, disagreements, and unresolved gaps.\n"
+    "Return valid JSON."
+)
+
+LIT_SYNTHESIZER_PROMPT = (
+    "You are an INFORMS-oriented literature synthesizer.\n\n"
+    "Research idea:\n{idea}\n\n"
+    "Aspect survey results:\n{search_results}\n\n"
+    "Produce a stream-structured literature review (not chronological), identify "
+    "research gaps, and list key papers with metadata.\n"
+    "Return valid JSON."
+)
+
+CLAIM_GATE_PROMPT = (
+    "You are a claim-evidence auditor.\n\n"
+    "Literature review draft:\n{literature_review}\n\n"
+    "Verified paper list:\n{verified_papers}\n\n"
+    "Identified gaps:\n{identified_gaps}\n\n"
+    "Score evidence coverage and list unsupported claims.\n"
+    "Return valid JSON."
+)
+
+OUTLINE_PROMPT = (
+    "You are an INFORMS paper planner targeting Management Science, Operations "
+    "Research, or M&SOM.\n\n"
+    "Research idea:\n{idea}\n\n"
+    "Grounded literature review:\n{literature_review}\n\n"
+    "Verified key papers:\n{verified_papers}\n\n"
+    "Evidence audit gate_pass={gate_pass}, coverage_score={coverage_score}, "
+    "unsupported_claims={unsupported_claims}\n\n"
+    "Create an outline with sections that include stable section IDs. "
+    "Pick journal from [mnsc, opre, msom] and include keywords.\n"
+    "Return valid JSON."
+)
+
+INTERVIEWER_PROMPT = (
+    "You are conducting a focused author interview before writing.\n\n"
+    "Current refined idea:\n{refined_idea}\n\n"
+    "Current refined literature:\n{refined_literature}\n\n"
+    "Current outline:\n{refined_outline}\n\n"
+    "Conversation history:\n{conversation_history}\n\n"
+    "Substantive rounds completed: {substantive_rounds}\n\n"
+    "Ask exactly one highest-value question. If no question is needed, ask a short "
+    "confirmation question and set has_questions=false.\n"
+    "Mark is_clarification=true only for small factual clarifications.\n"
+    "Return valid JSON."
+)
+
+INTERVIEW_REFINER_PROMPT = (
+    "You are refining paper design after an author response.\n\n"
+    "Question:\n{question}\n\n"
+    "Author response:\n{response}\n\n"
+    "Current idea:\n{refined_idea}\n\n"
+    "Current literature:\n{refined_literature}\n\n"
+    "Current outline:\n{refined_outline}\n\n"
+    "Update idea, literature framing, and outline if needed. "
+    "Set has_questions=false when ready to write.\n"
+    "Return valid JSON."
+)
+
+WRITE_SECTION_PROMPT = (
+    "Write one LaTeX section for an INFORMS-style manuscript.\n\n"
+    "Section ID: {section_id}\n"
+    "Section title: {section_title}\n"
+    "Purpose: {purpose}\n"
+    "Key points: {key_points}\n\n"
+    "Research idea:\n{idea}\n\n"
+    "Grounded literature:\n{literature}\n\n"
+    "Quantitative artifacts to reference:\n{artifact_notes}\n\n"
+    "Output full LaTeX for this section including \\\\section{{...}} and citations "
+    "(e.g., \\\\cite{{key}}). Return valid JSON."
+)
+
+BIBTEX_PROMPT = (
+    "Generate a compact but valid BibTeX file for this draft.\n\n"
+    "Sections map:\n{sections_map}\n\n"
+    "Verified papers:\n{verified_papers}\n\n"
+    "Prioritize verified papers and ensure BibTeX keys match cited works in the section LaTeX.\n"
+    "If a section cites a key that is not in verified papers, still include a valid fallback entry "
+    "so LaTeX compilation does not fail due to missing citations.\n"
+    "Return JSON with key 'bibtex'."
+)
+
+REVIEWER_PROMPT_TEMPLATE = (
+    "You are the {role_name} reviewer in an INFORMS review panel.\n\n"
+    "Draft LaTeX:\n{draft_tex}\n\n"
+    "Outline:\n{outline}\n\n"
+    "Prior feedback context:\n{feedback}\n\n"
+    "Return role-specific feedback, recommendation, and section-level actions. "
+    "Return valid JSON."
+)
+
+REVIEW_MERGER_PROMPT = (
+    "You are a meta-reviewer merging three reviewer reports.\n\n"
+    "Method reviewer feedback:\n{method_feedback}\n"
+    "Method recommendation: {method_recommendation}\n"
+    "Method section feedback:\n{method_section_feedback}\n\n"
+    "Writing reviewer feedback:\n{writing_feedback}\n"
+    "Writing recommendation: {writing_recommendation}\n"
+    "Writing section feedback:\n{writing_section_feedback}\n\n"
+    "Venue reviewer feedback:\n{venue_feedback}\n"
+    "Venue recommendation: {venue_recommendation}\n"
+    "Venue section feedback:\n{venue_section_feedback}\n\n"
+    "Current outline:\n{outline}\n\n"
+    "Return a merged verdict, merged section_feedback, and revised_outline if needed."
+)
+
+REVISE_SECTION_PROMPT = (
+    "Revise one section based on reviewer guidance.\n\n"
+    "Section ID: {section_id}\n"
+    "Section title: {section_title}\n"
+    "Action: {action}\n"
+    "Current content:\n{current_content}\n\n"
+    "Feedback to address:\n{feedback}\n\n"
+    "Return updated section LaTeX as valid JSON."
+)
+
+
+# ---------------------------------------------------------------------------
+# Workflow definition
+# ---------------------------------------------------------------------------
 
 
 def build_paper_workflow(max_review_iterations: int = 3) -> Any:
-    """Build the paper-writing workflow graph and return (graph, wf)."""
+    """Build the grounded paper-writing workflow graph."""
     wf = workflow(
         "paper_writing",
         description=(
-            "Multi-agent paper writing with literature survey, "
-            "parallel section writing, and iterative review-revise."
+            "Grounded multi-agent paper writing with internet survey, human interview, "
+            "parallel section drafting, and iterative review-revise."
         ),
-        tags=["paper-writing", "multi-agent", "demo"],
+        tags=["paper-writing", "multi-agent", "informs", "grounded"],
     )
 
-    # 1. Idea generation
+    # 0) Dependency check (entry-point side branch)
+    wf.tool(
+        "check_latex_deps",
+        tool_id="check_latex_deps",
+        input_ports=[],
+        output_ports=[
+            {"name": "deps_ok"},
+            {"name": "missing_commands"},
+            {"name": "missing_templates"},
+            {"name": "dependency_message"},
+        ],
+    )
+
+    # 1) Idea generation
     idea = wf.llm(
         "idea_gen",
         prompt=(
-            "You are a research AI. Generate a compelling research idea about: {topic}\n\n"
-            "Output a 2-3 paragraph description of the research idea, "
-            "including its novelty and potential impact."
+            "You are a research AI. Generate a compelling, feasible research idea about: {topic}\n\n"
+            "Focus on novelty, managerial relevance, and testable contribution."
         ),
+        input_ports=[{"name": "topic"}],
     )
 
-    # 2. Literature survey (f-string magic creates edge idea_gen:text -> lit_survey)
-    lit = wf.llm(
-        "lit_survey",
-        prompt=(
-            f"You are a literature review specialist.\n\n"
-            f"Survey relevant literature for the following research idea:\n\n{idea}\n\n"
-            f"Identify 5-7 relevant papers/topics and explain how they relate. "
-            f"Include key findings and gaps the research idea could address."
-        ),
+    # 2) Grounded literature survey pipeline
+    aspect_planner = wf.llm(
+        "aspect_planner",
+        prompt=ASPECT_PLANNER_PROMPT,
+        output_schema=ASPECT_PLAN_SCHEMA,
+        input_ports=[{"name": "idea"}],
     )
+    wf.edge(idea["text"], aspect_planner["idea"])
 
-    # 3. Outline planner (structured output -> title, abstract, sections)
+    build_aspect_tasks = wf.code(
+        "build_aspect_tasks",
+        code=BUILD_ASPECT_TASKS_CODE,
+        input_ports=[{"name": "aspects"}, {"name": "idea"}],
+        output_ports=[{"name": "aspect_tasks"}],
+    )
+    wf.edge(aspect_planner["aspects"], build_aspect_tasks["aspects"])
+    wf.edge(idea["text"], build_aspect_tasks["idea"])
+
+    with wf.for_each(
+        "lit_search",
+        items=build_aspect_tasks["aspect_tasks"],
+        parallelism=4,
+        merge_strategy=MergeStrategy.APPEND,
+    ) as lit_body:
+        unpack_task = lit_body.code(
+            "unpack_aspect_task",
+            code=UNPACK_ASPECT_TASK_CODE,
+            input_ports=[{"name": "item"}],
+            output_ports=[{"name": "aspect"}, {"name": "query"}, {"name": "num_results"}],
+        )
+        search = lit_body.tool(
+            "search_papers",
+            tool_id="search_papers",
+            input_ports=[{"name": "query"}, {"name": "num_results"}, {"name": "aspect"}],
+            output_ports=[
+                {"name": "aspect"},
+                {"name": "query"},
+                {"name": "papers"},
+                {"name": "paper_count"},
+                {"name": "source"},
+                {"name": "error"},
+                {"name": "fallback_answer"},
+                {"name": "fallback_citations"},
+            ],
+        )
+        lit_body.edge(unpack_task["query"], search["query"])
+        lit_body.edge(unpack_task["num_results"], search["num_results"])
+        lit_body.edge(unpack_task["aspect"], search["aspect"])
+
+        survey = lit_body.llm(
+            "survey_aspect",
+            prompt=SURVEY_ASPECT_PROMPT,
+            output_schema=SURVEY_ASPECT_SCHEMA,
+            input_ports=[
+                {"name": "aspect"},
+                {"name": "query"},
+                {"name": "papers"},
+                {"name": "fallback_answer"},
+            ],
+        )
+        lit_body.edge(search["aspect"], survey["aspect"])
+        lit_body.edge(search["query"], survey["query"])
+        lit_body.edge(search["papers"], survey["papers"])
+        lit_body.edge(search["fallback_answer"], survey["fallback_answer"])
+
+    lit_ref = NodeRef("lit_search", "for_each", wf)
+    lit_synth = wf.llm(
+        "lit_synthesizer",
+        prompt=LIT_SYNTHESIZER_PROMPT,
+        output_schema=LIT_SYNTHESIS_SCHEMA,
+        input_ports=[{"name": "idea"}, {"name": "search_results"}],
+    )
+    wf.edge(idea["text"], lit_synth["idea"])
+    wf.edge(lit_ref["results"], lit_synth["search_results"])
+
+    verify = wf.tool(
+        "citation_verifier",
+        tool_id="citation_verifier",
+        input_ports=[{"name": "key_papers"}],
+        output_ports=[
+            {"name": "verified_papers"},
+            {"name": "invalid_citations"},
+            {"name": "verification_notes"},
+        ],
+    )
+    wf.edge(lit_synth["key_papers"], verify["key_papers"])
+
+    claim_gate = wf.llm(
+        "claim_evidence_gate",
+        prompt=CLAIM_GATE_PROMPT,
+        output_schema=CLAIM_GATE_SCHEMA,
+        input_ports=[
+            {"name": "literature_review"},
+            {"name": "verified_papers"},
+            {"name": "identified_gaps"},
+        ],
+    )
+    wf.edge(lit_synth["literature_review"], claim_gate["literature_review"])
+    wf.edge(verify["verified_papers"], claim_gate["verified_papers"])
+    wf.edge(lit_synth["identified_gaps"], claim_gate["identified_gaps"])
+
     outline = wf.llm(
         "outline_planner",
-        prompt=(
-            f"You are an expert academic paper planner.\n\n"
-            f"Research Idea:\n{idea}\n\n"
-            f"Literature Background:\n{lit}\n\n"
-            f"Create a detailed paper outline. Output valid JSON with keys:\n"
-            f'  {{"title": "paper title", "abstract": "150-word abstract", '
-            f'"sections": ["Introduction", "Related Work", ...]}}'
-        ),
+        prompt=OUTLINE_PROMPT,
         output_schema=OUTLINE_SCHEMA,
+        input_ports=[
+            {"name": "idea"},
+            {"name": "literature_review"},
+            {"name": "verified_papers"},
+            {"name": "gate_pass"},
+            {"name": "coverage_score"},
+            {"name": "unsupported_claims"},
+        ],
     )
+    wf.edge(idea["text"], outline["idea"])
+    wf.edge(lit_synth["literature_review"], outline["literature_review"])
+    wf.edge(verify["verified_papers"], outline["verified_papers"])
+    wf.edge(claim_gate["gate_pass"], outline["gate_pass"])
+    wf.edge(claim_gate["coverage_score"], outline["coverage_score"])
+    wf.edge(claim_gate["unsupported_claims"], outline["unsupported_claims"])
 
-    # 4. Parallel section writing (ForEach over outline.sections)
+    pack_outline = wf.code(
+        "pack_outline",
+        code=PACK_OUTLINE_CODE,
+        input_ports=[
+            {"name": "title"},
+            {"name": "abstract"},
+            {"name": "keywords"},
+            {"name": "journal"},
+            {"name": "paper_type"},
+            {"name": "sections"},
+        ],
+        output_ports=[{"name": "outline"}],
+    )
+    wf.edge(outline["title"], pack_outline["title"])
+    wf.edge(outline["abstract"], pack_outline["abstract"])
+    wf.edge(outline["keywords"], pack_outline["keywords"])
+    wf.edge(outline["journal"], pack_outline["journal"])
+    wf.edge(outline["paper_type"], pack_outline["paper_type"])
+    wf.edge(outline["sections"], pack_outline["sections"])
+
+    # 3) Human interview loop before drafting
+    init_interview = wf.code(
+        "init_interview_state",
+        code=INIT_INTERVIEW_STATE_CODE,
+        input_ports=[
+            {"name": "idea"},
+            {"name": "literature_review"},
+            {"name": "outline"},
+        ],
+        output_ports=[
+            {"name": "refined_idea"},
+            {"name": "refined_literature"},
+            {"name": "refined_outline"},
+            {"name": "conversation_history"},
+            {"name": "has_questions"},
+            {"name": "is_clarification"},
+            {"name": "substantive_rounds"},
+            {"name": "max_rounds"},
+        ],
+    )
+    wf.edge(idea["text"], init_interview["idea"])
+    wf.edge(lit_synth["literature_review"], init_interview["literature_review"])
+    wf.edge(pack_outline["outline"], init_interview["outline"])
+
+    with wf.while_loop(
+        "interview_loop",
+        condition="has_questions and substantive_rounds < max_rounds",
+        max_iterations=15,
+        compaction=CompactionRule(strategy=CompactionStrategy.SLIDING_WINDOW, window_size=3),
+        failure_policy=FailurePolicy(max_iterations=15, stagnation_threshold=3),
+        input_ports=[
+            {"name": "refined_idea"},
+            {"name": "refined_literature"},
+            {"name": "refined_outline"},
+            {"name": "conversation_history"},
+            {"name": "has_questions"},
+            {"name": "is_clarification"},
+            {"name": "substantive_rounds"},
+            {"name": "max_rounds"},
+        ],
+        output_ports=[
+            {"name": "refined_idea"},
+            {"name": "refined_literature"},
+            {"name": "refined_outline"},
+            {"name": "conversation_history"},
+            {"name": "has_questions"},
+            {"name": "is_clarification"},
+            {"name": "substantive_rounds"},
+            {"name": "max_rounds"},
+        ],
+    ) as interview_body:
+        interview_inputs = interview_body.code(
+            "interview_loop_inputs",
+            code=INTERVIEW_LOOP_INPUTS_CODE,
+            input_ports=[
+                {"name": "refined_idea"},
+                {"name": "refined_literature"},
+                {"name": "refined_outline"},
+                {"name": "conversation_history"},
+                {"name": "has_questions"},
+                {"name": "is_clarification"},
+                {"name": "substantive_rounds"},
+                {"name": "max_rounds"},
+            ],
+            output_ports=[
+                {"name": "refined_idea"},
+                {"name": "refined_literature"},
+                {"name": "refined_outline"},
+                {"name": "conversation_history"},
+                {"name": "has_questions"},
+                {"name": "is_clarification"},
+                {"name": "substantive_rounds"},
+                {"name": "max_rounds"},
+            ],
+        )
+
+        interviewer = interview_body.llm(
+            "interviewer",
+            prompt=INTERVIEWER_PROMPT,
+            output_schema=INTERVIEWER_SCHEMA,
+            input_ports=[
+                {"name": "refined_idea"},
+                {"name": "refined_literature"},
+                {"name": "refined_outline"},
+                {"name": "conversation_history"},
+                {"name": "substantive_rounds"},
+            ],
+        )
+        interview_body.edge(interview_inputs["refined_idea"], interviewer["refined_idea"])
+        interview_body.edge(interview_inputs["refined_literature"], interviewer["refined_literature"])
+        interview_body.edge(interview_inputs["refined_outline"], interviewer["refined_outline"])
+        interview_body.edge(interview_inputs["conversation_history"], interviewer["conversation_history"])
+        interview_body.edge(interview_inputs["substantive_rounds"], interviewer["substantive_rounds"])
+
+        prompt_builder = interview_body.code(
+            "build_interview_prompt",
+            code=BUILD_INTERVIEW_PROMPT_CODE,
+            input_ports=[{"name": "question"}],
+            output_ports=[{"name": "user_prompt"}],
+        )
+        interview_body.edge(interviewer["question"], prompt_builder["question"])
+
+        human = interview_body.human_in_the_loop(
+            "human_interview",
+            prompt="Please answer the interview question.",
+            default_action="No additional preferences beyond what is already specified.",
+            input_ports=[{"name": "user_prompt"}, {"name": "question"}],
+            output_ports=[{"name": "response"}, {"name": "question"}],
+        )
+        interview_body.edge(prompt_builder["user_prompt"], human["user_prompt"])
+        interview_body.edge(interviewer["question"], human["question"])
+
+        refiner = interview_body.llm(
+            "interview_refiner",
+            prompt=INTERVIEW_REFINER_PROMPT,
+            output_schema=INTERVIEW_REFINER_SCHEMA,
+            input_ports=[
+                {"name": "question"},
+                {"name": "response"},
+                {"name": "refined_idea"},
+                {"name": "refined_literature"},
+                {"name": "refined_outline"},
+            ],
+        )
+        interview_body.edge(human["question"], refiner["question"])
+        interview_body.edge(human["response"], refiner["response"])
+        interview_body.edge(interview_inputs["refined_idea"], refiner["refined_idea"])
+        interview_body.edge(interview_inputs["refined_literature"], refiner["refined_literature"])
+        interview_body.edge(interview_inputs["refined_outline"], refiner["refined_outline"])
+
+        update_state = interview_body.code(
+            "update_interview_state",
+            code=UPDATE_INTERVIEW_STATE_CODE,
+            input_ports=[
+                {"name": "question"},
+                {"name": "response"},
+                {"name": "conversation_history"},
+                {"name": "substantive_rounds"},
+                {"name": "max_rounds"},
+                {"name": "refined_idea"},
+                {"name": "refined_literature"},
+                {"name": "refined_outline"},
+                {"name": "round_summary"},
+                {"name": "has_questions"},
+                {"name": "is_clarification"},
+            ],
+            output_ports=[
+                {"name": "refined_idea"},
+                {"name": "refined_literature"},
+                {"name": "refined_outline"},
+                {"name": "conversation_history"},
+                {"name": "has_questions"},
+                {"name": "is_clarification"},
+                {"name": "substantive_rounds"},
+                {"name": "max_rounds"},
+            ],
+        )
+        interview_body.edge(human["question"], update_state["question"])
+        interview_body.edge(human["response"], update_state["response"])
+        interview_body.edge(refiner["refined_idea"], update_state["refined_idea"])
+        interview_body.edge(refiner["refined_literature"], update_state["refined_literature"])
+        interview_body.edge(refiner["refined_outline"], update_state["refined_outline"])
+        interview_body.edge(refiner["round_summary"], update_state["round_summary"])
+        interview_body.edge(refiner["has_questions"], update_state["has_questions"])
+        interview_body.edge(refiner["is_clarification"], update_state["is_clarification"])
+        interview_body.edge(interview_inputs["conversation_history"], update_state["conversation_history"])
+        interview_body.edge(interview_inputs["substantive_rounds"], update_state["substantive_rounds"])
+        interview_body.edge(interview_inputs["max_rounds"], update_state["max_rounds"])
+
+    interview_ref = NodeRef("interview_loop", "while_loop", wf)
+    for port in [
+        "refined_idea",
+        "refined_literature",
+        "refined_outline",
+        "conversation_history",
+        "has_questions",
+        "is_clarification",
+        "substantive_rounds",
+        "max_rounds",
+    ]:
+        wf.edge(init_interview[port], interview_ref[port])
+
+    # 4) Evidence-aware section drafting
+    results_builder = wf.code(
+        "results_builder",
+        code=BUILD_RESULTS_ARTIFACTS_CODE,
+        input_ports=[{"name": "refined_outline"}],
+        output_ports=[{"name": "results_artifacts"}],
+    )
+    wf.edge(interview_ref["refined_outline"], results_builder["refined_outline"])
+
+    build_section_tasks = wf.code(
+        "build_section_tasks",
+        code=BUILD_SECTION_TASKS_CODE,
+        input_ports=[
+            {"name": "refined_outline"},
+            {"name": "refined_idea"},
+            {"name": "refined_literature"},
+            {"name": "results_artifacts"},
+        ],
+        output_ports=[{"name": "section_tasks"}],
+    )
+    wf.edge(interview_ref["refined_outline"], build_section_tasks["refined_outline"])
+    wf.edge(interview_ref["refined_idea"], build_section_tasks["refined_idea"])
+    wf.edge(interview_ref["refined_literature"], build_section_tasks["refined_literature"])
+    wf.edge(results_builder["results_artifacts"], build_section_tasks["results_artifacts"])
+
     with wf.for_each(
         "section_writers",
-        items=outline["sections"],
+        items=build_section_tasks["section_tasks"],
         parallelism=3,
         merge_strategy=MergeStrategy.APPEND,
     ) as section_body:
-        section_body.llm(
-            "write_section",
-            prompt=(
-                "Write a detailed section for an academic paper.\n\n"
-                "Section title: {item}\n\n"
-                "Write 3-5 paragraphs of substantive content. "
-                "Use formal academic tone with clear topic sentences."
-            ),
-            input_ports=[{"name": "item"}, {"name": "index"}],
+        unpack_section = section_body.code(
+            "unpack_section_task",
+            code=UNPACK_SECTION_TASK_CODE,
+            input_ports=[{"name": "item"}],
+            output_ports=[
+                {"name": "section_id"},
+                {"name": "section_title"},
+                {"name": "purpose"},
+                {"name": "key_points"},
+                {"name": "idea"},
+                {"name": "literature"},
+                {"name": "artifact_notes"},
+            ],
         )
+        write_section = section_body.llm(
+            "write_section",
+            prompt=WRITE_SECTION_PROMPT,
+            output_schema=SECTION_DRAFT_SCHEMA,
+            input_ports=[
+                {"name": "section_id"},
+                {"name": "section_title"},
+                {"name": "purpose"},
+                {"name": "key_points"},
+                {"name": "idea"},
+                {"name": "literature"},
+                {"name": "artifact_notes"},
+            ],
+        )
+        for p in [
+            "section_id",
+            "section_title",
+            "purpose",
+            "key_points",
+            "idea",
+            "literature",
+            "artifact_notes",
+        ]:
+            section_body.edge(unpack_section[p], write_section[p])
 
-    # 5. Assembly (Code node combines sections + outline metadata into draft)
-    assembler = wf.code(
-        "assembler",
-        code=ASSEMBLE_CODE,
+    section_ref = NodeRef("section_writers", "for_each", wf)
+
+    build_sections_map = wf.code(
+        "build_sections_map",
+        code=BUILD_SECTIONS_MAP_CODE,
+        input_ports=[{"name": "results"}],
+        output_ports=[{"name": "sections_map"}],
+    )
+    wf.edge(section_ref["results"], build_sections_map["results"])
+
+    bib = wf.llm(
+        "bibtex_builder",
+        prompt=BIBTEX_PROMPT,
+        output_schema=BIBTEX_SCHEMA,
+        input_ports=[{"name": "sections_map"}, {"name": "verified_papers"}],
+    )
+    wf.edge(build_sections_map["sections_map"], bib["sections_map"])
+    wf.edge(verify["verified_papers"], bib["verified_papers"])
+
+    assemble = wf.code(
+        "assemble_latex",
+        code=ASSEMBLE_LATEX_CODE,
         input_ports=[
-            {"name": "results"},
             {"name": "title"},
-            {"name": "abstract"},
+            {"name": "outline"},
+            {"name": "sections_map"},
+            {"name": "bibtex"},
+            {"name": "evidence_gate_pass"},
+            {"name": "verified_papers"},
         ],
         output_ports=[
-            {"name": "draft"},
+            {"name": "draft_tex"},
+            {"name": "title"},
+            {"name": "sections_map"},
+            {"name": "outline"},
+            {"name": "bibtex"},
             {"name": "verdict"},
             {"name": "feedback"},
+            {"name": "evidence_gate_pass"},
+            {"name": "verified_papers"},
         ],
     )
+    wf.edge(build_sections_map["sections_map"], assemble["sections_map"])
+    wf.edge(interview_ref["refined_outline"], assemble["outline"])
+    wf.edge(bib["bibtex"], assemble["bibtex"])
+    wf.edge(claim_gate["gate_pass"], assemble["evidence_gate_pass"])
+    wf.edge(verify["verified_papers"], assemble["verified_papers"])
+    wf.edge(outline["title"], assemble["title"])
 
-    section_writers_ref = NodeRef("section_writers", "for_each", wf)
-    wf.edge(section_writers_ref["results"], assembler["results"])
-    wf.edge(outline["title"], assembler["title"])
-    wf.edge(outline["abstract"], assembler["abstract"])
+    compile_initial = wf.tool(
+        "compile_initial_latex",
+        tool_id="compile_latex",
+        input_ports=[{"name": "content"}, {"name": "title"}, {"name": "bibtex"}],
+        output_ports=[
+            {"name": "compile_success"},
+            {"name": "pdf_path"},
+            {"name": "compile_log"},
+            {"name": "tex_path"},
+            {"name": "bib_path"},
+        ],
+    )
+    wf.edge(assemble["draft_tex"], compile_initial["content"])
+    wf.edge(assemble["title"], compile_initial["title"])
+    wf.edge(assemble["bibtex"], compile_initial["bibtex"])
 
-    # 6. Review-revise loop (WhileLoop with structured LLM output)
+    # 5) Multi-role review and revise loop
     with wf.while_loop(
         "review_loop",
-        condition="verdict != 'accept'",
+        condition="verdict != 'accept' and evidence_gate_pass",
         max_iterations=max_review_iterations,
-        compaction=CompactionRule(
-            strategy=CompactionStrategy.SLIDING_WINDOW, window_size=2
-        ),
-        failure_policy=FailurePolicy(
-            max_iterations=max_review_iterations, stagnation_threshold=2
-        ),
+        compaction=CompactionRule(strategy=CompactionStrategy.SLIDING_WINDOW, window_size=2),
+        failure_policy=FailurePolicy(max_iterations=max_review_iterations, stagnation_threshold=2),
         input_ports=[
-            {"name": "draft"},
+            {"name": "draft_tex"},
+            {"name": "title"},
+            {"name": "sections_map"},
+            {"name": "outline"},
+            {"name": "bibtex"},
             {"name": "verdict"},
             {"name": "feedback"},
+            {"name": "evidence_gate_pass"},
+            {"name": "verified_papers"},
+            {"name": "compile_success"},
+            {"name": "compile_log"},
+            {"name": "pdf_path"},
         ],
         output_ports=[
-            {"name": "draft"},
+            {"name": "draft_tex"},
+            {"name": "title"},
+            {"name": "sections_map"},
+            {"name": "outline"},
+            {"name": "bibtex"},
             {"name": "verdict"},
             {"name": "feedback"},
+            {"name": "evidence_gate_pass"},
+            {"name": "verified_papers"},
+            {"name": "compile_success"},
+            {"name": "compile_log"},
+            {"name": "pdf_path"},
         ],
-    ) as loop_body:
-        loop_body.llm(
-            "review_and_revise",
-            prompt=REVIEW_PROMPT,
-            output_schema=REVIEW_SCHEMA,
-            input_ports=[{"name": "draft"}, {"name": "feedback"}],
+    ) as review_body:
+        review_inputs = review_body.code(
+            "review_loop_inputs",
+            code=REVIEW_LOOP_INPUTS_CODE,
+            input_ports=[
+                {"name": "draft_tex"},
+                {"name": "title"},
+                {"name": "sections_map"},
+                {"name": "outline"},
+                {"name": "bibtex"},
+                {"name": "verdict"},
+                {"name": "feedback"},
+                {"name": "evidence_gate_pass"},
+                {"name": "verified_papers"},
+                {"name": "compile_success"},
+                {"name": "compile_log"},
+                {"name": "pdf_path"},
+            ],
+            output_ports=[
+                {"name": "draft_tex"},
+                {"name": "title"},
+                {"name": "sections_map"},
+                {"name": "outline"},
+                {"name": "bibtex"},
+                {"name": "verdict"},
+                {"name": "feedback"},
+                {"name": "evidence_gate_pass"},
+                {"name": "verified_papers"},
+                {"name": "compile_success"},
+                {"name": "compile_log"},
+                {"name": "pdf_path"},
+            ],
         )
 
+        method_reviewer = review_body.llm(
+            "method_reviewer",
+            prompt=REVIEWER_PROMPT_TEMPLATE.replace("{role_name}", "methodology"),
+            output_schema=REVIEWER_SCHEMA,
+            input_ports=[{"name": "draft_tex"}, {"name": "outline"}, {"name": "feedback"}],
+        )
+        review_body.edge(review_inputs["draft_tex"], method_reviewer["draft_tex"])
+        review_body.edge(review_inputs["outline"], method_reviewer["outline"])
+        review_body.edge(review_inputs["feedback"], method_reviewer["feedback"])
+        writing_reviewer = review_body.llm(
+            "writing_reviewer",
+            prompt=REVIEWER_PROMPT_TEMPLATE.replace(
+                "{role_name}",
+                "writing and argument quality",
+            ),
+            output_schema=REVIEWER_SCHEMA,
+            input_ports=[{"name": "draft_tex"}, {"name": "outline"}, {"name": "feedback"}],
+        )
+        review_body.edge(review_inputs["draft_tex"], writing_reviewer["draft_tex"])
+        review_body.edge(review_inputs["outline"], writing_reviewer["outline"])
+        review_body.edge(review_inputs["feedback"], writing_reviewer["feedback"])
+        venue_reviewer = review_body.llm(
+            "venue_reviewer",
+            prompt=REVIEWER_PROMPT_TEMPLATE.replace(
+                "{role_name}",
+                "venue fit and contribution positioning",
+            ),
+            output_schema=REVIEWER_SCHEMA,
+            input_ports=[{"name": "draft_tex"}, {"name": "outline"}, {"name": "feedback"}],
+        )
+        review_body.edge(review_inputs["draft_tex"], venue_reviewer["draft_tex"])
+        review_body.edge(review_inputs["outline"], venue_reviewer["outline"])
+        review_body.edge(review_inputs["feedback"], venue_reviewer["feedback"])
+
+        merger = review_body.llm(
+            "review_merger",
+            prompt=REVIEW_MERGER_PROMPT,
+            output_schema=REVIEW_MERGER_SCHEMA,
+            input_ports=[
+                {"name": "method_feedback"},
+                {"name": "method_recommendation"},
+                {"name": "method_section_feedback"},
+                {"name": "writing_feedback"},
+                {"name": "writing_recommendation"},
+                {"name": "writing_section_feedback"},
+                {"name": "venue_feedback"},
+                {"name": "venue_recommendation"},
+                {"name": "venue_section_feedback"},
+                {"name": "outline"},
+            ],
+        )
+        review_body.edge(method_reviewer["feedback"], merger["method_feedback"])
+        review_body.edge(method_reviewer["recommendation"], merger["method_recommendation"])
+        review_body.edge(method_reviewer["section_feedback"], merger["method_section_feedback"])
+        review_body.edge(writing_reviewer["feedback"], merger["writing_feedback"])
+        review_body.edge(writing_reviewer["recommendation"], merger["writing_recommendation"])
+        review_body.edge(writing_reviewer["section_feedback"], merger["writing_section_feedback"])
+        review_body.edge(venue_reviewer["feedback"], merger["venue_feedback"])
+        review_body.edge(venue_reviewer["recommendation"], merger["venue_recommendation"])
+        review_body.edge(venue_reviewer["section_feedback"], merger["venue_section_feedback"])
+        review_body.edge(review_inputs["outline"], merger["outline"])
+
+        build_revision_tasks = review_body.code(
+            "build_revision_tasks",
+            code=BUILD_REVISION_TASKS_CODE,
+            input_ports=[
+                {"name": "verdict"},
+                {"name": "section_feedback"},
+                {"name": "sections_map"},
+                {"name": "outline"},
+                {"name": "revised_outline"},
+            ],
+            output_ports=[
+                {"name": "revision_tasks"},
+                {"name": "working_outline"},
+                {"name": "base_sections_map"},
+            ],
+        )
+        review_body.edge(merger["verdict"], build_revision_tasks["verdict"])
+        review_body.edge(merger["section_feedback"], build_revision_tasks["section_feedback"])
+        review_body.edge(merger["revised_outline"], build_revision_tasks["revised_outline"])
+        review_body.edge(review_inputs["sections_map"], build_revision_tasks["sections_map"])
+        review_body.edge(review_inputs["outline"], build_revision_tasks["outline"])
+
+        with review_body.for_each(
+            "section_revisers",
+            items=build_revision_tasks["revision_tasks"],
+            parallelism=3,
+            merge_strategy=MergeStrategy.APPEND,
+        ) as revise_body:
+            unpack_revision = revise_body.code(
+                "unpack_revision_task",
+                code=UNPACK_REVISION_TASK_CODE,
+                input_ports=[{"name": "item"}],
+                output_ports=[
+                    {"name": "section_id"},
+                    {"name": "section_title"},
+                    {"name": "current_content"},
+                    {"name": "feedback"},
+                    {"name": "action"},
+                ],
+            )
+            revise_section = revise_body.llm(
+                "revise_section",
+                prompt=REVISE_SECTION_PROMPT,
+                output_schema=REVISED_SECTION_SCHEMA,
+                input_ports=[
+                    {"name": "section_id"},
+                    {"name": "section_title"},
+                    {"name": "current_content"},
+                    {"name": "feedback"},
+                    {"name": "action"},
+                ],
+            )
+            for p in ["section_id", "section_title", "current_content", "feedback", "action"]:
+                revise_body.edge(unpack_revision[p], revise_section[p])
+
+        reviser_ref = NodeRef("section_revisers", "for_each", review_body)
+        apply_revisions = review_body.code(
+            "apply_revisions",
+            code=APPLY_REVISIONS_CODE,
+            input_ports=[
+                {"name": "base_sections_map"},
+                {"name": "revision_results"},
+                {"name": "working_outline"},
+            ],
+            output_ports=[{"name": "sections_map"}, {"name": "outline"}],
+        )
+        review_body.edge(build_revision_tasks["base_sections_map"], apply_revisions["base_sections_map"])
+        review_body.edge(reviser_ref["results"], apply_revisions["revision_results"])
+        review_body.edge(build_revision_tasks["working_outline"], apply_revisions["working_outline"])
+
+        reassemble = review_body.code(
+            "reassemble_latex",
+            code=ASSEMBLE_LATEX_CODE,
+            input_ports=[
+                {"name": "title"},
+                {"name": "outline"},
+                {"name": "sections_map"},
+                {"name": "bibtex"},
+                {"name": "evidence_gate_pass"},
+                {"name": "verified_papers"},
+            ],
+            output_ports=[
+                {"name": "draft_tex"},
+                {"name": "title"},
+                {"name": "sections_map"},
+                {"name": "outline"},
+                {"name": "bibtex"},
+                {"name": "verdict"},
+                {"name": "feedback"},
+                {"name": "evidence_gate_pass"},
+                {"name": "verified_papers"},
+            ],
+        )
+        review_body.edge(apply_revisions["sections_map"], reassemble["sections_map"])
+        review_body.edge(apply_revisions["outline"], reassemble["outline"])
+        review_body.edge(review_inputs["title"], reassemble["title"])
+        review_body.edge(review_inputs["bibtex"], reassemble["bibtex"])
+        review_body.edge(review_inputs["evidence_gate_pass"], reassemble["evidence_gate_pass"])
+        review_body.edge(review_inputs["verified_papers"], reassemble["verified_papers"])
+
+        recompile = review_body.tool(
+            "recompile_latex",
+            tool_id="compile_latex",
+            input_ports=[{"name": "content"}, {"name": "title"}, {"name": "bibtex"}],
+            output_ports=[
+                {"name": "compile_success"},
+                {"name": "pdf_path"},
+                {"name": "compile_log"},
+                {"name": "tex_path"},
+                {"name": "bib_path"},
+            ],
+        )
+        review_body.edge(reassemble["draft_tex"], recompile["content"])
+        review_body.edge(reassemble["title"], recompile["title"])
+        review_body.edge(reassemble["bibtex"], recompile["bibtex"])
+
+        review_gate = review_body.llm(
+            "review_claim_gate",
+            prompt=CLAIM_GATE_PROMPT,
+            output_schema=CLAIM_GATE_SCHEMA,
+            input_ports=[
+                {"name": "literature_review"},
+                {"name": "verified_papers"},
+                {"name": "identified_gaps"},
+            ],
+        )
+        review_body.edge(reassemble["draft_tex"], review_gate["literature_review"])
+        review_body.edge(reassemble["verified_papers"], review_gate["verified_papers"])
+        review_body.edge(merger["overall_feedback"], review_gate["identified_gaps"])
+
+        update_review = review_body.code(
+            "update_review_state",
+            code=REVIEW_STATE_UPDATE_CODE,
+            input_ports=[
+                {"name": "draft_tex"},
+                {"name": "title"},
+                {"name": "sections_map"},
+                {"name": "outline"},
+                {"name": "bibtex"},
+                {"name": "verified_papers"},
+                {"name": "verdict"},
+                {"name": "overall_feedback"},
+                {"name": "gate_pass"},
+                {"name": "coverage_score"},
+                {"name": "unsupported_claims"},
+                {"name": "compile_success"},
+                {"name": "compile_log"},
+                {"name": "pdf_path"},
+            ],
+            output_ports=[
+                {"name": "draft_tex"},
+                {"name": "title"},
+                {"name": "sections_map"},
+                {"name": "outline"},
+                {"name": "bibtex"},
+                {"name": "verdict"},
+                {"name": "feedback"},
+                {"name": "evidence_gate_pass"},
+                {"name": "verified_papers"},
+                {"name": "compile_success"},
+                {"name": "compile_log"},
+                {"name": "pdf_path"},
+            ],
+        )
+        review_body.edge(reassemble["draft_tex"], update_review["draft_tex"])
+        review_body.edge(reassemble["title"], update_review["title"])
+        review_body.edge(reassemble["sections_map"], update_review["sections_map"])
+        review_body.edge(reassemble["outline"], update_review["outline"])
+        review_body.edge(reassemble["bibtex"], update_review["bibtex"])
+        review_body.edge(reassemble["verified_papers"], update_review["verified_papers"])
+        review_body.edge(merger["verdict"], update_review["verdict"])
+        review_body.edge(merger["overall_feedback"], update_review["overall_feedback"])
+        review_body.edge(review_gate["gate_pass"], update_review["gate_pass"])
+        review_body.edge(review_gate["coverage_score"], update_review["coverage_score"])
+        review_body.edge(review_gate["unsupported_claims"], update_review["unsupported_claims"])
+        review_body.edge(recompile["compile_success"], update_review["compile_success"])
+        review_body.edge(recompile["compile_log"], update_review["compile_log"])
+        review_body.edge(recompile["pdf_path"], update_review["pdf_path"])
+
     review_ref = NodeRef("review_loop", "while_loop", wf)
-    wf.edge(assembler["draft"], review_ref["draft"])
-    wf.edge(assembler["verdict"], review_ref["verdict"])
-    wf.edge(assembler["feedback"], review_ref["feedback"])
+    for port in [
+        "draft_tex",
+        "title",
+        "sections_map",
+        "outline",
+        "bibtex",
+        "verdict",
+        "feedback",
+        "evidence_gate_pass",
+        "verified_papers",
+    ]:
+        wf.edge(assemble[port], review_ref[port])
+    for port in ["compile_success", "compile_log", "pdf_path"]:
+        wf.edge(compile_initial[port], review_ref[port])
 
-    # 7. Format output (Code node)
-    format_node = wf.code(
-        "format_output",
-        code=FORMAT_CODE,
-        input_ports=[{"name": "draft"}, {"name": "title"}],
-        output_ports=[{"name": "content"}, {"name": "title"}],
-    )
-
-    wf.edge(review_ref["draft"], format_node["draft"])
-    wf.edge(outline["title"], format_node["title"])
-
-    # 8. Save paper (Tool node)
+    # 6) Persist and package outputs
     save = wf.tool(
         "save_paper",
         tool_id="save_paper",
-        input_ports=[{"name": "content"}, {"name": "title"}],
-        output_ports=[{"name": "saved_path"}, {"name": "title"}],
+        input_ports=[
+            {"name": "content"},
+            {"name": "title"},
+            {"name": "bibtex"},
+            {"name": "pdf_path"},
+            {"name": "compile_log"},
+            {"name": "verdict"},
+        ],
+        output_ports=[
+            {"name": "saved_path"},
+            {"name": "title"},
+            {"name": "tex_path"},
+            {"name": "bib_path"},
+            {"name": "pdf_path"},
+            {"name": "compile_log_path"},
+            {"name": "summary_path"},
+            {"name": "verdict"},
+        ],
     )
+    wf.edge(review_ref["draft_tex"], save["content"])
+    wf.edge(review_ref["title"], save["title"])
+    wf.edge(review_ref["bibtex"], save["bibtex"])
+    wf.edge(review_ref["pdf_path"], save["pdf_path"])
+    wf.edge(review_ref["compile_log"], save["compile_log"])
+    wf.edge(review_ref["verdict"], save["verdict"])
 
-    wf.edge(format_node["content"], save["content"])
-    wf.edge(format_node["title"], save["title"])
+    pack = wf.tool(
+        "package_submission",
+        tool_id="package_submission",
+        input_ports=[
+            {"name": "title"},
+            {"name": "tex_path"},
+            {"name": "bib_path"},
+            {"name": "pdf_path"},
+            {"name": "compile_log_path"},
+            {"name": "summary_path"},
+        ],
+        output_ports=[{"name": "bundle_path"}, {"name": "saved_path"}, {"name": "title"}],
+    )
+    for p in ["title", "tex_path", "bib_path", "pdf_path", "compile_log_path", "summary_path"]:
+        wf.edge(save[p], pack[p])
 
-    graph = wf.build()
-    return graph
+    return wf.build()
 
 
-# ── Engine setup ──────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Engine setup
+# ---------------------------------------------------------------------------
 
 
 def create_engine(
-    *, checkpoint_enabled: bool = False, event_callback: Any = None
+    *,
+    checkpoint_enabled: bool = False,
+    event_callback: Any = None,
+    human_input_callback: Any = None,
 ) -> Engine:
     """Create an Engine with custom ToolRegistry wiring."""
     config = EngineConfig(
@@ -280,7 +2311,13 @@ def create_engine(
     )
 
     tool_registry = ToolRegistry()
+    tool_registry.register("check_latex_deps", check_latex_deps)
+    tool_registry.register("search_papers", search_papers)
+    tool_registry.register("search_web", search_web)
+    tool_registry.register("citation_verifier", citation_verifier)
+    tool_registry.register("compile_latex", compile_latex)
     tool_registry.register("save_paper", save_paper)
+    tool_registry.register("package_submission", package_submission)
 
     exec_registry = ExecutorRegistry()
     exec_registry.register("tool_operator", ToolExecutor(tool_registry))
@@ -291,21 +2328,30 @@ def create_engine(
         config=config,
         executor_registry=exec_registry,
         checkpoint_store=checkpoint_store,
+        human_input_callback=human_input_callback,
         event_callback=event_callback,
     )
 
 
-# ── Event logger ──────────────────────────────────────────────────────
+async def cli_human_input(prompt: str) -> str:
+    """Interactive callback used by HumanInTheLoop nodes in CLI runs."""
+    print("\n" + "=" * 72)
+    print(prompt)
+    print("=" * 72)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, input, "Your response: ")
+
+
+# ---------------------------------------------------------------------------
+# Event logger
+# ---------------------------------------------------------------------------
 
 
 async def log_event(event: EngineEvent) -> None:
-    """Print engine events for progress tracking."""
+    """Print concise engine progress events."""
     node_label = f" [{event.node_id}]" if event.node_id else ""
     if event.event_type == EventType.RUN_STARTED:
-        n = event.data.get("node_count", "?")
-        print(f"\n{'='*60}")
-        print(f"  Run started — {n} nodes")
-        print(f"{'='*60}")
+        print(f"\n{'='*60}\n  Run started — {event.data.get('node_count', '?')} nodes\n{'='*60}")
     elif event.event_type == EventType.NODE_STARTED:
         print(f"  -> Starting{node_label} ({event.node_type})")
     elif event.event_type == EventType.NODE_COMPLETED:
@@ -317,40 +2363,42 @@ async def log_event(event: EngineEvent) -> None:
             extra = f" (attempt {meta['attempts']})"
         print(f"  <- Completed{node_label}{extra}")
     elif event.event_type == EventType.NODE_FAILED:
-        err = event.data.get("error", "")
+        err = str(event.data.get("error", ""))
         print(f"  !! FAILED{node_label}: {err[:120]}")
     elif event.event_type == EventType.RUN_COMPLETED:
-        print(f"\n{'='*60}")
-        print(f"  Run completed successfully")
-        print(f"{'='*60}")
+        print(f"\n{'='*60}\n  Run completed successfully\n{'='*60}")
     elif event.event_type == EventType.RUN_FAILED:
-        print(f"\n{'='*60}")
-        print(f"  Run FAILED: {event.data.get('errors', {})}")
-        print(f"{'='*60}")
+        print(f"\n{'='*60}\n  Run FAILED: {event.data.get('errors', {})}\n{'='*60}")
 
 
-# ── Main ──────────────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 
-async def main(topic: str, max_review: int = 3) -> None:
+async def main(topic: str, max_review: int = 3, no_human: bool = False) -> None:
     graph = build_paper_workflow(max_review_iterations=max_review)
 
-    # Save graph JSON for visual editor
     graphs_dir = Path("graphs")
     graphs_dir.mkdir(exist_ok=True)
     graph_path = graphs_dir / "paper_writing.json"
     graph_path.write_text(graph.model_dump_json(indent=2), encoding="utf-8")
     print(f"Graph saved to {graph_path}")
 
-    engine = create_engine(event_callback=log_event)
+    engine = create_engine(
+        event_callback=log_event,
+        human_input_callback=None if no_human else cli_human_input,
+    )
     result = await engine.run(graph, inputs={"topic": topic})
 
     if result.success:
-        saved = result.outputs.get("saved_path", "")
-        print(f"\nPaper saved to: {saved}")
+        print("\nRun outputs:")
+        for key in ("saved_path", "bundle_path", "title"):
+            if key in result.outputs:
+                print(f"  - {key}: {result.outputs[key]}")
         print(f"Node statuses: {result.node_statuses}")
     else:
-        print(f"\nWorkflow failed!")
+        print("\nWorkflow failed!")
         print(f"Errors: {json.dumps(result.errors, indent=2)}")
         print(f"Node statuses: {result.node_statuses}")
         sys.exit(1)
@@ -359,9 +2407,10 @@ async def main(topic: str, max_review: int = 3) -> None:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Paper-writing workflow demo")
+    parser = argparse.ArgumentParser(description="Grounded paper-writing workflow demo")
     parser.add_argument("topic", nargs="?", default="supply chain resilience under climate change")
     parser.add_argument("--max-review", type=int, default=3)
+    parser.add_argument("--no-human", action="store_true", help="Skip interactive human callback")
     parser.add_argument("--verbose", "-v", action="store_true")
     args = parser.parse_args()
 
@@ -370,4 +2419,4 @@ if __name__ == "__main__":
     else:
         logging.basicConfig(level=logging.INFO, format="%(message)s")
 
-    asyncio.run(main(args.topic, args.max_review))
+    asyncio.run(main(args.topic, args.max_review, args.no_human))
