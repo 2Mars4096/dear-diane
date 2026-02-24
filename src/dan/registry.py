@@ -1,8 +1,10 @@
 """Node type registry — maps ``node_type`` strings to Pydantic model classes.
 
-The built-in types are registered automatically on import.  External
-code can call ``NodeTypeRegistry.register()`` to add custom node types
-that participate in JSON round-trip deserialization.
+The built-in types are registered automatically on import.  The registry
+is for **programmatic discovery** (e.g. listing available node types in
+a UI palette) and for user code that needs to resolve a type string to
+its class.  JSON round-trip deserialization of built-in types is handled
+by the Pydantic discriminated union in ``dan.models.graph.Node``.
 """
 
 from __future__ import annotations
@@ -29,9 +31,14 @@ from dan.models.control_flow import (
 class NodeTypeRegistry:
     """Singleton registry of known node types.
 
-    Pydantic's discriminated union already handles deserialization of
-    the built-in types.  This registry is for **programmatic discovery**
-    and for extending the type system with user-defined node types.
+    Pydantic's discriminated union in ``Graph`` handles deserialization
+    of the built-in types.  This registry is for **programmatic
+    discovery** — e.g. populating a UI palette with available node types,
+    or resolving a type string to a class at runtime.
+
+    User-defined node types can be registered here for discovery, but
+    they will not participate in ``Graph.model_validate()`` unless the
+    ``Node`` union in ``graph.py`` is also extended.
     """
 
     _registry: dict[str, Type[NodeBase]] = {}

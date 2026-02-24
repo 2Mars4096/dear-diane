@@ -122,6 +122,10 @@ class ForEachNode(NodeBase):
     # Composite-node contract
     external_input_schema: dict[str, Any] | None = None
     external_output_schema: dict[str, Any] | None = None
+    control_state_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON Schema for branch count, completion tracking",
+    )
     local_state: NodeLocalState = Field(default_factory=NodeLocalState)
     read_set: list[ContextDeclaration] = Field(default_factory=list)
     write_set: list[ContextDeclaration] = Field(default_factory=list)
@@ -152,6 +156,10 @@ class CompositeNode(NodeBase):
     # Composite-node contract
     external_input_schema: dict[str, Any] | None = None
     external_output_schema: dict[str, Any] | None = None
+    control_state_schema: dict[str, Any] = Field(
+        default_factory=dict,
+        description="JSON Schema for internal control state",
+    )
     local_state: NodeLocalState = Field(default_factory=NodeLocalState)
     read_set: list[ContextDeclaration] = Field(default_factory=list)
     write_set: list[ContextDeclaration] = Field(default_factory=list)
