@@ -108,6 +108,7 @@ export interface CompositeNode extends NodeBase {
   body_graph: string;
   input_mappings: Record<string, string>;
   output_mappings: Record<string, string>;
+  is_blackbox?: boolean;
   external_input_schema?: Record<string, unknown> | null;
   external_output_schema?: Record<string, unknown> | null;
 }
@@ -198,3 +199,61 @@ export const NODE_TYPE_CATALOG = [
 ] as const;
 
 export type NodeTypeString = (typeof NODE_TYPE_CATALOG)[number]["type"];
+
+// -- 5-4: Build palette — node descriptions for hover previews ----------------
+
+export const NODE_DESCRIPTIONS: Record<
+  string,
+  { description: string; inputs: string[]; outputs: string[] }
+> = {
+  llm_operator: {
+    description: "Call an LLM with a prompt template",
+    inputs: ["input"],
+    outputs: ["output"],
+  },
+  tool_operator: {
+    description: "Execute a registered tool function",
+    inputs: ["input"],
+    outputs: ["result"],
+  },
+  code_operator: {
+    description: "Run sandboxed Python code",
+    inputs: ["input"],
+    outputs: ["result"],
+  },
+  if_else: {
+    description: "Route data based on a condition",
+    inputs: ["input"],
+    outputs: ["true", "false"],
+  },
+  while_loop: {
+    description: "Repeat a sub-graph until condition is met",
+    inputs: ["input"],
+    outputs: ["output"],
+  },
+  for_each: {
+    description: "Fan out a sub-graph over list items",
+    inputs: ["items"],
+    outputs: ["results"],
+  },
+  reduce: {
+    description: "Aggregate outputs from parallel branches",
+    inputs: ["input"],
+    outputs: ["result"],
+  },
+  router: {
+    description: "LLM-powered dynamic routing",
+    inputs: ["input"],
+    outputs: ["route", "output"],
+  },
+  human_in_the_loop: {
+    description: "Pause for human input",
+    inputs: ["input"],
+    outputs: ["response"],
+  },
+  composite: {
+    description: "Reusable sub-graph block",
+    inputs: ["input"],
+    outputs: ["output"],
+  },
+};

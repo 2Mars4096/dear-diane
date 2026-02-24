@@ -27,7 +27,7 @@ export function danNodeToReactFlow(node: DanNode): Node {
   };
 }
 
-const EDGE_COLORS: Record<string, string> = {
+export const EDGE_COLORS: Record<string, string> = {
   data: "#6366f1",
   control: "#f59e0b",
   context: "#10b981",
@@ -42,7 +42,12 @@ export function danEdgeToReactFlow(edge: DanEdge): Edge {
     targetHandle: portHandleId(edge.target_port),
     type: "smoothstep",
     animated: edge.edge_type === "context",
-    label: edge.edge_type !== "data" ? edge.edge_type : undefined,
+    label:
+      edge.edge_type !== "data"
+        ? edge.edge_type
+        : edge.source_port
+          ? `${edge.source_port} → ${edge.target_port}`
+          : undefined,
     style: { stroke: EDGE_COLORS[edge.edge_type] ?? "#94a3b8" },
     markerEnd: { type: MarkerType.ArrowClosed },
     data: { danEdge: edge },
@@ -138,6 +143,6 @@ export function createDefaultNode(
     case "human_in_the_loop":
       return { ...base, node_type: "human_in_the_loop", prompt: "", timeout_seconds: null, default_action: null };
     case "composite":
-      return { ...base, node_type: "composite", body_graph: "", input_mappings: {}, output_mappings: {} };
+      return { ...base, node_type: "composite", body_graph: "", input_mappings: {}, output_mappings: {}, is_blackbox: false };
   }
 }
