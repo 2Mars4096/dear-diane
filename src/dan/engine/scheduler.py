@@ -1,0 +1,492 @@
+"""Graph scheduler — topological sort, ready-queue dispatch, and the Engine API."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
+
+from dan.engine.checkpoint import CheckpointStore, FileSystemCheckpointStore
+from dan.engine.context_runtime import ArtifactStore, LocalStateManager, SharedContextStore
+from dan.engine.executor import EngineConfig, ExecutionContext, ExecutorRegistry, NodeResult
+from dan.engine.state import ExecutionState, NodeStatus
+from dan.models.edges import ControlEdge, ContextEdge, DataEdge
+from dan.models.graph import Graph
+
+logger = logging.getLogger(__name__)
+
+_VALIDATION_WARNING_PATTERNS = (
+    "schema safety bypassed",
+    "untyped data edge",
+)
+
+
+def _is_validation_warning(msg: str) -> bool:
+    """True if *msg* is a non-fatal validation warning, not a blocking error."""
+    lower = msg.lower()
+    return any(p in lower for p in _VALIDATION_WARNING_PATTERNS)
+
+
+@dataclass
+class RunResult:
+    """Final result of an Engine.run() or Engine.resume() call."""
+
+    run_id: str
+    outputs: dict[str, Any] = field(default_factory=dict)
+    success: bool = True
+    node_statuses: dict[str, str] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _topological_levels(graph: Graph) -> list[list[str]]:
+    """Group nodes into parallel execution levels via Kahn's algorithm.
+
+    Nodes in the same level have no data dependencies on each other and
+    can run concurrently.
+    """
+    in_degree: dict[str, int] = defaultdict(int)
+    dependents: dict[str, list[str]] = defaultdict(list)
+
+    node_ids = {n.id for n in graph.nodes}
+    for nid in node_ids:
+        in_degree.setdefault(nid, 0)
+
+    for edge in graph.edges:
+        if isinstance(edge, DataEdge) and edge.target_node_id in node_ids:
+            in_degree[edge.target_node_id] += 1
+            dependents[edge.source_node_id].append(edge.target_node_id)
+
+    levels: list[list[str]] = []
+    queue = [nid for nid in node_ids if in_degree[nid] == 0]
+
+    while queue:
+        levels.append(sorted(queue))
+        next_queue: list[str] = []
+        for nid in queue:
+            for dep in dependents[nid]:
+                in_degree[dep] -= 1
+                if in_degree[dep] == 0:
+                    next_queue.append(dep)
+        queue = next_queue
+
+    return levels
+
+
+class Engine:
+    """The core graph execution engine.
+
+    Usage::
+
+        engine = Engine(config)
+        result = await engine.run(graph, inputs={"idea": "..."})
+        result = await engine.resume(graph, run_id="abc123")
+    """
+
+    def __init__(
+        self,
+        config: EngineConfig | None = None,
+        executor_registry: ExecutorRegistry | None = None,
+        checkpoint_store: CheckpointStore | None = None,
+        human_input_callback: Callable[[str], Awaitable[dict[str, Any]]] | None = None,
+    ) -> None:
+        self.config = config or EngineConfig()
+        self.executor_registry = executor_registry or ExecutorRegistry()
+        self.human_input_callback = human_input_callback
+
+        if checkpoint_store is not None:
+            self.checkpoint_store: CheckpointStore | None = checkpoint_store
+        elif self.config.checkpoint_enabled:
+            self.checkpoint_store = FileSystemCheckpointStore(self.config.checkpoint_dir)
+        else:
+            self.checkpoint_store = None
+
+        self._register_defaults()
+
+    def _register_defaults(self) -> None:
+        """Register built-in executors for all standard node types."""
+        from dan.executors.llm import LLMExecutor
+        from dan.executors.tool import ToolExecutor
+        from dan.executors.code import CodeExecutor
+        from dan.executors.control_flow import (
+            ForEachExecutor,
+            HumanInTheLoopExecutor,
+            IfElseExecutor,
+            ReduceExecutor,
+            RouterExecutor,
+            WhileLoopExecutor,
+        )
+
+        defaults: list[tuple[str, Any]] = [
+            ("llm_operator", LLMExecutor()),
+            ("tool_operator", ToolExecutor()),
+            ("code_operator", CodeExecutor()),
+            ("if_else", IfElseExecutor()),
+            ("while_loop", WhileLoopExecutor()),
+            ("for_each", ForEachExecutor()),
+            ("reduce", ReduceExecutor()),
+            ("router", RouterExecutor()),
+            ("human_in_the_loop", HumanInTheLoopExecutor()),
+        ]
+
+        for node_type, executor in defaults:
+            if not self.executor_registry.has(node_type):
+                self.executor_registry.register(node_type, executor)
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    async def run(
+        self,
+        graph: Graph,
+        inputs: dict[str, Any] | None = None,
+        run_id: str | None = None,
+    ) -> RunResult:
+        """Execute *graph* from entry points to exit points.
+
+        *inputs* are injected as output-port values on entry-point nodes
+        so that downstream nodes receive them via normal edge resolution.
+        """
+        from dan.validation.graph import validate_graph
+
+        all_errors = validate_graph(graph)
+        fatal = [e for e in all_errors if not _is_validation_warning(e)]
+        if fatal:
+            return RunResult(
+                run_id=run_id or "invalid",
+                success=False,
+                errors={"validation": "; ".join(fatal)},
+            )
+
+        state = ExecutionState(graph, run_id)
+        shared_context = SharedContextStore(graph.shared_context)
+        artifacts = ArtifactStore()
+        local_state = LocalStateManager()
+
+        if inputs:
+            self._inject_inputs(state, graph, inputs)
+
+        return await self._execute(graph, state, shared_context, artifacts, local_state)
+
+    async def resume(
+        self,
+        graph: Graph,
+        run_id: str,
+    ) -> RunResult:
+        """Resume a previously checkpointed run."""
+        if self.checkpoint_store is None:
+            return RunResult(
+                run_id=run_id,
+                success=False,
+                errors={"checkpoint": "No checkpoint store configured"},
+            )
+
+        checkpoint = await self.checkpoint_store.load(run_id)
+        if checkpoint is None:
+            return RunResult(
+                run_id=run_id,
+                success=False,
+                errors={"checkpoint": f"No checkpoint found for run_id '{run_id}'"},
+            )
+
+        state = ExecutionState(graph, run_id)
+        state.restore_from_snapshot(checkpoint["state"])
+
+        shared_context = SharedContextStore(graph.shared_context)
+        shared_context.restore(checkpoint.get("shared_context", {}))
+
+        artifacts = ArtifactStore()
+        artifacts.restore(checkpoint.get("artifacts", {}))
+
+        local_state = LocalStateManager()
+        local_state.restore(checkpoint.get("local_state", {}))
+
+        return await self._execute(graph, state, shared_context, artifacts, local_state)
+
+    # ------------------------------------------------------------------
+    # Internal scheduling
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _inject_inputs(
+        state: ExecutionState,
+        graph: Graph,
+        inputs: dict[str, Any],
+    ) -> None:
+        """Inject external inputs as port values on entry-point nodes.
+
+        Stores each input under a virtual ``__input__<node_id>`` source
+        so that ``_resolve_entry_inputs`` can pick them up.
+        """
+        for entry_id in graph.entry_points:
+            node = graph.node_by_id(entry_id)
+            if node is None:
+                continue
+            for port_name, value in inputs.items():
+                state.port_data.set(f"__input__{entry_id}", port_name, value)
+
+    async def _execute(
+        self,
+        graph: Graph,
+        state: ExecutionState,
+        shared_context: SharedContextStore,
+        artifacts: ArtifactStore,
+        local_state: LocalStateManager,
+    ) -> RunResult:
+        """Core scheduling loop: dispatch ready nodes, checkpoint, repeat."""
+        context = self._make_context(
+            state, shared_context, artifacts, local_state, graph
+        )
+
+        levels = _topological_levels(graph)
+
+        for level in levels:
+            ready = [
+                nid for nid in level
+                if state.node_statuses.get(nid) == NodeStatus.PENDING
+            ]
+            if not ready:
+                continue
+
+            tasks = [
+                self._execute_node(nid, graph, state, context)
+                for nid in ready
+            ]
+            await asyncio.gather(*tasks)
+
+            if self.checkpoint_store is not None:
+                await self._save_checkpoint(
+                    state, shared_context, artifacts, local_state
+                )
+
+        return self._build_result(graph, state)
+
+    async def _execute_node(
+        self,
+        node_id: str,
+        graph: Graph,
+        state: ExecutionState,
+        context: ExecutionContext,
+    ) -> None:
+        """Resolve inputs, dispatch to executor, store outputs."""
+        node = graph.node_by_id(node_id)
+        if node is None:
+            state.mark(node_id, NodeStatus.FAILED)
+            state.node_errors[node_id] = f"Node '{node_id}' not found in graph"
+            return
+
+        if self._should_skip(node_id, graph, state):
+            state.mark(node_id, NodeStatus.SKIPPED)
+            return
+
+        state.mark(node_id, NodeStatus.RUNNING)
+        inputs = state.port_data.resolve_inputs(node_id, graph)
+
+        virtual_src = f"__input__{node_id}"
+        for port in node.input_ports:
+            if state.port_data.has(virtual_src, port.name):
+                inputs.setdefault(port.name, state.port_data.get(virtual_src, port.name))
+
+        self._read_context_edges(node_id, graph, context, inputs)
+
+        node_type = getattr(node, "node_type", None)
+        if node_type is None or not self.executor_registry.has(node_type):
+            state.mark(node_id, NodeStatus.FAILED)
+            state.node_errors[node_id] = f"No executor for node_type '{node_type}'"
+            return
+
+        executor = self.executor_registry.get(node_type)
+
+        try:
+            result: NodeResult = await executor.execute(node, inputs, context)
+        except Exception as exc:
+            logger.exception("Executor raised for node '%s'", node_id)
+            result = NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error=f"Executor exception: {exc}",
+            )
+
+        state.mark(node_id, result.status)
+        if result.error:
+            state.node_errors[node_id] = result.error
+        if result.metadata:
+            state.node_metadata[node_id] = result.metadata
+
+        for port_name, value in result.outputs.items():
+            state.port_data.set(node_id, port_name, value)
+
+        self._write_context_edges(node_id, graph, context, result.outputs)
+
+    def _should_skip(
+        self, node_id: str, graph: Graph, state: ExecutionState
+    ) -> bool:
+        """Skip a node if it's on an inactive IfElse branch."""
+        for edge in graph.edges_to(node_id):
+            if not isinstance(edge, ControlEdge):
+                continue
+            if edge.condition is None:
+                continue
+            source_outputs = state.port_data.get_node_outputs(edge.source_node_id)
+            active_branch = source_outputs.get("branch")
+            if active_branch is not None and active_branch != edge.condition:
+                return True
+        return False
+
+    @staticmethod
+    def _read_context_edges(
+        node_id: str,
+        graph: Graph,
+        context: ExecutionContext,
+        inputs: dict[str, Any],
+    ) -> None:
+        """Inject shared-context values into inputs via context edges."""
+        for edge in graph.edges_to(node_id):
+            if isinstance(edge, ContextEdge) and edge.mode.value == "read":
+                try:
+                    value = context.shared_context.read(edge.context_key)
+                    if value is not None:
+                        inputs[edge.target_port] = value
+                except KeyError:
+                    pass
+
+    @staticmethod
+    def _write_context_edges(
+        node_id: str,
+        graph: Graph,
+        context: ExecutionContext,
+        outputs: dict[str, Any],
+    ) -> None:
+        """Write node outputs to shared context via context edges."""
+        for edge in graph.edges_from(node_id):
+            if not isinstance(edge, ContextEdge):
+                continue
+            value = outputs.get(edge.source_port)
+            if value is None:
+                continue
+            try:
+                if edge.mode.value == "write":
+                    context.shared_context.write(edge.context_key, value)
+                elif edge.mode.value == "append":
+                    context.shared_context.append(edge.context_key, value)
+            except KeyError:
+                logger.warning(
+                    "Context write failed for key '%s' from node '%s'",
+                    edge.context_key, node_id,
+                )
+
+    def _make_context(
+        self,
+        state: ExecutionState,
+        shared_context: SharedContextStore,
+        artifacts: ArtifactStore,
+        local_state: LocalStateManager,
+        graph: Graph,
+    ) -> ExecutionContext:
+        async def run_subgraph(
+            sub_graph_key: str, inputs: dict[str, Any]
+        ) -> dict[str, Any]:
+            return await self._run_subgraph(
+                sub_graph_key, inputs, graph, state,
+                shared_context, artifacts, local_state,
+            )
+
+        return ExecutionContext(
+            state=state,
+            config=self.config,
+            shared_context=shared_context,
+            artifacts=artifacts,
+            local_state=local_state,
+            human_input_callback=self.human_input_callback,
+            run_subgraph=run_subgraph,
+        )
+
+    async def _run_subgraph(
+        self,
+        sub_graph_key: str,
+        inputs: dict[str, Any],
+        parent_graph: Graph,
+        parent_state: ExecutionState,
+        shared_context: SharedContextStore,
+        artifacts: ArtifactStore,
+        local_state: LocalStateManager,
+    ) -> dict[str, Any]:
+        """Execute a named sub-graph and return its outputs."""
+        sub_graph = parent_graph.sub_graphs.get(sub_graph_key)
+        if sub_graph is None:
+            raise RuntimeError(f"Sub-graph '{sub_graph_key}' not found")
+
+        sub_state = ExecutionState(sub_graph)
+        sub_context = self._make_context(
+            sub_state, shared_context, artifacts, local_state, sub_graph
+        )
+
+        if inputs:
+            for entry_id in sub_graph.entry_points:
+                entry_node = sub_graph.node_by_id(entry_id)
+                if entry_node is not None:
+                    for port in entry_node.input_ports:
+                        if port.name in inputs:
+                            sub_state.port_data.set(
+                                f"__input__{entry_id}", port.name, inputs[port.name]
+                            )
+
+        levels = _topological_levels(sub_graph)
+        for level in levels:
+            ready = [
+                nid for nid in level
+                if sub_state.node_statuses.get(nid) == NodeStatus.PENDING
+            ]
+            if not ready:
+                continue
+
+            tasks = [
+                self._execute_node(nid, sub_graph, sub_state, sub_context)
+                for nid in ready
+            ]
+            await asyncio.gather(*tasks)
+
+        outputs: dict[str, Any] = {}
+        for exit_id in sub_graph.exit_points:
+            outputs.update(sub_state.port_data.get_node_outputs(exit_id))
+
+        return outputs
+
+    async def _save_checkpoint(
+        self,
+        state: ExecutionState,
+        shared_context: SharedContextStore,
+        artifacts: ArtifactStore,
+        local_state: LocalStateManager,
+    ) -> None:
+        if self.checkpoint_store is None:
+            return
+        checkpoint = {
+            "state": state.snapshot(),
+            "shared_context": shared_context.snapshot(),
+            "artifacts": artifacts.snapshot(),
+            "local_state": local_state.snapshot(),
+        }
+        await self.checkpoint_store.save(state.run_id, checkpoint)
+
+    @staticmethod
+    def _build_result(graph: Graph, state: ExecutionState) -> RunResult:
+        outputs: dict[str, Any] = {}
+        for exit_id in graph.exit_points:
+            outputs.update(state.port_data.get_node_outputs(exit_id))
+
+        has_failures = any(
+            s == NodeStatus.FAILED for s in state.node_statuses.values()
+        )
+
+        return RunResult(
+            run_id=state.run_id,
+            outputs=outputs,
+            success=not has_failures,
+            node_statuses={nid: s.value for nid, s in state.node_statuses.items()},
+            errors=dict(state.node_errors),
+            metadata=dict(state.node_metadata),
+        )
