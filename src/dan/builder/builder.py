@@ -318,6 +318,72 @@ class WorkflowBuilder:
         self._add_node(pn)
         return NodeRef(node_id, "human_in_the_loop", self)
 
+    # ── Import pre-built graph as composite ───────────────────────
+
+    def import_workflow(
+        self,
+        node_id: str,
+        graph: Graph,
+        *,
+        input_mappings: dict[str, str] | None = None,
+        output_mappings: dict[str, str] | None = None,
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Import a pre-built ``Graph`` as a composite node.
+
+        The imported graph's internal node IDs are namespaced with a
+        prefix derived from *node_id* to avoid collisions.  Input and
+        output ports are auto-derived from the graph's entry/exit nodes
+        when not provided explicitly.
+
+        This is the Python equivalent of the editor's
+        ``graphAsCompositeNode()`` and enables progressive workflow
+        wrapping — build Workflow A, import it as a node in Workflow B,
+        then import B as a node in Workflow C, etc.
+        """
+        import re as _re
+
+        from dan.builder.importer import derive_ports, namespace_graph
+        from dan.models.ports import InputPort, OutputPort
+
+        safe_id = _re.sub(r"[^a-zA-Z0-9_]", "_", node_id)
+        prefix = f"wf_{safe_id}__"
+        body_key = f"{node_id}_body"
+
+        namespaced = namespace_graph(graph, prefix)
+        auto_in, auto_out, auto_in_map, auto_out_map = derive_ports(namespaced)
+
+        eff_in = [InputPort(**p) for p in input_ports] if input_ports else auto_in
+        eff_out = [OutputPort(**p) for p in output_ports] if output_ports else auto_out
+        eff_in_map = input_mappings if input_mappings is not None else auto_in_map
+        eff_out_map = output_mappings if output_mappings is not None else auto_out_map
+
+        kwargs: dict[str, Any] = {
+            "name": name or graph.metadata.name or node_id,
+            "description": description or graph.metadata.description,
+            "body_graph": body_key,
+            "input_mappings": eff_in_map,
+            "output_mappings": eff_out_map,
+        }
+
+        pn = _PendingNode(
+            id=node_id,
+            node_type="composite",
+            kwargs=kwargs,
+            explicit_input_ports=list(eff_in),
+            explicit_output_ports=list(eff_out),
+        )
+        self._add_node(pn)
+        self._sub_graphs.append(_PendingSubGraph(
+            parent_node_id=node_id,
+            sub_graph_key=body_key,
+            graph=namespaced,
+        ))
+        return NodeRef(node_id, "composite", self)
+
     # ── Sub-graph context managers ─────────────────────────────────
 
     @contextmanager

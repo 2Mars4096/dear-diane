@@ -14,6 +14,7 @@ Usage::
 from dan.builder.builder import WorkflowBuilder, workflow
 from dan.builder.compiler import BuildError
 from dan.builder.decompiler import decompile
+from dan.builder.importer import derive_ports, namespace_graph
 from dan.builder.refs import NodeRef, PortRef
 
 __all__ = [
@@ -23,4 +24,6 @@ __all__ = [
     "decompile",
     "NodeRef",
     "PortRef",
+    "namespace_graph",
+    "derive_ports",
 ]
