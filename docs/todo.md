@@ -26,6 +26,27 @@
 ## MVP — End-to-End Runnable from UI
 - [x] Server-side tool registry — `RunManager` accepts `ToolRegistry`, `save_paper` tool registered in `app.py` lifespan
 - [x] Run-inputs dialog — `RunInputsDialog` detects `{variable}` placeholders from entry node prompts, shows modal before execution
+- [x] Auto-layout on load — detect degenerate positions (all nodes at 0,0), apply dagre layout automatically
+- [x] Sub-graph editing — removed read-only guards, layer-aware save persists edits back to correct `sub_graphs[key]`
+- [x] `.env` loading — server loads `DAN_LLM_API_KEY` via `load_dotenv()` on startup
+
+## Phase 3.75 — Visual Editor Full Editing
+> Make the visual editor a complete authoring surface. Currently nodes can be placed and wired, but ports can't be edited, nodes can't be renamed inline, and many editing primitives are missing. This phase closes the gap so users can build workflows entirely from the UI without touching JSON or Python.
+
+- [ ] **Input node** — visual entry point for workflow inputs. Instead of a popup dialog, a dedicated "Start" / "Input" node sits at the graph entry and shows editable fields for each input variable (e.g. `topic`). Users fill in values directly on the canvas before hitting Run. Replaces or supplements `RunInputsDialog`. Could be the existing `HumanInTheLoop` node type with a special "pre-run" mode, or a new lightweight `InputNode` type.
+- [ ] **Port editor** — add/remove/rename input and output ports on any node type from the ConfigPanel. Each port: editable name, optional JSON Schema, required toggle (inputs only). Changes propagate to node handles in real-time.
+- [ ] **Node rename inline** — double-click node header (or single-click name field in ConfigPanel) to rename. Currently `name` is editable in ConfigPanel as a text field but there's no inline edit on the node itself.
+- [ ] **Port-aware connection validation** — when dragging an edge, highlight compatible target ports. Warn on type mismatches (if schemas are defined). Currently `isValidConnection` only checks self-connect and duplicates.
+- [ ] **Edge reconnection** — drag an existing edge's source or target handle to a different port to rewire without delete+recreate.
+- [ ] **Copy / paste / duplicate** — Cmd+C/V for selected nodes (with offset). Duplicate button in ConfigPanel or context menu. Edges between copied nodes are preserved.
+- [ ] **Undo / redo** — history stack in Zustand store. Cmd+Z / Cmd+Shift+Z. Track node/edge add, remove, move, property change, port change.
+- [ ] **Multi-select operations** — shift-click or lasso to select multiple nodes. Bulk delete, bulk move, group into composite.
+- [ ] **Context menu** — right-click on canvas (add node), on node (duplicate, delete, drill-in, copy), on edge (delete, change type).
+- [ ] **Sub-graph creation from selection** — select nodes, right-click "Group into Composite". Auto-generates input/output mappings from cut edges.
+- [ ] **Output schema editor for LLM nodes** — visual JSON Schema builder for `output_json_schema` instead of raw JSON textarea. Shows expected output structure clearly.
+- [ ] **Validation feedback in UI** — run `validate_graph()` on save and surface errors/warnings as inline badges on nodes/edges + toast summary. Currently validation only runs server-side at run time.
+- [ ] **Import / export graph JSON** — toolbar buttons to download current graph as `.json` and import a `.json` file as a new graph. Enables sharing without server access.
+- [ ] **Node search / jump** — Cmd+K style palette to search nodes by name/type and center viewport on selection. Useful for large graphs.
 
 ## Phase 4 — Memory & Context Scoping
 > Foundational engine layer for how nodes share, scope, and recall context. Prerequisite for long-running multi-agent workflows where brute-force context passing breaks down. Two pillars: (1) formalized local/global/hierarchical scoping at agent boundaries, and (2) a memory system for compressing and retrieving distant context.

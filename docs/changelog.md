@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-02-24 (README + tracking rule)
+- [docs] Created `README.md` — project overview, quick start, builder DSL examples, visual editor features, API endpoints, roadmap
+- [docs] Updated `.cursor/rules/project-tracking.mdc` — added `README.md` to document inventory and "After Each Modification" checklist (update on new features, setup changes, CLI commands, roadmap milestones)
+
+## 2026-02-24 (Phase 3.75 roadmap + MVP fixes)
+- [docs] Added Phase 3.75 — Visual Editor Full Editing to `todo.md`: 13 items covering port editor, inline rename, edge reconnection, copy/paste, undo/redo, multi-select, context menu, sub-graph creation from selection, schema editor, validation feedback, import/export, node search
+- [fix] Sub-graph editing: removed read-only guards from GraphCanvas, ConfigPanel, NodePalette, BreadcrumbBar; `saveGraph` is now layer-aware (writes to correct `sub_graphs[key]`)
+- [fix] Auto-layout on graph load: detects degenerate positions (all nodes at 0,0) and applies dagre layout automatically
+- [fix] Server `.env` loading: added `load_dotenv()` to `app.py` so `DAN_LLM_API_KEY` is picked up from `.env`
+- [fix] `RunInputsDialog`: replaced `useEffect`-based variable detection with synchronous `useMemo` to prevent premature auto-run before variables are computed
+
 ## 2026-02-24 (MVP — end-to-end runnable from UI)
 - [feat] **Server-side tool registry:** `RunManager` now accepts a `ToolRegistry` parameter; engines created for runs use it. `app.py` lifespan registers `save_paper` as a built-in tool. Paper-writing workflow now runs end-to-end from the visual editor.
 - [feat] **Run-inputs dialog:** `RunInputsDialog.tsx` — modal that detects `{variable}` template placeholders from entry node prompts + unconnected input ports. Shows a form before execution so users can provide workflow inputs (e.g. `topic` for paper writing). Graphs with no inputs run immediately. Cmd/Ctrl+Enter shortcut to submit.
