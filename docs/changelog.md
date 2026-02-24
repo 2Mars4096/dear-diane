@@ -1,5 +1,66 @@
 # Changelog
 
+## 2026-02-24 (MVP — end-to-end runnable from UI)
+- [feat] **Server-side tool registry:** `RunManager` now accepts a `ToolRegistry` parameter; engines created for runs use it. `app.py` lifespan registers `save_paper` as a built-in tool. Paper-writing workflow now runs end-to-end from the visual editor.
+- [feat] **Run-inputs dialog:** `RunInputsDialog.tsx` — modal that detects `{variable}` template placeholders from entry node prompts + unconnected input ports. Shows a form before execution so users can provide workflow inputs (e.g. `topic` for paper writing). Graphs with no inputs run immediately. Cmd/Ctrl+Enter shortcut to submit.
+- [refactor] `EditorToolbar.tsx`: Run button now opens `RunInputsDialog` instead of calling `startRun()` directly
+- [infra] 256 backend tests passing, 0 TypeScript errors
+
+## 2026-02-24 (Phase 3.5 — full implementation)
+- [feat] **5-1 Multi-Layered Graph Navigation:**
+  - Backend: Added `is_blackbox: bool = False` to `CompositeNode`; created `CompositeExecutor` (input/output mapping + single `run_subgraph` call); registered in scheduler
+  - Frontend: `layerStack` + `drillIn`/`drillOut`/`jumpToLayer` in Zustand store; double-click drill-in on composite/while_loop/for_each nodes; read-only guards when drilled in; `BreadcrumbBar.tsx` (Root > Node > Node navigation); `PortMappingOverlay.tsx` (input/output port mapping display); deleted `CompositePreview.tsx` modal; CSS fade-in animation
+  - Tests: `test_composite_executor.py` (4 tests, all passing)
+- [feat] **5-2 Live Execution Visualization:**
+  - `nodeTimings` + `activeExecutionPath` in store; `handleRunEvent` tracks start/end timestamps per node
+  - `DanNode.tsx`: CSS pulse animation on active nodes, completion flash, duration badges (e.g. "123ms", "1.2s"), opacity dimming for inactive nodes during runs
+  - `AnimatedEdge.tsx`: custom React Flow edge with SVG particle flow on active edges (source completed → target started), dimming for inactive edges; registered as `smoothstep` override
+  - `ExecutionTimeline.tsx`: horizontal timeline bar with colored segments per node, click-to-select; mounted above bottom tabs
+- [feat] **5-3 Rich Logging Window:**
+  - Backend: 5 new `EventType` values (`LLM_THINKING`, `TOOL_CALL_STARTED`, `TOOL_CALL_RESULT`, `CODE_OUTPUT`, `INTERMEDIATE_TEXT`); `emit_event` on `ExecutionContext`; unified parent `run_id` for sub-graph events; rolling latest-500 event buffer (was first-500)
+  - LLMExecutor emits `LLM_THINKING` (model, prompt preview); ToolExecutor emits `TOOL_CALL_STARTED`/`TOOL_CALL_RESULT`; CodeExecutor captures stdout/stderr via redirect and emits `CODE_OUTPUT`
+  - Frontend: `EVENT_CATEGORY` mapping; rebuilt `LogPanel.tsx` with grouped-by-node sections, sub-grouped by category, inline SVG icons (brain, wrench, terminal, X), color coding, text/node/type filtering, click-to-select, auto-scroll
+- [feat] **5-4 Build Palette:**
+  - `paletteTemplates.ts`: extensible template factory (`TemplateResult` with `subGraphs: Record<string, DanGraph>`); ReAct template (WhileLoop + LLM→Tool body); Plan-Execute template (Composite + Planner→Executor body)
+  - `selectedEdgeType` + `addTemplateNode` in store; `onConnect` uses selected edge type with proper styling (color, label, animation for context edges)
+  - Rebuilt `NodePalette.tsx`: search input, collapsible categories (Operators, Control Flow, Pre-defined Agents, MCP/Wrapped Agents, Composite), template drag-drop with `template:` prefix, disabled MCP placeholders, compact edge type selector, `NODE_DESCRIPTIONS` hover tooltips
+- [feat] **5-5 UI/UX Polish:**
+  - Toast system: `ToastContainer.tsx` (fixed bottom-right, slide-in, auto-dismiss 4s/6s); `addToast`/`removeToast` in store; all async actions wrapped with success/error toasts
+  - Loading states: `Spinner.tsx`; `loadingGraph`/`savingGraph` flags in store
+  - Connection validation: `connectionValidation.ts` (no self-connect, no duplicates, port existence); `isValidConnection` prop on ReactFlow
+  - Merged toolbar: `EditorToolbar.tsx` combining GraphSwitcher + RunPanel (DAN branding, graph selector, save/run/resume/disconnect, status badge, auto-layout button); replaced both components in App.tsx
+  - Node icons: `nodeIcons.tsx` (inline SVG for all 10 types); added to `DanNode.tsx` header
+  - Keyboard shortcuts: `useKeyboardShortcuts.ts` (Cmd/Ctrl+S → save)
+  - Edge labels: data edges now show `source_port → target_port`
+  - Auto-layout: `layout.ts` using dagre (LR, nodesep 40, ranksep 60); `applyAutoLayout` in store
+  - Favicon: updated title + `favicon.svg`; ConfigPanel: larger textareas, editable edge config
+- [infra] All changes validated: 256 backend tests passing, 0 TypeScript errors, 0 lint errors
+
+## 2026-02-24 (Phase 3.5 plan consistency pass)
+- [docs] Normalized all 5 sub-plans for consistent formatting: bold-keyword Notes (5-1), standardized "Stretch:" label for deferred items (all plans), unified "Docs sync" task naming with architecture.md → todo.md → changelog.md order (all plans), removed V1/V1.1 version labels (5-4), aligned test paths to existing `tests/test_*` layout (5-1, 5-3)
+
+## 2026-02-24 (Phase 3.5 plan refinements — decision lock)
+- [docs] Updated `plans/5-phase-3.5-frontend-design.md` shared decisions: locked unified parent `run_id` event stream for sub-graphs, navigation-only/read-only scope for 5-1 drill-in, and simple-first-but-extensible template strategy for 5-4
+- [docs] Updated `plans/5-1-multi-layered-graph.md`: clarified read-only drill-in MVP, added explicit UI guardrails to disable edits while inside nested layers, and updated test scope accordingly
+- [docs] Updated `plans/5-3-rich-logging.md`: added tasks for parent `run_id` reuse in `_run_subgraph`, hierarchy metadata tags (`graph_key`, `layer_path`, `parent_node_id`), and rolling latest-500 event buffer validation
+- [docs] Updated `plans/5-4-build-palette.md`: changed template factory contract to support multi-level sub-graphs via extensible `subGraphs` payload while keeping V1 template implementations simple
+
+## 2026-02-24 (Phase 3.5 — detailed sub-plans)
+- [docs] Created top-level plan `plans/5-phase-3.5-frontend-design.md` — dependency graph, sequencing recommendation, shared decisions across all 5 sub-plans
+- [docs] Created `plans/5-1-multi-layered-graph.md` — CompositeExecutor, `is_blackbox`, canvas drill-in replacing modal, breadcrumb bar, animated transitions, port mapping visualization (7 tasks, 23 sub-tasks)
+- [docs] Created `plans/5-2-live-execution-viz.md` — pulse/glow CSS animations, animated edges with particles, execution path dimming, timeline/playback scrubber, duration badges (7 tasks)
+- [docs] Created `plans/5-3-rich-logging.md` — 5 new backend event types, executor emission, structured collapsible log UI, icons/colors, click-to-select, filtering (6 tasks, 22 sub-tasks)
+- [docs] Created `plans/5-4-build-palette.md` — searchable categorized sidebar, ReAct/Plan-Execute agent templates, MCP placeholder, edge type selector, hover preview tooltips (7 tasks)
+- [docs] Created `plans/5-5-ui-polish.md` — error handling/toasts, loading states, connection validation, toolbar merge, resizable panels, keyboard shortcuts, auto-layout, syntax highlighting (13 task groups)
+- [docs] Updated `todo.md` — replaced inline Phase 3.5 bullet lists with linked sub-plan references
+
+## 2026-02-24 (todo restructure — Phase 3.5 Frontend Design)
+- [docs] `todo.md`: added Phase 3.5 — Frontend Design with 5 sub-groups (A. Multi-Layered Graph Navigation, B. Live Execution Visualization, C. Rich Logging Window, D. Build Palette, E. UI/UX Polish)
+- [docs] `todo.md`: absorbed old Phase 4 (Composite Nodes) into Phase 3.5-A, old Phase 5 (Execution Visualization) into Phase 3.5-B, old Phase 2.5 non-bug-fix items into Phase 3.5-E
+- [docs] `todo.md`: removed Phase 2.5 section (completed bug fixes retained in changelog; remaining items moved to Phase 3.5-E); renumbered Phase 6 → Phase 4
+- [docs] `architecture.md`: updated Composite Node Preview section — replaced "Phase 4" reference with Phase 3.5-A drill-in navigation plan
+- [docs] Plan file created: `phase_3.5_frontend_design_99e66334.plan.md` with full breakdown, review fixes (sub-plan split guidance, typed event contract lockstep note, `is_blackbox` field), and documentation checklist
+
 ## 2026-02-24 (editor build cleanup — TypeScript fixes)
 - [fix] `App.tsx`, `DanNode.tsx`, `CompositePreview.tsx`: replaced unsafe `Record<string, unknown>` casts with explicit node-type narrowing for `body_graph` access
 - [fix] `NodePalette.tsx`: replaced `Object.groupBy` with typed `reduce` grouping to remove ES2024 dependency and fix strict TypeScript inference errors
@@ -167,6 +228,33 @@
 - [docs] Added `docs/plans/1-5-builder-api.md` with full task breakdown
 - [docs] Updated `architecture.md` with builder module layout, DSL design, connection mechanisms, decompiler details
 - [docs] Marked Phase 1.5 complete in `todo.md`
+
+## 2026-02-24 (Phase 4 roadmap — review fixes)
+- [docs] `todo.md`: reworded Phase 4 description — markdown is a third authoring surface alongside Python DSL and visual editor, not a replacement
+- [docs] `todo.md`: added plan file link placeholder (`6:`) for Phase 4; renumbered Phase 5 marketplace to `7:` to avoid collision with Phase 3.5's `plans/5-*` prefix
+- [docs] `todo.md`: clarified backlog overlap — split hyperedge items into "engine runtime" (execution hooks, attachment logic) vs "markdown authoring syntax" (`.md` file references in workflow)
+- [docs] `todo.md`: added 5 backlog items — markdown/Python coexistence policy, `dan.loader` ↔ `dan.builder` parity checklist, compiler diagnostics + source maps, markdown round-trip conformance tests, markdown format versioning
+- [docs] `architecture.md`: replaced "Code-first, visual-second" key decision with "Three authoring surfaces, one IR" (Python DSL, markdown, visual editor all compile to `dan_graph_v1`)
+- [docs] `development-plan.md`: replaced "Workflows as Code" section with "Three Authoring Surfaces, One IR" — table comparing Python / markdown / visual editor strengths and use cases
+- [docs] `development-plan.md`: updated roadmap table — marked Phases 1.5 and 3 as Done with test counts, added Phase 3.5 and Phase 4, removed stale old Phases 4/5 (composite + visualization, now in 3.5)
+
+## 2026-02-24 (Phase 4 Memory & Context Scoping)
+- [docs] Promoted memory & context scoping from backlog to Phase 4 — context scoping across agent boundaries (global/local/pass_down/emit_up) and memory system for long chains (encoding, consolidation, retrieval)
+- [docs] Renumbered Markdown Agent Format → Phase 5, Shareable Blocks / Marketplace → Phase 6
+
+## 2026-02-24 (Phase 4 roadmap — now Phase 5)
+- [docs] Added Phase 4 — Markdown Agent Format to `todo.md`: agent file format (YAML frontmatter + natural language), workflow file format (arrow notation), flow notation parser, port type inference, auto-wiring, `dan.loader` compiler, and paper-writing rewrite as validation
+- [docs] Renumbered Shareable Blocks / Marketplace to Phase 5
+- [docs] Added backlog items: composite agents in markdown, skills/rules as markdown hyperedges, markdown round-trip from visual editor, linked JSON Schema files
+
+## 2026-02-24 (Phase 3.5 post-review bug fixes)
+- [fix] Read-only drill-in guard: disabled click-to-add, drag, and editing in `NodePalette` and `ConfigPanel` when drilled into sub-graph layer
+- [fix] Template port contracts: LLM nodes output port renamed `output` → `text` (matching `LLMExecutor` output key); ReAct loop condition changed `"not done"` → `"True"` (avoids `ConditionError`); Plan-Execute composite given proper `input_mappings`/`output_mappings`
+- [fix] `startRun()` stale-graph guard: `saveGraph()` now returns `boolean`; `startRun` aborts if save fails
+- [fix] Edge type styling sync: `updateEdgeData` now updates top-level `animated`, `label`, and `style.stroke` when `edge_type` changes (previously only updated `data.danEdge`)
+- [fix] Subgraph event hierarchy tags: added `layer_path: tuple[str, ...]` to `ExecutionContext`; `emit_event` injects `layer_path` into event data; `run_subgraph` accepts `parent_node_id` and threads it to child contexts via scheduler
+- [fix] LogPanel node names: `nodeNameMap` now reads `data.name` (matching DanNode model) with `data.label` as fallback
+- [test] Fixed composite executor test mock to accept new `parent_node_id` parameter; 256 tests pass, TypeScript zero errors
 
 ## 2026-02-24 (Phase 1.5 post-review fixes)
 - [fix] Builder/compiler idempotence: repeated `build()` calls now produce stable output (no in-place mutation of pending node kwargs/ports during compilation)

@@ -132,19 +132,25 @@ This approach preserved early backend validation while moving quickly to a pract
 
 ## 5. Design Decisions
 
-### Workflows as Code (first-class principle)
+### Three Authoring Surfaces, One IR
 
-Every workflow, agent, and operator must be definable in Python code — not just through the visual editor. Code is the primary authoring interface. The visual editor renders and edits the same underlying graph, but code comes first.
+Every workflow, agent, and operator must be definable in file-based formats — not just through the visual editor. All authoring surfaces compile to the same `dan_graph_v1` JSON intermediate representation and coexist:
 
-**Why this matters:**
+| Surface | Strength | Format | When to use |
+|---------|----------|--------|-------------|
+| **Python builder DSL** (`dan.builder`) | Most programmable — loops, conditionals, parameterization, testing | `.py` files | Power users, CI pipelines, programmatic workflow generation |
+| **Markdown agent files** (`dan.loader`) | Most accessible — natural language prompts, minimal syntax, skill-like | `.md` files (one per agent + one workflow) | Rapid authoring, vibe-coding with LLMs, non-programmer-friendly |
+| **Visual editor** | Most interactive — drag-and-drop, live execution, debugging overlays | React Flow canvas (reads/writes graph JSON) | Exploration, debugging, demos |
 
-- **Vibe-codeable** — an LLM (Cursor, Claude Code, etc.) can generate, modify, and debug workflows by writing Python. This is how most power users will build workflows.
-- **Version-controllable** — code diffs are readable; visual graph diffs are not.
-- **Testable** — workflows can be unit tested, parameterized, and CI'd.
-- **Documentable** — a workflow definition IS its own documentation. Hardcode a workflow and it's immediately readable.
-- **Composable** — import workflow definitions as Python modules. `from my_workflows import review_revise_loop`.
+**Why file-based authoring matters:**
 
-**What this requires:** a high-level builder API / DSL on top of the raw Pydantic models. Constructing `Graph`, `Node`, `Edge` objects by hand is possible but verbose. The builder should make common patterns readable:
+- **Vibe-codeable** — an LLM (Cursor, Claude Code, etc.) can generate, modify, and debug workflows by writing Python or markdown. Markdown is trivially generatable.
+- **Version-controllable** — file diffs are readable; visual graph diffs are not.
+- **Testable** — Python workflows can be unit tested, parameterized, and CI'd.
+- **Documentable** — a markdown agent file IS its own documentation. The prompt is the file.
+- **Composable** — reference agents by file path (markdown) or import as modules (Python).
+
+**What this requires:** a high-level builder API / DSL on top of the raw Pydantic models, and a markdown loader that parses agent/workflow files. Both compile to the same graph JSON. The builder makes programmatic patterns readable:
 
 ```python
 from dan.builder import workflow, llm, code, for_each, while_loop
@@ -369,12 +375,12 @@ The paper-writing workflow already in `development-plan.md` Section 1 is the tar
 |-------|-----------|-------------|--------|
 | **0** | Solidify abstraction model | Formal spec: node types, edge types, schema format (91 tests) | **Done** |
 | **1** | Python orchestration library | Async engine: typed nodes, while-loops, fan-out/fan-in, checkpointing (140 tests) | **Done** |
-| **1.5** | Workflow builder API | Fluent Python DSL (`dan.builder`) compiling to `dan_graph_v1` JSON | Not started |
+| **1.5** | Workflow builder API | Fluent Python DSL (`dan.builder`) compiling to `dan_graph_v1` JSON (243 tests) | **Done** |
 | **2** | Visual editor baseline | FastAPI + React Flow: CRUD, live streaming execution, composite preview (167 tests) | **Done** |
-| **3** | Paper-writing proof of concept | End-to-end paper-writing workflow running on engine + editor + code | Not started |
-| **4** | Composite nodes | Nest sub-graphs inside nodes, zoom-in/zoom-out | Not started |
-| **5** | Advanced execution visualization | Debugging overlays, run timeline, and richer data-flow inspection | Not started |
-| **6** | Shareable blocks / marketplace | Publish and import reusable agent-blocks | Not started |
+| **3** | Paper-writing proof of concept | End-to-end paper-writing workflow running on engine + editor + code (252 tests) | **Done** |
+| **3.5** | Frontend design | Multi-layer navigation, live execution viz, rich logging, build palette, UI polish | Not started |
+| **4** | Markdown agent format | `dan.loader`: markdown agent/workflow files → `dan_graph_v1` JSON (third authoring surface) | Not started |
+| **5** | Shareable blocks / marketplace | Publish and import reusable agent-blocks | Not started |
 
 ---
 

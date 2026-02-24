@@ -58,31 +58,43 @@ deep-agent-network/
     server/                      # Phase 2 — FastAPI backend for visual editor
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
-      app.py                     # FastAPI application — CRUD, runs, WebSocket
+      app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry
       graph_store.py             # Filesystem-based graph JSON persistence
-      run_manager.py             # Background run execution + event pubsub + catch-up
-  editor/                        # Phase 2 — React Flow visual editor
-    package.json                 # Dependencies: react, @xyflow/react, zustand, tailwindcss
+      run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection
+  editor/                        # Phase 2+3.5 — React Flow visual editor
+    package.json                 # Dependencies: react, @xyflow/react, zustand, tailwindcss, dagre, allotment, highlight.js, lucide-react
     vite.config.ts               # Vite config: Tailwind plugin, /api proxy to backend
     tsconfig.json                # TypeScript config
     src/
-      types/graph.ts             # TypeScript types mirroring dan_graph_v1
-      lib/graphAdapter.ts        # Bidirectional DAN <-> React Flow conversion
+      types/graph.ts             # TypeScript types mirroring dan_graph_v1 + NODE_DESCRIPTIONS
+      lib/graphAdapter.ts        # Bidirectional DAN <-> React Flow conversion + EDGE_COLORS + edge labels
       lib/api.ts                 # HTTP/WebSocket API client
-      store/useGraphStore.ts     # Zustand store — graph, selection, run state, events
-      components/DanNode.tsx     # Custom React Flow node with port handles + status
-      components/NodePalette.tsx # Draggable node type catalogue
-      components/ConfigPanel.tsx # Node/edge property editor
-      components/GraphCanvas.tsx # Main React Flow canvas with drop handling
-      components/RunPanel.tsx    # Run/resume/save controls + status badge
-      components/LogPanel.tsx    # Scrolling timestamped event log
-      components/OutputPreview.tsx   # Per-node output viewer
-      components/CompositePreview.tsx # Read-only sub-graph modal
-      components/GraphSwitcher.tsx   # Graph list/create/delete header
-      App.tsx                    # Main layout: palette + canvas + panels
+      lib/paletteTemplates.ts    # Extensible template factories (ReAct, Plan-Execute)
+      lib/connectionValidation.ts # isValidConnection — no self-connect, no duplicates
+      lib/layout.ts              # Auto-layout via dagre (LR direction)
+      lib/nodeIcons.tsx          # Inline SVG icons for all 10 node types
+      store/useGraphStore.ts     # Zustand store — graph, selection, run state, events, layers, toasts, timings
+      hooks/useKeyboardShortcuts.ts # Cmd/Ctrl+S save shortcut
+      components/DanNode.tsx     # Custom node: port handles, status ring, pulse/glow, duration badge, icons, dimming
+      components/AnimatedEdge.tsx # Custom edge: particle flow on active edges, dimming on inactive
+      components/NodePalette.tsx  # Searchable categorized sidebar: templates, edge selector, hover previews
+      components/ConfigPanel.tsx  # Node/edge property editor with field grouping
+      components/GraphCanvas.tsx  # Main canvas: drop handling, drill-in, validation, animated edges
+      components/EditorToolbar.tsx # Merged toolbar: graph selector + run controls + auto-layout
+      components/RunInputsDialog.tsx # Modal for collecting entry-point input variables before run
+      components/BreadcrumbBar.tsx # Layer navigation: Root > Node1 > Node2
+      components/PortMappingOverlay.tsx # Input/output port mapping display when drilled in
+      components/LogPanel.tsx     # Rich structured logs: grouped by node, icons, filtering, click-to-select
+      components/ExecutionTimeline.tsx # Horizontal timeline bar with per-node segments
+      components/OutputPreview.tsx    # Per-node output viewer
+      components/ToastContainer.tsx   # Fixed bottom-right toast notifications
+      components/Spinner.tsx          # Reusable loading spinner
+      components/RunPanel.tsx         # (deprecated — merged into EditorToolbar)
+      components/GraphSwitcher.tsx    # (deprecated — merged into EditorToolbar)
+      App.tsx                    # Main layout: toolbar + palette + canvas + panels + toasts
   examples/                      # Phase 3 — runnable workflow scripts
     paper_writing.py             # End-to-end paper-writing workflow (builder DSL + engine)
-  tests/                         # pytest suite (252 tests)
+  tests/                         # pytest suite (256 tests)
     test_models/                 # Unit tests for all model types
     test_validation/             # Validation logic tests
     test_examples/               # Paper-writing motivating example + e2e tests
@@ -341,7 +353,7 @@ result = await engine.resume(graph, run_id="abc123")
 
 - `NodeExecutor` is a `Protocol` with `async execute(node, inputs, context) -> NodeResult`
 - `ExecutorRegistry` maps `node_type` strings to executor instances; users can register custom executors
-- Built-in executors for all 10 node types auto-registered on Engine creation
+- Built-in executors for all 10 node types (including `CompositeExecutor`) auto-registered on Engine creation
 
 ### LLM Integration
 
@@ -412,16 +424,20 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 
 ### Engine Event System
 
-- 9 typed events: `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`
+- 14 typed events: `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`
 - Opt-in `event_callback` parameter on `Engine` constructor — no events emitted if not set (backward compatible)
+- `ExecutionContext.emit_event()` — executors emit rich events (LLM thinking, tool calls, code output) during execution
+- Sub-graph events use parent `run_id` (unified stream) — `_run_subgraph` inherits parent state's run_id
 - Events are fire-and-forget; callback failures never break execution
 
 ### Run Manager
 
 - Executes `Engine.run()` / `Engine.resume()` as asyncio background tasks
+- Accepts `ToolRegistry` — creates `ExecutorRegistry` with pre-configured `ToolExecutor` per run so Engine inherits server-registered tools
 - Multiplexes events to WebSocket subscribers via async queues
-- Catch-up snapshot on subscribe: current node statuses + buffered recent events (up to 500)
+- Catch-up snapshot on subscribe: current node statuses + buffered recent events (latest 500, rolling window)
 - Tracks active/completed runs with status snapshots
+- Built-in tools registered in `app.py` lifespan: `save_paper` (paper-writing workflow)
 
 ### API Endpoints
 
@@ -471,16 +487,54 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 └──────┴─────────────────────────────┴─────────────┘
 ```
 
-### Composite Node Preview
+### Multi-Layered Graph Navigation (Phase 3.5-A)
 
-- Nodes with `body_graph` (while_loop, for_each, composite) show a "View Sub-graph" button
-- Opens a read-only React Flow modal rendering the referenced sub-graph
-- No nested editing — that's Phase 4
+- **CompositeExecutor** — backend executor that maps input/output ports and delegates to `run_subgraph`; registered in scheduler alongside WhileLoop/ForEach
+- **`is_blackbox`** field on CompositeNode — when true, node is opaque (no drill-in, no sub-graph preview)
+- **Canvas drill-in** — double-click composite/while_loop/for_each nodes to navigate into their sub-graph; read-only (no edits while drilled in)
+- **`layerStack`** in Zustand store — tracks navigation depth; `drillIn`/`drillOut`/`jumpToLayer` actions recompute React Flow nodes/edges from `danGraph.sub_graphs`
+- **BreadcrumbBar** — "Root > Node1 > Node2" navigation bar; each segment clickable
+- **PortMappingOverlay** — shows input/output port mappings when viewing a composite node's sub-graph
+- **Animated zoom** — CSS fade-in + `fitView()` on layer change
+
+### Live Execution Visualization (Phase 3.5-B)
+
+- **Node pulse/glow** — CSS `@keyframes dan-node-pulse` on active nodes; completion flash animation
+- **Duration badges** — per-node "123ms" / "1.2s" shown on completed nodes; tracked via `nodeTimings` in store
+- **AnimatedEdge** — custom React Flow edge with SVG particle flow (`<animateMotion>`) on active edges (source completed → target started); dimming on inactive edges
+- **Execution path highlighting** — nodes without status dimmed to `opacity-40` during runs
+- **ExecutionTimeline** — horizontal bar with colored segments per node (ordered by start time); click to select node
+
+### Rich Logging (Phase 3.5-C)
+
+- **5 new event types** — `LLM_THINKING`, `TOOL_CALL_STARTED`, `TOOL_CALL_RESULT`, `CODE_OUTPUT`, `INTERMEDIATE_TEXT`
+- **`ExecutionContext.emit_event()`** — executors emit structured events during execution
+- **Unified run stream** — sub-graph events inherit parent `run_id`; single WebSocket subscription per run
+- **LogPanel rebuild** — grouped by node_id with collapsible sections, sub-grouped by `EVENT_CATEGORY` (thinking/tool/output/error/lifecycle), inline SVG icons, color coding, text/node/type filtering, click-to-select-node
+
+### Build Palette (Phase 3.5-D)
+
+- **Searchable sidebar** — text input filters NODE_TYPE_CATALOG; collapsible category sections
+- **Template factories** — extensible `TemplateResult` contract (`{ node, rootSubGraphKey, subGraphs }`); ReAct and Plan-Execute pre-built templates
+- **Edge type selector** — compact toggle (Data/Control/Context) using EDGE_COLORS; `onConnect` creates edges with selected type
+- **MCP placeholders** — disabled entries with "Coming soon" badge
+- **Hover previews** — `NODE_DESCRIPTIONS` with port info shown on tooltip
+
+### UI/UX Polish (Phase 3.5-E)
+
+- **Toast notifications** — Zustand slice (`addToast`/`removeToast`); all async actions wrapped with success/error toasts
+- **Loading states** — `loadingGraph`/`savingGraph` flags; `Spinner.tsx` component
+- **Connection validation** — `isValidConnection` (no self-connect, no duplicates, port existence)
+- **Merged toolbar** — `EditorToolbar.tsx` combines GraphSwitcher + RunPanel into one bar (DAN branding, graph selector, save/run/resume, status, auto-layout)
+- **Node type icons** — inline SVG icons for all 10 node types (in DanNode header and palette)
+- **Keyboard shortcuts** — Cmd/Ctrl+S → save
+- **Edge labels** — data edges show `source_port → target_port`
+- **Auto-layout** — dagre-based (LR direction, `applyAutoLayout` store action)
 
 ## Key Decisions
 
 - **Build, don't buy.** Existing tools (Langflow, Flowise, Dify) cannot handle while-loops, composable sub-graphs, or typed edges natively. See development-plan.md sections 3-4 for full analysis.
-- **Code-first, visual-second.** Python builder API is the primary workflow authoring interface. The visual editor reads/writes the same graph JSON. Both are first-class, but code comes first.
+- **Three authoring surfaces, one IR.** Python builder DSL (most programmable), markdown agent files (most accessible), and visual editor (most interactive) all compile to the same `dan_graph_v1` JSON. They coexist — users pick the surface that fits. Python and markdown are file-based and version-controllable; the visual editor is for interactive exploration and debugging.
 - **Language split.** Python for orchestration runtime and validation; TypeScript for the visual editor and interaction layer.
 - **Roadmap resequencing.** Build the core engine first, then immediately build a full visual editor baseline to test the system early via UI.
 - **Hierarchical plan numbering.** Plan files use hierarchical numbering (`1-name`, `1-1-name`, `1-1-1-name`) to mirror the task tree.

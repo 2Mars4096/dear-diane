@@ -4,7 +4,7 @@
     "name": "paper_writing",
     "description": "Multi-agent paper writing with literature survey, parallel section writing, and iterative review-revise.",
     "created_at": null,
-    "updated_at": null,
+    "updated_at": "2026-02-24T17:10:33Z",
     "tags": [
       "paper-writing",
       "multi-agent",
@@ -25,8 +25,8 @@
         }
       ],
       "position": {
-        "x": 0.0,
-        "y": 0.0
+        "x": 0,
+        "y": 40
       },
       "ui": {},
       "metadata": {},
@@ -58,8 +58,8 @@
         }
       ],
       "position": {
-        "x": 0.0,
-        "y": 0.0
+        "x": 240,
+        "y": 0
       },
       "ui": {},
       "metadata": {},
@@ -107,8 +107,8 @@
         }
       ],
       "position": {
-        "x": 0.0,
-        "y": 0.0
+        "x": 480,
+        "y": 40
       },
       "ui": {},
       "metadata": {},
@@ -161,8 +161,8 @@
         }
       ],
       "position": {
-        "x": 0.0,
-        "y": 0.0
+        "x": 720,
+        "y": 120
       },
       "ui": {},
       "metadata": {},
@@ -229,8 +229,8 @@
         }
       ],
       "position": {
-        "x": 0.0,
-        "y": 0.0
+        "x": 960,
+        "y": 80
       },
       "ui": {},
       "metadata": {},
@@ -281,8 +281,8 @@
         }
       ],
       "position": {
-        "x": 0.0,
-        "y": 0.0
+        "x": 1200,
+        "y": 80
       },
       "ui": {},
       "metadata": {},
@@ -342,8 +342,8 @@
         }
       ],
       "position": {
-        "x": 0.0,
-        "y": 0.0
+        "x": 1440,
+        "y": 40
       },
       "ui": {},
       "metadata": {},
@@ -383,8 +383,8 @@
         }
       ],
       "position": {
-        "x": 0.0,
-        "y": 0.0
+        "x": 1680,
+        "y": 40
       },
       "ui": {},
       "metadata": {},
@@ -566,8 +566,8 @@
           ],
           "output_ports": [],
           "position": {
-            "x": 0.0,
-            "y": 0.0
+            "x": 0,
+            "y": 0
           },
           "ui": {},
           "metadata": {},
@@ -621,8 +621,8 @@
           ],
           "output_ports": [],
           "position": {
-            "x": 0.0,
-            "y": 0.0
+            "x": 0,
+            "y": 0
           },
           "ui": {},
           "metadata": {},
