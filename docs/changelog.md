@@ -1,5 +1,47 @@
 # Changelog
 
+## 2026-02-24 (editor build cleanup — TypeScript fixes)
+- [fix] `App.tsx`, `DanNode.tsx`, `CompositePreview.tsx`: replaced unsafe `Record<string, unknown>` casts with explicit node-type narrowing for `body_graph` access
+- [fix] `NodePalette.tsx`: replaced `Object.groupBy` with typed `reduce` grouping to remove ES2024 dependency and fix strict TypeScript inference errors
+- [fix] `useGraphStore.ts`: removed unused `portHandleId` import and unused `EMPTY_GRAPH` constant to satisfy strict compile checks
+- [test] `editor/`: `npm run build` now passes (TypeScript + Vite build successful); only Node.js version warning remains (20.17 vs Vite recommended 20.19+)
+- [docs] `bugs.md`: moved `Object.groupBy` issue out of Known Limitations and into Resolved Bugs
+- [docs] `todo.md`: added and checked off "Fix editor TypeScript build blockers" item in Phase 2.5
+
+## 2026-02-24 (Phase 2.5 — fix 5 open editor bugs)
+- [fix] `GraphCanvas.tsx`: replaced manual `clientX - bounds.left` drop position calculation with `screenToFlowPosition()` from `useReactFlow()` — nodes now land correctly when canvas is zoomed/panned
+- [fix] `graphAdapter.ts`: replaced module-level `_counter` with `Date.now()` + random suffix for node IDs — eliminates collisions after page refresh
+- [fix] `GraphCanvas.tsx`: removed wrapper `onKeyDown` handler and `tabIndex`, added `deleteKeyCode={["Delete", "Backspace"]}` prop to `<ReactFlow>` — delete key now fires reliably via React Flow's native handling
+- [fix] `useGraphStore.ts`: extracted `Date.now()` to a single `edgeId` const in `onConnect` — React Flow edge ID and `danEdge.id` are now always identical
+- [fix] `App.tsx`: changed `hasBodyGraph` from `useCallback` to `useMemo`, updated call site to use the memoized boolean directly — avoids redundant recomputation on every render
+- [fix] `GraphCanvas.tsx`: removed unused `danNodeToReactFlow` import
+- [docs] `bugs.md`: moved all 5 bugs from "Open Bugs" to new "Resolved Bugs" section
+- [docs] `todo.md`: checked off 5 bug-fix items in Phase 2.5
+
+## 2026-02-24 (visual editor review — bugs + polish backlog)
+- [docs] `bugs.md`: added 5 open bugs found during frontend code review — drop position wrong when zoomed/panned, node ID collisions after page refresh, delete key unreliable, onConnect edge ID mismatch, hasBodyGraph useCallback/useMemo
+- [docs] `bugs.md`: added 9 known limitations — no error feedback, no loading states, no connection validation, ConfigPanel generic field dump, fixed-height bottom panel, two header bars, no keyboard shortcuts, app title/favicon defaults
+- [docs] `todo.md`: added Phase 2.5 (Visual Editor Polish) with 19 MVP-critical items covering bug fixes, UX improvements, and visual polish
+
+## 2026-02-24 (Phase 3)
+- [feat] Phase 3 — Paper-Writing Proof of Concept (Extended):
+  - `examples/paper_writing.py`: end-to-end workflow using builder DSL (~200 lines)
+    - 8 nodes: LLMOperator x3 (idea_gen, lit_survey, outline_planner), ForEach (section_writers with parallel section writing), CodeOperator x2 (assembler, format_output), WhileLoop (review_loop with structured review-and-revise), ToolOperator (save_paper)
+    - Structured output normalization on outline_planner (JSON schema → title, abstract, sections) and review_and_revise (verdict, feedback, draft)
+    - Explicit ToolRegistry wiring: custom ExecutorRegistry with pre-registered save_paper tool function
+    - Configurable CLI: topic, max review iterations, verbose logging
+    - Event callback for live progress tracking
+    - Saves compiled graph JSON to `graphs/paper_writing.json` and paper output to `output/`
+  - `tests/test_examples/test_paper_writing_e2e.py`: 9 tests covering 3 categories
+    - Happy-path mock e2e (6 tests): graph compilation, node types, entry/exit, JSON round-trip, full mock run, section count
+    - Tool-failure recovery (2 tests): tool exception → FAILED status, unknown tool_id → FAILED status
+    - Checkpoint/resume (1 test): full run with filesystem checkpointing, verify checkpoint files created, resume succeeds
+  - Live-tested against vectorengine.ai with claude-sonnet-4-6: all 8 nodes completed, outline needed 2 normalization attempts, review loop ran 2 iterations, paper saved to output/
+- [test] 9 new tests (252 total)
+- [docs] Created `docs/plans/4-phase-3-paper-writing.md` with task breakdown
+- [docs] Updated `todo.md`: marked Phase 3 complete, added 3 reliability backlog items (tool retry, per-node retry policy, handoff validators)
+- [docs] Updated `architecture.md`: added `examples/` directory to tree
+
 ## 2026-02-24 (architecture expansion — hyperedges, HumanNode, context scoping, applications)
 - [docs] `architecture.md`: added "Context Scoping Across Agent Boundaries" — four scopes (global, local, pass_down, emit_up) with explicit schemas at agent boundaries, upward signals (sticky/non-sticky), revised agent boundary contract (accepts, returns, reads_global, writes_global, signals)
 - [docs] `architecture.md`: added "Hyperedges: Skills and Rules" — skills and rules modeled as hyperedges attaching to multiple nodes. Four types (skill, guardrail, style, override), attachment scope (node ID, type, tags, subgraph), precedence rules, execution hooks (pre_prompt, tool_call, post_output, validation)

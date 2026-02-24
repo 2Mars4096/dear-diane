@@ -13,7 +13,29 @@
 - [x] [3-phase-2-visual-editor](plans/3-phase-2-visual-editor.md) — full-stack visual editor (FastAPI + React Flow) with live streaming execution
 
 ## Phase 3 — Paper-Writing Proof of Concept
-- [ ] 4: End-to-end paper-writing workflow running on engine + editor → (not yet planned)
+- [x] [4-phase-3-paper-writing](plans/4-phase-3-paper-writing.md) — end-to-end paper-writing workflow (builder DSL, ForEach, WhileLoop, Tool, Code, mock + live tests, editor integration)
+
+## Phase 2.5 — Visual Editor Polish (MVP-critical)
+- [x] Fix drop position bug — use `screenToFlowPosition()` for correct node placement when canvas is zoomed/panned
+- [x] Fix node ID collisions — seed counter from existing IDs or switch to UUID/timestamp-based IDs
+- [x] Fix delete key — use React Flow v12 `deleteKeyCode` prop or `onDelete` callback instead of wrapper div `onKeyDown`
+- [x] Fix `onConnect` edge ID mismatch — extract `Date.now()` to local variable
+- [x] Fix `hasBodyGraph` — change from `useCallback` to `useMemo`
+- [x] Fix editor TypeScript build blockers — replace unsafe `Record<string, unknown>` casts in body-graph checks, replace `Object.groupBy`, remove unused store symbols
+- [ ] Error handling + toast notifications — add try/catch to all store actions, surface errors to user
+- [ ] Loading states — spinners/indicators for graph load, save, run start
+- [ ] Connection validation — add `isValidConnection` callback to prevent invalid port wiring
+- [ ] Merge GraphSwitcher + RunPanel into one compact toolbar
+- [ ] App title + favicon — "Deep Agent Network" title, custom favicon
+- [ ] ConfigPanel improvements — field grouping by category, larger code/prompt textareas, validation feedback for JSON fields, editable edge properties
+- [ ] Resizable bottom panel — draggable splitter instead of fixed `h-44`
+- [ ] Node type icons in palette and node header — visual differentiation beyond color
+- [ ] Keyboard shortcuts — Cmd+S for save, standard bindings
+- [ ] Edge labels — show port names on data edges for data-flow visibility
+- [ ] Log filtering — filter by node ID or event type in LogPanel
+- [ ] Syntax highlighting — for code_operator code, JSON output preview, and ConfigPanel JSON fields
+- [ ] Auto-layout — dagre or elkjs for automatic node positioning
+- [ ] Edge type legend — explain what colors/animations mean
 
 ## Phase 4 — Composite Nodes
 - [ ] 5: Nest sub-graphs inside nodes, zoom-in/zoom-out → (not yet planned)
@@ -26,6 +48,9 @@
 
 ## Backlog (unphased)
 - [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
+- [ ] Built-in retry/backoff for ToolOperator — mirror LLMExecutor's transient-error retry (rate limits, timeouts, network). Currently ToolExecutor catches exceptions and immediately returns FAILED.
+- [ ] Per-node retry policy / fallback model — `retry_policy` field (max_retries, backoff, fallback_model, on_failure) exists in architecture docs but is not implemented in runtime. Add to EngineConfig/executor dispatch.
+- [ ] Standardized handoff validator between major stages — lightweight validation node at agent boundaries that checks required output keys, schema conformance, and non-empty values before passing data downstream. Prevents silent data loss propagation.
 - [ ] Survey EvoAgentX for reusable multi-agent patterns
 - [ ] Memory system for long chains — short-term vs. long-term memory modeled after human cognition (encoding, consolidation, retrieval). For very long workflows: how nodes recall distant context, how completed sub-graph results are compressed into retrievable memory, how relevance-based recall replaces brute-force context passing. Research: MemGPT, AgentNet's RAG-based adaptive learning, hippocampal indexing analogies.
 - [ ] Dynamic model selection — `model_policy` field on operators. Budget-aware selection (read `context.token_budget`, pick model tier accordingly). Learned assignment (track model performance per task type across runs, auto-assign optimal model). Strategies 1-4 (static, fallback, router, cascade) already work via composition; this covers the edge cases that are too verbose to express with existing primitives.

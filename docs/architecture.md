@@ -80,10 +80,12 @@ deep-agent-network/
       components/CompositePreview.tsx # Read-only sub-graph modal
       components/GraphSwitcher.tsx   # Graph list/create/delete header
       App.tsx                    # Main layout: palette + canvas + panels
-  tests/                         # pytest suite (243 tests)
+  examples/                      # Phase 3 — runnable workflow scripts
+    paper_writing.py             # End-to-end paper-writing workflow (builder DSL + engine)
+  tests/                         # pytest suite (252 tests)
     test_models/                 # Unit tests for all model types
     test_validation/             # Validation logic tests
-    test_examples/               # Paper-writing motivating example
+    test_examples/               # Paper-writing motivating example + e2e tests
     test_engine/                 # Engine unit + integration tests
     test_builder/                # Builder DSL unit + integration tests
     test_server/                 # Server API, run manager, and event tests
