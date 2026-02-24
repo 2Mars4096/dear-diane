@@ -1,0 +1,106 @@
+---
+description: Project tracking document conventions. Governs which markdown files to read before working, which to update after changes, and how to maintain project memory across sessions.
+alwaysApply: true
+---
+
+# Project Tracking Documents
+
+All tracking docs live in `docs/`. Detailed plans live in `docs/plans/`.
+
+## Document Inventory
+
+| File | Purpose | When to Read | When to Update |
+|------|---------|--------------|----------------|
+| `docs/todo.md` | High-level task list grouped by phase, links to plan files | Start of session to pick up work | After completing or discovering tasks |
+| `docs/plans/N-name.md` | Detailed breakdown of a buildable unit with nested sub-tasks | When working on that plan | Check off sub-tasks as you complete them |
+| `docs/changelog.md` | Chronological log of completed work | Before starting work (to avoid re-doing) | After every meaningful change — end of session at latest |
+| `docs/architecture.md` | Tech stack, directory layout, conventions, patterns | Before writing any code | When adding new modules, changing patterns, or introducing dependencies |
+| `docs/bugs.md` | Known issues, failed approaches, workarounds | Before debugging or proposing solutions | When discovering bugs or when an approach fails |
+| `docs/development-plan.md` | Vision, roadmap, research landscape | Start of session | Only when scope, goals, or roadmap change |
+
+## Session Start Protocol
+
+1. Read `docs/todo.md` — identify what to work on and which plan is active
+2. Read the active plan file in `docs/plans/` — get detailed sub-tasks for current work
+3. Read `docs/changelog.md` (last 3–5 entries) — understand recent context
+4. Read `docs/architecture.md` — respect existing patterns before writing code
+5. Read `docs/development-plan.md` only if the task touches roadmap-level decisions
+
+## After Each Modification
+
+1. **Active plan file** — check off completed sub-tasks (`[x]`), add new sub-tasks if discovered
+2. **`docs/todo.md`** — mark completed high-level items `[x]`, add newly discovered tasks as `[ ]`
+3. **`docs/changelog.md`** — append an entry:
+   ```
+   ## YYYY-MM-DD
+   - [category] Brief description of what changed and why
+   ```
+   Categories: `feat`, `fix`, `refactor`, `docs`, `test`, `infra`
+4. **`docs/architecture.md`** — update if you introduced new files, changed directory structure, added dependencies, or established new patterns
+5. **`docs/bugs.md`** — update if you found a bug, worked around one, or tried an approach that failed (record what and why)
+6. **`docs/development-plan.md`** — update only if a roadmap milestone is completed or scope changed
+
+## Plan Files
+
+Plans live in `docs/plans/` with **hierarchical numbering** that mirrors the task tree:
+
+```
+plans/
+  1-name.md          # top-level plan
+  1-1-name.md        # sub-plan of 1
+  1-2-name.md        # another sub-plan of 1
+  2-name.md          # next top-level plan
+  2-1-name.md        # sub-plan of 2
+  2-1-1-name.md      # sub-sub-plan (expand only when needed)
+```
+
+The number prefix encodes the hierarchy. Sub-plans are created just-in-time — only when you're about to start working on that piece. Future items stay as one-liners in `todo.md` marked `(not yet planned)`.
+
+### Plan file format
+
+```markdown
+# 1-1: Sub-Plan Title
+
+**Parent:** [1-name](1-name.md)
+**Status:** not-started | in-progress | completed
+**Goal:** One sentence describing what this plan achieves.
+
+## Tasks
+- [ ] 1. Task
+  - [ ] 1-1. Sub-task
+  - [ ] 1-2. Sub-task
+- [ ] 2. Task
+
+## Decisions
+- (filled in during execution)
+
+## Notes
+- (filled in during execution)
+```
+
+Top-level plans omit the **Parent** field. Sub-plans link back to their parent.
+
+### todo.md format
+
+High-level items grouped by phase. Each links to its plan file.
+
+```markdown
+# Todo
+
+## Phase 0 — Phase Name
+- [x] [1-name](plans/1-name.md) — brief description
+  - [x] [1-1-name](plans/1-1-name.md)
+  - [ ] [1-2-name](plans/1-2-name.md)
+- [ ] 2: Description → (not yet planned)
+
+## Backlog (unphased)
+- [ ] Task description
+```
+
+## Rules
+
+- Keep each document concise. Bullet points over paragraphs.
+- Never delete changelog entries — it's append-only.
+- In bugs.md, never remove a failed approach — it prevents retry loops.
+- Plan numbering is hierarchical: top-level (1, 2, 3), sub-plans (1-1, 1-2), sub-sub-plans (1-1-1). Depth expands just-in-time.
+- When unsure whether to update a doc, update it. The cost of a stale doc is higher than a redundant entry.
