@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { ReactFlowProvider } from "@xyflow/react";
 import { useGraphStore } from "./store/useGraphStore";
 import EditorToolbar from "./components/EditorToolbar";
@@ -15,11 +15,37 @@ import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
 type BottomTab = "logs" | "output";
 
+const MIN_PANEL_HEIGHT = 80;
+const MAX_PANEL_HEIGHT = 600;
+const DEFAULT_PANEL_HEIGHT = 176;
+
 export default function App() {
   const loadGraphList = useGraphStore((s) => s.loadGraphList);
   const [bottomTab, setBottomTab] = useState<BottomTab>("logs");
+  const [panelHeight, setPanelHeight] = useState(DEFAULT_PANEL_HEIGHT);
+  const dragging = useRef(false);
 
   useKeyboardShortcuts();
+
+  const onDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    dragging.current = true;
+    const startY = e.clientY;
+    const startH = panelHeight;
+
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging.current) return;
+      const delta = startY - ev.clientY;
+      setPanelHeight(Math.min(MAX_PANEL_HEIGHT, Math.max(MIN_PANEL_HEIGHT, startH + delta)));
+    };
+    const onUp = () => {
+      dragging.current = false;
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }, [panelHeight]);
 
   useEffect(() => {
     loadGraphList();
@@ -46,8 +72,12 @@ export default function App() {
               <GraphCanvas />
             </div>
 
-            {/* Bottom panel */}
-            <div className="h-44 border-t border-gray-200 flex flex-col">
+            {/* Bottom panel — resizable */}
+            <div
+              onMouseDown={onDragStart}
+              className="h-1.5 border-t border-gray-200 cursor-row-resize hover:bg-indigo-100 active:bg-indigo-200 transition-colors flex-shrink-0"
+            />
+            <div style={{ height: panelHeight }} className="flex flex-col flex-shrink-0">
               {/* 5-2: Execution timeline bar */}
               <ExecutionTimeline />
               <div className="flex items-center gap-0 border-b border-gray-100 bg-gray-50 px-2">

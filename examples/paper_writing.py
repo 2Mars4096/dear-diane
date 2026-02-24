@@ -73,7 +73,13 @@ result = {'draft': draft, 'verdict': 'pending', 'feedback': 'Initial draft, no p
 """
 
 FORMAT_CODE = """\
-result = {'content': draft, 'title': title}
+# Extract title from the revised draft (review loop may change it)
+final_title = title
+for line in draft.strip().split('\\n'):
+    if line.startswith('# '):
+        final_title = line.lstrip('# ').strip()
+        break
+result = {'content': draft, 'title': final_title}
 """
 
 REVIEW_PROMPT = (

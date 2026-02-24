@@ -4,7 +4,7 @@
     "name": "paper_writing",
     "description": "Multi-agent paper writing with literature survey, parallel section writing, and iterative review-revise.",
     "created_at": null,
-    "updated_at": "2026-02-24T17:10:33Z",
+    "updated_at": "2026-02-24T17:15:28Z",
     "tags": [
       "paper-writing",
       "multi-agent",
@@ -107,8 +107,8 @@
         }
       ],
       "position": {
-        "x": 480,
-        "y": 40
+        "x": 536.8572949946752,
+        "y": -93.32055378061767
       },
       "ui": {},
       "metadata": {},
@@ -161,8 +161,8 @@
         }
       ],
       "position": {
-        "x": 720,
-        "y": 120
+        "x": 720.9802981895633,
+        "y": 238.61608093716723
       },
       "ui": {},
       "metadata": {},
@@ -281,8 +281,8 @@
         }
       ],
       "position": {
-        "x": 1200,
-        "y": 80
+        "x": 1214.7044728434505,
+        "y": 127.05431309904154
       },
       "ui": {},
       "metadata": {},
@@ -348,7 +348,7 @@
       "ui": {},
       "metadata": {},
       "node_type": "code_operator",
-      "code": "result = {'content': draft, 'title': title}\n",
+      "code": "# Extract title from the revised draft (review loop may change it)\nfinal_title = title\nfor line in draft.strip().split('\\n'):\n    if line.startswith('# '):\n        final_title = line.lstrip('# ').strip()\n        break\nresult = {'content': draft, 'title': final_title}\n",
       "language": "python",
       "sandbox_config": {}
     },
