@@ -68,13 +68,48 @@ class RunManager:
         self._runs: dict[str, RunRecord] = {}
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         self._tasks: dict[str, asyncio.Task[None]] = {}
-        self._max_event_buffer = 500
+        self._max_event_buffer = 2000
+        self._pending_human_inputs: dict[str, asyncio.Event] = {}
+        self._human_input_responses: dict[str, dict[str, Any]] = {}
 
     def get_run(self, run_id: str) -> RunRecord | None:
         return self._runs.get(run_id)
 
     def list_runs(self) -> list[dict[str, Any]]:
         return [r.snapshot() for r in self._runs.values()]
+
+    def submit_human_input(self, run_id: str, request_id: str, response: dict[str, Any]) -> bool:
+        """Submit a response for a pending human-input request."""
+        evt = self._pending_human_inputs.get(request_id)
+        if evt is None:
+            return False
+        self._human_input_responses[request_id] = response
+        evt.set()
+        return True
+
+    def get_pending_human_inputs(self, run_id: str) -> list[dict[str, Any]]:
+        """Return pending (unresolved) human-input requests for a run."""
+        record = self._runs.get(run_id)
+        if record is None:
+            return []
+        pending = []
+        for evt_dict in record.events:
+            if evt_dict.get("event_type") == "human_input_needed":
+                rid = (evt_dict.get("data") or {}).get("request_id")
+                if rid and rid in self._pending_human_inputs and not self._pending_human_inputs[rid].is_set():
+                    pending.append(evt_dict)
+        return pending
+
+    def _make_human_input_callback(self, run_id: str):
+        async def callback(request_meta: dict[str, Any]) -> dict[str, Any]:
+            request_id = request_meta["request_id"]
+            evt = asyncio.Event()
+            self._pending_human_inputs[request_id] = evt
+            await evt.wait()
+            response = self._human_input_responses.pop(request_id, {})
+            self._pending_human_inputs.pop(request_id, None)
+            return response
+        return callback
 
     # ------------------------------------------------------------------
     # Subscription
@@ -91,6 +126,7 @@ class RunManager:
                 "run_id": run_id,
                 "snapshot": record.snapshot(),
                 "buffered_events": list(record.events[-self._max_event_buffer:]),
+                "pending_human_inputs": self.get_pending_human_inputs(run_id),
             })
         self._subscribers[run_id].append(queue)
         return queue
@@ -153,7 +189,18 @@ class RunManager:
         run_id = event.run_id
         record = self._runs.get(run_id)
         if record is not None:
-            record.events.append(event_dict)
+            if event.event_type == EventType.INTERMEDIATE_TEXT and event.node_id:
+                for i in range(len(record.events) - 1, -1, -1):
+                    old = record.events[i]
+                    if (old.get("event_type") == "intermediate_text"
+                            and old.get("node_id") == event.node_id
+                            and not (old.get("data") or {}).get("done")):
+                        record.events[i] = event_dict
+                        break
+                else:
+                    record.events.append(event_dict)
+            else:
+                record.events.append(event_dict)
             if len(record.events) > self._max_event_buffer:
                 record.events = record.events[-self._max_event_buffer:]
             if event.node_id and event.event_type in (
@@ -184,6 +231,7 @@ class RunManager:
             config=self._config,
             executor_registry=self._make_executor_registry(),
             event_callback=self._event_callback,
+            human_input_callback=self._make_human_input_callback(record.run_id),
         )
         try:
             result = await engine.run(graph, inputs=inputs, run_id=record.run_id)
@@ -207,6 +255,7 @@ class RunManager:
             config=self._config,
             executor_registry=self._make_executor_registry(),
             event_callback=self._event_callback,
+            human_input_callback=self._make_human_input_callback(record.run_id),
         )
         try:
             result = await engine.resume(graph, run_id=record.run_id)
