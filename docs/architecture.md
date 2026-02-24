@@ -103,6 +103,7 @@ deep-agent-network/
     test_server/                 # Server API, run manager, and event tests
   graphs/                        # Saved graph JSON files (filesystem persistence)
   pyproject.toml                 # Pydantic v2 + OpenAI SDK + FastAPI + uvicorn + pytest
+  README.md                      # User-facing project overview, quick start, feature summary
   .env.example                   # Environment variable template
   .cursor/rules/                 # AI agent rules
 ```
