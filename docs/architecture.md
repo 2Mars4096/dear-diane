@@ -19,6 +19,7 @@ deep-agent-network/
     changelog.md                 # Append-only log of completed work
     todo.md                      # High-level task list, links to plan files
     bugs.md                      # Known issues and failed approaches
+    llm-api-guide.md             # LLM-facing API reference (auto-updated on API changes)
     plans/                       # Numbered detailed plans (just-in-time)
   src/dan/                       # Python package
     __init__.py                  # Top-level package exports
@@ -60,7 +61,7 @@ deep-agent-network/
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
       app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry
       graph_store.py             # Filesystem-based graph JSON persistence
-      run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection
+      run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing
   editor/                        # Phase 2+3.5 — React Flow visual editor
     package.json                 # Dependencies: react, @xyflow/react, zustand, tailwindcss, dagre, allotment, highlight.js, lucide-react
     vite.config.ts               # Vite config: Tailwind plugin, /api proxy to backend
@@ -71,30 +72,33 @@ deep-agent-network/
       lib/api.ts                 # HTTP/WebSocket API client
       lib/paletteTemplates.ts    # Extensible template factories (ReAct, Plan-Execute)
       lib/connectionValidation.ts # isValidConnection — no self-connect, no duplicates
+      lib/graphImporter.ts       # Workflow-as-node: converts saved graph into CompositeNode with autonomous-entry filtering, node-aware port mappings, entry/exit validation
       lib/layout.ts              # Auto-layout via dagre (LR direction)
       lib/nodeIcons.tsx          # Inline SVG icons for all 10 node types
-      store/useGraphStore.ts     # Zustand store — graph, selection, run state, events, layers, toasts, timings
-      hooks/useKeyboardShortcuts.ts # Cmd/Ctrl+S save shortcut
-      components/DanNode.tsx     # Custom node: port handles, status ring, pulse/glow, duration badge, icons, dimming
+      store/useGraphStore.ts     # Zustand store — graph, selection, run state, events, layers, toasts, timings, clipboard, history, port ops, loop iterations, streaming, human input, workflow import
+      hooks/useKeyboardShortcuts.ts # Keyboard shortcuts: save, undo/redo, copy/paste/duplicate
+      components/DanNode.tsx     # Custom node: port handles, status ring, pulse/glow, duration badge, icons, dimming, inline rename, loop badges/counters
       components/AnimatedEdge.tsx # Custom edge: particle flow on active edges, dimming on inactive
-      components/NodePalette.tsx  # Searchable categorized sidebar: templates, edge selector, hover previews
-      components/ConfigPanel.tsx  # Node/edge property editor with field grouping
-      components/GraphCanvas.tsx  # Main canvas: drop handling, drill-in, validation, animated edges
+      components/NodePalette.tsx  # Searchable categorized sidebar: templates, edge selector, hover previews, saved workflows
+      components/ConfigPanel.tsx  # Node/edge property editor, port editor (add/rename/delete), SchemaEditor (visual + raw JSON)
+      components/ContextMenu.tsx  # Right-click context menu: canvas/node/edge actions (paste, copy, delete, edge type)
+      components/GraphCanvas.tsx  # Main canvas: drop handling, drill-in, validation, animated edges, context menu, edge reconnection
       components/EditorToolbar.tsx # Merged toolbar: graph selector + run controls + auto-layout
       components/RunInputsDialog.tsx # Modal for collecting entry-point input variables before run
       components/BreadcrumbBar.tsx # Layer navigation: Root > Node1 > Node2
       components/PortMappingOverlay.tsx # Input/output port mapping display when drilled in
       components/LogPanel.tsx     # Rich structured logs: grouped by node, icons, filtering, click-to-select
       components/ExecutionTimeline.tsx # Horizontal timeline bar with per-node segments
-      components/OutputPreview.tsx    # Per-node output viewer
+      components/OutputPreview.tsx    # Per-node output viewer with streaming text support
+      components/HumanInputDialog.tsx # Modal popup for mid-run human-in-the-loop input submission
       components/ToastContainer.tsx   # Fixed bottom-right toast notifications
       components/Spinner.tsx          # Reusable loading spinner
       components/RunPanel.tsx         # (deprecated — merged into EditorToolbar)
       components/GraphSwitcher.tsx    # (deprecated — merged into EditorToolbar)
       App.tsx                    # Main layout: toolbar + palette + canvas + panels + toasts
   examples/                      # Phase 3 — runnable workflow scripts
-    paper_writing.py             # End-to-end paper-writing workflow (builder DSL + engine)
-  tests/                         # pytest suite (256 tests)
+    paper_writing.py             # INFORMS-oriented workflow: internet-grounded lit search, human interview loop, parallel section drafting, multi-role review, LaTeX/PDF packaging
+  tests/                         # pytest suite (274 tests)
     test_models/                 # Unit tests for all model types
     test_validation/             # Validation logic tests
     test_examples/               # Paper-writing motivating example + e2e tests
@@ -438,7 +442,8 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 - Multiplexes events to WebSocket subscribers via async queues
 - Catch-up snapshot on subscribe: current node statuses + buffered recent events (latest 500, rolling window)
 - Tracks active/completed runs with status snapshots
-- Built-in tools registered in `app.py` lifespan: `save_paper` (paper-writing workflow)
+- Built-in tools registered in `app.py` lifespan: `save_paper`, `search_papers`, `citation_verifier`, `check_latex_deps`, `compile_latex`, `package_submission` (paper-writing workflow)
+- `compile_latex` hardening: auto-bootstrap `informs3.cls` into `output/`, normalize LaTeX preamble for `plainnat` compatibility (`hyperref`, `\newblock`), and auto-fill missing BibTeX citation keys with placeholder entries before `pdflatex`/`bibtex` passes
 
 ### API Endpoints
 
@@ -490,9 +495,11 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 
 ### Multi-Layered Graph Navigation (Phase 3.5-A)
 
-- **CompositeExecutor** — backend executor that maps input/output ports and delegates to `run_subgraph`; registered in scheduler alongside WhileLoop/ForEach
+- **CompositeExecutor** — backend executor that maps input/output ports and delegates to `run_subgraph`; supports node-aware mapping format (`nodeId::portName`) for targeted per-entry-node input injection (backward compatible with legacy flat mappings); registered in scheduler alongside WhileLoop/ForEach
+- **`_run_subgraph` targeted injection** — optional `targeted_inputs: dict[str, dict[str, Any]]` parameter routes inputs to specific entry-point nodes instead of broadcasting to all entries; solves routing collisions when multiple entry nodes share port names
 - **`is_blackbox`** field on CompositeNode — when true, node is opaque (no drill-in, no sub-graph preview)
 - **Canvas drill-in** — double-click composite/while_loop/for_each nodes to navigate into their sub-graph; read-only (no edits while drilled in)
+- **Loop feedback arrows** — when drilling into `while_loop` or `for_each`, synthetic dashed edges (tagged `data.synthetic=true`) are injected from exit-point output ports back to entry-point input ports by name matching; generic fallback arrow when names don't match; `saveGraph()` filters out synthetic edges before serialization
 - **`layerStack`** in Zustand store — tracks navigation depth; `drillIn`/`drillOut`/`jumpToLayer` actions recompute React Flow nodes/edges from `danGraph.sub_graphs`
 - **BreadcrumbBar** — "Root > Node1 > Node2" navigation bar; each segment clickable
 - **PortMappingOverlay** — shows input/output port mappings when viewing a composite node's sub-graph
@@ -531,6 +538,14 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - **Keyboard shortcuts** — Cmd/Ctrl+S → save
 - **Edge labels** — data edges show `source_port → target_port`
 - **Auto-layout** — dagre-based (LR direction, `applyAutoLayout` store action)
+
+### Node & Port Editing (Phase 3.75-C)
+
+- **Port editor** — `ConfigPanel.tsx` renders editable port rows per node (input and output). Each row: name input (commit-on-blur), required checkbox (input only), delete button. "Add Port" button appends with auto-generated unique name (`input_N`/`output_N`). Validation: no duplicates, no empty names (inline red styling).
+- **Atomic port rename** — `renamePort` store action updates the port name on the node AND all connected edges' `source_port`/`target_port` + React Flow `sourceHandle`/`targetHandle` in a single `pushSnapshot` (one undo step).
+- **Port delete with edge cleanup** — `deletePort` store action removes the port and filters out all edges referencing it.
+- **Inline node rename** — double-click the name span in `DanNode.tsx` header to enter edit mode (controlled `<input>`, transparent background matching header style). Enter/blur commits via `updateNodeData`; Escape reverts. `stopPropagation` prevents composite drill-in. Auto-select text via ref + useEffect.
+- **Output schema editor** — `SchemaEditor` component (inline in ConfigPanel) for `llm_operator` and `router` nodes. Visual mode: property rows (name, type dropdown, required checkbox, delete). Raw JSON mode: textarea with parse-on-blur. Toggle between modes; invalid JSON blocks switch to visual. Empty/null schema initializes as `{type: "object", properties: {}}` on first visual switch.
 
 ## Key Decisions
 

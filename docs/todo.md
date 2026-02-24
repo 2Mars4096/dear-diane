@@ -14,6 +14,7 @@
 
 ## Phase 3 — Paper-Writing Proof of Concept
 - [x] [4-phase-3-paper-writing](plans/4-phase-3-paper-writing.md) — end-to-end paper-writing workflow (builder DSL, ForEach, WhileLoop, Tool, Code, mock + live tests, editor integration)
+  - [x] [4-1-grounded-paper-writing-upgrade](plans/4-1-grounded-paper-writing-upgrade.md) — internet-grounded literature survey, human interview loop, evidence gates, INFORMS-oriented LaTeX/PDF workflow
 
 ## Phase 3.5 — Frontend Design
 - [x] [5-phase-3.5-frontend-design](plans/5-phase-3.5-frontend-design.md) — production-quality workflow builder (LangFlow/Flowise/Coze-inspired)
@@ -33,20 +34,15 @@
 ## Phase 3.75 — Visual Editor Full Editing
 > Make the visual editor a complete authoring surface. Currently nodes can be placed and wired, but ports can't be edited, nodes can't be renamed inline, and many editing primitives are missing. This phase closes the gap so users can build workflows entirely from the UI without touching JSON or Python.
 
-- [ ] **Input node** — visual entry point for workflow inputs. Instead of a popup dialog, a dedicated "Start" / "Input" node sits at the graph entry and shows editable fields for each input variable (e.g. `topic`). Users fill in values directly on the canvas before hitting Run. Replaces or supplements `RunInputsDialog`. Could be the existing `HumanInTheLoop` node type with a special "pre-run" mode, or a new lightweight `InputNode` type.
-- [ ] **Port editor** — add/remove/rename input and output ports on any node type from the ConfigPanel. Each port: editable name, optional JSON Schema, required toggle (inputs only). Changes propagate to node handles in real-time.
-- [ ] **Node rename inline** — double-click node header (or single-click name field in ConfigPanel) to rename. Currently `name` is editable in ConfigPanel as a text field but there's no inline edit on the node itself.
-- [ ] **Port-aware connection validation** — when dragging an edge, highlight compatible target ports. Warn on type mismatches (if schemas are defined). Currently `isValidConnection` only checks self-connect and duplicates.
-- [ ] **Edge reconnection** — drag an existing edge's source or target handle to a different port to rewire without delete+recreate.
-- [ ] **Copy / paste / duplicate** — Cmd+C/V for selected nodes (with offset). Duplicate button in ConfigPanel or context menu. Edges between copied nodes are preserved.
-- [ ] **Undo / redo** — history stack in Zustand store. Cmd+Z / Cmd+Shift+Z. Track node/edge add, remove, move, property change, port change.
-- [ ] **Multi-select operations** — shift-click or lasso to select multiple nodes. Bulk delete, bulk move, group into composite.
-- [ ] **Context menu** — right-click on canvas (add node), on node (duplicate, delete, drill-in, copy), on edge (delete, change type).
-- [ ] **Sub-graph creation from selection** — select nodes, right-click "Group into Composite". Auto-generates input/output mappings from cut edges.
-- [ ] **Output schema editor for LLM nodes** — visual JSON Schema builder for `output_json_schema` instead of raw JSON textarea. Shows expected output structure clearly.
-- [ ] **Validation feedback in UI** — run `validate_graph()` on save and surface errors/warnings as inline badges on nodes/edges + toast summary. Currently validation only runs server-side at run time.
-- [ ] **Import / export graph JSON** — toolbar buttons to download current graph as `.json` and import a `.json` file as a new graph. Enables sharing without server access.
-- [ ] **Node search / jump** — Cmd+K style palette to search nodes by name/type and center viewport on selection. Useful for large graphs.
+- [x] [6-phase-3.75-visual-editor-editing](plans/6-phase-3.75-visual-editor-editing.md) — complete authoring surface (undo/redo, copy/paste, port editing, context menus, inline rename, validation, import/export, input node, command palette, execution UX)
+  - [x] [6-1-history-multiselect](plans/6-1-history-multiselect.md) — A. Undo/redo history stack, multi-select (lasso, shift-click, bulk delete/move)
+  - [x] [6-2-clipboard-context-menu](plans/6-2-clipboard-context-menu.md) — B. Copy/paste/duplicate, right-click context menu (canvas/node/edge), edge reconnection
+  - [x] [6-3-node-port-editing](plans/6-3-node-port-editing.md) — C. Port editor (add/remove/rename/schema), inline node rename, output schema visual builder
+  - [x] [6-4-validation](plans/6-4-validation.md) — D. Port-aware connection validation, validation API endpoint, inline error badges + toast summary
+  - [x] [6-5-graph-io-input-node](plans/6-5-graph-io-input-node.md) — E. InputNode type, import/export graph JSON, Cmd+K node search, sub-graph creation from selection
+  - [x] [6-6-execution-ux](plans/6-6-execution-ux.md) — F. Loop visualization as gate/feedback, streaming run output in logs/preview, human-in-the-loop popup + submit flow
+  - [x] [6-7-workflow-as-node](plans/6-7-workflow-as-node.md) — G. Wrap saved workflows as reusable composite nodes from palette/canvas drop
+  - [x] [6-8-patch-up](plans/6-8-patch-up.md) — H. Drill-in feedback arrows, workflow-node port cleanup, multi-entry composite run readiness
 
 ## Phase 4 — Memory & Context Scoping
 > Foundational engine layer for how nodes share, scope, and recall context. Prerequisite for long-running multi-agent workflows where brute-force context passing breaks down. Two pillars: (1) formalized local/global/hierarchical scoping at agent boundaries, and (2) a memory system for compressing and retrieving distant context.
@@ -54,11 +50,26 @@
 - [ ] 8: Memory & context scoping → (not yet planned)
 - [ ] Context scoping across agent boundaries — formalize four scopes (global, local, pass_down, emit_up) with explicit schemas at every agent boundary. Add upward signals (sticky → global, non-sticky → one layer up). Agent boundary contract: accepts, returns, reads_global, writes_global, signals.
 - [ ] Memory system for long chains — short-term vs. long-term memory modeled after human cognition (encoding, consolidation, retrieval). For very long workflows: how nodes recall distant context, how completed sub-graph results are compressed into retrievable memory, how relevance-based recall replaces brute-force context passing. Research: MemGPT, AgentNet's RAG-based adaptive learning, hippocampal indexing analogies.
+- [ ] Phase 4 policy defaults (agreed)
+  - [ ] Backend strategy — DAN-native memory first; external context-db adapters later.
+  - [ ] Canonical memory layers — `L0=TOC/index`, `L1=abstract/overview`, `L2=detailed payload + artifact refs`.
+  - [ ] Lifespan and scope — memory at all levels (local, pass_down/emit_up, global) plus cross-run persistence on checkpoint/resume.
+  - [ ] Message semantics — source node emits message; target node receives message.
+  - [ ] Rule model — deterministic global memory rules plus node-specific memory rules.
+  - [ ] Retrieval model — contingent + rule-based retrieval with balanced determinism/recall.
+  - [ ] Retrieval budget defaults — retrieve `20` → rerank `8` → inject `4`; cap memory context to ~`35%` of prompt budget.
+  - [ ] Consolidation triggers — consolidate at checkpoint and when model-relative context pressure rises (soft at `85-90%`, hard at `95%`).
+  - [ ] Sticky-write approval — required; timeout path escalates to parent.
+  - [ ] Parallel conflict handling — hybrid aggregator (generic default aggregator + per-key reducers).
+  - [ ] Memory hygiene — forbid chain-of-thought persistence; store only project-useful memory.
+  - [ ] Global memory schema baseline — `id`, `scope`, `type`, `summary`, `payload_ref`, `tags`, `confidence`, `provenance`, `created_at`, `ttl`, `approval_status`.
+  - [ ] TTL defaults by memory type (initial) — `profile=365d`, `preferences=180d`, `entities=365d`, `events=90d`, `cases=365d`, `patterns=730d` (overrideable by policy).
+  - [ ] Future tuning policy — treat all defaults as starting points and tune over time using runtime telemetry, retrieval quality, and cost/latency trade-offs (budgets, thresholds, TTLs, rerank/inject counts, reducer policies).
 
 ## Phase 5 — Markdown Agent Format
 > A third authoring surface alongside the Python builder DSL and the visual editor. One `.md` per agent (frontmatter + natural language), one workflow `.md` to wire them. All three surfaces compile to the same `dan_graph_v1` JSON and coexist — markdown is the most accessible, Python the most programmable, visual the most interactive.
 
-- [ ] 6: Markdown agent format → (not yet planned)
+- [ ] 7: Markdown agent format → (not yet planned)
 - [ ] Agent file format — YAML frontmatter (`type`, `model`) + `> Accepts` / `> Returns` blockquote for ports + markdown body as prompt/behavior
 - [ ] Workflow file format — agent list (markdown links to agent files) + `## Flow` section with arrow notation
 - [ ] Flow notation parser — `→` for chaining, `.port` for specific outputs, `| each(agent, parallel: N)`, `| loop(agent, until: cond, max: N)`, `| if(cond, then: A, else: B)`
@@ -68,7 +79,7 @@
 - [ ] Rewrite `examples/paper_writing.py` as a set of markdown agent files + workflow file (validation)
 
 ## Phase 6 — Shareable Blocks / Marketplace
-- [ ] 7: Publish and import reusable agent-blocks → (not yet planned)
+- [ ] 9: Publish and import reusable agent-blocks → (not yet planned)
 
 ## Backlog (unphased)
 - [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
@@ -94,3 +105,12 @@
 - [ ] Voting / ensemble primitive — same-model voting (run node N times with different temperatures, aggregate by majority/threshold) and cross-model ensemble (Claude + GPT + Gemini on same task, best-of or consensus). Either a dedicated `Vote` node or builder sugar like `wf.vote("review", n=3, threshold=2)`. Useful for guardrails, evaluation, and high-stakes decisions. Ref: Anthropic "Building Effective Agents" parallelization pattern.
 - [ ] Tool definition quality (ACI) — invest in tool descriptions for ToolOperator: include example usage, edge cases, input format requirements. Enforce absolute paths over relative in file-manipulating tools (models fail after `cd`). "Poka-yoke" tool arguments to prevent misuse. Treat agent-computer interface design with the same rigor as human-computer interface design. Ref: Anthropic ACI appendix.
 - [ ] Latency / cost observability — surface per-node token counts, wall-clock latency, and estimated cost in the execution viz and LogPanel. Helps users make informed topology and model-selection decisions. Connects to dynamic model selection backlog item.
+- [ ] Built-in tool library (`dan.tools`) — batteries-included tools for ToolOperator: file read/write, web search, web fetch, HTTP request, shell command, PDF ingestion. Currently every tool must be manually registered. ~10 common tools would bridge the gap between "demo" and "usable."
+- [ ] Multi-provider LLM registry — provider registry mapping model names to different API clients/keys (OpenAI, Anthropic, Google). Per-node `model` field already exists in the data model; engine needs a dispatch layer so `model="claude-sonnet-4-6"` and `model="gpt-4o"` resolve to different clients in the same graph. Required to make model heterogeneity practical.
+- [ ] RAG / knowledge retrieval node — first-class `RAGOperator` node type (query input → retrieved chunks output) backed by configurable vector store (local FAISS/ChromaDB or API). Avoids forcing users to wire RAG through ToolOperator + custom code. Needed for paper-writing and science-cursor workflows.
+- [ ] Workflow templates — ship 3-5 graph templates as `.py` files in `examples/`: simple chain, fan-out/fan-in, review-revise loop, RAG Q&A, ReAct agent. Double as documentation and starting points for visual editor palette. Leverage DAN's advantage that templates are code (version-controllable, testable, LLM-generatable).
+- [ ] Session / conversation memory — lightweight persistence layer for carrying conversation history and key-value state across multiple `Engine.run()` invocations of the same graph. Smaller scope than the full memory system (Phase 4); enables chatbot-style use cases where context accumulates across turns.
+- [ ] HTTP request node — dedicated `HTTPOperator` (method, URL, headers, body, response schema extraction) with configurable auth and retries. More ergonomic in the visual editor than a generic ToolOperator wrapping `requests`.
+- [ ] Node test cases / annotations — pin expected input/output pairs on individual nodes for isolated testing. Right-click node → "Add test case" → run in isolation. Visual editor surfaces results; Python builder exposes as pytest-compatible assertions.
+- [ ] Variable inspector in config panel — show available upstream data at each node ("at this node you can access: `{outline: {sections: string[]}}` from planner, `{style: string}` from context store"). Leverage typed edge schemas already in the data model.
+- [ ] Run history / comparison — persist run artifacts (events, outputs, token counts, latency) to disk. Show run history list in editor. Enable side-by-side comparison of outputs across runs for iterative prompt tuning.

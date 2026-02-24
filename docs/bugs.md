@@ -18,6 +18,7 @@
 - **Edge type edit doesn't update styling**: Fixed — `updateEdgeData` syncs top-level `animated`, `label`, `style.stroke` when `edge_type` changes.
 - **Subgraph events lack hierarchy tags**: Fixed — `layer_path` threaded through `ExecutionContext` and emitted with every event.
 - **LogPanel shows node IDs instead of names**: Fixed — `nodeNameMap` reads `data.name` (not `data.label`).
+- **Paper workflow LaTeX compile fails on missing INFORMS assets/citation keys**: Fixed — `compile_latex` now auto-fetches `informs3.cls`, normalizes TeX for `plainnat` compatibility (`hyperref`, `\newblock`), and auto-fills missing BibTeX keys with placeholder entries.
 
 ## Known Limitations
 

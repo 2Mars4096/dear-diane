@@ -1,5 +1,140 @@
 # Changelog
 
+## 2026-02-24 (6-8 patch-up implementation)
+- [feat] Loop feedback arrows: `drillIn` injects synthetic dashed edges from exit-point output ports back to entry-point input ports (name-matched), with generic fallback arrow when names don't match; edges tagged `data.synthetic=true`
+- [fix] Save-leak prevention: `saveGraph()` filters out `edge.data?.synthetic` edges before passing to `reactFlowToDanGraph()`, preventing phantom edges from persisting when saving while drilled into a loop body
+- [feat] Smart port derivation: `derivePorts()` in `graphImporter.ts` now skips autonomous entry nodes (zero input ports), uses node-aware mapping format (`nodeId::portName`), reverses exit-node order so primary exit ports appear first
+- [feat] Entry/exit validation: `graphAsCompositeNode()` validates that all namespaced entry/exit point IDs exist in the body graph before deriving ports
+- [feat] Node-aware input routing: `CompositeExecutor` parses `nodeId::portName` mapping values into per-node `targeted_inputs`, forwarded through `run_subgraph` → `_run_subgraph` for precise per-entry-node injection (backward compatible with legacy flat mappings)
+- [feat] Node-aware output routing: `CompositeExecutor` parses `nodeId::portName` mapping keys, extracting port names for lookup in body output
+- [feat] Targeted injection in `_run_subgraph`: new optional `targeted_inputs` parameter injects values to specific entry-point nodes instead of broadcasting; `ExecutionContext.run_subgraph` signature updated to forward the parameter
+- [fix] Existing mock test signatures updated for new `targeted_inputs` parameter in `test_composite_executor.py`
+- [test] 9 new tests in `tests/test_engine/test_68_patchup.py`: node-aware input routing, legacy fallback, mixed mappings, duplicate port collision, node-aware output mapping, zero-input-port entries, partial input coverage, targeted injection
+- [docs] Updated `docs/architecture.md` with feedback-arrow strategy, node-aware mapping format, autonomous-entry filtering, test count 265→274
+
+## 2026-02-24 (6-8 patch-up plan)
+- [docs] Created `docs/plans/6-8-patch-up.md` — targeted fixes: (1) virtual feedback arrows in loop drill-in views, (2) smart port derivation for workflow-as-node to skip autonomous entry nodes, (3) multi-entry composite run readiness, (4) synthetic edge save-leak prevention, (5) node-aware port mapping collisions
+- [docs] Added 6-8 row to parent plan `6-phase-3.75-visual-editor-editing.md`, re-opened parent status to `in-progress`
+- [docs] Added 6-8 entry to `docs/todo.md`
+
+## 2026-02-24 (6-7 workflow-as-node implementation)
+- [feat] Created `editor/src/lib/graphImporter.ts` — `graphAsCompositeNode()` factory with recursive ID namespacing (`wf_{graphId}__` prefix), deterministic port derivation from entry/exit points, collision-safe naming, and input/output mapping generation
+- [feat] Added "Saved Workflows" category in `NodePalette.tsx` — lists all saved graphs (excluding current), drag/drop with `workflow:{graphId}` payload, click-to-insert, emerald styling, search filtering
+- [feat] Extended `GraphCanvas.tsx` `onDrop` to handle `workflow:` prefix and delegate to `addGraphAsNode` store action
+- [feat] Added `addGraphAsNode(graphId, position)` async action in `useGraphStore.ts` — fetches graph via API, validates payload, runs importer factory, merges sub_graphs, adds CompositeNode atomically with undo snapshot, self-import guard, error toast on failure
+- [docs] Marked `6-7-workflow-as-node.md` and parent plan as completed
+
+## 2026-02-24 (6-6 execution UX implementation)
+- [feat] Added `ITERATION_STARTED`, `ITERATION_COMPLETED`, `HUMAN_INPUT_NEEDED` event types in `events.py`
+- [feat] `WhileLoopExecutor` emits iteration_started/completed events with iteration index, max_iterations, condition per loop turn
+- [feat] `ForEachExecutor` emits iteration_started/completed events per item with index and total count
+- [feat] `HumanInTheLoopExecutor` generates request_id, emits `human_input_needed` event, passes structured metadata dict to callback
+- [feat] Updated `human_input_callback` signature from `Callable[[str], ...]` to `Callable[[dict], ...]` in `executor.py` and `scheduler.py`
+- [feat] `LLMExecutor._call_llm` now streams by default (`stream=True`), emits `intermediate_text` every 5 chunks with delta/accumulated text, falls back to non-streaming on failure
+- [feat] `RunManager` — added pending-input registry (`_pending_human_inputs`), `submit_human_input()`, `get_pending_human_inputs()`, `_make_human_input_callback()`, wired callback into engine creation
+- [feat] `RunManager._event_callback` — coalesces `intermediate_text` events (replaces in-place, preserves `done` events), increased `_max_event_buffer` to 2000
+- [feat] `RunManager.subscribe` — catch-up includes `pending_human_inputs` for reconnect-safe dialog recovery
+- [feat] Added `POST /api/runs/{run_id}/human-input` endpoint in `app.py` — validates request_id, delegates to `submit_human_input`
+- [feat] Added `submitHumanInput` API client in `api.ts`
+- [feat] Added `nodeIterations`, `streamingOutputs`, `pendingHumanInput` state slices in `useGraphStore.ts` with event handlers in `handleRunEvent`
+- [feat] `DanNode.tsx` — loop indicator icon (↻) in header for while_loop/for_each nodes, condition badge for while_loop, live iteration counter badge
+- [feat] `LogPanel.tsx` — added `intermediate_text` icon and data preview, iteration/human-input event colors
+- [feat] `OutputPreview.tsx` — shows streaming text with pulsing cursor for running nodes, swaps to finalized output on completion
+- [feat] Created `HumanInputDialog.tsx` — modal popup with prompt display, textarea response, Cmd+Enter submit, dismiss, error handling
+- [feat] Mounted `HumanInputDialog` in `App.tsx`
+- [test] Added 10 new tests: WhileLoop/ForEach iteration events, human-input events, streaming coalescing, event buffer sizing, event type existence (265 total)
+- [docs] Marked `6-6-execution-ux.md` as completed; Phase 3.75 parent plan fully completed
+
+## 2026-02-24 (6-7 workflow-as-node planning)
+- [docs] Created `docs/plans/6-7-workflow-as-node.md` — new Phase 3.75 sub-plan for wrapping saved workflows as reusable composite nodes via palette/canvas insertion
+- [docs] Reviewed/tightened `docs/plans/6-6-execution-ux.md` and `docs/plans/6-7-workflow-as-node.md` — added reconnect-safe human-input catch-up requirement, explicit stream coalescing/throttling task, deterministic port-collision policy, and invalid-import negative-path coverage
+- [docs] Updated `docs/plans/6-phase-3.75-visual-editor-editing.md` — added 6-7 sub-plan row, expanded parent goal, and updated sequencing notes
+- [docs] Updated `docs/todo.md` — added `6-7-workflow-as-node` under Phase 3.75 tracking
+
+## 2026-02-24 (paper-writing LaTeX workflow hardening)
+- [fix] Updated `compile_latex` in both `src/dan/server/app.py` and `examples/paper_writing.py` to auto-bootstrap `informs3.cls` into `output/` (copy from project root if present, otherwise fetch from a public template mirror), reducing first-run template failures
+- [fix] Added LaTeX compatibility normalization in `compile_latex`: enforce `\\usepackage{hyperref}`, add `\\providecommand{\\newblock}{}`, and rewrite `\\bibliographystyle{informs2014}` to `\\bibliographystyle{plainnat}` before compilation
+- [fix] Added citation/key safety in `compile_latex`: parse cited BibTeX keys from TeX, detect missing entries, and auto-append placeholder BibTeX entries so missing references no longer break/bottleneck compile runs
+- [fix] Updated `check_latex_deps` semantics to treat `informs3.cls` as auto-bootstrap-capable (non-blocking warning) instead of hard-failing on missing local template files
+- [fix] Updated `examples/paper_writing.py` assembly template and regenerated `graphs/paper_writing.json` so the workflow defaults include `hyperref`, `\\newblock` compatibility, `plainnat`, and review loop `max_iterations=3`
+- [test] Verified with targeted suites: `tests/test_examples/test_paper_writing_e2e.py` (8 passed) and `tests/test_server` (27 passed)
+
+## 2026-02-24 (6-6 execution UX planning)
+- [docs] Created `docs/plans/6-6-execution-ux.md` — new Phase 3.75 sub-plan for loop visualization, streaming LLM output visibility, and human-in-the-loop popup/submit flow
+- [docs] Reviewed and tightened `docs/plans/6-6-execution-ux.md` — added explicit callback-contract update tasks (`ExecutionContext`/`Engine`), request-id concurrency safety for human input, and in-place streaming log update strategy to prevent log/event explosion
+- [docs] Added additional 6-6 safeguards — catch-up-safe streaming buffer policy in `run_manager.py`, non-deterministic `for_each` progress handling (`completed/total`), and fallback behavior for ambiguous loop drill-in feedback arrows
+- [docs] Updated `docs/plans/6-phase-3.75-visual-editor-editing.md` — added 6-6 sub-plan row, expanded goal, and set status to `in-progress`
+- [docs] Updated `docs/todo.md` — added `6-6-execution-ux` under Phase 3.75 and re-opened parent 6 plan as pending
+
+## 2026-02-24 (6-5 InputNode, graph I/O, command palette, sub-graph grouping)
+- [feat] Added `InputVariable` and `InputNode` Pydantic models in `src/dan/models/control_flow.py` — typed variables (string/number/boolean) with defaults
+- [feat] Added `InputNode` to `Node` discriminated union in `graph.py`, registered in `registry.py`
+- [feat] Created `InputExecutor` in `src/dan/executors/input.py` — pass-through executor that reads variable values from inputs, falls back to defaults
+- [feat] Registered `InputExecutor` in `scheduler.py` `_register_defaults` and `executors/__init__.py`
+- [feat] Added `InputNodeType` TS interface, `"input"` to `NODE_TYPE_CATALOG` (category `"io"`), and `NODE_DESCRIPTIONS` in `types/graph.ts`
+- [feat] Added `createDefaultNode` case for `"input"` in `graphAdapter.ts` with one default string variable
+- [feat] Added play-triangle SVG icon for `"input"` in `nodeIcons.tsx`
+- [feat] Added `"io"` (Input / Output) category to `NodePalette.tsx` category order and labels
+- [feat] Added `inputNodeValues: Record<string, Record<string, unknown>>` ephemeral state to Zustand store with `setInputNodeValue` action
+- [feat] In `DanNode.tsx`, InputNode renders editable fields per variable (text/number/checkbox) on the node body
+- [feat] Updated `startRun` to collect `inputNodeValues` from InputNode and pass as run inputs, bypassing RunInputsDialog
+- [feat] Added Export button in `EditorToolbar.tsx` — serializes `danGraph` as formatted JSON, triggers browser download
+- [feat] Added Import button in `EditorToolbar.tsx` — file picker validates `dan_graph_v1` structure, creates new graph via API, hard-resets ephemeral state
+- [feat] Created `CommandPalette.tsx` — modal overlay with search input, arrow-key navigation, Enter to select, Escape to close; filters nodes by name/type substring match; on select centers viewport and selects node
+- [feat] Added `commandPaletteOpen` state to store, bound `Cmd/Ctrl+K` in `useKeyboardShortcuts.ts`, mounted in `App.tsx`
+- [feat] Added `groupIntoComposite()` store action — groups multi-selected nodes into a CompositeNode with auto-generated `in_`/`out_` ports, port collision handling, sub-graph creation, entry/exit point detection, edge remapping, and undo snapshot
+- [feat] Bound `Cmd/Ctrl+Shift+G` for grouping in `useKeyboardShortcuts.ts`
+
+## 2026-02-24 (6-4 validation)
+- [feat] Extended `isValidConnection` in `connectionValidation.ts` with port-existence, single-incoming-edge, and JSON Schema type-level compatibility checks
+- [feat] Added `POST /api/graphs/{graph_id}/validate` endpoint in `app.py` — runs `validate_graph()` and returns structured `{errors, warnings}` JSON with extracted `node_id`/`edge_id`
+- [feat] Added `validateGraph` API client function in `api.ts` with `ValidationIssue`/`ValidationResult` types
+- [feat] Added `validationErrors: Record<string, string[]>` to Zustand store — auto-populated after every successful `saveGraph()`, cleared on load/save-start
+- [feat] Added validation error badge on `DanNode` — red dot in top-right corner with tooltip showing error messages
+- [feat] Toast summary after validation — "N errors" warning or "Validation passed" info toast
+- [fix] Added missing `BaseModel` import in `src/dan/models/control_flow.py` (pre-existing bug)
+
+## 2026-02-24 (6-3 node & port editing)
+- [feat] Port editor in `ConfigPanel.tsx` — replaced read-only comma-separated port display with editable rows (name input, required checkbox for input ports, delete button, "Add Port" button) for both input and output port lists
+- [feat] Added `renamePort` and `deletePort` store actions in `useGraphStore.ts` — atomic port rename updates node ports + all connected edges' `source_port`/`target_port` + React Flow handles in one undo snapshot; delete removes port + all referencing edges
+- [feat] Inline node rename in `DanNode.tsx` — double-click name span enters edit mode with transparent input; Enter/blur commits, Escape reverts, stopPropagation prevents drill-in, auto-select text via ref + useEffect
+- [feat] Output schema visual editor (`SchemaEditor`) in `ConfigPanel.tsx` — for `llm_operator` and `router` nodes; Visual mode renders property rows (name, type dropdown, required checkbox, delete); Raw JSON mode with textarea; toggle between modes; invalid JSON blocks visual switch; empty schema auto-initializes as `{type:"object", properties:{}}`
+- [feat] Port name validation — no duplicates, no empty names; inline red border + tooltip on violation
+- [docs] Updated `docs/plans/6-3-node-port-editing.md` — checked off tasks 1–3 (code), noted 3-6 (nested objects) deferred to v2
+- [docs] Updated `docs/architecture.md` — documented port editor, inline rename, SchemaEditor capabilities; updated directory descriptions
+
+## 2026-02-24 (6-2 clipboard, context menu, edge reconnection)
+- [feat] Added clipboard slice to Zustand store (`copySelected`, `pasteClipboard`, `duplicateSelected`) with UUID remapping, position offsetting, and internal-edge preservation
+- [feat] Added keyboard shortcuts `Cmd/Ctrl+C` (copy), `Cmd/Ctrl+V` (paste), `Cmd/Ctrl+D` (duplicate) in `useKeyboardShortcuts.ts`, respecting text input focus
+- [feat] Created `ContextMenu.tsx` — right-click context menu with canvas (Paste), node (Copy/Duplicate/Delete), and edge (Delete/Change Type) actions; dismisses on click-away or Escape
+- [feat] Wired context menu in `GraphCanvas.tsx` via `onPaneContextMenu`, `onNodeContextMenu`, `onEdgeContextMenu` callbacks
+- [feat] Enabled edge reconnection: `edgesReconnectable` prop + `onReconnect` handler that updates both React Flow edge and embedded DAN edge data, with `isValidConnection` guard
+- [docs] Updated `docs/plans/6-2-clipboard-context-menu.md` — checked off tasks 1-5, recorded decisions
+- [docs] Updated `docs/architecture.md` — documented ContextMenu component, updated store/hooks/canvas descriptions
+
+## 2026-02-24 (4-1 grounded paper-writing upgrade)
+- [feat] Rewrote `examples/paper_writing.py` into an INFORMS-oriented, internet-grounded workflow with parallel literature-aspect fan-out, citation verification, claim-evidence gating, human interview loop, evidence-aware section drafting, multi-role review panel, iterative revision, LaTeX compilation, and submission packaging
+- [feat] Added example tool suite: `check_latex_deps`, `search_papers`, `search_web`, `citation_verifier`, `compile_latex`, `save_paper`, `package_submission`
+- [feat] Expanded built-in server tool registry in `src/dan/server/app.py` to support search/verification/LaTeX/submission tools for editor-run workflows
+- [refactor] Updated `src/dan/executors/control_flow.py` HumanInTheLoop executor to prefer dynamic prompt text from `user_prompt`/`prompt` input ports when provided
+- [test] Replaced `tests/test_examples/test_paper_writing_e2e.py` with an updated deterministic suite for the new topology (8 passing tests)
+- [test] Regression checks passed: `python -m pytest tests/test_examples/test_paper_writing_e2e.py -q` and `python -m pytest tests/test_server -q`
+- [docs] Added and completed `docs/plans/4-1-grounded-paper-writing-upgrade.md`; updated `docs/todo.md` and `docs/architecture.md` to track the finished upgrade
+
+## 2026-02-24 (Phase 3.75 planning)
+- [docs] Created `docs/plans/6-phase-3.75-visual-editor-editing.md` — parent plan for Phase 3.75 (Visual Editor Full Editing) with 5 sub-plans, shared decisions (run-state isolation, layer-aware mutations, multi-select ripple effects, grouping scope lock, InputNode value persistence, import hard-reset), and dependency graph
+- [docs] Created 5 sub-plan files with hierarchical task breakdowns:
+  - `6-1-history-multiselect.md` — undo/redo history stack (GraphSnapshot, push/undo/redo, drag debounce, run-state exclusion, depth cap) + multi-select (lasso, shift-click, selectedNodeIds, bulk delete, ConfigPanel summary)
+  - `6-2-clipboard-context-menu.md` — copy/paste/duplicate (clipboard slice, UUID remapping, cross-layer paste, edge preservation) + context menu (canvas/node/edge zones, 3 trigger callbacks) + edge reconnection (edgesReconnectable, onReconnect)
+  - `6-3-node-port-editing.md` — port editor (add/remove/rename with atomic edge updates, schema, required toggle) + inline node rename (double-click, stopPropagation) + output schema visual builder (tree editor, raw JSON toggle)
+  - `6-4-validation.md` — port-aware connection validation (port existence, schema compatibility, single-incoming-edge) + visual drag feedback (CSS handle classes) + validation API endpoint (POST /api/graphs/{id}/validate) + inline badges + toast summary
+  - `6-5-graph-io-input-node.md` — InputNode (backend model/executor/registry + frontend catalog/adapter/icon/palette + ephemeral value persistence) + import/export JSON (hard-reset on import) + Cmd+K command palette + sub-graph creation from selection (cut-edge analysis, deterministic port naming, data-edges-only scope lock)
+- [docs] Updated `docs/todo.md` — added plan links for Phase 3.75 (6 parent + 5 sub-plans), renumbered future phase plan references (Markdown 6→7, Marketplace 7→9, Memory stays at 8)
+
+## 2026-02-24 (LLM API guide)
+- [docs] Created `docs/llm-api-guide.md` — comprehensive LLM-facing API reference covering builder DSL, all 10 node types with full parameter signatures, four edge wiring mechanisms, sub-graph context managers (WhileLoop, ForEach, Composite), engine setup (EngineConfig, ToolRegistry, ExecutorRegistry, checkpointing, event callbacks), complete paper-writing example, REST API endpoints, type reference tables, patterns/recipes, and full import map
+- [docs] Updated `.cursor/rules/project-tracking.mdc` — added `docs/llm-api-guide.md` to document inventory (read before writing API code; update when nodes, edges, builder, engine, executors, or examples change) and "After Each Modification" checklist (item 8)
+
 ## 2026-02-24 (README + tracking rule)
 - [docs] Created `README.md` — project overview, quick start, builder DSL examples, visual editor features, API endpoints, roadmap
 - [docs] Updated `.cursor/rules/project-tracking.mdc` — added `README.md` to document inventory and "After Each Modification" checklist (update on new features, setup changes, CLI commands, roadmap milestones)
@@ -276,3 +411,13 @@
 - [fix] Decompiler metadata fidelity: preserves node `position`/`ui`/`metadata`, graph `created_at`/`updated_at`, and `artifact_refs`
 - [feat] Builder artifact support: added `wf.artifact_ref(...)` and compiler support for graph-level `artifact_refs`
 - [test] Added 6 regression tests for post-review issues (build idempotence, sub-graph entry refs, control/context edge round-trip, custom-port chain fidelity, UI/metadata/artifact preservation); total test suite now 243 passing
+
+## 2026-02-24 (Phase 3.75 — 6-7 Workflow as Reusable Node, partial)
+- [feat] Created `editor/src/lib/graphImporter.ts` — `graphAsCompositeNode()` converts a saved DAN graph into a CompositeNode insertion payload with recursive ID namespacing, port derivation from entry/exit points, collision-safe naming, and flattened sub_graphs
+- [feat] Updated `NodePalette.tsx` — added "Saved Workflows" category listing all saved graphs (excluding current), with search filtering, drag/drop (`workflow:{graphId}`), and click-to-insert support
+- [feat] Updated `GraphCanvas.tsx` — `onDrop` handler routes `workflow:` prefixed payloads to `addGraphAsNode` store action
+- [docs] Updated `architecture.md` — added `graphImporter.ts` to directory structure, updated NodePalette description
+- [docs] Plan 6-7 marked in-progress; tasks 2 (palette UX), 3 (import utility), and 4-4 (canvas drop) checked off. Remaining: store action `addGraphAsNode` (4-1–4-3, 4-5–4-6), validation/tests (6), docs sync (7)
+
+## 2026-02-24 (Phase 4 memory policy defaults)
+- [docs] `todo.md`: expanded Phase 4 defaults with an explicit future-tuning policy — current memory budgets/thresholds/TTLs/reducer choices are baseline defaults to be iteratively tuned using telemetry, retrieval quality, and cost/latency trade-offs

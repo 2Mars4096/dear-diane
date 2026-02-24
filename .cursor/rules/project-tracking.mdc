@@ -18,6 +18,7 @@ All tracking docs live in `docs/`. Detailed plans live in `docs/plans/`.
 | `docs/bugs.md` | Known issues, failed approaches, workarounds | Before debugging or proposing solutions | When discovering bugs or when an approach fails |
 | `docs/development-plan.md` | Vision, roadmap, research landscape | Start of session | Only when scope, goals, or roadmap change |
 | `README.md` | User-facing project overview, quick start, feature summary | Before adding new user-facing features | When adding features, changing setup steps, adding CLI commands, or updating the roadmap |
+| `docs/llm-api-guide.md` | LLM-facing API reference — teaches callers how to use builder DSL, node types, edges, engine | Before writing example code or API usage instructions | When adding/changing node types, edge types, builder methods, engine API, executors, context enums, or examples |
 
 ## Session Start Protocol
 
@@ -41,6 +42,7 @@ All tracking docs live in `docs/`. Detailed plans live in `docs/plans/`.
 5. **`docs/bugs.md`** — update if you found a bug, worked around one, or tried an approach that failed (record what and why)
 6. **`docs/development-plan.md`** — update only if a roadmap milestone is completed or scope changed
 7. **`README.md`** — update if you added a user-facing feature, changed setup/install steps, added new CLI commands or API endpoints, or completed a roadmap milestone. Keep it concise — this is for users, not internal tracking.
+8. **`docs/llm-api-guide.md`** — update if you added or changed node types, edge types, builder methods, engine APIs, executors, context enums, or examples. This is the LLM-facing API reference — keep it accurate so LLM callers can construct valid workflows.
 
 ## Plan Files
 
