@@ -113,6 +113,18 @@ export interface CompositeNode extends NodeBase {
   external_output_schema?: Record<string, unknown> | null;
 }
 
+export interface InputVariable {
+  name: string;
+  type: "string" | "number" | "boolean";
+  default: unknown;
+  description: string;
+}
+
+export interface InputNodeType extends NodeBase {
+  node_type: "input";
+  variables: InputVariable[];
+}
+
 export type DanNode =
   | LLMOperator
   | ToolOperator
@@ -123,7 +135,8 @@ export type DanNode =
   | ReduceNode
   | RouterNode
   | HumanInTheLoopNode
-  | CompositeNode;
+  | CompositeNode
+  | InputNodeType;
 
 // -- Edges -------------------------------------------------------------------
 
@@ -189,6 +202,7 @@ export const NODE_TYPE_CATALOG = [
   { type: "llm_operator", label: "LLM Operator", category: "operator" },
   { type: "tool_operator", label: "Tool Operator", category: "operator" },
   { type: "code_operator", label: "Code Operator", category: "operator" },
+  { type: "input", label: "Input", category: "io" },
   { type: "if_else", label: "If / Else", category: "control" },
   { type: "while_loop", label: "While Loop", category: "control" },
   { type: "for_each", label: "For Each", category: "control" },
@@ -255,5 +269,10 @@ export const NODE_DESCRIPTIONS: Record<
     description: "Reusable sub-graph block",
     inputs: ["input"],
     outputs: ["output"],
+  },
+  input: {
+    description: "Visual entry point for workflow inputs",
+    inputs: [],
+    outputs: ["input"],
   },
 };

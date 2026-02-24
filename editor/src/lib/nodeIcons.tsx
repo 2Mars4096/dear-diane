@@ -60,6 +60,11 @@ const icons: Record<string, JSX.Element> = {
       <rect x="4" y="2" width="8" height="8" rx="1.5" stroke="currentColor" strokeWidth={1.3} opacity={0.5} />
     </svg>
   ),
+  input: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <path d="M4 3v10l9-5-9-5z" fill="currentColor" />
+    </svg>
+  ),
 };
 
 export function NodeIcon({ type, className }: { type: string; className?: string }) {

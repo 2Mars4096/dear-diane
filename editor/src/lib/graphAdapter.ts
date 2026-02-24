@@ -144,5 +144,13 @@ export function createDefaultNode(
       return { ...base, node_type: "human_in_the_loop", prompt: "", timeout_seconds: null, default_action: null };
     case "composite":
       return { ...base, node_type: "composite", body_graph: "", input_mappings: {}, output_mappings: {}, is_blackbox: false };
+    case "input":
+      return {
+        ...base,
+        node_type: "input",
+        input_ports: [],
+        output_ports: [{ name: "input", schema: {} }],
+        variables: [{ name: "input", type: "string" as const, default: "", description: "" }],
+      };
   }
 }

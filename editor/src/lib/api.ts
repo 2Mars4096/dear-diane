@@ -48,6 +48,22 @@ export const deleteGraph = (id: string) =>
     method: "DELETE",
   });
 
+// -- Validation --------------------------------------------------------------
+
+export interface ValidationIssue {
+  node_id?: string;
+  edge_id?: string;
+  message: string;
+}
+
+export interface ValidationResult {
+  errors: ValidationIssue[];
+  warnings: ValidationIssue[];
+}
+
+export const validateGraph = (graphId: string) =>
+  request<ValidationResult>(`/graphs/${graphId}/validate`, { method: "POST" });
+
 // -- Runs --------------------------------------------------------------------
 
 export interface RunInfo {
@@ -76,6 +92,20 @@ export const resumeRun = (runId: string, graphId: string) =>
 
 export const getRun = (runId: string) =>
   request<RunInfo>(`/runs/${runId}`);
+
+export const submitHumanInput = (
+  runId: string,
+  requestId: string,
+  nodeId: string,
+  response: string,
+) =>
+  request<{ status: string; request_id: string }>(
+    `/runs/${runId}/human-input`,
+    {
+      method: "POST",
+      body: JSON.stringify({ request_id: requestId, node_id: nodeId, response }),
+    },
+  );
 
 // -- WebSocket ---------------------------------------------------------------
 
