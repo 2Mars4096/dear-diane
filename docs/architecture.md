@@ -27,12 +27,13 @@ deep-agent-network/
       ports.py                   # InputPort, OutputPort
       context.py                 # NodeLocalState, SharedContextDeclaration, ArtifactRef, ContextProjection, policies
       nodes.py                   # NodeBase, LLMOperator, ToolOperator, CodeOperator
-      control_flow.py            # GateNode (unified if_else/while), IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop, CompositeNode
+      control_flow.py            # GateNode (unified if_else/while), IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop, ValidatorNode, CompositeNode
       edges.py                   # DataEdge, ControlEdge, ContextEdge
       graph.py                   # Graph container, Node/Edge discriminated unions, dan_graph_v1 contract
     validation/
       schema.py                  # Port schema compatibility (MVP structural check)
       graph.py                   # Graph well-formedness validation
+      boundaries.py              # Boundary auto-insert: generate entry/exit ValidatorNodes for composite nodes
     migration/
       gate_migration.py          # Legacy IfElse/WhileLoop → GateNode graph-dict migration helpers
     registry.py                  # NodeTypeRegistry — maps node_type strings to classes
@@ -57,6 +58,10 @@ deep-agent-network/
       text_chunk.py              # Text chunking with overlap
       json_extract.py            # Dot-notation JSON extraction
       regex_match.py             # Regex match/replace
+    sandbox/                     # Phase 6 — subprocess sandbox (operational guardrails)
+      __init__.py                # SandboxConfig (Pydantic), SandboxResult (dataclass), defaults
+      adapters.py                # LanguageAdapter protocol, PythonAdapter, ShellAdapter, ADAPTERS registry
+      runner.py                  # SandboxRunner — subprocess exec with timeout, memory limits, env filtering, output truncation
     engine/                      # Phase 1 — async execution engine
       __init__.py                # Public API: Engine, EngineConfig, RunResult, etc.
       state.py                   # NodeStatus, PortDataStore, ExecutionState
@@ -67,12 +72,22 @@ deep-agent-network/
       checkpoint.py              # CheckpointStore protocol, FileSystemCheckpointStore
       events.py                  # EngineEvent, EventType — typed runtime events
       scheduler.py               # Topological sort (DAG fast-path + cycle-aware for gate loops), parallel dispatch, Engine.run()/resume(), event emission
+    rag/                         # Phase 6 — RAG / knowledge retrieval subsystem
+      __init__.py                # EmbeddingProvider protocol, EmbeddingResult, OpenAI/Local providers, EmbeddingRegistry
+      indexer.py                 # Indexer — create/populate/manage vector store indexes with chunking + batch embedding
+      stores/
+        __init__.py              # VectorStore protocol, DocumentRecord, QueryResult, VectorStoreConfig, VectorStoreFactory
+        memory.py                # MemoryVectorStore — pure-Python stdlib-only (cosine sim via math), O(n) scan
+        faiss_store.py           # FAISSVectorStore — faiss.IndexFlatIP, L2-normalized inner product, persistence, metadata sidecar
+        chroma_store.py          # ChromaVectorStore — chromadb.PersistentClient, native metadata filtering
     executors/                   # Phase 1 — built-in node executors
       __init__.py                # Auto-registers built-in executors
       llm.py                     # LLMExecutor — OpenAI-compatible (vectorengine.ai default)
       tool.py                    # ToolExecutor + ToolRegistry — function dispatch
       code.py                    # CodeExecutor — sandboxed Python exec
+      rag.py                     # RAGExecutor — embed query → vector search → chunk retrieval, event emission, store caching
       control_flow.py            # GateExecutor (unified branching/looping), IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop
+      validator.py               # ValidatorExecutor — rule-based data validation with valid/invalid routing
     builder/                     # Phase 1.5 — fluent workflow builder DSL
       __init__.py                # Public API: workflow(), WorkflowBuilder, NodeRef, PortRef, decompile(), namespace_graph, derive_ports
       refs.py                    # NodeRef, PortRef — compile-time proxies with __format__, __rshift__, __getitem__
@@ -80,6 +95,15 @@ deep-agent-network/
       compiler.py                # Compile builder state -> Graph model (marker resolution, port/edge generation)
       importer.py                # namespace_graph(), derive_ports() — import pre-built Graph as composite node
       decompiler.py              # Graph -> Python builder code string (for visual editor round-trip)
+    loader/                      # Phase 5 — markdown authoring surface (workflow.md + agent .md files)
+      __init__.py                # Public API: load(), load_agents(), compile_workflow()
+      models.py                  # Parsed markdown IR: AgentSpec, WorkflowSpec, FlowStatement, PortSpec
+      parser.py                  # Markdown parser (frontmatter, sections, ports, context, flow extraction)
+      flow_parser.py             # Flow-line parser (chain / each / loop / if)
+      types.py                   # Port schema inference + linked-schema loading
+      compiler.py                # Markdown→Graph compiler (agent→node, flow→edge, auto-wiring, InputNode, diagnostics)
+      decompiler.py              # Graph→Markdown decompiler (node→agent.md, edge→flow, round-trip)
+      diagnostics.py             # Diagnostic, CompileResult, DecompileResult, format_diagnostics()
     server/                      # Phase 2 — FastAPI backend for visual editor
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
@@ -122,17 +146,19 @@ deep-agent-network/
       App.tsx                    # Main layout: toolbar + palette + canvas + panels + toasts
   examples/                      # Phase 3+ — runnable workflow scripts
     paper_writing.py             # INFORMS-oriented workflow: internet-grounded lit search, human interview loop, parallel section drafting, multi-role review, LaTeX/PDF packaging
+    paper_writing_md/            # Markdown rewrite of paper-writing pipeline (Phase 5 validation fixture)
     simple_chain.py              # Phase 4 template: 3-node linear pipeline (LLM→LLM→Code)
     fan_out_fan_in.py            # Phase 4 template: ForEach + Reduce parallel processing
     review_revise.py             # Phase 4 template: GateNode while-loop draft→review→revise
     rag_qa.py                    # Phase 4 template: tool-based RAG Q&A (no vector DB)
     react_agent.py               # Phase 4 template: ReAct agent loop with web tools
-  tests/                         # pytest suite (503 tests)
+  tests/                         # pytest suite (765 passed, 15 skipped)
     test_models/                 # Unit tests for all model types
     test_validation/             # Validation logic tests
     test_examples/               # Paper-writing motivating example + e2e tests
     test_engine/                 # Engine unit + integration tests
     test_builder/                # Builder DSL unit + integration tests
+    test_loader/                 # Markdown loader parser/compiler/type-inference tests
     test_migration/              # Migration helper tests (legacy → gate)
     test_server/                 # Server API, run manager, and event tests
   graphs/                        # Saved graph JSON files (filesystem persistence)
@@ -390,7 +416,7 @@ result = await engine.resume(graph, run_id="abc123")
 
 - `NodeExecutor` is a `Protocol` with `async execute(node, inputs, context) -> NodeResult`
 - `ExecutorRegistry` maps `node_type` strings to executor instances; users can register custom executors
-- Built-in executors for all 10 node types (including `CompositeExecutor`) auto-registered on Engine creation
+- Built-in executors for all 13 node types (including `CompositeExecutor`, `RAGExecutor`, `ValidatorExecutor`) auto-registered on Engine creation
 
 ### LLM Integration
 

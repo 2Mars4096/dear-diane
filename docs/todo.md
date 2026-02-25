@@ -59,35 +59,30 @@
 ## Phase 5 — Markdown Agent Format
 > A third authoring surface alongside the Python builder DSL and the visual editor. One `.md` per agent (frontmatter + natural language), one workflow `.md` to wire them. All three surfaces compile to the same `dan_graph_v1` JSON and coexist — markdown is the most accessible and LLM-generatable format.
 
-- [ ] 8: Markdown agent format → (not yet planned)
-- [ ] Agent file format — YAML frontmatter (`type`, `model`) + `> Accepts` / `> Returns` blockquote for ports + markdown body as prompt/behavior
-- [ ] Workflow file format — agent list (markdown links to agent files) + `## Flow` section with arrow notation
-- [ ] Flow notation parser — `→` for chaining, `.port` for specific outputs, `| each(agent, parallel: N)`, `| loop(agent, until: cond, max: N)`, `| if(cond, then: A, else: B)`
-- [ ] Port type inference — infer types from names and suffixes (`sections[]` → array, plain name → string/text), optional explicit annotation
-- [ ] Auto-wiring — match port names across agents for implicit edge creation; explicit `.port → .port` override when ambiguous
-- [ ] Markdown → Graph compiler (`dan.loader`) — parse markdown files, resolve file references, infer wiring, produce `dan_graph_v1` JSON
-- [ ] Rewrite `examples/paper_writing.py` as markdown agent files + workflow file (validation)
-- [ ] Composite agents in markdown — `type: composite` with internal `## Flow` section for nested zoom-in from a single `.md` file
-- [ ] Markdown round-trip from visual editor — export graph to markdown agent + workflow files (inverse of `dan.loader`)
-- [ ] Linked JSON Schema files — `> Returns: (schema: schemas/outline.json)` for complex structured outputs
-- [ ] Markdown/Python coexistence policy — define relationship between `dan.builder` and `dan.loader`
-- [ ] `dan.loader` ↔ `dan.builder` parity checklist — ensure markdown covers all node/edge/control-flow features
-- [ ] Compiler diagnostics + source maps — `dan.loader` errors reference `file.md:line`
-- [ ] Markdown round-trip conformance tests — `markdown → graph → markdown` idempotent
-- [ ] Markdown format versioning — `format_version` in workflow frontmatter
+- [x] [8-markdown-agent-format](plans/8-markdown-agent-format.md) — `dan.loader`: markdown agent/workflow files → `dan_graph_v1` JSON (third authoring surface)
+  - [x] [8-1-format-design-parser](plans/8-1-format-design-parser.md) — A. Agent file format, workflow file format, flow notation parser, port type inference, format versioning
+  - [x] [8-2-markdown-graph-compiler](plans/8-2-markdown-graph-compiler.md) — B. Auto-wiring, `dan.loader.compile()` → `dan_graph_v1`, compiler diagnostics + source maps
+  - [x] [8-3-validation-parity-advanced](plans/8-3-validation-parity-advanced.md) — C. Paper-writing rewrite, builder parity checklist, coexistence policy, composite agents, linked JSON Schema
+  - [x] [8-4-round-trip-decompiler](plans/8-4-round-trip-decompiler.md) — D. Graph → markdown decompiler, visual editor export, round-trip conformance tests
 
 ## Phase 6 — Extended Capabilities
 > New node types and execution modes following existing patterns. Key missing capabilities for real workflows.
 
-- [ ] 9: Extended capabilities → (not yet planned)
-- [ ] RAG / knowledge retrieval node — first-class `RAGOperator` (query → retrieved chunks) backed by configurable vector store (FAISS/ChromaDB or API). Upgrade from tool-based RAG in Phase 4; dedicated node is more ergonomic in the visual editor and supports index lifecycle management.
-- [ ] Script execution / sandbox — subprocess execution with timeouts and resource limits beyond current sandboxed `exec()`. Prerequisite for trustworthy ToolOperator and Code nodes.
-- [ ] Standardized handoff validator — lightweight validation node at agent boundaries checking required keys, schema conformance, non-empty values.
+- [ ] [9-extended-capabilities](plans/9-extended-capabilities.md) — RAG node, subprocess sandbox, handoff validator
+  - [x] [9-1-rag-knowledge-retrieval](plans/9-1-rag-knowledge-retrieval.md) — embedding pipeline (API + local), vector store (FAISS/ChromaDB/memory), `RAGOperator` node, RAGExecutor, Indexer (backend complete; server endpoints, editor integration, migration follow-up remaining)
+  - [x] [9-2-subprocess-sandbox](plans/9-2-subprocess-sandbox.md) — `SandboxRunner`, resource limits, `CodeExecutor` upgrade, shell tool hardening (backend complete; editor/builder/docs follow-up remaining)
+  - [x] [9-3-handoff-validator](plans/9-3-handoff-validator.md) — `ValidatorNode`, rule types (required keys, schema, expression), boundary auto-insert (backend complete; editor integration, builder helper follow-up remaining)
 
 ## Phase 7 — Author & Distribute
-> Make DAN accessible beyond local development. CLI for headless execution, publish workflows as callable APIs, package for distribution.
+> Make DAN easier to author and share: conversational workflow creation, CLI for headless execution, publish workflows as callable APIs, package for distribution.
 
-- [ ] 10: Author & distribute → (not yet planned)
+- [ ] [10-chatbox-nl-workflow](plans/10-chatbox-nl-workflow.md) — conversational workflow authoring: chat panel, `@` mentions, NL→graph mutations, diff preview, history, run-from-chat
+  - [ ] [10-1-chat-panel-backend](plans/10-1-chat-panel-backend.md) — A. Chat panel React component, backend message endpoint, LLM integration, graph-aware system prompt, streaming
+  - [ ] [10-2-mention-co-navigation](plans/10-2-mention-co-navigation.md) — B. `@` autocomplete (nodes/workflows/sub-graphs), mention chips, click→canvas navigation, canvas→chat suggestion
+  - [ ] [10-3-nl-graph-mutation](plans/10-3-nl-graph-mutation.md) — C. Graph operation primitives, LLM function-calling schema, multi-step mutation planning, validation, error recovery
+  - [ ] [10-4-graph-diff-confirmation](plans/10-4-graph-diff-confirmation.md) — D. Before/after diff computation, visual diff preview, accept/reject/partial-accept, undo integration, conversation rollback
+  - [ ] [10-5-history-execution](plans/10-5-history-execution.md) — E. Per-workflow chat persistence, thread list UI, graph delta tracking, run-from-chat, execution streaming in thread
+- [ ] 11: Author & distribute (remaining) → (not yet planned)
 - [ ] CLI mode — run workflows in terminal/background. Supervisor-style: start, check progress, inspect logs without blocking. Complements visual editor for headless/CI/server deployments.
 - [ ] Publish workflow as API/MCP — build a workflow, publish as a callable MCP server or HTTP endpoint. Turns workflows into consumable services (Coze-style).
 - [ ] Shareable blocks — publish and import reusable agent-blocks. Registry/marketplace for community sharing.
@@ -111,7 +106,6 @@
 - [ ] Agent teams — group-chat style multi-agent coordination with "@" routing, handoffs, and conversational context.
 - [ ] Messaging/comm integrations — email, Slack, Discord, Telegram, WhatsApp adapters. Trigger workflows from external messages.
 - [ ] User system — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments.
-- [ ] Chatbox for NL flow creation — describe workflows in natural language; system generates/modifies graphs without drag-and-drop.
 
 ## Phase 10 — Deep Systems
 > Architectural additions for advanced use cases. Build when real workflows demand them.

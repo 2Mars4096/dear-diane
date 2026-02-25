@@ -1,0 +1,54 @@
+# 10: Conversational Workflow Authoring (Chatbox)
+
+**Status:** not-started
+**Goal:** Add a chat panel to the visual editor where users describe workflows in natural language. The system interprets intent, generates/modifies the graph, and streams results — a fourth interaction surface (alongside drag-and-drop, Python builder, and markdown files) that makes workflow creation as fluid as a conversation.
+
+## Sub-Plans
+
+| # | Sub-Plan | Scope | Primary Files |
+|---|----------|-------|---------------|
+| [10-1](10-1-chat-panel-backend.md) | Chat Panel & Backend API | Chat UI component, FastAPI message endpoint, LLM integration, graph-aware system prompt, streaming responses | new `editor/src/components/ChatPanel.tsx`, new `src/dan/server/chat_manager.py`, `app.py` |
+| [10-2](10-2-mention-co-navigation.md) | `@` Mention & Co-Navigation | `@` trigger detection, autocomplete dropdown (nodes/workflows/sub-graphs), mention chips, click→canvas selection, canvas→chat suggestion | new `editor/src/components/MentionAutocomplete.tsx`, `ChatPanel.tsx`, `useGraphStore.ts` |
+| [10-3](10-3-nl-graph-mutation.md) | NL→Graph Mutation Engine | Graph operation primitives, LLM function-calling schema, multi-step mutation planning, validation before apply, error recovery | new `src/dan/server/graph_mutator.py`, `chat_manager.py` |
+| [10-4](10-4-graph-diff-confirmation.md) | Graph Diff & Confirmation UX | Before/after graph diff computation, visual diff preview dialog, accept/reject/partial-accept, undo integration, conversation-level rollback | new `editor/src/components/GraphDiffPreview.tsx`, `useGraphStore.ts`, `graphAdapter.ts` |
+| [10-5](10-5-history-execution.md) | Chat History & Execution Integration | Per-workflow message persistence, history list UI, graph delta tracking, run-from-chat commands, execution streaming into chat thread | new `src/dan/server/chat_store.py`, `ChatPanel.tsx`, `chat_manager.py` |
+
+## Dependencies / Sequencing
+
+Build order is mostly linear — each sub-plan extends the previous:
+
+1. **10-1** first: foundational chat panel + backend. Nothing else works without this.
+2. **10-2** second: `@` mentions enrich the chat experience and provide structured node references that 10-3 depends on.
+3. **10-3** third: the core intelligence layer. Converts NL to graph mutations. Needs the chat panel (10-1) and mention resolution (10-2) to provide context.
+4. **10-4** fourth: safety layer. Graph diff preview before applying mutations from 10-3. Can be developed partly in parallel with 10-3.
+5. **10-5** last: persistence and execution. Quality-of-life features that layer on top of the working chat+mutation pipeline.
+
+```
+10-1 (panel + API)
+  └──> 10-2 (@ mentions)
+         └──> 10-3 (NL→graph mutation)
+                └──> 10-4 (diff + confirmation)
+                       └──> 10-5 (history + execution)
+```
+
+10-4 and 10-5 are partially independent — history persistence (10-5 tasks 1-4) can start as soon as 10-1 is done.
+
+## Shared Decisions
+
+- **Chat is a panel, not a modal.** The chat panel lives alongside the canvas as a resizable pane (like the existing log panel). It's always accessible, not a popup. Users can see the graph and chat simultaneously.
+- **LLM sees the graph.** Every chat message includes a serialized representation of the current graph (node list with types/ports, edge list, metadata). The LLM has full structural awareness. For large graphs, a compressed summary is used.
+- **Mutations are operations, not full graph replacement.** The LLM produces a sequence of atomic graph operations (add_node, remove_node, edit_node, add_edge, remove_edge, edit_edge_type, rename_node, set_prompt, etc.). This enables granular diff, partial accept, and undo — and avoids the LLM hallucinating unrelated graph changes.
+- **`@` mentions resolve to structured context.** `@SectionWriter` doesn't just paste a name into the prompt — it injects the full node definition (type, ports, prompt, connections) so the LLM can reason about it precisely.
+- **Chat uses the same LLM provider infrastructure.** Chat messages route through `ProviderRegistry` using a configurable `DAN_CHAT_MODEL` (default: `claude-sonnet-4-6`). No separate LLM integration.
+- **WebSocket for streaming.** Chat responses stream token-by-token over the existing WebSocket infrastructure (new event types, same connection pattern as run events).
+- **Graph mutations go through the undo stack.** Every chat-generated mutation batch is pushed as a single undo snapshot. `Ctrl+Z` reverts the entire chat action, not individual operations.
+- **Chat history is per-workflow.** Each workflow tab has its own conversation thread. Switching tabs switches the chat context. History persists to disk alongside graph JSON.
+- **No drag-and-drop replacement.** Chat augments the visual editor — it doesn't replace it. Users can freely mix chat commands with manual edits. The graph is the source of truth; chat is an input method.
+
+## Notes
+
+- The existing `HumanInTheLoopNode` is for mid-execution human input (approve/reject during a run). The chatbox is for design-time interaction (building/editing the graph before or between runs). These are orthogonal features.
+- Cursor's `@` file mention system is the UX reference. The autocomplete should feel equally fast and fluid.
+- The graph-aware system prompt is the key differentiator. Generic chatbots can't reason about graph topology. DAN's chat knows the exact structure and can make precise edits.
+- Future: chat could also serve as a conversational interface for running workflows (Phase 10-5), blurring the line between design-time and run-time interaction.
+- Future: multi-user chat (collaborative editing with shared chat thread) is out of scope for this phase. Single-user local is the target.
