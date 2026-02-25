@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_checkable
 
 from dan.engine.context_runtime import ArtifactStore, LocalStateManager, SharedContextStore
 from dan.engine.state import ExecutionState, NodeStatus
 from dan.models.nodes import NodeBase
+
+if TYPE_CHECKING:
+    from dan.providers import ProviderConfig
+    from dan.providers.registry import ProviderRegistry
 
 
 @dataclass
@@ -20,6 +24,9 @@ class EngineConfig:
     checkpoint_dir: str = "./checkpoints"
     checkpoint_enabled: bool = True
     output_norm_max_retries: int = 3
+    max_concurrency: int | None = None
+    providers: dict[str, ProviderConfig] = field(default_factory=dict)
+    model_provider_map: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -53,6 +60,8 @@ class ExecutionContext:
         event_callback: Callable[[Any], Awaitable[None]] | None = None,
         run_id: str = "",
         layer_path: tuple[str, ...] = (),
+        # -- 7-2: Multi-provider LLM registry -----------------------------------
+        provider_registry: ProviderRegistry | None = None,
     ) -> None:
         self.state = state
         self.config = config
@@ -64,6 +73,7 @@ class ExecutionContext:
         self._event_callback = event_callback
         self._run_id = run_id
         self.layer_path = layer_path
+        self.provider_registry = provider_registry
 
     # -- 5-3: Rich logging -----------------------------------------------------
     async def emit_event(

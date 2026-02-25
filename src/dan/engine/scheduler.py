@@ -253,7 +253,61 @@ class Engine:
         else:
             self.checkpoint_store = None
 
+        self.provider_registry = self._build_provider_registry()
         self._register_defaults()
+
+    def _build_provider_registry(self):
+        """Create the ProviderRegistry from engine config."""
+        from dan.providers import ProviderConfig
+        from dan.providers.registry import ProviderRegistry
+        from dan.providers.openai_provider import OpenAIProvider
+
+        registry = ProviderRegistry()
+
+        default_config = ProviderConfig(
+            api_key=self.config.llm_api_key,
+            base_url=self.config.llm_base_url,
+        )
+        registry.register("default", OpenAIProvider(default_config))
+
+        for name, pconfig in self.config.providers.items():
+            if name == "default":
+                continue
+            provider = self._create_provider(name, pconfig)
+            if provider:
+                registry.register(name, provider)
+
+        for model, provider_name in self.config.model_provider_map.items():
+            registry.set_model_override(model, provider_name)
+
+        return registry
+
+    @staticmethod
+    def _create_provider(name: str, config):
+        """Instantiate a provider by name, returning None on ImportError."""
+        from dan.providers.openai_provider import OpenAIProvider
+
+        if name == "openai":
+            return OpenAIProvider(config)
+
+        if name == "anthropic":
+            try:
+                from dan.providers.anthropic_provider import AnthropicProvider
+                return AnthropicProvider(config)
+            except ImportError:
+                logger.warning("anthropic package not installed; skipping provider '%s'", name)
+                return None
+
+        if name == "google":
+            try:
+                from dan.providers.google_provider import GoogleProvider
+                return GoogleProvider(config)
+            except ImportError:
+                logger.warning("google-generativeai not installed; skipping provider '%s'", name)
+                return None
+
+        # Unknown provider name — treat as OpenAI-compatible
+        return OpenAIProvider(config)
 
     def _register_defaults(self) -> None:
         """Register built-in executors for all standard node types."""
@@ -391,6 +445,14 @@ class Engine:
             for port_name, value in inputs.items():
                 state.port_data.set(f"__input__{entry_id}", port_name, value)
 
+    @staticmethod
+    def _check_halt(state: ExecutionState) -> bool:
+        """Return True if any node signalled halt via metadata."""
+        for meta in state.node_metadata.values():
+            if isinstance(meta, dict) and meta.get("halt"):
+                return True
+        return False
+
     async def _execute(
         self,
         graph: Graph,
@@ -411,10 +473,13 @@ class Engine:
             state, shared_context, artifacts, local_state, graph
         )
 
+        global_sem: asyncio.Semaphore | None = None
+        if self.config.max_concurrency is not None and self.config.max_concurrency > 0:
+            global_sem = asyncio.Semaphore(self.config.max_concurrency)
+
         levels, back_edges, cycle_regions = _topological_levels_with_backedges(graph)
 
         if not back_edges:
-            # DAG fast-path — identical to original behaviour
             for level in levels:
                 ready = [
                     nid for nid in level
@@ -424,7 +489,7 @@ class Engine:
                     continue
 
                 tasks = [
-                    self._execute_node(nid, graph, state, context)
+                    self._guarded_execute_node(nid, graph, state, context, global_sem)
                     for nid in ready
                 ]
                 await asyncio.gather(*tasks)
@@ -433,10 +498,17 @@ class Engine:
                     await self._save_checkpoint(
                         state, shared_context, artifacts, local_state
                     )
+
+                if self._check_halt(state):
+                    if self.checkpoint_store is not None:
+                        await self._save_checkpoint(
+                            state, shared_context, artifacts, local_state
+                        )
+                    break
         else:
             await self._execute_with_cycles(
                 graph, state, context, levels, back_edges, cycle_regions,
-                shared_context, artifacts, local_state,
+                shared_context, artifacts, local_state, global_sem,
             )
 
         result = self._build_result(graph, state)
@@ -455,6 +527,21 @@ class Engine:
         ))
         return result
 
+    async def _guarded_execute_node(
+        self,
+        node_id: str,
+        graph: Graph,
+        state: ExecutionState,
+        context: ExecutionContext,
+        semaphore: asyncio.Semaphore | None = None,
+    ) -> None:
+        """Optionally wrap _execute_node with a global concurrency semaphore."""
+        if semaphore is not None:
+            async with semaphore:
+                await self._execute_node(node_id, graph, state, context)
+        else:
+            await self._execute_node(node_id, graph, state, context)
+
     # ------------------------------------------------------------------
     # Cycle-aware execution
     # ------------------------------------------------------------------
@@ -470,6 +557,7 @@ class Engine:
         shared_context: SharedContextStore,
         artifacts: ArtifactStore,
         local_state: LocalStateManager,
+        global_sem: asyncio.Semaphore | None = None,
     ) -> None:
         """Execute graph with cycle regions handled via bounded iteration."""
         executed_gates: set[str] = set()
@@ -483,10 +571,17 @@ class Engine:
                 continue
 
             tasks = [
-                self._execute_node(nid, graph, state, context)
+                self._guarded_execute_node(nid, graph, state, context, global_sem)
                 for nid in ready
             ]
             await asyncio.gather(*tasks)
+
+            if self._check_halt(state):
+                if self.checkpoint_store is not None:
+                    await self._save_checkpoint(
+                        state, shared_context, artifacts, local_state,
+                    )
+                break
 
             for nid in ready:
                 if nid not in cycle_regions or nid in executed_gates:
@@ -510,6 +605,7 @@ class Engine:
                         await self._iterate_cycle(
                             graph, state, context, nid, cycle_nodes,
                             back_edge_target, max_iter, levels,
+                            global_sem,
                         )
                         executed_gates.add(nid)
 
@@ -528,6 +624,7 @@ class Engine:
         back_edge_target: str,
         max_iterations: int,
         levels: list[list[str]],
+        global_sem: asyncio.Semaphore | None = None,
     ) -> None:
         """Re-execute cycle region nodes until gate emits 'done' or max iterations."""
         for iteration in range(1, max_iterations):
@@ -566,10 +663,13 @@ class Engine:
                 if not ready:
                     continue
                 tasks = [
-                    self._execute_node(nid, graph, state, context)
+                    self._guarded_execute_node(nid, graph, state, context, global_sem)
                     for nid in ready
                 ]
                 await asyncio.gather(*tasks)
+
+                if self._check_halt(state):
+                    return
 
             gate_outputs = state.port_data.get_node_outputs(gate_id)
             exiting = "done" in gate_outputs or "false" in gate_outputs
@@ -792,6 +892,7 @@ class Engine:
             event_callback=self.event_callback,
             run_id=state.run_id,
             layer_path=layer_path,
+            provider_registry=self.provider_registry,
         )
 
     async def _run_subgraph(
@@ -831,6 +932,10 @@ class Engine:
                 for port_name, value in port_values.items():
                     sub_state.port_data.set(f"__input__{node_id}", port_name, value)
 
+        global_sem: asyncio.Semaphore | None = None
+        if self.config.max_concurrency is not None and self.config.max_concurrency > 0:
+            global_sem = asyncio.Semaphore(self.config.max_concurrency)
+
         levels = _topological_levels(sub_graph)
         for level in levels:
             ready = [
@@ -841,10 +946,13 @@ class Engine:
                 continue
 
             tasks = [
-                self._execute_node(nid, sub_graph, sub_state, sub_context)
+                self._guarded_execute_node(nid, sub_graph, sub_state, sub_context, global_sem)
                 for nid in ready
             ]
             await asyncio.gather(*tasks)
+
+            if self._check_halt(sub_state):
+                break
 
         outputs: dict[str, Any] = {}
         for exit_id in sub_graph.exit_points:

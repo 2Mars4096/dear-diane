@@ -1,4 +1,4 @@
-"""LLM executor — OpenAI-compatible chat completions with output normalization."""
+"""LLM executor — multi-provider chat completions with output normalization."""
 
 from __future__ import annotations
 
@@ -12,9 +12,11 @@ from openai import AsyncOpenAI, APIError, APITimeoutError, RateLimitError
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.normalizer import OutputNormalizer
 from dan.engine.state import NodeStatus
-from dan.models.nodes import LLMOperator, NodeBase
+from dan.models.nodes import LLMOperator, NodeBase, RetryPolicy
 
 logger = logging.getLogger(__name__)
+
+_LLM_DEFAULT_RETRY = RetryPolicy(max_retries=3)
 
 
 def _render_template(template: str, variables: dict[str, Any]) -> str:
@@ -30,22 +32,42 @@ def _render_template(template: str, variables: dict[str, Any]) -> str:
 
 
 class LLMExecutor:
-    """Executes LLMOperator nodes via an OpenAI-compatible endpoint.
+    """Executes LLMOperator nodes via the provider registry.
 
     Handles prompt rendering, chat completion calls, output normalization
     (parse/validate/re-prompt loop), and retry policy for API failures.
+    Backward compatible: falls back to direct AsyncOpenAI if no provider
+    registry is available.
     """
 
     def __init__(self, client: AsyncOpenAI | None = None) -> None:
         self._client = client
 
     def _get_client(self, context: ExecutionContext) -> AsyncOpenAI:
+        """Legacy fallback — used only when provider_registry is not available."""
         if self._client is not None:
             return self._client
         return AsyncOpenAI(
             api_key=context.config.llm_api_key,
             base_url=context.config.llm_base_url,
         )
+
+    def _resolve_provider(self, model: str, context: ExecutionContext):
+        """Resolve the LLM provider for a model, with backward compat fallback."""
+        if context.provider_registry is not None:
+            return context.provider_registry.resolve(model)
+
+        from dan.providers import ProviderConfig
+        from dan.providers.openai_provider import OpenAIProvider
+
+        if self._client is not None:
+            return OpenAIProvider.from_client(self._client)
+
+        config = ProviderConfig(
+            api_key=context.config.llm_api_key,
+            base_url=context.config.llm_base_url,
+        )
+        return OpenAIProvider(config)
 
     async def execute(
         self,
@@ -54,12 +76,11 @@ class LLMExecutor:
         context: ExecutionContext,
     ) -> NodeResult:
         assert isinstance(node, LLMOperator)
-        client = self._get_client(context)
+        policy = node.retry_policy or _LLM_DEFAULT_RETRY
         model = node.model or context.config.llm_default_model
 
         rendered_prompt = _render_template(node.prompt_template, inputs)
 
-        # -- 5-3: Rich logging -------------------------------------------------
         await context.emit_event(
             event_type="llm_thinking",
             node_id=node.id,
@@ -79,7 +100,7 @@ class LLMExecutor:
         cumulative_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         for attempt in range(1 + max_norm_retries):
             raw_text, api_error, usage = await self._call_llm(
-                client, model, messages, node, context=context, attempt=attempt
+                model, messages, node, context=context, attempt=attempt
             )
             if usage:
                 for k in cumulative_usage:
@@ -118,11 +139,22 @@ class LLMExecutor:
             else:
                 last_error = result.error_message
 
+        fail_meta = {"model": model, "usage": cumulative_usage}
+
+        if policy.on_failure == "skip":
+            return NodeResult(
+                outputs={}, status=NodeStatus.SKIPPED, metadata=fail_meta,
+            )
+        if policy.on_failure == "halt":
+            return NodeResult(
+                outputs={}, status=NodeStatus.FAILED,
+                error=last_error or "LLM execution failed",
+                metadata={**fail_meta, "halt": True},
+            )
         return NodeResult(
-            outputs={},
-            status=NodeStatus.FAILED,
+            outputs={}, status=NodeStatus.FAILED,
             error=last_error or "LLM execution failed",
-            metadata={"model": model, "usage": cumulative_usage},
+            metadata=fail_meta,
         )
 
     @staticmethod
@@ -138,7 +170,6 @@ class LLMExecutor:
 
     async def _call_llm(
         self,
-        client: AsyncOpenAI,
         model: str,
         messages: list[dict[str, str]],
         node: LLMOperator,
@@ -150,54 +181,23 @@ class LLMExecutor:
         Returns (response_text, error_message, usage_dict). On success
         error_message is None; on exhausted retries response_text is empty.
         """
-        max_retries = 3
-        backoff = 1.0
+        policy = node.retry_policy or _LLM_DEFAULT_RETRY
+        max_retries = max(policy.max_retries, 1)
+        backoff = policy.backoff
+        current_model = model
 
         for retry in range(max_retries):
             try:
-                kwargs: dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "temperature": node.temperature,
-                }
-                if node.max_tokens is not None:
-                    kwargs["max_tokens"] = node.max_tokens
+                provider = self._resolve_provider(current_model, context) if context else None
 
-                try:
-                    kwargs["stream"] = True
-                    kwargs["stream_options"] = {"include_usage": True}
-                    stream = await client.chat.completions.create(**kwargs)
-                    accumulated = ""
-                    chunk_count = 0
-                    last_chunk = None
-                    async for chunk in stream:
-                        last_chunk = chunk
-                        if chunk.choices:
-                            delta = chunk.choices[0].delta.content or ""
-                            accumulated += delta
-                            chunk_count += 1
-                            if context and chunk_count % 5 == 0:
-                                await context.emit_event(
-                                    event_type="intermediate_text",
-                                    node_id=node.id,
-                                    node_type="llm_operator",
-                                    data={"delta": delta, "text": accumulated, "attempt": attempt},
-                                )
-                    if context and accumulated:
-                        await context.emit_event(
-                            event_type="intermediate_text",
-                            node_id=node.id,
-                            node_type="llm_operator",
-                            data={"delta": "", "text": accumulated, "attempt": attempt, "done": True},
-                        )
-                    usage = self._extract_usage(last_chunk) if last_chunk else None
-                    return accumulated, None, usage
-                except Exception:
-                    kwargs.pop("stream", None)
-                    kwargs.pop("stream_options", None)
-                    resp = await client.chat.completions.create(**kwargs)
-                    content = resp.choices[0].message.content or ""
-                    return content, None, self._extract_usage(resp)
+                if provider is not None:
+                    text, usage = await self._call_via_provider(
+                        provider, current_model, messages, node, context, attempt,
+                    )
+                    return text, None, usage
+                else:
+                    # Absolute fallback — no context available
+                    return "", "No execution context available", None
 
             except (RateLimitError, APITimeoutError) as exc:
                 if retry < max_retries - 1:
@@ -205,15 +205,110 @@ class LLMExecutor:
                         "Transient API error (attempt %d/%d): %s",
                         retry + 1, max_retries, exc,
                     )
+                    if context:
+                        await context.emit_event(
+                            event_type="retry_attempted",
+                            node_id=node.id,
+                            node_type="llm_operator",
+                            data={
+                                "attempt": retry + 1,
+                                "max_retries": max_retries,
+                                "error": str(exc),
+                                "model": current_model,
+                            },
+                        )
                     await asyncio.sleep(backoff)
-                    backoff *= 2
+                    backoff = min(backoff * 2, policy.backoff_max)
                 else:
+                    if policy.fallback_model and current_model != policy.fallback_model:
+                        logger.info(
+                            "Retries exhausted on '%s', trying fallback '%s'",
+                            current_model, policy.fallback_model,
+                        )
+                        if context:
+                            await context.emit_event(
+                                event_type="retry_attempted",
+                                node_id=node.id,
+                                node_type="llm_operator",
+                                data={
+                                    "attempt": retry + 1,
+                                    "max_retries": max_retries,
+                                    "error": str(exc),
+                                    "model": current_model,
+                                    "fallback_model": policy.fallback_model,
+                                },
+                            )
+                        current_model = policy.fallback_model
+                        backoff = policy.backoff
+                        try:
+                            fb_provider = self._resolve_provider(current_model, context) if context else None
+                            if fb_provider is not None:
+                                from dan.providers import CompletionResult
+                                result = await fb_provider.complete(
+                                    messages=messages,
+                                    model=current_model,
+                                    temperature=node.temperature,
+                                    max_tokens=node.max_tokens,
+                                )
+                                return result.text, None, result.usage
+                            return "", f"No provider for fallback model '{current_model}'", None
+                        except Exception as fb_exc:
+                            return "", f"Fallback model '{current_model}' also failed: {fb_exc}", None
                     return "", f"API error after {max_retries} retries: {exc}", None
 
-            except APIError as exc:
+            except (APIError,) as exc:
                 return "", f"API error: {exc}", None
 
             except Exception as exc:
                 return "", f"Unexpected error calling LLM: {exc}", None
 
         return "", "LLM call failed", None
+
+    async def _call_via_provider(
+        self,
+        provider: Any,
+        model: str,
+        messages: list[dict[str, str]],
+        node: LLMOperator,
+        context: ExecutionContext | None,
+        attempt: int,
+    ) -> tuple[str, dict[str, int] | None]:
+        """Call LLM via provider — try streaming first, fall back to complete."""
+        try:
+            accumulated = ""
+            chunk_count = 0
+            last_usage = None
+            async for chunk in provider.stream(
+                messages=messages,
+                model=model,
+                temperature=node.temperature,
+                max_tokens=node.max_tokens,
+            ):
+                accumulated = chunk.accumulated
+                chunk_count += 1
+                if context and chunk_count % 5 == 0 and not chunk.done:
+                    await context.emit_event(
+                        event_type="intermediate_text",
+                        node_id=node.id,
+                        node_type="llm_operator",
+                        data={"delta": chunk.delta, "text": accumulated, "attempt": attempt},
+                    )
+                if chunk.done:
+                    last_usage = chunk.usage
+
+            if context and accumulated:
+                await context.emit_event(
+                    event_type="intermediate_text",
+                    node_id=node.id,
+                    node_type="llm_operator",
+                    data={"delta": "", "text": accumulated, "attempt": attempt, "done": True},
+                )
+            return accumulated, last_usage
+        except Exception:
+            result = await provider.complete(
+                messages=messages,
+                model=model,
+                temperature=node.temperature,
+                max_tokens=node.max_tokens,
+            )
+            return result.text, result.usage
