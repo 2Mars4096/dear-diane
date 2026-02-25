@@ -816,3 +816,12 @@
 - [test] **`test_validated_composite_with_custom_ports`**: Asserts custom `input_ports`/`output_ports` are used for validator wiring.
 - [test] **`test_insert_boundary_validators_idempotent`**: Asserts repeated calls return the same graph; no duplicate validators.
 - [test] 870 passed, 15 skipped.
+
+## 2026-02-25 (Phase 7 — review bug-fixes)
+- [fix] **Chat mutation events dropped by UI**: `ChatPanel.tsx` `ws.onmessage` now handles `chat_mutation` stream events — updates the assistant message with `mutationPlan`, `mutationStatus: "proposed"`, and `mutationId`, then saves the thread and stops streaming.
+- [fix] **`/run` chat commands not wired**: `app.py::chat_message` now calls `parse_run_command()` on each incoming message; `/run`, `/run-node`, `/run-subgraph` commands dispatch through `build_scoped_graph` + `RunManager.start_run`, returning `run_started`/`run_error` responses that the frontend handles inline.
+- [fix] **Token usage key mismatch**: Added `_normalize_usage()` in `chat_manager.py` — maps provider keys (`prompt_tokens`/`completion_tokens`) to frontend keys (`prompt`/`completion`). Applied to all three emission paths (stream, tool-call, JSON-fallback).
+- [fix] **`_chat_streams` memory leak**: Changed `_chat_streams` from `dict[str, Queue]` to `dict[str, (Queue, float)]` with monotonic timestamps. `_reap_stale_chat_streams()` evicts entries older than 120s on each POST, guarding against leaked queues when clients never connect.
+- [fix] **Markdown link XSS via unsafe URL schemes**: `ChatMessage.tsx` `applyInlineMarkdown` now rejects `javascript:` hrefs and only allows `https:`, `http:`, `mailto:`, and `#` schemes; added `rel="noreferrer"`.
+- [fix] **Mention trigger fires mid-word**: `mentionParser.ts::findMentionQuery` now requires `@` to be preceded by whitespace or at position 0, preventing false triggers like `email@foo`.
+- [fix] **Workflow mention click was a no-op**: `navigateToMention` now calls `store.openTab(mention.id)` for `workflow` mention type.

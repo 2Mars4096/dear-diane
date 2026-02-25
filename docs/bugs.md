@@ -35,6 +35,16 @@
 - **App title/favicon are Vite defaults**: HTML title is "editor", favicon is `vite.svg`. Basic branding gap.
 - **Node.js version warning**: Vite 7.x and `@vitejs/plugin-react` require Node.js 20.19+ or 22.12+. Current dev environment runs 20.17 — builds succeed with warnings but may break on future Vite updates. Fix: upgrade Node.js.
 
+## Phase 7 Review Fixes (2026-02-25)
+
+- **Chat mutation events silently dropped**: Fixed — `ChatPanel.tsx` now handles `chat_mutation` WebSocket events.
+- **`/run` chat commands ignored**: Fixed — `app.py::chat_message` now dispatches to `parse_run_command` + `build_scoped_graph`.
+- **Token usage keys mismatched (backend→frontend)**: Fixed — `_normalize_usage()` maps `prompt_tokens`/`completion_tokens` → `prompt`/`completion`.
+- **`_chat_streams` memory leak**: Fixed — entries now carry monotonic timestamps; stale entries reaped on each POST.
+- **Markdown link XSS via `javascript:` URLs**: Fixed — `ChatMessage.tsx` allowlists `https:`, `http:`, `mailto:`, `#`.
+- **Mention autocomplete fires mid-word**: Fixed — `findMentionQuery` requires whitespace or start-of-input before `@`.
+- **Workflow mention click was no-op**: Fixed — `navigateToMention` calls `store.openTab()`.
+
 ## Failed Approaches (do not retry)
 
 (none yet)
