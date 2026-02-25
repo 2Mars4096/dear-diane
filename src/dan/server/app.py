@@ -36,7 +36,13 @@ from dan.server.chat_manager import ChatManager, compute_graph_revision
 from dan.server.chat_store import ChatMessage as StoreChatMessage, ChatStore
 from dan.server.graph_store import GraphStore
 from dan.server.run_manager import RunManager
-from dan.server.scoped_run import ScopedRunRequest, ScopedRunResponse, build_scoped_graph
+from dan.server.scoped_run import (
+    ScopedRunRequest,
+    ScopedRunResponse,
+    build_scoped_graph,
+    map_run_event_to_chat_block,
+    parse_run_command,
+)
 from dan.validation.graph import validate_graph
 
 logger = logging.getLogger(__name__)
@@ -990,16 +996,35 @@ async def run_events_ws(websocket: WebSocket, run_id: str):
 # Chat — message endpoint + WebSocket streaming
 # ------------------------------------------------------------------
 
-_chat_streams: dict[str, asyncio.Queue] = {}
+_chat_streams: dict[str, tuple[asyncio.Queue, float]] = {}
+_CHAT_STREAM_TTL_SECONDS = 120.0
+
+
+def _reap_stale_chat_streams() -> None:
+    """Remove chat stream entries older than TTL (guards against leaked queues)."""
+    import time
+    now = time.monotonic()
+    stale = [k for k, (_, ts) in _chat_streams.items() if now - ts > _CHAT_STREAM_TTL_SECONDS]
+    for k in stale:
+        _chat_streams.pop(k, None)
 
 
 @app.post("/api/chat/message")
 async def chat_message(req: ChatMessageRequest):
+    import time
+
     if _chat_manager is None:
         raise HTTPException(status_code=503, detail="Chat not initialised")
+
+    _reap_stale_chat_streams()
+
+    run_cmd = parse_run_command(req.message)
+    if run_cmd is not None:
+        return await _handle_run_command(req, run_cmd)
+
     stream_channel_id = f"chat-{uuid.uuid4().hex[:10]}"
     queue: asyncio.Queue = asyncio.Queue()
-    _chat_streams[stream_channel_id] = queue
+    _chat_streams[stream_channel_id] = (queue, time.monotonic())
 
     async def _produce():
         try:
@@ -1027,12 +1052,48 @@ async def chat_message(req: ChatMessageRequest):
     return {"message_id": uuid.uuid4().hex[:12], "stream_channel_id": stream_channel_id}
 
 
+async def _handle_run_command(
+    req: ChatMessageRequest, run_cmd: dict[str, Any],
+) -> dict[str, Any]:
+    """Execute a /run chat command and return immediate response."""
+    rm = _require_run_manager()
+    graph = _graph_store.load_as_model(req.workflow_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{req.workflow_id}' not found")
+
+    scope = run_cmd.get("scope", "full")
+    result = build_scoped_graph(
+        graph,
+        scope,
+        run_cmd.get("target_node_id"),
+        run_cmd.get("target_subgraph_key"),
+    )
+    if result.error:
+        return {
+            "type": "run_error",
+            "error": result.error.model_dump(),
+            "message_id": uuid.uuid4().hex[:12],
+        }
+
+    record = await rm.start_run(
+        result.graph, graph_id=req.workflow_id, inputs=run_cmd.get("inputs"),
+    )
+    return {
+        "type": "run_started",
+        "run_id": record.run_id,
+        "scope": scope,
+        "target": run_cmd.get("target_node_id") or run_cmd.get("target_subgraph_key"),
+        "message_id": uuid.uuid4().hex[:12],
+    }
+
+
 @app.websocket("/api/chat/{channel_id}/events")
 async def chat_events_ws(websocket: WebSocket, channel_id: str):
-    queue = _chat_streams.get(channel_id)
-    if queue is None:
+    entry = _chat_streams.get(channel_id)
+    if entry is None:
         await websocket.close(code=4004)
         return
+    queue, _ = entry
     await websocket.accept()
     try:
         while True:
