@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import urllib.parse
 import urllib.request
 import zipfile
@@ -25,8 +26,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+from dan.builder.decompiler import decompile as decompile_to_python
 from dan.engine.executor import EngineConfig
 from dan.executors.tool import ToolRegistry
+from dan.loader.decompiler import decompile_to_markdown
 from dan.models.graph import Graph
 from dan.server.graph_store import GraphStore
 from dan.server.run_manager import RunManager
@@ -637,6 +640,40 @@ async def validate_graph_endpoint(graph_id: str):
             errors.append(entry)
 
     return {"errors": errors, "warnings": warnings}
+
+
+@app.get("/api/graphs/{graph_id}/export/markdown")
+async def export_graph_markdown(graph_id: str):
+    graph = _graph_store.load_as_model(graph_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        result = decompile_to_markdown(graph, tmpdir)
+        files: list[dict[str, str]] = []
+        for p in result.files:
+            content = p.read_text(encoding="utf-8")
+            files.append({"path": p.name, "content": content})
+        diagnostics: list[dict[str, Any]] = [
+            {
+                "level": d.level,
+                "message": d.message,
+                "source_file": str(d.source_file) if d.source_file else None,
+                "source_line": d.source_line,
+                "source_column": d.source_column,
+                "hint": d.hint,
+            }
+            for d in result.diagnostics
+        ]
+        return {"files": files, "diagnostics": diagnostics}
+
+
+@app.get("/api/graphs/{graph_id}/export/python")
+async def export_graph_python(graph_id: str):
+    graph = _graph_store.load_as_model(graph_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    code = decompile_to_python(graph)
+    return {"code": code}
 
 
 # ------------------------------------------------------------------
