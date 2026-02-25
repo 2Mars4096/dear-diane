@@ -315,6 +315,8 @@ class Engine:
         from dan.executors.tool import ToolExecutor
         from dan.executors.code import CodeExecutor
         from dan.executors.input import InputExecutor
+        from dan.executors.rag import RAGExecutor
+        from dan.executors.validator import ValidatorExecutor
         from dan.executors.control_flow import (
             CompositeExecutor,
             ForEachExecutor,
@@ -330,6 +332,7 @@ class Engine:
             ("llm_operator", LLMExecutor()),
             ("tool_operator", ToolExecutor()),
             ("code_operator", CodeExecutor()),
+            ("rag_operator", RAGExecutor()),
             ("input", InputExecutor()),
             ("if_else", IfElseExecutor()),
             ("gate", GateExecutor()),
@@ -338,6 +341,7 @@ class Engine:
             ("reduce", ReduceExecutor()),
             ("router", RouterExecutor()),
             ("human_in_the_loop", HumanInTheLoopExecutor()),
+            ("validator", ValidatorExecutor()),
             ("composite", CompositeExecutor()),
         ]
 
