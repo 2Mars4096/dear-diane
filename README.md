@@ -6,7 +6,7 @@ Typed graph orchestration for multi-agent LLM workflows. Design agent networks a
 
 - **Two-level nodes** — atomic operators (LLM call, tool call, code execution) and composite agents (sub-graphs that behave as single nodes with typed interfaces)
 - **Typed edges** — data (schema-validated), control (conditionals, loops, routing), and context (shared state)
-- **Control-flow primitives** — IfElse, WhileLoop, ForEach, Reduce, Router, Human-in-the-Loop
+- **Control-flow primitives** — GateNode (if/else + while loop), ForEach, Reduce, Router, Human-in-the-Loop
 - **Model heterogeneity** — each operator independently specifies its model (cheap for classification, strong for reasoning)
 - **Output normalization** — built-in parse → validate → re-prompt → retry on every LLM operator
 - **Checkpointing** — resume long-running workflows from the last completed level
@@ -91,11 +91,18 @@ All surfaces compile to the same `dan_graph_v1` JSON and coexist:
 
 The editor is a full-featured workflow builder inspired by LangFlow, Flowise, and Coze:
 
-- **Node palette** — searchable, categorized sidebar with all 10 node types plus pre-built templates (ReAct, Plan-Execute)
+- **Multi-tab workflows** — open multiple workflows as tabs, each with isolated editing and run state; background runs continue on the server and catch up when reactivated
+- **Node palette** — searchable, categorized sidebar with 12 node types plus pre-built templates (ReAct, Plan-Execute, Gate nodes)
+- **Full editing** — undo/redo, copy/paste/duplicate, right-click context menus, inline rename, port editor (add/remove/rename ports with schemas)
 - **Multi-layer navigation** — double-click composite/loop nodes to drill into sub-graphs; breadcrumb bar for navigation
-- **Live execution** — pulse/glow animations on active nodes, particle flow on edges, duration badges, execution timeline
-- **Rich logging** — per-node collapsible log sections with LLM thinking, tool calls, code output; filtering and click-to-select
+- **Gate-based control flow** — if/else and while-loop gates with branch-colored handles, visible back-edges, condition badges, and collapsible loop groups
+- **Live execution** — pulse/glow animations on active nodes, particle flow on edges, duration badges, streaming LLM output, iteration counters
+- **Human-in-the-loop** — popup dialog during execution for workflows that require user input
+- **Rich logging** — expandable per-node log sections with LLM thinking, tool calls, code output; filtering and click-to-select
+- **Workflow reuse** — wrap saved workflows as reusable composite nodes via palette or context menu
 - **Run inputs** — auto-detects `{variable}` placeholders and shows an input dialog before execution
+- **Validation** — port-aware connection validation, backend validation API, inline error badges with toast summaries
+- **Import/export** — save and load graph JSON; Cmd+K command palette for node search
 - **Edge types** — toggle between data/control/context edges; color-coded with labels
 - **Auto-layout** — dagre-based layout with one click
 
@@ -134,10 +141,11 @@ deep-agent-network/
     engine/             # Async execution engine (scheduler, state, checkpointing)
     executors/          # Built-in executors (LLM, tool, code, control flow)
     builder/            # Fluent DSL (builder, compiler, decompiler)
+    migration/          # Graph migration helpers (legacy → gate nodes)
     server/             # FastAPI backend (CRUD, runs, WebSocket events)
   editor/               # React Flow visual editor (TypeScript + Vite)
   examples/             # Runnable workflow scripts
-  tests/                # pytest suite (256 tests)
+  tests/                # pytest suite (341 tests)
   graphs/               # Saved graph JSON files
   docs/                 # Project tracking and documentation
 ```
@@ -155,7 +163,7 @@ pytest --cov=dan
 pytest tests/test_engine/test_scheduler.py
 ```
 
-256 tests covering models, validation, engine, builder, server, and end-to-end workflows.
+341 tests covering models, validation, engine, builder, server, migration, and end-to-end workflows.
 
 ## API Endpoints
 
@@ -171,6 +179,8 @@ The backend exposes a REST + WebSocket API:
 | POST | `/api/runs` | Start execution |
 | POST | `/api/runs/{id}/resume` | Resume from checkpoint |
 | GET | `/api/runs/{id}` | Run status |
+| POST | `/api/runs/{id}/human-input` | Submit human-in-the-loop response |
+| POST | `/api/validate` | Validate graph structure |
 | WS | `/api/runs/{id}/events` | Live event stream |
 
 ## Roadmap
@@ -183,6 +193,7 @@ The backend exposes a REST + WebSocket API:
 | 2 — Visual editor (FastAPI + React Flow, live streaming) | Done |
 | 3 — Paper-writing proof of concept (end-to-end workflow) | Done |
 | 3.5 — Frontend design (multi-layer nav, execution viz, logging, palette, polish) | Done |
+| 3.75 — Visual editor full editing (tabs, gates, ports, validation, workflow reuse) | Done |
 | 4 — Memory & context scoping | Planned |
 | 5 — Markdown agent format (`dan.loader`) | Planned |
 | 6 — Shareable blocks / marketplace | Planned |

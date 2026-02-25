@@ -1,6 +1,6 @@
 # 6: Phase 3.75 — Visual Editor Full Editing
 
-**Status:** completed
+**Status:** in-progress
 **Goal:** Make the visual editor a complete authoring surface with undo/redo, copy/paste, port editing, context menus, inline rename, validation feedback, import/export, command palette, InputNode support, execution-time UX (loop visualization, streaming output, human input), and workflow-as-node reuse — so users can build and run workflows entirely from the UI without touching JSON or Python.
 
 ## Sub-Plans
@@ -15,6 +15,9 @@
 | [6-6](6-6-execution-ux.md) | Execution UX Gaps | Loop visualization, streaming output, human-in-the-loop popup | `DanNode.tsx`, `LogPanel.tsx`, `OutputPreview.tsx`, `useGraphStore.ts`, `events.py`, `llm.py`, `run_manager.py`, `app.py` |
 | [6-7](6-7-workflow-as-node.md) | Workflow as Reusable Node | Insert saved workflows from palette as composite nodes | `NodePalette.tsx`, `GraphCanvas.tsx`, `useGraphStore.ts`, `graphAdapter.ts`/`graphImporter.ts`, `api.ts` |
 | [6-8](6-8-patch-up.md) | Patch-Up | Drill-in feedback arrows, port cleanup, multi-entry run readiness | `useGraphStore.ts`, `graphImporter.ts`, `control_flow.py`, `scheduler.py` |
+| [6-9](6-9-multi-tab-workflow-sessions.md) | Multi-Tab Workflow Sessions | Multiple workflow tabs with per-tab run state and reconnect-on-activation | `useGraphStore.ts`, `EditorToolbar.tsx`, new `TabBar.tsx`, `App.tsx` |
+| [6-10](6-10-gate-loop-condition-redesign.md) | Gate Loop + Condition Redesign | Visible loop flow via gate nodes, condition routing cleanup, collapsible loop groups | `control_flow.py`, `scheduler.py`, `graph.py`, `DanNode.tsx`, `paletteTemplates.ts` |
+| [6-11](6-11-workflow-ux-polish.md) | Workflow UX Polish | Run summary (tokens + time), drill-in auto-layout, multi-tab duplicate graphs | `llm.py`, `scheduler.py`, `useGraphStore.ts`, `TabBar.tsx`, `LogPanel.tsx` |
 
 ## Dependencies / Sequencing
 
@@ -39,6 +42,9 @@
 4. **6-5** (Input Node, Graph I/O, Search) — depends on 6-1 multi-select; most complex sub-plan
 5. **6-6** (Execution UX Gaps) — follow-up polish for run-time UX; can be split into parallel tracks (loop viz, streaming, human input)
 6. **6-7** (Workflow as Reusable Node) — reusable composition primitive; can run in parallel with 6-6
+7. **6-8** (Patch-Up) — stabilize loop drill-in visuals, workflow-node port derivation, and multi-entry runtime readiness
+8. **6-9** (Multi-Tab Workflow Sessions) — extend editor to multi-workflow tab sessions with per-tab state isolation and reconnect-on-activation
+9. **6-10** (Gate Loop + Condition Redesign) — replace hidden loop authoring with gate-based visible loops and fix condition-node UX/runtime semantics
 
 ## Shared Decisions
 

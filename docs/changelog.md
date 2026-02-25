@@ -1,11 +1,48 @@
 # Changelog
 
+## 2026-02-24 (6-9 multi-tab workflow sessions implementation)
+- [feat] `TabInfo` and `TabSnapshot` types in `useGraphStore.ts` — per-tab state model covering all workflow-scoped slices (graph, nodes, edges, selection, layers, validation, run state, logs, history, iterations, streaming, human input)
+- [feat] `_snapshotActiveTab()` / `_restoreTab()` internal helpers — deep-clone all per-tab state into/from a `TabSnapshot` using `structuredClone` and `Set` copies
+- [feat] `_persistTabState()` — writes `{ tabs, activeTabId, runs }` to `sessionStorage` under `dan_open_tabs` key (lightweight metadata only, no nodes/edges/logs)
+- [feat] `openTab(graphId)` — deduplicates by `graphId` (switches to existing tab), snapshots active tab to cache, creates new tab with fresh state, loads graph via API
+- [feat] `switchTab(tabId)` — snapshots active tab, closes active WebSocket, restores target from cache (or loads from API), reconnects WS if target has an active run (`running`/`pending`)
+- [feat] `closeTab(tabId)` — blocks closing last tab with toast warning, switches to neighbor before removing active tab, cleans `tabCache`
+- [feat] Cross-tab event guard in `handleRunEvent` — ignores WS events whose `run_id` doesn't match active tab's `runId`, preventing log/status contamination during fast tab switches
+- [feat] `restoreTabs()` startup action — reads `dan_open_tabs` from `sessionStorage`, rebuilds tab list, loads active tab's graph, reconnects active run via API + WS catch-up
+- [feat] Legacy migration in `restoreTabs()` — detects old `dan_active_run` key, converts to tab-aware schema, clears legacy key
+- [feat] `startRun` / `resumeRun` / `handleRunEvent` (terminal events) call `_persistTabState()` for session persistence
+- [feat] `loadGraphList` creates initial tab from `last_opened` when no tabs exist
+- [feat] `createGraph` routes through `openTab` after creation; `deleteGraph` closes matching tab
+- [feat] Created `editor/src/components/TabBar.tsx` — horizontal tab bar with graph name (truncated), run status badge (colored dot), close button (×), active tab indigo border styling, "+" button with dropdown picker of unopened graphs
+- [feat] Updated `EditorToolbar.tsx` — replaced graph `<select>` dropdown with `<TabBar />` component, kept create/delete controls, import routes through `openTab`
+- [feat] Updated `App.tsx` — startup calls `restoreTabs()` after `loadGraphList()` instead of `recoverActiveRun()`
+- [infra] TypeScript compiles cleanly (`npx tsc --noEmit` — 0 errors)
+
+## 2026-02-24 (6-10 cycle-aware scheduling + gate validation — phase 2)
+- [feat] `PortDataStore.clear_node(node_id)` — removes all port data for a node, replacing raw `_data` dict manipulation in cycle iteration
+- [fix] `_should_skip()` back-edge exemption — while-gate continue/loop ports no longer cause downstream cycle nodes to be skipped during initial pass or iterations; only forward gate branches (true/false/done) trigger skip logic
+- [fix] Virtual input priority in `_execute_node()` — virtual inputs (from `_inject_inputs` and `_iterate_cycle`) now override stale data-edge values via direct assignment instead of `setdefault`, fixing cycle nodes receiving outdated non-cycle predecessor data
+- [fix] `_iterate_cycle()` refactored to use `clear_node()` instead of raw `_data` access
+- [feat] Multi-gate cycle validation in `_validate_gate_cycles()` — computes per-gate cycle regions via bidirectional reachability; rejects overlapping regions from two while-gates in the same cycle
+- [test] `tests/test_engine/test_cycle_scheduling.py` — 14 tests: PortDataStore.clear_node (3), DAG fast-path (2), while-gate loop execution (2), max_iterations enforcement (1), if_else branch skip (2), gateless cycle rejection (1), gated cycle acceptance (1), if_else-mode cycle rejection (1), multi-gate cycle rejection (1)
+- [fix] Updated `test_gate_scheduling.py::test_loop_executes_multiple_iterations` stop_at from 3→5 to match corrected cycle behavior where inc node now properly executes
+
+## 2026-02-24 (6-10 cycle-aware scheduling + gate validation)
+- [feat] `_topological_levels_with_backedges(graph)` — extended topo sort that identifies gate-controlled back-edges and computes cycle regions, enabling flat visible-loop scheduling without sub-graph containers
+- [feat] Cycle-aware execution in `Engine._execute_with_cycles()` and `_iterate_cycle()` — re-executes cycle region nodes in bounded iterations when a gate(while) node outputs on its continue port; respects `max_iterations` guard
+- [feat] Gate branch-port skip logic in `_should_skip()` — nodes downstream of an inactive gate branch are skipped (complements existing ControlEdge-based branching for legacy if_else)
+- [feat] `_validate_gate_cycles()` in `validation/graph.py` — validates that gate-controlled cycles use while mode with valid iteration bounds; rejects if_else-mode gates in cycles
+- [feat] `_check_data_cycles()` now exempts gate nodes alongside while_loop/for_each so gate-controlled back-edges don't trigger false cycle errors
+- [feat] DAG fast-path preserved — when no back-edges exist, `_execute()` runs the original level-by-level scheduling with zero overhead
+- [test] `tests/test_engine/test_gate_scheduling.py` — 15 tests covering gate if_else branching, while-loop iteration, max_iterations enforcement, iteration events, DAG fast-path, topo sort back-edge detection, cycle validation, and helper functions
+
 ## 2026-02-24 (import_workflow + equity research example)
 - [feat] `wf.import_workflow(node_id, graph)` — Python builder method to embed a pre-built Graph as a composite node, enabling progressive workflow wrapping (build A, import into B, import B into C)
 - [feat] `namespace_graph(graph, prefix)` — prefixes all internal IDs to avoid collisions when importing
 - [feat] `derive_ports(graph)` — auto-derives composite input/output ports from entry/exit nodes, using `node_id::port_name` mapping format (matches editor's `graphAsCompositeNode()`)
 - [feat] New file `src/dan/builder/importer.py` with import utilities
-- [feat] `examples/equity_research.py` — 3-level progressive wrapping demo (Data Gatherer → Section Analyst → Report Orchestrator) using all 3 edge types and most node types
+- [feat] `examples/equity_research.py` — 5-level progressive wrapping demo (Data Gatherer → Section Analyst → Report Orchestrator + Scenario Analysis + Multi-Ticker Comparison) using all 3 edge types and most node types
+- [feat] Parallel imported nodes: Section Analyst imports `data_gatherer` graph twice (`dg_primary` + `dg_news`) running concurrently with no data dependency, merged before the draft-review loop — demonstrates reusing the same workflow as multiple parallel composite nodes
 - [docs] Updated `docs/llm-api-guide.md` with `import_workflow` API, progressive wrapping pattern, and import map
 - [docs] Updated `docs/architecture.md` with new `importer.py` file
 
@@ -433,9 +470,144 @@
 - [fix] Backend: raised `RunManager` event buffer 2000→10000 (`run_manager.py`)
 - [feat] Frontend: `LogPanel` rows now expandable — click "more" to reveal full content; removed hard `.slice(0,200)` previews in `dataContent`
 - [fix] Frontend: store log buffer raised 500→5000 entries (`useGraphStore.ts`)
-- [feat] Frontend: persist active run to `localStorage` on start/resume; clear on terminal state (`run_completed`/`run_failed`)
-- [feat] Frontend: `recoverActiveRun()` action — on page load, reads `localStorage`, validates run via `api.getRun()`, reconnects WebSocket with `_catchup` replay if still running
+- [feat] Frontend: persist active run to `sessionStorage` on start/resume; clear on terminal state (`run_completed`/`run_failed`)
+- [feat] Frontend: `recoverActiveRun()` action — on page load, reads `sessionStorage`, validates run via `api.getRun()`, reconnects WebSocket with `_catchup` replay if still running
 - [feat] `App.tsx` calls `recoverActiveRun()` after `loadGraphList()` on mount
 
 ## 2026-02-24 (Phase 4 memory policy defaults)
 - [docs] `todo.md`: expanded Phase 4 defaults with an explicit future-tuning policy — current memory budgets/thresholds/TTLs/reducer choices are baseline defaults to be iteratively tuned using telemetry, retrieval quality, and cost/latency trade-offs
+
+## 2026-02-24 (Phase 3.75 — 6-9 multi-tab workflow sessions plan)
+- [docs] Added `docs/plans/6-9-multi-tab-workflow-sessions.md` with a tab-scoped state architecture plan (snapshot/restore, per-tab run recovery, toolbar tab UI, and tests)
+- [docs] Reviewed and tightened 6-9 plan scope: added cross-tab event bleed guard (`run_id` check), lightweight storage constraints (metadata-only persistence), legacy-key migration, and `createGraph` tab-open behavior
+- [docs] Updated `docs/plans/6-phase-3.75-visual-editor-editing.md` — set parent status to `in-progress` and added sub-plan row for 6-9
+- [docs] Updated `docs/todo.md` — added 6-9 as an unchecked Phase 3.75 sub-plan and marked the parent 6-phase item as in-progress
+
+## 2026-02-24 (Phase 3.75 — 6-10 gate editor UX)
+- [feat] `editor/src/types/graph.ts`: added `GateNode` interface (`gate_mode`, `condition`, `max_iterations`) to `DanNode` union, `NODE_TYPE_CATALOG`, and `NODE_DESCRIPTIONS`
+- [feat] `editor/src/lib/paletteTemplates.ts`: added `ifElseGateFactory` and `whileGateFactory` template factories + registered in `PREDEFINED_AGENT_TEMPLATES`
+- [feat] `editor/src/lib/nodeIcons.tsx`: added diamond/rhombus icon for "gate" node type
+- [feat] `editor/src/components/DanNode.tsx`: gate condition badge, "IF"/"WHILE" header indicator, green/red branch port coloring for gate output handles
+- [feat] `editor/src/lib/graphAdapter.ts`: back-edge detection for while-gate `continue` port (dashed, animated, muted "loop back" label); added "gate" case to `createDefaultNode`
+- [feat] `editor/src/components/ConfigPanel.tsx`: dedicated gate config section with gate_mode dropdown (auto-swaps output ports), condition input, and conditional max_iterations field
+
+## 2026-02-24 (Phase 3.75 — 6-10 GateNode model + executor)
+- [feat] Added `GateNode` model in `src/dan/models/control_flow.py` — unified conditional gate with `gate_mode="if_else"` (true/false branches) and `gate_mode="while"` (continue/done branches), `max_iterations` guard
+- [feat] Added `GateExecutor` in `src/dan/executors/control_flow.py` — evaluates condition, routes inputs to exactly one branch output port, emits `gate_evaluated` event
+- [feat] Registered `GateExecutor` in `src/dan/engine/scheduler.py` under `"gate"` node type
+- [feat] Added `GateNode` to `NodeTypeRegistry` in `src/dan/registry.py`, `Node` discriminated union in `src/dan/models/graph.py`, and package exports in `src/dan/__init__.py`
+- [feat] Added `GATE_EVALUATED` event type to `src/dan/engine/events.py`
+- [test] Added `tests/test_engine/test_gate.py` — 10 tests covering model validation, if_else/while branching, error handling, metadata
+- [fix] Updated `test_builtins_registered` count from 11 → 12 to account for new gate type
+
+## 2026-02-24 (Phase 3.75 — 6-10 gate loop + condition redesign plan)
+- [docs] Added `docs/plans/6-10-gate-loop-condition-redesign.md` covering gate-based visible loop authoring, condition-routing redesign, cycle-aware scheduler updates, collapsible loop groups, and migration strategy
+- [docs] Reviewed and tightened plan risk areas: limited scope to while+condition redesign (keep `for_each`/`composite` unchanged), added transition compatibility for legacy graphs, constrained scheduler work to gate-controlled cycle regions with DAG fast-path retained, and added builder/decompiler + rollout-flag tasks
+- [docs] Updated `docs/plans/6-phase-3.75-visual-editor-editing.md` with 6-10 sub-plan row and sequencing note
+- [docs] Updated `docs/todo.md` with unchecked 6-10 Phase 3.75 sub-plan entry
+
+## 2026-02-24 (Phase 3.75 — 6-10 GateNode/GateExecutor iteration tracking)
+- [feat] Updated `GateNode.model_post_init` in `src/dan/models/control_flow.py` — auto-derives `output_ports` from `gate_mode` (if_else: true/false, while: continue/done) when not explicitly set
+- [feat] Updated `GateExecutor` in `src/dan/executors/control_flow.py` — while mode now reads `gate_iteration` from `context.local_state` and injects it as `iteration` into condition vars; event data includes `iteration`/`max_iterations`; metadata includes `iteration`; error returns raw `ConditionError` string
+- [test] Added `tests/test_engine/test_gate_executor.py` — 9 tests covering if_else branching, while branching with iteration tracking, condition errors, iteration counter availability, and output port derivation
+- [fix] Updated `tests/test_engine/test_gate.py` — added `local_state` to MockContext for while-mode tests, updated error assertion to match new error format
+
+## 2026-02-24 (Phase 3.75 — 6-10 cycle-aware scheduler + validation)
+- [feat] `src/dan/engine/state.py`: added `PortDataStore.clear_node(node_id)` for clean cycle iteration resets
+- [feat] `src/dan/engine/scheduler.py`: cycle-aware scheduling — `_topological_levels_with_backedges()` detects gate back-edges, `_iterate_cycle()` resets and re-executes cycle-region nodes, `_should_skip()` exempts while-gate back-edge ports from skip logic
+- [feat] `src/dan/validation/graph.py`: enhanced `_validate_gate_cycles()` with bidirectional reachability for per-gate cycle regions, rejects gateless cycles and overlapping multi-gate cycles
+- [test] Added `tests/test_engine/test_cycle_scheduling.py` — 14 tests covering DAG fast-path, while-gate loops, max_iterations, if_else branch skipping, gateless cycle rejection, and multi-gate cycle rejection
+- [fix] Fixed `_should_skip` pre-existing bug where while-gate back-edge ports caused cycle-body nodes to be silently skipped
+- [fix] Updated `tests/test_engine/test_streaming.py` — corrected `_max_event_buffer` assertion from 2000 → 10000 to match earlier buffer increase
+
+## 2026-02-24 (Phase 3.75 — 6-9 multi-tab workflow sessions implementation)
+- [feat] `editor/src/store/useGraphStore.ts`: added `TabInfo`/`TabSnapshot` types, `tabs`/`activeTabId`/`tabCache` state, `_snapshotActiveTab`/`_restoreTab`/`_persistTabState` helpers, `openTab`/`switchTab`/`closeTab`/`restoreTabs` actions, cross-tab event guard, tab-aware `createGraph`/`deleteGraph`/`startRun`/`resumeRun`
+- [feat] Added `editor/src/components/TabBar.tsx` — horizontal tab bar with graph name, run status dot, close button, "+" graph picker dropdown
+- [feat] `editor/src/components/EditorToolbar.tsx`: replaced graph `<select>` dropdown with `<TabBar />`, routed graph open through `openTab`
+- [feat] `editor/src/App.tsx`: startup calls `restoreTabs()` after `loadGraphList()` for tab + run recovery
+- [docs] Updated `docs/architecture.md` test count to 322
+- [docs] Marked 6-10 tasks 1, 2, 3, 4 (partial), 5 (partial), 7 (partial) as completed in plan
+
+## 2026-02-24 (Phase 3.75 — 6-10 backend migration, builder/decompiler, tests)
+- [feat] `src/dan/executors/control_flow.py`: added `DeprecationWarning` to `IfElseExecutor.execute()` and `WhileLoopExecutor.execute()` — legacy executors still work but emit warnings (task 2-3)
+- [feat] `src/dan/validation/graph.py`: added `_check_deprecated_edge_conditions()` — emits non-blocking deprecation warnings for `ControlEdge.condition` usage (task 4-3)
+- [feat] `src/dan/engine/scheduler.py`, `src/dan/builder/compiler.py`: added `"deprecated"` to `_VALIDATION_WARNING_PATTERNS` so deprecation messages are non-fatal in both engine and builder
+- [feat] `src/dan/server/app.py`: validate endpoint now separates deprecated messages into `warnings` list (was always `[]`)
+- [feat] Created `src/dan/migration/gate_migration.py` with `migrate_if_else_to_gate()`, `migrate_while_loop_to_flat_gate()`, and `migrate_graph()` (tasks 6-1, 6-2)
+- [feat] `src/dan/server/app.py`: `GET /api/graphs/{id}` applies `migrate_graph()` when `DAN_GATE_MIGRATION_ENABLED=true` env var is set (tasks 6-3, 6-5)
+- [feat] `src/dan/builder/builder.py`: added `gate()` method to `WorkflowBuilder` (task 6-4)
+- [feat] `src/dan/builder/compiler.py`: added `GateNode` to `_build_node()` and `"gate"` to `DEFAULT_OUTPUT_PORTS` (task 6-4)
+- [feat] `src/dan/builder/decompiler.py`: added gate node decompilation — emits `wf.gate()` with conditional `gate_mode`/`max_iterations` kwargs (task 6-4)
+- [test] Created `tests/test_migration/test_gate_migration.py` — 11 tests covering if_else migration, while_loop flattening, combined migration, noop on clean graphs (task 7-3)
+- [test] Added 4 gate round-trip tests to `tests/test_builder/test_decompiler.py` — if_else and while gate modes, default kwarg elision (task 7-4)
+- [fix] Updated `tests/test_builder/test_compiler.py` expected node type set to include `"gate"`
+
+## 2026-02-24 (Phase 3.75 — 6-10 collapsible loop groups)
+- [feat] `editor/src/types/graph.ts`: added `LoopGroup` interface and `loop_groups` field on `GraphMetadata` for visual-only loop grouping
+- [feat] `editor/src/lib/graphAdapter.ts`: added `injectLoopGroups` / `stripLoopGroups` helpers for injecting/removing group nodes + synthetic edges; updated `reactFlowToDanGraph` to filter out `loopGroup` nodes
+- [feat] Added `editor/src/components/LoopGroupNode.tsx` — collapsed view (compact card with handles + expand button) and expanded view (dashed amber border with collapse button)
+- [feat] `editor/src/components/GraphCanvas.tsx`: registered `loopGroup` node type
+- [feat] `editor/src/components/ContextMenu.tsx`: added "Create Loop Group" (when multi-select includes a while-gate) and "Ungroup Loop" (when right-clicking a grouped node)
+- [feat] `editor/src/store/useGraphStore.ts`: added `loopGroups` state, `createLoopGroup`/`toggleLoopGroup`/`removeLoopGroup` actions, loop-group-aware load/save (serializes to `metadata.loop_groups`), tab snapshot integration
+
+## 2026-02-24 (Phase 3.75 — 6-10 migration + builder + rollout)
+- [feat] `src/dan/executors/control_flow.py`: added `DeprecationWarning` to `IfElseExecutor` and `WhileLoopExecutor`
+- [feat] `src/dan/validation/graph.py`: added `_check_deprecated_edge_conditions()` — non-blocking warnings for `ControlEdge.condition` usage
+- [feat] Created `src/dan/migration/gate_migration.py`: `migrate_if_else_to_gate()`, `migrate_while_loop_to_flat_gate()`, `migrate_graph()` helpers
+- [feat] `src/dan/builder/builder.py`: added `gate()` method to `WorkflowBuilder`
+- [feat] `src/dan/builder/decompiler.py`: added gate node decompilation support
+- [feat] `src/dan/server/app.py`: `DAN_GATE_MIGRATION_ENABLED` env flag for optional migration on graph load
+- [test] Added `tests/test_migration/test_gate_migration.py` — 11 migration tests
+- [test] Added gate round-trip tests in `tests/test_builder/test_decompiler.py` — 4 tests
+- [docs] Updated `README.md` with Phase 3.75 features, new API endpoints, test count (337), roadmap entry
+- [docs] Updated `docs/architecture.md` with gate model, cycle-aware scheduling, migration policy, test count
+- [docs] Marked 6-10 plan as completed, parent 6-phase plan as completed, both checked off in `todo.md`
+
+## 2026-02-24 (Phase 3.75 — code review fixes)
+- [fix] `editor/src/store/useGraphStore.ts`: `closeTab` now checks `dirty` state (from live store or tabCache) and shows a confirmation dialog before closing
+- [fix] `editor/src/store/useGraphStore.ts`: `deleteGraph` on the last open tab now clears `tabs`, `activeTabId`, `loopGroups`, and run state, then persists to sessionStorage
+- [fix] `src/dan/migration/gate_migration.py`: updated `migrate_if_else_to_gate` docstring to document that `branch→true` remapping is best-effort; added `logger.warning` on each remapped edge
+- [fix] `src/dan/migration/gate_migration.py`: `migrate_while_loop_to_flat_gate` now infers exit/entry port names from body node output_ports/input_ports instead of hardcoding `result`/`input`; skips migration gracefully when entry or exit points are empty
+- [fix] `src/dan/server/app.py`: unified validation warning classification — "schema safety bypassed" and "untyped data edge" messages now classified as warnings alongside "deprecated"
+- [fix] `editor/src/components/ContextMenu.tsx`: moved `setSelectedNode(targetId)` from render body into `useEffect` to prevent state writes during render
+- [test] Added 4 migration edge-case tests: port inference for exit/entry, empty body skip, and warning log assertion (341 tests total)
+- [docs] Updated test count to 341 in `README.md` and `docs/architecture.md`
+
+## 2026-02-24 (Phase 3.75 — 6-11 workflow UX polish)
+- [feat] `src/dan/executors/llm.py`: widened `_call_llm` return type to include token usage dict; streaming path passes `stream_options={"include_usage": True}`, non-streaming reads `resp.usage`; `execute()` accumulates usage across normalization retries and includes it in `NodeResult.metadata`
+- [feat] `src/dan/engine/scheduler.py`: added `_aggregate_usage()` to sum token counts from all `state.node_metadata`; `_execute()` now records `run_start_time` and emits `elapsed_seconds`, `total_prompt_tokens`, `total_completion_tokens`, `total_tokens` in `run_completed`/`run_failed` events
+- [feat] `editor/src/store/useGraphStore.ts`: added `runSummary` state (captured from `run_completed`/`run_failed` event data); included in `TabSnapshot` for tab-switch persistence; cleared on run start/resume
+- [feat] `editor/src/components/LogPanel.tsx`: added `RunSummaryBar` component — compact summary bar at bottom of log panel showing elapsed time and token counts on run completion/failure
+- [feat] `editor/src/lib/layout.ts`: added `needsAutoLayout(nodes)` — detects degenerate positions (all same point, bounding box < 50px, or NaN/undefined)
+- [feat] `editor/src/store/useGraphStore.ts`: `drillIn`, `drillOut`, `jumpToLayer` now auto-apply dagre layout when sub-graph positions are degenerate
+- [feat] `editor/src/components/TabBar.tsx`: removed already-open graph filter from "+" picker — all saved graphs always shown; replaced "All graphs already open" with "No saved graphs" empty state; added duplicate tab name disambiguation with counter suffix
+- [feat] `editor/src/store/useGraphStore.ts`: removed `openTab` short-circuit that redirected to existing tab with same `graphId` — each `openTab` call now creates an independent tab
+- [docs] Updated plan `6-11-workflow-ux-polish.md` — patched with review findings (widened return type, aggregate from node_metadata, save-conflict note, NaN positions), marked all tasks completed
+- [docs] Updated `docs/todo.md` — marked 6-11 completed
+- [docs] Updated `docs/changelog.md` with implementation entry
+
+## 2026-02-24 (Phase 3.75 — 6-11 template switch follow-up)
+- [fix] `editor/src/components/TabBar.tsx`: fixed Babel parse error by parenthesizing `??`/`||` expression for tab title rendering
+- [feat] `editor/src/store/useGraphStore.ts`: added `replaceActiveTabGraph(graphId)` to swap template/graph in the active tab (dirty-check confirmation, websocket disconnect, run/log/summary reset)
+- [feat] `editor/src/components/TabBar.tsx`: added dual picker modes — `+` opens selected template in a new tab; `↺` replaces the current tab template in-place
+- [fix] `editor/src/store/useGraphStore.ts`: cleared `runSummary` in last-tab `deleteGraph` branch and in `openTab` reset state to prevent stale summary leakage across template switches
+- [test] Verified TypeScript (`npx tsc --noEmit`) and backend tests (`341 passed`)
+- [docs] Updated `docs/plans/6-11-workflow-ux-polish.md` with completed sub-task 3-4 for current-tab template switching
+
+## 2026-02-24 (Phase 3.75 — tab UX polish)
+- [feat] `TabBar.tsx`: click active tab now opens a dropdown with all templates + search box (replaces `↺` button); removed `PickerMode` dual-button pattern
+- [feat] `useGraphStore.ts`: `refreshTab()` action reloads current tab's graph from server, disconnects WS, resets run/log/summary state
+- [feat] `useGraphStore.ts`: `closeTab` now allows closing the last tab — auto-creates a blank tab afterwards
+- [feat] `useGraphStore.ts`: `openTab("blank")` creates an empty tab (no server graph) with name "blank"
+- [feat] `EditorToolbar.tsx`: added refresh icon button (↻) next to Save; renamed `+ New` to `+ Blank`
+- [feat] `useGraphStore.ts`: `deleteGraph` on last tab now delegates to `closeTab` which auto-opens blank tab (removed special-case empty-state branch)
+- [fix] `useGraphStore.ts`: `restoreTabs` skips `loadGraph` for blank tabs (empty `graphId`)
+- [fix] `useGraphStore.ts`: `loadGraphList` fallback opens a blank tab when no `last_opened` graph exists
+- [test] TypeScript clean, 341 backend tests passing
+
+## 2026-02-24 (Phase 3.75 — shared template picker)
+- [feat] `TabBar.tsx`: unified template picker dropdown shared by active-tab click (replace mode) and `+ New` button (new-tab mode); rendered via `createPortal` to avoid tab-strip overflow clipping
+- [feat] `TabBar.tsx`: dropdown shows search box, top 5 most-frequent templates (tracked in `localStorage` via `dan_tpl_freq`), all templates section, and "Blank" option in new-tab mode
+- [feat] `TabBar.tsx`: dropdown width matches the anchor element (tab or button), with 220px minimum
+- [feat] `EditorToolbar.tsx`: renamed `+ Blank` to `+ Create` (creates a new named server-side graph — distinct from the tab-level template picker)
+- [test] TypeScript clean, 341 backend tests passing

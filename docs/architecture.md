@@ -27,12 +27,14 @@ deep-agent-network/
       ports.py                   # InputPort, OutputPort
       context.py                 # NodeLocalState, SharedContextDeclaration, ArtifactRef, ContextProjection, policies
       nodes.py                   # NodeBase, LLMOperator, ToolOperator, CodeOperator
-      control_flow.py            # IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop, CompositeNode
+      control_flow.py            # GateNode (unified if_else/while), IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop, CompositeNode
       edges.py                   # DataEdge, ControlEdge, ContextEdge
       graph.py                   # Graph container, Node/Edge discriminated unions, dan_graph_v1 contract
     validation/
       schema.py                  # Port schema compatibility (MVP structural check)
       graph.py                   # Graph well-formedness validation
+    migration/
+      gate_migration.py          # Legacy IfElse/WhileLoop → GateNode graph-dict migration helpers
     registry.py                  # NodeTypeRegistry — maps node_type strings to classes
     engine/                      # Phase 1 — async execution engine
       __init__.py                # Public API: Engine, EngineConfig, RunResult, etc.
@@ -43,13 +45,13 @@ deep-agent-network/
       normalizer.py              # OutputNormalizer — JSON extraction, schema validation, re-prompt
       checkpoint.py              # CheckpointStore protocol, FileSystemCheckpointStore
       events.py                  # EngineEvent, EventType — typed runtime events
-      scheduler.py               # Topological sort, parallel dispatch, Engine.run()/resume(), event emission
+      scheduler.py               # Topological sort (DAG fast-path + cycle-aware for gate loops), parallel dispatch, Engine.run()/resume(), event emission
     executors/                   # Phase 1 — built-in node executors
       __init__.py                # Auto-registers built-in executors
       llm.py                     # LLMExecutor — OpenAI-compatible (vectorengine.ai default)
       tool.py                    # ToolExecutor + ToolRegistry — function dispatch
       code.py                    # CodeExecutor — sandboxed Python exec
-      control_flow.py            # IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop
+      control_flow.py            # GateExecutor (unified branching/looping), IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop
     builder/                     # Phase 1.5 — fluent workflow builder DSL
       __init__.py                # Public API: workflow(), WorkflowBuilder, NodeRef, PortRef, decompile(), namespace_graph, derive_ports
       refs.py                    # NodeRef, PortRef — compile-time proxies with __format__, __rshift__, __getitem__
@@ -99,12 +101,13 @@ deep-agent-network/
       App.tsx                    # Main layout: toolbar + palette + canvas + panels + toasts
   examples/                      # Phase 3 — runnable workflow scripts
     paper_writing.py             # INFORMS-oriented workflow: internet-grounded lit search, human interview loop, parallel section drafting, multi-role review, LaTeX/PDF packaging
-  tests/                         # pytest suite (274 tests)
+  tests/                         # pytest suite (341 tests)
     test_models/                 # Unit tests for all model types
     test_validation/             # Validation logic tests
     test_examples/               # Paper-writing motivating example + e2e tests
     test_engine/                 # Engine unit + integration tests
     test_builder/                # Builder DSL unit + integration tests
+    test_migration/              # Migration helper tests (legacy → gate)
     test_server/                 # Server API, run manager, and event tests
   graphs/                        # Saved graph JSON files (filesystem persistence)
   pyproject.toml                 # Pydantic v2 + OpenAI SDK + FastAPI + uvicorn + pytest
@@ -353,7 +356,9 @@ result = await engine.resume(graph, run_id="abc123")
 
 - Async-first: `Engine.run()` is async; parallel fan-out uses `asyncio.gather()`
 - Kahn's algorithm groups nodes into topological levels; nodes in the same level execute concurrently
+- Cycle-aware scheduling for `GateNode(while)` back-edges: detects gate-controlled cycles, iterates cycle regions bounded by `max_iterations`, DAG fast-path preserved for non-cyclic graphs
 - Sub-graph execution is recursive: WhileLoop/ForEach/Composite executors call back into the scheduler
+- Legacy `IfElseNode`/`WhileLoopNode` continue to work (with deprecation warnings); migration helpers in `dan.migration` convert to gate patterns
 
 ### Executor Protocol
 
