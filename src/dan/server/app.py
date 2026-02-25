@@ -46,12 +46,29 @@ _run_manager: RunManager | None = None
 
 
 def _get_engine_config() -> EngineConfig:
+    from dan.providers import ProviderConfig
+
+    providers: dict[str, ProviderConfig] = {}
+
+    openai_key = os.environ.get("DAN_OPENAI_API_KEY", "")
+    if openai_key:
+        providers["openai"] = ProviderConfig(api_key=openai_key)
+
+    anthropic_key = os.environ.get("DAN_ANTHROPIC_API_KEY", "")
+    if anthropic_key:
+        providers["anthropic"] = ProviderConfig(api_key=anthropic_key)
+
+    google_key = os.environ.get("DAN_GOOGLE_API_KEY", "")
+    if google_key:
+        providers["google"] = ProviderConfig(api_key=google_key)
+
     return EngineConfig(
         llm_base_url=os.environ.get("DAN_LLM_BASE_URL", "https://api.vectorengine.ai/v1"),
         llm_api_key=os.environ.get("DAN_LLM_API_KEY", os.environ.get("LLM_API_KEY", "")),
         llm_default_model=os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6"),
         checkpoint_dir=os.environ.get("DAN_CHECKPOINT_DIR", "./checkpoints"),
         checkpoint_enabled=True,
+        providers=providers,
     )
 
 
@@ -482,6 +499,9 @@ async def _package_submission(
 
 def _build_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
+    builtin = registry.register_builtin_tools()
+    logger.info("Registered %d built-in tools: %s", len(builtin), builtin)
+    # Domain-specific tools override built-ins if they share an ID
     registry.register("save_paper", _save_paper)
     registry.register("search_papers", _search_papers)
     registry.register("citation_verifier", _citation_verifier)
