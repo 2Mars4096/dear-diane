@@ -161,10 +161,18 @@ def insert_boundary_validators(
 
     Rewires incoming edges to flow through the entry validator and
     outgoing edges to flow through the exit validator.
+
+    **Idempotent**: if validators with the expected IDs already exist in
+    the graph, the call returns the graph unchanged.
     """
     composite_node = graph.node_by_id(composite_node_id)
     if composite_node is None:
         raise ValueError(f"Node '{composite_node_id}' not found in graph")
+
+    entry_id = f"{composite_node_id}__entry_validator"
+    exit_id = f"{composite_node_id}__exit_validator"
+    if graph.node_by_id(entry_id) is not None or graph.node_by_id(exit_id) is not None:
+        return graph
 
     new_graph = graph.model_copy(deep=True)
     composite_node = new_graph.node_by_id(composite_node_id)

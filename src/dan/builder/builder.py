@@ -667,6 +667,161 @@ class WorkflowBuilder:
             graph=sub_graph,
         ))
 
+    @contextmanager
+    def validated_composite(
+        self,
+        node_id: str,
+        *,
+        entry_schema: dict[str, Any] | None = None,
+        exit_schema: dict[str, Any] | None = None,
+        entry_rules: list[dict[str, Any]] | None = None,
+        exit_rules: list[dict[str, Any]] | None = None,
+        on_failure: str = "route",
+        input_mappings: dict[str, str] | None = None,
+        output_mappings: dict[str, str] | None = None,
+        name: str | None = None,
+        description: str = "",
+        read_set: list[ContextDeclaration] | None = None,
+        write_set: list[ContextDeclaration] | None = None,
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> Generator["_ValidatedCompositeRef", None, None]:
+        """Composite sub-graph with auto-inserted boundary validators.
+
+        Wraps ``composite()`` and returns a ``_ValidatedCompositeRef``
+        whose ``>>`` target is the entry validator and ``>>`` source is
+        the exit validator.  External edges therefore always flow
+        *through* the validators — the composite itself is internal.
+
+        Parameters
+        ----------
+        entry_schema / exit_schema:
+            JSON Schema dicts.  When provided, a validator is generated
+            with ``required_keys`` + ``schema_conformance`` rules.
+        entry_rules / exit_rules:
+            Explicit ``ValidationRule`` dicts.  Takes precedence over
+            auto-derived rules when provided.
+        on_failure:
+            ``"route"`` (default) | ``"warn"`` | ``"halt"``.
+        """
+        from dan.models.ports import InputPort, OutputPort
+
+        composite_kwargs: dict[str, Any] = {}
+        if input_ports is not None:
+            composite_kwargs["input_ports"] = input_ports
+        if output_ports is not None:
+            composite_kwargs["output_ports"] = output_ports
+
+        ref = _ValidatedCompositeRef(node_id, self)
+
+        with self.composite(
+            node_id,
+            input_mappings=input_mappings,
+            output_mappings=output_mappings,
+            name=name,
+            description=description,
+            read_set=read_set,
+            write_set=write_set,
+            **composite_kwargs,
+        ) as sub:
+            yield ref._set_sub(sub)
+
+        has_entry = bool(entry_schema or entry_rules)
+        has_exit = bool(exit_schema or exit_rules)
+
+        pn = next(n for n in self._nodes if n.id == node_id)
+        composite_in = self._first_composite_input_port(input_ports, input_mappings)
+        composite_out = self._first_composite_output_port(output_ports, output_mappings)
+
+        if has_entry:
+            e_rules = entry_rules or self._auto_rules(entry_schema)
+            entry_id = f"{node_id}__entry_validator"
+            self.validator(
+                entry_id,
+                rules=e_rules,
+                on_failure=on_failure,
+                name=f"Entry validator for {node_id}",
+                input_ports=[{"name": "data", "schema": {}}],
+                output_ports=[
+                    {"name": "valid", "schema": {}},
+                    {"name": "invalid", "schema": {}},
+                ],
+            )
+            self._edges.append(_PendingEdge(
+                source_node_id=entry_id,
+                source_port="valid",
+                target_node_id=node_id,
+                target_port=composite_in,
+                edge_type="data",
+            ))
+            ref._entry_node_id = entry_id
+
+        if has_exit:
+            x_rules = exit_rules or self._auto_rules(exit_schema)
+            exit_id = f"{node_id}__exit_validator"
+            self.validator(
+                exit_id,
+                rules=x_rules,
+                on_failure=on_failure,
+                name=f"Exit validator for {node_id}",
+                input_ports=[{"name": "data", "schema": {}}],
+                output_ports=[
+                    {"name": "valid", "schema": {}},
+                    {"name": "invalid", "schema": {}},
+                ],
+            )
+            self._edges.append(_PendingEdge(
+                source_node_id=node_id,
+                source_port=composite_out,
+                target_node_id=exit_id,
+                target_port="data",
+                edge_type="data",
+            ))
+            ref._exit_node_id = exit_id
+
+        pn.kwargs.setdefault("external_input_schema", entry_schema)
+        pn.kwargs.setdefault("external_output_schema", exit_schema)
+
+    @staticmethod
+    def _auto_rules(schema: dict[str, Any] | None) -> list[dict[str, Any]]:
+        """Derive validation rules from a JSON Schema dict."""
+        if not schema or not isinstance(schema, dict):
+            return []
+        rules: list[dict[str, Any]] = []
+        required_keys = schema.get("required", [])
+        if required_keys:
+            rules.append({"rule_type": "required_keys", "config": {"keys": required_keys}})
+        rules.append({"rule_type": "schema_conformance", "config": {"schema": schema}})
+        return rules
+
+    @staticmethod
+    def _first_composite_input_port(
+        input_ports: list[dict[str, Any]] | None,
+        input_mappings: dict[str, str] | None,
+    ) -> str:
+        """Derive the composite's first input port name for validator wiring."""
+        if input_ports and len(input_ports) > 0:
+            name = input_ports[0].get("name")
+            if name:
+                return name
+        if input_mappings and len(input_mappings) > 0:
+            return next(iter(input_mappings))
+        return "input"
+
+    @staticmethod
+    def _first_composite_output_port(
+        output_ports: list[dict[str, Any]] | None,
+        output_mappings: dict[str, str] | None,
+    ) -> str:
+        """Derive the composite's first output port name for validator wiring."""
+        if output_ports and len(output_ports) > 0:
+            name = output_ports[0].get("name")
+            if name:
+                return name
+        if output_mappings and len(output_mappings) > 0:
+            return next(iter(output_mappings.values()))
+        return "result"
+
     # ── Explicit edge wiring ───────────────────────────────────────
 
     def edge(self, source: PortRef, target: PortRef) -> None:
@@ -807,3 +962,111 @@ class WorkflowBuilder:
             artifact_refs=list(self._artifact_refs),
             validate=True,
         )
+
+
+class _ValidatedCompositeRef:
+    """Proxy returned by ``validated_composite`` that intercepts ``>>`` chains.
+
+    - When used as a ``>>`` *target* (right-hand side), incoming data is
+      routed to the **entry validator** (if present), else the composite.
+    - When used as a ``>>`` *source* (left-hand side), outgoing data
+      originates from the **exit validator** (if present), else the composite.
+
+    This ensures user-level ``a >> block >> b`` automatically flows
+    through the boundary validators without manual wiring.
+    """
+
+    def __init__(self, composite_id: str, builder: WorkflowBuilder) -> None:
+        self._composite_id = composite_id
+        self._builder = builder
+        self._entry_node_id: str | None = None
+        self._exit_node_id: str | None = None
+        self._sub: WorkflowBuilder | None = None
+
+    def _set_sub(self, sub: WorkflowBuilder) -> _ValidatedCompositeRef:
+        self._sub = sub
+        return self
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate builder methods (llm, code, etc.) to the sub-workflow."""
+        if self._sub is not None and hasattr(self._sub, name):
+            return getattr(self._sub, name)
+        raise AttributeError(f"{type(self).__name__!r} object has no attribute {name!r}")
+
+    @property
+    def node_id(self) -> str:
+        """Target node for incoming ``>>`` edges."""
+        return self._entry_node_id or self._composite_id
+
+    @property
+    def source_node_id(self) -> str:
+        """Source node for outgoing ``>>`` edges."""
+        return self._exit_node_id or self._composite_id
+
+    @property
+    def node_type(self) -> str:
+        if self._entry_node_id:
+            return "validator"
+        return "composite"
+
+    @property
+    def _source_node_type(self) -> str:
+        if self._exit_node_id:
+            return "validator"
+        return "composite"
+
+    def __getitem__(self, port_name: str) -> PortRef:
+        return PortRef(self._composite_id, port_name, self._builder)
+
+    def __rshift__(self, other: NodeRef | _ValidatedCompositeRef) -> NodeRef | _ValidatedCompositeRef:
+        """Chain: use exit validator (or composite) as the source."""
+        from dan.builder.compiler import default_output_port, default_input_port
+
+        src_id = self.source_node_id
+        src_type = self._source_node_type
+        src_port = default_output_port(src_type)
+
+        if isinstance(other, _ValidatedCompositeRef):
+            dst_id = other.node_id
+            dst_type = other.node_type
+        elif isinstance(other, NodeRef):
+            dst_id = other.node_id
+            dst_type = other.node_type
+        else:
+            return NotImplemented
+
+        dst_port = default_input_port(dst_type)
+        self._builder._edges.append(_PendingEdge(
+            source_node_id=src_id,
+            source_port=src_port,
+            target_node_id=dst_id,
+            target_port=dst_port,
+            edge_type="data",
+        ))
+        return other
+
+    def __rrshift__(self, other: NodeRef) -> _ValidatedCompositeRef:
+        """Handle ``node_ref >> validated_block``."""
+        from dan.builder.compiler import default_output_port, default_input_port
+
+        if not isinstance(other, NodeRef):
+            return NotImplemented
+
+        src_port = default_output_port(other.node_type)
+        dst_id = self.node_id
+        dst_type = self.node_type
+        dst_port = default_input_port(dst_type)
+
+        builder = self._builder or other._builder
+        if builder is not None:
+            builder._edges.append(_PendingEdge(
+                source_node_id=other.node_id,
+                source_port=src_port,
+                target_node_id=dst_id,
+                target_port=dst_port,
+                edge_type="data",
+            ))
+        return self
+
+    def __repr__(self) -> str:
+        return f"_ValidatedCompositeRef({self._composite_id!r})"
