@@ -13,6 +13,7 @@ class CompletionResult:
     text: str
     usage: dict[str, int] | None = None
     model: str = ""
+    tool_calls: list[dict[str, Any]] | None = None
 
 
 @dataclass

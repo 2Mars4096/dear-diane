@@ -43,9 +43,25 @@ class OpenAIProvider:
             call_kwargs["max_tokens"] = max_tokens
 
         resp = await self._client.chat.completions.create(**call_kwargs)
-        text = resp.choices[0].message.content or ""
+        message = resp.choices[0].message
+        text = message.content or ""
         usage = self._extract_usage(resp)
-        return CompletionResult(text=text, usage=usage, model=model)
+        tool_calls = None
+        if hasattr(message, "tool_calls") and message.tool_calls:
+            tool_calls = [
+                {
+                    "id": tc.id,
+                    "type": tc.type,
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in message.tool_calls
+            ]
+        return CompletionResult(
+            text=text, usage=usage, model=model, tool_calls=tool_calls,
+        )
 
     async def stream(
         self,

@@ -194,3 +194,83 @@ class EmbeddingRegistry:
 
     def provider_names(self) -> list[str]:
         return sorted(self._providers)
+
+
+def _create_embedding_provider(
+    name: str,
+    pconfig: Any,
+    fallback_api_key: str = "",
+    fallback_base_url: str = "",
+    fallback_model: str = "text-embedding-3-small",
+) -> EmbeddingProvider | None:
+    """Instantiate an embedding provider by name + config."""
+    if name in {"default", "openai"}:
+        api_key = getattr(pconfig, "api_key", "") or fallback_api_key
+        base_url = getattr(pconfig, "base_url", None) or fallback_base_url or None
+        default_model = getattr(pconfig, "default_model", "") or fallback_model
+        try:
+            return OpenAIEmbeddingProvider(
+                api_key=api_key, base_url=base_url, default_model=default_model,
+            )
+        except Exception:
+            logger.warning("Could not create OpenAI embedding provider '%s'", name)
+            return None
+
+    if name in {"local", "sentence-transformers"}:
+        try:
+            default_model = getattr(pconfig, "default_model", "") or "all-MiniLM-L6-v2"
+            return LocalEmbeddingProvider(default_model=default_model)
+        except Exception:
+            logger.warning("Could not create local embedding provider '%s'", name)
+            return None
+
+    logger.warning("Unknown embedding provider '%s'; treating as OpenAI-compatible", name)
+    api_key = getattr(pconfig, "api_key", "") or fallback_api_key
+    base_url = getattr(pconfig, "base_url", None) or fallback_base_url or None
+    default_model = getattr(pconfig, "default_model", "") or fallback_model
+    try:
+        return OpenAIEmbeddingProvider(
+            api_key=api_key, base_url=base_url, default_model=default_model,
+        )
+    except Exception:
+        return None
+
+
+def build_embedding_registry(config: Any) -> EmbeddingRegistry:
+    """Build an ``EmbeddingRegistry`` from an ``EngineConfig`` (or compatible).
+
+    Shared helper used by both the execution engine and the server's
+    RAG CRUD endpoints so they resolve embedding providers identically.
+    """
+    from dan.providers import ProviderConfig
+
+    registry = EmbeddingRegistry()
+    fallback_key = getattr(config, "llm_api_key", "")
+    fallback_url = getattr(config, "llm_base_url", "")
+    fallback_model = getattr(config, "default_embedding_model", "text-embedding-3-small")
+
+    embedding_providers = getattr(config, "embedding_providers", {}) or {}
+    if embedding_providers:
+        for name, pconf in embedding_providers.items():
+            provider = _create_embedding_provider(name, pconf, fallback_key, fallback_url, fallback_model)
+            if provider is not None:
+                registry.register(name, provider)
+    else:
+        if fallback_key:
+            fallback_conf = ProviderConfig(
+                api_key=fallback_key, base_url=fallback_url, default_model=fallback_model,
+            )
+            provider = _create_embedding_provider("default", fallback_conf, fallback_key, fallback_url, fallback_model)
+            if provider is not None:
+                registry.register("default", provider)
+
+    if not registry.has_provider("default") and "openai" in embedding_providers:
+        provider = _create_embedding_provider("openai", embedding_providers["openai"], fallback_key, fallback_url, fallback_model)
+        if provider is not None:
+            registry.register("default", provider)
+
+    model_map = getattr(config, "embedding_model_provider_map", {}) or {}
+    for model, provider_name in model_map.items():
+        registry.set_model_override(model, provider_name)
+
+    return registry
