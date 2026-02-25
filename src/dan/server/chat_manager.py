@@ -367,6 +367,16 @@ def serialize_for_prompt(summary: GraphSummary, max_tokens: int = 4000) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _normalize_usage(raw: dict[str, int] | None) -> dict[str, int]:
+    """Normalize provider usage dicts to {prompt, completion} keys."""
+    if not raw:
+        return {}
+    return {
+        "prompt": raw.get("prompt", 0) or raw.get("prompt_tokens", 0) or 0,
+        "completion": raw.get("completion", 0) or raw.get("completion_tokens", 0) or 0,
+    }
+
+
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
 
 
@@ -452,7 +462,7 @@ class ChatManager:
                 )
                 if chunk.done:
                     final_content = chunk.accumulated
-                    token_usage = chunk.usage or {}
+                    token_usage = _normalize_usage(chunk.usage)
 
             yield ChatCompleteEvent(
                 message_id=message_id,
@@ -543,24 +553,26 @@ class ChatManager:
                 dry_result = GraphMutator().dry_run(
                     graph_dict, plan, current_revision=revision,
                 )
+                normalized_usage = _normalize_usage(result.usage)
                 yield ChatMutationEvent(
                     message_id=message_id,
                     content=mutation_data.get("reasoning", result.text or ""),
                     mutation_plan=plan.model_dump(),
                     dry_run_result=dry_result.model_dump(),
-                    token_usage=result.usage or {},
+                    token_usage=normalized_usage,
                     graph_revision=revision,
                     revision_mismatch=revision_mismatch,
                 )
                 return
 
             content = result.text or ""
+            normalized_usage = _normalize_usage(result.usage)
             if content:
                 yield ChatTokenEvent(delta=content, accumulated=content)
             yield ChatCompleteEvent(
                 message_id=message_id,
                 content=content,
-                token_usage=result.usage or {},
+                token_usage=normalized_usage,
                 graph_revision=revision,
                 revision_mismatch=revision_mismatch,
             )
@@ -601,7 +613,7 @@ class ChatManager:
             )
             if chunk.done:
                 final_content = chunk.accumulated
-                token_usage = chunk.usage or {}
+                token_usage = _normalize_usage(chunk.usage)
 
         mutation_data = _try_parse_mutation_json(final_content)
         if mutation_data is not None:
