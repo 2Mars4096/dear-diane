@@ -8,7 +8,7 @@
 
 - [ ] 1. Chat panel React component
   - [ ] 1-1. `ChatPanel.tsx`: message list (scrollable, auto-scroll-to-bottom), input box (auto-resize textarea), send button, keyboard shortcut (Enter to send, Shift+Enter for newline)
-  - [ ] 1-2. `ChatMessage.tsx`: renders user messages (right-aligned, blue) and assistant messages (left-aligned, gray). Markdown rendering for assistant messages (code blocks, inline code, lists, bold/italic). Timestamp display.
+  - [ ] 1-2. `ChatMessage.tsx`: renders user messages (right-aligned, blue) and assistant messages (left-aligned, gray). Markdown rendering for assistant messages (code blocks, inline code, lists, bold/italic) with HTML sanitization / `skipHtml` policy to avoid script injection. Timestamp display.
   - [ ] 1-3. Loading indicator: animated dots or spinner while LLM is generating. Streaming text appears incrementally as tokens arrive.
   - [ ] 1-4. Empty state: welcome message with example prompts ("Add a reviewer node after the writer", "Connect the output of @Planner to @Drafter", "Create a 3-node research pipeline")
   - [ ] 1-5. Error state: if LLM call fails, show error inline in the chat with a retry button
@@ -20,21 +20,22 @@
   - [ ] 2-4. Responsive: chat panel collapses to an icon button on narrow viewports
 
 - [ ] 3. Backend chat endpoint
-  - [ ] 3-1. `POST /api/chat/message` — accepts `{ workflow_id: string, message: string, history: ChatMessage[], graph_context: GraphSummary }`. Returns streaming SSE (Server-Sent Events) or chunked response with token-by-token text.
+  - [ ] 3-1. `POST /api/chat/message` — accepts `{ workflow_id: string, thread_id: string | null, message: string, history: ChatMessage[], client_graph_revision: string | null }`. Returns `{ message_id, stream_channel_id }`; tokens stream over WebSocket.
   - [ ] 3-2. `ChatManager` class in `src/dan/server/chat_manager.py`: orchestrates LLM call with graph-aware system prompt, manages token streaming, handles errors
-  - [ ] 3-3. Graph context serialization: `GraphSummary` is a compact representation of the current graph — node list (id, name, type, ports), edge list (source→target with ports), metadata. Serialized as structured text in the system prompt. Cap at ~4000 tokens; for large graphs, summarize (node count, key paths, omit port details of non-mentioned nodes).
-  - [ ] 3-4. System prompt template: instructs the LLM about DAN's node types, edge types, graph structure, and available operations. Includes the current graph summary. Tells the LLM it can suggest graph modifications (but 10-3 implements actual mutation).
+  - [ ] 3-3. Server-authoritative graph context serialization: backend loads graph by `workflow_id` from `GraphStore`, builds `GraphSummary` (node list, edge list, metadata), and serializes it into the system prompt. Client-supplied graph context is ignored.
+  - [ ] 3-4. System prompt template: instructs the LLM about DAN's node types, edge types, graph structure, and available operations. Includes server-built graph summary. Tells the LLM it can suggest graph modifications (but 10-3 implements actual mutation).
   - [ ] 3-5. Wire endpoint in `app.py` alongside existing routes
+  - [ ] 3-6. Revision mismatch handling: if `client_graph_revision` differs from current server graph revision, include a warning in response metadata so frontend can prompt refresh/retry before apply
 
 - [ ] 4. LLM provider integration
   - [ ] 4-1. Chat uses `ProviderRegistry` from existing multi-provider infrastructure. Model configurable via `DAN_CHAT_MODEL` env var (default: engine's `llm_default_model`).
-  - [ ] 4-2. Streaming: use provider's streaming API (same pattern as `LLMExecutor` streaming path). Yield tokens to SSE response.
+  - [ ] 4-2. Streaming: use provider's streaming API (same pattern as `LLMExecutor` streaming path). Emit token chunks to chat WebSocket events.
   - [ ] 4-3. Token usage tracking: count prompt + completion tokens per message. Surface in chat UI (subtle token count badge per assistant message, like the run summary bar).
 
-- [ ] 5. WebSocket streaming alternative
-  - [ ] 5-1. Extend existing WebSocket infrastructure with new event types: `chat_token` (incremental text), `chat_complete` (full message + token usage), `chat_error`
-  - [ ] 5-2. Frontend: `sendMessage` action opens WebSocket subscription (or reuses existing run WS connection with multiplexed event types). Accumulates tokens into streaming message.
-  - [ ] 5-3. Decide SSE vs. WebSocket: if run events already use WS, prefer WS for consistency. If SSE is simpler for request-response chat, use SSE. Both implementations are straightforward; pick one during implementation.
+- [ ] 5. WebSocket streaming protocol
+  - [ ] 5-1. Extend existing WebSocket infrastructure with chat event types: `chat_token` (incremental text), `chat_complete` (full message + token usage + revision metadata), `chat_error`
+  - [ ] 5-2. Frontend: `sendMessage` action subscribes to the chat stream channel and accumulates tokens into the in-flight assistant message
+  - [ ] 5-3. Connection strategy: either multiplex chat events onto existing `/api/runs/{run_id}/events`-style channel or provide dedicated `/api/chat/{channel_id}/events` endpoint; pick one and document
 
 - [ ] 6. Basic graph-aware responses
   - [ ] 6-1. The LLM should be able to answer questions about the current graph: "How many nodes are there?", "What does the Planner node do?", "What's connected to the Reviewer?"
@@ -53,11 +54,13 @@
 
 ## Decisions
 
-- (to be filled during execution: SSE vs. WebSocket, graph context token budget, chat panel placement)
+- Streaming transport is WebSocket-only (no SSE path).
+- Graph context is server-authoritative; client does not provide canonical graph structure.
+- Rollback pointers are session-scoped and handled in frontend state (cross-reload rollback out of scope).
 
 ## Notes
 
-- The chat endpoint is stateless — history is passed with each request. Server-side persistence comes in 10-5.
+- The chat endpoint is stateless for inference — history is passed with each request. Server-side thread persistence comes in 10-5.
 - Graph context serialization is crucial. Too little context and the LLM can't reason about the graph. Too much and we blow the context window. The ~4000 token budget is a starting heuristic.
 - The system prompt is the most important piece. It needs to teach the LLM about DAN's node/edge model concisely. Consider including the `llm-api-guide.md` content (or a compressed version) in the system prompt.
 - Streaming UX should feel as responsive as ChatGPT/Claude — first token within 1-2s, smooth incremental rendering.

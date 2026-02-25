@@ -41,17 +41,19 @@
   - [ ] 5-4. Chat message update: the "proposed changes" block in the assistant message changes to "Changes applied ✓" (or "Partially applied: 2 of 3" for partial accept).
 
 - [ ] 6. Conversation-level rollback
-  - [ ] 6-1. Each chat message that produces mutations records a `graph_snapshot_id` (pointer to the undo stack position before the mutation).
-  - [ ] 6-2. In the chat message history, a "Revert to here" action on any assistant message with mutations: rolls the graph back to the state before that message's mutations (using the undo stack).
-  - [ ] 6-3. Revert cascades: reverting message N also reverts messages N+1, N+2, etc. if they also produced mutations. Show a confirmation: "This will also undo changes from 2 later messages."
-  - [ ] 6-4. Visual indicator: messages whose mutations are active show a green dot; reverted messages show a gray dot with strikethrough on the "Changes applied" label.
+  - [ ] 6-1. Each chat message that produces mutations records a session-only `history_cursor` marker (index into active tab undo stack) in frontend state, not persisted to server.
+  - [ ] 6-2. In chat history, "Revert to here" walks undo stack back to the message's `history_cursor`.
+  - [ ] 6-3. Revert cascades: reverting message N also reverts N+1, N+2, etc. if their markers are after target cursor. Show confirmation ("This will also undo changes from 2 later messages.").
+  - [ ] 6-4. Reload behavior: if session markers are unavailable (page reload/new session), disable "Revert to here" with tooltip ("Available only in current session").
+  - [ ] 6-5. Visual indicator: active mutations show green dot; reverted show gray/strikethrough; non-restorable (cross-session) show hollow dot.
 
 - [ ] 7. Tests
   - [ ] 7-1. `computeGraphDiff` unit tests: node add/remove/modify, edge add/remove/modify, empty diff, full replacement
   - [ ] 7-2. Partial accept: apply subset of operations, verify graph state
   - [ ] 7-3. Undo integration: apply mutations, undo, verify graph reverts
-  - [ ] 7-4. Conversation rollback: apply 3 messages with mutations, rollback to message 1, verify graph state
-  - [ ] 7-5. Frontend: verify diff preview renders correctly, accept/reject buttons work, animations fire (component test or manual)
+  - [ ] 7-4. Conversation rollback (same session): apply 3 messages with mutations, rollback to message 1, verify graph state
+  - [ ] 7-5. Conversation rollback unavailable after marker loss/reload: verify UI disables action cleanly
+  - [ ] 7-6. Frontend: verify diff preview renders correctly, accept/reject buttons work, animations fire (component test or manual)
 
 - [ ] 8. Docs sync
   - [ ] 8-1. `architecture.md`: document GraphDiffPreview component, diff computation, undo integration
@@ -59,12 +61,15 @@
 
 ## Decisions
 
-- (to be filled during execution: list-based vs. canvas-based diff preview, partial accept UX details, rollback cascade confirmation)
+- List-based diff preview ships first; mini-canvas stays stretch.
+- Partial accept remains user-controlled via per-operation checkboxes.
+- Conversation rollback is session-scoped only (no cross-reload replay of undo pointers).
 
 ## Notes
 
 - The diff preview is directly inspired by Cursor's code diff view and GitHub's PR diff. Users should feel the same level of confidence reviewing graph changes as they do reviewing code changes.
 - Partial accept is important because LLMs sometimes get most of a complex request right but make one mistake. Users should be able to accept the good parts and reject the bad.
 - Conversation-level rollback is a powerful feature that most chat-based tools lack. It turns the chat into a reversible timeline of graph evolution.
+- Rollback intentionally targets active-session UX; durable rollback across reloads would require persisted graph snapshots/versioning and is out of scope here.
 - The "Edit and Apply" escape hatch exists for power users who want to tweak the LLM's output. Most users will use Accept/Reject.
 - Canvas mini-preview (stretch goal) would be the most intuitive diff format but is complex to implement (two React Flow instances, color-coded nodes). Start with the list-based diff and iterate.

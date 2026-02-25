@@ -152,7 +152,7 @@ deep-agent-network/
     review_revise.py             # Phase 4 template: GateNode while-loop draft→review→revise
     rag_qa.py                    # Phase 4 template: tool-based RAG Q&A (no vector DB)
     react_agent.py               # Phase 4 template: ReAct agent loop with web tools
-  tests/                         # pytest suite (765 passed, 15 skipped)
+  tests/                         # pytest suite (771 passed, 15 skipped)
     test_models/                 # Unit tests for all model types
     test_validation/             # Validation logic tests
     test_examples/               # Paper-writing motivating example + e2e tests

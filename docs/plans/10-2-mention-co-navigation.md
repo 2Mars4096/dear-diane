@@ -47,10 +47,11 @@
   - [ ] 6-4. Optional: drag a node from canvas onto the chat input to create a mention (stretch goal)
 
 - [ ] 7. Mention resolution for backend
-  - [ ] 7-1. When sending a message to the backend, resolve mentions into structured context. Each `@[name](node:id)` is expanded into the full node definition (type, model, prompt, input/output ports, connected edges) and injected into the LLM context as a structured block.
-  - [ ] 7-2. Workflow mentions: inject the workflow's node list and description as context
-  - [ ] 7-3. Multiple mentions: each resolved independently and included as separate context blocks. Dedup if the same entity is mentioned twice.
-  - [ ] 7-4. Context budget: mentioned entities get priority in the graph context serialization. Non-mentioned nodes get compressed representation if total context exceeds budget.
+  - [ ] 7-1. Client sends mention references only (`type`, `id`, display `name`) alongside message text; backend resolves them against server-side graph/workflow state.
+  - [ ] 7-2. Node mentions: backend expands `@[name](node:id)` into structured node context (type, model/prompt config, ports, adjacent edges) and injects that into LLM context.
+  - [ ] 7-3. Workflow mentions: backend loads referenced workflow from `GraphStore` and injects summary context.
+  - [ ] 7-4. Multiple mentions: each resolved independently and included as separate context blocks. Dedup if same entity appears multiple times.
+  - [ ] 7-5. Context budget: mentioned entities get priority in graph context serialization. Non-mentioned nodes are compressed when total context exceeds budget.
 
 - [ ] 8. Tests
   - [ ] 8-1. Mention parsing: `@[name](type:id)` → structured mention object, round-trip serialization
@@ -72,3 +73,4 @@
 - ContentEditable is powerful but complex. A textarea with an overlay for chip rendering might be simpler and more reliable. Evaluate during implementation.
 - The mention system is reusable beyond chat — future phases could use it in node prompt editors, condition expressions, or markdown flow notation.
 - Mention resolution is the bridge between natural language and structured graph operations. The richer the context injected for mentions, the better the LLM can reason about requested changes.
+- Mention expansion must happen on the server to keep trust boundaries clean and avoid stale/tampered client graph payloads.

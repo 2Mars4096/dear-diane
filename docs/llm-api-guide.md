@@ -736,6 +736,9 @@ dan-serve
 | `checkpoint_dir` | `str` | `"./checkpoints"` | Checkpoint directory |
 | `checkpoint_enabled` | `bool` | `True` | Enable checkpointing |
 | `output_norm_max_retries` | `int` | `3` | Schema validation retries |
+| `embedding_providers` | `dict[str, ProviderConfig]` | `{}` | Named embedding providers for `RAGOperator` (e.g., `default`, `openai`, `local`) |
+| `embedding_model_provider_map` | `dict[str, str]` | `{}` | Exact embedding model → provider override map |
+| `default_embedding_model` | `str` | `"text-embedding-3-small"` | Default embedding model when a `RAGOperator` omits `embedding_model` |
 
 ### RunResult Fields
 
