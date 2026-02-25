@@ -62,10 +62,18 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
 }
 
 DEFAULT_INPUT_PORT = "input"
+DEFAULT_INPUT_PORTS: dict[str, str] = {
+    "rag_operator": "query",
+    "validator": "data",
+}
 
 
 def default_output_port(node_type: str) -> str:
     return DEFAULT_OUTPUT_PORTS.get(node_type, "result")
+
+
+def default_input_port(node_type: str) -> str:
+    return DEFAULT_INPUT_PORTS.get(node_type, DEFAULT_INPUT_PORT)
 
 
 class BuildError(Exception):

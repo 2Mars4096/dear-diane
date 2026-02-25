@@ -22,8 +22,8 @@ from dan.builder.compiler import (
     _PendingNode,
     _PendingSubGraph,
     compile_graph,
+    default_input_port,
     default_output_port,
-    DEFAULT_INPUT_PORT,
 )
 from dan.builder.refs import NodeRef, PortRef
 from dan.models.context import (
@@ -784,7 +784,7 @@ class WorkflowBuilder:
     def _register_chain(self, src: NodeRef, dst: NodeRef) -> None:
         """Called by NodeRef.__rshift__ to register a >> edge."""
         src_port = default_output_port(src.node_type)
-        dst_port = DEFAULT_INPUT_PORT
+        dst_port = default_input_port(dst.node_type)
         self._edges.append(_PendingEdge(
             source_node_id=src.node_id,
             source_port=src_port,

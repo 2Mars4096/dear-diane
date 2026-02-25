@@ -16,7 +16,7 @@ import re
 from collections import defaultdict
 from typing import Any
 
-from dan.builder.compiler import DEFAULT_INPUT_PORT, default_output_port
+from dan.builder.compiler import default_input_port, default_output_port
 from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
@@ -470,11 +470,12 @@ class _Decompiler:
 
     def _is_default_data_edge(self, edge: DataEdge) -> bool:
         src_node = self.node_map.get(edge.source_node_id)
-        if src_node is None:
+        tgt_node = self.node_map.get(edge.target_node_id)
+        if src_node is None or tgt_node is None:
             return False
         return (
             edge.source_port == default_output_port(src_node.node_type)
-            and edge.target_port == DEFAULT_INPUT_PORT
+            and edge.target_port == default_input_port(tgt_node.node_type)
         )
 
     def _is_default_chain_edge(self, src_node_id: str, tgt_node_id: str) -> bool:
