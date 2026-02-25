@@ -399,7 +399,34 @@ export default function ChatPanel() {
           );
         }
 
-        const { stream_channel_id } = (await res.json()) as {
+        const resBody = await res.json();
+
+        if (resBody.type === "run_started" || resBody.type === "run_error") {
+          const isError = resBody.type === "run_error";
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    content: isError
+                      ? `Run failed: ${resBody.error?.detail ?? "Unknown error"}`
+                      : `Started ${resBody.scope ?? "full"} run.`,
+                    runRef: isError
+                      ? null
+                      : {
+                          runId: resBody.run_id as string,
+                          scope: (resBody.scope as string) ?? "full",
+                          status: "running",
+                        },
+                  }
+                : m,
+            ),
+          );
+          setIsStreaming(false);
+          return;
+        }
+
+        const { stream_channel_id } = resBody as {
           message_id: string;
           stream_channel_id: string;
         };
@@ -433,6 +460,34 @@ export default function ChatPanel() {
                         ...m,
                         content: evt.content ?? m.content,
                         tokenUsage: evt.token_usage ?? null,
+                      }
+                    : m,
+                );
+                const tid = activeThreadIdRef.current;
+                if (tid && capturedGraphId) {
+                  api
+                    .updateChatThread(capturedGraphId, tid, {
+                      messages: updated.map(toBackendMessage),
+                    })
+                    .catch((err: unknown) =>
+                      console.warn("Failed to save thread:", err),
+                    );
+                }
+                return updated;
+              });
+              setIsStreaming(false);
+              ws.close();
+            } else if (evt.type === "chat_mutation") {
+              setMessages((prev) => {
+                const updated = prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        content: evt.content ?? m.content,
+                        tokenUsage: evt.token_usage ?? null,
+                        mutationPlan: evt.mutation_plan ?? null,
+                        mutationStatus: "proposed" as const,
+                        mutationId: evt.message_id ?? null,
                       }
                     : m,
                 );
