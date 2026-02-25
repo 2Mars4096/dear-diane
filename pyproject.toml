@@ -22,7 +22,21 @@ all-tools = ["pypdf>=4.0", "duckduckgo-search>=6.0"]
 anthropic = ["anthropic>=0.40"]
 google = ["google-generativeai>=0.8"]
 all-providers = ["anthropic>=0.40", "google-generativeai>=0.8"]
-all = ["pypdf>=4.0", "duckduckgo-search>=6.0", "anthropic>=0.40", "google-generativeai>=0.8"]
+faiss = ["faiss-cpu>=1.7"]
+chroma = ["chromadb>=0.5"]
+embeddings = ["sentence-transformers>=3.0"]
+jsonschema = ["jsonschema>=4.0"]
+all-rag = ["faiss-cpu>=1.7", "chromadb>=0.5", "sentence-transformers>=3.0"]
+all = [
+    "pypdf>=4.0",
+    "duckduckgo-search>=6.0",
+    "anthropic>=0.40",
+    "google-generativeai>=0.8",
+    "faiss-cpu>=1.7",
+    "chromadb>=0.5",
+    "sentence-transformers>=3.0",
+    "jsonschema>=4.0",
+]
 dev = [
     "pytest>=8.0",
     "pytest-cov",
