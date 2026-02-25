@@ -26,6 +26,7 @@ export default function ContextMenu({ type, position, targetId, onClose }: Conte
   const loopGroups = useGraphStore((s) => s.loopGroups);
   const createLoopGroup = useGraphStore((s) => s.createLoopGroup);
   const removeLoopGroup = useGraphStore((s) => s.removeLoopGroup);
+  const addBoundaryValidators = useGraphStore((s) => s.addBoundaryValidators);
 
   const close = useCallback(() => onClose(), [onClose]);
 
@@ -91,6 +92,19 @@ export default function ContextMenu({ type, position, targetId, onClose }: Conte
           label: "Ungroup Loop",
           onClick: () => action(() => removeLoopGroup(targetGroup.id)),
         });
+      }
+
+      const targetNode = nodes.find((n) => n.id === targetId);
+      if (targetNode) {
+        const nd = targetNode.data as Record<string, unknown>;
+        const isCompositeStyle = nd.node_type === "composite" || nd.node_type === "while_loop" || nd.node_type === "for_each";
+        const hasSchema = nd.external_input_schema || nd.external_output_schema;
+        if (isCompositeStyle && hasSchema) {
+          items.push({
+            label: "Add Boundary Validators",
+            onClick: () => action(() => addBoundaryValidators(targetId)),
+          });
+        }
       }
     }
   }

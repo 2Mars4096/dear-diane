@@ -131,6 +131,30 @@ export interface CompositeNode extends NodeBase {
   external_output_schema?: Record<string, unknown> | null;
 }
 
+export interface RagOperator extends NodeBase {
+  node_type: "rag_operator";
+  collection: string;
+  top_k: number;
+  similarity_threshold?: number | null;
+  embedding_model?: string;
+  vector_store_config?: Record<string, unknown>;
+  query_template: string;
+  include_metadata: boolean;
+  rerank: boolean;
+}
+
+export interface ValidationRule {
+  rule_type: "required_keys" | "non_empty" | "schema_conformance" | "type_check" | "custom_expression";
+  config: Record<string, unknown>;
+}
+
+export interface ValidatorNode extends NodeBase {
+  node_type: "validator";
+  validation_rules: ValidationRule[];
+  on_failure: "route" | "warn" | "halt";
+  strict_mode: boolean;
+}
+
 export interface InputVariable {
   name: string;
   type: "string" | "number" | "boolean";
@@ -155,6 +179,8 @@ export type DanNode =
   | RouterNode
   | HumanInTheLoopNode
   | CompositeNode
+  | RagOperator
+  | ValidatorNode
   | InputNodeType;
 
 // -- Edges -------------------------------------------------------------------
@@ -240,6 +266,8 @@ export const NODE_TYPE_CATALOG = [
   { type: "router", label: "Router", category: "control" },
   { type: "human_in_the_loop", label: "Human in the Loop", category: "control" },
   { type: "gate", label: "Gate", category: "control" },
+  { type: "rag_operator", label: "RAG Operator", category: "operator" },
+  { type: "validator", label: "Validator", category: "control" },
   { type: "composite", label: "Composite", category: "composite" },
 ] as const;
 
@@ -300,6 +328,16 @@ export const NODE_DESCRIPTIONS: Record<
     description: "Conditional gate for branching or looping",
     inputs: ["input"],
     outputs: ["true/continue", "false/done"],
+  },
+  rag_operator: {
+    description: "Retrieve relevant chunks from a vector store",
+    inputs: ["query"],
+    outputs: ["chunks", "scores"],
+  },
+  validator: {
+    description: "Validate data with configurable rules (valid/invalid routing)",
+    inputs: ["data"],
+    outputs: ["valid", "invalid"],
   },
   composite: {
     description: "Reusable sub-graph block",

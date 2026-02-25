@@ -64,6 +64,14 @@ export interface ValidationResult {
 export const validateGraph = (graphId: string) =>
   request<ValidationResult>(`/graphs/${graphId}/validate`, { method: "POST" });
 
+// -- Boundary validators -----------------------------------------------------
+
+export const addBoundaryValidators = (graphId: string, nodeId: string) =>
+  request<{ graph_id: string; node_id: string; status: string }>(
+    `/graphs/${graphId}/nodes/${nodeId}/add-boundary-validators`,
+    { method: "POST" },
+  );
+
 // -- Runs --------------------------------------------------------------------
 
 export interface RunInfo {
@@ -106,6 +114,83 @@ export const submitHumanInput = (
       body: JSON.stringify({ request_id: requestId, node_id: nodeId, response }),
     },
   );
+
+// -- Chat --------------------------------------------------------------------
+
+export interface ChatMessageResponse {
+  message_id: string;
+  stream_channel_id: string;
+}
+
+export const sendChatMessage = (
+  workflowId: string,
+  message: string,
+  history: Array<{ role: string; content: string }> = [],
+  threadId?: string | null,
+  clientGraphRevision?: string | null,
+) =>
+  request<ChatMessageResponse>("/chat/message", {
+    method: "POST",
+    body: JSON.stringify({
+      workflow_id: workflowId,
+      message,
+      history,
+      thread_id: threadId,
+      client_graph_revision: clientGraphRevision,
+    }),
+  });
+
+export interface ChatThreadSummary {
+  id: string;
+  title: string;
+  workflow_id: string;
+  message_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export const listChatThreads = (workflowId: string) =>
+  request<{ threads: ChatThreadSummary[] }>(`/chats/${workflowId}`);
+
+export const getChatThread = (workflowId: string, threadId: string) =>
+  request<Record<string, unknown>>(`/chats/${workflowId}/${threadId}`);
+
+export const createChatThread = (workflowId: string, title?: string) =>
+  request<Record<string, unknown>>(`/chats/${workflowId}`, {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+
+export const updateChatThread = (
+  workflowId: string,
+  threadId: string,
+  body: { title?: string; messages?: unknown[] },
+) =>
+  request<{ status: string }>(`/chats/${workflowId}/${threadId}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+
+export const deleteChatThread = (workflowId: string, threadId: string) =>
+  request<{ status: string }>(`/chats/${workflowId}/${threadId}`, {
+    method: "DELETE",
+  });
+
+export function connectChatStream(
+  channelId: string,
+  onEvent: (event: Record<string, unknown>) => void,
+  onClose?: () => void,
+): WebSocket {
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/api/chat/${channelId}/events`);
+  ws.onmessage = (e) => {
+    try {
+      onEvent(JSON.parse(e.data));
+    } catch { /* ignore parse errors */ }
+  };
+  ws.onclose = () => onClose?.();
+  return ws;
+}
 
 // -- WebSocket ---------------------------------------------------------------
 

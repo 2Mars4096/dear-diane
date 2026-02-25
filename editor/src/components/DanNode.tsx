@@ -17,6 +17,8 @@ const TYPE_COLORS: Record<string, string> = {
   router: "#14b8a6",
   human_in_the_loop: "#06b6d4",
   gate: "#eab308",
+  rag_operator: "#7c3aed",
+  validator: "#059669",
   composite: "#10b981",
 };
 

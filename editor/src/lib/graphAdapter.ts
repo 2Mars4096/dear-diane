@@ -305,6 +305,31 @@ export function createDefaultNode(
       return { ...base, node_type: "router", model: "", route_descriptions: {} };
     case "human_in_the_loop":
       return { ...base, node_type: "human_in_the_loop", prompt: "", timeout_seconds: null, default_action: null };
+    case "rag_operator":
+      return {
+        ...base,
+        node_type: "rag_operator",
+        input_ports: [{ name: "query", schema: {}, required: true }],
+        output_ports: [{ name: "chunks", schema: {} }, { name: "scores", schema: {} }],
+        collection: "",
+        top_k: 5,
+        similarity_threshold: null,
+        embedding_model: "",
+        vector_store_config: {},
+        query_template: "{query}",
+        include_metadata: true,
+        rerank: false,
+      };
+    case "validator":
+      return {
+        ...base,
+        node_type: "validator",
+        input_ports: [{ name: "data", schema: {}, required: true }],
+        output_ports: [{ name: "valid", schema: {} }, { name: "invalid", schema: {} }],
+        validation_rules: [],
+        on_failure: "route",
+        strict_mode: false,
+      };
     case "composite":
       return { ...base, node_type: "composite", body_graph: "", input_mappings: {}, output_mappings: {}, is_blackbox: false };
     case "gate":

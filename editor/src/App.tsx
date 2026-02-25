@@ -11,6 +11,7 @@ import BreadcrumbBar from "./components/BreadcrumbBar";
 import PortMappingOverlay from "./components/PortMappingOverlay";
 import ToastContainer from "./components/ToastContainer";
 import ExecutionTimeline from "./components/ExecutionTimeline";
+import ChatPanel from "./components/ChatPanel";
 import CommandPalette from "./components/CommandPalette";
 import HumanInputDialog from "./components/HumanInputDialog";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -113,6 +114,9 @@ export default function App() {
 
           {/* Right — config panel */}
           <ConfigPanel />
+
+          {/* Right — chat panel (overlays/stacks alongside config) */}
+          <ChatPanel />
         </div>
 
         <ToastContainer />

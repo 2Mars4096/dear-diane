@@ -59,6 +59,19 @@ const icons: Record<string, JSX.Element> = {
       <path d="M12 2 L22 12 L12 22 L2 12 Z" />
     </svg>
   ),
+  rag_operator: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <circle cx="6" cy="6" r="4" stroke="currentColor" strokeWidth={1.3} />
+      <path d="M9 9l4.5 4.5" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" />
+      <path d="M5 4v4M3 6h4" stroke="currentColor" strokeWidth={1} strokeLinecap="round" opacity={0.6} />
+    </svg>
+  ),
+  validator: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <path d="M8 1L2 4v4c0 3.3 2.6 6.4 6 7 3.4-.6 6-3.7 6-7V4L8 1z" stroke="currentColor" strokeWidth={1.3} strokeLinejoin="round" />
+      <path d="M5.5 8l2 2 3.5-4" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ),
   composite: (
     <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
       <rect x="2" y="5" width="12" height="8" rx="1.5" stroke="currentColor" strokeWidth={1.3} />

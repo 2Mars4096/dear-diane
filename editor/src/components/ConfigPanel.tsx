@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useGraphStore } from "../store/useGraphStore";
 import type { DanNode, InputPort, OutputPort, RetryPolicy } from "../types/graph";
 
@@ -8,6 +8,9 @@ const SKIP_FIELDS = new Set([
   "local_state", "control_state_schema", "external_input_schema", "external_output_schema",
   "output_json_schema", "retry_policy",
   "model", "temperature", "system_prompt", "max_tokens",
+  "collection", "top_k", "similarity_threshold", "embedding_model", "vector_store_config",
+  "query_template", "include_metadata", "rerank",
+  "validation_rules", "on_failure", "strict_mode",
 ]);
 
 const LARGE_TEXT_FIELDS = new Set(["prompt_template", "code", "system_prompt"]);
@@ -524,6 +527,191 @@ function LLMConfigSection({ nodeId, data }: { nodeId: string; data: Record<strin
   );
 }
 
+// -- RAG Config Section -------------------------------------------------------
+
+const RAG_STORE_BACKENDS = ["memory", "faiss", "chroma"] as const;
+
+function RAGConfigSection({ nodeId, data }: { nodeId: string; data: Record<string, unknown> }) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  const collection = (data.collection as string) ?? "";
+  const topK = (data.top_k as number) ?? 5;
+  const queryTemplate = (data.query_template as string) ?? "{query}";
+  const includeMetadata = (data.include_metadata as boolean) ?? true;
+  const rerank = (data.rerank as boolean) ?? false;
+  const embeddingModel = (data.embedding_model as string) ?? "";
+  const threshold = data.similarity_threshold as number | null | undefined;
+  const storeConfig = (data.vector_store_config ?? {}) as Record<string, unknown>;
+
+  const update = (patch: Record<string, unknown>) => {
+    updateNodeData(nodeId, patch as unknown as Partial<DanNode>);
+  };
+
+  return (
+    <div className="mt-3">
+      <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">RAG Config</h3>
+      <div className="flex flex-col gap-2 pl-2 border-l border-purple-200">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">collection</span>
+          <input type="text" value={collection} onChange={(e) => update({ collection: e.target.value })} placeholder="my_knowledge_base" className="border rounded px-2 py-1 text-xs" />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">top_k</span>
+          <input type="number" min={1} max={100} value={topK} onChange={(e) => update({ top_k: parseInt(e.target.value) || 5 })} className="border rounded px-2 py-1 text-xs" />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">query_template</span>
+          <textarea value={queryTemplate} onChange={(e) => update({ query_template: e.target.value })} className="border rounded px-2 py-1 text-xs font-mono min-h-12 resize-y" placeholder="{query}" />
+        </label>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={includeMetadata} onChange={(e) => update({ include_metadata: e.target.checked })} className="w-3.5 h-3.5" />
+          <span className="text-[11px] font-medium text-gray-500">include_metadata</span>
+        </label>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={rerank} onChange={(e) => update({ rerank: e.target.checked })} className="w-3.5 h-3.5" />
+          <span className="text-[11px] font-medium text-gray-500">rerank</span>
+        </label>
+        <div>
+          <button onClick={() => setAdvancedOpen(!advancedOpen)} className="text-[10px] text-gray-400 hover:text-gray-600">
+            {advancedOpen ? "▾ Advanced" : "▸ Advanced"}
+          </button>
+          {advancedOpen && (
+            <div className="flex flex-col gap-2 mt-1">
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">embedding_model</span>
+                <input type="text" value={embeddingModel} onChange={(e) => update({ embedding_model: e.target.value })} placeholder="text-embedding-3-small" className="border rounded px-2 py-1 text-xs" />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">similarity_threshold</span>
+                <input type="number" min={0} max={1} step={0.05} value={threshold ?? ""} onChange={(e) => update({ similarity_threshold: e.target.value ? parseFloat(e.target.value) : null })} placeholder="None (return all)" className="border rounded px-2 py-1 text-xs" />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">store backend</span>
+                <select value={(storeConfig.backend as string) ?? "memory"} onChange={(e) => update({ vector_store_config: { ...storeConfig, backend: e.target.value } })} className="border rounded px-2 py-1 text-xs">
+                  {RAG_STORE_BACKENDS.map((b) => <option key={b} value={b}>{b}</option>)}
+                </select>
+              </label>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// -- Validator Config Section -------------------------------------------------
+
+const RULE_TYPES = ["required_keys", "non_empty", "schema_conformance", "type_check", "custom_expression"] as const;
+const ON_FAILURE_VALIDATOR = ["route", "warn", "halt"] as const;
+
+interface VRule {
+  rule_type: string;
+  config: Record<string, unknown>;
+}
+
+function RuleConfigEditor({ value, onChange }: { value: Record<string, unknown>; onChange: (v: Record<string, unknown>) => void }) {
+  const [text, setText] = useState(() => JSON.stringify(value, null, 2));
+  const [parseError, setParseError] = useState<string | null>(null);
+  const canonical = JSON.stringify(value, null, 2);
+
+  useEffect(() => {
+    try {
+      if (JSON.stringify(JSON.parse(text), null, 2) !== canonical) {
+        setText(canonical);
+        setParseError(null);
+      }
+    } catch {
+      setText(canonical);
+      setParseError(null);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canonical]);
+
+  const commit = () => {
+    try {
+      const parsed = JSON.parse(text);
+      setParseError(null);
+      onChange(parsed);
+    } catch (err) {
+      setParseError((err as Error).message);
+    }
+  };
+
+  return (
+    <>
+      <textarea
+        value={text}
+        onChange={(e) => { setText(e.target.value); setParseError(null); }}
+        onBlur={commit}
+        className={`mt-1 w-full border rounded px-1.5 py-0.5 text-[10px] font-mono h-12 resize-y ${parseError ? "border-red-400" : ""}`}
+        placeholder='{"keys": ["name", "email"]}'
+      />
+      {parseError && <p className="text-[9px] text-red-500 mt-0.5">{parseError}</p>}
+    </>
+  );
+}
+
+function ValidatorConfigSection({ nodeId, data }: { nodeId: string; data: Record<string, unknown> }) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+
+  const rules = (data.validation_rules ?? []) as VRule[];
+  const onFailure = (data.on_failure as string) ?? "route";
+  const strictMode = (data.strict_mode as boolean) ?? false;
+
+  const update = (patch: Record<string, unknown>) => {
+    updateNodeData(nodeId, patch as unknown as Partial<DanNode>);
+  };
+
+  const updateRule = (idx: number, patch: Partial<VRule>) => {
+    const updated = rules.map((r, i) => (i === idx ? { ...r, ...patch } : r));
+    update({ validation_rules: updated });
+  };
+
+  const addRule = () => {
+    update({ validation_rules: [...rules, { rule_type: "required_keys", config: { keys: [] } }] });
+  };
+
+  const deleteRule = (idx: number) => {
+    update({ validation_rules: rules.filter((_, i) => i !== idx) });
+  };
+
+  return (
+    <div className="mt-3">
+      <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Validator Config</h3>
+      <div className="flex flex-col gap-2 pl-2 border-l border-emerald-200">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">on_failure</span>
+          <select value={onFailure} onChange={(e) => update({ on_failure: e.target.value })} className="border rounded px-2 py-1 text-xs">
+            {ON_FAILURE_VALIDATOR.map((o) => <option key={o} value={o}>{o}</option>)}
+          </select>
+        </label>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={strictMode} onChange={(e) => update({ strict_mode: e.target.checked })} className="w-3.5 h-3.5" />
+          <span className="text-[11px] font-medium text-gray-500">strict_mode (stop on first failure)</span>
+        </label>
+        <div>
+          <h4 className="text-[11px] font-medium text-gray-500 mb-1">Rules</h4>
+          <div className="flex flex-col gap-1.5">
+            {rules.map((rule, i) => (
+              <div key={i} className="border rounded p-1.5 bg-white">
+                <div className="flex items-center gap-1">
+                  <select value={rule.rule_type} onChange={(e) => updateRule(i, { rule_type: e.target.value, config: {} })} className="flex-1 border rounded px-1 py-0.5 text-[10px]">
+                    {RULE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                  </select>
+                  <button onClick={() => deleteRule(i)} className="text-gray-400 hover:text-red-500 text-sm leading-none px-0.5" title="Delete rule">×</button>
+                </div>
+                <RuleConfigEditor value={rule.config} onChange={(v) => updateRule(i, { config: v })} />
+              </div>
+            ))}
+          </div>
+          <button onClick={addRule} className="text-xs text-blue-500 hover:text-blue-700 mt-1">+ Add Rule</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // -- Main Component ----------------------------------------------------------
 
 export default function ConfigPanel() {
@@ -763,6 +951,16 @@ export default function ConfigPanel() {
               )}
             </div>
           </div>
+        )}
+
+        {/* 9-1: RAG config — collection, top_k, query_template, etc. */}
+        {d.node_type === "rag_operator" && (
+          <RAGConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
+        )}
+
+        {/* 9-3: Validator config — rules, on_failure, strict_mode */}
+        {d.node_type === "validator" && (
+          <ValidatorConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
         )}
 
         {/* 7-1: Retry policy — configurable for all node types */}

@@ -227,6 +227,9 @@ interface GraphState {
   // -- 6-7: Workflow as node
   addGraphAsNode: (graphId: string, position: { x: number; y: number }) => Promise<void>;
 
+  // -- 9-3: Boundary validators
+  addBoundaryValidators: (nodeId: string) => Promise<void>;
+
   // -- 6-1: History (undo/redo)
   _history: { past: GraphSnapshot[]; future: GraphSnapshot[] };
   pushSnapshot: () => void;
@@ -1227,6 +1230,22 @@ export const useGraphStore = create<GraphState>((set, get) => {
       get().addToast({ type: "success", message: `Imported "${graphId}" as node` });
     } catch (err: unknown) {
       get().addToast({ type: "error", message: (err as Error).message ?? "Failed to import graph" });
+    }
+  },
+
+  // -- 9-3: Boundary validators -----------------------------------------------
+
+  addBoundaryValidators: async (nodeId) => {
+    const { graphId } = get();
+    if (!graphId) return;
+    try {
+      const saved = await get().saveGraph();
+      if (!saved) return;
+      await api.addBoundaryValidators(graphId, nodeId);
+      await get().loadGraph(graphId);
+      get().addToast({ type: "success", message: "Boundary validators inserted" });
+    } catch (err: unknown) {
+      get().addToast({ type: "error", message: (err as Error).message ?? "Failed to add boundary validators" });
     }
   },
 
