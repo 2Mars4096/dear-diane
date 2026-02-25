@@ -7,19 +7,54 @@ required_keys + schema_conformance rules, wired into the graph.
 
 from __future__ import annotations
 
-import copy
-import uuid
 from typing import Any
 
-from dan.models.control_flow import CompositeNode, ValidatorNode, ValidationRule
+from dan.models.control_flow import ValidatorNode, ValidationRule
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph
 from dan.models.nodes import NodeBase
 from dan.models.ports import InputPort, OutputPort
 
 
+def _unique_port_names(names: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for name in names:
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        ordered.append(name)
+    return ordered
+
+
+def _default_input_ports(composite_node: NodeBase) -> list[str]:
+    ports = getattr(composite_node, "input_ports", []) or []
+    names = [p.name for p in ports if getattr(p, "name", "")]
+    return _unique_port_names(names) or ["input"]
+
+
+def _default_output_ports(composite_node: NodeBase) -> list[str]:
+    ports = getattr(composite_node, "output_ports", []) or []
+    names = [p.name for p in ports if getattr(p, "name", "")]
+    return _unique_port_names(names) or ["result"]
+
+
+def _validator_output_ports(boundary_ports: list[str]) -> list[OutputPort]:
+    output_ports = [
+        OutputPort(name="valid", description="Passthrough when all rules pass"),
+        OutputPort(name="invalid", description="Data + errors when any rule fails"),
+    ]
+    for port in boundary_ports:
+        if port not in ("valid", "invalid"):
+            output_ports.append(
+                OutputPort(name=port, description=f"Passthrough for '{port}'"),
+            )
+    return output_ports
+
+
 def generate_entry_validator(
     composite_node: NodeBase,
+    port_names: list[str] | None = None,
 ) -> tuple[ValidatorNode, list[DataEdge]]:
     """Generate a ValidatorNode from a composite node's ``external_input_schema``.
 
@@ -29,6 +64,7 @@ def generate_entry_validator(
     """
     schema = getattr(composite_node, "external_input_schema", None) or {}
     node_id = f"{composite_node.id}__entry_validator"
+    boundary_ports = _unique_port_names(port_names or _default_input_ports(composite_node))
 
     rules: list[ValidationRule] = []
 
@@ -49,26 +85,27 @@ def generate_entry_validator(
         name=f"Entry validator for {composite_node.id}",
         validation_rules=rules,
         on_failure="route",
-        input_ports=[InputPort(name="input", required=True)],
-        output_ports=[
-            OutputPort(name="valid", description="Passthrough when all rules pass"),
-            OutputPort(name="invalid", description="Data + errors when any rule fails"),
-        ],
+        input_ports=[InputPort(name=port, required=False) for port in boundary_ports],
+        output_ports=_validator_output_ports(boundary_ports),
     )
 
-    edge_to_composite = DataEdge(
-        id=f"edge_{node_id}__to__{composite_node.id}",
-        source_node_id=node_id,
-        source_port="valid",
-        target_node_id=composite_node.id,
-        target_port="input",
-    )
+    edges_to_composite = [
+        DataEdge(
+            id=f"edge_{node_id}_{port}__to__{composite_node.id}_{port}",
+            source_node_id=node_id,
+            source_port=port,
+            target_node_id=composite_node.id,
+            target_port=port,
+        )
+        for port in boundary_ports
+    ]
 
-    return validator, [edge_to_composite]
+    return validator, edges_to_composite
 
 
 def generate_exit_validator(
     composite_node: NodeBase,
+    port_names: list[str] | None = None,
 ) -> tuple[ValidatorNode, list[DataEdge]]:
     """Generate a ValidatorNode from a composite node's ``external_output_schema``.
 
@@ -77,6 +114,7 @@ def generate_exit_validator(
     """
     schema = getattr(composite_node, "external_output_schema", None) or {}
     node_id = f"{composite_node.id}__exit_validator"
+    boundary_ports = _unique_port_names(port_names or _default_output_ports(composite_node))
 
     rules: list[ValidationRule] = []
 
@@ -97,22 +135,22 @@ def generate_exit_validator(
         name=f"Exit validator for {composite_node.id}",
         validation_rules=rules,
         on_failure="route",
-        input_ports=[InputPort(name="input", required=True)],
-        output_ports=[
-            OutputPort(name="valid", description="Passthrough when all rules pass"),
-            OutputPort(name="invalid", description="Data + errors when any rule fails"),
-        ],
+        input_ports=[InputPort(name=port, required=False) for port in boundary_ports],
+        output_ports=_validator_output_ports(boundary_ports),
     )
 
-    edge_from_composite = DataEdge(
-        id=f"edge_{composite_node.id}__to__{node_id}",
-        source_node_id=composite_node.id,
-        source_port="result",
-        target_node_id=node_id,
-        target_port="input",
-    )
+    edges_from_composite = [
+        DataEdge(
+            id=f"edge_{composite_node.id}_{port}__to__{node_id}_{port}",
+            source_node_id=composite_node.id,
+            source_port=port,
+            target_node_id=node_id,
+            target_port=port,
+        )
+        for port in boundary_ports
+    ]
 
-    return validator, [edge_from_composite]
+    return validator, edges_from_composite
 
 
 def insert_boundary_validators(
@@ -129,6 +167,10 @@ def insert_boundary_validators(
         raise ValueError(f"Node '{composite_node_id}' not found in graph")
 
     new_graph = graph.model_copy(deep=True)
+    composite_node = new_graph.node_by_id(composite_node_id)
+    if composite_node is None:
+        raise ValueError(f"Node '{composite_node_id}' not found in copied graph")
+
     new_nodes: list[Any] = list(new_graph.nodes)
     new_edges: list[Any] = list(new_graph.edges)
 
@@ -136,7 +178,16 @@ def insert_boundary_validators(
     exit_schema = getattr(composite_node, "external_output_schema", None)
 
     if entry_schema:
-        entry_validator, entry_wiring_edges = generate_entry_validator(composite_node)
+        entry_ports = _unique_port_names(
+            [
+                edge.target_port
+                for edge in new_edges
+                if isinstance(edge, DataEdge) and edge.target_node_id == composite_node_id
+            ],
+        ) or _default_input_ports(composite_node)
+        entry_validator, entry_wiring_edges = generate_entry_validator(
+            composite_node, entry_ports,
+        )
         new_nodes.append(entry_validator)
 
         rewired_edges = []
@@ -144,7 +195,6 @@ def insert_boundary_validators(
             if isinstance(edge, DataEdge) and edge.target_node_id == composite_node_id:
                 rewired = edge.model_copy(update={
                     "target_node_id": entry_validator.id,
-                    "target_port": "input",
                     "id": f"{edge.id}__rewired",
                 })
                 rewired_edges.append(rewired)
@@ -154,7 +204,16 @@ def insert_boundary_validators(
         new_edges.extend(entry_wiring_edges)
 
     if exit_schema:
-        exit_validator, exit_wiring_edges = generate_exit_validator(composite_node)
+        exit_ports = _unique_port_names(
+            [
+                edge.source_port
+                for edge in new_edges
+                if isinstance(edge, DataEdge) and edge.source_node_id == composite_node_id
+            ],
+        ) or _default_output_ports(composite_node)
+        exit_validator, exit_wiring_edges = generate_exit_validator(
+            composite_node, exit_ports,
+        )
         new_nodes.append(exit_validator)
 
         rewired_edges = []
@@ -162,7 +221,6 @@ def insert_boundary_validators(
             if isinstance(edge, DataEdge) and edge.source_node_id == composite_node_id:
                 rewired = edge.model_copy(update={
                     "source_node_id": exit_validator.id,
-                    "source_port": "valid",
                     "id": f"{edge.id}__rewired",
                 })
                 rewired_edges.append(rewired)

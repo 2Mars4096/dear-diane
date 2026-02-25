@@ -319,6 +319,7 @@ class ValidatorExecutor:
         assert isinstance(node, ValidatorNode)
 
         data = self._extract_data(inputs)
+        passthrough_outputs = self._passthrough_outputs(inputs)
 
         all_violations: list[ValidationViolation] = []
 
@@ -371,7 +372,7 @@ class ValidatorExecutor:
                         node.id, v.message, v.dotpath,
                     )
             return NodeResult(
-                outputs={"valid": data},
+                outputs={"valid": data, **passthrough_outputs},
                 status=NodeStatus.COMPLETED,
                 metadata={"passed": passed, "violations": violation_dicts},
             )
@@ -392,8 +393,33 @@ class ValidatorExecutor:
         if not isinstance(inputs, dict):
             return {"value": inputs}
 
-        if "data" in inputs and len(inputs) == 1:
+        # Backward-compatible unwrapping:
+        # - Preferred: validator payload arrives on "data"
+        # - Legacy/default-input graphs may still send on "input"
+        if len(inputs) == 1 and "data" in inputs:
             inner = inputs["data"]
+            return inner if isinstance(inner, dict) else {"value": inner}
+        if len(inputs) == 1 and "input" in inputs:
+            inner = inputs["input"]
             return inner if isinstance(inner, dict) else {"value": inner}
 
         return inputs
+
+    @staticmethod
+    def _passthrough_outputs(inputs: dict[str, Any]) -> dict[str, Any]:
+        """Expose original input ports on success/warn for boundary wiring.
+
+        This keeps the canonical ``valid``/``invalid`` routing while allowing
+        boundary validators to preserve arbitrary composite port mappings.
+        """
+        if not isinstance(inputs, dict):
+            return {}
+
+        if len(inputs) == 1 and "data" in inputs and isinstance(inputs["data"], dict):
+            passthrough = dict(inputs["data"])
+        else:
+            passthrough = dict(inputs)
+
+        passthrough.pop("valid", None)
+        passthrough.pop("invalid", None)
+        return passthrough
