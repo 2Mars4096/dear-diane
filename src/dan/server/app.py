@@ -52,6 +52,7 @@ def _get_engine_config() -> EngineConfig:
     from dan.providers import ProviderConfig
 
     providers: dict[str, ProviderConfig] = {}
+    embedding_providers: dict[str, ProviderConfig] = {}
 
     openai_key = os.environ.get("DAN_OPENAI_API_KEY", "")
     if openai_key:
@@ -65,6 +66,29 @@ def _get_engine_config() -> EngineConfig:
     if google_key:
         providers["google"] = ProviderConfig(api_key=google_key)
 
+    default_embedding_model = os.environ.get(
+        "DAN_DEFAULT_EMBEDDING_MODEL", "text-embedding-3-small",
+    )
+    embedding_api_key = os.environ.get(
+        "DAN_EMBEDDING_API_KEY",
+        openai_key or os.environ.get("DAN_LLM_API_KEY", os.environ.get("LLM_API_KEY", "")),
+    )
+    embedding_base_url = os.environ.get(
+        "DAN_EMBEDDING_BASE_URL",
+        os.environ.get("DAN_LLM_BASE_URL", "https://api.vectorengine.ai/v1"),
+    )
+    if embedding_api_key:
+        embedding_providers["default"] = ProviderConfig(
+            api_key=embedding_api_key,
+            base_url=embedding_base_url,
+            default_model=default_embedding_model,
+        )
+
+    if os.environ.get("DAN_ENABLE_LOCAL_EMBEDDINGS", "").lower() in ("1", "true", "yes"):
+        embedding_providers["local"] = ProviderConfig(
+            default_model=os.environ.get("DAN_LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
+        )
+
     return EngineConfig(
         llm_base_url=os.environ.get("DAN_LLM_BASE_URL", "https://api.vectorengine.ai/v1"),
         llm_api_key=os.environ.get("DAN_LLM_API_KEY", os.environ.get("LLM_API_KEY", "")),
@@ -72,6 +96,8 @@ def _get_engine_config() -> EngineConfig:
         checkpoint_dir=os.environ.get("DAN_CHECKPOINT_DIR", "./checkpoints"),
         checkpoint_enabled=True,
         providers=providers,
+        embedding_providers=embedding_providers,
+        default_embedding_model=default_embedding_model,
     )
 
 

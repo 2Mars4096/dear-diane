@@ -49,7 +49,10 @@ def _resolve_embedding_provider(
     embedding_registry: EmbeddingRegistry | None = getattr(
         context, "embedding_registry", None
     )
-    model = node.embedding_model or "text-embedding-3-small"
+    default_model = getattr(
+        context.config, "default_embedding_model", "text-embedding-3-small",
+    )
+    model = node.embedding_model or default_model
 
     if embedding_registry is not None:
         try:
@@ -76,7 +79,13 @@ class RAGExecutor:
         assert isinstance(node, RAGOperator)
         t0 = time.time()
 
-        query = _render_template(node.query_template, inputs)
+        template_vars = dict(inputs)
+        if "query" not in template_vars:
+            if "input" in template_vars:
+                template_vars["query"] = template_vars["input"]
+            elif "data" in template_vars:
+                template_vars["query"] = template_vars["data"]
+        query = _render_template(node.query_template, template_vars)
 
         await context.emit_event(
             event_type="retrieval_started",
@@ -95,9 +104,9 @@ class RAGExecutor:
                 outputs={},
                 status=NodeStatus.FAILED,
                 error=(
-                    "No embedding provider available. Configure an EmbeddingRegistry "
-                    "on the execution context or pass 'embedding_provider' in "
-                    "vector_store_config."
+                    "No embedding provider available. Configure "
+                    "EngineConfig.embedding_providers (Option B) or pass "
+                    "'embedding_provider' in vector_store_config."
                 ),
             )
 

@@ -254,6 +254,7 @@ class Engine:
             self.checkpoint_store = None
 
         self.provider_registry = self._build_provider_registry()
+        self.embedding_registry = self._build_embedding_registry()
         self._register_defaults()
 
     def _build_provider_registry(self):
@@ -278,6 +279,49 @@ class Engine:
                 registry.register(name, provider)
 
         for model, provider_name in self.config.model_provider_map.items():
+            registry.set_model_override(model, provider_name)
+
+        return registry
+
+    def _build_embedding_registry(self):
+        """Create the EmbeddingRegistry from engine config."""
+        from dan.providers import ProviderConfig
+        from dan.rag import EmbeddingRegistry
+
+        registry = EmbeddingRegistry()
+
+        # Preferred path: explicit embedding provider config.
+        if self.config.embedding_providers:
+            for name, pconfig in self.config.embedding_providers.items():
+                provider = self._create_embedding_provider(name, pconfig)
+                if provider is not None:
+                    registry.register(name, provider)
+        else:
+            # Backward-compatible default: if only llm_api_key is set, build
+            # a default OpenAI-compatible embedding provider from it.
+            if self.config.llm_api_key:
+                fallback = ProviderConfig(
+                    api_key=self.config.llm_api_key,
+                    base_url=self.config.llm_base_url,
+                    default_model=self.config.default_embedding_model,
+                )
+                provider = self._create_embedding_provider("default", fallback)
+                if provider is not None:
+                    registry.register("default", provider)
+
+        # Ensure there is a default fallback when openai is configured but
+        # "default" is omitted from embedding_providers.
+        if (
+            not registry.has_provider("default")
+            and "openai" in self.config.embedding_providers
+        ):
+            provider = self._create_embedding_provider(
+                "openai", self.config.embedding_providers["openai"],
+            )
+            if provider is not None:
+                registry.register("default", provider)
+
+        for model, provider_name in self.config.embedding_model_provider_map.items():
             registry.set_model_override(model, provider_name)
 
         return registry
@@ -308,6 +352,59 @@ class Engine:
 
         # Unknown provider name — treat as OpenAI-compatible
         return OpenAIProvider(config)
+
+    def _create_embedding_provider(self, name: str, config):
+        """Instantiate an embedding provider by name."""
+        from dan.rag import OpenAIEmbeddingProvider
+
+        if name in {"default", "openai"}:
+            api_key = config.api_key or self.config.llm_api_key
+            base_url = (
+                config.base_url if config.base_url is not None else self.config.llm_base_url
+            )
+            default_model = config.default_model or self.config.default_embedding_model
+            try:
+                return OpenAIEmbeddingProvider(
+                    api_key=api_key,
+                    base_url=base_url,
+                    default_model=default_model,
+                )
+            except ImportError:
+                logger.warning("openai package not installed; skipping embedding provider '%s'", name)
+                return None
+
+        if name in {"local", "sentence-transformers"}:
+            try:
+                from dan.rag import LocalEmbeddingProvider
+
+                default_model = config.default_model or "all-MiniLM-L6-v2"
+                return LocalEmbeddingProvider(default_model=default_model)
+            except ImportError:
+                logger.warning(
+                    "sentence-transformers not installed; skipping embedding provider '%s'",
+                    name,
+                )
+                return None
+
+        # Unknown provider name — treat as OpenAI-compatible embedding API.
+        logger.warning(
+            "Unknown embedding provider '%s'; treating as OpenAI-compatible",
+            name,
+        )
+        api_key = config.api_key or self.config.llm_api_key
+        base_url = (
+            config.base_url if config.base_url is not None else self.config.llm_base_url
+        )
+        default_model = config.default_model or self.config.default_embedding_model
+        try:
+            return OpenAIEmbeddingProvider(
+                api_key=api_key,
+                base_url=base_url,
+                default_model=default_model,
+            )
+        except ImportError:
+            logger.warning("openai package not installed; skipping embedding provider '%s'", name)
+            return None
 
     def _register_defaults(self) -> None:
         """Register built-in executors for all standard node types."""
@@ -897,6 +994,7 @@ class Engine:
             run_id=state.run_id,
             layer_path=layer_path,
             provider_registry=self.provider_registry,
+            embedding_registry=self.embedding_registry,
         )
 
     async def _run_subgraph(

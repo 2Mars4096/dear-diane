@@ -12,6 +12,7 @@ from dan.models.nodes import NodeBase
 if TYPE_CHECKING:
     from dan.providers import ProviderConfig
     from dan.providers.registry import ProviderRegistry
+    from dan.rag import EmbeddingRegistry
 
 
 @dataclass
@@ -27,6 +28,9 @@ class EngineConfig:
     max_concurrency: int | None = None
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     model_provider_map: dict[str, str] = field(default_factory=dict)
+    embedding_providers: dict[str, ProviderConfig] = field(default_factory=dict)
+    embedding_model_provider_map: dict[str, str] = field(default_factory=dict)
+    default_embedding_model: str = "text-embedding-3-small"
 
 
 @dataclass
@@ -62,6 +66,8 @@ class ExecutionContext:
         layer_path: tuple[str, ...] = (),
         # -- 7-2: Multi-provider LLM registry -----------------------------------
         provider_registry: ProviderRegistry | None = None,
+        # -- 9-1: Embedding provider registry -----------------------------------
+        embedding_registry: EmbeddingRegistry | None = None,
     ) -> None:
         self.state = state
         self.config = config
@@ -74,6 +80,7 @@ class ExecutionContext:
         self._run_id = run_id
         self.layer_path = layer_path
         self.provider_registry = provider_registry
+        self.embedding_registry = embedding_registry
 
     # -- 5-3: Rich logging -----------------------------------------------------
     async def emit_event(
