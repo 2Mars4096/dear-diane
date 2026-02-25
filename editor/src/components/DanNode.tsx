@@ -16,6 +16,7 @@ const TYPE_COLORS: Record<string, string> = {
   reduce: "#ec4899",
   router: "#14b8a6",
   human_in_the_loop: "#06b6d4",
+  gate: "#eab308",
   composite: "#10b981",
 };
 
@@ -139,6 +140,11 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
         {(d.node_type === "while_loop" || d.node_type === "for_each") && (
           <span className="ml-auto text-[10px] opacity-80" title="Loop node">&#x21BB;</span>
         )}
+        {d.node_type === "gate" && (
+          <span className="ml-auto text-[10px] font-bold opacity-90">
+            {d.gate_mode === "while" ? "WHILE" : "IF"}
+          </span>
+        )}
       </div>
 
       {/* 6-6: Loop badges */}
@@ -169,6 +175,23 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
         </div>
       )}
 
+      {/* Gate condition badge */}
+      {d.node_type === "gate" && (
+        <div className="px-2 py-0.5 text-[10px] text-yellow-700 bg-yellow-50 flex items-center gap-1.5">
+          <span className="font-semibold">{d.gate_mode === "if_else" ? "IF" : "WHILE"}</span>
+          {d.condition && (
+            <span className="truncate" title={d.condition}>
+              {d.condition.slice(0, 30)}{d.condition.length > 30 ? "\u2026" : ""}
+            </span>
+          )}
+          {d.gate_mode === "while" && iteration && (
+            <span className="ml-auto font-mono bg-yellow-100 px-1 rounded">
+              iter {iteration.current}/{iteration.total ?? "?"}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* Body — port labels */}
       <div className="flex justify-between px-2 py-1.5 text-[11px] text-gray-600 gap-4">
         <div className="flex flex-col gap-0.5">
@@ -185,17 +208,24 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
           ))}
         </div>
         <div className="flex flex-col gap-0.5 items-end">
-          {(d.output_ports ?? []).map((p) => (
-            <div key={p.name} className="relative">
-              <span className="pr-3">{p.name}</span>
-              <Handle
-                type="source"
-                position={Position.Right}
-                id={portHandleId(p.name)}
-                className="!w-2.5 !h-2.5 !bg-gray-400 !border-white"
-              />
-            </div>
-          ))}
+          {(d.output_ports ?? []).map((p) => {
+            let handleColor = "!bg-gray-400";
+            if (d.node_type === "gate") {
+              if (p.name === "true" || p.name === "continue") handleColor = "!bg-green-400";
+              else if (p.name === "false" || p.name === "done") handleColor = "!bg-red-400";
+            }
+            return (
+              <div key={p.name} className="relative">
+                <span className="pr-3">{p.name}</span>
+                <Handle
+                  type="source"
+                  position={Position.Right}
+                  id={portHandleId(p.name)}
+                  className={`!w-2.5 !h-2.5 ${handleColor} !border-white`}
+                />
+              </div>
+            );
+          })}
         </div>
       </div>
 

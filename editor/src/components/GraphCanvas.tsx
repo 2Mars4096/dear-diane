@@ -13,6 +13,7 @@ import {
   type Connection,
 } from "@xyflow/react";
 import DanNode from "./DanNode";
+import LoopGroupNode from "./LoopGroupNode";
 import AnimatedEdge from "./AnimatedEdge";
 import ContextMenu from "./ContextMenu";
 import { useGraphStore } from "../store/useGraphStore";
@@ -22,6 +23,7 @@ import type { DanNode as DanNodeType, NodeTypeString } from "../types/graph";
 
 const nodeTypes: NodeTypes = {
   danNode: DanNode,
+  loopGroup: LoopGroupNode,
 };
 
 // -- 5-2: Override smoothstep edges with animated variant

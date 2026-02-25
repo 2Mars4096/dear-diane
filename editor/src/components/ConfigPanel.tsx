@@ -11,6 +11,8 @@ const SKIP_FIELDS = new Set([
 
 const LARGE_TEXT_FIELDS = new Set(["prompt_template", "code", "system_prompt"]);
 
+const GATE_DEDICATED_FIELDS = new Set(["gate_mode", "condition", "max_iterations"]);
+
 const SCHEMA_TYPES = ["string", "number", "boolean", "array", "object"] as const;
 
 // -- Port Editor Row ---------------------------------------------------------
@@ -312,7 +314,7 @@ export default function ConfigPanel() {
     const d = node.data as unknown as DanNode;
 
     const editableFields = Object.entries(d).filter(
-      ([k]) => !SKIP_FIELDS.has(k),
+      ([k]) => !SKIP_FIELDS.has(k) && !(d.node_type === "gate" && GATE_DEDICATED_FIELDS.has(k)),
     );
 
     return (
@@ -458,6 +460,58 @@ export default function ConfigPanel() {
                 | undefined
             }
           />
+        )}
+
+        {/* 6-10: Gate config — mode, condition, max_iterations */}
+        {d.node_type === "gate" && (
+          <div className="mt-3">
+            <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Gate Config</h3>
+            <div className="flex flex-col gap-2">
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">gate_mode</span>
+                <select
+                  value={d.gate_mode}
+                  onChange={(e) => {
+                    const mode = e.target.value as "if_else" | "while";
+                    const ports = mode === "if_else"
+                      ? [{ name: "true", schema: {} }, { name: "false", schema: {} }]
+                      : [{ name: "continue", schema: {} }, { name: "done", schema: {} }];
+                    updateNodeData(d.id, { gate_mode: mode, output_ports: ports } as unknown as Partial<DanNode>);
+                  }}
+                  className="border rounded px-2 py-1 text-xs"
+                >
+                  <option value="if_else">if_else</option>
+                  <option value="while">while</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">condition</span>
+                <input
+                  type="text"
+                  value={d.condition}
+                  onChange={(e) =>
+                    updateNodeData(d.id, { condition: e.target.value } as unknown as Partial<DanNode>)
+                  }
+                  placeholder="e.g. output.success == true"
+                  className="border rounded px-2 py-1 text-xs font-mono"
+                />
+              </label>
+              {d.gate_mode === "while" && (
+                <label className="flex flex-col gap-0.5">
+                  <span className="text-[11px] font-medium text-gray-500">max_iterations</span>
+                  <input
+                    type="number"
+                    value={d.max_iterations ?? 10}
+                    onChange={(e) =>
+                      updateNodeData(d.id, { max_iterations: parseInt(e.target.value) || 10 } as unknown as Partial<DanNode>)
+                    }
+                    className="border rounded px-2 py-1 text-xs"
+                    min={1}
+                  />
+                </label>
+              )}
+            </div>
+          </div>
         )}
       </div>
     );

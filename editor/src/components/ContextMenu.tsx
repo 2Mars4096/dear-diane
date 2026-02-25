@@ -21,8 +21,19 @@ export default function ContextMenu({ type, position, targetId, onClose }: Conte
   const pushSnapshot = useGraphStore((s) => s.pushSnapshot);
   const setSelectedNode = useGraphStore((s) => s.setSelectedNode);
   const setSelectedEdge = useGraphStore((s) => s.setSelectedEdge);
+  const selectedNodeIds = useGraphStore((s) => s.selectedNodeIds);
+  const nodes = useGraphStore((s) => s.nodes);
+  const loopGroups = useGraphStore((s) => s.loopGroups);
+  const createLoopGroup = useGraphStore((s) => s.createLoopGroup);
+  const removeLoopGroup = useGraphStore((s) => s.removeLoopGroup);
 
   const close = useCallback(() => onClose(), [onClose]);
+
+  useEffect(() => {
+    if (type === "node" && targetId) {
+      setSelectedNode(targetId);
+    }
+  }, [type, targetId, setSelectedNode]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -54,14 +65,34 @@ export default function ContextMenu({ type, position, targetId, onClose }: Conte
   }
 
   if (type === "node") {
-    if (targetId) {
-      setSelectedNode(targetId);
-    }
     items.push(
       { label: "Copy", shortcut: "⌘C", onClick: () => action(copySelected) },
       { label: "Duplicate", shortcut: "⌘D", onClick: () => action(duplicateSelected) },
       { label: "Delete", shortcut: "⌫", onClick: () => action(deleteSelected) },
     );
+
+    const selectedIds = selectedNodeIds.size > 0 ? selectedNodeIds : targetId ? new Set([targetId]) : new Set<string>();
+    const selectedNodes = nodes.filter((n) => selectedIds.has(n.id));
+    const whileGate = selectedNodes.find((n) => {
+      const d = n.data as Record<string, unknown>;
+      return d.node_type === "gate" && d.gate_mode === "while";
+    });
+    if (selectedIds.size >= 2 && whileGate) {
+      items.push({
+        label: "Create Loop Group",
+        onClick: () => action(() => createLoopGroup(whileGate.id, [...selectedIds])),
+      });
+    }
+
+    if (targetId) {
+      const targetGroup = loopGroups.find((g) => g.memberNodeIds.includes(targetId));
+      if (targetGroup) {
+        items.push({
+          label: "Ungroup Loop",
+          onClick: () => action(() => removeLoopGroup(targetGroup.id)),
+        });
+      }
+    }
   }
 
   if (type === "edge") {

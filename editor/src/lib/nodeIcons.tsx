@@ -54,6 +54,11 @@ const icons: Record<string, JSX.Element> = {
       <path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5" stroke="currentColor" strokeWidth={1.3} strokeLinecap="round" />
     </svg>
   ),
+  gate: (
+    <svg width={S} height={S} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+      <path d="M12 2 L22 12 L12 22 L2 12 Z" />
+    </svg>
+  ),
   composite: (
     <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
       <rect x="2" y="5" width="12" height="8" rx="1.5" stroke="currentColor" strokeWidth={1.3} />

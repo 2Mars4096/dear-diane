@@ -291,6 +291,27 @@ function CategorySection({
 // Main panel
 // ---------------------------------------------------------------------------
 
+function RunSummaryBar() {
+  const runSummary = useGraphStore((s) => s.runSummary);
+  const runStatus = useGraphStore((s) => s.runStatus);
+  if (!runSummary || (runStatus !== "completed" && runStatus !== "failed")) return null;
+  const ok = runStatus === "completed";
+  const elapsed = runSummary.elapsed_seconds != null ? `${runSummary.elapsed_seconds}s` : "—";
+  const total = runSummary.total_tokens ?? 0;
+  const prompt = runSummary.total_prompt_tokens ?? 0;
+  const completion = runSummary.total_completion_tokens ?? 0;
+  const tokenStr = total > 0
+    ? `${total.toLocaleString()} tokens (${prompt.toLocaleString()} prompt + ${completion.toLocaleString()} completion)`
+    : "no token data";
+  return (
+    <div className={`flex items-center gap-2 px-3 py-1.5 text-[11px] font-medium border-t ${ok ? "bg-green-50 text-green-800 border-green-200" : "bg-red-50 text-red-800 border-red-200"}`}>
+      <span>{ok ? "Completed" : "Failed"} in {elapsed}</span>
+      <span className="text-gray-400">|</span>
+      <span>{tokenStr}</span>
+    </div>
+  );
+}
+
 export default function LogPanel() {
   const logs = useGraphStore((s) => s.logs);
   const nodes = useGraphStore((s) => s.nodes);
@@ -433,6 +454,8 @@ export default function LogPanel() {
           />
         ))}
       </div>
+
+      <RunSummaryBar />
     </div>
   );
 }

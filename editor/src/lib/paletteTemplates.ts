@@ -198,6 +198,48 @@ function planExecuteTemplateFactory(position: Position): TemplateResult {
   };
 }
 
+// -- IfElse Gate: conditional branch ------------------------------------------
+
+function ifElseGateFactory(position: Position): TemplateResult {
+  const id = uid("gate_if_else");
+  const node: DanNode = {
+    id,
+    node_type: "gate",
+    name: "IfElse Gate",
+    description: "Conditional branching",
+    input_ports: [{ name: "input", schema: {}, required: false }],
+    output_ports: [{ name: "true", schema: {} }, { name: "false", schema: {} }],
+    position,
+    ui: {},
+    metadata: {},
+    gate_mode: "if_else",
+    condition: "",
+    max_iterations: 10,
+  };
+  return { node, rootSubGraphKey: "", subGraphs: {} };
+}
+
+// -- While Gate: loop with back-edge ------------------------------------------
+
+function whileGateFactory(position: Position): TemplateResult {
+  const id = uid("gate_while");
+  const node: DanNode = {
+    id,
+    node_type: "gate",
+    name: "While Gate",
+    description: "Loop gate with condition",
+    input_ports: [{ name: "input", schema: {}, required: false }],
+    output_ports: [{ name: "continue", schema: {} }, { name: "done", schema: {} }],
+    position,
+    ui: {},
+    metadata: {},
+    gate_mode: "while",
+    condition: "",
+    max_iterations: 10,
+  };
+  return { node, rootSubGraphKey: "", subGraphs: {} };
+}
+
 // -- Template registry --------------------------------------------------------
 
 export const PREDEFINED_AGENT_TEMPLATES: PaletteTemplate[] = [
@@ -212,5 +254,17 @@ export const PREDEFINED_AGENT_TEMPLATES: PaletteTemplate[] = [
     label: "Plan-Execute",
     description: "LLM planner generates steps, executor runs each one",
     factory: planExecuteTemplateFactory,
+  },
+  {
+    id: "if_else_gate",
+    label: "IfElse Gate",
+    description: "Conditional branching — routes data to true or false output based on a condition",
+    factory: ifElseGateFactory,
+  },
+  {
+    id: "while_gate",
+    label: "While Gate",
+    description: "Loop gate — routes to 'continue' (loop back) or 'done' (exit) based on a condition",
+    factory: whileGateFactory,
   },
 ];

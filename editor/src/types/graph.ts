@@ -67,6 +67,13 @@ export interface IfElseNode extends NodeBase {
   condition: string;
 }
 
+export interface GateNode extends NodeBase {
+  node_type: "gate";
+  gate_mode: "if_else" | "while";
+  condition: string;
+  max_iterations?: number;
+}
+
 export interface WhileLoopNode extends NodeBase {
   node_type: "while_loop";
   condition: string;
@@ -130,6 +137,7 @@ export type DanNode =
   | ToolOperator
   | CodeOperator
   | IfElseNode
+  | GateNode
   | WhileLoopNode
   | ForEachNode
   | ReduceNode
@@ -168,6 +176,16 @@ export interface ContextEdge extends EdgeBase {
 
 export type DanEdge = DataEdge | ControlEdge | ContextEdge;
 
+// -- Loop Groups (visual-only metadata) --------------------------------------
+
+export interface LoopGroup {
+  id: string;
+  label: string;
+  gateNodeId: string;
+  memberNodeIds: string[];
+  collapsed: boolean;
+}
+
 // -- Graph -------------------------------------------------------------------
 
 export interface GraphMetadata {
@@ -176,6 +194,7 @@ export interface GraphMetadata {
   created_at?: string | null;
   updated_at?: string | null;
   tags?: string[];
+  loop_groups?: LoopGroup[];
 }
 
 export interface SharedContextDeclaration {
@@ -209,6 +228,7 @@ export const NODE_TYPE_CATALOG = [
   { type: "reduce", label: "Reduce", category: "control" },
   { type: "router", label: "Router", category: "control" },
   { type: "human_in_the_loop", label: "Human in the Loop", category: "control" },
+  { type: "gate", label: "Gate", category: "control" },
   { type: "composite", label: "Composite", category: "composite" },
 ] as const;
 
@@ -264,6 +284,11 @@ export const NODE_DESCRIPTIONS: Record<
     description: "Pause for human input",
     inputs: ["input"],
     outputs: ["response"],
+  },
+  gate: {
+    description: "Conditional gate for branching or looping",
+    inputs: ["input"],
+    outputs: ["true/continue", "false/done"],
   },
   composite: {
     description: "Reusable sub-graph block",

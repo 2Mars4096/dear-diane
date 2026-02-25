@@ -7,7 +7,7 @@
  */
 
 import { type Node, type Edge, MarkerType } from "@xyflow/react";
-import type { DanGraph, DanNode, DanEdge, NodeTypeString } from "../types/graph";
+import type { DanGraph, DanNode, DanEdge, NodeTypeString, LoopGroup } from "../types/graph";
 
 // -- Handle ID helpers -------------------------------------------------------
 
@@ -55,10 +55,30 @@ export function danEdgeToReactFlow(edge: DanEdge): Edge {
 }
 
 export function danGraphToReactFlow(graph: DanGraph): { nodes: Node[]; edges: Edge[] } {
-  return {
-    nodes: graph.nodes.map(danNodeToReactFlow),
-    edges: graph.edges.map(danEdgeToReactFlow),
-  };
+  const rfNodes = graph.nodes.map(danNodeToReactFlow);
+  const rfEdges = graph.edges.map(danEdgeToReactFlow);
+
+  const nodeMap = new Map(graph.nodes.map((n) => [n.id, n]));
+  for (const rfEdge of rfEdges) {
+    const sourceNode = nodeMap.get(rfEdge.source);
+    if (
+      sourceNode?.node_type === "gate" &&
+      rfEdge.sourceHandle === portHandleId("continue")
+    ) {
+      rfEdge.type = "smoothstep";
+      rfEdge.animated = true;
+      rfEdge.style = {
+        stroke: "#9ca3af",
+        strokeDasharray: "5 5",
+        strokeWidth: 2,
+      };
+      rfEdge.label = "loop back";
+      rfEdge.labelStyle = { fontSize: 10, fill: "#9ca3af" };
+      rfEdge.data = { ...rfEdge.data, isBackEdge: true };
+    }
+  }
+
+  return { nodes: rfNodes, edges: rfEdges };
 }
 
 // -- React Flow → DAN --------------------------------------------------------
@@ -100,8 +120,151 @@ export function reactFlowToDanGraph(
 ): DanGraph {
   return {
     ...base,
-    nodes: nodes.map(reactFlowNodeToDan),
+    nodes: nodes.filter((n) => n.type !== "loopGroup").map(reactFlowNodeToDan),
     edges: edges.map(reactFlowEdgeToDan),
+  };
+}
+
+// -- Loop group helpers ------------------------------------------------------
+
+const ESTIMATED_NODE_WIDTH = 220;
+const ESTIMATED_NODE_HEIGHT = 100;
+const GROUP_PADDING = 40;
+
+/**
+ * Inject visual loop-group nodes into the React Flow state.
+ * Collapsed groups hide member nodes and redirect cross-boundary edges
+ * through a synthetic placeholder. Expanded groups add a background rectangle.
+ */
+export function injectLoopGroups(
+  baseNodes: Node[],
+  baseEdges: Edge[],
+  loopGroups: LoopGroup[],
+): { nodes: Node[]; edges: Edge[] } {
+  if (!loopGroups || loopGroups.length === 0) return { nodes: baseNodes, edges: baseEdges };
+
+  const nodes = baseNodes.map((n) => ({ ...n }));
+  const edges = baseEdges.map((e) => ({ ...e, data: e.data ? { ...e.data } : {} }));
+  const newNodes: Node[] = [];
+  const newEdges: Edge[] = [];
+
+  for (const group of loopGroups) {
+    const memberSet = new Set(group.memberNodeIds);
+    const memberNodes = nodes.filter((n) => memberSet.has(n.id));
+    if (memberNodes.length === 0) continue;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const n of memberNodes) {
+      const w = n.measured?.width ?? ESTIMATED_NODE_WIDTH;
+      const h = n.measured?.height ?? ESTIMATED_NODE_HEIGHT;
+      minX = Math.min(minX, n.position.x);
+      minY = Math.min(minY, n.position.y);
+      maxX = Math.max(maxX, n.position.x + w);
+      maxY = Math.max(maxY, n.position.y + h);
+    }
+
+    const groupNodeId = `loop-group-${group.id}`;
+
+    if (group.collapsed) {
+      for (const n of nodes) {
+        if (memberSet.has(n.id)) n.hidden = true;
+      }
+
+      const cx = (minX + maxX) / 2 - 80;
+      const cy = (minY + maxY) / 2 - 25;
+
+      newNodes.push({
+        id: groupNodeId,
+        type: "loopGroup",
+        position: { x: cx, y: cy },
+        data: {
+          groupId: group.id,
+          label: group.label,
+          collapsed: true,
+          gateNodeId: group.gateNodeId,
+          memberCount: group.memberNodeIds.length,
+        },
+      });
+
+      for (const edge of edges) {
+        const srcIn = memberSet.has(edge.source);
+        const tgtIn = memberSet.has(edge.target);
+
+        if (srcIn && !tgtIn) {
+          edge.hidden = true;
+          edge.data = { ...edge.data, _groupHidden: true };
+          newEdges.push({
+            ...edge,
+            id: `synth-out-${edge.id}`,
+            source: groupNodeId,
+            sourceHandle: "port:group-out",
+            hidden: false,
+            data: { ...edge.data, loopGroupEdge: true, synthetic: true, _groupHidden: undefined },
+          });
+        } else if (!srcIn && tgtIn) {
+          edge.hidden = true;
+          edge.data = { ...edge.data, _groupHidden: true };
+          newEdges.push({
+            ...edge,
+            id: `synth-in-${edge.id}`,
+            target: groupNodeId,
+            targetHandle: "port:group-in",
+            hidden: false,
+            data: { ...edge.data, loopGroupEdge: true, synthetic: true, _groupHidden: undefined },
+          });
+        } else if (srcIn && tgtIn) {
+          edge.hidden = true;
+          edge.data = { ...edge.data, _groupHidden: true };
+        }
+      }
+    } else {
+      const x = minX - GROUP_PADDING;
+      const y = minY - GROUP_PADDING - 24;
+      const width = maxX - minX + GROUP_PADDING * 2;
+      const height = maxY - minY + GROUP_PADDING * 2 + 24;
+
+      newNodes.push({
+        id: groupNodeId,
+        type: "loopGroup",
+        position: { x, y },
+        zIndex: -1,
+        selectable: false,
+        draggable: false,
+        connectable: false,
+        data: {
+          groupId: group.id,
+          label: group.label,
+          collapsed: false,
+          gateNodeId: group.gateNodeId,
+          memberCount: group.memberNodeIds.length,
+        },
+        style: { width, height },
+      });
+    }
+  }
+
+  return { nodes: [...nodes, ...newNodes], edges: [...edges, ...newEdges] };
+}
+
+/**
+ * Remove all loop-group visual artifacts (group nodes, synthetic edges,
+ * hidden flags) to get back to the clean base graph state.
+ */
+export function stripLoopGroups(
+  nodes: Node[],
+  edges: Edge[],
+): { nodes: Node[]; edges: Edge[] } {
+  return {
+    nodes: nodes
+      .filter((n) => n.type !== "loopGroup")
+      .map((n) => (n.hidden ? { ...n, hidden: false } : n)),
+    edges: edges
+      .filter((e) => !e.data?.loopGroupEdge)
+      .map((e) =>
+        e.data?._groupHidden
+          ? { ...e, hidden: false, data: { ...e.data, _groupHidden: undefined } }
+          : e,
+      ),
   };
 }
 
@@ -144,6 +307,8 @@ export function createDefaultNode(
       return { ...base, node_type: "human_in_the_loop", prompt: "", timeout_seconds: null, default_action: null };
     case "composite":
       return { ...base, node_type: "composite", body_graph: "", input_mappings: {}, output_mappings: {}, is_blackbox: false };
+    case "gate":
+      return { ...base, node_type: "gate", gate_mode: "if_else", condition: "", max_iterations: 10, output_ports: [{ name: "true", schema: {} }, { name: "false", schema: {} }] };
     case "input":
       return {
         ...base,

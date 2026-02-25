@@ -17,16 +17,18 @@ import {
   addEdge,
   MarkerType,
 } from "@xyflow/react";
-import type { DanGraph, DanNode, DanEdge, InputVariable } from "../types/graph";
+import type { DanGraph, DanNode, DanEdge, InputVariable, LoopGroup } from "../types/graph";
 import {
   danGraphToReactFlow,
   danNodeToReactFlow,
   danEdgeToReactFlow,
   reactFlowToDanGraph,
   EDGE_COLORS,
+  injectLoopGroups,
+  stripLoopGroups,
 } from "../lib/graphAdapter";
 import { PREDEFINED_AGENT_TEMPLATES } from "../lib/paletteTemplates";
-import { layoutGraph } from "../lib/layout";
+import { layoutGraph, needsAutoLayout } from "../lib/layout";
 import * as api from "../lib/api";
 
 // -- 6-1: History & multi-select -----------------------------------------------
@@ -65,6 +67,42 @@ export const EVENT_CATEGORY: Record<string, string> = {
   human_input_needed: "lifecycle",
 };
 
+// -- 6-9: Tab types ----------------------------------------------------------
+
+export interface TabInfo {
+  id: string;
+  graphId: string;
+  graphName: string;
+  cachedRunStatus: string | null;
+}
+
+interface TabSnapshot {
+  graphId: string | null;
+  danGraph: DanGraph | null;
+  dirty: boolean;
+  nodes: Node[];
+  edges: Edge[];
+  selectedNodeId: string | null;
+  selectedEdgeId: string | null;
+  selectedNodeIds: Set<string>;
+  layerStack: Array<{ graphKey: string; nodeId: string; nodeName?: string }>;
+  validationErrors: Record<string, string[]>;
+  inputNodeValues: Record<string, Record<string, unknown>>;
+  nodeTimings: Record<string, { start: number; end?: number }>;
+  activeExecutionPath: Set<string>;
+  nodeIterations: Record<string, { current: number; total?: number; condition?: string }>;
+  streamingOutputs: Record<string, string>;
+  pendingHumanInput: { requestId: string; nodeId: string; prompt: string } | null;
+  _history: { past: GraphSnapshot[]; future: GraphSnapshot[] };
+  runId: string | null;
+  runStatus: string | null;
+  nodeStatuses: Record<string, string>;
+  nodeOutputs: Record<string, Record<string, unknown>>;
+  logs: LogEntry[];
+  loopGroups: LoopGroup[];
+  runSummary: { elapsed_seconds?: number; total_prompt_tokens?: number; total_completion_tokens?: number; total_tokens?: number } | null;
+}
+
 interface GraphState {
   // -- Graph identity
   graphId: string | null;
@@ -93,6 +131,7 @@ interface GraphState {
   nodeStatuses: Record<string, string>;
   nodeOutputs: Record<string, Record<string, unknown>>;
   logs: LogEntry[];
+  runSummary: { elapsed_seconds?: number; total_prompt_tokens?: number; total_completion_tokens?: number; total_tokens?: number } | null;
   ws: WebSocket | null;
 
   // -- Actions: graph lifecycle
@@ -187,9 +226,103 @@ interface GraphState {
   pushSnapshot: () => void;
   undo: () => void;
   redo: () => void;
+
+  // -- 6-10: Loop groups (visual-only)
+  loopGroups: LoopGroup[];
+  createLoopGroup: (gateNodeId: string, memberNodeIds: string[], label?: string) => void;
+  toggleLoopGroup: (groupId: string) => void;
+  removeLoopGroup: (groupId: string) => void;
+
+  // -- 6-9: Tab state
+  tabs: TabInfo[];
+  activeTabId: string | null;
+  tabCache: Record<string, TabSnapshot>;
+  openTab: (graphId: string) => Promise<void>;
+  replaceActiveTabGraph: (graphId: string) => Promise<void>;
+  closeTab: (tabId: string) => Promise<void>;
+  switchTab: (tabId: string) => Promise<void>;
+  refreshTab: () => Promise<void>;
+  restoreTabs: () => Promise<void>;
 }
 
-export const useGraphStore = create<GraphState>((set, get) => ({
+export const useGraphStore = create<GraphState>((set, get) => {
+  // -- 6-9: Tab internal helpers -----------------------------------------------
+
+  const _snapshotActiveTab = (): TabSnapshot => {
+    const s = get();
+    return {
+      graphId: s.graphId,
+      danGraph: s.danGraph ? structuredClone(s.danGraph) : null,
+      dirty: s.dirty,
+      nodes: structuredClone(s.nodes),
+      edges: structuredClone(s.edges),
+      selectedNodeId: s.selectedNodeId,
+      selectedEdgeId: s.selectedEdgeId,
+      selectedNodeIds: new Set(s.selectedNodeIds),
+      layerStack: structuredClone(s.layerStack),
+      validationErrors: { ...s.validationErrors },
+      inputNodeValues: structuredClone(s.inputNodeValues),
+      nodeTimings: { ...s.nodeTimings },
+      activeExecutionPath: new Set(s.activeExecutionPath),
+      nodeIterations: structuredClone(s.nodeIterations),
+      streamingOutputs: { ...s.streamingOutputs },
+      pendingHumanInput: s.pendingHumanInput ? { ...s.pendingHumanInput } : null,
+      _history: structuredClone(s._history),
+      runId: s.runId,
+      runStatus: s.runStatus,
+      nodeStatuses: { ...s.nodeStatuses },
+      nodeOutputs: structuredClone(s.nodeOutputs),
+      logs: [...s.logs],
+      loopGroups: structuredClone(s.loopGroups),
+      runSummary: s.runSummary ? { ...s.runSummary } : null,
+    };
+  };
+
+  const _restoreTab = (snapshot: TabSnapshot): void => {
+    set({
+      graphId: snapshot.graphId,
+      danGraph: snapshot.danGraph,
+      dirty: snapshot.dirty,
+      nodes: snapshot.nodes,
+      edges: snapshot.edges,
+      selectedNodeId: snapshot.selectedNodeId,
+      selectedEdgeId: snapshot.selectedEdgeId,
+      selectedNodeIds: snapshot.selectedNodeIds,
+      layerStack: snapshot.layerStack,
+      validationErrors: snapshot.validationErrors,
+      inputNodeValues: snapshot.inputNodeValues,
+      nodeTimings: snapshot.nodeTimings,
+      activeExecutionPath: snapshot.activeExecutionPath,
+      nodeIterations: snapshot.nodeIterations,
+      streamingOutputs: snapshot.streamingOutputs,
+      pendingHumanInput: snapshot.pendingHumanInput,
+      _history: snapshot._history,
+      runId: snapshot.runId,
+      runStatus: snapshot.runStatus,
+      nodeStatuses: snapshot.nodeStatuses,
+      nodeOutputs: snapshot.nodeOutputs,
+      logs: snapshot.logs,
+      loopGroups: snapshot.loopGroups ?? [],
+      runSummary: snapshot.runSummary ?? null,
+    });
+  };
+
+  const _persistTabState = (): void => {
+    try {
+      const { tabs, activeTabId, tabCache, runId } = get();
+      const runs: Record<string, { runId: string | null; graphId: string }> = {};
+      for (const tab of tabs) {
+        if (tab.id === activeTabId) {
+          runs[tab.id] = { runId, graphId: tab.graphId };
+        } else {
+          runs[tab.id] = { runId: tabCache[tab.id]?.runId ?? null, graphId: tab.graphId };
+        }
+      }
+      sessionStorage.setItem("dan_open_tabs", JSON.stringify({ tabs, activeTabId, runs }));
+    } catch { /* quota */ }
+  };
+
+  return {
   graphId: null,
   danGraph: null,
   graphList: [],
@@ -205,6 +338,7 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   nodeStatuses: {},
   nodeOutputs: {},
   logs: [],
+  runSummary: null,
   ws: null,
   layerStack: [],
   selectedEdgeType: "data" as const,
@@ -221,14 +355,31 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   pendingHumanInput: null,
   _history: { past: [], future: [] },
 
+  // -- 6-10: Loop groups
+  loopGroups: [],
+
+  // -- 6-9: Tab state
+  tabs: [],
+  activeTabId: null,
+  tabCache: {},
+
   // -- Graph lifecycle -------------------------------------------------------
 
   loadGraphList: async () => {
     try {
       const { graphs, last_opened } = await api.listGraphs();
       set({ graphList: graphs });
-      if (last_opened && !get().graphId) {
-        await get().loadGraph(last_opened);
+      if (get().tabs.length === 0 && !get().graphId) {
+        if (last_opened) {
+          const tabId = crypto.randomUUID();
+          set({
+            tabs: [{ id: tabId, graphId: last_opened, graphName: last_opened, cachedRunStatus: null }],
+            activeTabId: tabId,
+          });
+          await get().loadGraph(last_opened);
+        } else {
+          await get().openTab("blank");
+        }
       }
     } catch (err: unknown) {
       get().addToast({ type: "error", message: (err as Error).message ?? "Failed to load graph list" });
@@ -252,7 +403,19 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         }
       }
 
-      set({ graphId, danGraph, nodes, edges, dirty: false, selectedNodeId: null, selectedEdgeId: null, layerStack: [], validationErrors: {} });
+      const loadedGroups: LoopGroup[] = (danGraph.metadata as Record<string, unknown>).loop_groups as LoopGroup[] ?? [];
+      if (loadedGroups.length > 0) {
+        const injected = injectLoopGroups(nodes, edges, loadedGroups);
+        nodes = injected.nodes;
+        edges = injected.edges;
+      }
+
+      set({ graphId, danGraph, nodes, edges, loopGroups: loadedGroups, dirty: false, selectedNodeId: null, selectedEdgeId: null, layerStack: [], validationErrors: {} });
+      const { activeTabId: atId } = get();
+      if (atId) {
+        const gName = danGraph.metadata?.name ?? graphId;
+        set((s) => ({ tabs: s.tabs.map((t) => t.id === atId ? { ...t, graphId, graphName: gName } : t) }));
+      }
       get().addToast({ type: "success", message: `Loaded "${graphId}"` });
     } catch (err: unknown) {
       get().addToast({ type: "error", message: (err as Error).message ?? "Failed to load graph" });
@@ -263,12 +426,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
 
   createGraph: async (graphId: string) => {
     try {
-      const { data } = await api.createGraph(graphId);
-      const danGraph = data as unknown as DanGraph;
-      const { nodes, edges } = danGraphToReactFlow(danGraph);
-      set({ graphId, danGraph, nodes, edges, dirty: false, layerStack: [] });
+      await api.createGraph(graphId);
       get().addToast({ type: "success", message: `Created "${graphId}"` });
       await get().loadGraphList();
+      await get().openTab(graphId);
     } catch (err: unknown) {
       get().addToast({ type: "error", message: (err as Error).message ?? "Failed to create graph" });
     }
@@ -277,8 +438,10 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   deleteGraph: async (graphId: string) => {
     try {
       await api.deleteGraph(graphId);
-      if (get().graphId === graphId) {
-        set({ graphId: null, danGraph: null, nodes: [], edges: [], dirty: false });
+      const { tabs } = get();
+      const matchingTab = tabs.find((t) => t.graphId === graphId);
+      if (matchingTab) {
+        await get().closeTab(matchingTab.id);
       }
       get().addToast({ type: "info", message: `Deleted "${graphId}"` });
       await get().loadGraphList();
@@ -288,22 +451,33 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   },
 
   saveGraph: async () => {
-    const { graphId, danGraph, nodes, edges, layerStack } = get();
+    const { graphId, danGraph, nodes, edges, layerStack, loopGroups } = get();
     if (!graphId || !danGraph) return false;
     set({ savingGraph: true, validationErrors: {} });
     try {
-      const realEdges = edges.filter((e) => !e.data?.synthetic);
+      const realNodes = nodes.filter((n) => n.type !== "loopGroup");
+      const realEdges = edges.filter((e) => !e.data?.synthetic && !e.data?.loopGroupEdge);
+      const cleanEdges = realEdges.map((e) =>
+        e.data?._groupHidden ? { ...e, hidden: false, data: { ...e.data, _groupHidden: undefined } } : e,
+      );
+      const cleanNodes = realNodes.map((n) => (n.hidden ? { ...n, hidden: false } : n));
       let updated: DanGraph;
       if (layerStack.length === 0) {
-        updated = reactFlowToDanGraph(nodes, realEdges, danGraph);
+        updated = reactFlowToDanGraph(cleanNodes, cleanEdges, danGraph);
       } else {
         const activeKey = layerStack[layerStack.length - 1].graphKey;
         const subBase = (danGraph.sub_graphs?.[activeKey] ?? danGraph) as unknown as DanGraph;
-        const updatedSub = reactFlowToDanGraph(nodes, realEdges, subBase);
+        const updatedSub = reactFlowToDanGraph(cleanNodes, cleanEdges, subBase);
         updated = {
           ...danGraph,
           sub_graphs: { ...danGraph.sub_graphs, [activeKey]: updatedSub as unknown as DanGraph },
         };
+      }
+      if (loopGroups.length > 0) {
+        updated = { ...updated, metadata: { ...updated.metadata, loop_groups: loopGroups } };
+      } else {
+        const { loop_groups: _removed, ...restMeta } = updated.metadata as Record<string, unknown>;
+        updated = { ...updated, metadata: restMeta as DanGraph["metadata"] };
       }
       await api.updateGraph(graphId, updated as unknown as Record<string, unknown>);
       set({ danGraph: updated, dirty: false });
@@ -589,8 +763,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       const saved = await get().saveGraph();
       if (!saved) return;
       const { run_id } = await api.startRun(graphId, finalInputs);
-      set({ runId: run_id, runStatus: "running", nodeStatuses: {}, nodeOutputs: {}, nodeTimings: {}, activeExecutionPath: new Set(), logs: [] });
-      try { sessionStorage.setItem("dan_active_run", JSON.stringify({ runId: run_id, graphId })); } catch { /* quota */ }
+      set({ runId: run_id, runStatus: "running", nodeStatuses: {}, nodeOutputs: {}, nodeTimings: {}, activeExecutionPath: new Set(), logs: [], runSummary: null });
+      _persistTabState();
       get().addToast({ type: "info", message: `Run started (${run_id.slice(0, 8)})` });
       const ws = api.connectRunEvents(
         run_id,
@@ -608,8 +782,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     if (!graphId || !runId) return;
     try {
       await api.resumeRun(runId, graphId);
-      set({ runStatus: "running", nodeStatuses: {}, nodeTimings: {}, activeExecutionPath: new Set(), logs: [] });
-      try { sessionStorage.setItem("dan_active_run", JSON.stringify({ runId, graphId })); } catch { /* quota */ }
+      set({ runStatus: "running", nodeStatuses: {}, nodeTimings: {}, activeExecutionPath: new Set(), logs: [], runSummary: null });
+      _persistTabState();
       get().addToast({ type: "info", message: "Run resumed" });
       const ws = api.connectRunEvents(
         runId,
@@ -682,6 +856,11 @@ export const useGraphStore = create<GraphState>((set, get) => ({
   // -- Event handling --------------------------------------------------------
 
   handleRunEvent: (event) => {
+    // 6-9: Ignore events from other tabs' runs
+    const activeRunId = get().runId;
+    const eventRunId = event.run_id as string | undefined;
+    if (activeRunId && eventRunId && eventRunId !== activeRunId) return;
+
     const eventType = event.event_type as string;
     const nodeId = event.node_id as string | undefined;
     const data = (event.data ?? {}) as Record<string, unknown>;
@@ -734,13 +913,15 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       if (nodeId && eventType === "node_output" && data.outputs) {
         newOutputs[nodeId] = data.outputs as Record<string, unknown>;
       }
-      if (eventType === "run_completed") {
-        newRunStatus = "completed";
-        try { sessionStorage.removeItem("dan_active_run"); } catch { /* ignore */ }
-      }
-      if (eventType === "run_failed") {
-        newRunStatus = "failed";
-        try { sessionStorage.removeItem("dan_active_run"); } catch { /* ignore */ }
+      let newRunSummary = s.runSummary;
+      if (eventType === "run_completed" || eventType === "run_failed") {
+        newRunStatus = eventType === "run_completed" ? "completed" : "failed";
+        newRunSummary = {
+          elapsed_seconds: data.elapsed_seconds as number | undefined,
+          total_prompt_tokens: data.total_prompt_tokens as number | undefined,
+          total_completion_tokens: data.total_completion_tokens as number | undefined,
+          total_tokens: data.total_tokens as number | undefined,
+        };
       }
 
       // -- 5-2: Track node timings
@@ -797,12 +978,17 @@ export const useGraphStore = create<GraphState>((set, get) => ({
         nodeTimings: newTimings,
         activeExecutionPath: new Set(Object.keys(newStatuses)),
         runStatus: newRunStatus,
+        runSummary: newRunSummary,
         logs: [...s.logs.slice(-4999), logMsg],
         nodeIterations: newIterations,
         streamingOutputs: newStreaming,
         pendingHumanInput: newPendingHuman,
       };
     });
+
+    if (eventType === "run_completed" || eventType === "run_failed") {
+      _persistTabState();
+    }
   },
 
   // -- 5-1: Layer navigation ---------------------------------------------------
@@ -883,7 +1069,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       rfEdges.push(...syntheticEdges);
     }
 
-    set({ layerStack: newStack, nodes: rfNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
+    const finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
+    set({ layerStack: newStack, nodes: finalNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
   },
 
   drillOut: () => {
@@ -898,7 +1085,8 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       currentGraph = (danGraph.sub_graphs?.[lastKey] as unknown as DanGraph) ?? danGraph;
     }
     const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(currentGraph);
-    set({ layerStack: newStack, nodes: rfNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
+    const finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
+    set({ layerStack: newStack, nodes: finalNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
   },
 
   jumpToLayer: (index) => {
@@ -906,14 +1094,16 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     if (!danGraph) return;
     if (index < 0 || index >= layerStack.length) {
       const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(danGraph);
-      set({ layerStack: [], nodes: rfNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
+      const finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
+      set({ layerStack: [], nodes: finalNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
       return;
     }
     const newStack = layerStack.slice(0, index + 1);
     const lastKey = newStack[newStack.length - 1].graphKey;
     const currentGraph = (danGraph.sub_graphs?.[lastKey] as unknown as DanGraph) ?? danGraph;
     const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(currentGraph);
-    set({ layerStack: newStack, nodes: rfNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
+    const finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
+    set({ layerStack: newStack, nodes: finalNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
   },
 
   // -- 5-4: Build palette -------------------------------------------------------
@@ -1173,6 +1363,42 @@ export const useGraphStore = create<GraphState>((set, get) => ({
     });
   },
 
+  // -- 6-10: Loop groups -------------------------------------------------------
+
+  createLoopGroup: (gateNodeId, memberNodeIds, label) => {
+    get().pushSnapshot();
+    const groupId = `lg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const newGroup: LoopGroup = {
+      id: groupId,
+      label: label ?? "Loop Group",
+      gateNodeId,
+      memberNodeIds,
+      collapsed: false,
+    };
+    const updatedGroups = [...get().loopGroups, newGroup];
+    const { nodes: clean, edges: cleanEdges } = stripLoopGroups(get().nodes, get().edges);
+    const { nodes, edges } = injectLoopGroups(clean, cleanEdges, updatedGroups);
+    set({ loopGroups: updatedGroups, nodes, edges, dirty: true });
+  },
+
+  toggleLoopGroup: (groupId) => {
+    get().pushSnapshot();
+    const updatedGroups = get().loopGroups.map((g) =>
+      g.id === groupId ? { ...g, collapsed: !g.collapsed } : g,
+    );
+    const { nodes: clean, edges: cleanEdges } = stripLoopGroups(get().nodes, get().edges);
+    const { nodes, edges } = injectLoopGroups(clean, cleanEdges, updatedGroups);
+    set({ loopGroups: updatedGroups, nodes, edges, dirty: true });
+  },
+
+  removeLoopGroup: (groupId) => {
+    get().pushSnapshot();
+    const updatedGroups = get().loopGroups.filter((g) => g.id !== groupId);
+    const { nodes: clean, edges: cleanEdges } = stripLoopGroups(get().nodes, get().edges);
+    const { nodes, edges } = injectLoopGroups(clean, cleanEdges, updatedGroups);
+    set({ loopGroups: updatedGroups, nodes, edges, dirty: true });
+  },
+
   // -- 6-1: History (undo/redo) -------------------------------------------------
 
   pushSnapshot: () => {
@@ -1223,4 +1449,323 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       dirty: true,
     });
   },
-}));
+
+  // -- 6-9: Tab lifecycle actions -----------------------------------------------
+
+  openTab: async (graphId) => {
+    const { activeTabId } = get();
+
+    if (activeTabId) {
+      const snapshot = _snapshotActiveTab();
+      set((s) => ({ tabCache: { ...s.tabCache, [activeTabId]: snapshot } }));
+    }
+
+    const oldWs = get().ws;
+    if (oldWs) { oldWs.onmessage = null; oldWs.onclose = null; oldWs.close(); }
+    set({ ws: null });
+
+    const isBlank = graphId === "blank";
+    const tabId = crypto.randomUUID();
+    const newTab: TabInfo = {
+      id: tabId,
+      graphId: isBlank ? "" : graphId,
+      graphName: isBlank ? "blank" : graphId,
+      cachedRunStatus: null,
+    };
+
+    set((s) => ({
+      tabs: [...s.tabs, newTab],
+      activeTabId: tabId,
+      graphId: isBlank ? null : s.graphId,
+      danGraph: isBlank ? null : s.danGraph,
+      nodes: isBlank ? [] : s.nodes,
+      edges: isBlank ? [] : s.edges,
+      dirty: false,
+      runId: null,
+      runStatus: null,
+      nodeStatuses: {},
+      nodeOutputs: {},
+      logs: [],
+      runSummary: null,
+      nodeTimings: {},
+      activeExecutionPath: new Set<string>(),
+      nodeIterations: {},
+      streamingOutputs: {},
+      pendingHumanInput: null,
+      _history: { past: [], future: [] },
+      validationErrors: {},
+      inputNodeValues: {},
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      selectedNodeIds: new Set<string>(),
+      layerStack: [],
+      loopGroups: [],
+    }));
+
+    if (!isBlank) {
+      await get().loadGraph(graphId);
+    }
+    _persistTabState();
+  },
+
+  replaceActiveTabGraph: async (graphId) => {
+    const { activeTabId, dirty, tabs } = get();
+    if (!activeTabId) {
+      await get().openTab(graphId);
+      return;
+    }
+
+    const activeTab = tabs.find((t) => t.id === activeTabId);
+    if (!activeTab) {
+      await get().openTab(graphId);
+      return;
+    }
+    if (activeTab.graphId === graphId) return;
+
+    if (dirty && !window.confirm("Unsaved changes will be lost. Switch template in this tab?")) return;
+
+    const oldWs = get().ws;
+    if (oldWs) { oldWs.onmessage = null; oldWs.onclose = null; oldWs.close(); }
+    set({ ws: null });
+
+    set((s) => {
+      const newCache = { ...s.tabCache };
+      delete newCache[activeTabId];
+      return {
+        tabCache: newCache,
+        tabs: s.tabs.map((t) =>
+          t.id === activeTabId ? { ...t, graphId, graphName: graphId, cachedRunStatus: null } : t,
+        ),
+        runId: null,
+        runStatus: null,
+        nodeStatuses: {},
+        nodeOutputs: {},
+        logs: [],
+        runSummary: null,
+        nodeTimings: {},
+        activeExecutionPath: new Set<string>(),
+        nodeIterations: {},
+        streamingOutputs: {},
+        pendingHumanInput: null,
+        _history: { past: [], future: [] },
+        validationErrors: {},
+        inputNodeValues: {},
+        selectedNodeId: null,
+        selectedEdgeId: null,
+        selectedNodeIds: new Set<string>(),
+        layerStack: [],
+        loopGroups: [],
+      };
+    });
+
+    await get().loadGraph(graphId);
+    _persistTabState();
+  },
+
+  switchTab: async (tabId) => {
+    const { activeTabId, tabs } = get();
+    if (tabId === activeTabId) return;
+
+    const targetTab = tabs.find((t) => t.id === tabId);
+    if (!targetTab) return;
+
+    if (activeTabId) {
+      const snapshot = _snapshotActiveTab();
+      const updatedTabs = tabs.map((t) =>
+        t.id === activeTabId ? { ...t, cachedRunStatus: get().runStatus } : t,
+      );
+      set((s) => ({
+        tabCache: { ...s.tabCache, [activeTabId]: snapshot },
+        tabs: updatedTabs,
+      }));
+    }
+
+    const oldWs = get().ws;
+    if (oldWs) { oldWs.onmessage = null; oldWs.onclose = null; oldWs.close(); }
+    set({ ws: null });
+
+    const cached = get().tabCache[tabId];
+    if (cached) {
+      _restoreTab(cached);
+      set((s) => {
+        const newCache = { ...s.tabCache };
+        delete newCache[tabId];
+        return { tabCache: newCache, activeTabId: tabId };
+      });
+    } else {
+      set({ activeTabId: tabId });
+      await get().loadGraph(targetTab.graphId);
+    }
+
+    const { runId: restoredRunId, runStatus: restoredRunStatus } = get();
+    if (restoredRunId && (restoredRunStatus === "running" || restoredRunStatus === "pending")) {
+      const ws = api.connectRunEvents(
+        restoredRunId,
+        (event) => get().handleRunEvent(event),
+        () => set({ ws: null }),
+      );
+      set({ ws });
+    }
+
+    _persistTabState();
+  },
+
+  closeTab: async (tabId) => {
+    const { tabs, activeTabId, tabCache } = get();
+
+    const isDirty = tabId === activeTabId
+      ? get().dirty
+      : tabCache[tabId]?.dirty ?? false;
+    if (isDirty && !window.confirm("Unsaved changes will be lost. Close anyway?")) return;
+
+    if (tabs.length <= 1) {
+      set((s) => {
+        const newCache = { ...s.tabCache };
+        delete newCache[tabId];
+        return { tabs: s.tabs.filter((t) => t.id !== tabId), tabCache: newCache };
+      });
+      await get().openTab("blank");
+      return;
+    }
+
+    if (tabId === activeTabId) {
+      const idx = tabs.findIndex((t) => t.id === tabId);
+      const nextTab = tabs[idx + 1] ?? tabs[idx - 1];
+      if (nextTab) await get().switchTab(nextTab.id);
+    }
+
+    set((s) => {
+      const newCache = { ...s.tabCache };
+      delete newCache[tabId];
+      return {
+        tabs: s.tabs.filter((t) => t.id !== tabId),
+        tabCache: newCache,
+      };
+    });
+
+    _persistTabState();
+  },
+
+  refreshTab: async () => {
+    const { graphId } = get();
+    if (!graphId) {
+      get().addToast({ type: "warning", message: "No graph loaded in this tab" });
+      return;
+    }
+
+    const oldWs = get().ws;
+    if (oldWs) { oldWs.onmessage = null; oldWs.onclose = null; oldWs.close(); }
+    set({
+      ws: null,
+      runId: null,
+      runStatus: null,
+      nodeStatuses: {},
+      nodeOutputs: {},
+      logs: [],
+      runSummary: null,
+      nodeTimings: {},
+      activeExecutionPath: new Set<string>(),
+      nodeIterations: {},
+      streamingOutputs: {},
+      pendingHumanInput: null,
+      validationErrors: {},
+      inputNodeValues: {},
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      selectedNodeIds: new Set<string>(),
+      layerStack: [],
+    });
+
+    await get().loadGraph(graphId);
+    _persistTabState();
+    get().addToast({ type: "success", message: "Tab refreshed" });
+  },
+
+  restoreTabs: async () => {
+    let stored: {
+      tabs: TabInfo[];
+      activeTabId: string | null;
+      runs: Record<string, { runId: string | null; graphId: string }>;
+    } | null = null;
+    try {
+      const raw = sessionStorage.getItem("dan_open_tabs");
+      if (raw) stored = JSON.parse(raw);
+    } catch { /* corrupt */ }
+
+    if (stored?.tabs?.length) {
+      set({ tabs: stored.tabs, activeTabId: stored.activeTabId });
+
+      const activeTab = stored.tabs.find((t) => t.id === stored!.activeTabId);
+      if (activeTab?.graphId) {
+        await get().loadGraph(activeTab.graphId);
+      }
+
+      const activeRunRef = stored.runs?.[stored.activeTabId!];
+      if (activeRunRef?.runId) {
+        try {
+          const info = await api.getRun(activeRunRef.runId);
+          set({
+            runId: activeRunRef.runId,
+            runStatus: info.status,
+            nodeStatuses: info.node_statuses ?? {},
+            nodeOutputs: info.outputs ? { _final: info.outputs } : {},
+          });
+          if (info.status === "pending" || info.status === "running") {
+            const ws = api.connectRunEvents(
+              activeRunRef.runId,
+              (event) => get().handleRunEvent(event),
+              () => set({ ws: null }),
+            );
+            set({ ws });
+            get().addToast({ type: "info", message: `Reconnected to run ${activeRunRef.runId.slice(0, 8)}` });
+          }
+        } catch { /* run may no longer exist */ }
+      }
+
+      _persistTabState();
+      return;
+    }
+
+    // Migration: check for legacy single-run key
+    try {
+      const raw = sessionStorage.getItem("dan_active_run");
+      if (raw) {
+        sessionStorage.removeItem("dan_active_run");
+        const legacy = JSON.parse(raw) as { runId: string; graphId: string };
+        if (legacy.graphId !== get().graphId) {
+          await get().loadGraph(legacy.graphId);
+        }
+        const { activeTabId: curTabId } = get();
+        if (curTabId) {
+          set((s) => ({
+            tabs: s.tabs.map((t) =>
+              t.id === curTabId ? { ...t, graphId: legacy.graphId, graphName: legacy.graphId } : t,
+            ),
+          }));
+        }
+        try {
+          const info = await api.getRun(legacy.runId);
+          set({
+            runId: legacy.runId,
+            runStatus: info.status,
+            nodeStatuses: info.node_statuses ?? {},
+            nodeOutputs: info.outputs ? { _final: info.outputs } : {},
+          });
+          if (info.status === "pending" || info.status === "running") {
+            const ws = api.connectRunEvents(
+              legacy.runId,
+              (event) => get().handleRunEvent(event),
+              () => set({ ws: null }),
+            );
+            set({ ws });
+            get().addToast({ type: "info", message: `Reconnected to run ${legacy.runId.slice(0, 8)}` });
+          }
+        } catch { /* run may no longer exist */ }
+      }
+    } catch { /* corrupt */ }
+
+    _persistTabState();
+  },
+
+  };
+});
