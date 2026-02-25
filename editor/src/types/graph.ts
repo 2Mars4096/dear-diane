@@ -25,6 +25,16 @@ export interface Position {
   y: number;
 }
 
+// -- Retry Policy ------------------------------------------------------------
+
+export interface RetryPolicy {
+  max_retries?: number;
+  backoff?: number;
+  backoff_max?: number;
+  fallback_model?: string | null;
+  on_failure?: "error" | "skip" | "halt";
+}
+
 // -- Nodes -------------------------------------------------------------------
 
 export interface NodeBase {
@@ -37,6 +47,7 @@ export interface NodeBase {
   position: Position;
   ui: Record<string, unknown>;
   metadata: Record<string, unknown>;
+  retry_policy?: RetryPolicy | null;
 }
 
 export interface LLMOperator extends NodeBase {

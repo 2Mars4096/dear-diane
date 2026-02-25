@@ -36,6 +36,8 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   const inputNodeValues = useGraphStore((s) => s.inputNodeValues);
   const setInputNodeValue = useGraphStore((s) => s.setInputNodeValue);
   const validationErrors = useGraphStore((s) => s.validationErrors);
+  const nodeUsage = useGraphStore((s) => s.nodeUsage);
+  const nodeCosts = useGraphStore((s) => s.nodeCosts);
   const nodeErrors = validationErrors[id];
   const d = data as unknown as DanNode;
 
@@ -81,6 +83,18 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   if (status === "node_completed" && timing?.end != null) {
     const ms = (timing.end - timing.start) * 1000;
     durationLabel = ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
+  }
+
+  const usage = nodeUsage[id];
+  const cost = nodeCosts[id];
+  let tokenLabel: string | null = null;
+  if (usage && usage.total_tokens > 0) {
+    const t = usage.total_tokens;
+    tokenLabel = t >= 1000 ? `${(t / 1000).toFixed(1)}k tok` : `${t} tok`;
+  }
+  let costLabel: string | null = null;
+  if (cost != null && cost > 0) {
+    costLabel = cost >= 0.01 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`;
   }
 
   const iteration = nodeIterations[id];
@@ -269,13 +283,27 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
         </div>
       )}
 
-      {/* Status indicator + 5-2 duration badge */}
+      {/* Status indicator + 5-2 duration badge + 7-4 token/cost badges */}
       {status && (
-        <div className="px-2 pb-1 text-[10px] text-gray-400 flex items-center justify-between">
+        <div className="px-2 pb-1 text-[10px] text-gray-400 flex items-center gap-1 flex-wrap">
           <span>{status.replace("node_", "")}</span>
+          <span className="ml-auto" />
           {durationLabel && (
             <span className="bg-gray-100 text-gray-500 px-1 rounded">
               {durationLabel}
+            </span>
+          )}
+          {tokenLabel && (
+            <span
+              className="bg-indigo-50 text-indigo-600 px-1 rounded"
+              title={usage ? `Prompt: ${usage.prompt_tokens.toLocaleString()}, Completion: ${usage.completion_tokens.toLocaleString()}, Total: ${usage.total_tokens.toLocaleString()}` : undefined}
+            >
+              {tokenLabel}
+            </span>
+          )}
+          {costLabel && (
+            <span className="bg-emerald-50 text-emerald-600 px-1 rounded">
+              {costLabel}
             </span>
           )}
         </div>

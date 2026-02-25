@@ -101,6 +101,8 @@ interface TabSnapshot {
   logs: LogEntry[];
   loopGroups: LoopGroup[];
   runSummary: { elapsed_seconds?: number; total_prompt_tokens?: number; total_completion_tokens?: number; total_tokens?: number } | null;
+  nodeUsage: Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number }>;
+  nodeCosts: Record<string, number>;
 }
 
 interface GraphState {
@@ -133,6 +135,10 @@ interface GraphState {
   logs: LogEntry[];
   runSummary: { elapsed_seconds?: number; total_prompt_tokens?: number; total_completion_tokens?: number; total_tokens?: number } | null;
   ws: WebSocket | null;
+
+  // -- 7-4: Per-node token/cost observability
+  nodeUsage: Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number }>;
+  nodeCosts: Record<string, number>;
 
   // -- Actions: graph lifecycle
   loadGraphList: () => Promise<void>;
@@ -245,6 +251,37 @@ interface GraphState {
   restoreTabs: () => Promise<void>;
 }
 
+// -- 7-4: Cost estimation (mirrors src/dan/providers/costs.py) ------------------
+const COST_PER_1K: Record<string, { prompt: number; completion: number }> = {
+  "gpt-4o": { prompt: 0.0025, completion: 0.01 },
+  "gpt-4o-mini": { prompt: 0.00015, completion: 0.0006 },
+  "gpt-4.1": { prompt: 0.002, completion: 0.008 },
+  "gpt-4.1-mini": { prompt: 0.0004, completion: 0.0016 },
+  "gpt-4.1-nano": { prompt: 0.0001, completion: 0.0004 },
+  "o1": { prompt: 0.015, completion: 0.06 },
+  "o3": { prompt: 0.01, completion: 0.04 },
+  "o3-mini": { prompt: 0.0011, completion: 0.0044 },
+  "o4-mini": { prompt: 0.0011, completion: 0.0044 },
+  "claude-opus-4": { prompt: 0.015, completion: 0.075 },
+  "claude-sonnet-4": { prompt: 0.003, completion: 0.015 },
+  "claude-haiku-3.5": { prompt: 0.0008, completion: 0.004 },
+  "gemini-2.0-flash": { prompt: 0.0001, completion: 0.0004 },
+  "gemini-2.0-pro": { prompt: 0.00125, completion: 0.005 },
+  "gemini-2.5-pro": { prompt: 0.00125, completion: 0.01 },
+  "gemini-2.5-flash": { prompt: 0.00015, completion: 0.0006 },
+};
+
+function estimateCost(model: string, promptTokens: number, completionTokens: number): number | null {
+  let rates = COST_PER_1K[model];
+  if (!rates) {
+    for (const [key, r] of Object.entries(COST_PER_1K)) {
+      if (model.startsWith(key)) { rates = r; break; }
+    }
+  }
+  if (!rates) return null;
+  return (promptTokens * rates.prompt + completionTokens * rates.completion) / 1000;
+}
+
 export const useGraphStore = create<GraphState>((set, get) => {
   // -- 6-9: Tab internal helpers -----------------------------------------------
 
@@ -275,6 +312,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       logs: [...s.logs],
       loopGroups: structuredClone(s.loopGroups),
       runSummary: s.runSummary ? { ...s.runSummary } : null,
+      nodeUsage: { ...s.nodeUsage },
+      nodeCosts: { ...s.nodeCosts },
     };
   };
 
@@ -304,6 +343,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       logs: snapshot.logs,
       loopGroups: snapshot.loopGroups ?? [],
       runSummary: snapshot.runSummary ?? null,
+      nodeUsage: snapshot.nodeUsage ?? {},
+      nodeCosts: snapshot.nodeCosts ?? {},
     });
   };
 
@@ -340,6 +381,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
   logs: [],
   runSummary: null,
   ws: null,
+  nodeUsage: {},
+  nodeCosts: {},
   layerStack: [],
   selectedEdgeType: "data" as const,
   nodeTimings: {},
@@ -763,7 +806,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       const saved = await get().saveGraph();
       if (!saved) return;
       const { run_id } = await api.startRun(graphId, finalInputs);
-      set({ runId: run_id, runStatus: "running", nodeStatuses: {}, nodeOutputs: {}, nodeTimings: {}, activeExecutionPath: new Set(), logs: [], runSummary: null });
+      set({ runId: run_id, runStatus: "running", nodeStatuses: {}, nodeOutputs: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, activeExecutionPath: new Set(), logs: [], runSummary: null });
       _persistTabState();
       get().addToast({ type: "info", message: `Run started (${run_id.slice(0, 8)})` });
       const ws = api.connectRunEvents(
@@ -782,7 +825,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     if (!graphId || !runId) return;
     try {
       await api.resumeRun(runId, graphId);
-      set({ runStatus: "running", nodeStatuses: {}, nodeTimings: {}, activeExecutionPath: new Set(), logs: [], runSummary: null });
+      set({ runStatus: "running", nodeStatuses: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, activeExecutionPath: new Set(), logs: [], runSummary: null });
       _persistTabState();
       get().addToast({ type: "info", message: "Run resumed" });
       const ws = api.connectRunEvents(
@@ -835,6 +878,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeStatuses: info.node_statuses ?? {},
         nodeOutputs: {},
         nodeTimings: {},
+        nodeUsage: {},
+        nodeCosts: {},
         activeExecutionPath: new Set(Object.keys(info.node_statuses ?? {})),
         logs: [],
       });
@@ -905,6 +950,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       const newStatuses = { ...s.nodeStatuses };
       const newOutputs = { ...s.nodeOutputs };
       const newTimings = { ...s.nodeTimings };
+      const newUsage = { ...s.nodeUsage };
+      const newCosts = { ...s.nodeCosts };
       let newRunStatus = s.runStatus;
 
       if (nodeId && ["node_started", "node_completed", "node_failed", "node_skipped"].includes(eventType)) {
@@ -913,6 +960,27 @@ export const useGraphStore = create<GraphState>((set, get) => {
       if (nodeId && eventType === "node_output" && data.outputs) {
         newOutputs[nodeId] = data.outputs as Record<string, unknown>;
       }
+
+      // -- 7-4: Extract per-node usage and cost on completion
+      if (nodeId && eventType === "node_completed" && data.metadata) {
+        const meta = data.metadata as Record<string, unknown>;
+        const usage = meta.usage as Record<string, number> | undefined;
+        if (usage && (usage.total_tokens ?? 0) > 0) {
+          newUsage[nodeId] = {
+            prompt_tokens: usage.prompt_tokens ?? 0,
+            completion_tokens: usage.completion_tokens ?? 0,
+            total_tokens: usage.total_tokens ?? 0,
+          };
+        }
+        const model = meta.model as string | undefined;
+        if (model && usage) {
+          const cost = estimateCost(model, usage.prompt_tokens ?? 0, usage.completion_tokens ?? 0);
+          if (cost != null) {
+            newCosts[nodeId] = cost;
+          }
+        }
+      }
+
       let newRunSummary = s.runSummary;
       if (eventType === "run_completed" || eventType === "run_failed") {
         newRunStatus = eventType === "run_completed" ? "completed" : "failed";
@@ -976,6 +1044,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeStatuses: newStatuses,
         nodeOutputs: newOutputs,
         nodeTimings: newTimings,
+        nodeUsage: newUsage,
+        nodeCosts: newCosts,
         activeExecutionPath: new Set(Object.keys(newStatuses)),
         runStatus: newRunStatus,
         runSummary: newRunSummary,
@@ -1488,6 +1558,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       logs: [],
       runSummary: null,
       nodeTimings: {},
+      nodeUsage: {},
+      nodeCosts: {},
       activeExecutionPath: new Set<string>(),
       nodeIterations: {},
       streamingOutputs: {},
@@ -1543,6 +1615,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
         logs: [],
         runSummary: null,
         nodeTimings: {},
+        nodeUsage: {},
+        nodeCosts: {},
         activeExecutionPath: new Set<string>(),
         nodeIterations: {},
         streamingOutputs: {},
@@ -1664,6 +1738,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       logs: [],
       runSummary: null,
       nodeTimings: {},
+      nodeUsage: {},
+      nodeCosts: {},
       activeExecutionPath: new Set<string>(),
       nodeIterations: {},
       streamingOutputs: {},

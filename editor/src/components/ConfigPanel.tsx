@@ -1,12 +1,13 @@
 import { useState, useMemo } from "react";
 import { useGraphStore } from "../store/useGraphStore";
-import type { DanNode, InputPort, OutputPort } from "../types/graph";
+import type { DanNode, InputPort, OutputPort, RetryPolicy } from "../types/graph";
 
 const SKIP_FIELDS = new Set([
   "id", "node_type", "input_ports", "output_ports", "position", "ui", "metadata",
   "read_set", "write_set", "compaction_rule", "failure_policy", "projections",
   "local_state", "control_state_schema", "external_input_schema", "external_output_schema",
-  "output_json_schema",
+  "output_json_schema", "retry_policy",
+  "model", "temperature", "system_prompt", "max_tokens",
 ]);
 
 const LARGE_TEXT_FIELDS = new Set(["prompt_template", "code", "system_prompt"]);
@@ -278,6 +279,251 @@ function SchemaEditor({
   );
 }
 
+// -- Retry Policy Editor -----------------------------------------------------
+
+const ON_FAILURE_OPTIONS = ["error", "skip", "halt"] as const;
+
+function RetryPolicyEditor({ nodeId, policy }: { nodeId: string; policy: RetryPolicy | null | undefined }) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const [open, setOpen] = useState(!!policy);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  const update = (patch: Partial<RetryPolicy>) => {
+    updateNodeData(nodeId, { retry_policy: { ...(policy ?? {}), ...patch } } as unknown as Partial<DanNode>);
+  };
+
+  if (!policy) {
+    return (
+      <div className="mt-3">
+        <button
+          onClick={() => {
+            updateNodeData(nodeId, { retry_policy: { max_retries: 0, backoff: 1, backoff_max: 60, on_failure: "error" } } as unknown as Partial<DanNode>);
+            setOpen(true);
+          }}
+          className="text-xs text-blue-500 hover:text-blue-700"
+        >
+          + Add retry policy
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-3">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 w-full"
+      >
+        <span className={`text-[10px] transition-transform ${open ? "rotate-90" : ""}`}>&#9654;</span>
+        <h3 className="text-[11px] font-semibold text-gray-400 uppercase">Retry Policy</h3>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            updateNodeData(nodeId, { retry_policy: null } as unknown as Partial<DanNode>);
+            setOpen(false);
+          }}
+          className="ml-auto text-gray-400 hover:text-red-500 text-[10px]"
+          title="Remove retry policy"
+        >
+          ✕
+        </button>
+      </button>
+      {open && (
+        <div className="flex flex-col gap-2 mt-1 pl-2 border-l border-gray-200">
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">max_retries</span>
+            <input
+              type="number"
+              min={0}
+              value={policy.max_retries ?? 0}
+              onChange={(e) => update({ max_retries: parseInt(e.target.value) || 0 })}
+              className="border rounded px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">backoff (seconds)</span>
+            <input
+              type="number"
+              min={0}
+              step={0.1}
+              value={policy.backoff ?? 1}
+              onChange={(e) => update({ backoff: parseFloat(e.target.value) || 1 })}
+              className="border rounded px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">fallback_model</span>
+            <input
+              type="text"
+              value={policy.fallback_model ?? ""}
+              onChange={(e) => update({ fallback_model: e.target.value || null })}
+              placeholder="e.g. gpt-4o-mini"
+              className="border rounded px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">on_failure</span>
+            <select
+              value={policy.on_failure ?? "error"}
+              onChange={(e) => update({ on_failure: e.target.value as RetryPolicy["on_failure"] })}
+              className="border rounded px-2 py-1 text-xs"
+            >
+              {ON_FAILURE_OPTIONS.map((o) => (
+                <option key={o} value={o}>{o}</option>
+              ))}
+            </select>
+          </label>
+          <div>
+            <button
+              onClick={() => setAdvancedOpen(!advancedOpen)}
+              className="text-[10px] text-gray-400 hover:text-gray-600"
+            >
+              {advancedOpen ? "▾ Advanced" : "▸ Advanced"}
+            </button>
+            {advancedOpen && (
+              <label className="flex flex-col gap-0.5 mt-1">
+                <span className="text-[11px] font-medium text-gray-500">backoff_max (seconds)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={policy.backoff_max ?? 60}
+                  onChange={(e) => update({ backoff_max: parseFloat(e.target.value) || 60 })}
+                  className="border rounded px-2 py-1 text-xs"
+                />
+              </label>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// -- LLM Config Section (model, temperature, system_prompt + advanced) ------
+
+const COMMON_MODELS = [
+  { value: "claude-sonnet-4-6", label: "Claude Sonnet 4", provider: "anthropic" },
+  { value: "claude-opus-4", label: "Claude Opus 4", provider: "anthropic" },
+  { value: "claude-haiku-3.5", label: "Claude Haiku 3.5", provider: "anthropic" },
+  { value: "gpt-4o", label: "GPT-4o", provider: "openai" },
+  { value: "gpt-4o-mini", label: "GPT-4o Mini", provider: "openai" },
+  { value: "gpt-4.1", label: "GPT-4.1", provider: "openai" },
+  { value: "gpt-4.1-mini", label: "GPT-4.1 Mini", provider: "openai" },
+  { value: "o3-mini", label: "o3-mini", provider: "openai" },
+  { value: "gemini-2.5-pro", label: "Gemini 2.5 Pro", provider: "google" },
+  { value: "gemini-2.5-flash", label: "Gemini 2.5 Flash", provider: "google" },
+  { value: "gemini-2.0-flash", label: "Gemini 2.0 Flash", provider: "google" },
+];
+
+const PROVIDER_BADGES: Record<string, { color: string; label: string }> = {
+  openai: { color: "bg-green-100 text-green-700", label: "OpenAI" },
+  anthropic: { color: "bg-orange-100 text-orange-700", label: "Anthropic" },
+  google: { color: "bg-blue-100 text-blue-700", label: "Google" },
+};
+
+function LLMConfigSection({ nodeId, data }: { nodeId: string; data: Record<string, unknown> }) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
+  const model = (data.model as string) ?? "";
+  const temperature = (data.temperature as number) ?? 0.7;
+  const systemPrompt = (data.system_prompt as string) ?? "";
+  const maxTokens = data.max_tokens as number | null | undefined;
+
+  const matchedModel = COMMON_MODELS.find((m) => m.value === model);
+  const badge = matchedModel ? PROVIDER_BADGES[matchedModel.provider] : null;
+
+  return (
+    <div className="mt-3">
+      <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">LLM Config</h3>
+      <div className="flex flex-col gap-2 pl-2 border-l border-gray-200">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500 flex items-center gap-1">
+            model
+            {badge && (
+              <span className={`text-[9px] px-1 py-0 rounded ${badge.color}`}>{badge.label}</span>
+            )}
+          </span>
+          <input
+            type="text"
+            value={model}
+            list="dan-model-list"
+            onChange={(e) =>
+              updateNodeData(nodeId, { model: e.target.value } as unknown as Partial<DanNode>)
+            }
+            placeholder="e.g. claude-sonnet-4-6"
+            className="border rounded px-2 py-1 text-xs"
+          />
+          <datalist id="dan-model-list">
+            {COMMON_MODELS.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label} ({m.provider})
+              </option>
+            ))}
+          </datalist>
+        </label>
+
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">temperature</span>
+          <input
+            type="number"
+            min={0}
+            max={2}
+            step={0.05}
+            value={temperature}
+            onChange={(e) =>
+              updateNodeData(nodeId, { temperature: parseFloat(e.target.value) || 0 } as unknown as Partial<DanNode>)
+            }
+            className="border rounded px-2 py-1 text-xs"
+          />
+        </label>
+
+        {data.system_prompt !== undefined && (
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">system_prompt</span>
+            <textarea
+              value={systemPrompt}
+              onChange={(e) =>
+                updateNodeData(nodeId, { system_prompt: e.target.value } as unknown as Partial<DanNode>)
+              }
+              className="border rounded px-2 py-1 text-xs font-mono min-h-20 resize-y"
+              placeholder="System instructions..."
+            />
+          </label>
+        )}
+
+        <div>
+          <button
+            onClick={() => setAdvancedOpen(!advancedOpen)}
+            className="text-[10px] text-gray-400 hover:text-gray-600"
+          >
+            {advancedOpen ? "▾ Advanced" : "▸ Advanced"}
+          </button>
+          {advancedOpen && (
+            <div className="flex flex-col gap-2 mt-1">
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">max_tokens</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={maxTokens ?? ""}
+                  onChange={(e) => {
+                    const v = e.target.value ? parseInt(e.target.value) : null;
+                    updateNodeData(nodeId, { max_tokens: v } as unknown as Partial<DanNode>);
+                  }}
+                  placeholder="Auto"
+                  className="border rounded px-2 py-1 text-xs"
+                />
+              </label>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // -- Main Component ----------------------------------------------------------
 
 export default function ConfigPanel() {
@@ -449,6 +695,11 @@ export default function ConfigPanel() {
           </button>
         </div>
 
+        {/* 7-2: Dedicated LLM config section — model, temperature, system_prompt, advanced */}
+        {(d.node_type === "llm_operator" || d.node_type === "router") && (
+          <LLMConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
+        )}
+
         {/* 6-3: Output Schema Editor — for LLM and router nodes */}
         {(d.node_type === "llm_operator" || d.node_type === "router") && (
           <SchemaEditor
@@ -513,6 +764,9 @@ export default function ConfigPanel() {
             </div>
           </div>
         )}
+
+        {/* 7-1: Retry policy — configurable for all node types */}
+        <RetryPolicyEditor nodeId={d.id} policy={d.retry_policy} />
       </div>
     );
   }

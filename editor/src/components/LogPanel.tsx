@@ -205,6 +205,10 @@ function NodeGroup({
   onSelectNode: (nodeId: string) => void;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  const nodeUsage = useGraphStore((s) => s.nodeUsage);
+  const nodeCosts = useGraphStore((s) => s.nodeCosts);
+  const usage = nodeUsage[nodeId];
+  const cost = nodeCosts[nodeId];
 
   const categorized = useMemo(() => {
     const groups: Record<string, LogEntry[]> = {};
@@ -225,6 +229,12 @@ function NodeGroup({
       >
         <ChevronIcon open={open} className="text-gray-400 shrink-0" />
         <span className="truncate">{nodeName}</span>
+        {usage && usage.total_tokens > 0 && (
+          <span className="text-indigo-500 font-normal text-[10px] shrink-0">{usage.total_tokens.toLocaleString()} tok</span>
+        )}
+        {cost != null && cost > 0 && (
+          <span className="text-emerald-600 font-normal text-[10px] shrink-0">{cost >= 0.01 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`}</span>
+        )}
         <span className="text-gray-400 font-normal ml-auto shrink-0">{entries.length}</span>
       </button>
 
@@ -294,6 +304,7 @@ function CategorySection({
 function RunSummaryBar() {
   const runSummary = useGraphStore((s) => s.runSummary);
   const runStatus = useGraphStore((s) => s.runStatus);
+  const nodeCosts = useGraphStore((s) => s.nodeCosts);
   if (!runSummary || (runStatus !== "completed" && runStatus !== "failed")) return null;
   const ok = runStatus === "completed";
   const elapsed = runSummary.elapsed_seconds != null ? `${runSummary.elapsed_seconds}s` : "—";
@@ -303,11 +314,19 @@ function RunSummaryBar() {
   const tokenStr = total > 0
     ? `${total.toLocaleString()} tokens (${prompt.toLocaleString()} prompt + ${completion.toLocaleString()} completion)`
     : "no token data";
+  const totalCost = Object.values(nodeCosts).reduce((a, b) => a + b, 0);
+  const costStr = totalCost > 0 ? `~$${totalCost.toFixed(4)}` : "";
   return (
     <div className={`flex items-center gap-2 px-3 py-1.5 text-[11px] font-medium border-t ${ok ? "bg-green-50 text-green-800 border-green-200" : "bg-red-50 text-red-800 border-red-200"}`}>
       <span>{ok ? "Completed" : "Failed"} in {elapsed}</span>
       <span className="text-gray-400">|</span>
       <span>{tokenStr}</span>
+      {costStr && (
+        <>
+          <span className="text-gray-400">|</span>
+          <span className="text-emerald-700">{costStr}</span>
+        </>
+      )}
     </div>
   );
 }
