@@ -474,7 +474,7 @@
         {
           "id": "section_analyst",
           "name": "section_analyst",
-          "description": "Fetch data and iteratively draft one report section",
+          "description": "Parallel data fetch + iterative draft/review for one section",
           "input_ports": [
             {
               "name": "section_name",
@@ -564,7 +564,7 @@
           "version": "dan_graph_v1",
           "metadata": {
             "name": "section_analyst",
-            "description": "Fetch data and iteratively draft one report section",
+            "description": "Parallel data fetch + iterative draft/review for one section",
             "created_at": null,
             "updated_at": null,
             "tags": [
@@ -615,7 +615,7 @@
               "sandbox_config": {}
             },
             {
-              "id": "wf_section_analyst__data_gatherer",
+              "id": "wf_section_analyst__dg_primary",
               "name": "data_gatherer",
               "description": "Route a data request to SEC, market, or news source",
               "input_ports": [
@@ -651,15 +651,15 @@
               "ui": {},
               "metadata": {},
               "node_type": "composite",
-              "body_graph": "wf_section_analyst__data_gatherer_body",
+              "body_graph": "wf_section_analyst__dg_primary_body",
               "is_blackbox": false,
               "input_mappings": {
-                "section_name": "wf_data_gatherer__entry::section_name",
-                "ticker": "wf_data_gatherer__entry::ticker"
+                "section_name": "wf_dg_primary__entry::section_name",
+                "ticker": "wf_dg_primary__entry::ticker"
               },
               "output_mappings": {
-                "wf_data_gatherer__normalize::clean_data": "clean_data",
-                "wf_data_gatherer__source_router::route": "route"
+                "wf_dg_primary__normalize::clean_data": "clean_data",
+                "wf_dg_primary__source_router::route": "route"
               },
               "external_input_schema": null,
               "external_output_schema": null,
@@ -672,6 +672,124 @@
               "write_set": [],
               "compaction_rule": null,
               "projections": []
+            },
+            {
+              "id": "wf_section_analyst__dg_news",
+              "name": "data_gatherer",
+              "description": "Route a data request to SEC, market, or news source",
+              "input_ports": [
+                {
+                  "name": "section_name",
+                  "json_schema": {},
+                  "required": true,
+                  "description": ""
+                },
+                {
+                  "name": "ticker",
+                  "json_schema": {},
+                  "required": true,
+                  "description": ""
+                }
+              ],
+              "output_ports": [
+                {
+                  "name": "clean_data",
+                  "json_schema": {},
+                  "description": ""
+                },
+                {
+                  "name": "route",
+                  "json_schema": {},
+                  "description": ""
+                }
+              ],
+              "position": {
+                "x": 0.0,
+                "y": 0.0
+              },
+              "ui": {},
+              "metadata": {},
+              "node_type": "composite",
+              "body_graph": "wf_section_analyst__dg_news_body",
+              "is_blackbox": false,
+              "input_mappings": {
+                "section_name": "wf_dg_news__entry::section_name",
+                "ticker": "wf_dg_news__entry::ticker"
+              },
+              "output_mappings": {
+                "wf_dg_news__normalize::clean_data": "clean_data",
+                "wf_dg_news__source_router::route": "route"
+              },
+              "external_input_schema": null,
+              "external_output_schema": null,
+              "control_state_schema": {},
+              "local_state": {
+                "json_schema": {},
+                "description": ""
+              },
+              "read_set": [],
+              "write_set": [],
+              "compaction_rule": null,
+              "projections": []
+            },
+            {
+              "id": "wf_section_analyst__news_label",
+              "name": "news_label",
+              "description": "",
+              "input_ports": [],
+              "output_ports": [
+                {
+                  "name": "section_name",
+                  "json_schema": {},
+                  "description": ""
+                }
+              ],
+              "position": {
+                "x": 0.0,
+                "y": 0.0
+              },
+              "ui": {},
+              "metadata": {},
+              "node_type": "code_operator",
+              "code": "result = {'section_name': 'Latest news and analyst commentary'}",
+              "language": "python",
+              "sandbox_config": {}
+            },
+            {
+              "id": "wf_section_analyst__merge_sources",
+              "name": "merge_sources",
+              "description": "",
+              "input_ports": [
+                {
+                  "name": "primary_data",
+                  "json_schema": {},
+                  "required": true,
+                  "description": ""
+                },
+                {
+                  "name": "news_data",
+                  "json_schema": {},
+                  "required": true,
+                  "description": ""
+                }
+              ],
+              "output_ports": [
+                {
+                  "name": "clean_data",
+                  "json_schema": {},
+                  "description": ""
+                }
+              ],
+              "position": {
+                "x": 0.0,
+                "y": 0.0
+              },
+              "ui": {},
+              "metadata": {},
+              "node_type": "code_operator",
+              "code": "primary = str(primary_data) if primary_data else ''\nsecondary = str(news_data) if news_data else ''\ncombined = primary\nif secondary:\n    combined += '\\n\\n--- Supplementary news context ---\\n' + secondary\nresult = {'clean_data': combined[:12000]}\n",
+              "language": "python",
+              "sandbox_config": {}
             },
             {
               "id": "wf_section_analyst__init_review",
@@ -805,28 +923,68 @@
           ],
           "edges": [
             {
-              "id": "wf_section_analyst__edge_entry__data_gatherer_0",
+              "id": "wf_section_analyst__edge_entry__dg_primary_0",
               "source_node_id": "wf_section_analyst__entry",
               "source_port": "section_name",
-              "target_node_id": "wf_section_analyst__data_gatherer",
+              "target_node_id": "wf_section_analyst__dg_primary",
               "target_port": "section_name",
               "ui": {},
               "metadata": {},
               "edge_type": "data"
             },
             {
-              "id": "wf_section_analyst__edge_entry__data_gatherer_1",
+              "id": "wf_section_analyst__edge_entry__dg_primary_1",
               "source_node_id": "wf_section_analyst__entry",
               "source_port": "ticker",
-              "target_node_id": "wf_section_analyst__data_gatherer",
+              "target_node_id": "wf_section_analyst__dg_primary",
               "target_port": "ticker",
               "ui": {},
               "metadata": {},
               "edge_type": "data"
             },
             {
-              "id": "wf_section_analyst__edge_data_gatherer__init_review_2",
-              "source_node_id": "wf_section_analyst__data_gatherer",
+              "id": "wf_section_analyst__edge_entry__dg_news_2",
+              "source_node_id": "wf_section_analyst__entry",
+              "source_port": "ticker",
+              "target_node_id": "wf_section_analyst__dg_news",
+              "target_port": "ticker",
+              "ui": {},
+              "metadata": {},
+              "edge_type": "data"
+            },
+            {
+              "id": "wf_section_analyst__edge_news_label__dg_news_3",
+              "source_node_id": "wf_section_analyst__news_label",
+              "source_port": "section_name",
+              "target_node_id": "wf_section_analyst__dg_news",
+              "target_port": "section_name",
+              "ui": {},
+              "metadata": {},
+              "edge_type": "data"
+            },
+            {
+              "id": "wf_section_analyst__edge_dg_primary__merge_sources_4",
+              "source_node_id": "wf_section_analyst__dg_primary",
+              "source_port": "clean_data",
+              "target_node_id": "wf_section_analyst__merge_sources",
+              "target_port": "primary_data",
+              "ui": {},
+              "metadata": {},
+              "edge_type": "data"
+            },
+            {
+              "id": "wf_section_analyst__edge_dg_news__merge_sources_5",
+              "source_node_id": "wf_section_analyst__dg_news",
+              "source_port": "clean_data",
+              "target_node_id": "wf_section_analyst__merge_sources",
+              "target_port": "news_data",
+              "ui": {},
+              "metadata": {},
+              "edge_type": "data"
+            },
+            {
+              "id": "wf_section_analyst__edge_merge_sources__init_review_6",
+              "source_node_id": "wf_section_analyst__merge_sources",
               "source_port": "clean_data",
               "target_node_id": "wf_section_analyst__init_review",
               "target_port": "clean_data",
@@ -835,7 +993,7 @@
               "edge_type": "data"
             },
             {
-              "id": "wf_section_analyst__edge_entry__init_review_3",
+              "id": "wf_section_analyst__edge_entry__init_review_7",
               "source_node_id": "wf_section_analyst__entry",
               "source_port": "section_name",
               "target_node_id": "wf_section_analyst__init_review",
@@ -845,7 +1003,7 @@
               "edge_type": "data"
             },
             {
-              "id": "wf_section_analyst__edge_init_review__draft_review_4",
+              "id": "wf_section_analyst__edge_init_review__draft_review_8",
               "source_node_id": "wf_section_analyst__init_review",
               "source_port": "clean_data",
               "target_node_id": "wf_section_analyst__draft_review",
@@ -855,7 +1013,7 @@
               "edge_type": "data"
             },
             {
-              "id": "wf_section_analyst__edge_init_review__draft_review_5",
+              "id": "wf_section_analyst__edge_init_review__draft_review_9",
               "source_node_id": "wf_section_analyst__init_review",
               "source_port": "section_name",
               "target_node_id": "wf_section_analyst__draft_review",
@@ -865,7 +1023,7 @@
               "edge_type": "data"
             },
             {
-              "id": "wf_section_analyst__edge_init_review__draft_review_6",
+              "id": "wf_section_analyst__edge_init_review__draft_review_10",
               "source_node_id": "wf_section_analyst__init_review",
               "source_port": "accuracy_score",
               "target_node_id": "wf_section_analyst__draft_review",
@@ -875,7 +1033,7 @@
               "edge_type": "data"
             },
             {
-              "id": "wf_section_analyst__edge_init_review__draft_review_7",
+              "id": "wf_section_analyst__edge_init_review__draft_review_11",
               "source_node_id": "wf_section_analyst__init_review",
               "source_port": "feedback",
               "target_node_id": "wf_section_analyst__draft_review",
@@ -886,7 +1044,7 @@
             }
           ],
           "sub_graphs": {
-            "wf_section_analyst__data_gatherer_body": {
+            "wf_section_analyst__dg_primary_body": {
               "version": "dan_graph_v1",
               "metadata": {
                 "name": "data_gatherer",
@@ -900,7 +1058,7 @@
               },
               "nodes": [
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__entry",
+                  "id": "wf_section_analyst__wf_dg_primary__entry",
                   "name": "entry",
                   "description": "",
                   "input_ports": [
@@ -941,7 +1099,7 @@
                   "sandbox_config": {}
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__source_router",
+                  "id": "wf_section_analyst__wf_dg_primary__source_router",
                   "name": "source_router",
                   "description": "",
                   "input_ports": [
@@ -974,7 +1132,7 @@
                   }
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__fetch_sec",
+                  "id": "wf_section_analyst__wf_dg_primary__fetch_sec",
                   "name": "fetch_sec",
                   "description": "",
                   "input_ports": [
@@ -1009,7 +1167,7 @@
                   "tool_config": {}
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__fetch_market",
+                  "id": "wf_section_analyst__wf_dg_primary__fetch_market",
                   "name": "fetch_market",
                   "description": "",
                   "input_ports": [
@@ -1044,7 +1202,7 @@
                   "tool_config": {}
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__fetch_news",
+                  "id": "wf_section_analyst__wf_dg_primary__fetch_news",
                   "name": "fetch_news",
                   "description": "",
                   "input_ports": [
@@ -1079,7 +1237,7 @@
                   "tool_config": {}
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__normalize",
+                  "id": "wf_section_analyst__wf_dg_primary__normalize",
                   "name": "normalize",
                   "description": "",
                   "input_ports": [
@@ -1123,50 +1281,50 @@
               ],
               "edges": [
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__edge_entry__source_router_0",
-                  "source_node_id": "wf_section_analyst__wf_data_gatherer__entry",
+                  "id": "wf_section_analyst__wf_dg_primary__edge_entry__source_router_0",
+                  "source_node_id": "wf_section_analyst__wf_dg_primary__entry",
                   "source_port": "section_name",
-                  "target_node_id": "wf_section_analyst__wf_data_gatherer__source_router",
+                  "target_node_id": "wf_section_analyst__wf_dg_primary__source_router",
                   "target_port": "section_name",
                   "ui": {},
                   "metadata": {},
                   "edge_type": "data"
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__edge_entry__fetch_sec_1",
-                  "source_node_id": "wf_section_analyst__wf_data_gatherer__entry",
+                  "id": "wf_section_analyst__wf_dg_primary__edge_entry__fetch_sec_1",
+                  "source_node_id": "wf_section_analyst__wf_dg_primary__entry",
                   "source_port": "ticker",
-                  "target_node_id": "wf_section_analyst__wf_data_gatherer__fetch_sec",
+                  "target_node_id": "wf_section_analyst__wf_dg_primary__fetch_sec",
                   "target_port": "ticker",
                   "ui": {},
                   "metadata": {},
                   "edge_type": "data"
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__edge_entry__fetch_market_2",
-                  "source_node_id": "wf_section_analyst__wf_data_gatherer__entry",
+                  "id": "wf_section_analyst__wf_dg_primary__edge_entry__fetch_market_2",
+                  "source_node_id": "wf_section_analyst__wf_dg_primary__entry",
                   "source_port": "ticker",
-                  "target_node_id": "wf_section_analyst__wf_data_gatherer__fetch_market",
+                  "target_node_id": "wf_section_analyst__wf_dg_primary__fetch_market",
                   "target_port": "ticker",
                   "ui": {},
                   "metadata": {},
                   "edge_type": "data"
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__edge_entry__fetch_news_3",
-                  "source_node_id": "wf_section_analyst__wf_data_gatherer__entry",
+                  "id": "wf_section_analyst__wf_dg_primary__edge_entry__fetch_news_3",
+                  "source_node_id": "wf_section_analyst__wf_dg_primary__entry",
                   "source_port": "ticker",
-                  "target_node_id": "wf_section_analyst__wf_data_gatherer__fetch_news",
+                  "target_node_id": "wf_section_analyst__wf_dg_primary__fetch_news",
                   "target_port": "ticker",
                   "ui": {},
                   "metadata": {},
                   "edge_type": "data"
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__edge_source_router__fetch_sec_4",
-                  "source_node_id": "wf_section_analyst__wf_data_gatherer__source_router",
+                  "id": "wf_section_analyst__wf_dg_primary__edge_source_router__fetch_sec_4",
+                  "source_node_id": "wf_section_analyst__wf_dg_primary__source_router",
                   "source_port": "route",
-                  "target_node_id": "wf_section_analyst__wf_data_gatherer__fetch_sec",
+                  "target_node_id": "wf_section_analyst__wf_dg_primary__fetch_sec",
                   "target_port": "route",
                   "ui": {},
                   "metadata": {},
@@ -1174,10 +1332,10 @@
                   "condition": "route == 'sec_edgar'"
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__edge_source_router__fetch_market_5",
-                  "source_node_id": "wf_section_analyst__wf_data_gatherer__source_router",
+                  "id": "wf_section_analyst__wf_dg_primary__edge_source_router__fetch_market_5",
+                  "source_node_id": "wf_section_analyst__wf_dg_primary__source_router",
                   "source_port": "route",
-                  "target_node_id": "wf_section_analyst__wf_data_gatherer__fetch_market",
+                  "target_node_id": "wf_section_analyst__wf_dg_primary__fetch_market",
                   "target_port": "route",
                   "ui": {},
                   "metadata": {},
@@ -1185,10 +1343,10 @@
                   "condition": "route == 'market_data'"
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__edge_source_router__fetch_news_6",
-                  "source_node_id": "wf_section_analyst__wf_data_gatherer__source_router",
+                  "id": "wf_section_analyst__wf_dg_primary__edge_source_router__fetch_news_6",
+                  "source_node_id": "wf_section_analyst__wf_dg_primary__source_router",
                   "source_port": "route",
-                  "target_node_id": "wf_section_analyst__wf_data_gatherer__fetch_news",
+                  "target_node_id": "wf_section_analyst__wf_dg_primary__fetch_news",
                   "target_port": "route",
                   "ui": {},
                   "metadata": {},
@@ -1196,30 +1354,30 @@
                   "condition": "route == 'news'"
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__edge_fetch_sec__normalize_7",
-                  "source_node_id": "wf_section_analyst__wf_data_gatherer__fetch_sec",
+                  "id": "wf_section_analyst__wf_dg_primary__edge_fetch_sec__normalize_7",
+                  "source_node_id": "wf_section_analyst__wf_dg_primary__fetch_sec",
                   "source_port": "raw_data",
-                  "target_node_id": "wf_section_analyst__wf_data_gatherer__normalize",
+                  "target_node_id": "wf_section_analyst__wf_dg_primary__normalize",
                   "target_port": "sec_data",
                   "ui": {},
                   "metadata": {},
                   "edge_type": "data"
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__edge_fetch_market__normalize_8",
-                  "source_node_id": "wf_section_analyst__wf_data_gatherer__fetch_market",
+                  "id": "wf_section_analyst__wf_dg_primary__edge_fetch_market__normalize_8",
+                  "source_node_id": "wf_section_analyst__wf_dg_primary__fetch_market",
                   "source_port": "raw_data",
-                  "target_node_id": "wf_section_analyst__wf_data_gatherer__normalize",
+                  "target_node_id": "wf_section_analyst__wf_dg_primary__normalize",
                   "target_port": "market_data",
                   "ui": {},
                   "metadata": {},
                   "edge_type": "data"
                 },
                 {
-                  "id": "wf_section_analyst__wf_data_gatherer__edge_fetch_news__normalize_9",
-                  "source_node_id": "wf_section_analyst__wf_data_gatherer__fetch_news",
+                  "id": "wf_section_analyst__wf_dg_primary__edge_fetch_news__normalize_9",
+                  "source_node_id": "wf_section_analyst__wf_dg_primary__fetch_news",
                   "source_port": "raw_data",
-                  "target_node_id": "wf_section_analyst__wf_data_gatherer__normalize",
+                  "target_node_id": "wf_section_analyst__wf_dg_primary__normalize",
                   "target_port": "news_data",
                   "ui": {},
                   "metadata": {},
@@ -1228,11 +1386,362 @@
               ],
               "sub_graphs": {},
               "entry_points": [
-                "wf_section_analyst__wf_data_gatherer__entry"
+                "wf_section_analyst__wf_dg_primary__entry"
               ],
               "exit_points": [
-                "wf_section_analyst__wf_data_gatherer__source_router",
-                "wf_section_analyst__wf_data_gatherer__normalize"
+                "wf_section_analyst__wf_dg_primary__source_router",
+                "wf_section_analyst__wf_dg_primary__normalize"
+              ],
+              "shared_context": [],
+              "artifact_refs": []
+            },
+            "wf_section_analyst__dg_news_body": {
+              "version": "dan_graph_v1",
+              "metadata": {
+                "name": "data_gatherer",
+                "description": "Route a data request to SEC, market, or news source",
+                "created_at": null,
+                "updated_at": null,
+                "tags": [
+                  "equity-research",
+                  "data"
+                ]
+              },
+              "nodes": [
+                {
+                  "id": "wf_section_analyst__wf_dg_news__entry",
+                  "name": "entry",
+                  "description": "",
+                  "input_ports": [
+                    {
+                      "name": "section_name",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    },
+                    {
+                      "name": "ticker",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    }
+                  ],
+                  "output_ports": [
+                    {
+                      "name": "section_name",
+                      "json_schema": {},
+                      "description": ""
+                    },
+                    {
+                      "name": "ticker",
+                      "json_schema": {},
+                      "description": ""
+                    }
+                  ],
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "ui": {},
+                  "metadata": {},
+                  "node_type": "code_operator",
+                  "code": "result = {'section_name': section_name, 'ticker': ticker}\n",
+                  "language": "python",
+                  "sandbox_config": {}
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__source_router",
+                  "name": "source_router",
+                  "description": "",
+                  "input_ports": [
+                    {
+                      "name": "section_name",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    }
+                  ],
+                  "output_ports": [
+                    {
+                      "name": "route",
+                      "json_schema": {},
+                      "description": ""
+                    }
+                  ],
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "ui": {},
+                  "metadata": {},
+                  "node_type": "router",
+                  "model": "gpt-4o-mini",
+                  "route_descriptions": {
+                    "sec_edgar": "Financial Analysis, Risk Factors, or Business Overview — needs SEC filings",
+                    "market_data": "Valuation or Price Target — needs stock prices and multiples",
+                    "news": "Competitive Landscape or Executive Summary — needs recent news"
+                  }
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__fetch_sec",
+                  "name": "fetch_sec",
+                  "description": "",
+                  "input_ports": [
+                    {
+                      "name": "ticker",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    },
+                    {
+                      "name": "route",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    }
+                  ],
+                  "output_ports": [
+                    {
+                      "name": "raw_data",
+                      "json_schema": {},
+                      "description": ""
+                    }
+                  ],
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "ui": {},
+                  "metadata": {},
+                  "node_type": "tool_operator",
+                  "tool_id": "fetch_sec_filing",
+                  "tool_config": {}
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__fetch_market",
+                  "name": "fetch_market",
+                  "description": "",
+                  "input_ports": [
+                    {
+                      "name": "ticker",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    },
+                    {
+                      "name": "route",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    }
+                  ],
+                  "output_ports": [
+                    {
+                      "name": "raw_data",
+                      "json_schema": {},
+                      "description": ""
+                    }
+                  ],
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "ui": {},
+                  "metadata": {},
+                  "node_type": "tool_operator",
+                  "tool_id": "fetch_market_data",
+                  "tool_config": {}
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__fetch_news",
+                  "name": "fetch_news",
+                  "description": "",
+                  "input_ports": [
+                    {
+                      "name": "ticker",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    },
+                    {
+                      "name": "route",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    }
+                  ],
+                  "output_ports": [
+                    {
+                      "name": "raw_data",
+                      "json_schema": {},
+                      "description": ""
+                    }
+                  ],
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "ui": {},
+                  "metadata": {},
+                  "node_type": "tool_operator",
+                  "tool_id": "fetch_news_articles",
+                  "tool_config": {}
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__normalize",
+                  "name": "normalize",
+                  "description": "",
+                  "input_ports": [
+                    {
+                      "name": "sec_data",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    },
+                    {
+                      "name": "market_data",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    },
+                    {
+                      "name": "news_data",
+                      "json_schema": {},
+                      "required": true,
+                      "description": ""
+                    }
+                  ],
+                  "output_ports": [
+                    {
+                      "name": "clean_data",
+                      "json_schema": {},
+                      "description": ""
+                    }
+                  ],
+                  "position": {
+                    "x": 0.0,
+                    "y": 0.0
+                  },
+                  "ui": {},
+                  "metadata": {},
+                  "node_type": "code_operator",
+                  "code": "parts = []\nfor raw in [sec_data, market_data, news_data]:\n    if raw:\n        parts.append(str(raw))\nclean = '\\n'.join(parts) if parts else 'No data retrieved.'\nresult = {'clean_data': clean[:8000]}\n",
+                  "language": "python",
+                  "sandbox_config": {}
+                }
+              ],
+              "edges": [
+                {
+                  "id": "wf_section_analyst__wf_dg_news__edge_entry__source_router_0",
+                  "source_node_id": "wf_section_analyst__wf_dg_news__entry",
+                  "source_port": "section_name",
+                  "target_node_id": "wf_section_analyst__wf_dg_news__source_router",
+                  "target_port": "section_name",
+                  "ui": {},
+                  "metadata": {},
+                  "edge_type": "data"
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__edge_entry__fetch_sec_1",
+                  "source_node_id": "wf_section_analyst__wf_dg_news__entry",
+                  "source_port": "ticker",
+                  "target_node_id": "wf_section_analyst__wf_dg_news__fetch_sec",
+                  "target_port": "ticker",
+                  "ui": {},
+                  "metadata": {},
+                  "edge_type": "data"
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__edge_entry__fetch_market_2",
+                  "source_node_id": "wf_section_analyst__wf_dg_news__entry",
+                  "source_port": "ticker",
+                  "target_node_id": "wf_section_analyst__wf_dg_news__fetch_market",
+                  "target_port": "ticker",
+                  "ui": {},
+                  "metadata": {},
+                  "edge_type": "data"
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__edge_entry__fetch_news_3",
+                  "source_node_id": "wf_section_analyst__wf_dg_news__entry",
+                  "source_port": "ticker",
+                  "target_node_id": "wf_section_analyst__wf_dg_news__fetch_news",
+                  "target_port": "ticker",
+                  "ui": {},
+                  "metadata": {},
+                  "edge_type": "data"
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__edge_source_router__fetch_sec_4",
+                  "source_node_id": "wf_section_analyst__wf_dg_news__source_router",
+                  "source_port": "route",
+                  "target_node_id": "wf_section_analyst__wf_dg_news__fetch_sec",
+                  "target_port": "route",
+                  "ui": {},
+                  "metadata": {},
+                  "edge_type": "control",
+                  "condition": "route == 'sec_edgar'"
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__edge_source_router__fetch_market_5",
+                  "source_node_id": "wf_section_analyst__wf_dg_news__source_router",
+                  "source_port": "route",
+                  "target_node_id": "wf_section_analyst__wf_dg_news__fetch_market",
+                  "target_port": "route",
+                  "ui": {},
+                  "metadata": {},
+                  "edge_type": "control",
+                  "condition": "route == 'market_data'"
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__edge_source_router__fetch_news_6",
+                  "source_node_id": "wf_section_analyst__wf_dg_news__source_router",
+                  "source_port": "route",
+                  "target_node_id": "wf_section_analyst__wf_dg_news__fetch_news",
+                  "target_port": "route",
+                  "ui": {},
+                  "metadata": {},
+                  "edge_type": "control",
+                  "condition": "route == 'news'"
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__edge_fetch_sec__normalize_7",
+                  "source_node_id": "wf_section_analyst__wf_dg_news__fetch_sec",
+                  "source_port": "raw_data",
+                  "target_node_id": "wf_section_analyst__wf_dg_news__normalize",
+                  "target_port": "sec_data",
+                  "ui": {},
+                  "metadata": {},
+                  "edge_type": "data"
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__edge_fetch_market__normalize_8",
+                  "source_node_id": "wf_section_analyst__wf_dg_news__fetch_market",
+                  "source_port": "raw_data",
+                  "target_node_id": "wf_section_analyst__wf_dg_news__normalize",
+                  "target_port": "market_data",
+                  "ui": {},
+                  "metadata": {},
+                  "edge_type": "data"
+                },
+                {
+                  "id": "wf_section_analyst__wf_dg_news__edge_fetch_news__normalize_9",
+                  "source_node_id": "wf_section_analyst__wf_dg_news__fetch_news",
+                  "source_port": "raw_data",
+                  "target_node_id": "wf_section_analyst__wf_dg_news__normalize",
+                  "target_port": "news_data",
+                  "ui": {},
+                  "metadata": {},
+                  "edge_type": "data"
+                }
+              ],
+              "sub_graphs": {},
+              "entry_points": [
+                "wf_section_analyst__wf_dg_news__entry"
+              ],
+              "exit_points": [
+                "wf_section_analyst__wf_dg_news__source_router",
+                "wf_section_analyst__wf_dg_news__normalize"
               ],
               "shared_context": [],
               "artifact_refs": []
@@ -1471,7 +1980,8 @@
             }
           },
           "entry_points": [
-            "wf_section_analyst__entry"
+            "wf_section_analyst__entry",
+            "wf_section_analyst__news_label"
           ],
           "exit_points": [
             "wf_section_analyst__draft_review"

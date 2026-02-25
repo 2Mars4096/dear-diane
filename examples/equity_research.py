@@ -311,25 +311,38 @@ def build_data_gatherer() -> Graph:
 # Level 2 — Section Analyst
 # ═══════════════════════════════════════════════════════════════════════════
 #
-# Imports Level 1 as a composite node, adds a WhileLoop draft-review cycle.
-# Demonstrates: DATA EDGES (draft flowing through the loop)
+# Imports Level 1 TWICE as parallel composite nodes — one for the primary
+# data source (routed by section name) and one that always fetches news
+# for supplementary context.  Both run concurrently with no dependency
+# between them, then a merge node combines their outputs.
+# Demonstrates: PARALLEL IMPORTED NODES + DATA EDGES
 # ═══════════════════════════════════════════════════════════════════════════
+
+MERGE_SOURCES_CODE = """\
+primary = str(primary_data) if primary_data else ''
+secondary = str(news_data) if news_data else ''
+combined = primary
+if secondary:
+    combined += '\\n\\n--- Supplementary news context ---\\n' + secondary
+result = {'clean_data': combined[:12000]}
+"""
 
 
 def build_section_analyst(data_gatherer: Graph) -> Graph:
     """Build a section-drafting workflow that wraps the data gatherer.
 
     Takes (section_name, ticker) → returns (polished_section, accuracy_score).
-    Internally imports the data_gatherer as a single composite node, then
-    iteratively writes and reviews until accuracy_score >= 0.85.
+    Imports the data_gatherer graph TWICE — once for the section's primary
+    data source (routed by section name) and once hardcoded to fetch news
+    context.  The two run in parallel (no data dependency), then a merge
+    node combines their output before the iterative draft-review loop.
     """
     wf = workflow(
         "section_analyst",
-        description="Fetch data and iteratively draft one report section",
+        description="Parallel data fetch + iterative draft/review for one section",
         tags=["equity-research", "section"],
     )
 
-    # Entry splits inputs to data_gatherer and the review loop
     entry = wf.code(
         "entry",
         code=ENTRY_PASSTHROUGH,
@@ -337,12 +350,32 @@ def build_section_analyst(data_gatherer: Graph) -> Graph:
         output_ports=[{"name": "section_name"}, {"name": "ticker"}],
     )
 
-    # ★ IMPORT Level 1 as a composite node
-    dg = wf.import_workflow("data_gatherer", data_gatherer)
-    wf.edge(entry["section_name"], dg["section_name"])
-    wf.edge(entry["ticker"], dg["ticker"])
+    # ★ IMPORT Level 1 twice — same graph, different node IDs, run in parallel
+    dg_primary = wf.import_workflow("dg_primary", data_gatherer)
+    wf.edge(entry["section_name"], dg_primary["section_name"])
+    wf.edge(entry["ticker"], dg_primary["ticker"])
 
-    # Initialise loop state with defaults
+    dg_news = wf.import_workflow("dg_news", data_gatherer)
+    wf.edge(entry["ticker"], dg_news["ticker"])
+    # Hard-wire the news fetcher to always request news context
+    news_label = wf.code(
+        "news_label",
+        code="result = {'section_name': 'Latest news and analyst commentary'}",
+        input_ports=[],
+        output_ports=[{"name": "section_name"}],
+    )
+    wf.edge(news_label["section_name"], dg_news["section_name"])
+
+    # Merge: combine primary + news data (both arrive in parallel)
+    merge = wf.code(
+        "merge_sources",
+        code=MERGE_SOURCES_CODE,
+        input_ports=[{"name": "primary_data"}, {"name": "news_data"}],
+        output_ports=[{"name": "clean_data"}],
+    )
+    wf.edge(dg_primary["clean_data"], merge["primary_data"])
+    wf.edge(dg_news["clean_data"], merge["news_data"])
+
     init_review = wf.code(
         "init_review",
         code=INIT_REVIEW_CODE,
@@ -354,7 +387,7 @@ def build_section_analyst(data_gatherer: Graph) -> Graph:
             {"name": "feedback"},
         ],
     )
-    wf.edge(dg["clean_data"], init_review["clean_data"])
+    wf.edge(merge["clean_data"], init_review["clean_data"])
     wf.edge(entry["section_name"], init_review["section_name"])
 
     # WhileLoop: write → review → repeat until good enough
@@ -544,13 +577,170 @@ def build_report_orchestrator(section_analyst: Graph) -> Graph:
     return wf.build()
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# Parallel wrapper A — Scenario Analysis
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Wraps Level 2 (Section Analyst) inside a ForEach over bull/bear/base
+# scenarios.  Each scenario gets the same ticker + section but a different
+# analysis angle, all running in parallel.
+# ═══════════════════════════════════════════════════════════════════════════
+
+PACK_SCENARIOS_CODE = """\
+scenarios = [
+    {'section_name': section_name + ' (Bull Case)', 'ticker': ticker},
+    {'section_name': section_name + ' (Bear Case)', 'ticker': ticker},
+    {'section_name': section_name + ' (Base Case)', 'ticker': ticker},
+]
+result = {'tasks': scenarios}
+"""
+
+MERGE_SCENARIOS_CODE = """\
+parts = []
+for s in scenarios:
+    text = s.get('polished_section', s.get('text', str(s))) if isinstance(s, dict) else str(s)
+    parts.append(text)
+result = {'combined': '\\n\\n---\\n\\n'.join(parts)}
+"""
+
+
+def build_scenario_analysis(section_analyst: Graph) -> Graph:
+    """Wrap the Section Analyst in a parallel 3-scenario fan-out.
+
+    Takes (section_name, ticker) → runs bull / bear / base case analyses
+    in parallel → merges into a single combined output.
+    """
+    wf = workflow(
+        "scenario_analysis",
+        description="Parallel bull/bear/base scenario analysis for one section",
+        tags=["equity-research", "scenarios", "parallel"],
+    )
+
+    entry = wf.code(
+        "entry",
+        code=ENTRY_PASSTHROUGH,
+        input_ports=[{"name": "section_name"}, {"name": "ticker"}],
+        output_ports=[{"name": "section_name"}, {"name": "ticker"}],
+    )
+
+    pack = wf.code(
+        "pack_scenarios",
+        code=PACK_SCENARIOS_CODE,
+        input_ports=[{"name": "section_name"}, {"name": "ticker"}],
+        output_ports=[{"name": "tasks"}],
+    )
+    wf.edge(entry["section_name"], pack["section_name"])
+    wf.edge(entry["ticker"], pack["ticker"])
+
+    with wf.for_each(
+        "scenario_runners",
+        items=pack["tasks"],
+        parallelism=3,
+        merge_strategy=MergeStrategy.APPEND,
+    ) as body:
+        unpack = body.code(
+            "unpack_scenario",
+            code=UNPACK_TASK_CODE,
+            input_ports=[{"name": "item"}],
+            output_ports=[{"name": "section_name"}, {"name": "ticker"}],
+        )
+        analyst = body.import_workflow("section_analyst", section_analyst)
+        body.edge(unpack["section_name"], analyst["section_name"])
+        body.edge(unpack["ticker"], analyst["ticker"])
+
+    runners_ref = NodeRef("scenario_runners", "for_each", wf)
+    merge = wf.code(
+        "merge_scenarios",
+        code=MERGE_SCENARIOS_CODE,
+        input_ports=[{"name": "scenarios"}],
+        output_ports=[{"name": "combined"}],
+    )
+    wf.edge(runners_ref["results"], merge["scenarios"])
+
+    return wf.build()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Parallel wrapper B — Multi-Ticker Comparison
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Wraps Level 3 (Report Orchestrator) inside a ForEach over a list of
+# tickers.  Each ticker gets a full independent report, then an LLM
+# synthesises a comparative analysis across all of them.
+# ═══════════════════════════════════════════════════════════════════════════
+
+UNPACK_TICKER_CODE = """\
+result = {'ticker': str(item) if not isinstance(item, dict) else str(item.get('ticker', item))}
+"""
+
+COMPARATIVE_PROMPT = (
+    "You have equity research reports for the following tickers:\n\n"
+    "{reports}\n\n"
+    "Write a concise comparative analysis highlighting relative strengths, "
+    "weaknesses, valuation gaps, and which stock is best positioned."
+)
+
+
+def build_multi_ticker_comparison(report_orchestrator: Graph) -> Graph:
+    """Wrap the Report Orchestrator in a parallel fan-out over tickers.
+
+    Takes (tickers — a JSON array like ["NVDA","AMD","INTC"]) → runs
+    the full report pipeline for each ticker in parallel → an LLM
+    writes a cross-company comparative synthesis.
+    """
+    wf = workflow(
+        "multi_ticker_comparison",
+        description="Parallel equity reports for multiple tickers with comparative synthesis",
+        tags=["equity-research", "comparison", "parallel"],
+    )
+
+    planner = wf.code(
+        "split_tickers",
+        code="result = {'ticker_list': tickers if isinstance(tickers, list) else tickers.split(',')}",
+        input_ports=[{"name": "tickers"}],
+        output_ports=[{"name": "ticker_list"}],
+    )
+
+    with wf.for_each(
+        "ticker_reports",
+        items=planner["ticker_list"],
+        parallelism=3,
+        merge_strategy=MergeStrategy.APPEND,
+    ) as body:
+        unpack = body.code(
+            "unpack_ticker",
+            code=UNPACK_TICKER_CODE,
+            input_ports=[{"name": "item"}],
+            output_ports=[{"name": "ticker"}],
+        )
+        report = body.import_workflow("report_orchestrator", report_orchestrator)
+        body.edge(unpack["ticker"], report["ticker"])
+
+    reports_ref = NodeRef("ticker_reports", "for_each", wf)
+
+    comparator = wf.llm(
+        "comparative_synthesis",
+        prompt=COMPARATIVE_PROMPT,
+        input_ports=[{"name": "reports"}],
+    )
+    wf.edge(reports_ref["results"], comparator["reports"])
+
+    return wf.build()
+
+
 # ---------------------------------------------------------------------------
 # Progressive build
 # ---------------------------------------------------------------------------
 
 
+def _save(graph: Graph, name: str, graphs_dir: Path) -> None:
+    p = graphs_dir / f"{name}.json"
+    p.write_text(graph.model_dump_json(indent=2), encoding="utf-8")
+    print(f"  → saved {p}")
+
+
 def build_all(*, save_json: bool = True) -> Graph:
-    """Build all three levels, wrapping each into the next.
+    """Build all levels, wrapping each into the next.
 
     When *save_json* is True (default), each level is saved as a
     separate JSON file under ``graphs/`` so the editor can load them.
@@ -562,29 +752,37 @@ def build_all(*, save_json: bool = True) -> Graph:
     dg = build_data_gatherer()
     print(f"  ✓ {len(dg.nodes)} nodes, {len(dg.edges)} edges")
     if save_json:
-        p = graphs_dir / "equity_data_gatherer.json"
-        p.write_text(dg.model_dump_json(indent=2), encoding="utf-8")
-        print(f"  → saved {p}")
+        _save(dg, "equity_data_gatherer", graphs_dir)
 
     print("Building Level 2: Section Analyst (imports Level 1) …")
     sa = build_section_analyst(dg)
     print(f"  ✓ {len(sa.nodes)} nodes, {len(sa.edges)} edges, "
           f"{len(sa.sub_graphs)} sub-graphs")
     if save_json:
-        p = graphs_dir / "equity_section_analyst.json"
-        p.write_text(sa.model_dump_json(indent=2), encoding="utf-8")
-        print(f"  → saved {p}")
+        _save(sa, "equity_section_analyst", graphs_dir)
 
     print("Building Level 3: Report Orchestrator (imports Level 2) …")
     report = build_report_orchestrator(sa)
     print(f"  ✓ {len(report.nodes)} nodes, {len(report.edges)} edges, "
           f"{len(report.sub_graphs)} sub-graphs")
     if save_json:
-        p = graphs_dir / "equity_report_orchestrator.json"
-        p.write_text(report.model_dump_json(indent=2), encoding="utf-8")
-        print(f"  → saved {p}")
+        _save(report, "equity_report_orchestrator", graphs_dir)
 
-    return report
+    print("Building Parallel A: Scenario Analysis (wraps Level 2 ×3) …")
+    scenarios = build_scenario_analysis(sa)
+    print(f"  ✓ {len(scenarios.nodes)} nodes, {len(scenarios.edges)} edges, "
+          f"{len(scenarios.sub_graphs)} sub-graphs")
+    if save_json:
+        _save(scenarios, "equity_scenario_analysis", graphs_dir)
+
+    print("Building Parallel B: Multi-Ticker Comparison (wraps Level 3 ×N) …")
+    comparison = build_multi_ticker_comparison(report)
+    print(f"  ✓ {len(comparison.nodes)} nodes, {len(comparison.edges)} edges, "
+          f"{len(comparison.sub_graphs)} sub-graphs")
+    if save_json:
+        _save(comparison, "equity_multi_ticker_comparison", graphs_dir)
+
+    return comparison
 
 
 # ---------------------------------------------------------------------------
