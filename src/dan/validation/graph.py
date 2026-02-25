@@ -15,7 +15,7 @@ Checks:
 
 from __future__ import annotations
 
-from collections import deque
+from collections import defaultdict, deque
 from typing import TYPE_CHECKING
 
 from dan.models.context import ContextMode
@@ -27,10 +27,17 @@ from dan.models.control_flow import (
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.validation.schema import check_schema_compatible
 
+try:
+    from dan.models.control_flow import GateNode  # noqa: F401
+    _HAS_GATE_NODE = True
+except ImportError:
+    _HAS_GATE_NODE = False
+
 if TYPE_CHECKING:
     from dan.models.graph import Graph
 
 _LOOP_NODE_TYPES = frozenset({"while_loop", "for_each"})
+_GATE_LOOP_TYPES = frozenset({"gate"})
 
 
 def validate_graph(graph: "Graph") -> list[str]:
@@ -45,6 +52,8 @@ def validate_graph(graph: "Graph") -> list[str]:
     errors.extend(_check_context_declarations(graph))
     errors.extend(_check_context_edge_permissions(graph))
     errors.extend(_check_data_cycles(graph))
+    errors.extend(_validate_gate_cycles(graph))
+    errors.extend(_check_deprecated_edge_conditions(graph))
     return errors
 
 
@@ -240,12 +249,12 @@ def _check_context_edge_permissions(graph: "Graph") -> list[str]:
 
 
 def _check_data_cycles(graph: "Graph") -> list[str]:
-    """Detect data-edge cycles that do NOT pass through a loop node."""
+    """Detect data-edge cycles that do NOT pass through a loop or gate node."""
     data_adj: dict[str, list[str]] = {n.id: [] for n in graph.nodes}
-    loop_nodes = set()
+    exempt_nodes = set()
     for node in graph.nodes:
-        if node.node_type in _LOOP_NODE_TYPES:
-            loop_nodes.add(node.id)
+        if node.node_type in _LOOP_NODE_TYPES or node.node_type in _GATE_LOOP_TYPES:
+            exempt_nodes.add(node.id)
 
     for edge in graph.edges:
         if isinstance(edge, DataEdge):
@@ -259,7 +268,7 @@ def _check_data_cycles(graph: "Graph") -> list[str]:
     def dfs(nid: str) -> bool:
         color[nid] = GRAY
         for neighbor in data_adj.get(nid, []):
-            if neighbor in loop_nodes:
+            if neighbor in exempt_nodes:
                 continue
             if color.get(neighbor) == GRAY:
                 errors.append(
@@ -276,3 +285,116 @@ def _check_data_cycles(graph: "Graph") -> list[str]:
             dfs(nid)
 
     return errors
+
+
+def _validate_gate_cycles(graph: "Graph") -> list[str]:
+    """Validate that any cycles involving gate nodes are well-formed.
+
+    For each gate node, check if there is a data-edge path from any of its
+    successors back to itself.  If a cycle exists:
+      - The gate must be in ``while`` mode.
+      - ``max_iterations`` must be >= 1.
+      - No other while-gate may share the same cycle region.
+    """
+    errors: list[str] = []
+    node_ids = {n.id for n in graph.nodes}
+    node_map = {n.id: n for n in graph.nodes}
+
+    adj: dict[str, list[str]] = defaultdict(list)
+    rev_adj: dict[str, list[str]] = defaultdict(list)
+    for edge in graph.edges:
+        if isinstance(edge, DataEdge) and edge.target_node_id in node_ids:
+            adj[edge.source_node_id].append(edge.target_node_id)
+            rev_adj[edge.target_node_id].append(edge.source_node_id)
+
+    cycle_regions: dict[str, set[str]] = {}
+
+    for node in graph.nodes:
+        if node.node_type != "gate":
+            continue
+
+        visited: set[str] = set()
+        queue: deque[str] = deque(adj.get(node.id, []))
+        forms_cycle = False
+        while queue:
+            n = queue.popleft()
+            if n == node.id:
+                forms_cycle = True
+                break
+            if n in visited:
+                continue
+            visited.add(n)
+            for succ in adj.get(n, []):
+                if succ not in visited:
+                    queue.append(succ)
+
+        if not forms_cycle:
+            continue
+
+        gmode = getattr(node, "gate_mode", None)
+        if gmode != "while":
+            errors.append(
+                f"Gate '{node.id}' creates a cycle but is in '{gmode}' mode — "
+                f"must be 'while' mode for loop-back"
+            )
+            continue
+
+        max_iter = getattr(node, "max_iterations", 0)
+        if max_iter < 1:
+            errors.append(
+                f"Gate '{node.id}' has max_iterations={max_iter} — must be >= 1"
+            )
+
+        fwd: set[str] = set()
+        q: deque[str] = deque(adj.get(node.id, []))
+        while q:
+            n = q.popleft()
+            if n in fwd:
+                continue
+            fwd.add(n)
+            for succ in adj.get(n, []):
+                if succ not in fwd:
+                    q.append(succ)
+
+        rev: set[str] = set()
+        q = deque(rev_adj.get(node.id, []))
+        while q:
+            n = q.popleft()
+            if n in rev:
+                continue
+            rev.add(n)
+            for pred in rev_adj.get(n, []):
+                if pred not in rev:
+                    q.append(pred)
+
+        cycle_regions[node.id] = (fwd & rev) | {node.id}
+
+    checked_pairs: set[tuple[str, str]] = set()
+    for g1, region1 in cycle_regions.items():
+        for g2, region2 in cycle_regions.items():
+            if g1 >= g2:
+                continue
+            pair = (g1, g2)
+            if pair in checked_pairs:
+                continue
+            checked_pairs.add(pair)
+            if region1 & region2:
+                errors.append(
+                    f"Ambiguous multi-gate cycle: gates '{g1}' and '{g2}' share "
+                    f"overlapping cycle regions — only one while-gate per cycle is allowed"
+                )
+
+    return errors
+
+
+def _check_deprecated_edge_conditions(graph: "Graph") -> list[str]:
+    """Emit deprecation warnings for ControlEdge.condition usage."""
+    warnings: list[str] = []
+    for edge in graph.edges:
+        if isinstance(edge, ControlEdge) and edge.condition:
+            warnings.append(
+                f"Edge {edge.source_node_id}->{edge.target_node_id} uses "
+                f"deprecated ControlEdge.condition; prefer GateNode branch "
+                f"ports for conditional routing"
+            )
+    return warnings

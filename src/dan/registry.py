@@ -20,6 +20,7 @@ from dan.models.nodes import (
 from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
+    GateNode,
     HumanInTheLoopNode,
     IfElseNode,
     InputNode,
@@ -74,6 +75,7 @@ _BUILTINS: list[tuple[str, Type[NodeBase]]] = [
     ("code_operator", CodeOperator),
     ("input", InputNode),
     ("if_else", IfElseNode),
+    ("gate", GateNode),
     ("while_loop", WhileLoopNode),
     ("for_each", ForEachNode),
     ("reduce", ReduceNode),

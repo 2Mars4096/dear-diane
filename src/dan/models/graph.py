@@ -10,6 +10,7 @@ from dan.models.context import ArtifactRef, SharedContextDeclaration
 from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
+    GateNode,
     HumanInTheLoopNode,
     IfElseNode,
     InputNode,
@@ -32,6 +33,7 @@ Node = Annotated[
         CodeOperator,
         InputNode,
         IfElseNode,
+        GateNode,
         WhileLoopNode,
         ForEachNode,
         ReduceNode,

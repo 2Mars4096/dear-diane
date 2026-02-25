@@ -21,6 +21,7 @@ from dan.models.context import (
     NodeLocalState,
 )
 from dan.models.nodes import NodeBase
+from dan.models.ports import OutputPort
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +64,43 @@ class IfElseNode(NodeBase):
 
     node_type: Literal["if_else"] = "if_else"
     condition: str = Field(description="Expression evaluated on the incoming data")
+
+
+class GateNode(NodeBase):
+    """Conditional routing gate with branch-specific output ports.
+
+    In if_else mode: evaluates condition, writes all inputs to exactly one
+    branch output port (true or false). No cycles.
+
+    In while mode: evaluates condition each iteration. Writes to 'continue'
+    port (back-edge to loop start) or 'done' port (forward exit).
+    The scheduler handles iteration — this executor runs ONCE per iteration.
+    """
+
+    node_type: Literal["gate"] = "gate"
+    condition: str = Field(description="Expression evaluated on inputs")
+    gate_mode: Literal["if_else", "while"] = Field(
+        default="if_else",
+        description="if_else: forward-only branching. while: loop gate with back-edges",
+    )
+    max_iterations: int = Field(
+        default=10,
+        ge=1,
+        description="Max loop iterations (while mode only)",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.output_ports:
+            if self.gate_mode == "if_else":
+                self.output_ports = [
+                    OutputPort(name="true", description="Active when condition is true"),
+                    OutputPort(name="false", description="Active when condition is false"),
+                ]
+            else:
+                self.output_ports = [
+                    OutputPort(name="continue", description="Loop back — condition still true"),
+                    OutputPort(name="done", description="Exit loop — condition is false"),
+                ]
 
 
 class ReduceNode(NodeBase):
