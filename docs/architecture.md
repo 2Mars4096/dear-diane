@@ -36,6 +36,27 @@ deep-agent-network/
     migration/
       gate_migration.py          # Legacy IfElse/WhileLoop → GateNode graph-dict migration helpers
     registry.py                  # NodeTypeRegistry — maps node_type strings to classes
+    providers/                   # Phase 4 — multi-provider LLM abstraction
+      __init__.py                # LLMProvider protocol, CompletionResult, StreamChunk, ProviderConfig
+      openai_provider.py         # OpenAIProvider — wraps AsyncOpenAI (any OpenAI-compatible endpoint)
+      anthropic_provider.py      # AnthropicProvider — wraps AsyncAnthropic (optional dep)
+      google_provider.py         # GoogleProvider — wraps google.generativeai (optional dep)
+      registry.py                # ProviderRegistry — model→provider routing (override→prefix→default)
+      costs.py                   # Static COST_PER_1K_TOKENS table + estimate_cost()
+    tools/                       # Phase 4 — built-in tool library (dan.tools)
+      __init__.py                # get_all_tools() auto-discovery
+      _workspace.py              # Workspace root sandboxing utility
+      file_read.py               # Read file with line range, size guard
+      file_write.py              # Write/append with parent dir creation
+      list_directory.py          # List with glob and recursive mode
+      web_search.py              # DuckDuckGo search (optional dep)
+      web_fetch.py               # URL content fetch via httpx
+      http_request.py            # General HTTP client
+      shell_command.py            # Subprocess with timeout and allowlist
+      pdf_read.py                # PDF text extraction (optional dep)
+      text_chunk.py              # Text chunking with overlap
+      json_extract.py            # Dot-notation JSON extraction
+      regex_match.py             # Regex match/replace
     engine/                      # Phase 1 — async execution engine
       __init__.py                # Public API: Engine, EngineConfig, RunResult, etc.
       state.py                   # NodeStatus, PortDataStore, ExecutionState
@@ -99,9 +120,14 @@ deep-agent-network/
       components/RunPanel.tsx         # (deprecated — merged into EditorToolbar)
       components/GraphSwitcher.tsx    # (deprecated — merged into EditorToolbar)
       App.tsx                    # Main layout: toolbar + palette + canvas + panels + toasts
-  examples/                      # Phase 3 — runnable workflow scripts
+  examples/                      # Phase 3+ — runnable workflow scripts
     paper_writing.py             # INFORMS-oriented workflow: internet-grounded lit search, human interview loop, parallel section drafting, multi-role review, LaTeX/PDF packaging
-  tests/                         # pytest suite (341 tests)
+    simple_chain.py              # Phase 4 template: 3-node linear pipeline (LLM→LLM→Code)
+    fan_out_fan_in.py            # Phase 4 template: ForEach + Reduce parallel processing
+    review_revise.py             # Phase 4 template: GateNode while-loop draft→review→revise
+    rag_qa.py                    # Phase 4 template: tool-based RAG Q&A (no vector DB)
+    react_agent.py               # Phase 4 template: ReAct agent loop with web tools
+  tests/                         # pytest suite (503 tests)
     test_models/                 # Unit tests for all model types
     test_validation/             # Validation logic tests
     test_examples/               # Paper-writing motivating example + e2e tests
@@ -110,7 +136,7 @@ deep-agent-network/
     test_migration/              # Migration helper tests (legacy → gate)
     test_server/                 # Server API, run manager, and event tests
   graphs/                        # Saved graph JSON files (filesystem persistence)
-  pyproject.toml                 # Pydantic v2 + OpenAI SDK + FastAPI + uvicorn + pytest
+  pyproject.toml                 # Pydantic v2 + OpenAI SDK + FastAPI + uvicorn + httpx + pytest; optional: anthropic, google-generativeai, pypdf, duckduckgo-search
   README.md                      # User-facing project overview, quick start, feature summary
   .env.example                   # Environment variable template
   .cursor/rules/                 # AI agent rules
@@ -152,7 +178,7 @@ Like batch normalization in DNNs, every LLM operator has a deterministic, built-
 
 ### Error Handling / Retry Policy
 
-Every operator carries a `retry_policy`: `max_retries`, `backoff`, `fallback_model`, `on_failure` (error / skip / halt). Separate from output normalization — this handles call-level failures (rate limits, timeouts, network errors).
+Every operator carries a `retry_policy`: `max_retries`, `backoff`, `backoff_max`, `fallback_model`, `on_failure` (error / skip / halt). Separate from output normalization — this handles call-level failures (rate limits, timeouts, network errors). `on_failure="halt"` stops the engine at the current topological level (already-running parallel nodes finish) and writes a checkpoint for later resume.
 
 ### Checkpointing / Resumability
 
@@ -368,9 +394,19 @@ result = await engine.resume(graph, run_id="abc123")
 
 ### LLM Integration
 
-- Default executor uses `openai.AsyncOpenAI(base_url=...)` — supports any OpenAI-compatible endpoint
+- **Multi-provider dispatch:** `ProviderRegistry` routes model names to the correct API. Resolution: exact `model_provider_map` override → prefix pattern match (`gpt-*`→OpenAI, `claude-*`→Anthropic, `gemini-*`→Google) → `default` fallback (OpenAI-compatible endpoint).
+- **Built-in providers:** `OpenAIProvider` (any OpenAI-compatible endpoint, default), `AnthropicProvider` (optional), `GoogleProvider` (optional). Provider SDKs are optional deps.
+- **Backward compatible:** `EngineConfig.llm_api_key` + `llm_base_url` auto-create a `"default"` provider. Existing vectorengine.ai setup works unchanged.
 - Output normalization built into LLM executor: extract JSON -> validate against schema -> re-prompt with error -> retry
-- Transient API errors (rate limits, timeouts) retried with exponential backoff
+- Transient API errors (rate limits, timeouts) retried with configurable `retry_policy`
+- **Cost estimation:** static `COST_PER_1K_TOKENS` table in `providers/costs.py` covering major models. `estimate_cost()` utility function. Best-effort — unknown models return None.
+
+### Built-in Tools (`dan.tools`)
+
+- 11 batteries-included tools: file I/O (sandboxed to workspace root), web search/fetch, HTTP requests, shell commands (allowlist-enforced), PDF reading, text chunking, JSON extraction, regex matching
+- Auto-registered during server lifespan via `ToolRegistry.register_builtin_tools()` — custom tools can override built-in IDs
+- Graceful degradation: optional SDK tools (pypdf, duckduckgo-search) skip with warning if SDK not installed
+- Workspace root sandboxing: all file tools enforce `DAN_WORKSPACE_ROOT` boundary
 
 ### Condition Evaluation
 

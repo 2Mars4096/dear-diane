@@ -1,5 +1,50 @@
 # Changelog
 
+## 2026-02-25 (Phase 4 — Core Hardening — implementation complete)
+- [feat] **7-1 Runtime Reliability:** Added `RetryPolicy` Pydantic model (`max_retries`, `backoff`, `backoff_max`, `fallback_model`, `on_failure`) on `NodeBase`. Replaced hardcoded retry in `LLMExecutor` with configurable policy. Added retry loop to `ToolExecutor` (transient exceptions: `TimeoutError`, `ConnectionError`, `OSError`). `CodeExecutor` honors `on_failure` (skip/halt) without retry. Scheduler checks `metadata.halt` flag after each level, saves checkpoint and stops. `RETRY_ATTEMPTED` event type added. `EngineConfig.max_concurrency` for graph-wide semaphore. Frontend: `RetryPolicyEditor` in ConfigPanel, `RetryPolicy` TypeScript interface. 27 new tests.
+- [feat] **7-2 Multi-Provider LLM Registry:** Created `src/dan/providers/` package with `LLMProvider` protocol, `CompletionResult`, `StreamChunk`, `ProviderConfig` dataclasses. Built-in providers: `OpenAIProvider` (wraps AsyncOpenAI), `AnthropicProvider` (wraps AsyncAnthropic, system prompt extraction), `GoogleProvider` (wraps google.generativeai). `ProviderRegistry` with 3-tier resolution (exact override → prefix pattern → default fallback). `EngineConfig` extended with `providers` dict and `model_provider_map`. `LLMExecutor` and `RouterExecutor` refactored to use provider dispatch. Static cost table (`costs.py`) covering 17 models. Server auto-scans `DAN_OPENAI_API_KEY`, `DAN_ANTHROPIC_API_KEY`, `DAN_GOOGLE_API_KEY`. Frontend: `LLMConfigSection` with basic/advanced pattern, model datalist, provider badges. 128 new tests (38 new provider tests).
+- [feat] **7-3 Built-in Tool Library:** Created `src/dan/tools/` package with 11 tools: `file_read`, `file_write`, `list_directory` (file category, workspace-root sandboxed), `web_search` (DuckDuckGo, optional dep), `web_fetch`, `http_request` (web category), `shell_command` (system, allowlist-enforced), `pdf_read` (document, optional dep), `text_chunk` (document), `json_extract`, `regex_match` (utility). Auto-discovery via `get_all_tools()` with graceful `ImportError` handling. `ToolRegistry.register_builtin_tools()` method. `httpx` promoted to main dependency. Optional deps: `pypdf`, `duckduckgo-search`. 60 new tests.
+- [feat] **7-4 Templates + Observability:** 5 workflow templates: `simple_chain` (LLM→LLM→Code), `fan_out_fan_in` (ForEach+Reduce), `review_revise` (GateNode while-loop), `rag_qa` (tool-based RAG), `react_agent` (ReAct loop with tools). Frontend: per-node token badges ("1.2k tok"), cost badges ("$0.03") on `DanNode`, total cost in `RunSummaryBar`, per-node usage in LogPanel headers. `nodeUsage` and `nodeCosts` state in Zustand store. 37 new tests.
+- [infra] Test suite: 341 → 503 tests (162 new), all passing. `pyproject.toml`: added optional dependency groups (`pdf`, `search`, `anthropic`, `google`, `all-providers`, `all-tools`, `all`).
+
+## 2026-02-25 (Phase 4 plans — review fixes)
+- [docs] **7-2 provider routing redesign:** replaced prefix-only routing with 3-tier resolution (exact model→provider map → prefix match → `default` fallback). Added `ProviderConfig` dataclass, named provider registration (`EngineConfig.providers`), and `model_provider_map` override. Current vectorengine `claude-sonnet-4-6` setup preserved via `default` provider. Fixes backward-compat break where `claude-*` prefix would route to Anthropic native SDK.
+- [docs] **7-2 RouterExecutor:** added task 5-6 to refactor `RouterExecutor` (currently creates its own `AsyncOpenAI` client directly, bypassing provider abstraction). Added test 8-6 for Router dispatch and test 8-10 for model override map.
+- [docs] **7-2 basic + advanced UI:** redesigned config panel from model-only dropdown to basic (model, temperature, system prompt) + collapsible advanced (base_url override, api_key override, max_tokens, extensible extra kwargs). Keeps common case clean, power users can customize per-node.
+- [docs] **7-1 on_failure=halt semantics (decided):** halt stops scheduling new topological levels, lets already-running parallel nodes finish, writes checkpoint at halt point, returns `RunResult(success=False)`. Added tasks 2-4, 3-5, scheduler halt-flag check, and 3 new integration tests (7-4, 7-8, 7-9).
+- [docs] **7-1 retry_policy naming:** renamed `backoff_base` → `backoff` to match architecture.md contract. `backoff_max` is additive (caps exponential growth). Updated architecture.md.
+- [docs] **7-1 retry_attempted event prerequisite:** added task 1-5 to register `RETRY_ATTEMPTED` in `EventType` enum before executors can emit it (emit_event validates via enum).
+- [docs] **7-1 CodeExecutor retry scoped:** replaced timeout-retry plan with explicit "no retry loop for code" decision — `exec()` is synchronous/deterministic with no preemption. `on_failure` (skip/halt) still honored. Retry becomes meaningful when Phase 6 adds subprocess sandboxing.
+- [docs] **7-3 workspace-root sandboxing:** added shared `_workspace_root()` utility (task 1-5) used by all file tools (`file_read`, `file_write`, `list_directory`). Rejects `../` escapes, symlink escapes, absolute paths outside root. Configurable via `DAN_WORKSPACE_ROOT`.
+- [docs] **7-3 graceful SDK import:** `get_all_tools()` catches `ImportError` per tool module (task 1-4 updated). Missing optional SDKs log warning and skip tool, not crash server.
+- [docs] Updated `7-core-hardening.md` shared decisions with all resolved items (halt semantics, routing safety, code retry, basic+advanced UI, workspace sandboxing).
+- [docs] Updated `architecture.md` — expanded retry_policy description with `backoff_max` field and halt semantics.
+
+## 2026-02-25 (Phase 4 core hardening — detailed planning)
+- [docs] Created `docs/plans/7-core-hardening.md` — parent plan for Phase 4 with 4 sub-plans, dependency graph, shared decisions, and execution order recommendation
+- [docs] Created `docs/plans/7-1-runtime-reliability.md` — `RetryPolicy` model on `NodeBase`, wire retry into LLM/Tool/Code executors, fallback model, `on_failure` modes, `max_concurrency` audit, Config panel UI (8 task groups, 27 sub-tasks)
+- [docs] Created `docs/plans/7-2-multi-provider-llm.md` — `LLMProvider` protocol, OpenAI/Anthropic/Google built-in providers, `ProviderRegistry` with prefix routing, per-provider key management, `LLMExecutor` refactor, static cost table, model picker UI (10 task groups, 30 sub-tasks)
+- [docs] Created `docs/plans/7-3-built-in-tools.md` — `dan.tools` package with ~10 tools (file read/write, list_directory, web_search, web_fetch, http_request, shell_command, pdf_read, text_chunk, json_extract, regex_match), `TOOL_METADATA` schema, auto-registration, ACI quality inline (11 task groups, 32 sub-tasks)
+- [docs] Created `docs/plans/7-4-templates-observability.md` — 5 workflow templates (simple chain, fan-out/fan-in, review-revise, RAG Q&A, ReAct agent), per-node token/cost badges, `RunSummaryBar` cost extension, LogPanel enhancements (7 task groups, 22 sub-tasks)
+- [docs] Updated `docs/todo.md` — replaced flat Phase 4 bullet list with linked sub-plan hierarchy (7 parent + 7-1 through 7-4)
+- [docs] Noted `ForEachNode.parallelism` + semaphore already implements per-node concurrency control — `max_concurrency` todo item is largely done, 7-1 audits whether a graph-wide ceiling is needed
+
+## 2026-02-25 (roadmap tightening — dependency fixes)
+- [docs] Phase 4 `dan.tools`: clarified HTTP request is a built-in tool (no separate `HTTPOperator` node type needed), expanded PDF/paper ingestion description for tool-based local RAG
+- [docs] Phase 4 templates: clarified RAG Q&A template uses tool-based RAG via `dan.tools` (local PDF reading), no dependency on Phase 6 `RAGOperator`
+- [docs] Phase 6: removed `HTTPOperator` (covered by `dan.tools.http_request` in Phase 4), clarified `RAGOperator` is upgrade from tool-based approach
+- [docs] Updated `development-plan.md` roadmap table to match Phase 6 scope change
+
+## 2026-02-25 (roadmap reorganization)
+- [docs] Refactored `docs/todo.md` — replaced old Phases 4-6 (Memory, Markdown, Marketplace) with new Phases 4-10 based on "furnish, don't renovate" principle: (4) Core Hardening, (5) Markdown Agent Format, (6) Extended Capabilities, (7) Author & Distribute, (8) Observe & Recover, (9) Application Layer, (10) Deep Systems
+- [docs] Redistributed all backlog items into appropriate phases; backlog now contains only aspirational/exploratory items (coding assistant PoC, science-cursor rebuild, EvoAgentX survey, cross-graph copy)
+- [docs] Marked Phase 3.75 parent item as completed (all 11 sub-tasks were already `[x]`)
+- [docs] Memory & context scoping moved from Phase 4 to Phase 10 — build when real workflows demand it, not speculatively
+- [docs] Markdown agent format moved up from old Phase 5 to new Phase 5 (immediately after core hardening)
+- [docs] Added new phases: (6) RAG/HTTP/sandbox, (7) CLI/publish-as-API/MCP/PyPI, (8) run history/audit/checkpoints, (9) agent teams/messaging/user system
+- [docs] Updated `docs/development-plan.md` roadmap table — marked Phases 3.5 and 3.75 as Done with test counts, added Phases 4-10 with new descriptions
+- [docs] Updated `docs/development-plan.md` recommendation section — struck through completed Phase 3 milestone, added forward-looking summary of Phases 4-10
+
 ## 2026-02-24 (6-9 multi-tab workflow sessions implementation)
 - [feat] `TabInfo` and `TabSnapshot` types in `useGraphStore.ts` — per-tab state model covering all workflow-scoped slices (graph, nodes, edges, selection, layers, validation, run state, logs, history, iterations, streaming, human input)
 - [feat] `_snapshotActiveTab()` / `_restoreTab()` internal helpers — deep-clone all per-tab state into/from a `TabSnapshot` using `structuredClone` and `Set` copies

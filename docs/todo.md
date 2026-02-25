@@ -34,7 +34,7 @@
 ## Phase 3.75 — Visual Editor Full Editing
 > Make the visual editor a complete authoring surface. Currently nodes can be placed and wired, but ports can't be edited, nodes can't be renamed inline, and many editing primitives are missing. This phase closes the gap so users can build workflows entirely from the UI without touching JSON or Python.
 
-- [ ] [6-phase-3.75-visual-editor-editing](plans/6-phase-3.75-visual-editor-editing.md) — complete authoring surface (undo/redo, copy/paste, port editing, context menus, inline rename, validation, import/export, input node, command palette, execution UX)
+- [x] [6-phase-3.75-visual-editor-editing](plans/6-phase-3.75-visual-editor-editing.md) — complete authoring surface (undo/redo, copy/paste, port editing, context menus, inline rename, validation, import/export, input node, command palette, execution UX)
   - [x] [6-1-history-multiselect](plans/6-1-history-multiselect.md) — A. Undo/redo history stack, multi-select (lasso, shift-click, bulk delete/move)
   - [x] [6-2-clipboard-context-menu](plans/6-2-clipboard-context-menu.md) — B. Copy/paste/duplicate, right-click context menu (canvas/node/edge), edge reconnection
   - [x] [6-3-node-port-editing](plans/6-3-node-port-editing.md) — C. Port editor (add/remove/rename/schema), inline node rename, output schema visual builder
@@ -47,82 +47,104 @@
   - [x] [6-10-gate-loop-condition-redesign](plans/6-10-gate-loop-condition-redesign.md) — J. Gate-style visible loop flow, condition-routing redesign, and collapsible loop internals
   - [x] [6-11-workflow-ux-polish](plans/6-11-workflow-ux-polish.md) — K. Run summary (tokens + time), drill-in auto-layout, multi-tab duplicate graphs
 
-## Phase 4 — Memory & Context Scoping
-> Foundational engine layer for how nodes share, scope, and recall context. Prerequisite for long-running multi-agent workflows where brute-force context passing breaks down. Two pillars: (1) formalized local/global/hierarchical scoping at agent boundaries, and (2) a memory system for compressing and retrieving distant context.
+## Phase 4 — Core Hardening
+> Make existing nodes robust and the platform practically usable. Fill gaps that prevent real workflows from running reliably.
 
-- [ ] 8: Memory & context scoping → (not yet planned)
-- [ ] Context scoping across agent boundaries — formalize four scopes (global, local, pass_down, emit_up) with explicit schemas at every agent boundary. Add upward signals (sticky → global, non-sticky → one layer up). Agent boundary contract: accepts, returns, reads_global, writes_global, signals.
-- [ ] Memory system for long chains — short-term vs. long-term memory modeled after human cognition (encoding, consolidation, retrieval). For very long workflows: how nodes recall distant context, how completed sub-graph results are compressed into retrievable memory, how relevance-based recall replaces brute-force context passing. Research: MemGPT, AgentNet's RAG-based adaptive learning, hippocampal indexing analogies.
-- [ ] Phase 4 policy defaults (agreed)
-  - [ ] Backend strategy — DAN-native memory first; external context-db adapters later.
-  - [ ] Canonical memory layers — `L0=TOC/index`, `L1=abstract/overview`, `L2=detailed payload + artifact refs`.
-  - [ ] Lifespan and scope — memory at all levels (local, pass_down/emit_up, global) plus cross-run persistence on checkpoint/resume.
-  - [ ] Message semantics — source node emits message; target node receives message.
-  - [ ] Rule model — deterministic global memory rules plus node-specific memory rules.
-  - [ ] Retrieval model — contingent + rule-based retrieval with balanced determinism/recall.
-  - [ ] Retrieval budget defaults — retrieve `20` → rerank `8` → inject `4`; cap memory context to ~`35%` of prompt budget.
-  - [ ] Consolidation triggers — consolidate at checkpoint and when model-relative context pressure rises (soft at `85-90%`, hard at `95%`).
-  - [ ] Sticky-write approval — required; timeout path escalates to parent.
-  - [ ] Parallel conflict handling — hybrid aggregator (generic default aggregator + per-key reducers).
-  - [ ] Memory hygiene — forbid chain-of-thought persistence; store only project-useful memory.
-  - [ ] Global memory schema baseline — `id`, `scope`, `type`, `summary`, `payload_ref`, `tags`, `confidence`, `provenance`, `created_at`, `ttl`, `approval_status`.
-  - [ ] TTL defaults by memory type (initial) — `profile=365d`, `preferences=180d`, `entities=365d`, `events=90d`, `cases=365d`, `patterns=730d` (overrideable by policy).
-  - [ ] Future tuning policy — treat all defaults as starting points and tune over time using runtime telemetry, retrieval quality, and cost/latency trade-offs (budgets, thresholds, TTLs, rerank/inject counts, reducer policies).
+- [x] [7-core-hardening](plans/7-core-hardening.md) — retry/fallback, multi-provider LLM, built-in tools, templates, observability
+  - [x] [7-1-runtime-reliability](plans/7-1-runtime-reliability.md) — `RetryPolicy` model on `NodeBase`, ToolExecutor retry/backoff, fallback model, halt semantics, concurrency audit
+  - [x] [7-2-multi-provider-llm](plans/7-2-multi-provider-llm.md) — provider registry (OpenAI, Anthropic, Google), per-node model dispatch, key management, cost table
+  - [x] [7-3-built-in-tools](plans/7-3-built-in-tools.md) — `dan.tools` package (11 tools: file, web, shell, PDF, utility), auto-registration, ACI quality
+  - [x] [7-4-templates-observability](plans/7-4-templates-observability.md) — 5 workflow templates, per-node token/cost display, LogPanel enhancements
 
 ## Phase 5 — Markdown Agent Format
-> A third authoring surface alongside the Python builder DSL and the visual editor. One `.md` per agent (frontmatter + natural language), one workflow `.md` to wire them. All three surfaces compile to the same `dan_graph_v1` JSON and coexist — markdown is the most accessible, Python the most programmable, visual the most interactive.
+> A third authoring surface alongside the Python builder DSL and the visual editor. One `.md` per agent (frontmatter + natural language), one workflow `.md` to wire them. All three surfaces compile to the same `dan_graph_v1` JSON and coexist — markdown is the most accessible and LLM-generatable format.
 
-- [ ] 7: Markdown agent format → (not yet planned)
+- [ ] 8: Markdown agent format → (not yet planned)
 - [ ] Agent file format — YAML frontmatter (`type`, `model`) + `> Accepts` / `> Returns` blockquote for ports + markdown body as prompt/behavior
 - [ ] Workflow file format — agent list (markdown links to agent files) + `## Flow` section with arrow notation
 - [ ] Flow notation parser — `→` for chaining, `.port` for specific outputs, `| each(agent, parallel: N)`, `| loop(agent, until: cond, max: N)`, `| if(cond, then: A, else: B)`
-- [ ] Port type inference — infer types from names and suffixes (`sections[]` → array, plain name → string/text), optional explicit annotation (`> Returns: sections[] (string)`)
+- [ ] Port type inference — infer types from names and suffixes (`sections[]` → array, plain name → string/text), optional explicit annotation
 - [ ] Auto-wiring — match port names across agents for implicit edge creation; explicit `.port → .port` override when ambiguous
 - [ ] Markdown → Graph compiler (`dan.loader`) — parse markdown files, resolve file references, infer wiring, produce `dan_graph_v1` JSON
-- [ ] Rewrite `examples/paper_writing.py` as a set of markdown agent files + workflow file (validation)
+- [ ] Rewrite `examples/paper_writing.py` as markdown agent files + workflow file (validation)
+- [ ] Composite agents in markdown — `type: composite` with internal `## Flow` section for nested zoom-in from a single `.md` file
+- [ ] Markdown round-trip from visual editor — export graph to markdown agent + workflow files (inverse of `dan.loader`)
+- [ ] Linked JSON Schema files — `> Returns: (schema: schemas/outline.json)` for complex structured outputs
+- [ ] Markdown/Python coexistence policy — define relationship between `dan.builder` and `dan.loader`
+- [ ] `dan.loader` ↔ `dan.builder` parity checklist — ensure markdown covers all node/edge/control-flow features
+- [ ] Compiler diagnostics + source maps — `dan.loader` errors reference `file.md:line`
+- [ ] Markdown round-trip conformance tests — `markdown → graph → markdown` idempotent
+- [ ] Markdown format versioning — `format_version` in workflow frontmatter
 
-## Phase 6 — Shareable Blocks / Marketplace
-- [ ] 9: Publish and import reusable agent-blocks → (not yet planned)
+## Phase 6 — Extended Capabilities
+> New node types and execution modes following existing patterns. Key missing capabilities for real workflows.
+
+- [ ] 9: Extended capabilities → (not yet planned)
+- [ ] RAG / knowledge retrieval node — first-class `RAGOperator` (query → retrieved chunks) backed by configurable vector store (FAISS/ChromaDB or API). Upgrade from tool-based RAG in Phase 4; dedicated node is more ergonomic in the visual editor and supports index lifecycle management.
+- [ ] Script execution / sandbox — subprocess execution with timeouts and resource limits beyond current sandboxed `exec()`. Prerequisite for trustworthy ToolOperator and Code nodes.
+- [ ] Standardized handoff validator — lightweight validation node at agent boundaries checking required keys, schema conformance, non-empty values.
+
+## Phase 7 — Author & Distribute
+> Make DAN accessible beyond local development. CLI for headless execution, publish workflows as callable APIs, package for distribution.
+
+- [ ] 10: Author & distribute → (not yet planned)
+- [ ] CLI mode — run workflows in terminal/background. Supervisor-style: start, check progress, inspect logs without blocking. Complements visual editor for headless/CI/server deployments.
+- [ ] Publish workflow as API/MCP — build a workflow, publish as a callable MCP server or HTTP endpoint. Turns workflows into consumable services (Coze-style).
+- [ ] Shareable blocks — publish and import reusable agent-blocks. Registry/marketplace for community sharing.
+- [ ] PyPI package — `pip install dan` with stable public API.
+- [ ] Lightweight skills (prompt injection) — skills as prompt-prefix injections scoped by node tag/type. No full hyperedge hooks; just "prepend this text to LLM nodes tagged X."
+
+## Phase 8 — Observe & Recover
+> Execution persistence, debugging tools, and iterative refinement capabilities.
+
+- [ ] 11: Observe & recover → (not yet planned)
+- [ ] Run history / comparison — persist run artifacts (events, outputs, tokens, latency) to disk. History list in editor. Side-by-side comparison for iterative prompt tuning.
+- [ ] Action audit log — persistent, queryable log of every action (tool calls, LLM outputs, decisions). Debugging + compliance + post-run analysis.
+- [ ] Checkpoints as portals — tweak downstream subgraph and re-run from checkpoint without restarting. Extends existing checkpoint/resume for partial re-runs.
+- [ ] Variable inspector in config panel — show available upstream data at each node. Leverage typed edge schemas.
+- [ ] Node test cases / annotations — pin expected input/output pairs per node for isolated testing. Right-click → "Add test case."
+
+## Phase 9 — Application Layer
+> Higher-level coordination patterns and external integrations.
+
+- [ ] 12: Application layer → (not yet planned)
+- [ ] Agent teams — group-chat style multi-agent coordination with "@" routing, handoffs, and conversational context.
+- [ ] Messaging/comm integrations — email, Slack, Discord, Telegram, WhatsApp adapters. Trigger workflows from external messages.
+- [ ] User system — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments.
+- [ ] Chatbox for NL flow creation — describe workflows in natural language; system generates/modifies graphs without drag-and-drop.
+
+## Phase 10 — Deep Systems
+> Architectural additions for advanced use cases. Build when real workflows demand them.
+
+- [ ] 13: Deep systems → (not yet planned)
+- [ ] Context scoping across agent boundaries — formalize four scopes (global, local, pass_down, emit_up) with explicit schemas at every agent boundary. Upward signals (sticky → global, non-sticky → one layer up). Agent boundary contract: accepts, returns, reads_global, writes_global, signals.
+- [ ] Memory system for long chains — short-term vs. long-term memory (encoding, consolidation, retrieval). How nodes recall distant context, how completed sub-graph results compress into retrievable memory. Research: MemGPT, AgentNet, hippocampal indexing.
+- [ ] Memory policy defaults (agreed)
+  - [ ] DAN-native memory first; external context-db adapters later
+  - [ ] Canonical layers: `L0=TOC/index`, `L1=abstract/overview`, `L2=detailed payload + artifact refs`
+  - [ ] Lifespan: memory at all scope levels plus cross-run persistence on checkpoint/resume
+  - [ ] Message semantics: source emits, target receives
+  - [ ] Rule model: deterministic global rules + node-specific rules
+  - [ ] Retrieval: contingent + rule-based, balanced determinism/recall
+  - [ ] Retrieval budget: retrieve `20` → rerank `8` → inject `4`; cap ~`35%` of prompt budget
+  - [ ] Consolidation triggers: at checkpoint + context pressure (soft `85-90%`, hard `95%`)
+  - [ ] Sticky-write approval required; timeout escalates to parent
+  - [ ] Parallel conflict: hybrid aggregator (generic default + per-key reducers)
+  - [ ] Memory hygiene: forbid chain-of-thought persistence; store only project-useful memory
+  - [ ] Global schema: `id`, `scope`, `type`, `summary`, `payload_ref`, `tags`, `confidence`, `provenance`, `created_at`, `ttl`, `approval_status`
+  - [ ] TTL defaults: `profile=365d`, `preferences=180d`, `entities=365d`, `events=90d`, `cases=365d`, `patterns=730d`
+  - [ ] Future tuning: treat all defaults as starting points; tune via telemetry, retrieval quality, cost/latency
+- [ ] Hyperedges — engine runtime — skills/rules as hyperedges attaching to multiple nodes. Types: skill, guardrail, style, override. Attachment by node ID, type, tags, subgraph. Precedence: policy > rule > skill. Hooks: pre_prompt, tool_call, post_output, validation.
+- [ ] Hyperedges — markdown syntax — reference skill/rule `.md` files in workflow with attachment scope. Depends on engine runtime.
+- [ ] HumanNode generalization — promote to first-class node type. Chat UI as renderer. Adjustable autonomy via topology. Background mode = zero HumanNodes.
+- [ ] Dynamic model selection — `model_policy` field. Budget-aware selection, learned assignment. Strategies beyond static/fallback/router/cascade.
+- [ ] Voting / ensemble primitive — same-model voting + cross-model ensemble. `Vote` node or builder sugar `wf.vote()`.
+- [ ] Session / conversation memory — lightweight persistence for conversation history + key-value state across multiple `Engine.run()` invocations.
+- [ ] Loop as context manager — loops manage what context feeds back, not just control flow. Feedback selectors filter what flows from body back to condition.
 
 ## Backlog (unphased)
 - [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
-- [ ] Built-in retry/backoff for ToolOperator — mirror LLMExecutor's transient-error retry (rate limits, timeouts, network). Currently ToolExecutor catches exceptions and immediately returns FAILED.
-- [ ] Per-node retry policy / fallback model — `retry_policy` field (max_retries, backoff, fallback_model, on_failure) exists in architecture docs but is not implemented in runtime. Add to EngineConfig/executor dispatch.
-- [ ] Standardized handoff validator between major stages — lightweight validation node at agent boundaries that checks required output keys, schema conformance, and non-empty values before passing data downstream. Prevents silent data loss propagation.
 - [ ] Survey EvoAgentX for reusable multi-agent patterns
-- [ ] Dynamic model selection — `model_policy` field on operators. Budget-aware selection (read `context.token_budget`, pick model tier accordingly). Learned assignment (track model performance per task type across runs, auto-assign optimal model). Strategies 1-4 (static, fallback, router, cascade) already work via composition; this covers the edge cases that are too verbose to express with existing primitives.
-- [ ] `max_concurrency` parameter on For-Each/Map — controls how many parallel instances run simultaneously (rate limits, memory, cost). Not yet in the formal spec.
-- [ ] Hyperedges — engine runtime (skills/rules) — model skills and rules as hyperedges that attach to multiple nodes simultaneously. Types: skill (knowledge), guardrail (constraint), style (consistency), override (interception). Attachment by node ID, node type, tags, or subgraph. Precedence: policy > rule > skill. Execution hooks: pre_prompt, tool_call, post_output, validation.
-- [ ] HumanNode generalization — promote Human-in-the-Loop from a control-flow primitive to a first-class node type. Chat UI becomes a renderer for active HumanNodes. Adjustable autonomy via graph topology (place/remove HumanNodes). Background mode = zero HumanNodes.
-- [ ] Coding assistant proof-of-concept — build Cursor-like agent mode as a DAN graph (~15 node types, ReAct while-loop + tool operators). Validate that Ask/Agent/Debug/Plan modes are expressible as four graph templates sharing a context layer.
-- [ ] science-cursor rebuild — extract scholar engines (Literature, Execution, Writing) as DAN agents. Build PaperOrchestrator as a DAN network. VS Code extension becomes a thin rendering client.
-- [ ] Composite agents in markdown — `type: composite` agent files with an internal `## Flow` section, enabling nested zoom-in behavior from a single `.md` file.
-- [ ] Hyperedges — markdown authoring syntax — reference skill/rule `.md` files in workflow with attachment scope (`→ all llm agents`, `→ section_writer, reviewer`). Same frontmatter-plus-prose format. Depends on hyperedge engine runtime above.
-- [ ] Markdown round-trip from visual editor — export a graph edited in the visual editor back to markdown agent files + workflow file (inverse of `dan.loader`).
-- [ ] Linked JSON Schema files — for rare complex structured outputs, allow `> Returns: (schema: schemas/outline.json)` to reference an external schema file instead of inline inference.
-- [ ] Markdown/Python coexistence policy — define whether `dan.builder` and `dan.loader` are peers (both compile to `dan_graph_v1`) or whether one is canonical IR. Establish deprecation criteria if one surface subsumes the other.
-- [ ] `dan.loader` ↔ `dan.builder` parity checklist — ensure markdown loader covers all node types, edge types, and control-flow features supported by the Python builder. Track gaps explicitly.
-- [ ] Compiler diagnostics + source maps — `dan.loader` parser errors should reference `file.md:line` for actionable feedback. Source map from graph nodes back to markdown origin for debugging.
-- [ ] Markdown round-trip conformance tests — `markdown → graph → markdown` produces stable output (idempotent diff). Similar to builder/decompiler round-trip golden tests.
-- [ ] Markdown format versioning — `format_version` field in workflow frontmatter for forward compatibility when the notation evolves.
-- [ ] Voting / ensemble primitive — same-model voting (run node N times with different temperatures, aggregate by majority/threshold) and cross-model ensemble (Claude + GPT + Gemini on same task, best-of or consensus). Either a dedicated `Vote` node or builder sugar like `wf.vote("review", n=3, threshold=2)`. Useful for guardrails, evaluation, and high-stakes decisions. Ref: Anthropic "Building Effective Agents" parallelization pattern.
-- [ ] Tool definition quality (ACI) — invest in tool descriptions for ToolOperator: include example usage, edge cases, input format requirements. Enforce absolute paths over relative in file-manipulating tools (models fail after `cd`). "Poka-yoke" tool arguments to prevent misuse. Treat agent-computer interface design with the same rigor as human-computer interface design. Ref: Anthropic ACI appendix.
-- [ ] Latency / cost observability — surface per-node token counts, wall-clock latency, and estimated cost in the execution viz and LogPanel. Helps users make informed topology and model-selection decisions. Connects to dynamic model selection backlog item.
-- [ ] Built-in tool library (`dan.tools`) — batteries-included tools for ToolOperator: file read/write, web search, web fetch, HTTP request, shell command, PDF ingestion. Currently every tool must be manually registered. ~10 common tools would bridge the gap between "demo" and "usable."
-- [ ] Multi-provider LLM registry — provider registry mapping model names to different API clients/keys (OpenAI, Anthropic, Google). Per-node `model` field already exists in the data model; engine needs a dispatch layer so `model="claude-sonnet-4-6"` and `model="gpt-4o"` resolve to different clients in the same graph. Required to make model heterogeneity practical.
-- [ ] RAG / knowledge retrieval node — first-class `RAGOperator` node type (query input → retrieved chunks output) backed by configurable vector store (local FAISS/ChromaDB or API). Avoids forcing users to wire RAG through ToolOperator + custom code. Needed for paper-writing and science-cursor workflows.
-- [ ] Workflow templates — ship 3-5 graph templates as `.py` files in `examples/`: simple chain, fan-out/fan-in, review-revise loop, RAG Q&A, ReAct agent. Double as documentation and starting points for visual editor palette. Leverage DAN's advantage that templates are code (version-controllable, testable, LLM-generatable).
-- [ ] Session / conversation memory — lightweight persistence layer for carrying conversation history and key-value state across multiple `Engine.run()` invocations of the same graph. Smaller scope than the full memory system (Phase 4); enables chatbot-style use cases where context accumulates across turns.
-- [ ] HTTP request node — dedicated `HTTPOperator` (method, URL, headers, body, response schema extraction) with configurable auth and retries. More ergonomic in the visual editor than a generic ToolOperator wrapping `requests`.
-- [ ] Node test cases / annotations — pin expected input/output pairs on individual nodes for isolated testing. Right-click node → "Add test case" → run in isolation. Visual editor surfaces results; Python builder exposes as pytest-compatible assertions.
-- [ ] Variable inspector in config panel — show available upstream data at each node ("at this node you can access: `{outline: {sections: string[]}}` from planner, `{style: string}` from context store"). Leverage typed edge schemas already in the data model.
-- [ ] Run history / comparison — persist run artifacts (events, outputs, token counts, latency) to disk. Show run history list in editor. Enable side-by-side comparison of outputs across runs for iterative prompt tuning.
-- [ ] Action audit log — save all actions numbered with detailed output. Persistent, queryable log of every action taken by agents/nodes (tool calls, LLM outputs, decisions). Enables debugging, compliance, and post-run analysis.
-- [ ] Sandbox mode — run scripts, apps, and tools in a safe, isolated environment. Enables running arbitrary code without risking host system. Consider containerized execution, resource limits, network restrictions, filesystem isolation. Prerequisite for trustworthy ToolOperator and Code node execution.
-- [ ] Messaging/comm integrations — link to email and social channels (WhatsApp, Telegram, Slack, Discord, etc.). Enable agents to send/receive messages, ingest notifications, and trigger workflows from external communication apps. Requires per-platform adapters and auth flows.
-- [ ] Agent teams — create a team of agents in group-chat style; use "@" to call specific agents and assign work. Multi-agent coordination layer with explicit routing, handoffs, and conversational context. Natural fit for human-in-the-loop workflows and delegated sub-tasks.
-- [ ] CLI mode — run workflows in terminal, in background. Supervisor-style: start a run, check progress periodically, inspect logs and outputs without blocking. Like "PhD students" — spawn long-running jobs, poll status, intervene when needed. Complements the visual editor for headless and server deployments.
-- [ ] Checkpoints as portals — for long chains, add checkpoints in the middle; tweak the following subgraph and re-run from checkpoint without starting from scratch. Checkpoints act as portals: snap state, allow graph edits downstream, resume from saved point. Extends existing checkpoint/resume for partial re-runs and iterative refinement.
-- [ ] Loop as context manager — today loops/conditions serve only as gates (control flow). Need loops to also manage what context feeds back. Example: "while there are bugs" → fix bugs → feed only bugs and surrounding context back to the gate, not full state. Avoids context explosion and lets the loop condition see only what it needs. Possible approaches: edge types (full vs scoped feedback), loop feedback schema (explicit keys/ports), or per-edge "feedback selector" that filters what flows from body back to condition. Gate and context scope become dual responsibilities of the loop primitive.
-- [ ] Copy selection to new workflow — select nodes (lasso/shift-click), copy, then paste into a new tab or blank template. Enables extracting a subgraph (e.g., all following nodes) and wrapping it as a standalone reusable workflow. Complements existing in-graph copy/paste and sub-graph-from-selection; adds cross-graph paste and "save selection as new workflow" flow for template creation and composition.
-- [ ] User system — login, password/auth, per-user data isolation. Graph store, run history, checkpoints, and session state scoped to authenticated user. Enables multi-user deployments (team/server mode) and cloud persistence. Includes: user registration, login/logout, password hashing, session management, and data saving tied to user identity.
+- [ ] Coding assistant proof-of-concept — build Cursor-like agent mode as a DAN graph (~15 node types, ReAct while-loop + tool operators). Validate Ask/Agent/Debug/Plan modes as graph templates.
+- [ ] science-cursor rebuild — extract scholar engines as DAN agents. Build PaperOrchestrator as a DAN network. VS Code extension as thin rendering client.
+- [ ] Copy selection to new workflow — lasso/shift-click, paste into new tab or blank template. Extract subgraph as standalone reusable workflow.

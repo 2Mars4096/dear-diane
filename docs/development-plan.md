@@ -124,9 +124,10 @@ Some systems already tackle the paper-writing use case specifically:
 
 - ~~**Start with a Python-first orchestration core** that implements typed nodes, typed edges, control-flow primitives, and formal graph serialization.~~ **Done** — Phases 0-1.
 - ~~**Immediately after the core engine works, build a full visual editor baseline** (React Flow + TypeScript) so workflows can be authored and tested through a UI early.~~ **Done** — Phase 2.
-- **Next: validate with the paper-writing workflow**, followed by deeper composability and advanced debugging overlays.
+- ~~**Validate with the paper-writing workflow**, followed by deeper composability and advanced debugging overlays.~~ **Done** — Phases 3, 3.5, 3.75.
+- **Next: harden the platform** (multi-provider LLM, built-in tools, retry policies, templates), then add the markdown authoring surface and extended capabilities (RAG, HTTP, sandbox). Followed by distribution (CLI, publish-as-API/MCP), observability (run history, audit log, checkpoint portals), and application-layer features (agent teams, chat integrations).
 
-This approach preserved early backend validation while moving quickly to a practical Langflow/Flowise-like user experience.
+This approach preserved early backend validation while moving quickly to a practical Langflow/Flowise-like user experience. The foundation (engine, builder, editor, execution UX) is complete; the next phases furnish it for real-world use.
 
 ---
 
@@ -378,9 +379,15 @@ The paper-writing workflow already in `development-plan.md` Section 1 is the tar
 | **1.5** | Workflow builder API | Fluent Python DSL (`dan.builder`) compiling to `dan_graph_v1` JSON (243 tests) | **Done** |
 | **2** | Visual editor baseline | FastAPI + React Flow: CRUD, live streaming execution, composite preview (167 tests) | **Done** |
 | **3** | Paper-writing proof of concept | End-to-end paper-writing workflow running on engine + editor + code (252 tests) | **Done** |
-| **3.5** | Frontend design | Multi-layer navigation, live execution viz, rich logging, build palette, UI polish | Not started |
-| **4** | Markdown agent format | `dan.loader`: markdown agent/workflow files → `dan_graph_v1` JSON (third authoring surface) | Not started |
-| **5** | Shareable blocks / marketplace | Publish and import reusable agent-blocks | Not started |
+| **3.5** | Frontend design | Multi-layer nav, execution viz, rich logging, build palette, UI polish (256 tests) | **Done** |
+| **3.75** | Visual editor full editing | Undo/redo, copy/paste, ports, context menus, gate loops, multi-tab, workflow-as-node (341 tests) | **Done** |
+| **4** | Core hardening | Multi-provider LLM, built-in tools, retry policies, templates, observability | Not started |
+| **5** | Markdown agent format | `dan.loader`: markdown agent/workflow files → `dan_graph_v1` JSON (third authoring surface) | Not started |
+| **6** | Extended capabilities | RAG node (upgrade from tool-based), script execution / sandbox, handoff validators | Not started |
+| **7** | Author & distribute | CLI mode, publish-as-API/MCP, shareable blocks, PyPI package, lightweight skills | Not started |
+| **8** | Observe & recover | Run history, audit log, checkpoint portals, variable inspector, node test cases | Not started |
+| **9** | Application layer | Agent teams, messaging integrations, user system, NL flow creation | Not started |
+| **10** | Deep systems | Memory & context scoping, hyperedges, HumanNode generalization, dynamic model selection | Not started |
 
 ---
 
