@@ -1,4 +1,4 @@
-"""Code executor — sandboxed Python exec for CodeOperator nodes."""
+"""Code executor — inline Python exec and subprocess sandbox for CodeOperator nodes."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from typing import Any
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
 from dan.models.nodes import CodeOperator, NodeBase
+from dan.sandbox import SandboxConfig, SandboxResult
+from dan.sandbox.runner import SandboxRunner
 
 logger = logging.getLogger(__name__)
 
@@ -44,15 +46,17 @@ _ALLOWED_BUILTINS: dict[str, Any] = {
     "None": None,
 }
 
+_runner = SandboxRunner()
+
 
 class CodeExecutor:
-    """Executes CodeOperator nodes in a restricted Python environment.
+    """Executes CodeOperator nodes via inline exec or subprocess sandbox.
 
-    Input data is injected as variables. The code is expected to assign
-    its output to a variable named ``result``.
-
-    No retry loop: ``exec()`` is deterministic with no timeout mechanism,
-    so retrying produces identical results. ``on_failure`` is still honored.
+    When ``sandbox_config`` is absent or ``mode="inline"``, the fast-path
+    in-process ``exec()`` is used (deterministic, no subprocess overhead).
+    When ``mode="subprocess"``, code runs in a child process via
+    :class:`SandboxRunner` with configurable timeouts, memory caps, and
+    output limits.
     """
 
     async def execute(
@@ -63,6 +67,20 @@ class CodeExecutor:
     ) -> NodeResult:
         assert isinstance(node, CodeOperator)
 
+        config = self._parse_config(node)
+
+        if config.mode == "subprocess":
+            return await self._execute_subprocess(node, inputs, context, config)
+        return await self._execute_inline(node, inputs, context)
+
+    # -- inline path (unchanged from original) --------------------------------
+
+    async def _execute_inline(
+        self,
+        node: CodeOperator,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
         if node.language != "python":
             return self._fail_result(
                 node,
@@ -111,6 +129,84 @@ class CodeExecutor:
             outputs = {}
 
         return NodeResult(outputs=outputs, status=NodeStatus.COMPLETED)
+
+    # -- subprocess path ------------------------------------------------------
+
+    async def _execute_subprocess(
+        self,
+        node: CodeOperator,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+        config: SandboxConfig,
+    ) -> NodeResult:
+        await context.emit_event(
+            event_type="sandbox_started",
+            node_id=node.id,
+            node_type="code_operator",
+            data={
+                "language": node.language,
+                "mode": "subprocess",
+                "timeout_seconds": config.timeout_seconds,
+                "memory_mb": config.memory_mb,
+            },
+        )
+
+        sandbox_result, structured_output = await _runner.run(
+            code=node.code, config=config, inputs=inputs,
+        )
+
+        await context.emit_event(
+            event_type="sandbox_completed",
+            node_id=node.id,
+            node_type="code_operator",
+            data={
+                "exit_code": sandbox_result.exit_code,
+                "duration_ms": sandbox_result.duration_ms,
+                "memory_peak_mb": sandbox_result.memory_peak_mb,
+                "truncated": sandbox_result.truncated,
+                "output_size_bytes": len(sandbox_result.stdout) + len(sandbox_result.stderr),
+            },
+        )
+
+        if sandbox_result.stdout or sandbox_result.stderr:
+            await context.emit_event(
+                event_type="code_output",
+                node_id=node.id,
+                node_type="code_operator",
+                data={
+                    "stdout": sandbox_result.stdout[:2000],
+                    "stderr": sandbox_result.stderr[:2000],
+                },
+            )
+
+        if sandbox_result.exit_code != 0:
+            error_msg = sandbox_result.stderr or f"Process exited with code {sandbox_result.exit_code}"
+            return self._fail_result(node, f"Subprocess execution failed: {error_msg}")
+
+        if structured_output is not None:
+            outputs = structured_output if isinstance(structured_output, dict) else {"result": structured_output}
+        else:
+            outputs = {}
+
+        return NodeResult(outputs=outputs, status=NodeStatus.COMPLETED)
+
+    # -- helpers --------------------------------------------------------------
+
+    @staticmethod
+    def _parse_config(node: CodeOperator) -> SandboxConfig:
+        if not node.sandbox_config:
+            return SandboxConfig()
+        try:
+            cfg = SandboxConfig(**node.sandbox_config)
+        except Exception:
+            logger.warning(
+                "Invalid sandbox_config on node '%s', falling back to inline",
+                node.id,
+            )
+            return SandboxConfig()
+        if not cfg.language or cfg.language == "python":
+            cfg = cfg.model_copy(update={"language": node.language})
+        return cfg
 
     @staticmethod
     def _fail_result(node: CodeOperator, error: str) -> NodeResult:

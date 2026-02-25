@@ -66,6 +66,11 @@ def _check_allowlist(command: str) -> None:
         )
 
 
+def _use_sandbox() -> bool:
+    """Check whether sandbox mode is enabled via env var."""
+    return os.environ.get("DAN_SANDBOX_SHELL", "").lower() in ("true", "1", "yes")
+
+
 async def shell_command(
     command: str,
     working_directory: str | None = None,
@@ -75,6 +80,19 @@ async def shell_command(
 ) -> dict:
     _check_allowlist(command)
 
+    if _use_sandbox():
+        return await _run_sandboxed(command, timeout, env)
+
+    return await _run_raw(command, working_directory, timeout, env)
+
+
+async def _run_raw(
+    command: str,
+    working_directory: str | None,
+    timeout: int,
+    env: dict | None,
+) -> dict:
+    """Original subprocess path — no sandbox wrapper."""
     run_env = {**os.environ, **(env or {})}
     cwd = working_directory or None
 
@@ -102,4 +120,36 @@ async def shell_command(
         "exit_code": proc.returncode,
         "stdout": (stdout_bytes or b"").decode("utf-8", errors="replace")[:MAX_OUTPUT_SIZE],
         "stderr": (stderr_bytes or b"").decode("utf-8", errors="replace")[:MAX_OUTPUT_SIZE],
+    }
+
+
+async def _run_sandboxed(
+    command: str,
+    timeout: int,
+    env: dict | None,
+) -> dict:
+    """Run command through SandboxRunner with ShellAdapter."""
+    from dan.sandbox import SandboxConfig
+    from dan.sandbox.runner import SandboxRunner
+
+    env_timeout = os.environ.get("DAN_SANDBOX_TIMEOUT")
+    env_memory = os.environ.get("DAN_SANDBOX_MEMORY_MB")
+
+    config = SandboxConfig(
+        mode="subprocess",
+        language="shell",
+        timeout_seconds=int(env_timeout) if env_timeout else timeout,
+        memory_mb=int(env_memory) if env_memory else None,
+        pass_env=list((env or {}).keys()),
+    )
+
+    inputs = env or {}
+
+    runner = SandboxRunner()
+    sandbox_result, _structured = await runner.run(command, config, inputs)
+
+    return {
+        "exit_code": sandbox_result.exit_code,
+        "stdout": sandbox_result.stdout[:MAX_OUTPUT_SIZE],
+        "stderr": sandbox_result.stderr[:MAX_OUTPUT_SIZE],
     }
