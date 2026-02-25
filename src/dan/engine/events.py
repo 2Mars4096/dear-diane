@@ -35,6 +35,8 @@ class EventType(str, Enum):
     HUMAN_INPUT_NEEDED = "human_input_needed"
     # -- 6-10: Gate node event types -------------------------------------------
     GATE_EVALUATED = "gate_evaluated"
+    # -- 7-1: Runtime reliability -----------------------------------------------
+    RETRY_ATTEMPTED = "retry_attempted"
 
 
 @dataclass(frozen=True)

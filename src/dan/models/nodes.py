@@ -10,6 +10,21 @@ from dan.models.ports import InputPort, OutputPort
 
 
 # ---------------------------------------------------------------------------
+# Retry policy
+# ---------------------------------------------------------------------------
+
+
+class RetryPolicy(BaseModel):
+    """Configurable retry/backoff/fallback for any node executor."""
+
+    max_retries: int = 0
+    backoff: float = 1.0
+    backoff_max: float = 60.0
+    fallback_model: str | None = None
+    on_failure: Literal["error", "skip", "halt"] = "error"
+
+
+# ---------------------------------------------------------------------------
 # UI metadata
 # ---------------------------------------------------------------------------
 
@@ -44,6 +59,7 @@ class NodeBase(BaseModel):
         description="Arbitrary UI hints (color, icon, collapsed state, …)",
     )
     metadata: dict[str, Any] = Field(default_factory=dict)
+    retry_policy: RetryPolicy | None = None
 
 
 # ---------------------------------------------------------------------------

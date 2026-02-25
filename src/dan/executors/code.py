@@ -50,6 +50,9 @@ class CodeExecutor:
 
     Input data is injected as variables. The code is expected to assign
     its output to a variable named ``result``.
+
+    No retry loop: ``exec()`` is deterministic with no timeout mechanism,
+    so retrying produces identical results. ``on_failure`` is still honored.
     """
 
     async def execute(
@@ -61,16 +64,14 @@ class CodeExecutor:
         assert isinstance(node, CodeOperator)
 
         if node.language != "python":
-            return NodeResult(
-                outputs={},
-                status=NodeStatus.FAILED,
-                error=f"Unsupported language: '{node.language}' (only 'python' is supported)",
+            return self._fail_result(
+                node,
+                f"Unsupported language: '{node.language}' (only 'python' is supported)",
             )
 
         namespace: dict[str, Any] = {"__builtins__": _ALLOWED_BUILTINS}
         namespace.update(inputs)
 
-        # -- 5-3: capture stdout/stderr for CODE_OUTPUT event ------------------
         stdout_capture = io.StringIO()
         stderr_capture = io.StringIO()
 
@@ -88,11 +89,7 @@ class CodeExecutor:
                     node_type="code_operator",
                     data={"stdout": stdout_str[:2000], "stderr": stderr_str[:2000]},
                 )
-            return NodeResult(
-                outputs={},
-                status=NodeStatus.FAILED,
-                error=f"Code execution failed: {exc}",
-            )
+            return self._fail_result(node, f"Code execution failed: {exc}")
 
         stdout_str = stdout_capture.getvalue()
         stderr_str = stderr_capture.getvalue()
@@ -114,3 +111,16 @@ class CodeExecutor:
             outputs = {}
 
         return NodeResult(outputs=outputs, status=NodeStatus.COMPLETED)
+
+    @staticmethod
+    def _fail_result(node: CodeOperator, error: str) -> NodeResult:
+        policy = node.retry_policy
+        on_failure = policy.on_failure if policy else "error"
+        if on_failure == "skip":
+            return NodeResult(outputs={}, status=NodeStatus.SKIPPED)
+        if on_failure == "halt":
+            return NodeResult(
+                outputs={}, status=NodeStatus.FAILED,
+                error=error, metadata={"halt": True},
+            )
+        return NodeResult(outputs={}, status=NodeStatus.FAILED, error=error)

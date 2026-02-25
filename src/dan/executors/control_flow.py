@@ -427,12 +427,7 @@ class RouterExecutor:
     ) -> NodeResult:
         assert isinstance(node, RouterNode)
 
-        from openai import AsyncOpenAI
-
-        client = AsyncOpenAI(
-            api_key=context.config.llm_api_key,
-            base_url=context.config.llm_base_url,
-        )
+        model = node.model or context.config.llm_default_model
 
         route_desc = "\n".join(
             f"- {name}: {desc}"
@@ -447,12 +442,7 @@ class RouterExecutor:
         )
 
         try:
-            resp = await client.chat.completions.create(
-                model=node.model or context.config.llm_default_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-            )
-            chosen = (resp.choices[0].message.content or "").strip()
+            chosen = await self._call_router_llm(context, model, prompt)
         except Exception as exc:
             return NodeResult(
                 outputs={},
@@ -477,6 +467,30 @@ class RouterExecutor:
             status=NodeStatus.COMPLETED,
             metadata={"chosen_route": chosen},
         )
+
+    @staticmethod
+    async def _call_router_llm(context: ExecutionContext, model: str, prompt: str) -> str:
+        """Dispatch to provider registry, falling back to direct AsyncOpenAI."""
+        messages = [{"role": "user", "content": prompt}]
+
+        if context.provider_registry is not None:
+            provider = context.provider_registry.resolve(model)
+            result = await provider.complete(
+                messages=messages, model=model, temperature=0.0,
+            )
+            return result.text.strip()
+
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(
+            api_key=context.config.llm_api_key,
+            base_url=context.config.llm_base_url,
+        )
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.0,
+        )
+        return (resp.choices[0].message.content or "").strip()
 
 
 # ---------------------------------------------------------------------------
