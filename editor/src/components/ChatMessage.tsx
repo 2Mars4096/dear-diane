@@ -25,10 +25,11 @@ function applyInlineMarkdown(line: string): string {
     )
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
     .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>")
-    .replace(
-      /\[([^\]]+)\]\(([^)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener" class="text-indigo-600 underline hover:text-indigo-800">$1</a>',
-    );
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text: string, url: string) => {
+      if (/^\s*javascript\s*:/i.test(url)) return escapeHtml(text);
+      const safeUrl = /^(https?:|mailto:|#)/.test(url) ? url : "#";
+      return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline hover:text-indigo-800">${text}</a>`;
+    });
 }
 
 function renderMentionHtml(name: string, type: string, id: string): string {

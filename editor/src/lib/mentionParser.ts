@@ -49,10 +49,11 @@ export function findMentionQuery(
   const atIdx = before.lastIndexOf("@");
   if (atIdx === -1) return null;
 
+  if (atIdx > 0 && !/\s/.test(before[atIdx - 1])) return null;
+
   const fragment = before.slice(atIdx + 1);
   if (/\s/.test(fragment)) return null;
 
-  // Don't trigger inside an already-completed mention: @[...](...) 
   if (atIdx > 0 || fragment.startsWith("[")) {
     const completed = before.slice(atIdx);
     if (/^@\[[^\]]*\]\([^)]*\)/.test(completed)) return null;
@@ -84,6 +85,7 @@ export function navigateToMention(
   store: {
     setSelectedNode: (id: string | null) => void;
     drillIn: (nodeId: string) => void;
+    openTab?: (graphId: string) => Promise<void>;
     danGraph: unknown;
     layerStack: unknown[];
   },
@@ -96,6 +98,7 @@ export function navigateToMention(
       store.drillIn(mention.id);
       break;
     case "workflow":
+      store.openTab?.(mention.id);
       break;
   }
 }
