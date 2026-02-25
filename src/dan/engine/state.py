@@ -48,6 +48,12 @@ class PortDataStore:
             if nid == node_id
         }
 
+    def clear_node(self, node_id: str) -> None:
+        """Remove all port data for a given node."""
+        keys_to_remove = [k for k in self._data if k[0] == node_id]
+        for k in keys_to_remove:
+            del self._data[k]
+
     def resolve_inputs(self, node_id: str, graph: Graph) -> dict[str, Any]:
         """Collect all upstream data-edge values destined for *node_id*.
 

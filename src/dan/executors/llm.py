@@ -76,19 +76,26 @@ class LLMExecutor:
         has_schema = node.output_json_schema is not None
 
         last_error: str | None = None
+        cumulative_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         for attempt in range(1 + max_norm_retries):
-            raw_text, api_error = await self._call_llm(
+            raw_text, api_error, usage = await self._call_llm(
                 client, model, messages, node, context=context, attempt=attempt
             )
+            if usage:
+                for k in cumulative_usage:
+                    cumulative_usage[k] += usage.get(k, 0)
+
             if api_error:
                 last_error = api_error
                 break
+
+            meta = {"model": model, "attempts": attempt + 1, "usage": cumulative_usage}
 
             if not has_schema:
                 return NodeResult(
                     outputs={"text": raw_text},
                     status=NodeStatus.COMPLETED,
-                    metadata={"model": model, "attempts": attempt + 1},
+                    metadata=meta,
                 )
 
             result = OutputNormalizer.normalize(raw_text, node.output_json_schema)  # type: ignore[arg-type]
@@ -96,7 +103,7 @@ class LLMExecutor:
                 return NodeResult(
                     outputs=result.data or {},
                     status=NodeStatus.COMPLETED,
-                    metadata={"model": model, "attempts": attempt + 1},
+                    metadata=meta,
                 )
 
             if attempt < max_norm_retries:
@@ -115,8 +122,19 @@ class LLMExecutor:
             outputs={},
             status=NodeStatus.FAILED,
             error=last_error or "LLM execution failed",
-            metadata={"model": model},
+            metadata={"model": model, "usage": cumulative_usage},
         )
+
+    @staticmethod
+    def _extract_usage(obj: Any) -> dict[str, int] | None:
+        usage = getattr(obj, "usage", None)
+        if usage is None:
+            return None
+        return {
+            "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
+            "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
+            "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+        }
 
     async def _call_llm(
         self,
@@ -126,11 +144,11 @@ class LLMExecutor:
         node: LLMOperator,
         context: ExecutionContext | None = None,
         attempt: int = 0,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, dict[str, int] | None]:
         """Call the LLM with retry on transient API errors.
 
-        Returns (response_text, error_message). On success error_message
-        is None; on exhausted retries response_text is empty.
+        Returns (response_text, error_message, usage_dict). On success
+        error_message is None; on exhausted retries response_text is empty.
         """
         max_retries = 3
         backoff = 1.0
@@ -147,20 +165,24 @@ class LLMExecutor:
 
                 try:
                     kwargs["stream"] = True
+                    kwargs["stream_options"] = {"include_usage": True}
                     stream = await client.chat.completions.create(**kwargs)
                     accumulated = ""
                     chunk_count = 0
+                    last_chunk = None
                     async for chunk in stream:
-                        delta = chunk.choices[0].delta.content or ""
-                        accumulated += delta
-                        chunk_count += 1
-                        if context and chunk_count % 5 == 0:
-                            await context.emit_event(
-                                event_type="intermediate_text",
-                                node_id=node.id,
-                                node_type="llm_operator",
-                                data={"delta": delta, "text": accumulated, "attempt": attempt},
-                            )
+                        last_chunk = chunk
+                        if chunk.choices:
+                            delta = chunk.choices[0].delta.content or ""
+                            accumulated += delta
+                            chunk_count += 1
+                            if context and chunk_count % 5 == 0:
+                                await context.emit_event(
+                                    event_type="intermediate_text",
+                                    node_id=node.id,
+                                    node_type="llm_operator",
+                                    data={"delta": delta, "text": accumulated, "attempt": attempt},
+                                )
                     if context and accumulated:
                         await context.emit_event(
                             event_type="intermediate_text",
@@ -168,12 +190,14 @@ class LLMExecutor:
                             node_type="llm_operator",
                             data={"delta": "", "text": accumulated, "attempt": attempt, "done": True},
                         )
-                    return accumulated, None
+                    usage = self._extract_usage(last_chunk) if last_chunk else None
+                    return accumulated, None, usage
                 except Exception:
                     kwargs.pop("stream", None)
+                    kwargs.pop("stream_options", None)
                     resp = await client.chat.completions.create(**kwargs)
                     content = resp.choices[0].message.content or ""
-                    return content, None
+                    return content, None, self._extract_usage(resp)
 
             except (RateLimitError, APITimeoutError) as exc:
                 if retry < max_retries - 1:
@@ -184,12 +208,12 @@ class LLMExecutor:
                     await asyncio.sleep(backoff)
                     backoff *= 2
                 else:
-                    return "", f"API error after {max_retries} retries: {exc}"
+                    return "", f"API error after {max_retries} retries: {exc}", None
 
             except APIError as exc:
-                return "", f"API error: {exc}"
+                return "", f"API error: {exc}", None
 
             except Exception as exc:
-                return "", f"Unexpected error calling LLM: {exc}"
+                return "", f"Unexpected error calling LLM: {exc}", None
 
-        return "", "LLM call failed"
+        return "", "LLM call failed", None

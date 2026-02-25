@@ -7,6 +7,7 @@ import json
 import logging
 import time
 import uuid as _uuid
+import warnings
 from typing import Any
 
 from dan.engine.conditions import ConditionError, evaluate_condition
@@ -15,6 +16,7 @@ from dan.engine.state import NodeStatus
 from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
+    GateNode,
     HumanInTheLoopNode,
     IfElseNode,
     ReduceNode,
@@ -42,6 +44,11 @@ class IfElseExecutor:
         context: ExecutionContext,
     ) -> NodeResult:
         assert isinstance(node, IfElseNode)
+        warnings.warn(
+            "IfElseNode is deprecated; use GateNode(gate_mode='if_else') instead",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         try:
             result = evaluate_condition(node.condition, inputs)
         except ConditionError as exc:
@@ -56,6 +63,77 @@ class IfElseExecutor:
             outputs={"branch": branch, **inputs},
             status=NodeStatus.COMPLETED,
             metadata={"condition_result": result, "branch": branch},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Gate
+# ---------------------------------------------------------------------------
+
+
+class GateExecutor:
+    """Evaluates condition and routes data to exactly one branch output port.
+
+    For if_else mode: evaluates condition, writes inputs to the active branch port only.
+    For while mode: injects iteration counter from local state, then routes to
+    'continue' or 'done'. The scheduler handles back-edge re-execution externally.
+    """
+
+    async def execute(
+        self,
+        node: NodeBase,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        assert isinstance(node, GateNode)
+
+        condition_vars = dict(inputs)
+        if node.gate_mode == "while":
+            scope = context.local_state.get_scope(node.id)
+            iteration = scope.get("gate_iteration", 0)
+            condition_vars["iteration"] = iteration
+
+        try:
+            result = evaluate_condition(node.condition, condition_vars)
+        except ConditionError as exc:
+            return NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error=str(exc),
+            )
+
+        if node.gate_mode == "if_else":
+            active_branch = "true" if result else "false"
+            return NodeResult(
+                outputs={active_branch: inputs},
+                status=NodeStatus.COMPLETED,
+                metadata={"condition_result": result, "active_branch": active_branch},
+            )
+
+        # while mode
+        active_branch = "continue" if result else "done"
+
+        await context.emit_event(
+            event_type="gate_evaluated",
+            node_id=node.id,
+            node_type="gate",
+            data={
+                "gate_mode": "while",
+                "active_branch": active_branch,
+                "iteration": condition_vars.get("iteration", 0),
+                "max_iterations": node.max_iterations,
+                "condition": node.condition,
+            },
+        )
+
+        return NodeResult(
+            outputs={active_branch: inputs},
+            status=NodeStatus.COMPLETED,
+            metadata={
+                "condition_result": result,
+                "active_branch": active_branch,
+                "iteration": condition_vars.get("iteration", 0),
+            },
         )
 
 
@@ -82,6 +160,11 @@ class WhileLoopExecutor:
         context: ExecutionContext,
     ) -> NodeResult:
         assert isinstance(node, WhileLoopNode)
+        warnings.warn(
+            "WhileLoopNode is deprecated; use GateNode(gate_mode='while') for flat visible loops",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         scope = context.local_state.get_scope(node.id)
         scope.setdefault("iteration", 0)

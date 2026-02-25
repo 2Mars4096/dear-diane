@@ -552,11 +552,19 @@ async def create_graph(req: CreateGraphRequest):
     return {"graph_id": req.graph_id, "data": data}
 
 
+_gate_migration_enabled = os.environ.get("DAN_GATE_MIGRATION_ENABLED", "").lower() in (
+    "1", "true", "yes",
+)
+
+
 @app.get("/api/graphs/{graph_id}")
 async def get_graph(graph_id: str):
     data = _graph_store.get_graph(graph_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    if _gate_migration_enabled and isinstance(data, dict):
+        from dan.migration.gate_migration import migrate_graph
+        data = migrate_graph(data)
     _graph_store.set_last_opened(graph_id)
     return {"graph_id": graph_id, "data": data}
 
@@ -586,6 +594,7 @@ async def validate_graph_endpoint(graph_id: str):
 
     raw_errors = validate_graph(graph)
     errors: list[dict[str, str]] = []
+    warnings: list[dict[str, str]] = []
     for msg in raw_errors:
         entry: dict[str, str] = {"message": msg}
         edge_match = re.search(r"(?:Edge|ContextEdge) '([^']+)'", msg)
@@ -597,9 +606,17 @@ async def validate_graph_endpoint(graph_id: str):
             entry["node_id"] = node_match.group(1)
         elif cycle_match:
             entry["node_id"] = cycle_match.group(1)
-        errors.append(entry)
+        lower = msg.lower()
+        is_warning = any(
+            p in lower
+            for p in ("schema safety bypassed", "untyped data edge", "deprecated")
+        )
+        if is_warning:
+            warnings.append(entry)
+        else:
+            errors.append(entry)
 
-    return {"errors": errors, "warnings": []}
+    return {"errors": errors, "warnings": warnings}
 
 
 # ------------------------------------------------------------------

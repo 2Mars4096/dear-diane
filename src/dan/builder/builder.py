@@ -225,6 +225,38 @@ class WorkflowBuilder:
         self._add_node(pn)
         return NodeRef(node_id, "if_else", self)
 
+    def gate(
+        self,
+        node_id: str,
+        *,
+        condition: str,
+        gate_mode: str = "if_else",
+        max_iterations: int = 10,
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Add a GateNode to the workflow."""
+        from dan.models.ports import InputPort, OutputPort
+
+        kwargs: dict[str, Any] = {
+            "name": name or node_id,
+            "description": description,
+            "condition": condition,
+            "gate_mode": gate_mode,
+            "max_iterations": max_iterations,
+        }
+        pn = _PendingNode(
+            id=node_id,
+            node_type="gate",
+            kwargs=kwargs,
+            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
+            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
+        )
+        self._add_node(pn)
+        return NodeRef(node_id, "gate", self)
+
     def reduce(
         self,
         node_id: str,

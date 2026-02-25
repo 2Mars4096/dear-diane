@@ -20,6 +20,7 @@ from dan.builder.compiler import DEFAULT_INPUT_PORT, default_output_port
 from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
+    GateNode,
     WhileLoopNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
@@ -231,6 +232,13 @@ class _Decompiler:
         elif nt == "if_else":
             method = "wf.if_else"
             kwargs.append(f"condition={node.condition!r}")
+        elif nt == "gate":
+            method = "wf.gate"
+            kwargs.append(f"condition={node.condition!r}")
+            if node.gate_mode != "if_else":
+                kwargs.append(f"gate_mode={node.gate_mode!r}")
+            if node.max_iterations != 10:
+                kwargs.append(f"max_iterations={node.max_iterations!r}")
         elif nt == "reduce":
             method = "wf.reduce"
             kwargs.append(f"reducer={node.reducer!r}")

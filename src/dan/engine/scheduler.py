@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import defaultdict
+import time as _time
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -16,6 +17,12 @@ from dan.engine.state import ExecutionState, NodeStatus
 from dan.models.edges import ControlEdge, ContextEdge, DataEdge
 from dan.models.graph import Graph
 
+try:
+    from dan.models.control_flow import GateNode  # noqa: F401 — added by another agent
+    _HAS_GATE_NODE = True
+except ImportError:
+    _HAS_GATE_NODE = False
+
 EventCallback = Callable[[EngineEvent], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
@@ -23,6 +30,7 @@ logger = logging.getLogger(__name__)
 _VALIDATION_WARNING_PATTERNS = (
     "schema safety bypassed",
     "untyped data edge",
+    "deprecated",
 )
 
 
@@ -78,6 +86,143 @@ def _topological_levels(graph: Graph) -> list[list[str]]:
     return levels
 
 
+def _is_gate_node(node) -> bool:
+    """Check whether *node* is a gate node regardless of import availability."""
+    if _HAS_GATE_NODE:
+        from dan.models.control_flow import GateNode
+        return isinstance(node, GateNode)
+    return getattr(node, "node_type", None) == "gate"
+
+
+def _topological_levels_with_backedges(
+    graph: Graph,
+) -> tuple[list[list[str]], dict[str, str], dict[str, set[str]]]:
+    """Extended topo sort that identifies back-edges and cycle regions.
+
+    Returns:
+        levels: standard topo levels (with back-edges excluded from in-degree)
+        back_edges: dict mapping gate_node_id -> back-edge target_node_id
+        cycle_regions: dict mapping gate_node_id -> set of node IDs in its cycle
+    """
+    node_ids = {n.id for n in graph.nodes}
+    node_map = {n.id: n for n in graph.nodes}
+
+    # --- Step 1: identify candidate back-edges --------------------------
+    # A back-edge is a DataEdge from a gate(while) node's continue-style port
+    # pointing backward in the graph.
+    candidate_back: list[DataEdge] = []
+    forward_edges: list[DataEdge] = []
+
+    for edge in graph.edges:
+        if not isinstance(edge, DataEdge) or edge.target_node_id not in node_ids:
+            continue
+        src_node = node_map.get(edge.source_node_id)
+        if (
+            src_node is not None
+            and _is_gate_node(src_node)
+            and getattr(src_node, "gate_mode", None) == "while"
+            and edge.source_port in ("continue", "loop")
+        ):
+            candidate_back.append(edge)
+        else:
+            forward_edges.append(edge)
+
+    # Build a preliminary topo ordering ignoring candidates so we can confirm
+    # which candidates truly point backward.
+    in_deg: dict[str, int] = defaultdict(int)
+    deps: dict[str, list[str]] = defaultdict(list)
+    for nid in node_ids:
+        in_deg.setdefault(nid, 0)
+    for edge in forward_edges:
+        if edge.source_node_id in node_ids:
+            in_deg[edge.target_node_id] += 1
+            deps[edge.source_node_id].append(edge.target_node_id)
+
+    order: dict[str, int] = {}
+    queue: list[str] = [nid for nid in node_ids if in_deg[nid] == 0]
+    idx = 0
+    while queue:
+        next_q: list[str] = []
+        for nid in sorted(queue):
+            order[nid] = idx
+            idx += 1
+            for dep in deps[nid]:
+                in_deg[dep] -= 1
+                if in_deg[dep] == 0:
+                    next_q.append(dep)
+        queue = next_q
+
+    # Confirm back-edges: target must appear *before* source in the ordering
+    back_edges: dict[str, str] = {}
+    for edge in candidate_back:
+        src_ord = order.get(edge.source_node_id)
+        tgt_ord = order.get(edge.target_node_id)
+        if src_ord is not None and tgt_ord is not None and tgt_ord < src_ord:
+            back_edges[edge.source_node_id] = edge.target_node_id
+        else:
+            forward_edges.append(edge)
+
+    # --- Step 2: standard Kahn's with back-edges excluded ---------------
+    in_degree: dict[str, int] = defaultdict(int)
+    dependents: dict[str, list[str]] = defaultdict(list)
+    for nid in node_ids:
+        in_degree.setdefault(nid, 0)
+    for edge in forward_edges:
+        if edge.source_node_id in node_ids:
+            in_degree[edge.target_node_id] += 1
+            dependents[edge.source_node_id].append(edge.target_node_id)
+
+    levels: list[list[str]] = []
+    queue = [nid for nid in node_ids if in_degree[nid] == 0]
+    while queue:
+        levels.append(sorted(queue))
+        next_q = []
+        for nid in queue:
+            for dep in dependents[nid]:
+                in_degree[dep] -= 1
+                if in_degree[dep] == 0:
+                    next_q.append(dep)
+        queue = next_q
+
+    # --- Step 3: compute cycle regions per gate -------------------------
+    # For each back-edge (gate -> loop_target), the cycle region is all nodes
+    # reachable from loop_target that can reach the gate via forward edges.
+    fwd_adj: dict[str, set[str]] = defaultdict(set)
+    rev_adj: dict[str, set[str]] = defaultdict(set)
+    for edge in forward_edges:
+        if edge.source_node_id in node_ids and edge.target_node_id in node_ids:
+            fwd_adj[edge.source_node_id].add(edge.target_node_id)
+            rev_adj[edge.target_node_id].add(edge.source_node_id)
+
+    cycle_regions: dict[str, set[str]] = {}
+    for gate_id, loop_target in back_edges.items():
+        reachable_fwd: set[str] = set()
+        q: deque[str] = deque([loop_target])
+        while q:
+            n = q.popleft()
+            if n in reachable_fwd:
+                continue
+            reachable_fwd.add(n)
+            for succ in fwd_adj.get(n, set()):
+                if succ not in reachable_fwd:
+                    q.append(succ)
+
+        reachable_rev: set[str] = set()
+        q = deque([gate_id])
+        while q:
+            n = q.popleft()
+            if n in reachable_rev:
+                continue
+            reachable_rev.add(n)
+            for pred in rev_adj.get(n, set()):
+                if pred not in reachable_rev:
+                    q.append(pred)
+
+        cycle_regions[gate_id] = reachable_fwd & reachable_rev
+
+    return levels, back_edges, cycle_regions
+
+
 class Engine:
     """The core graph execution engine.
 
@@ -119,6 +264,7 @@ class Engine:
         from dan.executors.control_flow import (
             CompositeExecutor,
             ForEachExecutor,
+            GateExecutor,
             HumanInTheLoopExecutor,
             IfElseExecutor,
             ReduceExecutor,
@@ -132,6 +278,7 @@ class Engine:
             ("code_operator", CodeExecutor()),
             ("input", InputExecutor()),
             ("if_else", IfElseExecutor()),
+            ("gate", GateExecutor()),
             ("while_loop", WhileLoopExecutor()),
             ("for_each", ForEachExecutor()),
             ("reduce", ReduceExecutor()),
@@ -253,6 +400,7 @@ class Engine:
         local_state: LocalStateManager,
     ) -> RunResult:
         """Core scheduling loop: dispatch ready nodes, checkpoint, repeat."""
+        run_start = _time.time()
         await self._emit(EngineEvent(
             event_type=EventType.RUN_STARTED,
             run_id=state.run_id,
@@ -263,7 +411,68 @@ class Engine:
             state, shared_context, artifacts, local_state, graph
         )
 
-        levels = _topological_levels(graph)
+        levels, back_edges, cycle_regions = _topological_levels_with_backedges(graph)
+
+        if not back_edges:
+            # DAG fast-path — identical to original behaviour
+            for level in levels:
+                ready = [
+                    nid for nid in level
+                    if state.node_statuses.get(nid) == NodeStatus.PENDING
+                ]
+                if not ready:
+                    continue
+
+                tasks = [
+                    self._execute_node(nid, graph, state, context)
+                    for nid in ready
+                ]
+                await asyncio.gather(*tasks)
+
+                if self.checkpoint_store is not None:
+                    await self._save_checkpoint(
+                        state, shared_context, artifacts, local_state
+                    )
+        else:
+            await self._execute_with_cycles(
+                graph, state, context, levels, back_edges, cycle_regions,
+                shared_context, artifacts, local_state,
+            )
+
+        result = self._build_result(graph, state)
+        elapsed = round(_time.time() - run_start, 2)
+        total_usage = self._aggregate_usage(state)
+        evt_type = EventType.RUN_COMPLETED if result.success else EventType.RUN_FAILED
+        await self._emit(EngineEvent(
+            event_type=evt_type,
+            run_id=state.run_id,
+            data={
+                "success": result.success,
+                "errors": result.errors,
+                "elapsed_seconds": elapsed,
+                **total_usage,
+            },
+        ))
+        return result
+
+    # ------------------------------------------------------------------
+    # Cycle-aware execution
+    # ------------------------------------------------------------------
+
+    async def _execute_with_cycles(
+        self,
+        graph: Graph,
+        state: ExecutionState,
+        context: ExecutionContext,
+        levels: list[list[str]],
+        back_edges: dict[str, str],
+        cycle_regions: dict[str, set[str]],
+        shared_context: SharedContextStore,
+        artifacts: ArtifactStore,
+        local_state: LocalStateManager,
+    ) -> None:
+        """Execute graph with cycle regions handled via bounded iteration."""
+        executed_gates: set[str] = set()
 
         for level in levels:
             ready = [
@@ -279,19 +488,104 @@ class Engine:
             ]
             await asyncio.gather(*tasks)
 
+            for nid in ready:
+                if nid not in cycle_regions or nid in executed_gates:
+                    continue
+                gate_node = graph.node_by_id(nid)
+                if gate_node is None or not _is_gate_node(gate_node):
+                    continue
+
+                gate_outputs = state.port_data.get_node_outputs(nid)
+                active_branch = None
+                for port_name in gate_outputs:
+                    if port_name in ("continue", "loop"):
+                        active_branch = port_name
+                        break
+
+                if active_branch is not None:
+                    max_iter = getattr(gate_node, "max_iterations", 10)
+                    cycle_nodes = cycle_regions[nid]
+                    back_edge_target = back_edges.get(nid)
+                    if back_edge_target:
+                        await self._iterate_cycle(
+                            graph, state, context, nid, cycle_nodes,
+                            back_edge_target, max_iter, levels,
+                        )
+                        executed_gates.add(nid)
+
             if self.checkpoint_store is not None:
                 await self._save_checkpoint(
-                    state, shared_context, artifacts, local_state
+                    state, shared_context, artifacts, local_state,
                 )
 
-        result = self._build_result(graph, state)
-        evt_type = EventType.RUN_COMPLETED if result.success else EventType.RUN_FAILED
-        await self._emit(EngineEvent(
-            event_type=evt_type,
-            run_id=state.run_id,
-            data={"success": result.success, "errors": result.errors},
-        ))
-        return result
+    async def _iterate_cycle(
+        self,
+        graph: Graph,
+        state: ExecutionState,
+        context: ExecutionContext,
+        gate_id: str,
+        cycle_nodes: set[str],
+        back_edge_target: str,
+        max_iterations: int,
+        levels: list[list[str]],
+    ) -> None:
+        """Re-execute cycle region nodes until gate emits 'done' or max iterations."""
+        for iteration in range(1, max_iterations):
+            await self._emit(EngineEvent(
+                event_type=EventType.ITERATION_STARTED,
+                run_id=state.run_id,
+                node_id=gate_id,
+                node_type="gate",
+                data={"iteration": iteration, "max_iterations": max_iterations},
+            ))
+
+            continue_data = state.port_data.get_node_outputs(gate_id).get("continue")
+            if continue_data is None:
+                continue_data = state.port_data.get_node_outputs(gate_id).get("loop")
+
+            for cn in cycle_nodes:
+                state.port_data.clear_node(cn)
+                state.mark(cn, NodeStatus.PENDING)
+
+            if isinstance(continue_data, dict):
+                for port_name, value in continue_data.items():
+                    state.port_data.set(
+                        f"__input__{back_edge_target}", port_name, value,
+                    )
+
+            cycle_levels = [
+                [nid for nid in level if nid in cycle_nodes]
+                for level in levels
+            ]
+
+            for level in cycle_levels:
+                ready = [
+                    nid for nid in level
+                    if state.node_statuses.get(nid) == NodeStatus.PENDING
+                ]
+                if not ready:
+                    continue
+                tasks = [
+                    self._execute_node(nid, graph, state, context)
+                    for nid in ready
+                ]
+                await asyncio.gather(*tasks)
+
+            gate_outputs = state.port_data.get_node_outputs(gate_id)
+            exiting = "done" in gate_outputs or "false" in gate_outputs
+            await self._emit(EngineEvent(
+                event_type=EventType.ITERATION_COMPLETED,
+                run_id=state.run_id,
+                node_id=gate_id,
+                node_type="gate",
+                data={
+                    "iteration": iteration,
+                    "max_iterations": max_iterations,
+                    "exit": exiting,
+                },
+            ))
+            if exiting:
+                break
 
     async def _execute_node(
         self,
@@ -332,7 +626,7 @@ class Engine:
         virtual_src = f"__input__{node_id}"
         for port in node.input_ports:
             if state.port_data.has(virtual_src, port.name):
-                inputs.setdefault(port.name, state.port_data.get(virtual_src, port.name))
+                inputs[port.name] = state.port_data.get(virtual_src, port.name)
 
         self._read_context_edges(node_id, graph, context, inputs)
 
@@ -391,7 +685,11 @@ class Engine:
     def _should_skip(
         self, node_id: str, graph: Graph, state: ExecutionState
     ) -> bool:
-        """Skip a node if it's on an inactive IfElse branch."""
+        """Skip a node if it's on an inactive branch.
+
+        Handles both legacy ControlEdge-based branching and newer gate
+        branch-port routing where the inactive port has no data.
+        """
         for edge in graph.edges_to(node_id):
             if not isinstance(edge, ControlEdge):
                 continue
@@ -401,6 +699,22 @@ class Engine:
             active_branch = source_outputs.get("branch")
             if active_branch is not None and active_branch != edge.condition:
                 return True
+
+        for edge in graph.edges_to(node_id):
+            if not isinstance(edge, DataEdge):
+                continue
+            source_node = graph.node_by_id(edge.source_node_id)
+            if source_node is None or not _is_gate_node(source_node):
+                continue
+            # Back-edge ports (continue/loop on while-gates) should not
+            # trigger skipping — the target is a loop-back node, not an
+            # inactive forward branch.
+            gate_mode = getattr(source_node, "gate_mode", None)
+            if gate_mode == "while" and edge.source_port in ("continue", "loop"):
+                continue
+            if not state.port_data.has(edge.source_node_id, edge.source_port):
+                return True
+
         return False
 
     @staticmethod
@@ -554,6 +868,19 @@ class Engine:
             "local_state": local_state.snapshot(),
         }
         await self.checkpoint_store.save(state.run_id, checkpoint)
+
+    @staticmethod
+    def _aggregate_usage(state: ExecutionState) -> dict[str, Any]:
+        """Sum token usage from all node metadata entries."""
+        totals = {"total_prompt_tokens": 0, "total_completion_tokens": 0, "total_tokens": 0}
+        for meta in state.node_metadata.values():
+            usage = meta.get("usage") if isinstance(meta, dict) else None
+            if not usage:
+                continue
+            totals["total_prompt_tokens"] += usage.get("prompt_tokens", 0)
+            totals["total_completion_tokens"] += usage.get("completion_tokens", 0)
+            totals["total_tokens"] += usage.get("total_tokens", 0)
+        return totals
 
     @staticmethod
     def _build_result(graph: Graph, state: ExecutionState) -> RunResult:

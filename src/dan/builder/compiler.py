@@ -21,6 +21,7 @@ from dan.models.context import ArtifactRef, ContextMode, SharedContextDeclaratio
 from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
+    GateNode,
     HumanInTheLoopNode,
     IfElseNode,
     ReduceNode,
@@ -36,6 +37,7 @@ from dan.validation.graph import validate_graph
 _VALIDATION_WARNING_PATTERNS = (
     "schema safety bypassed",
     "untyped data edge",
+    "deprecated",
 )
 
 # ── Node-type output contract map ──────────────────────────────────────
@@ -47,6 +49,7 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "tool_operator": "result",
     "code_operator": "result",
     "if_else": "branch",
+    "gate": "true",
     "while_loop": "result",
     "for_each": "results",
     "reduce": "result",
@@ -322,6 +325,8 @@ def _build_node(pn: _PendingNode) -> NodeBase:
         return CodeOperator(**common, **kwargs)
     elif pn.node_type == "if_else":
         return IfElseNode(**common, **kwargs)
+    elif pn.node_type == "gate":
+        return GateNode(**common, **kwargs)
     elif pn.node_type == "while_loop":
         return WhileLoopNode(**common, **kwargs)
     elif pn.node_type == "for_each":

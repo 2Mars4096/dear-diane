@@ -33,6 +33,8 @@ class EventType(str, Enum):
     ITERATION_STARTED = "iteration_started"
     ITERATION_COMPLETED = "iteration_completed"
     HUMAN_INPUT_NEEDED = "human_input_needed"
+    # -- 6-10: Gate node event types -------------------------------------------
+    GATE_EVALUATED = "gate_evaluated"
 
 
 @dataclass(frozen=True)
