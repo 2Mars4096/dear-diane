@@ -16,10 +16,11 @@ from dan.models.control_flow import (
     InputNode,
     ReduceNode,
     RouterNode,
+    ValidatorNode,
     WhileLoopNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
-from dan.models.nodes import CodeOperator, LLMOperator, ToolOperator
+from dan.models.nodes import CodeOperator, LLMOperator, RAGOperator, ToolOperator
 
 # ---------------------------------------------------------------------------
 # Discriminated unions — Pydantic resolves the concrete type from JSON
@@ -31,6 +32,7 @@ Node = Annotated[
         LLMOperator,
         ToolOperator,
         CodeOperator,
+        RAGOperator,
         InputNode,
         IfElseNode,
         GateNode,
@@ -39,6 +41,7 @@ Node = Annotated[
         ReduceNode,
         RouterNode,
         HumanInTheLoopNode,
+        ValidatorNode,
         CompositeNode,
     ],
     Field(discriminator="node_type"),

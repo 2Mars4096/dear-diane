@@ -21,8 +21,10 @@ from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
     GateNode,
+    ValidatorNode,
     WhileLoopNode,
 )
+from dan.models.nodes import RAGOperator
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph
 
@@ -254,6 +256,32 @@ class _Decompiler:
                 kwargs.append(f"timeout_seconds={node.timeout_seconds!r}")
             if node.default_action is not None:
                 kwargs.append(f"default_action={node.default_action!r}")
+        elif nt == "rag_operator":
+            method = "wf.rag"
+            kwargs.append(f"collection={node.collection!r}")
+            if node.top_k != 5:
+                kwargs.append(f"top_k={node.top_k!r}")
+            if node.similarity_threshold is not None:
+                kwargs.append(f"similarity_threshold={node.similarity_threshold!r}")
+            if node.embedding_model:
+                kwargs.append(f"embedding_model={node.embedding_model!r}")
+            if node.vector_store_config:
+                kwargs.append(f"vector_store_config={node.vector_store_config!r}")
+            if node.query_template != "{query}":
+                kwargs.append(f"query_template={node.query_template!r}")
+            if not node.include_metadata:
+                kwargs.append(f"include_metadata={node.include_metadata!r}")
+            if node.rerank:
+                kwargs.append(f"rerank={node.rerank!r}")
+        elif nt == "validator":
+            method = "wf.validator"
+            if node.validation_rules:
+                rules_data = [r.model_dump() for r in node.validation_rules]
+                kwargs.append(f"rules={rules_data!r}")
+            if node.on_failure != "route":
+                kwargs.append(f"on_failure={node.on_failure!r}")
+            if node.strict_mode:
+                kwargs.append(f"strict_mode={node.strict_mode!r}")
         else:
             method = f"wf.llm"  # fallback
 

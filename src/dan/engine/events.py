@@ -37,6 +37,14 @@ class EventType(str, Enum):
     GATE_EVALUATED = "gate_evaluated"
     # -- 7-1: Runtime reliability -----------------------------------------------
     RETRY_ATTEMPTED = "retry_attempted"
+    # -- 9-1: RAG events -------------------------------------------------------
+    RETRIEVAL_STARTED = "retrieval_started"
+    RETRIEVAL_COMPLETED = "retrieval_completed"
+    # -- 9-2: Sandbox events ----------------------------------------------------
+    SANDBOX_STARTED = "sandbox_started"
+    SANDBOX_COMPLETED = "sandbox_completed"
+    # -- 9-3: Validator events --------------------------------------------------
+    VALIDATION_RESULT = "validation_result"
 
 
 @dataclass(frozen=True)

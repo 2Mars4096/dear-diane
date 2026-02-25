@@ -15,6 +15,7 @@ from dan.models.nodes import (
     CodeOperator,
     LLMOperator,
     NodeBase,
+    RAGOperator,
     ToolOperator,
 )
 from dan.models.control_flow import (
@@ -26,6 +27,7 @@ from dan.models.control_flow import (
     InputNode,
     ReduceNode,
     RouterNode,
+    ValidatorNode,
     WhileLoopNode,
 )
 
@@ -73,6 +75,7 @@ _BUILTINS: list[tuple[str, Type[NodeBase]]] = [
     ("llm_operator", LLMOperator),
     ("tool_operator", ToolOperator),
     ("code_operator", CodeOperator),
+    ("rag_operator", RAGOperator),
     ("input", InputNode),
     ("if_else", IfElseNode),
     ("gate", GateNode),
@@ -81,6 +84,7 @@ _BUILTINS: list[tuple[str, Type[NodeBase]]] = [
     ("reduce", ReduceNode),
     ("router", RouterNode),
     ("human_in_the_loop", HumanInTheLoopNode),
+    ("validator", ValidatorNode),
     ("composite", CompositeNode),
 ]
 

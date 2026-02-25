@@ -26,11 +26,12 @@ from dan.models.control_flow import (
     IfElseNode,
     ReduceNode,
     RouterNode,
+    ValidatorNode,
     WhileLoopNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph, GraphMetadata
-from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, ToolOperator
+from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, RAGOperator, ToolOperator
 from dan.models.ports import InputPort, OutputPort
 from dan.validation.graph import validate_graph
 
@@ -48,6 +49,7 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "llm_operator": "text",
     "tool_operator": "result",
     "code_operator": "result",
+    "rag_operator": "chunks",
     "if_else": "branch",
     "gate": "true",
     "while_loop": "result",
@@ -55,6 +57,7 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "reduce": "result",
     "router": "route",
     "human_in_the_loop": "response",
+    "validator": "valid",
     "composite": "result",
 }
 
@@ -337,6 +340,10 @@ def _build_node(pn: _PendingNode) -> NodeBase:
         return RouterNode(**common, **kwargs)
     elif pn.node_type == "human_in_the_loop":
         return HumanInTheLoopNode(**common, **kwargs)
+    elif pn.node_type == "rag_operator":
+        return RAGOperator(**common, **kwargs)
+    elif pn.node_type == "validator":
+        return ValidatorNode(**common, **kwargs)
     elif pn.node_type == "composite":
         return CompositeNode(**common, **kwargs)
     else:

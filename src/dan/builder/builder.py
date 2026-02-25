@@ -197,6 +197,85 @@ class WorkflowBuilder:
         self._add_node(pn)
         return NodeRef(node_id, "code_operator", self)
 
+    def rag(
+        self,
+        node_id: str,
+        *,
+        collection: str,
+        top_k: int = 5,
+        similarity_threshold: float | None = None,
+        embedding_model: str = "",
+        vector_store_config: dict[str, Any] | None = None,
+        query_template: str = "{query}",
+        include_metadata: bool = True,
+        rerank: bool = False,
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Add a RAG operator node for vector-store retrieval."""
+        from dan.models.ports import InputPort, OutputPort
+
+        kwargs: dict[str, Any] = {
+            "name": name or node_id,
+            "description": description,
+            "collection": collection,
+            "top_k": top_k,
+            "query_template": query_template,
+            "include_metadata": include_metadata,
+            "rerank": rerank,
+        }
+        if similarity_threshold is not None:
+            kwargs["similarity_threshold"] = similarity_threshold
+        if embedding_model:
+            kwargs["embedding_model"] = embedding_model
+        if vector_store_config:
+            kwargs["vector_store_config"] = vector_store_config
+
+        pn = _PendingNode(
+            id=node_id,
+            node_type="rag_operator",
+            kwargs=kwargs,
+            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
+            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
+        )
+        self._add_node(pn)
+        return NodeRef(node_id, "rag_operator", self)
+
+    def validator(
+        self,
+        node_id: str,
+        *,
+        rules: list[dict[str, Any]] | None = None,
+        on_failure: str = "route",
+        strict_mode: bool = False,
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Add a validator node for data validation at agent boundaries."""
+        from dan.models.ports import InputPort, OutputPort
+
+        kwargs: dict[str, Any] = {
+            "name": name or node_id,
+            "description": description,
+            "validation_rules": rules or [],
+            "on_failure": on_failure,
+            "strict_mode": strict_mode,
+        }
+
+        pn = _PendingNode(
+            id=node_id,
+            node_type="validator",
+            kwargs=kwargs,
+            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
+            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
+        )
+        self._add_node(pn)
+        return NodeRef(node_id, "validator", self)
+
     def if_else(
         self,
         node_id: str,

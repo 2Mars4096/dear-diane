@@ -138,6 +138,44 @@ class HumanInTheLoopNode(NodeBase):
 
 
 # ---------------------------------------------------------------------------
+# Validation / handoff node
+# ---------------------------------------------------------------------------
+
+
+class ValidationRule(BaseModel):
+    """A single validation rule applied by a ValidatorNode."""
+
+    rule_type: Literal[
+        "required_keys",
+        "non_empty",
+        "schema_conformance",
+        "type_check",
+        "custom_expression",
+    ]
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class ValidatorNode(NodeBase):
+    """Checks data at agent boundaries and routes to valid/invalid ports.
+
+    Visible on the canvas — not hidden middleware.  Rule evaluation is
+    sequential; ``strict_mode`` stops at the first violation.
+    """
+
+    node_type: Literal["validator"] = "validator"
+    validation_rules: list[ValidationRule] = Field(default_factory=list)
+    on_failure: Literal["route", "warn", "halt"] = "route"
+    strict_mode: bool = False
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.output_ports:
+            self.output_ports = [
+                OutputPort(name="valid", description="Passthrough when all rules pass"),
+                OutputPort(name="invalid", description="Data + errors when any rule fails"),
+            ]
+
+
+# ---------------------------------------------------------------------------
 # Sub-graph-bearing control-flow — full composite-node contract
 # ---------------------------------------------------------------------------
 

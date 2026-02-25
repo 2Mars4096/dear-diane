@@ -101,3 +101,22 @@ class CodeOperator(NodeBase):
     code: str
     language: str = "python"
     sandbox_config: dict[str, Any] = Field(default_factory=dict)
+
+
+class RAGOperator(NodeBase):
+    """Retrieves relevant chunks from a vector store given a query.
+
+    Backed by a pluggable vector store and embedding pipeline.
+    The query is embedded, searched against the collection, and
+    matching chunks are returned on the ``chunks`` output port.
+    """
+
+    node_type: Literal["rag_operator"] = "rag_operator"
+    collection: str
+    top_k: int = 5
+    similarity_threshold: float | None = None
+    embedding_model: str = ""
+    vector_store_config: dict[str, Any] = Field(default_factory=dict)
+    query_template: str = "{query}"
+    include_metadata: bool = True
+    rerank: bool = False
