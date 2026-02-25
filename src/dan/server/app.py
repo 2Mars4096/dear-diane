@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import urllib.parse
 import urllib.request
+import uuid
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -31,8 +32,11 @@ from dan.engine.executor import EngineConfig
 from dan.executors.tool import ToolRegistry
 from dan.loader.decompiler import decompile_to_markdown
 from dan.models.graph import Graph
+from dan.server.chat_manager import ChatManager, compute_graph_revision
+from dan.server.chat_store import ChatMessage as StoreChatMessage, ChatStore
 from dan.server.graph_store import GraphStore
 from dan.server.run_manager import RunManager
+from dan.server.scoped_run import ScopedRunRequest, ScopedRunResponse, build_scoped_graph
 from dan.validation.graph import validate_graph
 
 logger = logging.getLogger(__name__)
@@ -45,7 +49,9 @@ def _require_run_manager() -> RunManager:
 
 _graphs_dir = os.environ.get("DAN_GRAPHS_DIR", "./graphs")
 _graph_store = GraphStore(base_dir=_graphs_dir)
+_chat_store = ChatStore(base_dir=_graphs_dir)
 _run_manager: RunManager | None = None
+_chat_manager: ChatManager | None = None
 
 
 def _get_engine_config() -> EngineConfig:
@@ -540,12 +546,46 @@ def _build_tool_registry() -> ToolRegistry:
     return registry
 
 
+def _build_chat_provider_registry():
+    from dan.providers import ProviderConfig
+    from dan.providers.registry import ProviderRegistry
+    from dan.providers.openai_provider import OpenAIProvider
+
+    registry = ProviderRegistry()
+    config = _get_engine_config()
+    default_config = ProviderConfig(api_key=config.llm_api_key, base_url=config.llm_base_url)
+    registry.register("default", OpenAIProvider(default_config))
+
+    for name, pconfig in config.providers.items():
+        if name == "default":
+            continue
+        if name == "anthropic":
+            try:
+                from dan.providers.anthropic_provider import AnthropicProvider
+                registry.register(name, AnthropicProvider(pconfig))
+            except ImportError:
+                pass
+        elif name == "google":
+            try:
+                from dan.providers.google_provider import GoogleProvider
+                registry.register(name, GoogleProvider(pconfig))
+            except ImportError:
+                pass
+        else:
+            registry.register(name, OpenAIProvider(pconfig))
+    return registry
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _run_manager
+    global _run_manager, _chat_manager
     _run_manager = RunManager(
         engine_config=_get_engine_config(),
         tool_registry=_build_tool_registry(),
+    )
+    _chat_manager = ChatManager(
+        provider_registry=_build_chat_provider_registry(),
+        graph_store=_graph_store,
     )
     yield
 
@@ -579,6 +619,14 @@ class RunRequest(BaseModel):
 
 class ResumeRequest(BaseModel):
     graph_id: str
+
+
+class ChatMessageRequest(BaseModel):
+    workflow_id: str
+    message: str
+    thread_id: str | None = None
+    history: list[dict[str, str]] = []
+    client_graph_revision: str | None = None
 
 
 # ------------------------------------------------------------------
@@ -668,6 +716,33 @@ async def validate_graph_endpoint(graph_id: str):
     return {"errors": errors, "warnings": warnings}
 
 
+@app.post("/api/graphs/{graph_id}/nodes/{node_id}/add-boundary-validators")
+async def add_boundary_validators(graph_id: str, node_id: str):
+    data = _graph_store.get_graph(graph_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    try:
+        graph = Graph.model_validate(data)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Graph parse error: {exc}")
+
+    target = graph.node_by_id(node_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found")
+
+    if not getattr(target, "external_input_schema", None) and not getattr(target, "external_output_schema", None):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Node '{node_id}' has no external_input_schema or external_output_schema — nothing to validate",
+        )
+
+    from dan.validation.boundaries import insert_boundary_validators
+    new_graph = insert_boundary_validators(graph, node_id)
+
+    _graph_store.save_graph(graph_id, new_graph.model_dump(mode="json"))
+    return {"graph_id": graph_id, "node_id": node_id, "status": "validators_inserted"}
+
+
 @app.get("/api/graphs/{graph_id}/export/markdown")
 async def export_graph_markdown(graph_id: str):
     graph = _graph_store.load_as_model(graph_id)
@@ -700,6 +775,108 @@ async def export_graph_python(graph_id: str):
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
     code = decompile_to_python(graph)
     return {"code": code}
+
+
+# ------------------------------------------------------------------
+# RAG collection CRUD
+# ------------------------------------------------------------------
+
+_rag_indexer: "Indexer | None" = None
+_rag_lock = asyncio.Lock()
+
+
+async def _get_indexer() -> "Indexer":
+    """Lazily create an Indexer backed by the configured embedding provider.
+
+    Uses ``EmbeddingRegistry`` to resolve the provider from ``EngineConfig``,
+    honouring both API and local embedding configurations (Option B).
+    """
+    global _rag_indexer
+    if _rag_indexer is not None:
+        return _rag_indexer
+
+    async with _rag_lock:
+        if _rag_indexer is not None:
+            return _rag_indexer
+
+        from dan.rag import build_embedding_registry
+        from dan.rag.indexer import Indexer
+        from dan.rag.stores import VectorStoreConfig, VectorStoreFactory
+
+        config = _get_engine_config()
+        model = config.default_embedding_model
+
+        registry = build_embedding_registry(config)
+        provider = registry.resolve(model)
+
+        backend = os.environ.get("DAN_RAG_STORE_BACKEND", "memory")
+        persist_dir = os.environ.get("DAN_RAG_PERSIST_DIR", "./rag_data")
+        store = VectorStoreFactory.create(
+            VectorStoreConfig(backend=backend, persist_directory=persist_dir),
+        )
+        _rag_indexer = Indexer(
+            embedding_provider=provider,
+            embedding_model=model,
+            store=store,
+        )
+        return _rag_indexer
+
+
+class RAGCreateRequest(BaseModel):
+    name: str
+    documents: list[dict[str, Any]]
+    chunking_config: dict[str, Any] | None = None
+    embedding_model: str = ""
+
+
+class RAGAddDocsRequest(BaseModel):
+    documents: list[dict[str, Any]]
+    chunking_config: dict[str, Any] | None = None
+    embedding_model: str = ""
+
+
+@app.get("/api/rag/collections")
+async def list_rag_collections():
+    indexer = await _get_indexer()
+    names = await indexer.list_indices()
+    return {"collections": names}
+
+
+@app.post("/api/rag/collections")
+async def create_rag_collection(req: RAGCreateRequest):
+    indexer = await _get_indexer()
+    stats = await indexer.create_index(
+        name=req.name,
+        documents=req.documents,
+        chunking_config=req.chunking_config,
+        embedding_model=req.embedding_model,
+    )
+    return stats
+
+
+@app.get("/api/rag/collections/{name}/stats")
+async def rag_collection_stats(name: str):
+    indexer = await _get_indexer()
+    return await indexer.get_index_stats(name)
+
+
+@app.post("/api/rag/collections/{name}/documents")
+async def add_rag_documents(name: str, req: RAGAddDocsRequest):
+    indexer = await _get_indexer()
+    chunks_added = await indexer.add_documents(
+        name=name,
+        documents=req.documents,
+        chunking_config=req.chunking_config,
+        embedding_model=req.embedding_model,
+    )
+    return {"name": name, "chunks_added": chunks_added}
+
+
+@app.delete("/api/rag/collections/{name}")
+async def delete_rag_collection(name: str):
+    indexer = await _get_indexer()
+    await indexer.delete_index(name)
+    return {"name": name, "status": "deleted"}
 
 
 # ------------------------------------------------------------------
@@ -762,6 +939,30 @@ async def submit_human_input(run_id: str, body: dict):
     return {"status": "submitted", "request_id": request_id}
 
 
+@app.post("/api/runs/scoped")
+async def start_scoped_run(req: ScopedRunRequest):
+    rm = _require_run_manager()
+    graph = _graph_store.load_as_model(req.workflow_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{req.workflow_id}' not found")
+
+    result = build_scoped_graph(
+        graph, req.scope, req.target_node_id, req.target_subgraph_key, req.inputs,
+    )
+    if result.error:
+        raise HTTPException(status_code=422, detail=result.error.model_dump())
+
+    record = await rm.start_run(
+        result.graph, graph_id=req.workflow_id, inputs=req.inputs,
+    )
+    return ScopedRunResponse(
+        run_id=record.run_id,
+        status=record.status.value,
+        scope=req.scope,
+        target=req.target_node_id or req.target_subgraph_key,
+    ).model_dump()
+
+
 # ------------------------------------------------------------------
 # WebSocket — live run events
 # ------------------------------------------------------------------
@@ -783,6 +984,116 @@ async def run_events_ws(websocket: WebSocket, run_id: str):
         logger.debug("WebSocket error for run %s", run_id, exc_info=True)
     finally:
         rm.unsubscribe(run_id, queue)
+
+
+# ------------------------------------------------------------------
+# Chat — message endpoint + WebSocket streaming
+# ------------------------------------------------------------------
+
+_chat_streams: dict[str, asyncio.Queue] = {}
+
+
+@app.post("/api/chat/message")
+async def chat_message(req: ChatMessageRequest):
+    if _chat_manager is None:
+        raise HTTPException(status_code=503, detail="Chat not initialised")
+    stream_channel_id = f"chat-{uuid.uuid4().hex[:10]}"
+    queue: asyncio.Queue = asyncio.Queue()
+    _chat_streams[stream_channel_id] = queue
+
+    async def _produce():
+        try:
+            graph_dict = _graph_store.get_graph(req.workflow_id)
+            use_tools = graph_dict is not None
+            send = (
+                _chat_manager.send_message_with_tools
+                if use_tools
+                else _chat_manager.send_message
+            )
+            async for event in send(
+                workflow_id=req.workflow_id,
+                message=req.message,
+                history=req.history,
+                thread_id=req.thread_id,
+                client_graph_revision=req.client_graph_revision,
+            ):
+                await queue.put(event.model_dump())
+        except Exception as exc:
+            await queue.put({"type": "chat_error", "error": str(exc)})
+        finally:
+            await queue.put(None)
+
+    asyncio.create_task(_produce())
+    return {"message_id": uuid.uuid4().hex[:12], "stream_channel_id": stream_channel_id}
+
+
+@app.websocket("/api/chat/{channel_id}/events")
+async def chat_events_ws(websocket: WebSocket, channel_id: str):
+    queue = _chat_streams.get(channel_id)
+    if queue is None:
+        await websocket.close(code=4004)
+        return
+    await websocket.accept()
+    try:
+        while True:
+            event = await queue.get()
+            if event is None:
+                break
+            await websocket.send_json(event)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.debug("Chat WebSocket error for channel %s", channel_id, exc_info=True)
+    finally:
+        _chat_streams.pop(channel_id, None)
+
+
+# ------------------------------------------------------------------
+# Chat thread CRUD
+# ------------------------------------------------------------------
+
+
+@app.get("/api/chats/{workflow_id}")
+async def list_chat_threads(workflow_id: str):
+    return {"threads": _chat_store.list_threads(workflow_id)}
+
+
+@app.get("/api/chats/{workflow_id}/{thread_id}")
+async def get_chat_thread(workflow_id: str, thread_id: str):
+    thread = _chat_store.get_thread(workflow_id, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return thread.model_dump(mode="json")
+
+
+@app.post("/api/chats/{workflow_id}")
+async def create_chat_thread(workflow_id: str, body: dict[str, Any] | None = None):
+    title = (body or {}).get("title", "")
+    thread = _chat_store.create_thread(workflow_id, title=title)
+    return thread.model_dump(mode="json")
+
+
+@app.put("/api/chats/{workflow_id}/{thread_id}")
+async def update_chat_thread(workflow_id: str, thread_id: str, body: dict[str, Any]):
+    thread = _chat_store.get_thread(workflow_id, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    if "title" in body:
+        thread.title = body["title"]
+    if "messages" in body:
+        thread.messages = [
+            StoreChatMessage.model_validate(m) for m in body["messages"]
+        ]
+    thread.updated_at = datetime.now(timezone.utc)
+    _chat_store.save_thread(thread)
+    return {"status": "updated"}
+
+
+@app.delete("/api/chats/{workflow_id}/{thread_id}")
+async def delete_chat_thread(workflow_id: str, thread_id: str):
+    if not _chat_store.delete_thread(workflow_id, thread_id):
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return {"status": "deleted"}
 
 
 # ------------------------------------------------------------------
