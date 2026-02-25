@@ -109,20 +109,27 @@ deep-agent-network/
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
       app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry
       graph_store.py             # Filesystem-based graph JSON persistence
+      graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run
+      chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA), text-streaming fallback
+      chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
       run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing
+      scoped_run.py              # Scoped execution: full/node/subgraph run builder
   editor/                        # Phase 2+3.5 — React Flow visual editor
     package.json                 # Dependencies: react, @xyflow/react, zustand, tailwindcss, dagre, allotment, highlight.js, lucide-react
     vite.config.ts               # Vite config: Tailwind plugin, /api proxy to backend
     tsconfig.json                # TypeScript config
     src/
       types/graph.ts             # TypeScript types mirroring dan_graph_v1 + NODE_DESCRIPTIONS
+      types/chat.ts              # ChatMessage, ChatThread, ChatStreamEvent types
       lib/graphAdapter.ts        # Bidirectional DAN <-> React Flow conversion + EDGE_COLORS + edge labels
       lib/api.ts                 # HTTP/WebSocket API client
       lib/paletteTemplates.ts    # Extensible template factories (ReAct, Plan-Execute)
       lib/connectionValidation.ts # isValidConnection — no self-connect, no duplicates
       lib/graphImporter.ts       # Workflow-as-node: converts saved graph into CompositeNode with autonomous-entry filtering, node-aware port mappings, entry/exit validation
       lib/layout.ts              # Auto-layout via dagre (LR direction)
-      lib/nodeIcons.tsx          # Inline SVG icons for all 10 node types
+      lib/nodeIcons.tsx          # Inline SVG icons for all 14 node types
+      lib/mentionParser.ts       # @mention serialization (`@[name](type:id)`), parsing, cursor detection, co-navigation dispatch, type colors
+      lib/graphDiff.ts           # Before/after graph diff computation
       store/useGraphStore.ts     # Zustand store — graph, selection, run state, events, layers, toasts, timings, clipboard, history, port ops, loop iterations, streaming, human input, workflow import
       hooks/useKeyboardShortcuts.ts # Keyboard shortcuts: save, undo/redo, copy/paste/duplicate
       components/DanNode.tsx     # Custom node: port handles, status ring, pulse/glow, duration badge, icons, dimming, inline rename, loop badges/counters
@@ -139,6 +146,10 @@ deep-agent-network/
       components/ExecutionTimeline.tsx # Horizontal timeline bar with per-node segments
       components/OutputPreview.tsx    # Per-node output viewer with streaming text support
       components/HumanInputDialog.tsx # Modal popup for mid-run human-in-the-loop input submission
+      components/MentionAutocomplete.tsx # Floating @ mention dropdown: nodes/workflows/subgraphs, keyboard nav, fuzzy filter
+      components/ChatPanel.tsx        # Resizable chat sidebar: message send/stream, @ mention integration, mutation event handling + GraphDiffPreview
+      components/ChatMessage.tsx      # Message bubble: markdown render, mention chips with click-to-navigate, clickable mutation badge
+      components/GraphDiffPreview.tsx  # Mutation diff preview modal: accept/reject/partial-accept
       components/ToastContainer.tsx   # Fixed bottom-right toast notifications
       components/Spinner.tsx          # Reusable loading spinner
       components/RunPanel.tsx         # (deprecated — merged into EditorToolbar)
@@ -416,7 +427,7 @@ result = await engine.resume(graph, run_id="abc123")
 
 - `NodeExecutor` is a `Protocol` with `async execute(node, inputs, context) -> NodeResult`
 - `ExecutorRegistry` maps `node_type` strings to executor instances; users can register custom executors
-- Built-in executors for all 13 node types (including `CompositeExecutor`, `RAGExecutor`, `ValidatorExecutor`) auto-registered on Engine creation
+- Built-in executors for all 14 node types (including `CompositeExecutor`, `RAGExecutor`, `ValidatorExecutor`) auto-registered on Engine creation
 
 ### LLM Integration
 
@@ -522,11 +533,25 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 | GET | `/api/graphs/{id}` | Load graph JSON |
 | PUT | `/api/graphs/{id}` | Save graph JSON |
 | DELETE | `/api/graphs/{id}` | Delete graph |
+| POST | `/api/graphs/{id}/nodes/{nid}/add-boundary-validators` | Insert entry/exit validator nodes around a composite |
+| GET | `/api/rag/collections` | List RAG collections |
+| POST | `/api/rag/collections` | Create collection with documents |
+| GET | `/api/rag/collections/{name}/stats` | Collection stats |
+| POST | `/api/rag/collections/{name}/documents` | Add documents |
+| DELETE | `/api/rag/collections/{name}` | Delete collection |
 | POST | `/api/runs` | Start execution |
 | POST | `/api/runs/{id}/resume` | Resume checkpointed run |
 | GET | `/api/runs/{id}` | Get run status snapshot |
 | GET | `/api/runs` | List all runs |
 | WS | `/api/runs/{id}/events` | Live event stream |
+| POST | `/api/chat/message` | Send chat message, get streaming response |
+| WS | `/api/chat/{channel_id}/events` | Chat token streaming |
+| GET | `/api/chats/{workflow_id}` | List chat threads |
+| GET | `/api/chats/{workflow_id}/{thread_id}` | Load chat thread |
+| POST | `/api/chats/{workflow_id}` | Create chat thread |
+| PUT | `/api/chats/{workflow_id}/{thread_id}` | Update chat thread |
+| DELETE | `/api/chats/{workflow_id}/{thread_id}` | Delete chat thread |
+| POST | `/api/runs/scoped` | Start scoped run (full/node/subgraph) |
 
 ### Graph Persistence
 
@@ -541,24 +566,23 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 Bidirectional conversion layer (`graphAdapter.ts`):
 - DAN `input_ports`/`output_ports` map to React Flow handles via `port:<name>` ID convention
 - 3 edge types visually differentiated: data (indigo), control (amber), context (emerald, animated)
-- All 10 node types rendered through a single `DanNode` custom component with per-type color coding
+- All 14 node types rendered through a single `DanNode` custom component with per-type color coding
 - Node execution status shown as colored rings (yellow=running, green=completed, red=failed)
 
 ### UI Layout
 
 ```
-┌─────────────────────────────────────────────────┐
-│  GraphSwitcher (graph list, create, delete)      │
-│  RunPanel (save, run, resume, disconnect, status)│
-├──────┬─────────────────────────────┬─────────────┤
-│      │                             │             │
-│ Node │      GraphCanvas            │  Config     │
-│Palette│   (React Flow + minimap)   │  Panel      │
-│      │                             │             │
-│      ├─────────────────────────────┤             │
-│      │ Logs | Output               │             │
-│      │ (tab bar + scrolling panel) │             │
-└──────┴─────────────────────────────┴─────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│  EditorToolbar (graph selector, run controls, auto-layout)       │
+├──────┬─────────────────────────────┬──────────────┬─────────────┤
+│      │                             │              │             │
+│ Node │      GraphCanvas            │  Config      │   Chat      │
+│Palette│   (React Flow + minimap)   │  Panel       │   Panel     │
+│      │                             │              │             │
+│      ├─────────────────────────────┤              │             │
+│      │ Logs | Output               │              │             │
+│      │ (tab bar + scrolling panel) │              │             │
+└──────┴─────────────────────────────┴──────────────┴─────────────┘
 ```
 
 ### Multi-Layered Graph Navigation (Phase 3.5-A)
@@ -614,6 +638,30 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - **Port delete with edge cleanup** — `deletePort` store action removes the port and filters out all edges referencing it.
 - **Inline node rename** — double-click the name span in `DanNode.tsx` header to enter edit mode (controlled `<input>`, transparent background matching header style). Enter/blur commits via `updateNodeData`; Escape reverts. `stopPropagation` prevents composite drill-in. Auto-select text via ref + useEffect.
 - **Output schema editor** — `SchemaEditor` component (inline in ConfigPanel) for `llm_operator` and `router` nodes. Visual mode: property rows (name, type dropdown, required checkbox, delete). Raw JSON mode: textarea with parse-on-blur. Toggle between modes; invalid JSON blocks switch to visual. Empty/null schema initializes as `{type: "object", properties: {}}` on first visual switch.
+
+## Conversational Workflow Authoring (Phase 7)
+
+### Chat Panel
+- Resizable right-side panel with streaming LLM responses
+- Graph-aware system prompt: serializes current workflow as `GraphSummary` for LLM context
+- `@` mention system: reference nodes, workflows, sub-graphs with Cursor-style autocomplete
+- Thread management: per-workflow persistent chat history, thread list, auto-restore
+
+### NL→Graph Mutation Engine
+- `GraphMutator` applies atomic operations (add/remove/edit nodes and edges) to graph dicts
+- LLM function-calling: `plan_graph_mutations` tool returns structured `MutationPlan`
+- Transactional by default (`all_or_nothing`); partial apply is opt-in
+- Optimistic concurrency via `base_graph_revision` / hash matching
+- `GraphDiffPreview` shows visual diff before applying; accept/reject/partial-accept
+
+### Scoped Execution from Chat
+- `/run`, `/run-node @Node`, `/run-subgraph @Node` commands in chat
+- `build_scoped_graph()` derives minimal executable graphs for node or subgraph scopes
+- Run events stream back into chat thread as status blocks
+
+### Session-Scoped Rollback
+- Each mutation records a frontend-only `historyCursor` marker
+- "Revert to here" walks the undo stack; markers cleared on page reload
 
 ## Key Decisions
 

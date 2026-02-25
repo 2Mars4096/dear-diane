@@ -68,21 +68,21 @@
 ## Phase 6 — Extended Capabilities
 > New node types and execution modes following existing patterns. Key missing capabilities for real workflows.
 
-- [ ] [9-extended-capabilities](plans/9-extended-capabilities.md) — RAG node, subprocess sandbox, handoff validator
-  - [x] [9-1-rag-knowledge-retrieval](plans/9-1-rag-knowledge-retrieval.md) — embedding pipeline (API + local), vector store (FAISS/ChromaDB/memory), `RAGOperator` node, RAGExecutor, Indexer (backend complete; server endpoints, editor integration, migration follow-up remaining)
-  - [x] [9-2-subprocess-sandbox](plans/9-2-subprocess-sandbox.md) — `SandboxRunner`, resource limits, `CodeExecutor` upgrade, shell tool hardening (backend complete; editor/builder/docs follow-up remaining)
-  - [x] [9-3-handoff-validator](plans/9-3-handoff-validator.md) — `ValidatorNode`, rule types (required keys, schema, expression), boundary auto-insert (backend complete; editor integration, builder helper follow-up remaining)
+- [x] [9-extended-capabilities](plans/9-extended-capabilities.md) — RAG node, subprocess sandbox, handoff validator
+  - [x] [9-1-rag-knowledge-retrieval](plans/9-1-rag-knowledge-retrieval.md) — embedding pipeline (API + local), vector store (FAISS/ChromaDB/memory), `RAGOperator` node, RAGExecutor, Indexer, server CRUD endpoints, editor config panel
+  - [x] [9-2-subprocess-sandbox](plans/9-2-subprocess-sandbox.md) — `SandboxRunner`, resource limits, `CodeExecutor` upgrade, shell tool hardening, editor node type
+  - [x] [9-3-handoff-validator](plans/9-3-handoff-validator.md) — `ValidatorNode`, rule types (required keys, schema, expression), boundary auto-insert, `wf.validated_composite()` builder helper, editor config panel + context menu action
 
 ## Phase 7 — Author & Distribute
 > Make DAN easier to author and share: conversational workflow creation, CLI for headless execution, publish workflows as callable APIs, package for distribution.
 
-- [ ] [10-chatbox-nl-workflow](plans/10-chatbox-nl-workflow.md) — conversational workflow authoring: chat panel, `@` mentions, NL→graph mutations, diff preview, session history, scoped run-from-chat
-  - [ ] [10-1-chat-panel-backend](plans/10-1-chat-panel-backend.md) — A. Chat panel React component, backend message endpoint, LLM integration, graph-aware system prompt, streaming
-  - [ ] [10-2-mention-co-navigation](plans/10-2-mention-co-navigation.md) — B. `@` autocomplete (nodes/workflows/sub-graphs), mention chips, click→canvas navigation, canvas→chat suggestion
-  - [ ] [10-3-nl-graph-mutation](plans/10-3-nl-graph-mutation.md) — C. Graph operation primitives, LLM function-calling schema, multi-step mutation planning, validation, error recovery
-  - [ ] [10-4-graph-diff-confirmation](plans/10-4-graph-diff-confirmation.md) — D. Before/after diff computation, visual diff preview, accept/reject/partial-accept, undo integration, session-scoped conversation rollback
-  - [ ] [10-5-history-execution](plans/10-5-history-execution.md) — E. Per-workflow chat persistence, thread list UI, graph delta tracking, session rollback metadata
-  - [ ] [10-6-scoped-run-from-chat](plans/10-6-scoped-run-from-chat.md) — F. Full/node/sub-graph run API, server-authoritative target resolution, chat command handling, run event streaming into thread
+- [x] [10-chatbox-nl-workflow](plans/10-chatbox-nl-workflow.md) — conversational workflow authoring: chat panel, `@` mentions, NL→graph mutations, diff preview, session history, scoped run-from-chat
+  - [x] [10-1-chat-panel-backend](plans/10-1-chat-panel-backend.md) — A. Chat panel React component, backend message endpoint, LLM integration, graph-aware system prompt, streaming
+  - [x] [10-2-mention-co-navigation](plans/10-2-mention-co-navigation.md) — B. `@` autocomplete (nodes/workflows/sub-graphs), mention chips, click→canvas navigation, canvas→chat suggestion
+  - [x] [10-3-nl-graph-mutation](plans/10-3-nl-graph-mutation.md) — C. Graph operation primitives, LLM function-calling schema, multi-step mutation planning, validation, error recovery
+  - [x] [10-4-graph-diff-confirmation](plans/10-4-graph-diff-confirmation.md) — D. Before/after diff computation, visual diff preview, accept/reject/partial-accept, undo integration, session-scoped conversation rollback
+  - [x] [10-5-history-execution](plans/10-5-history-execution.md) — E. Per-workflow chat persistence, thread list UI, graph delta tracking, session rollback metadata *(thread UI, auto-restore, session markers done; cascade delete, offline resilience, tests, docs remaining)*
+  - [x] [10-6-scoped-run-from-chat](plans/10-6-scoped-run-from-chat.md) — F. Full/node/sub-graph run API, server-authoritative target resolution, chat command handling, run event streaming into thread
 - [ ] 10-R: Author & distribute (remaining) → (not yet planned)
 - [ ] CLI mode — run workflows in terminal/background. Supervisor-style: start, check progress, inspect logs without blocking. Complements visual editor for headless/CI/server deployments.
 - [ ] Publish workflow as API/MCP — build a workflow, publish as a callable MCP server or HTTP endpoint. Turns workflows into consumable services (Coze-style).

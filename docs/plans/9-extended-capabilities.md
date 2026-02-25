@@ -1,6 +1,6 @@
 # 9: Phase 6 -- Extended Capabilities
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Add new node types and execution modes following existing engine patterns. Three key missing capabilities for real workflows: first-class RAG retrieval, trustworthy subprocess execution, and schema-validated handoffs between agents.
 
 ## Sub-Plans

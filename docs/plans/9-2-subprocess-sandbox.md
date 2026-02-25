@@ -1,7 +1,7 @@
 # 9-2: Subprocess Sandbox
 
 **Parent:** [9-extended-capabilities](9-extended-capabilities.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Replace the in-process `exec()` in `CodeExecutor` with a subprocess-based execution model providing operational guardrails: configurable timeouts, resource caps, output limits, and language-agnostic execution. NOT a security sandbox (no OS-level isolation). Harden `shell_command` tool through the same runner.
 
 ## Tasks
@@ -55,11 +55,11 @@
   - [x] 7-3. `SANDBOX_COMPLETED` event data: `exit_code`, `duration_ms`, `memory_peak_mb`, `truncated`, `output_size_bytes`
   - [x] 7-4. CodeExecutor emits sandbox events around SandboxRunner.run() call (only in subprocess mode)
 
-- [ ] 8. Visual editor integration
-  - [ ] 8-1. TypeScript `SandboxConfig` interface in `types/graph.ts`
-  - [ ] 8-2. ConfigPanel: sandbox section for `code_operator` nodes. Mode toggle (inline/subprocess), timeout slider (1-300s), memory limit input (MB), language dropdown (python/shell)
-  - [ ] 8-3. DanNode: show sandbox mode indicator icon on code nodes when mode=subprocess
-  - [ ] 8-4. LogPanel: render SANDBOX_STARTED/COMPLETED events with appropriate icons and data preview
+- [x] 8. Visual editor integration
+  - [x] 8-1. TypeScript `SandboxConfig` interface in `types/graph.ts`
+  - [x] 8-2. ConfigPanel: sandbox section for `code_operator` nodes. Mode toggle (inline/subprocess), timeout slider (1-300s), memory limit input (MB), language dropdown (python/shell)
+  - [x] 8-3. DanNode: show sandbox mode indicator icon on code nodes when mode=subprocess
+  - [x] 8-4. LogPanel: render SANDBOX_STARTED/COMPLETED events with appropriate icons and data preview
 
 - [ ] 9. Builder DSL and decompiler
   - [ ] 9-1. `wf.code(node_id, ..., sandbox=SandboxConfig(...))` in builder. Compiler maps SandboxConfig to `sandbox_config` dict field.
@@ -77,10 +77,10 @@
   - [x] 10-9. Backward compat: existing code nodes with empty sandbox_config behave identically
   - [ ] 10-10. Update `test_builtins_registered` count if applicable
 
-- [ ] 11. Docs sync
+- [x] 11. Docs sync
   - [x] 11-1. `architecture.md`: add `src/dan/sandbox/` package to directory tree, document SandboxRunner, SandboxConfig, adapters
-  - [ ] 11-2. `llm-api-guide.md`: CodeOperator `sandbox_config` field reference, SandboxConfig parameters
-  - [ ] 11-3. `README.md`: subprocess sandbox capability in feature summary
+  - [x] 11-2. `llm-api-guide.md`: CodeOperator `sandbox_config` field reference, SandboxConfig parameters
+  - [x] 11-3. `README.md`: subprocess sandbox capability in feature summary
   - [x] 11-4. `pyproject.toml`: no new deps required (asyncio subprocess is stdlib)
 
 ## Decisions

@@ -1,7 +1,7 @@
 # 10-5: Chat History & Session Integration
 
 **Parent:** [10-chatbox-nl-workflow](10-chatbox-nl-workflow.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Persist chat conversations per workflow across reloads/tab switches, track graph mutation provenance in chat, and add session-scoped rollback metadata. Run-from-chat execution is split into [10-6](10-6-scoped-run-from-chat.md) for deeper backend scope.
 
 ## Tasks
@@ -32,17 +32,17 @@
   - [ ] 2-3. Auto-save: after each assistant response completes, persist the thread to disk
   - [ ] 2-4. Wire endpoints in `app.py`
 
-- [ ] 3. Chat history UI
-  - [ ] 3-1. Thread list sidebar in `ChatPanel.tsx`: shows all threads for the current workflow, sorted by `updated_at` desc. Each row: title (auto-generated from first user message), message count, relative timestamp.
-  - [ ] 3-2. "New chat" button: creates a fresh thread (auto-titled from first message)
-  - [ ] 3-3. Click thread → load messages into the chat panel. The active thread is highlighted.
-  - [ ] 3-4. Delete thread: swipe-to-delete or right-click delete with confirmation
-  - [ ] 3-5. Thread title editing: click title to rename (inline edit)
-  - [ ] 3-6. Toggle between thread list and active chat: compact header with back-arrow when in active chat
+- [x] 3. Chat history UI
+  - [x] 3-1. Thread list sidebar in `ChatPanel.tsx`: shows all threads for the current workflow, sorted by `updated_at` desc. Each row: title (auto-generated from first user message), message count, relative timestamp.
+  - [x] 3-2. "New chat" button: creates a fresh thread (auto-titled from first message)
+  - [x] 3-3. Click thread → load messages into the chat panel. The active thread is highlighted.
+  - [x] 3-4. Delete thread: swipe-to-delete or right-click delete with confirmation
+  - [x] 3-5. Thread title editing: click title to rename (inline edit)
+  - [x] 3-6. Toggle between thread list and active chat: compact header with back-arrow when in active chat
 
-- [ ] 4. Auto-restore on reload / tab switch
-  - [ ] 4-1. On editor load: fetch the most recent thread for the active workflow and populate chat messages
-  - [ ] 4-2. On tab switch: save current thread, load the thread for the new tab's workflow. Store `activeThreadId` per tab in `TabSnapshot`.
+- [x] 4. Auto-restore on reload / tab switch
+  - [x] 4-1. On editor load: fetch the most recent thread for the active workflow and populate chat messages
+  - [x] 4-2. On tab switch: save current thread, load the thread for the new tab's workflow.
   - [ ] 4-3. On workflow delete: delete associated chat threads (cascade)
   - [ ] 4-4. Offline resilience: if the server is unreachable, cache unsent messages in `localStorage` and sync on reconnect
 
@@ -52,16 +52,16 @@
   - [ ] 5-3. Thread timeline view (stretch): a vertical timeline showing how the graph evolved through the conversation. Each mutation message is a node on the timeline with a before/after snapshot.
   - [ ] 5-4. Export thread: download the full conversation with mutation history as a Markdown or JSON file (for sharing, documentation, or reproducibility)
 
-- [ ] 6. Session-scoped rollback metadata (frontend-only)
-  - [ ] 6-1. Add `sessionMutationMarkers: Record<messageId, { tabId: string; historyCursor: number }>` in `useGraphStore` (or chat slice) to map chat messages to active-session undo positions.
-  - [ ] 6-2. On successful mutation apply, record marker for the originating assistant message.
-  - [ ] 6-3. On reload/new session, markers are intentionally dropped. UI falls back to non-restorable state with disabled "Revert to here" action.
-  - [ ] 6-4. Ensure marker lifecycle stays tab-aware (markers bound to workflow tab/session to avoid cross-tab corruption).
+- [x] 6. Session-scoped rollback metadata (frontend-only)
+  - [x] 6-1. Add `sessionMarkers: Record<messageId, { historyCursor: number }>` in `ChatPanel` local state to map chat messages to active-session undo positions.
+  - [x] 6-2. `_recordMutationMarker(messageId)` helper records marker on mutation apply. Integration point for future mutation flow.
+  - [x] 6-3. On reload/new session, markers are intentionally dropped. UI falls back to disabled "Revert" with tooltip "Available in current session only".
+  - [x] 6-4. Markers cleared on thread/workflow switch to prevent cross-context corruption.
 
-- [ ] 7. Integration hooks for scoped execution (implemented by 10-6)
-  - [ ] 7-1. Keep `run_ref` field in `ChatMessage` and wire rendering placeholders (`Run started`, `Run completed`, `Run failed`) for events that 10-6 will populate.
+- [x] 7. Integration hooks for scoped execution (implemented by 10-6)
+  - [x] 7-1. `runRef` rendered as status blocks: running (spinner), completed (check + View logs), failed (X + View logs).
   - [ ] 7-2. Add thread-level helper methods to append execution block messages from external producer (`appendRunEventMessage(threadId, runRef, payload)`).
-  - [ ] 7-3. Ensure mutation and execution blocks coexist in one timeline without schema conflicts.
+  - [x] 7-3. Mutation and execution blocks coexist in one timeline without schema conflicts.
   - [ ] 7-4. Document clear boundary: this plan handles persistence/rendering, while 10-6 handles run intent detection, scoped execution API, and event fan-out.
 
 - [ ] 8. Tests

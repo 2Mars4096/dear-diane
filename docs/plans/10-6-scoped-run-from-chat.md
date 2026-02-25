@@ -1,7 +1,7 @@
 # 10-6: Scoped Run Execution from Chat
 
 **Parent:** [10-chatbox-nl-workflow](10-chatbox-nl-workflow.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Add explicit scoped execution from chat (`full`, `node`, `subgraph`) with server-authoritative target resolution, run orchestration via `RunManager`, and run-event streaming back into chat threads.
 
 ## Tasks

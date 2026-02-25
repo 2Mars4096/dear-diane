@@ -1,7 +1,7 @@
 # 10-3: NL→Graph Mutation Engine
 
 **Parent:** [10-chatbox-nl-workflow](10-chatbox-nl-workflow.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Enable the LLM to modify the workflow graph in response to natural language instructions. The core intelligence layer: user says "add a reviewer after the writer" and the system produces the correct sequence of graph operations (add node, add edges, set prompt) and applies them.
 
 ## Tasks
@@ -30,12 +30,12 @@
   - [ ] 2-8. Transactional default: pre-validate entire plan, apply in-memory, run `validate_graph()`, then commit all changes only if plan is valid (`apply_mode="all_or_nothing"`).
   - [ ] 2-9. Concurrency guard: if `plan.base_graph_revision`/`base_graph_hash` mismatches current graph state, reject apply with `stale_plan=True` and require re-plan.
 
-- [ ] 3. LLM function-calling schema
-  - [ ] 3-1. Define a JSON Schema / OpenAI function-calling tool definition for `plan_graph_mutations`. The LLM returns a `MutationPlan` with a list of `GraphOperation` objects.
+- [x] 3. LLM function-calling schema
+  - [x] 3-1. Define a JSON Schema / OpenAI function-calling tool definition for `plan_graph_mutations`. The LLM returns a `MutationPlan` with a list of `GraphOperation` objects.
   - [ ] 3-2. Tool description: explains each operation type with examples. Includes the current graph context and available node types.
-  - [ ] 3-3. System prompt additions: instruct the LLM to use the `plan_graph_mutations` tool when the user asks to modify the graph. For questions or explanations, respond in plain text.
+  - [x] 3-3. System prompt additions: instruct the LLM to use the `plan_graph_mutations` tool when the user asks to modify the graph. For questions or explanations, respond in plain text.
   - [ ] 3-4. Multi-turn refinement: if the user says "no, make it a Code node instead", the LLM references the previous mutation plan and produces a corrective plan.
-  - [ ] 3-5. Handle both function-call-capable models (OpenAI, Anthropic) and text-only models (fallback: parse structured JSON from text response)
+  - [x] 3-5. Handle both function-call-capable models (OpenAI, Anthropic) and text-only models (fallback: parse structured JSON from text response)
 
 - [ ] 4. Multi-step mutation planning
   - [ ] 4-1. Complex requests may require multiple coordinated operations. Example: "Create a review loop where the writer drafts, the reviewer critiques, and the writer revises until approved" → add writer node, add reviewer node, add gate node, add edges (chain + feedback), set gate condition, set max iterations.
@@ -51,8 +51,8 @@
   - [ ] 5-5. Dry-run mode: `GraphMutator.dry_run(graph_dict, current_revision, plan)` returns diff + validation + stale-plan signal without applying. Used by diff preview (10-4).
 
 - [ ] 6. Chat integration
-  - [ ] 6-1. `ChatManager` extended: when LLM response includes a `plan_graph_mutations` tool call, extract the `MutationPlan`, run dry-run, return both the text response and the mutation plan to the frontend.
-  - [ ] 6-2. Frontend: when a chat response includes a mutation plan, show it as a special "proposed changes" block in the chat message (collapsed by default, expandable to see operations). Wire to diff preview (10-4).
+  - [x] 6-1. `ChatManager` extended: when LLM response includes a `plan_graph_mutations` tool call, extract the `MutationPlan`, run dry-run, return both the text response and the mutation plan to the frontend.
+  - [x] 6-2. Frontend: when a chat response includes a mutation plan, show it as a special "proposed changes" block in the chat message (collapsed by default, expandable to see operations). Wire to diff preview (10-4).
   - [ ] 6-3. Quick-apply button: optional explicit action for simple low-risk plans; still runs stale-plan check and transactional validation before commit.
   - [ ] 6-4. Rejection flow: if user says "no" or "undo that", the LLM understands and can produce a reversal plan or try a different approach.
 

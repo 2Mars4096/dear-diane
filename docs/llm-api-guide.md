@@ -709,6 +709,8 @@ dan-serve
 | `reduce` | `wf.reduce()` | `result` | Fan-in aggregation |
 | `router` | `wf.router()` | `route` | LLM-powered routing |
 | `human_in_the_loop` | `wf.human_in_the_loop()` | `response` | Human input |
+| `rag_operator` | `wf.rag()` | `chunks` | Vector-store retrieval |
+| `validator` | `wf.validator()` | `valid` | Data validation with rule routing |
 
 ### Edge Types
 

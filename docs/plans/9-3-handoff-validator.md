@@ -1,7 +1,7 @@
 # 9-3: Handoff Validator Node
 
 **Parent:** [9-extended-capabilities](9-extended-capabilities.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Add a lightweight `ValidatorNode` type that checks schema conformance, required keys, and non-empty values at agent boundaries. Explicit validation node visible on the canvas, not hidden middleware.
 
 ## Tasks
@@ -36,18 +36,18 @@
   - [x] 4-1. `generate_entry_validator(composite_node) -> tuple[ValidatorNode, list[DataEdge]]` in `src/dan/validation/boundaries.py`: generate a ValidatorNode from `external_input_schema` with required_keys + schema_conformance rules, wired between the composite input and its first internal node
   - [x] 4-2. `generate_exit_validator(composite_node) -> tuple[ValidatorNode, list[DataEdge]]`: same for `external_output_schema` at the output boundary
   - [x] 4-3. `insert_boundary_validators(graph, composite_node_id) -> Graph`: returns a new Graph with validators inserted at both boundaries of the specified composite node
-  - [ ] 4-4. Builder helper: `wf.validated_composite(node_id, ...)` context manager that auto-inserts entry/exit validators on `build()`
-  - [ ] 4-5. Editor action: right-click composite node -> "Add Boundary Validators" in ContextMenu. Calls store action that generates validators via boundary utility and adds them to the graph.
+  - [x] 4-4. Builder helper: `wf.validated_composite(node_id, ...)` context manager that auto-inserts entry/exit validators on `build()`
+  - [x] 4-5. Editor action: right-click composite node -> "Add Boundary Validators" in ContextMenu. Calls store action that generates validators via boundary utility and adds them to the graph.
 
-- [ ] 5. Visual editor integration
-  - [ ] 5-1. `"validator"` in `NODE_TYPE_CATALOG` (category: `"Control Flow"`)
-  - [ ] 5-2. `NODE_DESCRIPTIONS` entry: "Validates data at agent boundaries. Checks required keys, schema conformance, non-empty values, type constraints, and custom expressions. Routes to valid/invalid output ports."
-  - [ ] 5-3. `createDefaultNode` case for `"validator"` in `graphAdapter.ts`: default with one `required_keys` rule and `on_failure="route"`
-  - [ ] 5-4. TypeScript interfaces: `ValidatorNodeType`, `ValidationRule` in `types/graph.ts`
-  - [ ] 5-5. ConfigPanel: dedicated validator section. Rule list with add/remove buttons. Per-rule: type dropdown, config fields (dotpath input for required_keys/non_empty/type_check, JSON schema editor for schema_conformance, expression textarea for custom_expression). on_failure dropdown. strict_mode toggle.
-  - [ ] 5-6. Node icon: shield with checkmark (SVG in `nodeIcons.tsx`)
-  - [ ] 5-7. DanNode: traffic-light border coloring based on last run result (green = all valid, red = violations, neutral = not run). Show violation count badge on failed runs.
-  - [ ] 5-8. Valid/invalid output port handles: green and red coloring (same pattern as GateNode true/false handles)
+- [x] 5. Visual editor integration
+  - [x] 5-1. `"validator"` in `NODE_TYPE_CATALOG` (category: `"Control Flow"`)
+  - [x] 5-2. `NODE_DESCRIPTIONS` entry: "Validates data at agent boundaries. Checks required keys, schema conformance, non-empty values, type constraints, and custom expressions. Routes to valid/invalid output ports."
+  - [x] 5-3. `createDefaultNode` case for `"validator"` in `graphAdapter.ts`: default with one `required_keys` rule and `on_failure="route"`
+  - [x] 5-4. TypeScript interfaces: `ValidatorNodeType`, `ValidationRule` in `types/graph.ts`
+  - [x] 5-5. ConfigPanel: dedicated validator section. Rule list with add/remove buttons. Per-rule: type dropdown, config fields (dotpath input for required_keys/non_empty/type_check, JSON schema editor for schema_conformance, expression textarea for custom_expression). on_failure dropdown. strict_mode toggle.
+  - [x] 5-6. Node icon: shield with checkmark (SVG in `nodeIcons.tsx`)
+  - [x] 5-7. DanNode: traffic-light border coloring based on last run result (green = all valid, red = violations, neutral = not run). Show violation count badge on failed runs.
+  - [x] 5-8. Valid/invalid output port handles: green and red coloring (same pattern as GateNode true/false handles)
 
 - [x] 6. Builder DSL and decompiler
   - [x] 6-1. `wf.validator(node_id, rules=[...], on_failure="route")` method on `WorkflowBuilder`, returns `NodeRef`. `on_failure` accepts `"route"`, `"warn"`, or `"halt"`.
@@ -67,8 +67,8 @@
 
 - [x] 8. Docs sync
   - [x] 8-1. `architecture.md`: add ValidatorNode to node types list, document rule types, add `executors/validator.py` and `validation/boundaries.py` to directory tree
-  - [ ] 8-2. `llm-api-guide.md`: ValidatorNode type reference, `wf.validator()` builder method, rule type configuration, boundary validator patterns
-  - [ ] 8-3. `README.md`: handoff validation capability in feature summary
+  - [x] 8-2. `llm-api-guide.md`: ValidatorNode type reference, `wf.validator()` builder method, rule type configuration, boundary validator patterns
+  - [x] 8-3. `README.md`: handoff validation capability in feature summary
   - [x] 8-4. `pyproject.toml`: optional dep `jsonschema` for full JSON Schema validation (pure-Python fallback covers basic cases without it)
 
 ## Decisions

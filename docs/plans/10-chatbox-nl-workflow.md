@@ -1,6 +1,6 @@
 # 10: Conversational Workflow Authoring (Chatbox)
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Add a chat panel to the visual editor where users describe workflows in natural language. The system interprets intent, generates/modifies the graph, and streams results — a fourth interaction surface (alongside drag-and-drop, Python builder, and markdown files) that makes workflow creation as fluid as a conversation.
 
 ## Sub-Plans

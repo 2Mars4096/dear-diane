@@ -1,7 +1,7 @@
 # 10-4: Graph Diff & Confirmation UX
 
 **Parent:** [10-chatbox-nl-workflow](10-chatbox-nl-workflow.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Before applying LLM-generated graph mutations, show users a clear visual diff of proposed changes and let them accept, reject, or partially accept. Prevents unwanted modifications and builds trust in the conversational authoring flow.
 
 ## Tasks

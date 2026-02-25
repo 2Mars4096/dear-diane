@@ -1,7 +1,7 @@
 # 9-1: RAG / Knowledge Retrieval Node
 
 **Parent:** [9-extended-capabilities](9-extended-capabilities.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Add a first-class `RAGOperator` node type backed by a pluggable vector store abstraction and embedding pipeline, upgrading from the tool-based RAG pattern in Phase 4. Supports both API-based and local embedding models.
 
 ## Tasks
@@ -12,7 +12,7 @@
   - [x] 1-3. `OpenAIEmbeddingProvider`: wraps `AsyncOpenAI` client, default model `text-embedding-3-small`, batch support
   - [x] 1-4. `LocalEmbeddingProvider`: wraps sentence-transformers `SentenceTransformer.encode()` via `asyncio.to_thread()`, configurable model name, optional dep (`sentence-transformers`)
   - [x] 1-5. `EmbeddingRegistry`: maps model name prefixes to providers (same pattern as `ProviderRegistry`). Resolution: exact override -> prefix match -> default fallback
-  - [ ] 1-6. `EngineConfig` extension: `embedding_providers: dict[str, ProviderConfig]`, `default_embedding_model: str`
+  - [x] 1-6. `EngineConfig` extension: `embedding_providers: dict[str, ProviderConfig]`, `default_embedding_model: str`
   - [x] 1-7. Graceful degradation: missing optional deps (openai, sentence-transformers) skip provider registration with warning
 
 - [x] 2. VectorStore protocol
@@ -59,16 +59,16 @@
   - [x] 7-2. Chunking integration: reuse `dan.tools.text_chunk` logic for splitting documents before embedding
   - [x] 7-3. Batch embedding with progress: embed in configurable batch sizes (default 100), yield progress events
   - [x] 7-4. Python-level API (engine-level, not server-only): `from dan.rag import Indexer, VectorStoreConfig`
-  - [ ] 7-5. Server API endpoints: `POST /api/collections` (create + populate), `GET /api/collections` (list), `GET /api/collections/{name}` (stats), `DELETE /api/collections/{name}`
-  - [ ] 7-6. Server endpoint wired in `app.py` lifespan, sharing VectorStoreFactory config with engine
+  - [x] 7-5. Server API endpoints: `POST /api/collections` (create + populate), `GET /api/collections` (list), `GET /api/collections/{name}` (stats), `DELETE /api/collections/{name}`
+  - [x] 7-6. Server endpoint wired in `app.py` lifespan, sharing VectorStoreFactory config with engine
 
-- [ ] 8. Visual editor integration
-  - [ ] 8-1. `"rag_operator"` in `NODE_TYPE_CATALOG` (category: `"Operators"`)
-  - [ ] 8-2. `NODE_DESCRIPTIONS` entry with port info and description
-  - [ ] 8-3. `createDefaultNode` case for `"rag_operator"` in `graphAdapter.ts`
-  - [ ] 8-4. ConfigPanel: collection name input (with dropdown if server collections endpoint available), top_k slider (1-50), similarity threshold input, embedding model selector, rerank toggle
-  - [ ] 8-5. Node icon: magnifying glass over database (SVG in `nodeIcons.tsx`)
-  - [ ] 8-6. TypeScript interface: `RAGOperatorNode` in `types/graph.ts`
+- [x] 8. Visual editor integration
+  - [x] 8-1. `"rag_operator"` in `NODE_TYPE_CATALOG` (category: `"Operators"`)
+  - [x] 8-2. `NODE_DESCRIPTIONS` entry with port info and description
+  - [x] 8-3. `createDefaultNode` case for `"rag_operator"` in `graphAdapter.ts`
+  - [x] 8-4. ConfigPanel: collection name input (with dropdown if server collections endpoint available), top_k slider (1-50), similarity threshold input, embedding model selector, rerank toggle
+  - [x] 8-5. Node icon: magnifying glass over database (SVG in `nodeIcons.tsx`)
+  - [x] 8-6. TypeScript interface: `RAGOperatorNode` in `types/graph.ts`
 
 - [x] 9. Builder DSL and decompiler (done in shared foundation)
   - [x] 9-1. `wf.rag(node_id, ...)` method on `WorkflowBuilder`, returns `NodeRef`
@@ -88,13 +88,13 @@
   - [x] 11-5. `RAGExecutor` integration tests: mock embedding + mock store, end-to-end query flow, threshold filtering
   - [x] 11-6. `Indexer` tests: create index with chunking, batch embedding progress, delete, stats
   - [x] 11-7. Builder/decompiler round-trip: `wf.rag()` -> compile -> decompile -> re-compile matches
-  - [ ] 11-8. Server endpoint tests: collection CRUD via httpx test client
+  - [x] 11-8. Server endpoint tests: collection CRUD via httpx test client
   - [x] 11-9. Update `test_builtins_registered` count for new executor type
 
-- [ ] 12. Docs sync
+- [x] 12. Docs sync
   - [x] 12-1. `architecture.md`: add `src/dan/rag/` package to directory tree, document RAGOperator, EmbeddingProvider, VectorStore
-  - [ ] 12-2. `llm-api-guide.md`: RAGOperator node type reference, `wf.rag()` builder method, collection management API
-  - [ ] 12-3. `README.md`: RAG capability in feature summary
+  - [x] 12-2. `llm-api-guide.md`: RAGOperator node type reference, `wf.rag()` builder method, collection management API
+  - [x] 12-3. `README.md`: RAG capability in feature summary
   - [x] 12-4. `pyproject.toml`: add optional dep groups `faiss`, `chroma`, `embeddings`, `all-rag` (done in shared foundation)
 
 ## Decisions

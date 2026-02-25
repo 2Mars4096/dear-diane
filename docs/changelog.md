@@ -744,6 +744,12 @@
 - [docs] Updated `docs/plans/9-1-rag-knowledge-retrieval.md`: checked off tasks 1-7, 9, 11 (embedding, stores, executor, indexer, builder, tests). Remaining: server endpoints (7-5/7-6), editor integration (8), migration/parity (10), some docs (12-2/12-3).
 - [docs] Updated `docs/todo.md`: marked 9-1 as complete (backend); noted follow-up for server/editor.
 
+## 2026-02-25 (Phase 6 — follow-up: editor integration, server endpoints, builder helper)
+- [feat] **Editor TypeScript integration** for `rag_operator` and `validator` node types: `RagOperator`/`ValidatorNode` interfaces in `graph.ts`, added to `DanNode` union, `NODE_TYPE_CATALOG` (operator/control categories), `NODE_DESCRIPTIONS` with port info, SVG icons in `nodeIcons.tsx`, `TYPE_COLORS` in `DanNode.tsx` (purple/emerald), `createDefaultNode` factory cases in `graphAdapter.ts`, dedicated `RAGConfigSection` (collection, top_k, query_template, store backend, embedding_model, threshold) and `ValidatorConfigSection` (rule list editor, on_failure select, strict_mode toggle) in `ConfigPanel.tsx`.
+- [feat] **RAG collection CRUD endpoints** on FastAPI server: `GET /api/rag/collections`, `POST /api/rag/collections` (create with documents + chunking), `GET /api/rag/collections/{name}/stats`, `POST /api/rag/collections/{name}/documents` (add docs), `DELETE /api/rag/collections/{name}`. Lazy-initialized `Indexer` backed by `EngineConfig` embedding settings and configurable vector store backend (`DAN_RAG_STORE_BACKEND`, `DAN_RAG_PERSIST_DIR` env vars).
+- [feat] **`wf.validated_composite()` builder helper**: context manager wrapping `composite()` that auto-generates entry and/or exit `ValidatorNode` nodes from JSON Schema (auto-derives `required_keys` + `schema_conformance` rules). Wires entry validator `valid` port → composite `input`, composite `result` → exit validator `data` port. Stores schemas on `external_input_schema`/`external_output_schema` for runtime `insert_boundary_validators` compatibility.
+- [feat] **"Add Boundary Validators" context menu action**: server endpoint `POST /api/graphs/{graph_id}/nodes/{node_id}/add-boundary-validators` (calls `insert_boundary_validators`, persists updated graph). Editor `api.ts` client function, `useGraphStore.addBoundaryValidators` action (save → call → reload cycle), `ContextMenu.tsx` entry shown for composite/while_loop/for_each nodes with external schemas.
+
 ## 2026-02-25 (Phase 7 — conversational planning review refinements)
 - [docs] Refined `docs/plans/10-chatbox-nl-workflow.md` with explicit trust and execution decisions: server-authoritative graph context, optimistic concurrency guard for mutation plans, WebSocket-only chat streaming, and session-scoped rollback policy.
 - [docs] Updated `docs/plans/10-1-chat-panel-backend.md` to remove SSE ambiguity, require server-loaded graph summaries (`workflow_id` source of truth), and add markdown sanitization requirements for assistant-rendered content.
@@ -752,3 +758,61 @@
 - [docs] Updated `docs/plans/10-4-graph-diff-confirmation.md` to define conversation rollback as active-session-only with in-memory history cursors and graceful disable behavior after reload.
 - [docs] Refocused `docs/plans/10-5-history-execution.md` to chat persistence/session metadata, and split run-from-chat backend/runtime complexity into a new detailed sub-plan `docs/plans/10-6-scoped-run-from-chat.md`.
 - [docs] Updated `docs/todo.md` to include `10-6` under Phase 7 and resolved top-level numbering collision by renaming the remaining Phase 7 umbrella item to `10-R`.
+
+## 2026-02-25 (Phase 7 — Plan 10-2: `@` Mention & Co-Navigation)
+- [feat] Added `editor/src/lib/mentionParser.ts`: mention serialization/parsing utilities — `serializeMention`, `parseMentions` (regex-based segment splitter), `findMentionQuery` (detect `@` trigger at cursor), `insertMention` (replace `@query` with `@[name](type:id)`), `navigateToMention` (co-navigation dispatcher: node→`setSelectedNode`, subgraph→`drillIn`, workflow→no-op), `mentionTypeColor` (Tailwind classes by mention type).
+- [feat] Added `editor/src/components/MentionAutocomplete.tsx`: floating autocomplete dropdown for `@` mentions. Three sections (Nodes, Workflows, Sub-graphs) populated from Zustand store. Case-insensitive substring filtering with bold match highlight. Keyboard navigation (ArrowUp/Down, Enter, Escape). Node type icons from `nodeIcons.tsx`, type badge pills, folder/layers icons for workflows/sub-graphs. Fixed positioning with viewport flip-up logic, max 300px height scroll.
+- [feat] Updated `editor/src/components/ChatPanel.tsx`: integrated mention system — `checkMention` detects `@` trigger on input/keyup/click, `handleMentionSelect` inserts serialized mention and repositions cursor, `dismissMention` hides dropdown. Textarea `onKeyDown` suppresses Enter/Arrow when autocomplete is active. `MentionAutocomplete` rendered inside input container.
+- [feat] Updated `editor/src/components/ChatMessage.tsx`: mention chip rendering in message bubbles — pre-processes `@[name](type:id)` tokens before HTML escaping (sentinel-swap technique), renders as inline `<button>` pills with colored backgrounds (blue/green/amber by type). Click delegation via `data-mention-*` attributes dispatches to `navigateToMention` for canvas co-navigation. Both user and assistant messages support mention chips.
+
+## 2026-02-25 (Phase 7 — Plan 10-3: LLM Function-Calling for Graph Mutations)
+- [feat] Extended `CompletionResult` with `tool_calls: list[dict] | None` field (`providers/__init__.py`). OpenAI provider (`openai_provider.py`) captures `tool_calls` from response messages (id, type, function name/arguments).
+- [feat] Added `MUTATION_TOOL_SCHEMA` constant in `chat_manager.py`: OpenAI function-calling tool definition for `plan_graph_mutations` covering all 6 operation types (add_node, remove_node, edit_node, add_edge, remove_edge, set_position).
+- [feat] Added `ChatMutationEvent` stream event: `message_id`, `content` (reasoning text), `mutation_plan`, `dry_run_result`, `token_usage`, `graph_revision`, `revision_mismatch`. Updated `ChatStreamEvent` union to include it.
+- [feat] Updated system prompt: instructs LLM to use `plan_graph_mutations` tool for modification requests, plain text for questions/explanations.
+- [feat] Added `ChatManager.send_message_with_tools()`: non-streaming `complete()` call with `tools=[MUTATION_TOOL_SCHEMA]`, extracts mutation plans from native tool_calls or text JSON fallback, runs `GraphMutator.dry_run()`, yields `ChatMutationEvent` and returns. Graceful fallback via `_stream_with_json_fallback()` when provider doesn't support tools kwarg.
+- [feat] Added `_try_parse_mutation_json()` module-level helper: regex-based extraction of mutation plans from markdown JSON code blocks or raw JSON text.
+- [feat] Original `send_message()` preserved as text-only streaming path (no function calling).
+- [feat] Updated `app.py` `/api/chat/message` endpoint: routes to `send_message_with_tools` when graph exists, falls back to `send_message` for missing graphs.
+- [fix] Relaxed `use_tools` guard in `/api/chat/message`: previously required `len(nodes) > 0`, now triggers for any existing graph (even empty). Consistent with system prompt that instructs the LLM to build from scratch for empty workflows.
+- [feat] Updated `editor/src/types/chat.ts`: added `chat_mutation` to `ChatStreamEvent.type` union, added `mutation_plan` and `dry_run_result` optional fields.
+- [feat] Updated `editor/src/components/ChatPanel.tsx`: handles `chat_mutation` WebSocket events — stores combined `{ plan, dryRunResult }` on assistant message, sets `mutationStatus: "proposed"`. Added `GraphDiffPreview` integration: clicking "Proposed changes" badge computes diff between current graph and `dryRunResult.new_graph`, shows diff dialog. "Apply All" saves new graph via `updateGraph` + reloads store. "Reject" marks message status as `rejected`.
+- [feat] Updated `editor/src/components/ChatMessage.tsx`: "Proposed changes" badge changed from `<span>` to clickable `<button>` with `onViewMutation` callback. Badge text reflects status (Applied/Rejected/Proposed changes).
+
+## 2026-02-25 (Phase 7 — Plan 10-5: Chat Thread Management & Session Rollback)
+- [feat] **Thread list sidebar** in `ChatPanel.tsx`: "Chat History" view with thread rows sorted by `updated_at` desc, message count badge, relative timestamp, delete button (confirm prompt), empty state ("No conversations yet"), and "New Chat" button. Active chat header has back arrow, inline-editable title, token count.
+- [feat] **Thread persistence via API**: auto-create thread on first message (with auto-title from content), save thread messages via PUT after each assistant response completion, save current thread on back-to-list and workflow switch. Uses `listChatThreads`, `getChatThread`, `createChatThread`, `updateChatThread`, `deleteChatThread` API functions.
+- [feat] **Auto-restore on load**: when chat panel opens with a workflow, fetches threads and auto-loads the most recent one. On workflow tab switch, saves current thread for old workflow and loads threads for new workflow.
+- [feat] **Session-scoped rollback markers**: `sessionMarkers` state tracks `{ historyCursor }` per message ID. `_recordMutationMarker(messageId)` records current undo stack position. "Revert to here" button walks undo stack back to marker position. After reload (markers empty), shows disabled "Revert" with tooltip "Available in current session only". Markers cleared on thread/workflow switch.
+- [feat] **ChatMessage mutation badges**: full status-aware rendering — proposed (amber chip + chevron), applied (green chip + check), rejected (gray chip), reverted (gray chip + strikethrough). Replaces previous simple `mutationPlan` presence check.
+- [feat] **ChatMessage run reference blocks**: `runRef` rendered as inline status blocks — running (blue spinner + scope), completed (green check + "View logs"), failed (red X + "View logs").
+- [feat] Added `updateChatThread` API function in `api.ts` (PUT `/chats/{workflowId}/{threadId}` with title and/or messages).
+- [feat] Extended backend PUT `/api/chats/{workflow_id}/{thread_id}` to accept `messages` array for full thread saves (previously title-only). Uses `StoreChatMessage.model_validate` for each message, updates `updated_at`, persists via `ChatStore.save_thread`.
+- [feat] Backend/frontend message format conversion helpers (`toBackendMessage`/`fromBackendMessage`) handle camelCase↔snake_case mapping and timestamp number↔ISO string conversion.
+- [fix] `ChatMessage.tsx` mutation badge now triggers on `mutationPlan` presence (not just `mutationStatus`), defaulting to "proposed" when plan exists without explicit status.
+
+## 2026-02-25
+- [feat] 10-1: Chat panel & backend — ChatPanel.tsx, ChatMessage.tsx, ChatManager, graph-aware system prompt, WebSocket streaming, chat endpoints in app.py
+- [feat] 10-2: @ mention system — MentionAutocomplete.tsx, mentionParser.ts, Cursor-style autocomplete, mention chips, click→canvas co-navigation
+- [feat] 10-3: NL→Graph mutation engine — GraphMutator with 8 operation types, MutationPlan, LLM function-calling schema, dry-run mode, optimistic concurrency
+- [feat] 10-4: Graph diff preview — graphDiff.ts computation, GraphDiffPreview.tsx modal with accept/reject/partial-accept, per-operation checkboxes
+- [feat] 10-5: Chat history & session — ChatStore persistence, thread list UI, auto-restore, session-scoped rollback markers, mutation/run badges in messages
+- [feat] 10-6: Scoped run execution — scoped_run.py, POST /api/runs/scoped, build_scoped_graph, /run commands, run event→chat block mapping
+- [test] Added test suites: test_chat_manager.py, test_graph_mutator.py, test_chat_store.py
+
+## 2026-02-25 (Phase 6 — review fixes: five critical bugs)
+- [fix] **`validated_composite` rewiring**: The builder helper now returns a `_ValidatedCompositeRef` proxy. When used with `>>`, inbound edges route to the entry validator and outbound edges originate from the exit validator, ensuring data always flows *through* validators instead of bypassing them.
+- [fix] **RAG CRUD `_get_indexer()` uses `EmbeddingRegistry`**: Extracted shared `build_embedding_registry(config)` function in `dan/rag/__init__.py`. Both the engine's `_build_embedding_registry` and the server's `_get_indexer` now use it, honouring local and API embedding provider configurations (Option B parity).
+- [fix] **Boundary validator insertion is idempotent**: `insert_boundary_validators()` now checks if `{node_id}__entry_validator` or `{node_id}__exit_validator` already exist and returns the graph unchanged, preventing duplicate node IDs and broken graphs on repeated calls.
+- [fix] **Editor `addBoundaryValidators` guards on save**: The Zustand action now checks `saveGraph()` return value and aborts if the save failed, preventing API calls against stale server state.
+- [fix] **Validator rule JSON editor UX**: Replaced direct `JSON.parse` on every keystroke with a `RuleConfigEditor` component using local `useState` for the textarea. Parsing and validation happen on blur, with a red border + error message for invalid JSON. Intermediate edits are preserved.
+- [refactor] Consolidated `_create_embedding_provider` + `_build_embedding_registry` from `engine/scheduler.py` into `dan/rag/__init__.py` as `_create_embedding_provider` + `build_embedding_registry`. Engine delegates to the shared helper. Test monkeypatches updated.
+- [test] 866 passed, 15 skipped.
+
+## 2026-02-25 (Phase 6 — review follow-ups: custom ports, tests)
+- [fix] **`validated_composite` custom ports**: Internal validator wiring now derives the composite's first input/output port from `input_ports`/`output_ports` or `input_mappings`/`output_mappings` instead of hardcoding `"input"`/`"result"`. Composites with custom ports (e.g. `payload`, `answer`) are correctly wired.
+- [fix] **`_ValidatedCompositeRef` delegation**: Added `__getattr__` so builder methods (llm, code, etc.) inside the block delegate to the sub-workflow. Users can write `with wf.validated_composite(...) as block: block.llm(...)`.
+- [test] **`test_validated_composite_flows_through_validators`**: Asserts `a >> block >> b` produces edges through entry/exit validators.
+- [test] **`test_validated_composite_with_custom_ports`**: Asserts custom `input_ports`/`output_ports` are used for validator wiring.
+- [test] **`test_insert_boundary_validators_idempotent`**: Asserts repeated calls return the same graph; no duplicate validators.
+- [test] 870 passed, 15 skipped.

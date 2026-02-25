@@ -1,7 +1,7 @@
 # 10-1: Chat Panel & Backend API
 
 **Parent:** [10-chatbox-nl-workflow](10-chatbox-nl-workflow.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Add a chat panel to the visual editor and a backend message endpoint. Users type natural language, the LLM responds with graph-aware answers, and responses stream token-by-token. This is the foundation that all other chatbox sub-plans build on.
 
 ## Tasks
