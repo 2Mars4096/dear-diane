@@ -817,7 +817,7 @@ wf.tool("fetch_data", tool_id="query_db",
         output_ports=[{"name": "rows"}, {"name": "count"}])
 ```
 
-**Planned (7-5):** `run_python(code, **context)` — generic tool that executes model-generated Python. Replaces domain-specific tools (plot_backtest, save_grid_csv). Preferred pattern for post-processing: LLM generates code → run_python executes it.
+**run_python (implemented):** `run_python(code, **context)` — generic tool that executes model-generated Python. Inject context kwargs (e.g. item, results, out_dir) as variables; code must assign to `result` or `output`. Returns `{ result, stdout, stderr, error? }`. Preferred pattern for post-processing: LLM generates code → run_python executes it. Replaces domain-specific tools (plot_backtest, save_grid_csv — now deprecated).
 
 ### Progressive Workflow Wrapping
 

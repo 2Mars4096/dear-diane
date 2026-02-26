@@ -1,6 +1,7 @@
 # Changelog
 
 ## 2026-02-26
+- [feat] **Plan 7-5 general tool design:** Shared executor `execute_python()` in `dan.server.exec`; `run_python(code, **context)` tool registered. Refactored `_run_strategy_script` to use shared executor. Deprecated `plot_backtest`, `save_grid_csv` (kept registered). Added `run_python.md` tool spec.
 - [docs] **Plan restructuring:** Removed 7-multi-department-adaptive from project plans (example-specific). Moved to examples/vibe_research_md/WORKFLOW.md. Phase 7.5 dropped; vibe research → Backlog.
 - [docs] **Plan 7-5 general tool design (improved):** Added state-of-the-art alignment (Cursor/Claude patterns), shared executor extraction, run_python interface spec, safety/sandbox notes, migration tasks, and comparison table.
 - [fix] **write_csv → each(plot_one):** Compiler prefers `results` port for tool_operator when present, so write_csv.results flows to each(plot_one).items correctly.

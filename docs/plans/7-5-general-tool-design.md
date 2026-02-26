@@ -1,7 +1,7 @@
 # 7-5: General Tool Design — Agent-Generated Code
 
 **Parent:** [7-core-hardening](7-core-hardening.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Replace domain-specific tools (plot_backtest, save_grid_csv) with a general "node writes code, generic runner executes" pattern — aligned with state-of-the-art IDEs (Cursor, Claude Code).
 
 ## Problem
@@ -48,13 +48,13 @@ ToolRegistry
 ## Tasks
 
 1. **Extract shared executor**
-   - [ ] `dan.tools` or `dan.server.exec` module: `execute_python(code, namespace, timeout=60, memory_mb=512)` → `{ result, stdout, stderr, error? }`
-   - [ ] run_strategy_script refactor to call shared executor instead of raw `exec()`
+   - [x] `dan.tools` or `dan.server.exec` module: `execute_python(code, namespace, timeout=60, memory_mb=512)` → `{ result, stdout, stderr, error? }`
+   - [x] run_strategy_script refactor to call shared executor instead of raw `exec()`
 
 2. **Add run_python tool**
-   - [ ] `run_python(code, **context)` — inject context into namespace, call shared executor, return normalized outputs
-   - [ ] Register in app.py; add to ToolRegistry
-   - [ ] Write tool spec (Accepts/Returns) for markdown agent format
+   - [x] `run_python(code, **context)` — inject context into namespace, call shared executor, return normalized outputs
+   - [x] Register in app.py; add to ToolRegistry
+   - [x] Write tool spec (Accepts/Returns) for markdown agent format
 
 3. **Refactor plot_one**
    - [ ] Option A: LLM node that receives `item`, generates plotting code, passes to run_python
@@ -68,14 +68,14 @@ ToolRegistry
    - [ ] Prompt: "Generate Python to write results to CSV. Context: results is list of dicts. Infer columns from first row."
 
 5. **Deprecate domain tools**
-   - [ ] Mark plot_backtest, save_grid_csv deprecated in docs; keep registered for backwards compat
+   - [x] Mark plot_backtest, save_grid_csv deprecated in docs; keep registered for backwards compat
    - [ ] Add env: `DAN_USE_LEGACY_PLOT_CSV=1` to prefer legacy tools (optional)
    - [ ] Remove after workflow_multi_dept migrates
 
 6. **Workflow and docs**
    - [ ] Update examples/vibe_research_md workflow: plot_one, write_csv use new pattern
-   - [ ] Update llm-api-guide: preferred pattern is agent-generated code + run_python
-   - [ ] Update architecture.md: tool design principles (generic over domain-specific)
+   - [x] Update llm-api-guide: preferred pattern is agent-generated code + run_python
+   - [x] Update architecture.md: tool design principles (generic over domain-specific)
 
 ## Decisions
 
