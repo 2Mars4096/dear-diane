@@ -298,10 +298,11 @@ class _Decompiler:
         all_args = ", ".join(args + kwargs)
         return f"{method}({all_args})"
 
-    def _emit_subgraph_node(self, node: Any, body_var: str) -> list[str]:
+    def _emit_subgraph_node(self, node: Any, body_var: str, indent: int = 0) -> list[str]:
         """Generate a context-manager block for a sub-graph node."""
         lines: list[str] = []
         nt = node.node_type
+        pad = "    " * indent
 
         if nt == "while_loop":
             kwargs_parts = [
@@ -335,7 +336,7 @@ class _Decompiler:
                 kwargs_parts.append(
                     f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
                 )
-            lines.append(f"with wf.while_loop({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
+            lines.append(f"{pad}with wf.while_loop({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
 
         elif nt == "for_each":
             kwargs_parts = [
@@ -362,7 +363,7 @@ class _Decompiler:
                 kwargs_parts.append(
                     f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
                 )
-            lines.append(f"with wf.for_each({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
+            lines.append(f"{pad}with wf.for_each({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
 
         elif nt == "composite":
             kwargs_parts = []
@@ -391,28 +392,96 @@ class _Decompiler:
                     f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
                 )
             kw_str = f", {', '.join(kwargs_parts)}" if kwargs_parts else ""
-            lines.append(f"with wf.composite({node.id!r}{kw_str}) as {body_var}:")
+            lines.append(f"{pad}with wf.composite({node.id!r}{kw_str}) as {body_var}:")
 
-        # Emit sub-graph body
-        sub_graph = self.graph.sub_graphs.get(node.body_graph)
+        # Resolve the body sub-graph from the root graph (handles nested graphs)
+        sub_graph = self._resolve_sub_graph(node.body_graph)
+        inner_pad = pad + "    "
         if sub_graph and sub_graph.nodes:
             sub_ordered = self._topological_sort_graph(sub_graph)
+            emitted_in_chain: set[str] = set()
             for sub_nid in sub_ordered:
+                if sub_nid in emitted_in_chain:
+                    continue
                 sub_node = sub_graph.node_by_id(sub_nid)
-                if sub_node is not None:
-                    sub_var = _to_var_name(sub_nid)
+                if sub_node is None:
+                    continue
+                sub_var = _to_var_name(sub_nid)
+                if isinstance(sub_node, (WhileLoopNode, ForEachNode, CompositeNode)):
+                    nested_body_var = f"_{sub_var}_body"
+                    nested_lines = self._emit_subgraph_node(sub_node, nested_body_var, indent=indent + 1)
+                    lines.extend(nested_lines)
+                    lines.append(f"{inner_pad}{sub_var} = NodeRef({sub_node.id!r}, {sub_node.node_type!r}, {body_var})")
+                else:
                     call = self._emit_node_call_scoped(sub_node, body_var)
-                    lines.append(f"    {sub_var} = {call}")
+                    lines.append(f"{inner_pad}{sub_var} = {call}")
 
             sub_chains = self._detect_chains_in(sub_graph)
+            emitted_chain_pairs: set[tuple[str, str]] = set()
+            sub_node_map = {n.id: n for n in sub_graph.nodes}
+            subgraph_node_ids = {
+                n.id for n in sub_graph.nodes
+                if isinstance(n, (WhileLoopNode, ForEachNode, CompositeNode))
+            }
             for chain in sub_chains:
-                if len(chain) >= 2:
-                    chain_str = " >> ".join(_to_var_name(nid) for nid in chain)
-                    lines.append(f"    {chain_str}")
+                filtered = [nid for nid in chain if nid not in subgraph_node_ids]
+                if len(filtered) >= 2:
+                    chain_str = " >> ".join(_to_var_name(nid) for nid in filtered)
+                    lines.append(f"{inner_pad}{chain_str}")
+                    for i in range(len(filtered) - 1):
+                        emitted_chain_pairs.add((filtered[i], filtered[i + 1]))
+
+            for edge in sub_graph.edges:
+                if isinstance(edge, DataEdge):
+                    pair = (edge.source_node_id, edge.target_node_id)
+                    if pair in emitted_chain_pairs and self._is_default_data_edge_in(edge, sub_node_map):
+                        continue
+                    src_var = _to_var_name(edge.source_node_id)
+                    tgt_var = _to_var_name(edge.target_node_id)
+                    lines.append(f'{inner_pad}{body_var}.edge({src_var}["{edge.source_port}"], {tgt_var}["{edge.target_port}"])')
+                elif isinstance(edge, ControlEdge):
+                    src_var = _to_var_name(edge.source_node_id)
+                    tgt_var = _to_var_name(edge.target_node_id)
+                    cond_arg = f", condition={edge.condition!r}" if edge.condition else ""
+                    lines.append(
+                        f'{inner_pad}{body_var}.control_edge({src_var}["{edge.source_port}"], '
+                        f'{tgt_var}["{edge.target_port}"]{cond_arg})'
+                    )
+                elif isinstance(edge, ContextEdge):
+                    src_var = _to_var_name(edge.source_node_id)
+                    tgt_var = _to_var_name(edge.target_node_id)
+                    lines.append(
+                        f'{inner_pad}{body_var}.context_edge({src_var}["{edge.source_port}"], '
+                        f'{tgt_var}["{edge.target_port}"], '
+                        f"context_key={edge.context_key!r}, mode={edge.mode.value!r})"
+                    )
         else:
-            lines.append("    pass")
+            lines.append(f"{inner_pad}pass")
 
         return lines
+
+    def _resolve_sub_graph(self, key: str) -> Graph | None:
+        """Find a sub-graph by key, searching recursively through nested sub-graphs."""
+        if key in self.graph.sub_graphs:
+            return self.graph.sub_graphs[key]
+        for sg in self.graph.sub_graphs.values():
+            if key in sg.sub_graphs:
+                return sg.sub_graphs[key]
+            for nested_sg in sg.sub_graphs.values():
+                if key in nested_sg.sub_graphs:
+                    return nested_sg.sub_graphs[key]
+        return None
+
+    @staticmethod
+    def _is_default_data_edge_in(edge: DataEdge, node_map: dict[str, Any]) -> bool:
+        src_node = node_map.get(edge.source_node_id)
+        tgt_node = node_map.get(edge.target_node_id)
+        if src_node is None or tgt_node is None:
+            return False
+        return (
+            edge.source_port == default_output_port(src_node.node_type)
+            and edge.target_port == default_input_port(tgt_node.node_type)
+        )
 
     def _emit_node_call_scoped(self, node: Any, scope_var: str) -> str:
         """Like _emit_node_call but uses scope_var instead of 'wf'."""
@@ -442,14 +511,41 @@ class _Decompiler:
 
     @staticmethod
     def _topological_sort_graph(graph: Graph) -> list[str]:
-        """Kahn's algorithm with alphabetical tie-breaking for determinism."""
+        """Kahn's algorithm with back-edge detection for cycles (while loops).
+
+        Removes back edges (target → gate that creates a cycle) before sorting
+        so all nodes appear in the output. Appends any remaining cycle nodes
+        at the end in alphabetical order.
+        """
+        node_ids = {n.id for n in graph.nodes}
+        gate_ids = set()
+        for n in graph.nodes:
+            if isinstance(n, GateNode) and getattr(n, "gate_mode", None) == "while":
+                gate_ids.add(n.id)
+
+        back_edge_pairs: set[tuple[str, str]] = set()
+        for edge in graph.edges:
+            if isinstance(edge, DataEdge) and edge.target_node_id in gate_ids:
+                if edge.source_node_id in node_ids and edge.source_node_id != edge.target_node_id:
+                    for other_edge in graph.edges:
+                        if (
+                            isinstance(other_edge, DataEdge)
+                            and other_edge.source_node_id == edge.target_node_id
+                            and other_edge.target_node_id != edge.source_node_id
+                        ):
+                            back_edge_pairs.add((edge.source_node_id, edge.target_node_id))
+                            break
+
         in_degree: dict[str, int] = {n.id: 0 for n in graph.nodes}
         dependents: dict[str, list[str]] = defaultdict(list)
 
         for edge in graph.edges:
-            if isinstance(edge, DataEdge) and edge.target_node_id in in_degree:
-                in_degree[edge.target_node_id] += 1
-                dependents[edge.source_node_id].append(edge.target_node_id)
+            if not isinstance(edge, DataEdge) or edge.target_node_id not in in_degree:
+                continue
+            if (edge.source_node_id, edge.target_node_id) in back_edge_pairs:
+                continue
+            in_degree[edge.target_node_id] += 1
+            dependents[edge.source_node_id].append(edge.target_node_id)
 
         queue = sorted(nid for nid, deg in in_degree.items() if deg == 0)
         order: list[str] = []
@@ -463,6 +559,8 @@ class _Decompiler:
                     queue.append(dep)
             queue.sort()
 
+        remaining = sorted(nid for nid in node_ids if nid not in set(order))
+        order.extend(remaining)
         return order
 
     def _detect_chains(self) -> list[list[str]]:
