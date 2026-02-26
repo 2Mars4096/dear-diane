@@ -1,5 +1,41 @@
 # Changelog
 
+## 2026-02-26
+- [refactor] **Vibe research cleanup:** Removed department_state.py (logic in persist_dept_state + app.py), quant_lib/strategy_registry.py (unused), quant_lib/strategy_schema.md (superseded by factor_schema.py), quant_lib/run_grid_backtest.py (superseded by run_grid.py + workflow_grid).
+- [feat] **vibe_research_md cleanup:** Removed 24 unused .md files and 3 run scripts (run.py, run_grid.py, run_adaptive.py). Kept only workflow_multi_dept and its 18 agent files; run_multi_dept.py remains.
+- [feat] **Orchestrator context:** Prompt now states project purpose, data/output paths, and strategy manager responsibilities (create strategies, reflect on results, improve).
+- [feat] **Multi-department max_factors:** Hard constraint as workflow input. When len(results) >= max_factors, orchestrator and governor set try_more=false. entry, unpack, persist, governor updated; run_multi_dept.py --max-factors (default 20).
+- [feat] **Multi-department adaptive workflow:** workflow_multi_dept.md — orchestrator (max 6 depts, delete for good), strategy_manager_dept (naming: dept_code+numbering+desc), strategy_coder (script-as-param), run_strategy_script tool, department state persistence. Factor schema (factor_schema.py) with validate_factor_df; run_backtest_from_factor_df; Compustat 6-month lag (apply_compustat_lag). run_multi_dept.py script; json/Path in code executor builtins.
+- [fix] **Code executor:** Added `NameError` and `Exception` to `_ALLOWED_BUILTINS` so governor/bug_fixer `try/except NameError` works in restricted exec namespace (was: `NameError: name 'NameError' is not defined`).
+- [fix] **Adaptive workflow nodes:** Added defensive `try/except NameError` in aggregator and merge_planner for all inputs (results, strategies_tried, iteration, backtest_result, planner_output, etc.) so missing upstream outputs don't break the loop.
+- [fix] **Loop gate condition:** GateExecutor flattens body output `{"result": {...}}` into condition_vars so `until: "not try_more"` can access try_more; adds try_more=True default when missing (was: `name 'try_more' is not defined`).
+- [feat] **Adaptive strategy workflow:** `workflow_adaptive.md` — LLM-driven loop with central planner, strategy writer, backtest, governor. `adaptive_iteration` composite: unpack → central_planner → merge_planner → strategy_creation (unpack → strategy_writer → strategy_to_item → backtest_runner → aggregator → governor). Loop `entry_adaptive | loop(adaptive_iteration, until: "not try_more", max: 5)`. Governor overrides try_more when all backtests fail. Standardized nodes: `unpack_loop_input`, `unpack_adaptive_input`, `merge_planner` (single result object), `aggregator` (pass-through start_year/end_year), `governor` (result object for gate).
+- [feat] **Adaptive ↔ grid integration:** Adaptive workflow now outputs to same CSV and plots as grid. `extract_adaptive_results` extracts results from loop; `gate.done → extract_results`; `extract_results.results → write_csv`; `extract_results | each(plot_one)`. Compiler: add loop gate to `nodes_by_id` immediately so flow can reference `gate.done`. `run_adaptive.py` script (mirrors `run_grid.py`).
+- [fix] **Editor graph list:** TabBar awaits `loadGraphList()` before opening picker; added refresh button in picker header; toolbar Refresh now reloads both graph list and current tab (no dan-serve restart needed).
+- [feat] **Adaptive workflow — bug fixer:** Added `bug_fixer.md` between backtest_runner and aggregator; catches malformed/failed backtest output so the loop never breaks. Updated workflow description to "revolving, auto-expanding"; tags include governor, bug-fixer. README notes drill path: adaptive_iteration → strategy_creation to see governor and bug fixer.
+- [fix] **Grid workflow diagram:** Compiler no longer creates `workflow_inputs.item → plot_one` — ForEach body agents used only in `each()` are excluded from the main graph so they receive items from the ForEach at runtime, not from Workflow Inputs. Agents used elsewhere (e.g. `processor` in if/else) remain in the main graph.
+- [fix] **Grid plots:** Compiler now uses composite "results" (not "result") for ForEach items when composite has both, so plot_one receives all 10 backtest results → 10 plots. Reverted cumulative prepend; time axis uses actual data dates.
+- [feat] **Grid-search workflow:** `workflow_grid.md` — 10 strategies via ForEach nodes (no hardcoded loops). strategies_config → each(backtest_one) → write_csv + each(plot_one). Saves factors, CSV summary, cumulative quintile + LS plots. Tools: `run_backtest` (item, lookback, skip, return_series), `plot_backtest`, `save_grid_csv`.
+- [fix] **Vibe research summarizer:** Handle missing `results` when upstream tool fails (NameError); README notes to restart `dan-serve` if "Unknown tool: run_backtest" appears.
+- [feat] **Vibe research example:** `examples/vibe_research_md/` — simple factor research workflow in markdown format. Nested composite (data_loader → compute_factor), mock data (no CRSP/Compustat), code-only summarizer for demo without LLM API. `run.py` for CLI execution; `--build-only` saves `graphs/vibe_research.json` for the editor.
+- [feat] **quant_lib:** CRSP/Compustat loaders, momentum factor, quintile backtest. Data from `AUTO_QUANT_ROOT` (default: `~/Dropbox/CUHK-phd/projects/auto-quant`). `run_backtest.py` CLI; `run_backtest` tool registered in server. `workflow_real.md` uses real data via tool.
+
+## 2026-02-25 (Phase 3.75 — 6-12 control flow consolidation)
+- [feat] `NODE_TYPE_CATALOG`: removed legacy `if_else` and `while_loop`; added `gate_if_else` (If/Else Gate) and `gate_while` (While Gate); removed generic `gate`
+- [feat] `graphAdapter.ts`: `createDefaultNode` for `gate_if_else` and `gate_while` creates `GateNode` with appropriate `gate_mode`; added default case that throws for unknown types
+- [feat] `paletteTemplates.ts`: removed redundant IfElse Gate and While Gate templates; ReAct template now uses CompositeNode with GateNode(while) body (LLM → Tool → Gate with back-edge) instead of WhileLoopNode
+- [feat] `app.py`: `DAN_GATE_MIGRATION_ENABLED` defaults to `true` so legacy graphs are migrated on load
+- [feat] `nodeIcons.tsx`: replaced `if_else`/`while_loop` with `gate_if_else`/`gate_while` icons
+- [feat] `MentionAutocomplete.tsx`: added `gate` fallback to typeLabel for display
+- [docs] Created `docs/plans/6-12-control-flow-consolidation.md`; updated `todo.md`
+- [test] TypeScript clean, 870 backend tests passing
+
+## 2026-02-25 (Phase 3.75 — 6-12 ReAct cyclic subgraph fix)
+- [fix] `scheduler.py`: `_run_subgraph` now uses `_topological_levels_with_backedges` and `_execute_with_cycles` when the sub-graph contains gate(while) back-edges, fixing ReAct palette template (Composite with cyclic body) which previously executed no nodes
+- [fix] `_execute_with_cycles`: added `skip_checkpoint=True` parameter so sub-graph execution does not overwrite parent checkpoints
+- [test] Added `TestCompositeCyclicSubgraph::test_composite_with_gate_loop_in_body` — verifies Composite with gate loop in body runs correctly
+- [test] 871 backend tests passing
+
 ## 2026-02-25 (Phase 6 — Extended Capabilities — backend implementation complete)
 - [feat] **9-3 Handoff Validator:** `ValidatorNode` model (5 rule types: required_keys, non_empty, schema_conformance, type_check, custom_expression) with valid/invalid output port routing. `ValidatorExecutor` with `resolve_dotpath()` utility, `ValidationViolation` dataclass, `on_failure` modes (route/warn/halt), `strict_mode` early stop, `VALIDATION_RESULT` event emission. Boundary auto-insert utility (`generate_entry_validator`, `generate_exit_validator`, `insert_boundary_validators`) for composite nodes. 49 new tests.
 - [feat] **9-2 Subprocess Sandbox:** `SandboxConfig` Pydantic model with `pass_env` glob matching, `SandboxRunner` (asyncio subprocess, timeout enforcement, output truncation, env filtering, memory limits via `resource.setrlimit`), `PythonAdapter` + `ShellAdapter` language adapters. `CodeExecutor` upgraded with subprocess routing (inline `exec()` fast-path preserved as default). `shell_command` tool upgraded with optional sandbox mode via `DAN_SANDBOX_SHELL` env var. `SANDBOX_STARTED`/`SANDBOX_COMPLETED` events. 50 new tests.
@@ -825,3 +861,33 @@
 - [fix] **Markdown link XSS via unsafe URL schemes**: `ChatMessage.tsx` `applyInlineMarkdown` now rejects `javascript:` hrefs and only allows `https:`, `http:`, `mailto:`, and `#` schemes; added `rel="noreferrer"`.
 - [fix] **Mention trigger fires mid-word**: `mentionParser.ts::findMentionQuery` now requires `@` to be preceded by whitespace or at position 0, preventing false triggers like `email@foo`.
 - [fix] **Workflow mention click was a no-op**: `navigateToMention` now calls `store.openTab(mention.id)` for `workflow` mention type.
+
+## 2026-02-25 (Phase 7 — 10-7 Apply Mutation Flow)
+- [feat] **Sub-plan 10-7**: Wire chat mutation proposal → diff preview → apply pipeline. Users can now apply LLM-generated graph changes.
+- [feat] **Backend**: `POST /api/graphs/{graph_id}/apply-mutation` — accepts `MutationPlan`, calls `GraphMutator.apply()`, persists via GraphStore, returns `{ success, new_graph?, errors?, stale_plan? }`. Concurrency check via `base_graph_revision`.
+- [feat] **Frontend**: `api.applyMutation()` client; "Proposed changes" badge in ChatMessage is clickable → opens GraphDiffPreview modal with `computeGraphDiff(currentGraph, dry_run_result.new_graph)`.
+- [feat] **Apply flow**: Apply All → `applyMutation` API → `pushSnapshot` + `loadGraph` → update message `mutationStatus: "applied"` → record session marker for "Revert to here" → persist thread.
+- [feat] **Reject flow**: Close modal, set `mutationStatus: "rejected"`, persist thread.
+- [feat] **ChatMessage**: Added `dryRunResult` to message model and backend conversion for diff computation.
+- [test] `test_apply_mutation_success`, `test_apply_mutation_nonexistent` in test_api.py.
+
+## 2026-02-25 (Phase 7 — 10-7 review fixes)
+- [fix] **Apply Selected misleading**: GraphDiffPreview now accepts `allowPartialApply` (default true). ChatPanel passes `allowPartialApply={false}` so "Apply Selected" is hidden until partial apply is implemented.
+- [fix] **Unrelated gate migration default**: Reverted `DAN_GATE_MIGRATION_ENABLED` default from `"true"` to `""` (was accidentally changed).
+- [fix] **Loading state during apply**: Added `isApplying` state; GraphDiffPreview accepts `disabled` prop. Apply/Reject buttons disabled while API call in flight.
+- [fix] **Modal closes on error**: On apply failure, modal stays open so user can retry or close manually. `setPreviewingMessage(null)` only on success.
+
+## 2026-02-25 (Phase 7 — 10-7 second review fixes)
+- [fix] **Apply error hidden behind modal**: Added `applyError` state and `applyError` prop to GraphDiffPreview. Failed apply shows error banner inside modal with "Try again" button.
+- [fix] **Close button during apply**: GraphDiffPreview Close (X) button now disabled when `disabled` is true.
+- [fix] **Stale isApplying guard**: Use `applyingRef` for the guard to avoid stale closure; `isApplying` state remains for UI disable.
+
+## 2026-02-25 (Phase 7 — 10-7 third review fixes)
+- [fix] **dry_run_result not persisted**: Added `dry_run_result` to `ChatMessage` in `chat_store.py` so mutation preview survives thread reload.
+- [fix] **No fallback when preview unavailable**: When user clicks "Proposed changes" but `dryRunResult.new_graph` is missing (old thread or failed persistence), show fallback modal with "Preview unavailable" and Close button instead of leaving user stuck.
+- [fix] **apply-mutation gate migration parity**: Applied gate migration to graph before mutation in `apply_mutation` endpoint when `DAN_GATE_MIGRATION_ENABLED` is set, matching `get_graph` behavior.
+
+## 2026-02-25 (Phase 7 — 10-7 fourth review fixes)
+- [fix] **Run error message wrong field**: Backend `ScopedRunError` uses `message`, not `detail`. Frontend now reads `resBody.error?.message` for run_error display.
+- [fix] **Run commands not persisted**: `/run` and `/run-node` responses (run_started/run_error) now save the assistant message to the thread via `updateChatThread`.
+- [fix] **TypeScript cast**: `danGraph as Record<string, unknown>` → `danGraph as unknown as Record<string, unknown>` to satisfy strict cast.

@@ -18,6 +18,7 @@
 | [6-9](6-9-multi-tab-workflow-sessions.md) | Multi-Tab Workflow Sessions | Multiple workflow tabs with per-tab run state and reconnect-on-activation | `useGraphStore.ts`, `EditorToolbar.tsx`, new `TabBar.tsx`, `App.tsx` |
 | [6-10](6-10-gate-loop-condition-redesign.md) | Gate Loop + Condition Redesign | Visible loop flow via gate nodes, condition routing cleanup, collapsible loop groups | `control_flow.py`, `scheduler.py`, `graph.py`, `DanNode.tsx`, `paletteTemplates.ts` |
 | [6-11](6-11-workflow-ux-polish.md) | Workflow UX Polish | Run summary (tokens + time), drill-in auto-layout, multi-tab duplicate graphs | `llm.py`, `scheduler.py`, `useGraphStore.ts`, `TabBar.tsx`, `LogPanel.tsx` |
+| [6-12](6-12-control-flow-consolidation.md) | Control Flow Consolidation | Drop legacy if_else/while_loop; palette shows only If/Else Gate, While Gate, For Each | `graph.ts`, `graphAdapter.ts`, `paletteTemplates.ts`, `app.py`, `nodeIcons.tsx` |
 
 ## Dependencies / Sequencing
 

@@ -46,6 +46,7 @@
   - [x] [6-9-multi-tab-workflow-sessions](plans/6-9-multi-tab-workflow-sessions.md) — I. Multi-workflow tabs with per-tab state isolation and reconnect-on-activation run recovery
   - [x] [6-10-gate-loop-condition-redesign](plans/6-10-gate-loop-condition-redesign.md) — J. Gate-style visible loop flow, condition-routing redesign, and collapsible loop internals
   - [x] [6-11-workflow-ux-polish](plans/6-11-workflow-ux-polish.md) — K. Run summary (tokens + time), drill-in auto-layout, multi-tab duplicate graphs
+  - [x] [6-12-control-flow-consolidation](plans/6-12-control-flow-consolidation.md) — L. Drop legacy if_else/while_loop; palette shows only If/Else Gate, While Gate, For Each
 
 ## Phase 4 — Core Hardening
 > Make existing nodes robust and the platform practically usable. Fill gaps that prevent real workflows from running reliably.
@@ -83,6 +84,7 @@
   - [x] [10-4-graph-diff-confirmation](plans/10-4-graph-diff-confirmation.md) — D. Before/after diff computation, visual diff preview, accept/reject/partial-accept, undo integration, session-scoped conversation rollback
   - [x] [10-5-history-execution](plans/10-5-history-execution.md) — E. Per-workflow chat persistence, thread list UI, graph delta tracking, session rollback metadata *(thread UI, auto-restore, session markers done; cascade delete, offline resilience, tests, docs remaining)*
   - [x] [10-6-scoped-run-from-chat](plans/10-6-scoped-run-from-chat.md) — F. Full/node/sub-graph run API, server-authoritative target resolution, chat command handling, run event streaming into thread
+  - [x] [10-7-apply-mutation-flow](plans/10-7-apply-mutation-flow.md) — G. Wire GraphDiffPreview, POST apply-mutation endpoint, chat→preview→apply pipeline, session marker
 - [ ] 10-R: Author & distribute (remaining) → (not yet planned)
 - [ ] CLI mode — run workflows in terminal/background. Supervisor-style: start, check progress, inspect logs without blocking. Complements visual editor for headless/CI/server deployments.
 - [ ] Publish workflow as API/MCP — build a workflow, publish as a callable MCP server or HTTP endpoint. Turns workflows into consumable services (Coze-style).
@@ -136,6 +138,10 @@
 - [ ] Voting / ensemble primitive — same-model voting + cross-model ensemble. `Vote` node or builder sugar `wf.vote()`.
 - [ ] Session / conversation memory — lightweight persistence for conversation history + key-value state across multiple `Engine.run()` invocations.
 - [ ] Loop as context manager — loops manage what context feeds back, not just control flow. Feedback selectors filter what flows from body back to condition.
+
+## Phase 7.5 — Multi-Department Adaptive (vibe research)
+- [ ] [7-multi-department-adaptive](plans/7-multi-department-adaptive.md) — parallel departments (each), meta department every N iterations (Sharpe blend top K), full integration
+- [x] Multi-dept foundation: orchestrator, strategy_manager_dept, strategy_coder, run_strategy_script, department state, factor schema
 
 ## Backlog (unphased)
 - [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12

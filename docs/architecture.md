@@ -534,6 +534,7 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 | PUT | `/api/graphs/{id}` | Save graph JSON |
 | DELETE | `/api/graphs/{id}` | Delete graph |
 | POST | `/api/graphs/{id}/nodes/{nid}/add-boundary-validators` | Insert entry/exit validator nodes around a composite |
+| POST | `/api/graphs/{id}/apply-mutation` | Apply chat-generated mutation plan (GraphMutator.apply), persist, return new graph |
 | GET | `/api/rag/collections` | List RAG collections |
 | POST | `/api/rag/collections` | Create collection with documents |
 | GET | `/api/rag/collections/{name}/stats` | Collection stats |

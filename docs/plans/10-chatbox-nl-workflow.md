@@ -13,6 +13,7 @@
 | [10-4](10-4-graph-diff-confirmation.md) | Graph Diff & Confirmation UX | Before/after graph diff computation, visual diff preview dialog, accept/reject/partial-accept, undo integration, session-scoped rollback | new `editor/src/components/GraphDiffPreview.tsx`, `useGraphStore.ts`, `graphAdapter.ts` |
 | [10-5](10-5-history-execution.md) | Chat History & Session Integration | Per-workflow message persistence, history list UI, graph delta tracking, session-scoped rollback metadata | new `src/dan/server/chat_store.py`, `ChatPanel.tsx`, `useGraphStore.ts` |
 | [10-6](10-6-scoped-run-from-chat.md) | Scoped Run Execution from Chat | Full/node/sub-graph run API, target resolution, chat command handling, run event streaming into thread | new `src/dan/server/scoped_run.py`, `chat_manager.py`, `run_manager.py`, `app.py` |
+| [10-7](10-7-apply-mutation-flow.md) | Apply Mutation Flow | Wire GraphDiffPreview, apply-mutation endpoint, chat→preview→apply pipeline, undo/session marker | `app.py`, `editor/src/lib/api.ts`, `ChatMessage.tsx`, `ChatPanel.tsx` |
 
 ## Dependencies / Sequencing
 

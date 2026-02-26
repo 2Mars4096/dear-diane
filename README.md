@@ -75,7 +75,7 @@ engine = Engine(config)
 result = await engine.run(graph, inputs={"topic": "supply chain optimization"})
 ```
 
-See `examples/paper_writing.py` for a full end-to-end workflow with parallel section writing, review-revise loops, and tool calls.
+See `examples/paper_writing.py` for a full end-to-end workflow with parallel section writing, review-revise loops, and tool calls. See `examples/vibe_research_md/` for a simple factor-research workflow (markdown format, nested composite, mock data).
 
 ## Three Authoring Surfaces
 
