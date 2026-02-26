@@ -139,7 +139,9 @@ class ToolExecutor:
         )
 
         if isinstance(result, dict):
-            outputs = result
+            outputs = dict(result)
+            # Also expose full dict on "result" so edges like tool.result → next.input work
+            outputs["result"] = result
         else:
             outputs = {"result": result}
 
