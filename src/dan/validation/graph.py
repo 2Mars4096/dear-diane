@@ -153,12 +153,16 @@ def _check_edge_endpoints(graph: "Graph") -> list[str]:
         src_port = next((p for p in src.output_ports if p.name == edge.source_port), None)
         tgt_port = next((p for p in tgt.input_ports if p.name == edge.target_port), None)
         if src_port is None:
+            available = sorted(p.name for p in src.output_ports)
             errors.append(
                 f"Edge '{edge.id}': source node '{src.id}' has no output port '{edge.source_port}'"
+                f" (available: {available})"
             )
         if tgt_port is None:
+            available = sorted(p.name for p in tgt.input_ports)
             errors.append(
                 f"Edge '{edge.id}': target node '{tgt.id}' has no input port '{edge.target_port}'"
+                f" (available: {available})"
             )
 
     return errors

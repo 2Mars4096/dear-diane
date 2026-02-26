@@ -676,13 +676,15 @@ def _resolve_chain_ports(
         if explicit_source_port not in source_names:
             _emit_error(
                 diagnostics,
-                f"Source node '{source_node.id}' has no output port '{explicit_source_port}'",
+                f"Source node '{source_node.id}' has no output port '{explicit_source_port}'"
+                f" (available: {sorted(source_names)})",
                 source=source,
             )
         if explicit_target_port not in target_names:
             _emit_error(
                 diagnostics,
-                f"Target node '{target_node.id}' has no input port '{explicit_target_port}'",
+                f"Target node '{target_node.id}' has no input port '{explicit_target_port}'"
+                f" (available: {sorted(target_names)})",
                 source=source,
             )
         return explicit_source_port, explicit_target_port
