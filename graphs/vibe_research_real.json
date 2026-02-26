@@ -1,0 +1,251 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "Vibe Research \u2014 Factor Analysis (Real Data)",
+    "description": "Factor research with CRSP data from auto-quant. Uses run_backtest tool.",
+    "created_at": null,
+    "updated_at": "2026-02-26T00:57:58Z",
+    "tags": [
+      "vibe-research",
+      "factor",
+      "finance",
+      "crsp"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "entry_real",
+      "name": "entry_real",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "factor_type",
+          "json_schema": {
+            "type": "string"
+          },
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "factor_type",
+          "json_schema": {
+            "type": "string"
+          },
+          "description": ""
+        },
+        {
+          "name": "result",
+          "json_schema": {
+            "type": "string"
+          },
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 240,
+        "y": 0
+      },
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/entry_real.md",
+          "line": 1
+        }
+      },
+      "retry_policy": null,
+      "node_type": "code_operator",
+      "code": "# Pass-through: factor type for backtest (e.g. momentum, size, value)\nresult = {\"factor_type\": str(factor_type or \"momentum\")}",
+      "language": "python",
+      "sandbox_config": {}
+    },
+    {
+      "id": "data_loader_real",
+      "name": "data_loader_real",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "factor_type",
+          "json_schema": {
+            "type": "string"
+          },
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "quintiles",
+          "json_schema": {
+            "type": "object"
+          },
+          "description": ""
+        },
+        {
+          "name": "spread_q5_q1_bps",
+          "json_schema": {
+            "type": "number"
+          },
+          "description": ""
+        },
+        {
+          "name": "result",
+          "json_schema": {
+            "type": "string"
+          },
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 480,
+        "y": 0
+      },
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/data_loader_real.md",
+          "line": 1
+        }
+      },
+      "retry_policy": null,
+      "node_type": "tool_operator",
+      "tool_id": "run_backtest",
+      "tool_config": {
+        "start_year": 2010,
+        "end_year": 2023
+      }
+    },
+    {
+      "id": "summarizer",
+      "name": "summarizer",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "results",
+          "json_schema": {
+            "type": "object"
+          },
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "json_schema": {
+            "type": "string"
+          },
+          "description": ""
+        },
+        {
+          "name": "result",
+          "json_schema": {
+            "type": "string"
+          },
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 720,
+        "y": 0
+      },
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/summarizer.md",
+          "line": 1
+        }
+      },
+      "retry_policy": null,
+      "node_type": "code_operator",
+      "code": "# Summarize quintile results (code-only so demo runs without LLM API)\nif isinstance(results, dict) and \"quintiles\" in results:\n    results = results[\"quintiles\"]\nquintile_list = results if isinstance(results, list) else []\nif not quintile_list:\n    result = {\"text\": \"No quintile results to summarize.\"}\nelse:\n    parts = []\n    for r in quintile_list:\n        qnum = r.get(\"quintile\", r.get(\"quintile_num\", \"?\"))\n        avg = r.get(\"avg_return_bps\", 0)\n        nstocks = r.get(\"n_stocks\", 0)\n        parts.append(\"Q\" + str(qnum) + \": \" + str(round(avg, 1)) + \" bps (n=\" + str(nstocks) + \")\")\n    spread = \"\"\n    if len(parts) >= 2:\n        first = quintile_list[0].get(\"avg_return_bps\", 0) if isinstance(quintile_list[0], dict) else 0\n        last = quintile_list[-1].get(\"avg_return_bps\", 0) if isinstance(quintile_list[-1], dict) else 0\n        spread = \" Spread Q1-Q5: \" + str(round(last - first, 1)) + \" bps.\"\n    result = {\"text\": \"Factor portfolio results: \" + \"; \".join(parts) + \".\" + spread + \" (Mock data for demo.)\"}",
+      "language": "python",
+      "sandbox_config": {}
+    },
+    {
+      "id": "workflow_inputs",
+      "name": "Workflow Inputs",
+      "description": "",
+      "input_ports": [],
+      "output_ports": [
+        {
+          "name": "factor_type",
+          "json_schema": {
+            "type": "string"
+          },
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "ui": {},
+      "metadata": {
+        "generated": true
+      },
+      "retry_policy": null,
+      "node_type": "input",
+      "variables": [
+        {
+          "name": "factor_type",
+          "type": "string",
+          "default": null,
+          "description": ""
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_entry_real_data_loader_real_0",
+      "source_node_id": "entry_real",
+      "source_port": "factor_type",
+      "target_node_id": "data_loader_real",
+      "target_port": "factor_type",
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "examples/vibe_research_md/workflow_real.md",
+          "line": 14
+        }
+      },
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_data_loader_real_summarizer_1",
+      "source_node_id": "data_loader_real",
+      "source_port": "quintiles",
+      "target_node_id": "summarizer",
+      "target_port": "results",
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "examples/vibe_research_md/workflow_real.md",
+          "line": 15
+        }
+      },
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_workflow_inputs_entry_real_2",
+      "source_node_id": "workflow_inputs",
+      "source_port": "factor_type",
+      "target_node_id": "entry_real",
+      "target_port": "factor_type",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    }
+  ],
+  "sub_graphs": {},
+  "entry_points": [
+    "workflow_inputs"
+  ],
+  "exit_points": [
+    "summarizer"
+  ],
+  "shared_context": [],
+  "artifact_refs": []
+}

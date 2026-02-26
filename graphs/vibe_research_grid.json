@@ -1,0 +1,779 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "Vibe Research — Grid Search (10 Strategies)",
+    "description": "Grid search over 10 momentum strategies using ForEach nodes. Saves factors, CSV summary, and plots. No hardcoded loops in scripts.",
+    "created_at": null,
+    "updated_at": null,
+    "tags": [
+      "vibe-research",
+      "factor",
+      "grid-search",
+      "for-each"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "entry_grid",
+      "name": "entry_grid",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "start_year",
+          "json_schema": {
+            "type": "number"
+          },
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "end_year",
+          "json_schema": {
+            "type": "number"
+          },
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "start_year",
+          "json_schema": {
+            "type": "number"
+          },
+          "description": ""
+        },
+        {
+          "name": "end_year",
+          "json_schema": {
+            "type": "number"
+          },
+          "description": ""
+        },
+        {
+          "name": "result",
+          "json_schema": {
+            "type": "string"
+          },
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/entry_grid.md",
+          "line": 1
+        }
+      },
+      "retry_policy": null,
+      "node_type": "code_operator",
+      "code": "start_year = int(start_year) if start_year is not None else 2010\nend_year = int(end_year) if end_year is not None else 2023\nresult = {\"start_year\": start_year, \"end_year\": end_year}",
+      "language": "python",
+      "sandbox_config": {}
+    },
+    {
+      "id": "grid_run",
+      "name": "grid_run",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "start_year",
+          "json_schema": {
+            "type": "number"
+          },
+          "required": true,
+          "description": ""
+        },
+        {
+          "name": "end_year",
+          "json_schema": {
+            "type": "number"
+          },
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "results",
+          "json_schema": {
+            "type": "array"
+          },
+          "description": ""
+        },
+        {
+          "name": "result",
+          "json_schema": {
+            "type": "string"
+          },
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/grid_run.md",
+          "line": 1
+        }
+      },
+      "retry_policy": null,
+      "node_type": "composite",
+      "body_graph": "grid_run__body",
+      "is_blackbox": false,
+      "input_mappings": {},
+      "output_mappings": {},
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "read_set": [],
+      "write_set": [],
+      "compaction_rule": null,
+      "projections": []
+    },
+    {
+      "id": "write_csv",
+      "name": "write_csv",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "results",
+          "json_schema": {
+            "type": "array"
+          },
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "csv_path",
+          "json_schema": {
+            "type": "string"
+          },
+          "description": ""
+        },
+        {
+          "name": "result",
+          "json_schema": {
+            "type": "string"
+          },
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/write_csv.md",
+          "line": 1
+        }
+      },
+      "retry_policy": null,
+      "node_type": "tool_operator",
+      "tool_id": "save_grid_csv",
+      "tool_config": {}
+    },
+    {
+      "id": "grid_run_each_plot_one",
+      "name": "grid_run_each_plot_one",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "items",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "results",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/workflow_grid.md",
+          "line": 18
+        }
+      },
+      "retry_policy": null,
+      "node_type": "for_each",
+      "body_graph": "grid_run_each_plot_one__body",
+      "parallelism": 2,
+      "merge_strategy": "append",
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "read_set": [],
+      "write_set": [],
+      "compaction_rule": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "timeout_seconds": null,
+        "stagnation_threshold": null
+      },
+      "projections": []
+    },
+    {
+      "id": "workflow_inputs",
+      "name": "Workflow Inputs",
+      "description": "",
+      "input_ports": [],
+      "output_ports": [
+        {
+          "name": "end_year",
+          "json_schema": {
+            "type": "number"
+          },
+          "description": ""
+        },
+        {
+          "name": "start_year",
+          "json_schema": {
+            "type": "number"
+          },
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {
+        "generated": true
+      },
+      "retry_policy": null,
+      "node_type": "input",
+      "variables": [
+        {
+          "name": "end_year",
+          "type": "number",
+          "default": null,
+          "description": ""
+        },
+        {
+          "name": "start_year",
+          "type": "number",
+          "default": null,
+          "description": ""
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_entry_grid_grid_run_0",
+      "source_node_id": "entry_grid",
+      "source_port": "start_year",
+      "target_node_id": "grid_run",
+      "target_port": "start_year",
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/workflow_grid.md",
+          "line": 15
+        }
+      },
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_entry_grid_grid_run_1",
+      "source_node_id": "entry_grid",
+      "source_port": "end_year",
+      "target_node_id": "grid_run",
+      "target_port": "end_year",
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/workflow_grid.md",
+          "line": 16
+        }
+      },
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_grid_run_write_csv_2",
+      "source_node_id": "grid_run",
+      "source_port": "results",
+      "target_node_id": "write_csv",
+      "target_port": "results",
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/workflow_grid.md",
+          "line": 17
+        }
+      },
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_grid_run_grid_run_each_plot_one_3",
+      "source_node_id": "grid_run",
+      "source_port": "results",
+      "target_node_id": "grid_run_each_plot_one",
+      "target_port": "items",
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/workflow_grid.md",
+          "line": 18
+        }
+      },
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_workflow_inputs_entry_grid_4",
+      "source_node_id": "workflow_inputs",
+      "source_port": "start_year",
+      "target_node_id": "entry_grid",
+      "target_port": "start_year",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_workflow_inputs_entry_grid_5",
+      "source_node_id": "workflow_inputs",
+      "source_port": "end_year",
+      "target_node_id": "entry_grid",
+      "target_port": "end_year",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
+    }
+  ],
+  "sub_graphs": {
+    "grid_run__body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "grid_run_composite",
+        "description": "",
+        "created_at": null,
+        "updated_at": null,
+        "tags": []
+      },
+      "nodes": [
+        {
+          "id": "strategies_config",
+          "name": "strategies_config",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "start_year",
+              "json_schema": {
+                "type": "number"
+              },
+              "required": true,
+              "description": ""
+            },
+            {
+              "name": "end_year",
+              "json_schema": {
+                "type": "number"
+              },
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "result",
+              "json_schema": {
+                "type": "array"
+              },
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {
+            "source": {
+              "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/strategies_config.md",
+              "line": 1
+            }
+          },
+          "retry_policy": null,
+          "node_type": "code_operator",
+          "code": "start_year = int(start_year) if start_year is not None else 2010\nend_year = int(end_year) if end_year is not None else 2023\nstrategies = [\n    {\"lookback\": 6, \"skip\": 1, \"name\": \"momentum_6_1\", \"start_year\": start_year, \"end_year\": end_year},\n    {\"lookback\": 6, \"skip\": 2, \"name\": \"momentum_6_2\", \"start_year\": start_year, \"end_year\": end_year},\n    {\"lookback\": 9, \"skip\": 1, \"name\": \"momentum_9_1\", \"start_year\": start_year, \"end_year\": end_year},\n    {\"lookback\": 9, \"skip\": 2, \"name\": \"momentum_9_2\", \"start_year\": start_year, \"end_year\": end_year},\n    {\"lookback\": 12, \"skip\": 1, \"name\": \"momentum_12_1\", \"start_year\": start_year, \"end_year\": end_year},\n    {\"lookback\": 12, \"skip\": 2, \"name\": \"momentum_12_2\", \"start_year\": start_year, \"end_year\": end_year},\n    {\"lookback\": 18, \"skip\": 1, \"name\": \"momentum_18_1\", \"start_year\": start_year, \"end_year\": end_year},\n    {\"lookback\": 18, \"skip\": 2, \"name\": \"momentum_18_2\", \"start_year\": start_year, \"end_year\": end_year},\n    {\"lookback\": 24, \"skip\": 1, \"name\": \"momentum_24_1\", \"start_year\": start_year, \"end_year\": end_year},\n    {\"lookback\": 24, \"skip\": 2, \"name\": \"momentum_24_2\", \"start_year\": start_year, \"end_year\": end_year},\n]\nresult = strategies",
+          "language": "python",
+          "sandbox_config": {}
+        },
+        {
+          "id": "strategies_config_each_backtest_one",
+          "name": "strategies_config_each_backtest_one",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "items",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "results",
+              "json_schema": {},
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {
+            "source": {
+              "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/grid_run.md",
+              "line": 2
+            }
+          },
+          "retry_policy": null,
+          "node_type": "for_each",
+          "body_graph": "strategies_config_each_backtest_one__body",
+          "parallelism": 3,
+          "merge_strategy": "append",
+          "external_input_schema": null,
+          "external_output_schema": null,
+          "control_state_schema": {},
+          "local_state": {
+            "json_schema": {},
+            "description": ""
+          },
+          "read_set": [],
+          "write_set": [],
+          "compaction_rule": null,
+          "failure_policy": {
+            "max_iterations": null,
+            "timeout_seconds": null,
+            "stagnation_threshold": null
+          },
+          "projections": []
+        },
+        {
+          "id": "workflow_inputs",
+          "name": "Workflow Inputs",
+          "description": "",
+          "input_ports": [],
+          "output_ports": [
+            {
+              "name": "end_year",
+              "json_schema": {
+                "type": "number"
+              },
+              "description": ""
+            },
+            {
+              "name": "start_year",
+              "json_schema": {
+                "type": "number"
+              },
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {
+            "generated": true
+          },
+          "retry_policy": null,
+          "node_type": "input",
+          "variables": [
+            {
+              "name": "end_year",
+              "type": "number",
+              "default": null,
+              "description": ""
+            },
+            {
+              "name": "start_year",
+              "type": "number",
+              "default": null,
+              "description": ""
+            }
+          ]
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge_strategies_config_strategies_config_each_backtest_one_0",
+          "source_node_id": "strategies_config",
+          "source_port": "result",
+          "target_node_id": "strategies_config_each_backtest_one",
+          "target_port": "items",
+          "ui": {},
+          "metadata": {
+            "source": {
+              "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/grid_run.md",
+              "line": 2
+            }
+          },
+          "edge_type": "data"
+        },
+        {
+          "id": "edge_workflow_inputs_strategies_config_1",
+          "source_node_id": "workflow_inputs",
+          "source_port": "start_year",
+          "target_node_id": "strategies_config",
+          "target_port": "start_year",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        },
+        {
+          "id": "edge_workflow_inputs_strategies_config_2",
+          "source_node_id": "workflow_inputs",
+          "source_port": "end_year",
+          "target_node_id": "strategies_config",
+          "target_port": "end_year",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data"
+        }
+      ],
+      "sub_graphs": {
+        "strategies_config_each_backtest_one__body": {
+          "version": "dan_graph_v1",
+          "metadata": {
+            "name": "strategies_config_each_backtest_one_body",
+            "description": "",
+            "created_at": null,
+            "updated_at": null,
+            "tags": []
+          },
+          "nodes": [
+            {
+              "id": "backtest_one",
+              "name": "backtest_one",
+              "description": "",
+              "input_ports": [
+                {
+                  "name": "item",
+                  "json_schema": {
+                    "type": "object"
+                  },
+                  "required": true,
+                  "description": ""
+                },
+                {
+                  "name": "start_year",
+                  "json_schema": {
+                    "type": "number"
+                  },
+                  "required": true,
+                  "description": ""
+                },
+                {
+                  "name": "end_year",
+                  "json_schema": {
+                    "type": "number"
+                  },
+                  "required": true,
+                  "description": ""
+                }
+              ],
+              "output_ports": [
+                {
+                  "name": "quintiles",
+                  "json_schema": {
+                    "type": "object"
+                  },
+                  "description": ""
+                },
+                {
+                  "name": "spread_q5_q1_bps",
+                  "json_schema": {
+                    "type": "number"
+                  },
+                  "description": ""
+                },
+                {
+                  "name": "dates",
+                  "json_schema": {
+                    "type": "array"
+                  },
+                  "description": ""
+                },
+                {
+                  "name": "cumulative_quintiles",
+                  "json_schema": {
+                    "type": "object"
+                  },
+                  "description": ""
+                },
+                {
+                  "name": "ls_cumulative",
+                  "json_schema": {
+                    "type": "array"
+                  },
+                  "description": ""
+                },
+                {
+                  "name": "strategy_name",
+                  "json_schema": {
+                    "type": "string"
+                  },
+                  "description": ""
+                },
+                {
+                  "name": "result",
+                  "json_schema": {
+                    "type": "string"
+                  },
+                  "description": ""
+                }
+              ],
+              "position": {
+                "x": 0.0,
+                "y": 0.0
+              },
+              "ui": {},
+              "metadata": {
+                "source": {
+                  "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/backtest_one.md",
+                  "line": 1
+                }
+              },
+              "retry_policy": null,
+              "node_type": "tool_operator",
+              "tool_id": "run_backtest",
+              "tool_config": {
+                "start_year": 2010,
+                "end_year": 2023,
+                "return_series": true
+              }
+            }
+          ],
+          "edges": [],
+          "sub_graphs": {},
+          "entry_points": [
+            "backtest_one"
+          ],
+          "exit_points": [
+            "backtest_one"
+          ],
+          "shared_context": [],
+          "artifact_refs": []
+        }
+      },
+      "entry_points": [
+        "workflow_inputs"
+      ],
+      "exit_points": [
+        "strategies_config_each_backtest_one"
+      ],
+      "shared_context": [],
+      "artifact_refs": []
+    },
+    "grid_run_each_plot_one__body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "grid_run_each_plot_one_body",
+        "description": "",
+        "created_at": null,
+        "updated_at": null,
+        "tags": []
+      },
+      "nodes": [
+        {
+          "id": "plot_one",
+          "name": "plot_one",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "item",
+              "json_schema": {
+                "type": "object"
+              },
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "saved_path",
+              "json_schema": {
+                "type": "string"
+              },
+              "description": ""
+            },
+            {
+              "name": "result",
+              "json_schema": {
+                "type": "string"
+              },
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {
+            "source": {
+              "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/plot_one.md",
+              "line": 1
+            }
+          },
+          "retry_policy": null,
+          "node_type": "tool_operator",
+          "tool_id": "plot_backtest",
+          "tool_config": {}
+        }
+      ],
+      "edges": [],
+      "sub_graphs": {},
+      "entry_points": [
+        "plot_one"
+      ],
+      "exit_points": [
+        "plot_one"
+      ],
+      "shared_context": [],
+      "artifact_refs": []
+    }
+  },
+  "entry_points": [
+    "workflow_inputs"
+  ],
+  "exit_points": [
+    "write_csv",
+    "grid_run_each_plot_one"
+  ],
+  "shared_context": [],
+  "artifact_refs": []
+}
