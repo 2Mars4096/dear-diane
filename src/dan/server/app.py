@@ -733,10 +733,15 @@ async def _save_grid_csv(
     project_root = Path(__file__).resolve().parents[3]
     out_path = project_root / "examples" / "vibe_research_md" / "output" / "grid_summary.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    if results is None and input:
-        inner = (input or {}).get("result", input)
-        if isinstance(inner, dict):
-            results = list(inner.get("results", [])) if isinstance(inner.get("results"), list) else []
+    # Prefer input when results is empty — workflow_inputs.results often passes [] and shadows loop output
+    use_input = (results is None or (isinstance(results, list) and len(results) == 0)) and input
+    if use_input:
+        obj = input or {}
+        # Unwrap: gate passes {"input": composite_output}; governor wraps in {"result": {results, ...}}
+        obj = obj.get("input", obj) if isinstance(obj, dict) else obj
+        obj = obj.get("result", obj) if isinstance(obj, dict) else obj
+        if isinstance(obj, dict) and isinstance(obj.get("results"), list):
+            results = list(obj["results"])
     results = results or []
     cols = ["strategy", "lookback", "skip", "spread_q5_q1_bps", "n_dates", "error"]
     lines = [",".join(cols)]
