@@ -789,6 +789,29 @@ class Engine:
 
         inputs = state.port_data.resolve_inputs(node_id, graph)
 
+        for edge in graph.edges_to(node_id):
+            if isinstance(edge, DataEdge):
+                if not state.port_data.has(edge.source_node_id, edge.source_port):
+                    source_node = graph.node_by_id(edge.source_node_id)
+                    if source_node is not None and _is_gate_node(source_node):
+                        continue
+                    await self._emit(EngineEvent(
+                        event_type=EventType.DEAD_EDGE_WARNING,
+                        run_id=state.run_id,
+                        node_id=node_id,
+                        node_type=node_type_str,
+                        data={
+                            "edge_id": edge.id,
+                            "source_node_id": edge.source_node_id,
+                            "source_port": edge.source_port,
+                            "target_port": edge.target_port,
+                            "message": (
+                                f"Data edge '{edge.id}': source port "
+                                f"'{edge.source_node_id}.{edge.source_port}' has no value"
+                            ),
+                        },
+                    ))
+
         virtual_src = f"__input__{node_id}"
         for port in node.input_ports:
             if state.port_data.has(virtual_src, port.name):

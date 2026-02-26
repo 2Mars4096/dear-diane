@@ -45,6 +45,8 @@ class EventType(str, Enum):
     SANDBOX_COMPLETED = "sandbox_completed"
     # -- 9-3: Validator events --------------------------------------------------
     VALIDATION_RESULT = "validation_result"
+    # -- 6-14: Dead-edge warnings -----------------------------------------------
+    DEAD_EDGE_WARNING = "dead_edge_warning"
 
 
 @dataclass(frozen=True)
