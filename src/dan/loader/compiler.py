@@ -315,6 +315,21 @@ def _compile_agent(
     return node, nested_sub_graphs
 
 
+def _agents_used_outside_each_body(statements: list[FlowStatement]) -> set[str]:
+    """Agents that appear in chains, if/else, or loop (not only as each body)."""
+    used: set[str] = set()
+    for stmt in statements:
+        if isinstance(stmt, ChainStatement):
+            used.update(stmt.agents)
+        elif isinstance(stmt, EachStatement):
+            used.add(stmt.source_agent)  # body lives in subgraph only
+        elif isinstance(stmt, IfStatement):
+            used.update((stmt.then_agent, stmt.else_agent))
+        elif isinstance(stmt, LoopStatement):
+            used.add(stmt.body_agent)
+    return used
+
+
 def _compile_flow(
     statements: list[FlowStatement],
     nodes_by_id: dict[str, NodeBase],
@@ -327,6 +342,7 @@ def _compile_flow(
     generated_subgraphs: dict[str, Graph] = {}
     generated_ids: set[str] = set()
     generated_subgraph_ids: set[str] = set()
+    agents_used_outside_each = _agents_used_outside_each_body(statements)
 
     for stmt in statements:
         if isinstance(stmt, ChainStatement):
@@ -420,6 +436,10 @@ def _compile_flow(
                     stmt.source,
                 )
             )
+            # Body used only in this each: remove from main graph so we don't create
+            # workflow_inputs.item → body (body receives items from ForEach at runtime)
+            if stmt.body_agent not in agents_used_outside_each:
+                nodes_by_id.pop(stmt.body_agent, None)
             continue
 
         if isinstance(stmt, LoopStatement):
@@ -452,7 +472,8 @@ def _compile_flow(
                 input_ports=[InputPort(name=DEFAULT_INPUT_PORT, required=True)],
                 metadata=_source_metadata(stmt.source),
             )
-            generated_nodes.append(gate_node)
+            nodes_by_id[gate_id] = gate_node  # add immediately so subsequent flow can reference gate (e.g. gate.done → next)
+            # Do not append to generated_nodes — already in nodes_by_id; avoids duplicate-id error
 
             source_node = nodes_by_id[stmt.source_agent]
             body_node = nodes_by_id[stmt.body_agent]
@@ -1002,6 +1023,9 @@ def _default_output_port(node: NodeBase) -> str:
     if node.node_type == "gate":
         gate_mode = getattr(node, "gate_mode", "if_else")
         return "done" if gate_mode == "while" else "true"
+    # For composite with "results" (array), prefer it over "result" for ForEach wiring
+    if node.node_type == "composite" and any(p.name == "results" for p in node.output_ports):
+        return "results"
     mapped = DEFAULT_OUTPUT_PORTS.get(node.node_type)
     if mapped and any(port.name == mapped for port in node.output_ports):
         return mapped

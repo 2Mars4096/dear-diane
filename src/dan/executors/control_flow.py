@@ -88,6 +88,14 @@ class GateExecutor:
         assert isinstance(node, GateNode)
 
         condition_vars = dict(inputs)
+        # Flatten: body often outputs {"result": {...}}; condition expects try_more etc. at top level
+        for _port, val in inputs.items():
+            if isinstance(val, dict) and "result" in val and isinstance(val["result"], dict):
+                condition_vars.update(val["result"])
+                break
+        # Safe default for loop conditions that reference try_more
+        if "try_more" not in condition_vars and "try_more" in (node.condition or ""):
+            condition_vars["try_more"] = True
         if node.gate_mode == "while":
             scope = context.local_state.get_scope(node.id)
             iteration = scope.get("gate_iteration", 0)
