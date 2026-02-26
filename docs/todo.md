@@ -48,6 +48,7 @@
   - [x] [6-11-workflow-ux-polish](plans/6-11-workflow-ux-polish.md) — K. Run summary (tokens + time), drill-in auto-layout, multi-tab duplicate graphs
   - [x] [6-12-control-flow-consolidation](plans/6-12-control-flow-consolidation.md) — L. Drop legacy if_else/while_loop; palette shows only If/Else Gate, While Gate, For Each
   - [x] [6-13-multi-dept-visualization](plans/6-13-multi-dept-visualization.md) — M. Orchestrator/department visibility, loop_groups, backend layout for vibe research
+  - [ ] [6-14-gate-test-suite](plans/6-14-gate-test-suite.md) — N. Workflow seam hardening first (code result contract, strict edge validation, dead-edge warnings) + expanded gate regression suite
 
 ## Phase 4 — Core Hardening
 > Make existing nodes robust and the platform practically usable. Fill gaps that prevent real workflows from running reliably.
