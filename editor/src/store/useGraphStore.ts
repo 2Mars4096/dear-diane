@@ -247,6 +247,7 @@ interface GraphState {
   activeTabId: string | null;
   tabCache: Record<string, TabSnapshot>;
   openTab: (graphId: string) => Promise<void>;
+  openTabFromTemplate: (templateId: string) => Promise<void>;
   replaceActiveTabGraph: (graphId: string) => Promise<void>;
   closeTab: (tabId: string) => Promise<void>;
   switchTab: (tabId: string) => Promise<void>;
@@ -1628,6 +1629,71 @@ export const useGraphStore = create<GraphState>((set, get) => {
     if (!isBlank) {
       await get().loadGraph(graphId);
     }
+    _persistTabState();
+  },
+
+  openTabFromTemplate: async (templateId) => {
+    const template = PREDEFINED_AGENT_TEMPLATES.find((t) => t.id === templateId);
+    if (!template) return;
+    const result = template.factory({ x: 200, y: 200 });
+    const danGraph: DanGraph = {
+      version: "dan_graph_v1",
+      metadata: { name: template.label },
+      nodes: [result.node],
+      edges: [],
+      sub_graphs: result.subGraphs,
+      entry_points: [result.node.id],
+      exit_points: [result.node.id],
+      shared_context: [],
+      artifact_refs: [],
+    };
+    const { nodes, edges } = danGraphToReactFlow(danGraph);
+    const { activeTabId } = get();
+    if (activeTabId) {
+      const snapshot = _snapshotActiveTab();
+      set((s) => ({ tabCache: { ...s.tabCache, [activeTabId]: snapshot } }));
+    }
+    const oldWs = get().ws;
+    if (oldWs) { oldWs.onmessage = null; oldWs.onclose = null; oldWs.close(); }
+    set({ ws: null });
+    const tabId = crypto.randomUUID();
+    const newTab: TabInfo = {
+      id: tabId,
+      graphId: "",
+      graphName: template.label,
+      cachedRunStatus: null,
+    };
+    set((s) => ({
+      tabs: [...s.tabs, newTab],
+      activeTabId: tabId,
+      graphId: null,
+      danGraph,
+      nodes,
+      edges,
+      dirty: true,
+      runId: null,
+      runStatus: null,
+      nodeStatuses: {},
+      nodeOutputs: {},
+      logs: [],
+      runSummary: null,
+      nodeTimings: {},
+      nodeUsage: {},
+      nodeCosts: {},
+      activeExecutionPath: new Set<string>(),
+      nodeIterations: {},
+      streamingOutputs: {},
+      pendingHumanInput: null,
+      _history: { past: [], future: [] },
+      validationErrors: {},
+      inputNodeValues: {},
+      selectedNodeId: null,
+      selectedEdgeId: null,
+      selectedNodeIds: new Set<string>(),
+      layerStack: [],
+      loopGroups: [],
+    }));
+    get().addToast({ type: "success", message: `Opened "${template.label}" starter` });
     _persistTabState();
   },
 

@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { useGraphStore } from "../store/useGraphStore";
+import { PREDEFINED_AGENT_TEMPLATES } from "../lib/paletteTemplates";
 
 const STATUS_DOT: Record<string, string> = {
   running: "bg-yellow-400 animate-pulse",
@@ -37,6 +38,7 @@ export default function TabBar() {
   const switchTab = useGraphStore((s) => s.switchTab);
   const closeTab = useGraphStore((s) => s.closeTab);
   const openTab = useGraphStore((s) => s.openTab);
+  const openTabFromTemplate = useGraphStore((s) => s.openTabFromTemplate);
   const replaceActiveTabGraph = useGraphStore((s) => s.replaceActiveTabGraph);
   const tabCache = useGraphStore((s) => s.tabCache);
   const loadGraphList = useGraphStore((s) => s.loadGraphList);
@@ -100,6 +102,11 @@ export default function TabBar() {
 
   const handleBlank = () => {
     openTab("blank");
+    closePicker();
+  };
+
+  const handleTemplateStarter = (templateId: string) => {
+    openTabFromTemplate(templateId);
     closePicker();
   };
 
@@ -238,15 +245,35 @@ export default function TabBar() {
           </div>
 
           <div className="overflow-y-auto flex-1">
-            {/* Blank option (new-tab mode, when not searching) */}
-            {picker.mode === "new" && !search && (
-              <button
-                onClick={handleBlank}
-                className="flex items-center gap-1.5 w-full text-left px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50 border-b border-gray-100"
-              >
-                <span className="text-gray-400 text-[10px]">+</span>
-                <span>Blank</span>
-              </button>
+            {/* Start from: Blank + built-in templates (when not searching or when search matches) */}
+            {picker.mode === "new" && (
+              <>
+                {(!search || "blank".includes(search.toLowerCase())) && (
+                  <button
+                    onClick={handleBlank}
+                    className="flex items-center gap-1.5 w-full text-left px-3 py-1.5 text-xs text-gray-500 hover:bg-gray-50 border-b border-gray-100"
+                  >
+                    <span className="text-gray-400 text-[10px]">+</span>
+                    <span>Blank</span>
+                  </button>
+                )}
+                {PREDEFINED_AGENT_TEMPLATES.filter(
+                  (t) =>
+                    !search ||
+                    t.label.toLowerCase().includes(search.toLowerCase()) ||
+                    t.description.toLowerCase().includes(search.toLowerCase()),
+                ).map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => handleTemplateStarter(t.id)}
+                    className="flex items-center gap-1.5 w-full text-left px-3 py-1.5 text-xs text-indigo-700 hover:bg-indigo-50 border-b border-gray-100"
+                  >
+                    <span className="text-indigo-400 text-[10px]">◇</span>
+                    <span>{t.label}</span>
+                  </button>
+                ))}
+                <div className="mx-2 my-0.5 border-b border-gray-100" />
+              </>
             )}
 
             {/* Frequent (when not searching, and at least 1 tracked) */}
