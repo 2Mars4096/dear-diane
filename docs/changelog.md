@@ -1,6 +1,8 @@
 # Changelog
 
 ## 2026-02-26
+- [feat] **Templates always visible:** TabBar "+ New" picker now shows built-in starters (Blank, ReAct Agent, Plan-Execute) at the top, independent of saved graphs. Added `openTabFromTemplate` store action to open a new tab from a predefined template. Fixes "not seeing any templates" when graph list is empty or API fails.
+- [fix] **if(use_builtin) gate:** LLM nodes with output_schema now emit a "result" port with the full structured object. Compiler wires strategy_manager.result → if gate (when source has "result") so the gate receives use_builtin for condition evaluation. GateExecutor flattens dict inputs for conditions. Fixes "name 'use_builtin' is not defined" when running vibe research.
 - [fix] **Runs with flattened graphs:** Validation no longer flags if_else gates inside a while-loop body as "creates cycle" — only gates that receive a back-edge are cycle creators. Disabled flatten by default (DAN_FLATTEN_LOOP_BODIES=0) so saving doesn't persist a flattened graph that fails validation. Rebuild with run_multi_dept.py --build-only to restore working graph.
 - [refactor] **Layout decoupled from examples:** Removed `_inject_orchestrator_department_groups` from layout.py — it hardcoded vibe research node names. Project no longer caters to specific examples. Vibe research example injects its own loop_groups in run_multi_dept.py --build-only.
 - [feat] **Flatten loop bodies at top level:** `flatten_loop_bodies()` in layout.py inlines while-loop body composites into the main graph. Enabled by default; set `DAN_FLATTEN_LOOP_BODIES=0` to disable.
