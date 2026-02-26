@@ -435,11 +435,11 @@ export const useGraphStore = create<GraphState>((set, get) => {
   loadGraph: async (graphId: string) => {
     set({ loadingGraph: true });
     try {
-      const { data } = await api.getGraph(graphId);
+      const { data } = await api.getGraph(graphId, { layout: true });
       const danGraph = data as unknown as DanGraph;
       let { nodes, edges } = danGraphToReactFlow(danGraph);
 
-      // Auto-layout when all nodes share the same position (e.g. builder-generated graphs)
+      // Fallback: auto-layout when all nodes share the same position (backend layout may be off)
       if (nodes.length > 1) {
         const allSamePos = nodes.every(
           (n) => n.position.x === nodes[0].position.x && n.position.y === nodes[0].position.y,
@@ -1142,8 +1142,15 @@ export const useGraphStore = create<GraphState>((set, get) => {
       rfEdges.push(...syntheticEdges);
     }
 
-    const finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
-    set({ layerStack: newStack, nodes: finalNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
+    let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
+    let finalEdges = rfEdges;
+    const sgGroups = (sg.metadata as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
+    if (sgGroups?.length) {
+      const injected = injectLoopGroups(finalNodes, finalEdges, sgGroups);
+      finalNodes = injected.nodes;
+      finalEdges = injected.edges;
+    }
+    set({ layerStack: newStack, nodes: finalNodes, edges: finalEdges, selectedNodeId: null, selectedEdgeId: null });
   },
 
   drillOut: () => {
@@ -1158,25 +1165,40 @@ export const useGraphStore = create<GraphState>((set, get) => {
       currentGraph = (danGraph.sub_graphs?.[lastKey] as unknown as DanGraph) ?? danGraph;
     }
     const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(currentGraph);
-    const finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
-    set({ layerStack: newStack, nodes: finalNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
+    let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
+    let finalEdges = rfEdges;
+    const groups = (currentGraph.metadata as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
+    if (groups?.length) {
+      const injected = injectLoopGroups(finalNodes, finalEdges, groups);
+      finalNodes = injected.nodes;
+      finalEdges = injected.edges;
+    }
+    set({ layerStack: newStack, nodes: finalNodes, edges: finalEdges, selectedNodeId: null, selectedEdgeId: null });
   },
 
   jumpToLayer: (index) => {
     const { danGraph, layerStack } = get();
     if (!danGraph) return;
+    let targetGraph: DanGraph;
+    let newStack: typeof layerStack;
     if (index < 0 || index >= layerStack.length) {
-      const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(danGraph);
-      const finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
-      set({ layerStack: [], nodes: finalNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
-      return;
+      newStack = [];
+      targetGraph = danGraph;
+    } else {
+      newStack = layerStack.slice(0, index + 1);
+      const lastKey = newStack[newStack.length - 1].graphKey;
+      targetGraph = (danGraph.sub_graphs?.[lastKey] as unknown as DanGraph) ?? danGraph;
     }
-    const newStack = layerStack.slice(0, index + 1);
-    const lastKey = newStack[newStack.length - 1].graphKey;
-    const currentGraph = (danGraph.sub_graphs?.[lastKey] as unknown as DanGraph) ?? danGraph;
-    const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(currentGraph);
-    const finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
-    set({ layerStack: newStack, nodes: finalNodes, edges: rfEdges, selectedNodeId: null, selectedEdgeId: null });
+    const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(targetGraph);
+    let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
+    let finalEdges = rfEdges;
+    const groups = (targetGraph.metadata as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
+    if (groups?.length) {
+      const injected = injectLoopGroups(finalNodes, finalEdges, groups);
+      finalNodes = injected.nodes;
+      finalEdges = injected.edges;
+    }
+    set({ layerStack: newStack, nodes: finalNodes, edges: finalEdges, selectedNodeId: null, selectedEdgeId: null });
   },
 
   // -- 5-4: Build palette -------------------------------------------------------
@@ -1210,7 +1232,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       return;
     }
     try {
-      const { data } = await api.getGraph(graphId);
+      const { data } = await api.getGraph(graphId, { layout: true });
       const importedGraph = data as unknown as DanGraph;
       if (!importedGraph?.nodes || !importedGraph?.edges) {
         get().addToast({ type: "error", message: "Invalid graph data — cannot import" });

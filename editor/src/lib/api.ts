@@ -28,8 +28,10 @@ export interface GraphListItem {
 export const listGraphs = () =>
   request<{ graphs: GraphListItem[]; last_opened: string | null }>("/graphs");
 
-export const getGraph = (id: string) =>
-  request<{ graph_id: string; data: Record<string, unknown> }>(`/graphs/${id}`);
+export const getGraph = (id: string, options?: { layout?: boolean }) =>
+  request<{ graph_id: string; data: Record<string, unknown> }>(
+    `/graphs/${id}${options?.layout ? "?layout=true" : ""}`,
+  );
 
 export const createGraph = (graphId: string, data?: Record<string, unknown>) =>
   request<{ graph_id: string; data: Record<string, unknown> }>("/graphs", {
