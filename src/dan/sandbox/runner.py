@@ -79,7 +79,7 @@ class SandboxRunner:
         code: str,
         config: SandboxConfig,
         inputs: dict[str, Any],
-    ) -> tuple[SandboxResult, dict[str, Any] | None]:
+    ) -> tuple[SandboxResult, Any]:
         """Execute code and return ``(result, structured_output)``.
 
         *structured_output* is the parsed ``_result.json`` if the script
@@ -187,7 +187,7 @@ class SandboxRunner:
             logger.debug("Failed to clean up temp dir: %s", temp_dir)
 
     @staticmethod
-    def _read_result_json(temp_dir: Path) -> dict[str, Any] | None:
+    def _read_result_json(temp_dir: Path) -> Any:
         """Read structured output from ``_result.json`` if present."""
         result_path = temp_dir / "_result.json"
         if not result_path.exists():

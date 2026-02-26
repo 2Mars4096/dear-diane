@@ -128,7 +128,8 @@ class CodeExecutor:
         if "result" in namespace:
             result_value = namespace["result"]
             if isinstance(result_value, dict):
-                outputs = result_value
+                outputs = dict(result_value)
+                outputs["result"] = result_value
             else:
                 outputs = {"result": result_value}
         else:
@@ -190,7 +191,11 @@ class CodeExecutor:
             return self._fail_result(node, f"Subprocess execution failed: {error_msg}")
 
         if structured_output is not None:
-            outputs = structured_output if isinstance(structured_output, dict) else {"result": structured_output}
+            if isinstance(structured_output, dict):
+                outputs = dict(structured_output)
+                outputs["result"] = structured_output
+            else:
+                outputs = {"result": structured_output}
         else:
             outputs = {}
 

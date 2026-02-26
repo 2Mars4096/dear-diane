@@ -34,7 +34,7 @@ locals().update(_inputs)
 {user_code}
 # --- user code above ---
 if "result" in dir():
-    json.dump(result if isinstance(result, dict) else {{"result": result}}, open("_result.json", "w"))
+    json.dump(result, open("_result.json", "w"))
 """
 
 
