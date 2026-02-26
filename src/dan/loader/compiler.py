@@ -554,10 +554,14 @@ def _compile_flow(
             source_node = nodes_by_id[stmt.source_agent]
             then_node = nodes_by_id[stmt.then_agent]
             else_node = nodes_by_id[stmt.else_agent]
+            # Prefer "result" when source has it (full structured output for condition + branch pass-through)
+            source_port = _default_output_port(source_node)
+            if any(p.name == "result" for p in source_node.output_ports):
+                source_port = "result"
             edges.append(
                 _make_data_edge(
                     stmt.source_agent,
-                    _default_output_port(source_node),
+                    source_port,
                     gate_id,
                     DEFAULT_INPUT_PORT,
                     edge_counter,
@@ -972,6 +976,12 @@ def _build_output_ports(spec: AgentSpec, diagnostics: list[Diagnostic]) -> list[
                     name=route_name,
                     json_schema={"type": "object"},
                 )
+
+    if spec.agent_type == "llm" and spec.output_schema and "result" not in by_name:
+        by_name["result"] = OutputPort(
+            name="result",
+            json_schema={"type": "object", "description": "Full structured output for gate conditions and pass-through"},
+        )
 
     default_name = _default_output_port_for_agent_type(spec.agent_type)
     if default_name not in by_name:

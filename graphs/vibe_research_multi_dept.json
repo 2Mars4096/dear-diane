@@ -4,7 +4,7 @@
     "name": "Vibe Research \u2014 Multi-Department Adaptive",
     "description": "Orchestrator oversees project, manages departments (max 6), strategy manager per department, script-as-param for custom strategies. Meta department (blend top K by Sharpe) runs every N iterations.",
     "created_at": null,
-    "updated_at": "2026-02-26T19:05:18Z",
+    "updated_at": "2026-02-26T19:19:38Z",
     "tags": [
       "vibe-research",
       "multi-department",
@@ -699,6 +699,14 @@
                 "type": "string"
               },
               "description": ""
+            },
+            {
+              "name": "result",
+              "json_schema": {
+                "type": "object",
+                "description": "Full structured output for gate conditions and pass-through"
+              },
+              "description": ""
             }
           ],
           "position": {
@@ -1078,6 +1086,14 @@
                 "type": "string"
               },
               "description": ""
+            },
+            {
+              "name": "result",
+              "json_schema": {
+                "type": "object",
+                "description": "Full structured output for gate conditions and pass-through"
+              },
+              "description": ""
             }
           ],
           "position": {
@@ -1381,6 +1397,14 @@
               "name": "code",
               "json_schema": {
                 "type": "string"
+              },
+              "description": ""
+            },
+            {
+              "name": "result",
+              "json_schema": {
+                "type": "object",
+                "description": "Full structured output for gate conditions and pass-through"
               },
               "description": ""
             }
@@ -2279,7 +2303,7 @@
         {
           "id": "edge_strategy_manager_dept_strategy_manager_dept_if_strategy_to_item_strategy_coder_22",
           "source_node_id": "strategy_manager_dept",
-          "source_port": "text",
+          "source_port": "result",
           "target_node_id": "strategy_manager_dept_if_strategy_to_item_strategy_coder",
           "target_port": "input",
           "ui": {},

@@ -88,11 +88,17 @@ class GateExecutor:
         assert isinstance(node, GateNode)
 
         condition_vars = dict(inputs)
-        # Flatten: body often outputs {"result": {...}}; condition expects try_more etc. at top level
+        # Flatten dict inputs for condition evaluation: {"result": {...}} or plain {...}
         for _port, val in inputs.items():
-            if isinstance(val, dict) and "result" in val and isinstance(val["result"], dict):
-                condition_vars.update(val["result"])
+            if isinstance(val, dict):
+                condition_vars.update(val.get("result", val))
                 break
+        # Single value on "input" port: if condition is a simple var name, map it (e.g. if(use_builtin))
+        cond = (node.condition or "").strip()
+        if cond and cond not in condition_vars and "input" in inputs:
+            val = inputs["input"]
+            if val is not None and not isinstance(val, dict):
+                condition_vars[cond] = val
         # Safe default for loop conditions that reference try_more
         if "try_more" not in condition_vars and "try_more" in (node.condition or ""):
             condition_vars["try_more"] = True

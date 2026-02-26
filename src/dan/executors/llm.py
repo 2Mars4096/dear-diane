@@ -121,8 +121,11 @@ class LLMExecutor:
 
             result = OutputNormalizer.normalize(raw_text, node.output_json_schema)  # type: ignore[arg-type]
             if result.success:
+                data = result.data or {}
+                # Add "result" with full object so downstream gates can evaluate conditions + pass through
+                outputs = {**data, "result": data}
                 return NodeResult(
-                    outputs=result.data or {},
+                    outputs=outputs,
                     status=NodeStatus.COMPLETED,
                     metadata=meta,
                 )
