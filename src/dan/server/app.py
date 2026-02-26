@@ -35,6 +35,7 @@ from dan.loader.decompiler import decompile_to_markdown
 from dan.models.graph import Graph
 from dan.server.chat_manager import ChatManager, compute_graph_revision
 from dan.server.chat_store import ChatMessage as StoreChatMessage, ChatStore
+from dan.server.exec import execute_python
 from dan.server.graph_mutator import GraphMutator, MutationPlan
 from dan.server.graph_store import GraphStore
 from dan.server.run_manager import RunManager
@@ -588,12 +589,11 @@ async def _run_strategy_script(
         "build_factor": None,
     }
 
-    try:
-        exec(code, namespace)
-    except Exception as e:
-        return {"quintiles": [], "error": f"Strategy script failed to compile/run: {e}"}
+    exec_out = execute_python(code, namespace, include_namespace=True)
+    if exec_out.get("error"):
+        return {"quintiles": [], "error": f"Strategy script failed to compile/run: {exec_out['error']}"}
 
-    build_factor = namespace.get("build_factor")
+    build_factor = exec_out.get("namespace", {}).get("build_factor")
     if not callable(build_factor):
         return {"quintiles": [], "error": "Code must define build_factor(crsp_path, start_year, end_year, **params) -> pd.DataFrame"}
 
@@ -725,7 +725,11 @@ async def _save_grid_csv(
     input: dict | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Write grid_summary.csv from backtest results. Accepts results array or input (loop output) with result.results."""
+    """Write grid_summary.csv from backtest results. Accepts results array or input (loop output) with result.results.
+
+    DEPRECATED: Prefer run_python(code, results=...) with agent-generated CSV code.
+    Kept for backwards compatibility.
+    """
     project_root = Path(__file__).resolve().parents[3]
     out_path = project_root / "examples" / "vibe_research_md" / "output" / "grid_summary.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -758,7 +762,11 @@ async def _plot_backtest(
     out_dir: str = "",
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Plot cumulative quintile and LS returns for one backtest result."""
+    """Plot cumulative quintile and LS returns for one backtest result.
+
+    DEPRECATED: Prefer run_python(code, item=..., out_dir=...) with agent-generated
+    plotting code. Kept for backwards compatibility.
+    """
     if not item or not isinstance(item, dict):
         return {"saved_path": "", "error": "item is None or not a dict"}
     project_root = Path(__file__).resolve().parents[3]
@@ -794,6 +802,25 @@ async def _plot_backtest(
         return {"saved_path": "", "error": str(e)}
 
 
+async def _run_python(code: str = "", **context: Any) -> dict[str, Any]:
+    """Execute Python code with injected context. Generic tool for agent-generated code.
+
+    Code must assign to `result` or `output` for structured return.
+    Context kwargs (e.g. item=..., results=..., out_dir=...) are injected as variables.
+    """
+    if not code or not code.strip():
+        return {"result": None, "stdout": "", "stderr": "", "error": "No code provided"}
+
+    namespace = dict(context)
+    out = execute_python(code, namespace)
+    return {
+        "result": out["result"],
+        "stdout": out["stdout"],
+        "stderr": out["stderr"],
+        "error": out.get("error"),
+    }
+
+
 def _build_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
     builtin = registry.register_builtin_tools()
@@ -807,6 +834,7 @@ def _build_tool_registry() -> ToolRegistry:
     registry.register("package_submission", _package_submission)
     registry.register("run_backtest", _run_backtest)
     registry.register("run_strategy_script", _run_strategy_script)
+    registry.register("run_python", _run_python)
     registry.register("get_department_state", _get_department_state)
     registry.register("update_department_state", _update_department_state)
     registry.register("plot_backtest", _plot_backtest)
