@@ -795,6 +795,12 @@ class Engine:
                     source_node = graph.node_by_id(edge.source_node_id)
                     if source_node is not None and _is_gate_node(source_node):
                         continue
+                    tgt_port = next(
+                        (p for p in node.input_ports if p.name == edge.target_port),
+                        None,
+                    )
+                    if tgt_port is not None and not tgt_port.required:
+                        continue
                     await self._emit(EngineEvent(
                         event_type=EventType.DEAD_EDGE_WARNING,
                         run_id=state.run_id,
