@@ -27,6 +27,7 @@ chroma = ["chromadb>=0.5"]
 embeddings = ["sentence-transformers>=3.0"]
 jsonschema = ["jsonschema>=4.0"]
 all-rag = ["faiss-cpu>=1.7", "chromadb>=0.5", "sentence-transformers>=3.0"]
+quant = ["pandas>=2.0", "matplotlib>=3.7"]
 all = [
     "pypdf>=4.0",
     "duckduckgo-search>=6.0",
