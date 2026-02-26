@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import contextlib
 import io
 import logging
@@ -16,6 +17,7 @@ from dan.sandbox.runner import SandboxRunner
 logger = logging.getLogger(__name__)
 
 _ALLOWED_BUILTINS: dict[str, Any] = {
+    "__import__": builtins.__import__,
     "NameError": NameError,
     "Exception": Exception,
     "json": __import__("json"),
