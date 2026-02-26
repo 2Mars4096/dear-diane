@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import os
 from pathlib import Path
 
@@ -71,8 +72,42 @@ def main() -> None:
     if args.build_only:
         graphs_dir = Path("graphs")
         graphs_dir.mkdir(exist_ok=True)
+        data = result.graph.model_dump(mode="json")
+        # Example-specific: inject loop_groups for this workflow's orchestrator/department structure
+        body_key = "orchestrator_and_departments__body"
+        if body_key in (data.get("sub_graphs") or {}):
+            sub = data["sub_graphs"][body_key]
+            meta = sub.setdefault("metadata", {})
+            if isinstance(meta, dict):
+                meta["loop_groups"] = [
+                    {
+                        "id": "lg-orchestrator",
+                        "label": "Orchestrator",
+                        "gateNodeId": "orchestrator",
+                        "memberNodeIds": ["unpack", "orchestrator", "persist_dept_state"],
+                        "collapsed": False,
+                    },
+                    {
+                        "id": "lg-departments",
+                        "label": "Departments",
+                        "gateNodeId": "strategy_manager_dept",
+                        "memberNodeIds": [
+                            "unpack_strategy",
+                            "strategy_manager_dept",
+                            "strategy_manager_dept_if_strategy_to_item_strategy_coder",
+                            "strategy_to_item",
+                            "backtest_runner",
+                            "strategy_coder",
+                            "run_strategy",
+                            "bug_fixer",
+                            "aggregator",
+                        ],
+                        "collapsed": False,
+                    },
+                ]
+                meta["expand_loop_groups_by_default"] = True
         path = graphs_dir / "vibe_research_multi_dept.json"
-        path.write_text(result.graph.model_dump_json(indent=2), encoding="utf-8")
+        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
         print(f"Saved {path}")
         return
 

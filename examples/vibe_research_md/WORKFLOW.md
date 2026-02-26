@@ -26,6 +26,7 @@ Design notes for the vibe research multi-dept example. See `workflow_multi_dept.
 
 ## Notes
 
+- **Flattened iteration:** iteration_multi_dept inlines all department nodes (no nested department_strategy composite). Drill once to see: unpack → orchestrator → persist → unpack_strategy → strategy_manager → [if] → backtest/run_strategy → bug_fixer → aggregator → governor. Loop groups: Orchestrator (unpack, orchestrator, persist), Departments (unpack_strategy through aggregator).
 - Meta runs every N iterations (C): gate or counter in loop.
 - Department codes: LLM decides, pattern DOC + numbering + desc.
 - Compustat gap: documented in prompts; hardcode in loader when used.
