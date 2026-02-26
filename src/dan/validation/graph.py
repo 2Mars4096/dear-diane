@@ -331,6 +331,25 @@ def _validate_gate_cycles(graph: "Graph") -> list[str]:
         if not forms_cycle:
             continue
 
+        # Only flag as cycle-creator if this gate receives a back-edge (i.e. a node in
+        # its forward closure has an edge TO this gate). if_else inside a while body
+        # is reachable in a cycle but doesn't receive the back-edge; the while gate does.
+        fwd_from_gate: set[str] = set()
+        q_fwd: deque[str] = deque(adj.get(node.id, []))
+        while q_fwd:
+            n = q_fwd.popleft()
+            if n in fwd_from_gate:
+                continue
+            fwd_from_gate.add(n)
+            for succ in adj.get(n, []):
+                if succ not in fwd_from_gate:
+                    q_fwd.append(succ)
+        has_back_edge = any(
+            node.id in adj.get(n, []) for n in fwd_from_gate
+        )
+        if not has_back_edge:
+            continue
+
         gmode = getattr(node, "gate_mode", None)
         if gmode != "while":
             errors.append(
