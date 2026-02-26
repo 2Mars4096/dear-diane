@@ -548,6 +548,7 @@ def _compile_flow(
                 input_ports=[InputPort(name=DEFAULT_INPUT_PORT, required=True)],
                 metadata=_source_metadata(stmt.source),
             )
+            nodes_by_id[gate_id] = gate_node  # so subsequent flow can reference gate (e.g. gate.false → run_strategy)
             generated_nodes.append(gate_node)
 
             source_node = nodes_by_id[stmt.source_agent]
@@ -1023,8 +1024,10 @@ def _default_output_port(node: NodeBase) -> str:
     if node.node_type == "gate":
         gate_mode = getattr(node, "gate_mode", "if_else")
         return "done" if gate_mode == "while" else "true"
-    # For composite with "results" (array), prefer it over "result" for ForEach wiring
-    if node.node_type == "composite" and any(p.name == "results" for p in node.output_ports):
+    # For composite or tool with "results" (array), prefer it for ForEach wiring
+    if node.node_type in ("composite", "tool_operator") and any(
+        p.name == "results" for p in node.output_ports
+    ):
         return "results"
     mapped = DEFAULT_OUTPUT_PORTS.get(node.node_type)
     if mapped and any(port.name == mapped for port in node.output_ports):
