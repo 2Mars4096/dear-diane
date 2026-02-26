@@ -1145,12 +1145,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
     let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
     let finalEdges = rfEdges;
     const sgGroups = (sg.metadata as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
-    if (sgGroups?.length) {
-      const injected = injectLoopGroups(finalNodes, finalEdges, sgGroups);
+    const loadedGroups = sgGroups ?? [];
+    if (loadedGroups.length > 0) {
+      const injected = injectLoopGroups(finalNodes, finalEdges, loadedGroups);
       finalNodes = injected.nodes;
       finalEdges = injected.edges;
     }
-    set({ layerStack: newStack, nodes: finalNodes, edges: finalEdges, selectedNodeId: null, selectedEdgeId: null });
+    set({ layerStack: newStack, nodes: finalNodes, edges: finalEdges, loopGroups: loadedGroups, selectedNodeId: null, selectedEdgeId: null });
   },
 
   drillOut: () => {
@@ -1168,12 +1169,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
     let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
     let finalEdges = rfEdges;
     const groups = (currentGraph.metadata as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
-    if (groups?.length) {
-      const injected = injectLoopGroups(finalNodes, finalEdges, groups);
+    const loadedGroups = groups ?? [];
+    if (loadedGroups.length > 0) {
+      const injected = injectLoopGroups(finalNodes, finalEdges, loadedGroups);
       finalNodes = injected.nodes;
       finalEdges = injected.edges;
     }
-    set({ layerStack: newStack, nodes: finalNodes, edges: finalEdges, selectedNodeId: null, selectedEdgeId: null });
+    set({ layerStack: newStack, nodes: finalNodes, edges: finalEdges, loopGroups: loadedGroups, selectedNodeId: null, selectedEdgeId: null });
   },
 
   jumpToLayer: (index) => {
@@ -1193,12 +1195,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
     let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
     let finalEdges = rfEdges;
     const groups = (targetGraph.metadata as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
-    if (groups?.length) {
-      const injected = injectLoopGroups(finalNodes, finalEdges, groups);
+    const loadedGroups = groups ?? [];
+    if (loadedGroups.length > 0) {
+      const injected = injectLoopGroups(finalNodes, finalEdges, loadedGroups);
       finalNodes = injected.nodes;
       finalEdges = injected.edges;
     }
-    set({ layerStack: newStack, nodes: finalNodes, edges: finalEdges, selectedNodeId: null, selectedEdgeId: null });
+    set({ layerStack: newStack, nodes: finalNodes, edges: finalEdges, loopGroups: loadedGroups, selectedNodeId: null, selectedEdgeId: null });
   },
 
   // -- 5-4: Build palette -------------------------------------------------------
