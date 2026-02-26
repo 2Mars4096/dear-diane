@@ -622,6 +622,8 @@ class Engine:
         artifacts: ArtifactStore,
         local_state: LocalStateManager,
         global_sem: asyncio.Semaphore | None = None,
+        *,
+        skip_checkpoint: bool = False,
     ) -> None:
         """Execute graph with cycle regions handled via bounded iteration."""
         executed_gates: set[str] = set()
@@ -641,7 +643,7 @@ class Engine:
             await asyncio.gather(*tasks)
 
             if self._check_halt(state):
-                if self.checkpoint_store is not None:
+                if not skip_checkpoint and self.checkpoint_store is not None:
                     await self._save_checkpoint(
                         state, shared_context, artifacts, local_state,
                     )
@@ -673,7 +675,7 @@ class Engine:
                         )
                         executed_gates.add(nid)
 
-            if self.checkpoint_store is not None:
+            if not skip_checkpoint and self.checkpoint_store is not None:
                 await self._save_checkpoint(
                     state, shared_context, artifacts, local_state,
                 )
@@ -1001,23 +1003,31 @@ class Engine:
         if self.config.max_concurrency is not None and self.config.max_concurrency > 0:
             global_sem = asyncio.Semaphore(self.config.max_concurrency)
 
-        levels = _topological_levels(sub_graph)
-        for level in levels:
-            ready = [
-                nid for nid in level
-                if sub_state.node_statuses.get(nid) == NodeStatus.PENDING
-            ]
-            if not ready:
-                continue
+        levels, back_edges, cycle_regions = _topological_levels_with_backedges(sub_graph)
 
-            tasks = [
-                self._guarded_execute_node(nid, sub_graph, sub_state, sub_context, global_sem)
-                for nid in ready
-            ]
-            await asyncio.gather(*tasks)
+        if not back_edges:
+            for level in levels:
+                ready = [
+                    nid for nid in level
+                    if sub_state.node_statuses.get(nid) == NodeStatus.PENDING
+                ]
+                if not ready:
+                    continue
 
-            if self._check_halt(sub_state):
-                break
+                tasks = [
+                    self._guarded_execute_node(nid, sub_graph, sub_state, sub_context, global_sem)
+                    for nid in ready
+                ]
+                await asyncio.gather(*tasks)
+
+                if self._check_halt(sub_state):
+                    break
+        else:
+            await self._execute_with_cycles(
+                sub_graph, sub_state, sub_context, levels, back_edges, cycle_regions,
+                shared_context, artifacts, local_state, global_sem,
+                skip_checkpoint=True,
+            )
 
         outputs: dict[str, Any] = {}
         for exit_id in sub_graph.exit_points:
