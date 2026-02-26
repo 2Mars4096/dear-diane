@@ -1,7 +1,9 @@
 # Changelog
 
 ## 2026-02-26
-- [test] **Plan 6-14 complete (903 pass, 0 fail).** All 6 batches landed: CodeExecutor `.result` contract fix, edge port diagnostics, dead-edge warnings, GateExecutor input tests, compiler semantics tests, real-executor integration tests. 26 new tests added, 8 existing tests updated.
+- [fix] **Remove redundant `{"result": payload}` wrapping from workflow files:** `strategy_to_item.md`, `bug_fixer.md`, and `workflow_multi_dept_builder.py` updated to return dicts directly. The CodeExecutor now auto-exposes the full dict on `.result`, so the manual wrapping caused double-nesting.
+- [fix] **Suppress dead-edge warnings for optional target ports:** `DEAD_EDGE_WARNING` no longer fires when the target input port has `required=False`. Missing data on optional ports is expected behavior. Added test.
+- [test] **Plan 6-14 complete (904 pass, 0 fail).** All 6 batches landed plus review fixes: CodeExecutor `.result` contract fix, edge port diagnostics, dead-edge warnings, GateExecutor input tests, compiler semantics tests, real-executor integration tests.
 - [test] **Plan 6-14 Batch 6 — Real executor integration tests:** Created `tests/test_engine/test_real_executor_integration.py` with 9 tests using REAL `CodeExecutor` + `GateExecutor` (no mocks): if/else routing, while loop with counter, `.result` port wiring end-to-end.
 - [test] **Plan 6-14 Batches 4 & 5 — GateExecutor input handling + compiler semantics:** 9 tests in `test_gate_executor.py` (dict flattening, single-value mapping, `try_more` default, done unwrapping, `gate_evaluated` event). 3 tests in `test_compiler.py` (`until:` negation, loop edge structure, if-gate edges).
 - [feat] **Plan 6-14 Batch 3 — Runtime dead-edge warnings:** Added `DEAD_EDGE_WARNING` event type. Scheduler emits warning when data edge source port has no value, suppressed for gate inactive branches. 3 tests in `test_dead_edge_warnings.py`.
