@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import re
 import shutil
 import tempfile
@@ -34,6 +35,7 @@ from dan.loader.decompiler import decompile_to_markdown
 from dan.models.graph import Graph
 from dan.server.chat_manager import ChatManager, compute_graph_revision
 from dan.server.chat_store import ChatMessage as StoreChatMessage, ChatStore
+from dan.server.graph_mutator import GraphMutator, MutationPlan
 from dan.server.graph_store import GraphStore
 from dan.server.run_manager import RunManager
 from dan.server.scoped_run import (
@@ -538,6 +540,255 @@ async def _package_submission(
     return {"bundle_path": str(bundle), "saved_path": str(bundle), "title": title}
 
 
+async def _run_strategy_script(
+    code: str = "",
+    params: dict | None = None,
+    start_year: int = 2008,
+    end_year: int = 2024,
+    data_dir: str = "",
+    strategy_name: str = "custom",
+    return_series: bool = True,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Execute strategy code (script-as-param), validate factor format, run backtest.
+
+    The code must define: def build_factor(crsp_path, start_year, end_year, **params) -> pd.DataFrame
+    Factor DataFrame must have columns: date, permno, ret, and factor or mom.
+    """
+    if not code or not code.strip():
+        return {"quintiles": [], "error": "No strategy code provided"}
+
+    project_root = Path(__file__).resolve().parents[3]
+    vibe_root = project_root / "examples" / "vibe_research_md"
+    for p in (project_root, vibe_root):
+        if str(p) not in sys.path:
+            sys.path.insert(0, str(p))
+
+    try:
+        from examples.vibe_research_md.quant_lib.config import CRSP_PATH, DATA_DIR
+        from examples.vibe_research_md.quant_lib.load_crsp import load_crsp
+        from examples.vibe_research_md.quant_lib.factor_schema import validate_factor_df
+        from examples.vibe_research_md.quant_lib.backtest import run_backtest_from_factor_df
+        import pandas as pd
+        import numpy as np
+    except ImportError as e:
+        return {"quintiles": [], "error": f"quant_lib import failed: {e}"}
+
+    crsp_path = str(DATA_DIR / "crsp_security_month_returns.csv.gz")
+    if data_dir:
+        crsp_path = str(Path(data_dir) / "crsp_security_month_returns.csv.gz")
+    params = params or {}
+
+    namespace = {
+        "pd": pd,
+        "np": np,
+        "Path": Path,
+        "load_crsp": load_crsp,
+        "CRSP_PATH": crsp_path,
+        "build_factor": None,
+    }
+
+    try:
+        exec(code, namespace)
+    except Exception as e:
+        return {"quintiles": [], "error": f"Strategy script failed to compile/run: {e}"}
+
+    build_factor = namespace.get("build_factor")
+    if not callable(build_factor):
+        return {"quintiles": [], "error": "Code must define build_factor(crsp_path, start_year, end_year, **params) -> pd.DataFrame"}
+
+    try:
+        factor_df = build_factor(crsp_path, start_year, end_year, **params)
+    except Exception as e:
+        return {"quintiles": [], "error": f"build_factor failed: {e}"}
+
+    valid, err = validate_factor_df(factor_df)
+    if not valid:
+        return {"quintiles": [], "error": f"Invalid factor format: {err}"}
+
+    out = run_backtest_from_factor_df(
+        factor_df, return_series=return_series, strategy_name=strategy_name
+    )
+    out["result"] = out
+    return out
+
+
+async def _get_department_state(**kwargs: Any) -> dict[str, Any]:
+    """Load department state (active, deleted departments)."""
+    project_root = Path(__file__).resolve().parents[3]
+    state_path = project_root / "examples" / "vibe_research_md" / "output" / "department_state.json"
+    if state_path.exists():
+        try:
+            data = json.loads(state_path.read_text(encoding="utf-8"))
+            return {"active": data.get("active", []), "deleted": data.get("deleted", []), "max_departments": data.get("max_departments", 6)}
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {"active": [], "deleted": [], "max_departments": 6}
+
+
+async def _update_department_state(
+    active: list | None = None,
+    deleted: list | None = None,
+    to_delete: list | None = None,
+    to_create: list | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Update department state. Pass to_delete/to_create or active/deleted directly."""
+    project_root = Path(__file__).resolve().parents[3]
+    state_path = project_root / "examples" / "vibe_research_md" / "output" / "department_state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if active is not None and deleted is not None:
+        data = {"active": list(active), "deleted": list(deleted), "max_departments": 6}
+    else:
+        current = {"active": [], "deleted": []}
+        if state_path.exists():
+            try:
+                current = json.loads(state_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        if to_delete or to_create:
+            to_del = set(to_delete or [])
+            to_cre = set(to_create or [])
+            new_deleted = list(set(current.get("deleted", [])) | to_del)
+            new_active = [d for d in current.get("active", []) if d not in to_del]
+            for d in to_cre:
+                if d not in new_active and d not in new_deleted and len(new_active) < 6:
+                    new_active.append(d)
+            data = {"active": new_active, "deleted": new_deleted, "max_departments": 6}
+        else:
+            data = {**current, "max_departments": 6}
+    state_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return data
+
+
+async def _run_backtest(
+    factor: str = "momentum",
+    factor_type: str = "",
+    start_year: int = 2008,
+    end_year: int = 2024,
+    data_dir: str = "",
+    lookback_months: int = 12,
+    skip_months: int = 1,
+    return_series: bool = False,
+    item: dict | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Run factor backtest using quant_lib (CRSP data from auto-quant)."""
+    factor = factor_type or factor
+    if isinstance(item, dict):
+        lookback_months = int(item.get("lookback", lookback_months))
+        skip_months = int(item.get("skip", skip_months))
+        start_year = int(item.get("start_year", start_year))
+        end_year = int(item.get("end_year", end_year))
+    project_root = Path(__file__).resolve().parents[3]
+    script = project_root / "examples" / "vibe_research_md" / "quant_lib" / "run_backtest.py"
+    if not script.exists():
+        return {"quintiles": [], "error": f"Backtest script not found: {script}"}
+    cmd = [
+        sys.executable,
+        str(script),
+        "--factor", factor,
+        "--start", str(start_year),
+        "--end", str(end_year),
+        "--lookback", str(lookback_months),
+        "--skip", str(skip_months),
+    ]
+    if return_series:
+        cmd.append("--series")
+    if data_dir:
+        cmd.extend(["--data-dir", data_dir])
+    save_factor_dir = kwargs.get("save_factor_dir") or kwargs.get("out_dir")
+    if not save_factor_dir:
+        save_factor_dir = project_root / "examples" / "vibe_research_md" / "output" / "factors"
+    cmd.extend(["--save-factor-dir", str(save_factor_dir)])
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=str(project_root),
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        out = stdout.decode("utf-8", errors="replace")
+        if proc.returncode != 0:
+            return {"quintiles": [], "error": stderr.decode("utf-8", errors="replace")[:500]}
+        return json.loads(out)
+    except asyncio.TimeoutError:
+        return {"quintiles": [], "error": "Backtest timed out after 120s"}
+    except json.JSONDecodeError as e:
+        return {"quintiles": [], "error": f"Invalid JSON output: {e}"}
+
+
+async def _save_grid_csv(
+    results: list | None = None,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Write grid_summary.csv from backtest results."""
+    project_root = Path(__file__).resolve().parents[3]
+    out_path = project_root / "examples" / "vibe_research_md" / "output" / "grid_summary.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    results = results or []
+    cols = ["strategy", "lookback", "skip", "spread_q5_q1_bps", "n_dates", "error"]
+    lines = [",".join(cols)]
+    for r in results:
+        if isinstance(r, dict):
+            row = [
+                str(r.get("strategy_name", "")),
+                str(r.get("lookback_months", "")),
+                str(r.get("skip_months", "")),
+                str(r.get("spread_q5_q1_bps", "")),
+                str(r.get("n_dates", "")),
+                str(r.get("error", "")).replace(",", ";"),
+            ]
+        else:
+            row = ["", "", "", "", "", str(r).replace(",", ";")]
+        lines.append(",".join(row))
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return {"csv_path": str(out_path)}
+
+
+async def _plot_backtest(
+    item: dict,
+    out_dir: str = "",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Plot cumulative quintile and LS returns for one backtest result."""
+    if not item or not isinstance(item, dict):
+        return {"saved_path": "", "error": "item is None or not a dict"}
+    project_root = Path(__file__).resolve().parents[3]
+    default_out = project_root / "examples" / "vibe_research_md" / "output" / "plots"
+    out_path = Path(out_dir) if out_dir else default_out
+    out_path.mkdir(parents=True, exist_ok=True)
+    name = item.get("strategy_name", "backtest")
+    plot_file = out_path / f"{name}.png"
+    dates = item.get("dates", [])
+    cum = item.get("cumulative_quintiles", {})
+    ls_cum = item.get("ls_cumulative", [])
+    if not dates or not cum or not ls_cum:
+        return {"saved_path": "", "error": "Missing dates, cumulative_quintiles, or ls_cumulative"}
+    try:
+        project_root_str = str(project_root)
+        if project_root_str not in sys.path:
+            sys.path.insert(0, project_root_str)
+        from examples.vibe_research_md.quant_lib.visualize import plot_cumulative_and_ls
+        plot_cumulative_and_ls(
+            dates=dates,
+            cumulative_quintiles=cum,
+            ls_cumulative=ls_cum,
+            out_path=plot_file,
+            title=f"{name} — Quintile & LS Cumulative Returns",
+            strategy_name=name,
+        )
+        if not plot_file.exists():
+            return {"saved_path": "", "error": "Plot file was not created"}
+        return {"saved_path": str(plot_file)}
+    except ImportError as e:
+        return {"saved_path": "", "error": f"matplotlib required: {e}. Install with: pip install matplotlib"}
+    except Exception as e:
+        return {"saved_path": "", "error": str(e)}
+
+
 def _build_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
     builtin = registry.register_builtin_tools()
@@ -549,6 +800,12 @@ def _build_tool_registry() -> ToolRegistry:
     registry.register("check_latex_deps", _check_latex_deps)
     registry.register("compile_latex", _compile_latex)
     registry.register("package_submission", _package_submission)
+    registry.register("run_backtest", _run_backtest)
+    registry.register("run_strategy_script", _run_strategy_script)
+    registry.register("get_department_state", _get_department_state)
+    registry.register("update_department_state", _update_department_state)
+    registry.register("plot_backtest", _plot_backtest)
+    registry.register("save_grid_csv", _save_grid_csv)
     return registry
 
 
@@ -635,6 +892,10 @@ class ChatMessageRequest(BaseModel):
     client_graph_revision: str | None = None
 
 
+class ApplyMutationRequest(BaseModel):
+    mutation_plan: dict[str, Any]
+
+
 # ------------------------------------------------------------------
 # Graph CRUD
 # ------------------------------------------------------------------
@@ -683,6 +944,40 @@ async def delete_graph(graph_id: str):
     if not _graph_store.delete_graph(graph_id):
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
     return {"graph_id": graph_id, "status": "deleted"}
+
+
+@app.post("/api/graphs/{graph_id}/apply-mutation")
+async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
+    """Apply a chat-generated mutation plan to the graph. Returns new graph on success."""
+    data = _graph_store.get_graph(graph_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    if _gate_migration_enabled and isinstance(data, dict):
+        from dan.migration.gate_migration import migrate_graph
+        data = migrate_graph(data)
+    try:
+        plan = MutationPlan.model_validate(req.mutation_plan)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid mutation plan: {exc}") from exc
+
+    revision = compute_graph_revision(data)
+    result = GraphMutator().apply(data, plan, current_revision=revision)
+
+    if not result.success:
+        return {
+            "success": False,
+            "new_graph": None,
+            "errors": [e.model_dump() for e in result.errors],
+            "stale_plan": result.stale_plan,
+        }
+
+    _graph_store.save_graph(graph_id, result.new_graph)
+    return {
+        "success": True,
+        "new_graph": result.new_graph,
+        "errors": [],
+        "stale_plan": False,
+    }
 
 
 @app.post("/api/graphs/{graph_id}/validate")
