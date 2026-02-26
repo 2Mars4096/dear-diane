@@ -108,6 +108,7 @@ deep-agent-network/
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
       app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry
+      exec.py                    # execute_python() — shared Python executor for run_python and run_strategy_script
       graph_store.py             # Filesystem-based graph JSON persistence
       graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run
       chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA), text-streaming fallback
@@ -563,6 +564,7 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 - Filesystem-based: JSON files in `./graphs/` directory
 - `last_opened` tracking for auto-load on editor open
 - `dan_graph_v1` JSON contract unchanged — the backend reads/writes the same format
+- **Server-side layout** — `GET /api/graphs/{id}?layout=true` (or `DAN_LAYOUT_ON_LOAD=1`) applies topological layout. Optionally flattens while-loop body composites (`flatten_loop_bodies`) for a flat view; disable with `DAN_FLATTEN_LOOP_BODIES=0`. No example-specific logic.
 
 ## Visual Editor Frontend (Phase 2)
 

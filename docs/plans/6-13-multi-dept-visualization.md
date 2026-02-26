@@ -1,7 +1,7 @@
 # 6-13: Multi-Department Visualization & Layout
 
 **Parent:** [6-phase-3.75-visual-editor-editing](6-phase-3.75-visual-editor-editing.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Visible orchestrator, departments as first-class nodes in the editor, and dynamic backend layout for multi-dept workflows.
 
 ## Scope
@@ -17,9 +17,9 @@ Editor/visualization features for workflows with orchestrator + departments (e.g
 ## Tasks
 
 - [x] Backend: dynamic layout on GET /api/graphs/{id}?layout=true (editor requests by default)
-- [ ] Workflow: restructure so orchestrator is visible at iteration level (or promote to summary view)
-- [ ] Department grouping in editor (loop_groups-style metadata for departments)
-- [ ] Editor: optional "outline" or expanded-by-default for key composites
+- [x] Workflow: restructure so orchestrator is visible at iteration level (or promote to summary view)
+- [x] Department grouping in editor (loop_groups-style metadata for departments)
+- [x] Editor: optional "outline" or expanded-by-default for key composites
 
 ## Decisions
 
@@ -29,5 +29,7 @@ Editor/visualization features for workflows with orchestrator + departments (e.g
 
 ## Notes
 
-- Current iteration_multi_dept is composite: unpack → orchestrator → persist → strategy_creation_multi → governor. Orchestrator is one level deep; user must drill into iteration to see it.
+- Current iteration_multi_dept is composite: unpack → orchestrator → persist → department_strategy → governor. Orchestrator is one level deep; user drills into orchestrator_and_departments to see it.
+- Layout injects loop_groups (Orchestrator + Departments) into orchestrator_and_departments__body when both nodes exist. Editor drillIn/drillOut/jumpToLayer load loop_groups from sub_graph metadata and sync store.loopGroups for toggle persistence.
+- drillIn, drillOut, jumpToLayer now set loopGroups from current layer metadata so toggles persist correctly when drilled in. saveGraph persists loop_groups to the active sub_graph when editing a drilled-in layer.
 - Parallel each(dept) and strategy coder retry are example workflow concerns — see examples/vibe_research_md/WORKFLOW.md.
