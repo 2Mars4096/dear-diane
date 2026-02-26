@@ -722,12 +722,17 @@ async def _run_backtest(
 
 async def _save_grid_csv(
     results: list | None = None,
+    input: dict | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
-    """Write grid_summary.csv from backtest results."""
+    """Write grid_summary.csv from backtest results. Accepts results array or input (loop output) with result.results."""
     project_root = Path(__file__).resolve().parents[3]
     out_path = project_root / "examples" / "vibe_research_md" / "output" / "grid_summary.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if results is None and input:
+        inner = (input or {}).get("result", input)
+        if isinstance(inner, dict):
+            results = list(inner.get("results", [])) if isinstance(inner.get("results"), list) else []
     results = results or []
     cols = ["strategy", "lookback", "skip", "spread_q5_q1_bps", "n_dates", "error"]
     lines = [",".join(cols)]
@@ -745,7 +750,7 @@ async def _save_grid_csv(
             row = ["", "", "", "", "", str(r).replace(",", ";")]
         lines.append(",".join(row))
     out_path.write_text("\n".join(lines), encoding="utf-8")
-    return {"csv_path": str(out_path)}
+    return {"csv_path": str(out_path), "results": results}
 
 
 async def _plot_backtest(
@@ -919,16 +924,21 @@ async def create_graph(req: CreateGraphRequest):
 _gate_migration_enabled = os.environ.get("DAN_GATE_MIGRATION_ENABLED", "").lower() in (
     "1", "true", "yes",
 )
+_layout_on_load = os.environ.get("DAN_LAYOUT_ON_LOAD", "").lower() in ("1", "true", "yes")
 
 
 @app.get("/api/graphs/{graph_id}")
-async def get_graph(graph_id: str):
+async def get_graph(graph_id: str, layout: bool = False):
+    """Load graph. If layout=true or DAN_LAYOUT_ON_LOAD=1, apply topological layout to nodes."""
     data = _graph_store.get_graph(graph_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
     if _gate_migration_enabled and isinstance(data, dict):
         from dan.migration.gate_migration import migrate_graph
         data = migrate_graph(data)
+    if (layout or _layout_on_load) and isinstance(data, dict):
+        from dan.server.layout import apply_layout
+        data = apply_layout(data)
     _graph_store.set_last_opened(graph_id)
     return {"graph_id": graph_id, "data": data}
 
