@@ -4,7 +4,7 @@ Design notes for the vibe research multi-dept example. See `workflow_multi_dept.
 
 ## Design Summary
 
-- **Orchestrator:** Decides try_more, to_delete, to_create. Max 6 departments. Deleted persists.
+- **Orchestrator:** Decides high-level direction and try_more. Department set is fixed for now (MOM, REV, FUND, CASH, OPS, ML), so add/delete is disabled.
 - **Departments:** Run in parallel via each(). Per dept: Strategy Manager → Coder (if custom) or strategy_to_item (if built-in) → run_backtest / run_strategy_script → bug_fixer → aggregator.
 - **Meta department:** Runs every N main-loop iterations. Monitors department outputs, Sharpe top K, blends (avg rankings), outputs BLEND_*.parquet.
 - **run_strategy_script:** Script-as-param tool. Executes code, validates factor schema, runs backtest.
@@ -20,13 +20,13 @@ Design notes for the vibe research multi-dept example. See `workflow_multi_dept.
 - [x] workflow_multi_dept.md — flow with if(use_builtin) branch (single dept v1)
 - [x] run_multi_dept.py script
 - [x] apply_compustat_lag in factor_schema; compustat_lag_months
-- [ ] Parallel departments via each(department_iteration) — orchestrator → persist → each(dept) → governor
+- [x] Parallel departments via each(department_run) — orchestrator → persist → expand_departments | each(department_run, parallel: 6) → merge_dept_results → governor
 - [ ] Strategy coder retry: wrap in loop(compile_check → coder → run_strategy, until: success, max: 3)
 - [ ] meta_department composite — monitor, Sharpe, blend top K (every N iterations)
 
 ## Notes
 
-- **Flattened iteration:** iteration_multi_dept inlines all department nodes (no nested department_strategy composite). Drill once to see: unpack → orchestrator → persist → unpack_strategy → strategy_manager → [if] → backtest/run_strategy → bug_fixer → aggregator → governor. Loop groups: Orchestrator (unpack, orchestrator, persist), Departments (unpack_strategy through aggregator).
+- **Flattened iteration:** Drill into `orchestrator_and_departments` to see: unpack → orchestrator → persist → expand_departments → each(department_run) → merge_dept_results → governor. `department_run` contains per-department strategy manager, if gate, backtest/run_strategy, and bug_fixer.
 - Meta runs every N iterations (C): gate or counter in loop.
 - Department codes: LLM decides, pattern DOC + numbering + desc.
 - Compustat gap: documented in prompts; hardcode in loader when used.

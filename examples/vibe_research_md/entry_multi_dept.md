@@ -22,6 +22,7 @@ try:
 except NameError:
     max_factors = 20
 max_factors = max(1, max_factors)
+fixed_departments = ["MOM", "REV", "FUND", "CASH", "OPS", "ML"]
 result = {
     "result": {
         "results": [],
@@ -31,7 +32,7 @@ result = {
         "start_year": start_year,
         "end_year": end_year,
         "max_factors": max_factors,
-        "active_departments": ["MOM"],
+        "active_departments": fixed_departments,
         "deleted_departments": [],
     }
 }

@@ -21,7 +21,9 @@ iteration = int(inner.get("iteration", 0)) if inner.get("iteration") is not None
 try_more = bool(inner.get("try_more", True)) if inner.get("try_more") is not None else True
 start_year = int(inner.get("start_year", 2010)) if inner.get("start_year") is not None else 2010
 end_year = int(inner.get("end_year", 2023)) if inner.get("end_year") is not None else 2023
-active_departments = list(inner.get("active_departments", ["MOM"])) if isinstance(inner.get("active_departments"), list) else ["MOM"]
+active_departments = list(inner.get("active_departments", [])) if isinstance(inner.get("active_departments"), list) else []
+if not active_departments:
+    active_departments = ["MOM", "REV", "FUND", "CASH", "OPS", "ML"]
 deleted_departments = list(inner.get("deleted_departments", [])) if isinstance(inner.get("deleted_departments"), list) else []
 try:
     max_factors = int(inner.get("max_factors", 20)) if inner.get("max_factors") is not None else 20

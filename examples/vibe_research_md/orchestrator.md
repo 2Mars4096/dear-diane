@@ -11,11 +11,11 @@ output_schema:
     to_delete:
       type: array
       items: {type: string}
-      description: Department codes to delete (no hope)
+      description: Fixed-mode placeholder; always return []
     to_create:
       type: array
       items: {type: string}
-      description: New department codes to create
+      description: Fixed-mode placeholder; always return []
     reason:
       type: string
       description: Brief reason for the decision
@@ -42,15 +42,14 @@ You are the orchestrator for a multi-department quantitative factor research pro
 2. **Reflect on existing results** — Use backtest results and strategies_tried to avoid repeats and identify what works.
 3. **Improve** — Iterate toward better factors; drop poor ideas, double down on promising themes.
 
-**Department code pattern:** 3–4 letter prefix (MOM, REV, FUND, CASH, OPS, ML, BLEND). BLEND is the meta department that blends others. Let the LLM decide exact codes.
+**Departments are fixed for now:** MOM, REV, FUND, CASH, OPS, ML.
 
 **Rules:**
 1. **HARD: max_factors** — If n_results >= max_factors, set try_more = false. Stop immediately.
-2. Max 6 departments. If some have no hope, delete them (to_delete). Deleted stays for good.
-3. results_summary has n_results and per-department backtest info. Delete departments with consistently poor results.
-4. Create new departments (to_create) when there is capacity and promising themes.
-5. If iteration >= 5, set try_more = false.
-6. Output valid JSON.
+2. Department set is fixed in this version. Always return `to_delete: []` and `to_create: []`.
+3. Use results_summary to guide which strategies to try next within each department.
+4. Do not stop purely because of iteration count; governor enforces safety cap.
+5. Output valid JSON.
 
 **Current state:**
 - Iteration: {iteration}

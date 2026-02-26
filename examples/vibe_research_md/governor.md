@@ -6,7 +6,7 @@ language: python
 > Accepts: results (array), strategies_tried (array), iteration (number), try_more (boolean), start_year (number), end_year (number), max_factors (number), active_departments (array), deleted_departments (array)
 > Returns: result (object)
 
-Governor: normalizes outputs so the loop never breaks. Overrides try_more when all backtests fail or when max_factors reached. Outputs single object for gate.
+Governor: normalizes outputs so the loop never breaks. Controls stopping with hard constraints (all failed, max_factors reached, or safety cap hit). Outputs single object for gate.
 
 ```python
 try:
@@ -22,9 +22,9 @@ try:
 except NameError:
     iteration = 0
 try:
-    try_more = bool(try_more) if try_more is not None else True
+    _incoming_try_more = bool(try_more) if try_more is not None else True
 except NameError:
-    try_more = True
+    _incoming_try_more = True
 try:
     start_year = int(start_year) if start_year is not None else 2010
 except NameError:
@@ -46,10 +46,17 @@ try:
 except NameError:
     deleted_departments = []
 
+# Governance policy: stop by hard constraints only.
+try_more = True
+safety_cap = max_factors + 10
 valid_results = [r for r in results if isinstance(r, dict) and not r.get("error")]
 if len(results) > 0 and len(valid_results) == 0:
     try_more = False
 if len(results) >= max_factors:
+    try_more = False
+if iteration >= safety_cap:
+    try_more = False
+if len(active_departments) == 0:
     try_more = False
 result = {
     "result": {

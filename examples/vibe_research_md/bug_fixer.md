@@ -14,7 +14,7 @@ try:
 except NameError:
     r = {}
 if not r or r.get("error"):
-    result = {
+    safe = {
         "strategy_name": r.get("strategy_name", "unknown"),
         "error": r.get("error", "backtest failed"),
         "spread_q5_q1_bps": 0,
@@ -24,5 +24,6 @@ if not r or r.get("error"):
         "ls_cumulative": [],
     }
 else:
-    result = r
+    safe = r
+result = {"result": safe}
 ```

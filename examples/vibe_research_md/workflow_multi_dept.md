@@ -14,6 +14,6 @@ tags: [vibe-research, multi-department, orchestrator, strategy-manager, run-stra
 
 ## Flow
 
-entry_multi_dept | loop(orchestrator_and_departments, until: "not try_more", max: 5)
+entry_multi_dept | loop(orchestrator_and_departments, until: "not try_more", max: 60)
 entry_multi_dept_loop_orchestrator_and_departments.done → write_csv.input
 write_csv | each(plot_one, parallel: 2)
