@@ -8,14 +8,12 @@ tags: [vibe-research, multi-department, orchestrator, strategy-manager, run-stra
 ## Agents
 
 - [entry_multi_dept](entry_multi_dept.md)
-- [iteration_multi_dept](iteration_multi_dept.md)
-- [extract_results](extract_adaptive_results.md)
+- [orchestrator_and_departments](iteration_multi_dept.md)
 - [write_csv](write_csv.md)
 - [plot_one](plot_one.md)
 
 ## Flow
 
-entry_multi_dept | loop(iteration_multi_dept, until: "not try_more", max: 5)
-entry_multi_dept_loop_iteration_multi_dept.done → extract_results.input
-extract_results.results → write_csv.results
-extract_results | each(plot_one, parallel: 2)
+entry_multi_dept | loop(orchestrator_and_departments, until: "not try_more", max: 5)
+entry_multi_dept_loop_orchestrator_and_departments.done → write_csv.input
+write_csv | each(plot_one, parallel: 2)

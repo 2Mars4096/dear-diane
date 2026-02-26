@@ -71,8 +71,8 @@
       "sandbox_config": {}
     },
     {
-      "id": "iteration_multi_dept",
-      "name": "iteration_multi_dept",
+      "id": "orchestrator_and_departments",
+      "name": "orchestrator_and_departments",
       "description": "",
       "input_ports": [
         {
@@ -106,7 +106,7 @@
       },
       "retry_policy": null,
       "node_type": "composite",
-      "body_graph": "iteration_multi_dept__body",
+      "body_graph": "orchestrator_and_departments__body",
       "is_blackbox": false,
       "input_mappings": {},
       "output_mappings": {},
@@ -123,10 +123,18 @@
       "projections": []
     },
     {
-      "id": "extract_results",
-      "name": "extract_results",
+      "id": "write_csv",
+      "name": "write_csv",
       "description": "",
       "input_ports": [
+        {
+          "name": "results",
+          "json_schema": {
+            "type": "array"
+          },
+          "required": true,
+          "description": ""
+        },
         {
           "name": "input",
           "json_schema": {
@@ -144,46 +152,6 @@
           },
           "description": ""
         },
-        {
-          "name": "result",
-          "json_schema": {
-            "type": "string"
-          },
-          "description": ""
-        }
-      ],
-      "position": {
-        "x": 0.0,
-        "y": 0.0
-      },
-      "ui": {},
-      "metadata": {
-        "source": {
-          "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/extract_adaptive_results.md",
-          "line": 1
-        }
-      },
-      "retry_policy": null,
-      "node_type": "code_operator",
-      "code": "inp = input or {}\ninner = inp.get(\"result\", inp) if isinstance(inp.get(\"result\"), dict) else inp\nresults = list(inner.get(\"results\", [])) if isinstance(inner.get(\"results\"), list) else []\nresult = {\"results\": results, \"result\": results}",
-      "language": "python",
-      "sandbox_config": {}
-    },
-    {
-      "id": "write_csv",
-      "name": "write_csv",
-      "description": "",
-      "input_ports": [
-        {
-          "name": "results",
-          "json_schema": {
-            "type": "array"
-          },
-          "required": true,
-          "description": ""
-        }
-      ],
-      "output_ports": [
         {
           "name": "csv_path",
           "json_schema": {
@@ -216,8 +184,8 @@
       "tool_config": {}
     },
     {
-      "id": "entry_multi_dept_loop_iteration_multi_dept",
-      "name": "entry_multi_dept_loop_iteration_multi_dept",
+      "id": "entry_multi_dept_loop_orchestrator_and_departments",
+      "name": "entry_multi_dept_loop_orchestrator_and_departments",
       "description": "",
       "input_ports": [
         {
@@ -247,7 +215,7 @@
       "metadata": {
         "source": {
           "file": "examples/vibe_research_md/workflow_multi_dept.md",
-          "line": 16
+          "line": 15
         }
       },
       "retry_policy": null,
@@ -257,8 +225,8 @@
       "max_iterations": 5
     },
     {
-      "id": "extract_results_each_plot_one",
-      "name": "extract_results_each_plot_one",
+      "id": "write_csv_each_plot_one",
+      "name": "write_csv_each_plot_one",
       "description": "",
       "input_ports": [
         {
@@ -283,12 +251,12 @@
       "metadata": {
         "source": {
           "file": "examples/vibe_research_md/workflow_multi_dept.md",
-          "line": 19
+          "line": 17
         }
       },
       "retry_policy": null,
       "node_type": "for_each",
-      "body_graph": "extract_results_each_plot_one__body",
+      "body_graph": "write_csv_each_plot_one__body",
       "parallelism": 2,
       "merge_strategy": "append",
       "external_input_schema": null,
@@ -329,6 +297,13 @@
           "description": ""
         },
         {
+          "name": "results",
+          "json_schema": {
+            "type": "array"
+          },
+          "description": ""
+        },
+        {
           "name": "start_year",
           "json_schema": {
             "type": "number"
@@ -360,6 +335,12 @@
           "description": ""
         },
         {
+          "name": "results",
+          "type": "string",
+          "default": null,
+          "description": ""
+        },
+        {
           "name": "start_year",
           "type": "number",
           "default": null,
@@ -370,40 +351,55 @@
   ],
   "edges": [
     {
-      "id": "edge_entry_multi_dept_entry_multi_dept_loop_iteration_multi_dept_0",
+      "id": "edge_entry_multi_dept_entry_multi_dept_loop_orchestrator_and_departments_0",
       "source_node_id": "entry_multi_dept",
       "source_port": "result",
-      "target_node_id": "entry_multi_dept_loop_iteration_multi_dept",
+      "target_node_id": "entry_multi_dept_loop_orchestrator_and_departments",
       "target_port": "input",
       "ui": {},
       "metadata": {
         "source": {
           "file": "examples/vibe_research_md/workflow_multi_dept.md",
-          "line": 16
+          "line": 15
         }
       },
       "edge_type": "data"
     },
     {
-      "id": "edge_entry_multi_dept_loop_iteration_multi_dept_iteration_multi_dept_1",
-      "source_node_id": "entry_multi_dept_loop_iteration_multi_dept",
+      "id": "edge_entry_multi_dept_loop_orchestrator_and_departments_orchestrator_and_departments_1",
+      "source_node_id": "entry_multi_dept_loop_orchestrator_and_departments",
       "source_port": "continue",
-      "target_node_id": "iteration_multi_dept",
+      "target_node_id": "orchestrator_and_departments",
       "target_port": "input",
       "ui": {},
       "metadata": {
         "source": {
           "file": "examples/vibe_research_md/workflow_multi_dept.md",
-          "line": 16
+          "line": 15
         }
       },
       "edge_type": "data"
     },
     {
-      "id": "edge_iteration_multi_dept_entry_multi_dept_loop_iteration_multi_dept_2",
-      "source_node_id": "iteration_multi_dept",
+      "id": "edge_orchestrator_and_departments_entry_multi_dept_loop_orchestrator_and_departments_2",
+      "source_node_id": "orchestrator_and_departments",
       "source_port": "result",
-      "target_node_id": "entry_multi_dept_loop_iteration_multi_dept",
+      "target_node_id": "entry_multi_dept_loop_orchestrator_and_departments",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {
+        "source": {
+          "file": "examples/vibe_research_md/workflow_multi_dept.md",
+          "line": 15
+        }
+      },
+      "edge_type": "data"
+    },
+    {
+      "id": "edge_entry_multi_dept_loop_orchestrator_and_departments_write_csv_3",
+      "source_node_id": "entry_multi_dept_loop_orchestrator_and_departments",
+      "source_port": "done",
+      "target_node_id": "write_csv",
       "target_port": "input",
       "ui": {},
       "metadata": {
@@ -415,11 +411,11 @@
       "edge_type": "data"
     },
     {
-      "id": "edge_entry_multi_dept_loop_iteration_multi_dept_extract_results_3",
-      "source_node_id": "entry_multi_dept_loop_iteration_multi_dept",
-      "source_port": "done",
-      "target_node_id": "extract_results",
-      "target_port": "input",
+      "id": "edge_write_csv_write_csv_each_plot_one_4",
+      "source_node_id": "write_csv",
+      "source_port": "result",
+      "target_node_id": "write_csv_each_plot_one",
+      "target_port": "items",
       "ui": {},
       "metadata": {
         "source": {
@@ -430,37 +426,7 @@
       "edge_type": "data"
     },
     {
-      "id": "edge_extract_results_write_csv_4",
-      "source_node_id": "extract_results",
-      "source_port": "results",
-      "target_node_id": "write_csv",
-      "target_port": "results",
-      "ui": {},
-      "metadata": {
-        "source": {
-          "file": "examples/vibe_research_md/workflow_multi_dept.md",
-          "line": 18
-        }
-      },
-      "edge_type": "data"
-    },
-    {
-      "id": "edge_extract_results_extract_results_each_plot_one_5",
-      "source_node_id": "extract_results",
-      "source_port": "result",
-      "target_node_id": "extract_results_each_plot_one",
-      "target_port": "items",
-      "ui": {},
-      "metadata": {
-        "source": {
-          "file": "examples/vibe_research_md/workflow_multi_dept.md",
-          "line": 19
-        }
-      },
-      "edge_type": "data"
-    },
-    {
-      "id": "edge_workflow_inputs_entry_multi_dept_6",
+      "id": "edge_workflow_inputs_entry_multi_dept_5",
       "source_node_id": "workflow_inputs",
       "source_port": "start_year",
       "target_node_id": "entry_multi_dept",
@@ -470,7 +436,7 @@
       "edge_type": "data"
     },
     {
-      "id": "edge_workflow_inputs_entry_multi_dept_7",
+      "id": "edge_workflow_inputs_entry_multi_dept_6",
       "source_node_id": "workflow_inputs",
       "source_port": "end_year",
       "target_node_id": "entry_multi_dept",
@@ -480,7 +446,7 @@
       "edge_type": "data"
     },
     {
-      "id": "edge_workflow_inputs_entry_multi_dept_8",
+      "id": "edge_workflow_inputs_entry_multi_dept_7",
       "source_node_id": "workflow_inputs",
       "source_port": "max_factors",
       "target_node_id": "entry_multi_dept",
@@ -488,13 +454,23 @@
       "ui": {},
       "metadata": {},
       "edge_type": "data"
+    },
+    {
+      "id": "edge_workflow_inputs_write_csv_8",
+      "source_node_id": "workflow_inputs",
+      "source_port": "results",
+      "target_node_id": "write_csv",
+      "target_port": "results",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data"
     }
   ],
   "sub_graphs": {
-    "iteration_multi_dept__body": {
+    "orchestrator_and_departments__body": {
       "version": "dan_graph_v1",
       "metadata": {
-        "name": "iteration_multi_dept_composite",
+        "name": "orchestrator_and_departments_composite",
         "description": "",
         "created_at": null,
         "updated_at": null,
@@ -708,7 +684,7 @@
           "retry_policy": null,
           "node_type": "llm_operator",
           "model": "claude-sonnet-4-6",
-          "prompt_template": "You are the orchestrator for a multi-department quantitative research project. You decide whether to continue, which departments to delete (max 6 total), and which new departments to create.\n\n**Department code pattern:** 3–4 letter prefix (MOM, REV, FUND, CASH, OPS, ML, BLEND). BLEND is the meta department that blends others. Let the LLM decide exact codes.\n\n**Rules:**\n1. **HARD: max_factors** — If n_results >= max_factors, set try_more = false. Stop immediately.\n2. Max 6 departments. If some have no hope, delete them (to_delete). Deleted stays for good.\n3. results_summary has n_results and per-department backtest info. Delete departments with consistently poor results.\n4. Create new departments (to_create) when there is capacity and promising themes.\n5. If iteration >= 5, set try_more = false.\n6. Output valid JSON.\n\n**Current state:**\n- Iteration: {iteration}\n- Active departments: {active_departments}\n- Deleted departments: {deleted_departments}\n- Results: {results_summary} (n_results = number of factors so far)\n- Max factors (hard limit): {max_factors}\n\nOutput your decision as JSON.",
+          "prompt_template": "You are the orchestrator for a multi-department quantitative factor research project.\n\n**Project:** Research and backtest cross-sectional factors (momentum, reversal, fundamentals, etc.) on CRSP data. Departments explore strategy themes in parallel. Each department's strategy manager proposes strategies; we run backtests and iterate until we hit max_factors or iteration limit.\n\n**Data paths:**\n- CRSP: `AUTO_QUANT_ROOT/data/crsp_security_month_returns.csv.gz`\n- Compustat: `AUTO_QUANT_ROOT/data/compustat_fundamentals_quarterly_*.dta`\n- AUTO_QUANT_ROOT: env var or default `~/Dropbox/CUHK-phd/projects/auto-quant`\n\n**Output paths:**\n- `examples/vibe_research_md/output/` — factors, plots, grid_summary.csv, department_state.json\n\n**Strategy managers (per department) are responsible for:**\n1. **Create new strategies** — Propose what to try next (built-in momentum/reversal or custom Python scripts).\n2. **Reflect on existing results** — Use backtest results and strategies_tried to avoid repeats and identify what works.\n3. **Improve** — Iterate toward better factors; drop poor ideas, double down on promising themes.\n\n**Department code pattern:** 3–4 letter prefix (MOM, REV, FUND, CASH, OPS, ML, BLEND). BLEND is the meta department that blends others. Let the LLM decide exact codes.\n\n**Rules:**\n1. **HARD: max_factors** — If n_results >= max_factors, set try_more = false. Stop immediately.\n2. Max 6 departments. If some have no hope, delete them (to_delete). Deleted stays for good.\n3. results_summary has n_results and per-department backtest info. Delete departments with consistently poor results.\n4. Create new departments (to_create) when there is capacity and promising themes.\n5. If iteration >= 5, set try_more = false.\n6. Output valid JSON.\n\n**Current state:**\n- Iteration: {iteration}\n- Active departments: {active_departments}\n- Deleted departments: {deleted_departments}\n- Results: {results_summary} (n_results = number of factors so far)\n- Max factors (hard limit): {max_factors}\n\nOutput your decision as JSON.",
           "system_prompt": "",
           "temperature": 0.2,
           "max_tokens": null,
@@ -862,13 +838,13 @@
           },
           "retry_policy": null,
           "node_type": "code_operator",
-          "code": "import json\nfrom pathlib import Path\ntry:\n    to_delete = list(to_delete) if isinstance(to_delete, list) else []\nexcept NameError:\n    to_delete = []\ntry:\n    to_create = list(to_create) if isinstance(to_create, list) else []\nexcept NameError:\n    to_create = []\ntry:\n    active = list(active_departments) if isinstance(active_departments, list) else []\nexcept NameError:\n    active = []\ntry:\n    deleted = list(deleted_departments) if isinstance(deleted_departments, list) else []\nexcept NameError:\n    deleted = []\ntry:\n    results = list(results) if isinstance(results, list) else []\nexcept NameError:\n    results = []\ntry:\n    strategies_tried = list(strategies_tried) if isinstance(strategies_tried, list) else []\nexcept NameError:\n    strategies_tried = []\ntry:\n    iteration = int(iteration) if iteration is not None else 0\nexcept NameError:\n    iteration = 0\ntry:\n    try_more = bool(try_more) if try_more is not None else True\nexcept NameError:\n    try_more = True\ntry:\n    start_year = int(start_year) if start_year else 2010\nexcept NameError:\n    start_year = 2010\ntry:\n    end_year = int(end_year) if end_year else 2023\nexcept NameError:\n    end_year = 2023\ntry:\n    max_factors = max(1, int(max_factors)) if max_factors is not None else 20\nexcept NameError:\n    max_factors = 20\nnew_deleted = list(set(deleted) | set(to_delete))\nnew_active = [d for d in active if d not in to_delete]\nfor d in to_create:\n    if d not in new_active and d not in new_deleted and len(new_active) < 6:\n        new_active.append(d)\nout_dir = Path(\"examples/vibe_research_md/output\")\nout_dir.mkdir(parents=True, exist_ok=True)\nstate_path = out_dir / \"department_state.json\"\nstate_path.write_text(json.dumps({\"active\": new_active, \"deleted\": new_deleted, \"max_departments\": 6}, indent=2), encoding=\"utf-8\")\nresult = {\n    \"result\": {\n        \"results\": results,\n        \"strategies_tried\": strategies_tried,\n        \"iteration\": iteration,\n        \"try_more\": try_more,\n        \"start_year\": start_year,\n        \"end_year\": end_year,\n        \"max_factors\": max_factors,\n        \"active_departments\": new_active,\n        \"deleted_departments\": new_deleted,\n    }\n}",
+          "code": "try:\n    to_delete = list(to_delete) if isinstance(to_delete, list) else []\nexcept NameError:\n    to_delete = []\ntry:\n    to_create = list(to_create) if isinstance(to_create, list) else []\nexcept NameError:\n    to_create = []\ntry:\n    active = list(active_departments) if isinstance(active_departments, list) else []\nexcept NameError:\n    active = []\ntry:\n    deleted = list(deleted_departments) if isinstance(deleted_departments, list) else []\nexcept NameError:\n    deleted = []\ntry:\n    results = list(results) if isinstance(results, list) else []\nexcept NameError:\n    results = []\ntry:\n    strategies_tried = list(strategies_tried) if isinstance(strategies_tried, list) else []\nexcept NameError:\n    strategies_tried = []\ntry:\n    iteration = int(iteration) if iteration is not None else 0\nexcept NameError:\n    iteration = 0\ntry:\n    try_more = bool(try_more) if try_more is not None else True\nexcept NameError:\n    try_more = True\ntry:\n    start_year = int(start_year) if start_year else 2010\nexcept NameError:\n    start_year = 2010\ntry:\n    end_year = int(end_year) if end_year else 2023\nexcept NameError:\n    end_year = 2023\ntry:\n    max_factors = max(1, int(max_factors)) if max_factors is not None else 20\nexcept NameError:\n    max_factors = 20\nnew_deleted = list(set(deleted) | set(to_delete))\nnew_active = [d for d in active if d not in to_delete]\nfor d in to_create:\n    if d not in new_active and d not in new_deleted and len(new_active) < 6:\n        new_active.append(d)\nout_dir = Path(\"examples/vibe_research_md/output\")\nout_dir.mkdir(parents=True, exist_ok=True)\nstate_path = out_dir / \"department_state.json\"\nstate_path.write_text(json.dumps({\"active\": new_active, \"deleted\": new_deleted, \"max_departments\": 6}, indent=2), encoding=\"utf-8\")\nresult = {\n    \"result\": {\n        \"results\": results,\n        \"strategies_tried\": strategies_tried,\n        \"iteration\": iteration,\n        \"try_more\": try_more,\n        \"start_year\": start_year,\n        \"end_year\": end_year,\n        \"max_factors\": max_factors,\n        \"active_departments\": new_active,\n        \"deleted_departments\": new_deleted,\n    }\n}",
           "language": "python",
           "sandbox_config": {}
         },
         {
-          "id": "strategy_creation_multi",
-          "name": "strategy_creation_multi",
+          "id": "department_strategy",
+          "name": "department_strategy",
           "description": "",
           "input_ports": [
             {
@@ -902,7 +878,7 @@
           },
           "retry_policy": null,
           "node_type": "composite",
-          "body_graph": "strategy_creation_multi__body",
+          "body_graph": "department_strategy__body",
           "is_blackbox": false,
           "input_mappings": {},
           "output_mappings": {},
@@ -1402,10 +1378,10 @@
           "edge_type": "data"
         },
         {
-          "id": "edge_persist_dept_state_strategy_creation_multi_16",
+          "id": "edge_persist_dept_state_department_strategy_16",
           "source_node_id": "persist_dept_state",
           "source_port": "result",
-          "target_node_id": "strategy_creation_multi",
+          "target_node_id": "department_strategy",
           "target_port": "input",
           "ui": {},
           "metadata": {
@@ -1417,8 +1393,8 @@
           "edge_type": "data"
         },
         {
-          "id": "edge_strategy_creation_multi_governor_17",
-          "source_node_id": "strategy_creation_multi",
+          "id": "edge_department_strategy_governor_17",
+          "source_node_id": "department_strategy",
           "source_port": "result",
           "target_node_id": "governor",
           "target_port": "results",
@@ -1523,10 +1499,10 @@
         }
       ],
       "sub_graphs": {
-        "strategy_creation_multi__body": {
+        "department_strategy__body": {
           "version": "dan_graph_v1",
           "metadata": {
-            "name": "strategy_creation_multi_composite",
+            "name": "department_strategy_composite",
             "description": "",
             "created_at": null,
             "updated_at": null,
@@ -1897,6 +1873,14 @@
                   },
                   "required": true,
                   "description": ""
+                },
+                {
+                  "name": "branch_trigger",
+                  "json_schema": {
+                    "type": "object"
+                  },
+                  "required": true,
+                  "description": ""
                 }
               ],
               "output_ports": [
@@ -2109,6 +2093,14 @@
                   "name": "strategy_name",
                   "json_schema": {
                     "type": "string"
+                  },
+                  "required": true,
+                  "description": ""
+                },
+                {
+                  "name": "branch_trigger",
+                  "json_schema": {
+                    "type": "object"
                   },
                   "required": true,
                   "description": ""
@@ -2786,11 +2778,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_strategy_to_item_backtest_runner_13",
-              "source_node_id": "strategy_to_item",
-              "source_port": "result",
+              "id": "edge_strategy_manager_dept_if_strategy_to_item_strategy_coder_backtest_runner_13",
+              "source_node_id": "strategy_manager_dept_if_strategy_to_item_strategy_coder",
+              "source_port": "true",
               "target_node_id": "backtest_runner",
-              "target_port": "item",
+              "target_port": "branch_trigger",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2801,11 +2793,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_strategy_manager_dept_strategy_coder_14",
-              "source_node_id": "strategy_manager_dept",
-              "source_port": "strategy_id",
-              "target_node_id": "strategy_coder",
-              "target_port": "strategy_id",
+              "id": "edge_strategy_to_item_backtest_runner_14",
+              "source_node_id": "strategy_to_item",
+              "source_port": "result",
+              "target_node_id": "backtest_runner",
+              "target_port": "item",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2816,11 +2808,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_strategy_manager_dept_strategy_coder_15",
-              "source_node_id": "strategy_manager_dept",
-              "source_port": "strategy_type",
-              "target_node_id": "strategy_coder",
-              "target_port": "strategy_type",
+              "id": "edge_strategy_manager_dept_if_strategy_to_item_strategy_coder_run_strategy_15",
+              "source_node_id": "strategy_manager_dept_if_strategy_to_item_strategy_coder",
+              "source_port": "false",
+              "target_node_id": "run_strategy",
+              "target_port": "branch_trigger",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2833,9 +2825,9 @@
             {
               "id": "edge_strategy_manager_dept_strategy_coder_16",
               "source_node_id": "strategy_manager_dept",
-              "source_port": "params",
+              "source_port": "strategy_id",
               "target_node_id": "strategy_coder",
-              "target_port": "params",
+              "target_port": "strategy_id",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2848,9 +2840,9 @@
             {
               "id": "edge_strategy_manager_dept_strategy_coder_17",
               "source_node_id": "strategy_manager_dept",
-              "source_port": "reuse_config",
+              "source_port": "strategy_type",
               "target_node_id": "strategy_coder",
-              "target_port": "reuse_config",
+              "target_port": "strategy_type",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2861,11 +2853,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_unpack_strategy_coder_18",
-              "source_node_id": "unpack",
-              "source_port": "department_code",
+              "id": "edge_strategy_manager_dept_strategy_coder_18",
+              "source_node_id": "strategy_manager_dept",
+              "source_port": "params",
               "target_node_id": "strategy_coder",
-              "target_port": "department_code",
+              "target_port": "params",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2876,11 +2868,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_backtest_runner_bug_fixer_19",
-              "source_node_id": "backtest_runner",
-              "source_port": "result",
-              "target_node_id": "bug_fixer",
-              "target_port": "backtest_result",
+              "id": "edge_strategy_manager_dept_strategy_coder_19",
+              "source_node_id": "strategy_manager_dept",
+              "source_port": "reuse_config",
+              "target_node_id": "strategy_coder",
+              "target_port": "reuse_config",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2891,11 +2883,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_strategy_coder_run_strategy_20",
-              "source_node_id": "strategy_coder",
-              "source_port": "code",
-              "target_node_id": "run_strategy",
-              "target_port": "code",
+              "id": "edge_unpack_strategy_coder_20",
+              "source_node_id": "unpack",
+              "source_port": "department_code",
+              "target_node_id": "strategy_coder",
+              "target_port": "department_code",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2906,11 +2898,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_strategy_manager_dept_run_strategy_21",
-              "source_node_id": "strategy_manager_dept",
-              "source_port": "params",
-              "target_node_id": "run_strategy",
-              "target_port": "params",
+              "id": "edge_backtest_runner_bug_fixer_21",
+              "source_node_id": "backtest_runner",
+              "source_port": "result",
+              "target_node_id": "bug_fixer",
+              "target_port": "backtest_result",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2921,11 +2913,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_unpack_run_strategy_22",
-              "source_node_id": "unpack",
-              "source_port": "start_year",
+              "id": "edge_strategy_coder_run_strategy_22",
+              "source_node_id": "strategy_coder",
+              "source_port": "code",
               "target_node_id": "run_strategy",
-              "target_port": "start_year",
+              "target_port": "code",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2936,11 +2928,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_unpack_run_strategy_23",
-              "source_node_id": "unpack",
-              "source_port": "end_year",
+              "id": "edge_strategy_manager_dept_run_strategy_23",
+              "source_node_id": "strategy_manager_dept",
+              "source_port": "params",
               "target_node_id": "run_strategy",
-              "target_port": "end_year",
+              "target_port": "params",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2951,11 +2943,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_strategy_manager_dept_run_strategy_24",
-              "source_node_id": "strategy_manager_dept",
-              "source_port": "strategy_id",
+              "id": "edge_unpack_run_strategy_24",
+              "source_node_id": "unpack",
+              "source_port": "start_year",
               "target_node_id": "run_strategy",
-              "target_port": "strategy_name",
+              "target_port": "start_year",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2966,11 +2958,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_run_strategy_bug_fixer_25",
-              "source_node_id": "run_strategy",
-              "source_port": "result",
-              "target_node_id": "bug_fixer",
-              "target_port": "backtest_result",
+              "id": "edge_unpack_run_strategy_25",
+              "source_node_id": "unpack",
+              "source_port": "end_year",
+              "target_node_id": "run_strategy",
+              "target_port": "end_year",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2981,11 +2973,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_bug_fixer_aggregator_26",
-              "source_node_id": "bug_fixer",
-              "source_port": "result",
-              "target_node_id": "aggregator",
-              "target_port": "backtest_result",
+              "id": "edge_strategy_manager_dept_run_strategy_26",
+              "source_node_id": "strategy_manager_dept",
+              "source_port": "strategy_id",
+              "target_node_id": "run_strategy",
+              "target_port": "strategy_name",
               "ui": {},
               "metadata": {
                 "source": {
@@ -2996,11 +2988,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_strategy_manager_dept_aggregator_27",
-              "source_node_id": "strategy_manager_dept",
-              "source_port": "strategy_id",
-              "target_node_id": "aggregator",
-              "target_port": "strategy_id",
+              "id": "edge_run_strategy_bug_fixer_27",
+              "source_node_id": "run_strategy",
+              "source_port": "result",
+              "target_node_id": "bug_fixer",
+              "target_port": "backtest_result",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3011,11 +3003,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_strategy_manager_dept_aggregator_28",
-              "source_node_id": "strategy_manager_dept",
-              "source_port": "strategy_type",
+              "id": "edge_bug_fixer_aggregator_28",
+              "source_node_id": "bug_fixer",
+              "source_port": "result",
               "target_node_id": "aggregator",
-              "target_port": "strategy_type",
+              "target_port": "backtest_result",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3028,9 +3020,9 @@
             {
               "id": "edge_strategy_manager_dept_aggregator_29",
               "source_node_id": "strategy_manager_dept",
-              "source_port": "params",
+              "source_port": "strategy_id",
               "target_node_id": "aggregator",
-              "target_port": "params",
+              "target_port": "strategy_id",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3041,11 +3033,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_unpack_aggregator_30",
-              "source_node_id": "unpack",
-              "source_port": "results",
+              "id": "edge_strategy_manager_dept_aggregator_30",
+              "source_node_id": "strategy_manager_dept",
+              "source_port": "strategy_type",
               "target_node_id": "aggregator",
-              "target_port": "results",
+              "target_port": "strategy_type",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3056,11 +3048,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_unpack_aggregator_31",
-              "source_node_id": "unpack",
-              "source_port": "strategies_tried",
+              "id": "edge_strategy_manager_dept_aggregator_31",
+              "source_node_id": "strategy_manager_dept",
+              "source_port": "params",
               "target_node_id": "aggregator",
-              "target_port": "strategies_tried",
+              "target_port": "params",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3073,9 +3065,9 @@
             {
               "id": "edge_unpack_aggregator_32",
               "source_node_id": "unpack",
-              "source_port": "iteration",
+              "source_port": "results",
               "target_node_id": "aggregator",
-              "target_port": "iteration",
+              "target_port": "results",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3088,9 +3080,9 @@
             {
               "id": "edge_unpack_aggregator_33",
               "source_node_id": "unpack",
-              "source_port": "try_more",
+              "source_port": "strategies_tried",
               "target_node_id": "aggregator",
-              "target_port": "try_more",
+              "target_port": "strategies_tried",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3103,9 +3095,9 @@
             {
               "id": "edge_unpack_aggregator_34",
               "source_node_id": "unpack",
-              "source_port": "start_year",
+              "source_port": "iteration",
               "target_node_id": "aggregator",
-              "target_port": "start_year",
+              "target_port": "iteration",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3118,9 +3110,9 @@
             {
               "id": "edge_unpack_aggregator_35",
               "source_node_id": "unpack",
-              "source_port": "end_year",
+              "source_port": "try_more",
               "target_node_id": "aggregator",
-              "target_port": "end_year",
+              "target_port": "try_more",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3131,11 +3123,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_aggregator_governor_36",
-              "source_node_id": "aggregator",
-              "source_port": "results",
-              "target_node_id": "governor",
-              "target_port": "results",
+              "id": "edge_unpack_aggregator_36",
+              "source_node_id": "unpack",
+              "source_port": "start_year",
+              "target_node_id": "aggregator",
+              "target_port": "start_year",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3146,11 +3138,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_aggregator_governor_37",
-              "source_node_id": "aggregator",
-              "source_port": "strategies_tried",
-              "target_node_id": "governor",
-              "target_port": "strategies_tried",
+              "id": "edge_unpack_aggregator_37",
+              "source_node_id": "unpack",
+              "source_port": "end_year",
+              "target_node_id": "aggregator",
+              "target_port": "end_year",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3163,9 +3155,9 @@
             {
               "id": "edge_aggregator_governor_38",
               "source_node_id": "aggregator",
-              "source_port": "iteration",
+              "source_port": "results",
               "target_node_id": "governor",
-              "target_port": "iteration",
+              "target_port": "results",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3178,9 +3170,9 @@
             {
               "id": "edge_aggregator_governor_39",
               "source_node_id": "aggregator",
-              "source_port": "try_more",
+              "source_port": "strategies_tried",
               "target_node_id": "governor",
-              "target_port": "try_more",
+              "target_port": "strategies_tried",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3193,9 +3185,9 @@
             {
               "id": "edge_aggregator_governor_40",
               "source_node_id": "aggregator",
-              "source_port": "start_year",
+              "source_port": "iteration",
               "target_node_id": "governor",
-              "target_port": "start_year",
+              "target_port": "iteration",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3208,9 +3200,9 @@
             {
               "id": "edge_aggregator_governor_41",
               "source_node_id": "aggregator",
-              "source_port": "end_year",
+              "source_port": "try_more",
               "target_node_id": "governor",
-              "target_port": "end_year",
+              "target_port": "try_more",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3221,11 +3213,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_unpack_governor_42",
-              "source_node_id": "unpack",
-              "source_port": "max_factors",
+              "id": "edge_aggregator_governor_42",
+              "source_node_id": "aggregator",
+              "source_port": "start_year",
               "target_node_id": "governor",
-              "target_port": "max_factors",
+              "target_port": "start_year",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3236,11 +3228,11 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_unpack_governor_43",
-              "source_node_id": "unpack",
-              "source_port": "active_departments",
+              "id": "edge_aggregator_governor_43",
+              "source_node_id": "aggregator",
+              "source_port": "end_year",
               "target_node_id": "governor",
-              "target_port": "active_departments",
+              "target_port": "end_year",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3253,9 +3245,9 @@
             {
               "id": "edge_unpack_governor_44",
               "source_node_id": "unpack",
-              "source_port": "deleted_departments",
+              "source_port": "max_factors",
               "target_node_id": "governor",
-              "target_port": "deleted_departments",
+              "target_port": "max_factors",
               "ui": {},
               "metadata": {
                 "source": {
@@ -3266,7 +3258,37 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_workflow_inputs_unpack_45",
+              "id": "edge_unpack_governor_45",
+              "source_node_id": "unpack",
+              "source_port": "active_departments",
+              "target_node_id": "governor",
+              "target_port": "active_departments",
+              "ui": {},
+              "metadata": {
+                "source": {
+                  "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/strategy_creation_multi.md",
+                  "line": 45
+                }
+              },
+              "edge_type": "data"
+            },
+            {
+              "id": "edge_unpack_governor_46",
+              "source_node_id": "unpack",
+              "source_port": "deleted_departments",
+              "target_node_id": "governor",
+              "target_port": "deleted_departments",
+              "ui": {},
+              "metadata": {
+                "source": {
+                  "file": "/Users/lizhi/Dropbox/Projects/deep-agent-network/examples/vibe_research_md/strategy_creation_multi.md",
+                  "line": 46
+                }
+              },
+              "edge_type": "data"
+            },
+            {
+              "id": "edge_workflow_inputs_unpack_47",
               "source_node_id": "workflow_inputs",
               "source_port": "input",
               "target_node_id": "unpack",
@@ -3276,7 +3298,7 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_workflow_inputs_strategy_to_item_46",
+              "id": "edge_workflow_inputs_strategy_to_item_48",
               "source_node_id": "workflow_inputs",
               "source_port": "lookback",
               "target_node_id": "strategy_to_item",
@@ -3286,7 +3308,7 @@
               "edge_type": "data"
             },
             {
-              "id": "edge_workflow_inputs_strategy_to_item_47",
+              "id": "edge_workflow_inputs_strategy_to_item_49",
               "source_node_id": "workflow_inputs",
               "source_port": "skip",
               "target_node_id": "strategy_to_item",
@@ -3316,10 +3338,10 @@
       "shared_context": [],
       "artifact_refs": []
     },
-    "extract_results_each_plot_one__body": {
+    "write_csv_each_plot_one__body": {
       "version": "dan_graph_v1",
       "metadata": {
-        "name": "extract_results_each_plot_one_body",
+        "name": "write_csv_each_plot_one_body",
         "description": "",
         "created_at": null,
         "updated_at": null,
@@ -3389,8 +3411,7 @@
     "workflow_inputs"
   ],
   "exit_points": [
-    "write_csv",
-    "extract_results_each_plot_one"
+    "write_csv_each_plot_one"
   ],
   "shared_context": [],
   "artifact_refs": []

@@ -5,14 +5,16 @@ type: composite
 > Accepts: input (object)
 > Returns: result (object)
 
-One iteration: unpack → orchestrator → persist state → strategy_creation_multi. Governor normalizes output.
+**Orchestrator + departments.** Unpack → **orchestrator** → persist → **department_strategy** → governor.
+
+Double-click to drill in — orchestrator (try_more, to_delete, to_create); persist (department state); department_strategy (strategy manager, coder/backtest per department).
 
 ## Agents
 
 - [unpack](unpack_multi_dept_input.md)
 - [orchestrator](orchestrator.md)
 - [persist_dept_state](persist_dept_state.md)
-- [strategy_creation_multi](strategy_creation_multi.md)
+- [department_strategy](strategy_creation_multi.md)
 - [governor](governor.md)
 
 ## Flow
@@ -33,5 +35,5 @@ unpack.end_year → persist_dept_state.end_year
 unpack.max_factors → persist_dept_state.max_factors
 unpack.active_departments → persist_dept_state.active_departments
 unpack.deleted_departments → persist_dept_state.deleted_departments
-persist_dept_state → strategy_creation_multi
-strategy_creation_multi → governor
+persist_dept_state → department_strategy
+department_strategy → governor

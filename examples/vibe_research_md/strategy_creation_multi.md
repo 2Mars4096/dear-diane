@@ -32,7 +32,9 @@ strategy_manager_dept.strategy_type → strategy_to_item.strategy_type
 strategy_manager_dept.params → strategy_to_item.params
 unpack.start_year → strategy_to_item.start_year
 unpack.end_year → strategy_to_item.end_year
+strategy_manager_dept_if_strategy_to_item_strategy_coder.true → backtest_runner.branch_trigger
 strategy_to_item.result → backtest_runner.item
+strategy_manager_dept_if_strategy_to_item_strategy_coder.false → run_strategy.branch_trigger
 strategy_manager_dept.strategy_id → strategy_coder.strategy_id
 strategy_manager_dept.strategy_type → strategy_coder.strategy_type
 strategy_manager_dept.params → strategy_coder.params

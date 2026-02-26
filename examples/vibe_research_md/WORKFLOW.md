@@ -1,7 +1,6 @@
-# 7: Multi-Department Adaptive Workflow
+# Multi-Department Adaptive Workflow
 
-**Status:** in-progress
-**Goal:** Orchestrator + parallel departments + meta department (timed, every N iterations).
+Design notes for the vibe research multi-dept example. See `workflow_multi_dept.md` and `run_multi_dept.py`.
 
 ## Design Summary
 
@@ -11,7 +10,7 @@
 - **run_strategy_script:** Script-as-param tool. Executes code, validates factor schema, runs backtest.
 - **Factor schema:** date, permno, ret, factor|mom. Validated in run_strategy_script.
 
-## Tasks
+## Tasks (example-specific)
 
 - [x] Factor schema (factor_schema.py) + validate_factor_df
 - [x] run_backtest_from_factor_df in backtest.py
@@ -21,7 +20,8 @@
 - [x] workflow_multi_dept.md — flow with if(use_builtin) branch (single dept v1)
 - [x] run_multi_dept.py script
 - [x] apply_compustat_lag in factor_schema; compustat_lag_months
-- [ ] Parallel departments via each(department_iteration)
+- [ ] Parallel departments via each(department_iteration) — orchestrator → persist → each(dept) → governor
+- [ ] Strategy coder retry: wrap in loop(compile_check → coder → run_strategy, until: success, max: 3)
 - [ ] meta_department composite — monitor, Sharpe, blend top K (every N iterations)
 
 ## Notes
@@ -29,3 +29,4 @@
 - Meta runs every N iterations (C): gate or counter in loop.
 - Department codes: LLM decides, pattern DOC + numbering + desc.
 - Compustat gap: documented in prompts; hardcode in loader when used.
+- Editor viz (loop_groups, orchestrator visibility): see project plan 6-13.

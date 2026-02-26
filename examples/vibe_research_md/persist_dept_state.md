@@ -8,9 +8,9 @@ language: python
 
 Persists department state (deleted for good). Passes through loop context to strategy creation.
 
+Uses pre-injected `json` and `Path` from code executor builtins (no import needed).
+
 ```python
-import json
-from pathlib import Path
 try:
     to_delete = list(to_delete) if isinstance(to_delete, list) else []
 except NameError:
