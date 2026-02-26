@@ -47,6 +47,7 @@
   - [x] [6-10-gate-loop-condition-redesign](plans/6-10-gate-loop-condition-redesign.md) — J. Gate-style visible loop flow, condition-routing redesign, and collapsible loop internals
   - [x] [6-11-workflow-ux-polish](plans/6-11-workflow-ux-polish.md) — K. Run summary (tokens + time), drill-in auto-layout, multi-tab duplicate graphs
   - [x] [6-12-control-flow-consolidation](plans/6-12-control-flow-consolidation.md) — L. Drop legacy if_else/while_loop; palette shows only If/Else Gate, While Gate, For Each
+  - [ ] [6-13-multi-dept-visualization](plans/6-13-multi-dept-visualization.md) — M. Orchestrator/department visibility, loop_groups, backend layout for vibe research
 
 ## Phase 4 — Core Hardening
 > Make existing nodes robust and the platform practically usable. Fill gaps that prevent real workflows from running reliably.
@@ -56,6 +57,7 @@
   - [x] [7-2-multi-provider-llm](plans/7-2-multi-provider-llm.md) — provider registry (OpenAI, Anthropic, Google), per-node model dispatch, key management, cost table
   - [x] [7-3-built-in-tools](plans/7-3-built-in-tools.md) — `dan.tools` package (11 tools: file, web, shell, PDF, utility), auto-registration, ACI quality
   - [x] [7-4-templates-observability](plans/7-4-templates-observability.md) — 5 workflow templates, per-node token/cost display, LogPanel enhancements
+  - [ ] [7-5-general-tool-design](plans/7-5-general-tool-design.md) — Generic run_python tool, deprecate plot_backtest/save_grid_csv; agent-generated code
 
 ## Phase 5 — Markdown Agent Format
 > A third authoring surface alongside the Python builder DSL and the visual editor. One `.md` per agent (frontmatter + natural language), one workflow `.md` to wire them. All three surfaces compile to the same `dan_graph_v1` JSON and coexist — markdown is the most accessible and LLM-generatable format.
@@ -139,13 +141,10 @@
 - [ ] Session / conversation memory — lightweight persistence for conversation history + key-value state across multiple `Engine.run()` invocations.
 - [ ] Loop as context manager — loops manage what context feeds back, not just control flow. Feedback selectors filter what flows from body back to condition.
 
-## Phase 7.5 — Multi-Department Adaptive (vibe research)
-- [ ] [7-multi-department-adaptive](plans/7-multi-department-adaptive.md) — parallel departments (each), meta department every N iterations (Sharpe blend top K), full integration
-- [x] Multi-dept foundation: orchestrator, strategy_manager_dept, strategy_coder, run_strategy_script, department state, factor schema
-
 ## Backlog (unphased)
 - [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
 - [ ] Survey EvoAgentX for reusable multi-agent patterns
 - [ ] Coding assistant proof-of-concept — build Cursor-like agent mode as a DAN graph (~15 node types, ReAct while-loop + tool operators). Validate Ask/Agent/Debug/Plan modes as graph templates.
 - [ ] science-cursor rebuild — extract scholar engines as DAN agents. Build PaperOrchestrator as a DAN network. VS Code extension as thin rendering client.
 - [ ] Copy selection to new workflow — lasso/shift-click, paste into new tab or blank template. Extract subgraph as standalone reusable workflow.
+- Vibe research example (`examples/vibe_research_md/`) — multi-dept workflow, run_multi_dept.py. Design: WORKFLOW.md.

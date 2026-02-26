@@ -11,6 +11,7 @@
 | [7-2](7-2-multi-provider-llm.md) | Multi-Provider LLM Registry | Provider abstraction, OpenAI/Anthropic/Google, key management, per-node dispatch | `executors/llm.py`, new `providers/`, `engine/executor.py`, `ConfigPanel.tsx` |
 | [7-3](7-3-built-in-tools.md) | Built-in Tool Library (`dan.tools`) | ~10 common tools, auto-registration, ACI quality | new `src/dan/tools/`, `server/app.py`, `executors/tool.py` |
 | [7-4](7-4-templates-observability.md) | Templates + Observability | 5 example workflows, per-node token/cost display | `examples/`, `DanNode.tsx`, `LogPanel.tsx`, `ConfigPanel.tsx` |
+| [7-5](7-5-general-tool-design.md) | General Tool Design | Generic run_python, deprecate plot_backtest/save_grid_csv; agent-generated code | `app.py`, `dan.tools`, `SandboxRunner` |
 
 ## Dependencies / Sequencing
 

@@ -19,6 +19,7 @@
 | [6-10](6-10-gate-loop-condition-redesign.md) | Gate Loop + Condition Redesign | Visible loop flow via gate nodes, condition routing cleanup, collapsible loop groups | `control_flow.py`, `scheduler.py`, `graph.py`, `DanNode.tsx`, `paletteTemplates.ts` |
 | [6-11](6-11-workflow-ux-polish.md) | Workflow UX Polish | Run summary (tokens + time), drill-in auto-layout, multi-tab duplicate graphs | `llm.py`, `scheduler.py`, `useGraphStore.ts`, `TabBar.tsx`, `LogPanel.tsx` |
 | [6-12](6-12-control-flow-consolidation.md) | Control Flow Consolidation | Drop legacy if_else/while_loop; palette shows only If/Else Gate, While Gate, For Each | `graph.ts`, `graphAdapter.ts`, `paletteTemplates.ts`, `app.py`, `nodeIcons.tsx` |
+| [6-13](6-13-multi-dept-visualization.md) | Multi-Dept Visualization | Orchestrator/department visibility, loop_groups, backend layout for vibe research | `layout.py`, `useGraphStore.ts`, `graphAdapter.ts` |
 
 ## Dependencies / Sequencing
 

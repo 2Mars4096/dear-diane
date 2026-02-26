@@ -445,6 +445,10 @@ result = await engine.resume(graph, run_id="abc123")
 - Graceful degradation: optional SDK tools (pypdf, duckduckgo-search) skip with warning if SDK not installed
 - Workspace root sandboxing: all file tools enforce `DAN_WORKSPACE_ROOT` boundary
 
+### Tool design (planned — Plan 7-5)
+
+- **Generic over domain-specific:** State-of-the-art IDEs (Cursor, Claude Code) use a single generic execution tool; the model generates code, the tool runs it. Plan 7-5 introduces `run_python(code, **context)` to replace hardcoded `plot_backtest`/`save_grid_csv`. Preferred pattern: agent-generated code + run_python.
+
 ### Condition Evaluation
 
 - IfElse/WhileLoop `condition` strings evaluated as Python expressions via restricted `eval()`
