@@ -144,19 +144,28 @@ function MutationBadge({
   status,
   sessionMarker,
   onRevert,
+  onPreview,
 }: {
   status: NonNullable<ChatMessage["mutationStatus"]>;
   sessionMarker?: { historyCursor: number };
   onRevert?: () => void;
+  onPreview?: () => void;
 }) {
   const badge = (() => {
     switch (status) {
       case "proposed":
         return (
-          <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full">
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPreview?.();
+            }}
+            className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 bg-amber-50 px-1.5 py-0.5 rounded-full hover:bg-amber-100 transition-colors cursor-pointer"
+          >
             Proposed changes
             <ChevronRight size={10} />
-          </span>
+          </button>
         );
       case "applied":
         return (
@@ -273,12 +282,14 @@ interface ChatMessageProps {
   message: ChatMessage;
   sessionMarker?: { historyCursor: number };
   onRevert?: () => void;
+  onPreviewMutation?: (message: ChatMessage) => void;
 }
 
 export default function ChatMessageBubble({
   message,
   sessionMarker,
   onRevert,
+  onPreviewMutation,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
   const store = useGraphStore();
@@ -341,6 +352,7 @@ export default function ChatMessageBubble({
             status={message.mutationStatus ?? "proposed"}
             sessionMarker={sessionMarker}
             onRevert={onRevert}
+            onPreview={message.mutationStatus === "proposed" ? () => onPreviewMutation?.(message) : undefined}
           />
         )}
 

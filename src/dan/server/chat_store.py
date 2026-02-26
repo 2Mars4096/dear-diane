@@ -41,6 +41,7 @@ class ChatMessage(BaseModel):
     content: str
     mentions: list[Mention] = Field(default_factory=list)
     mutation_plan: dict[str, Any] | None = None
+    dry_run_result: dict[str, Any] | None = None
     mutation_id: str | None = None
     mutation_status: Literal[
         "proposed", "applied", "partial", "rejected", "reverted"

@@ -20,8 +20,11 @@ import { useGraphStore } from "../store/useGraphStore";
 import type { ChatMessage, ChatStreamEvent } from "../types/chat";
 import type { ChatThreadSummary } from "../lib/api";
 import * as api from "../lib/api";
+import type { ApplyMutationResult } from "../lib/api";
 import ChatMessageBubble from "./ChatMessage";
+import GraphDiffPreview from "./GraphDiffPreview";
 import MentionAutocomplete from "./MentionAutocomplete";
+import { computeGraphDiff } from "../lib/graphDiff";
 import {
   findMentionQuery,
   insertMention,
@@ -52,6 +55,7 @@ function toBackendMessage(m: ChatMessage): Record<string, unknown> {
       ? { prompt: m.tokenUsage.prompt, completion: m.tokenUsage.completion }
       : null,
     mutation_plan: m.mutationPlan ?? null,
+    dry_run_result: m.dryRunResult ?? null,
     mutation_id: m.mutationId ?? null,
     mutation_status: m.mutationStatus ?? null,
     run_ref: m.runRef
@@ -75,6 +79,7 @@ function fromBackendMessage(m: Record<string, unknown>): ChatMessage {
     timestamp: new Date(m.timestamp as string).getTime(),
     tokenUsage: tu ? { prompt: tu.prompt, completion: tu.completion } : null,
     mutationPlan: m.mutation_plan ?? null,
+    dryRunResult: (m.dry_run_result as Record<string, unknown>) ?? null,
     mutationId: (m.mutation_id as string) ?? null,
     mutationStatus:
       (m.mutation_status as ChatMessage["mutationStatus"]) ?? null,
@@ -102,6 +107,9 @@ function relativeTimeShort(iso: string): string {
 
 export default function ChatPanel() {
   const graphId = useGraphStore((s) => s.graphId);
+  const danGraph = useGraphStore((s) => s.danGraph);
+  const loadGraph = useGraphStore((s) => s.loadGraph);
+  const pushSnapshot = useGraphStore((s) => s.pushSnapshot);
 
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -125,8 +133,13 @@ export default function ChatPanel() {
   const [sessionMarkers, setSessionMarkers] = useState<
     Record<string, { historyCursor: number }>
   >({});
+  const [previewingMessage, setPreviewingMessage] =
+    useState<ChatMessage | null>(null);
+  const [isApplying, setIsApplying] = useState(false);
+  const [applyError, setApplyError] = useState<string | null>(null);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const applyingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const dragging = useRef(false);
@@ -403,13 +416,16 @@ export default function ChatPanel() {
 
         if (resBody.type === "run_started" || resBody.type === "run_error") {
           const isError = resBody.type === "run_error";
-          setMessages((prev) =>
-            prev.map((m) =>
+          const errMsg =
+            (resBody.error as { message?: string } | undefined)?.message ??
+            "Unknown error";
+          setMessages((prev) => {
+            const updated = prev.map((m) =>
               m.id === assistantId
                 ? {
                     ...m,
                     content: isError
-                      ? `Run failed: ${resBody.error?.detail ?? "Unknown error"}`
+                      ? `Run failed: ${errMsg}`
                       : `Started ${resBody.scope ?? "full"} run.`,
                     runRef: isError
                       ? null
@@ -420,8 +436,19 @@ export default function ChatPanel() {
                         },
                   }
                 : m,
-            ),
-          );
+            );
+            const tid = activeThreadIdRef.current;
+            if (tid && capturedGraphId) {
+              api
+                .updateChatThread(capturedGraphId, tid, {
+                  messages: updated.map(toBackendMessage),
+                })
+                .catch((err: unknown) =>
+                  console.warn("Failed to save thread:", err),
+                );
+            }
+            return updated;
+          });
           setIsStreaming(false);
           return;
         }
@@ -486,6 +513,7 @@ export default function ChatPanel() {
                         content: evt.content ?? m.content,
                         tokenUsage: evt.token_usage ?? null,
                         mutationPlan: evt.mutation_plan ?? null,
+                        dryRunResult: evt.dry_run_result ?? null,
                         mutationStatus: "proposed" as const,
                         mutationId: evt.message_id ?? null,
                       }
@@ -630,6 +658,80 @@ export default function ChatPanel() {
     [graphId, activeThreadId],
   );
 
+  const handlePreviewMutation = useCallback((message: ChatMessage) => {
+    setPreviewingMessage(message);
+    setApplyError(null);
+  }, []);
+
+  const handleApplyMutation = useCallback(
+    async () => {
+      const msg = previewingMessage;
+      if (!msg || !graphId || !msg.mutationPlan || applyingRef.current) return;
+      applyingRef.current = true;
+      setIsApplying(true);
+      setApplyError(null);
+      const plan = msg.mutationPlan as Record<string, unknown>;
+      try {
+        const res: ApplyMutationResult = await api.applyMutation(graphId, plan);
+        if (!res.success) {
+          const errMsg = res.errors?.[0]?.message ?? "Apply failed";
+          setApplyError(
+            res.stale_plan ? `${errMsg} (graph changed — try again)` : errMsg,
+          );
+          return;
+        }
+        pushSnapshot();
+        await loadGraph(graphId);
+        const updated = messages.map((m) =>
+          m.id === msg.id ? { ...m, mutationStatus: "applied" as const } : m,
+        );
+        setMessages(updated);
+        const pastLen = useGraphStore.getState()._history.past.length;
+        setSessionMarkers((prev) => ({
+          ...prev,
+          [msg.id]: { historyCursor: pastLen > 0 ? pastLen - 1 : 0 },
+        }));
+        const tid = activeThreadIdRef.current;
+        if (tid && graphId) {
+          api
+            .updateChatThread(graphId, tid, {
+              messages: updated.map(toBackendMessage),
+            })
+            .catch((err: unknown) =>
+              console.warn("Failed to save thread:", err),
+            );
+        }
+        setPreviewingMessage(null);
+        setApplyError(null);
+      } catch (err) {
+        setApplyError(err instanceof Error ? err.message : "Apply failed");
+      } finally {
+        applyingRef.current = false;
+        setIsApplying(false);
+      }
+    },
+    [previewingMessage, graphId, messages, pushSnapshot, loadGraph],
+  );
+
+  const handleRejectMutation = useCallback(() => {
+    const msg = previewingMessage;
+    if (!msg) return;
+    const updated = messages.map((m) =>
+      m.id === msg.id ? { ...m, mutationStatus: "rejected" as const } : m,
+    );
+    setMessages(updated);
+    const tid = activeThreadIdRef.current;
+    if (tid && graphId) {
+      api
+        .updateChatThread(graphId, tid, {
+          messages: updated.map(toBackendMessage),
+        })
+        .catch((err: unknown) => console.warn("Failed to save thread:", err));
+    }
+    setPreviewingMessage(null);
+    setApplyError(null);
+  }, [previewingMessage, graphId, messages]);
+
   const handleRevert = useCallback(
     (messageId: string) => {
       const marker = sessionMarkers[messageId];
@@ -766,12 +868,59 @@ export default function ChatPanel() {
                       message={m}
                       sessionMarker={sessionMarkers[m.id]}
                       onRevert={() => handleRevert(m.id)}
+                      onPreviewMutation={handlePreviewMutation}
                     />
                   ))}
 
                   {isStreaming &&
                     messages[messages.length - 1]?.content === "" && (
                       <StreamingDots />
+                    )}
+
+                  {previewingMessage &&
+                    !previewingMessage.dryRunResult?.new_graph && (
+                      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+                        <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 text-center">
+                          <p className="text-sm text-gray-500 mb-4">
+                            Preview unavailable — the proposed changes may have
+                            been saved before this feature, or the graph has
+                            changed.
+                          </p>
+                          <button
+                            onClick={() => {
+                              setPreviewingMessage(null);
+                              setApplyError(null);
+                            }}
+                            className="px-4 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                          >
+                            Close
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                  {previewingMessage &&
+                    previewingMessage.dryRunResult?.new_graph &&
+                    danGraph && (
+                      <GraphDiffPreview
+                        diff={computeGraphDiff(
+                          danGraph as unknown as Record<string, unknown>,
+                          previewingMessage.dryRunResult.new_graph as Record<
+                            string,
+                            unknown
+                          >,
+                        )}
+                        onApplyAll={handleApplyMutation}
+                        onApplySelected={() => {}}
+                        onReject={handleRejectMutation}
+                        onClose={() => {
+                          setPreviewingMessage(null);
+                          setApplyError(null);
+                        }}
+                        allowPartialApply={false}
+                        disabled={isApplying}
+                        applyError={applyError}
+                      />
                     )}
 
                   {error && (

@@ -43,6 +43,22 @@ export const updateGraph = (id: string, data: Record<string, unknown>) =>
     body: JSON.stringify(data),
   });
 
+export interface ApplyMutationResult {
+  success: boolean;
+  new_graph: Record<string, unknown> | null;
+  errors: Array<{ op_index?: number; op_type?: string; message?: string }>;
+  stale_plan?: boolean;
+}
+
+export const applyMutation = (
+  graphId: string,
+  mutationPlan: Record<string, unknown>,
+) =>
+  request<ApplyMutationResult>(`/graphs/${graphId}/apply-mutation`, {
+    method: "POST",
+    body: JSON.stringify({ mutation_plan: mutationPlan }),
+  });
+
 export const deleteGraph = (id: string) =>
   request<{ graph_id: string; status: string }>(`/graphs/${id}`, {
     method: "DELETE",

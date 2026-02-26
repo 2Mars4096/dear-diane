@@ -9,6 +9,12 @@ interface GraphDiffPreviewProps {
   onApplySelected: (selectedIndices: number[]) => void;
   onReject: () => void;
   onClose: () => void;
+  /** When false, hides "Apply Selected" (partial apply not yet supported). Default true. */
+  allowPartialApply?: boolean;
+  /** When true, disables Apply/Reject buttons (e.g. during API call). */
+  disabled?: boolean;
+  /** Error message from a failed apply (shown inside modal with Try again). */
+  applyError?: string | null;
 }
 
 type FlatItem =
@@ -156,6 +162,9 @@ export default function GraphDiffPreview({
   onApplySelected,
   onReject,
   onClose,
+  allowPartialApply = true,
+  disabled = false,
+  applyError = null,
 }: GraphDiffPreviewProps) {
   const flatList = useMemo(() => buildFlatList(diff), [diff]);
   const [checked, setChecked] = useState<boolean[]>(() =>
@@ -211,11 +220,25 @@ export default function GraphDiffPreview({
           </div>
           <button
             onClick={onClose}
-            className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors"
+            disabled={disabled}
+            className="p-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <X size={16} />
           </button>
         </div>
+
+        {applyError && (
+          <div className="mx-5 mt-3 px-3 py-2 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-center justify-between gap-2 shrink-0">
+            <span className="flex-1">{applyError}</span>
+            <button
+              onClick={onApplyAll}
+              disabled={disabled}
+              className="text-xs font-medium text-red-600 hover:text-red-800 underline disabled:opacity-50"
+            >
+              Try again
+            </button>
+          </div>
+        )}
 
         <div className="flex-1 overflow-y-auto px-5 py-3">
           <SectionHeader
@@ -332,14 +355,16 @@ export default function GraphDiffPreview({
         <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-end gap-2 shrink-0">
           <button
             onClick={onReject}
-            className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors"
+            disabled={disabled}
+            className="px-3 py-1.5 text-xs font-medium text-gray-600 bg-white border border-gray-200 rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Reject
           </button>
-          {someUnchecked && (
+          {allowPartialApply && someUnchecked && (
             <button
               onClick={() => onApplySelected(selectedIndices)}
-              className="px-3 py-1.5 text-xs font-medium text-indigo-600 bg-white border border-indigo-300 rounded-lg hover:bg-indigo-50 transition-colors"
+              disabled={disabled}
+              className="px-3 py-1.5 text-xs font-medium text-indigo-600 bg-white border border-indigo-300 rounded-lg hover:bg-indigo-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <span className="flex items-center gap-1">
                 <Check size={13} />
@@ -349,7 +374,8 @@ export default function GraphDiffPreview({
           )}
           <button
             onClick={onApplyAll}
-            className="px-3 py-1.5 text-xs font-medium text-white bg-indigo-500 rounded-lg hover:bg-indigo-600 transition-colors"
+            disabled={disabled}
+            className="px-3 py-1.5 text-xs font-medium text-white bg-indigo-500 rounded-lg hover:bg-indigo-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <span className="flex items-center gap-1">
               <Check size={13} />

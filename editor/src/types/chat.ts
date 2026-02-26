@@ -5,6 +5,7 @@ export interface ChatMessage {
   timestamp: number;
   tokenUsage?: { prompt: number; completion: number } | null;
   mutationPlan?: unknown | null;
+  dryRunResult?: Record<string, unknown> | null;
   mutationId?: string | null;
   mutationStatus?: "proposed" | "applied" | "partial" | "rejected" | "reverted" | null;
   runRef?: { runId: string; scope: string; status: string } | null;
