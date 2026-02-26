@@ -449,7 +449,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         }
       }
 
-      const loadedGroups: LoopGroup[] = (danGraph.metadata as Record<string, unknown>).loop_groups as LoopGroup[] ?? [];
+      const loadedGroups: LoopGroup[] = (danGraph.metadata as unknown as Record<string, unknown>).loop_groups as LoopGroup[] ?? [];
       if (loadedGroups.length > 0) {
         const injected = injectLoopGroups(nodes, edges, loadedGroups);
         nodes = injected.nodes;
@@ -510,20 +510,27 @@ export const useGraphStore = create<GraphState>((set, get) => {
       let updated: DanGraph;
       if (layerStack.length === 0) {
         updated = reactFlowToDanGraph(cleanNodes, cleanEdges, danGraph);
+        if (loopGroups.length > 0) {
+          updated = { ...updated, metadata: { ...updated.metadata, loop_groups: loopGroups } };
+        } else {
+          const { loop_groups: _removed, ...restMeta } = (updated.metadata ?? {}) as unknown as Record<string, unknown>;
+          updated = { ...updated, metadata: restMeta as unknown as DanGraph["metadata"] };
+        }
       } else {
         const activeKey = layerStack[layerStack.length - 1].graphKey;
         const subBase = (danGraph.sub_graphs?.[activeKey] ?? danGraph) as unknown as DanGraph;
-        const updatedSub = reactFlowToDanGraph(cleanNodes, cleanEdges, subBase);
+        let updatedSub = reactFlowToDanGraph(cleanNodes, cleanEdges, subBase);
+        if (loopGroups.length > 0) {
+          updatedSub = { ...updatedSub, metadata: { ...updatedSub.metadata, loop_groups: loopGroups } };
+        } else {
+          const meta = (updatedSub.metadata ?? {}) as unknown as Record<string, unknown>;
+          const { loop_groups: _removed, ...restMeta } = meta;
+          updatedSub = { ...updatedSub, metadata: restMeta as unknown as DanGraph["metadata"] };
+        }
         updated = {
           ...danGraph,
           sub_graphs: { ...danGraph.sub_graphs, [activeKey]: updatedSub as unknown as DanGraph },
         };
-      }
-      if (loopGroups.length > 0) {
-        updated = { ...updated, metadata: { ...updated.metadata, loop_groups: loopGroups } };
-      } else {
-        const { loop_groups: _removed, ...restMeta } = updated.metadata as Record<string, unknown>;
-        updated = { ...updated, metadata: restMeta as DanGraph["metadata"] };
       }
       await api.updateGraph(graphId, updated as unknown as Record<string, unknown>);
       set({ danGraph: updated, dirty: false });
@@ -1144,7 +1151,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
     let finalEdges = rfEdges;
-    const sgGroups = (sg.metadata as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
+    const sgGroups = (sg.metadata as unknown as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
     const loadedGroups = sgGroups ?? [];
     if (loadedGroups.length > 0) {
       const injected = injectLoopGroups(finalNodes, finalEdges, loadedGroups);
@@ -1168,7 +1175,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(currentGraph);
     let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
     let finalEdges = rfEdges;
-    const groups = (currentGraph.metadata as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
+    const groups = (currentGraph.metadata as unknown as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
     const loadedGroups = groups ?? [];
     if (loadedGroups.length > 0) {
       const injected = injectLoopGroups(finalNodes, finalEdges, loadedGroups);
@@ -1194,7 +1201,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(targetGraph);
     let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
     let finalEdges = rfEdges;
-    const groups = (targetGraph.metadata as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
+    const groups = (targetGraph.metadata as unknown as Record<string, unknown>)?.loop_groups as LoopGroup[] | undefined;
     const loadedGroups = groups ?? [];
     if (loadedGroups.length > 0) {
       const injected = injectLoopGroups(finalNodes, finalEdges, loadedGroups);
