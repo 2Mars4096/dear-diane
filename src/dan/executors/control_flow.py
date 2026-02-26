@@ -126,22 +126,26 @@ class GateExecutor:
 
         # while mode
         active_branch = "continue" if result else "done"
+        # For "done": pass body value directly so write_csv etc. get governor output, not {"input": body}
+        out_val = inputs.get("input", inputs) if active_branch == "done" else inputs
 
+        gate_data: dict[str, Any] = {
+            "gate_mode": "while",
+            "active_branch": active_branch,
+            "iteration": condition_vars.get("iteration", 0),
+            "max_iterations": node.max_iterations,
+            "condition": node.condition,
+            "condition_vars": dict(condition_vars),
+        }
         await context.emit_event(
             event_type="gate_evaluated",
             node_id=node.id,
             node_type="gate",
-            data={
-                "gate_mode": "while",
-                "active_branch": active_branch,
-                "iteration": condition_vars.get("iteration", 0),
-                "max_iterations": node.max_iterations,
-                "condition": node.condition,
-            },
+            data=gate_data,
         )
 
         return NodeResult(
-            outputs={active_branch: inputs},
+            outputs={active_branch: out_val},
             status=NodeStatus.COMPLETED,
             metadata={
                 "condition_result": result,
