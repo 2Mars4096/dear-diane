@@ -259,13 +259,12 @@ export const NODE_TYPE_CATALOG = [
   { type: "tool_operator", label: "Tool Operator", category: "operator" },
   { type: "code_operator", label: "Code Operator", category: "operator" },
   { type: "input", label: "Input", category: "io" },
-  { type: "if_else", label: "If / Else", category: "control" },
-  { type: "while_loop", label: "While Loop", category: "control" },
+  { type: "gate_if_else", label: "If/Else Gate", category: "control" },
+  { type: "gate_while", label: "While Gate", category: "control" },
   { type: "for_each", label: "For Each", category: "control" },
   { type: "reduce", label: "Reduce", category: "control" },
   { type: "router", label: "Router", category: "control" },
   { type: "human_in_the_loop", label: "Human in the Loop", category: "control" },
-  { type: "gate", label: "Gate", category: "control" },
   { type: "rag_operator", label: "RAG Operator", category: "operator" },
   { type: "validator", label: "Validator", category: "control" },
   { type: "composite", label: "Composite", category: "composite" },
@@ -294,15 +293,15 @@ export const NODE_DESCRIPTIONS: Record<
     inputs: ["input"],
     outputs: ["result"],
   },
-  if_else: {
-    description: "Route data based on a condition",
+  gate_if_else: {
+    description: "Route data to true or false branch based on a condition",
     inputs: ["input"],
     outputs: ["true", "false"],
   },
-  while_loop: {
-    description: "Repeat a sub-graph until condition is met",
+  gate_while: {
+    description: "Loop gate — continue (loop back) or done (exit) based on condition",
     inputs: ["input"],
-    outputs: ["output"],
+    outputs: ["continue", "done"],
   },
   for_each: {
     description: "Fan out a sub-graph over list items",
@@ -323,11 +322,6 @@ export const NODE_DESCRIPTIONS: Record<
     description: "Pause for human input",
     inputs: ["input"],
     outputs: ["response"],
-  },
-  gate: {
-    description: "Conditional gate for branching or looping",
-    inputs: ["input"],
-    outputs: ["true/continue", "false/done"],
   },
   rag_operator: {
     description: "Retrieve relevant chunks from a vector store",

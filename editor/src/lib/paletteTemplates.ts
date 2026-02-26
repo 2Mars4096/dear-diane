@@ -34,12 +34,13 @@ function emptySubGraph(overrides?: Partial<DanGraph>): DanGraph {
   };
 }
 
-// -- ReAct: Think → Act loop --------------------------------------------------
+// -- ReAct: Think → Act loop (Composite with GateNode while-loop body) ---------
 
 function reactTemplateFactory(position: Position): TemplateResult {
   const bodyKey = `react_body_${Date.now()}`;
   const llmId = uid("react_llm");
   const toolId = uid("react_tool");
+  const gateId = uid("react_gate");
 
   const llmNode: DanNode = {
     id: llmId,
@@ -67,50 +68,90 @@ function reactTemplateFactory(position: Position): TemplateResult {
     description: "Execute tool action",
     input_ports: [{ name: "input", schema: {}, required: false }],
     output_ports: [{ name: "result", schema: {} }],
-    position: { x: 100, y: 260 },
+    position: { x: 100, y: 200 },
     ui: {},
     metadata: {},
     tool_id: "",
     tool_config: {},
   };
 
-  const bodyEdge: DanEdge = {
-    id: `e-${llmId}-${toolId}`,
-    edge_type: "data",
-    source_node_id: llmId,
-    source_port: "text",
-    target_node_id: toolId,
-    target_port: "input",
+  const gateNode: DanNode = {
+    id: gateId,
+    node_type: "gate",
+    name: "Loop Gate",
+    description: "Continue or done",
+    input_ports: [{ name: "input", schema: {}, required: false }],
+    output_ports: [
+      { name: "continue", schema: {} },
+      { name: "done", schema: {} },
+    ],
+    position: { x: 100, y: 320 },
     ui: {},
     metadata: {},
+    gate_mode: "while",
+    condition: "True",
+    max_iterations: 10,
   };
+
+  const bodyEdges: DanEdge[] = [
+    {
+      id: `e-${llmId}-${toolId}`,
+      edge_type: "data",
+      source_node_id: llmId,
+      source_port: "text",
+      target_node_id: toolId,
+      target_port: "input",
+      ui: {},
+      metadata: {},
+    },
+    {
+      id: `e-${toolId}-${gateId}`,
+      edge_type: "data",
+      source_node_id: toolId,
+      source_port: "result",
+      target_node_id: gateId,
+      target_port: "input",
+      ui: {},
+      metadata: {},
+    },
+    {
+      id: `e-${gateId}-${llmId}`,
+      edge_type: "data",
+      source_node_id: gateId,
+      source_port: "continue",
+      target_node_id: llmId,
+      target_port: "input",
+      ui: {},
+      metadata: {},
+    },
+  ];
 
   const bodyGraph = emptySubGraph({
     metadata: { name: "ReAct Loop Body" },
-    nodes: [llmNode, toolNode],
-    edges: [bodyEdge],
+    nodes: [llmNode, toolNode, gateNode],
+    edges: bodyEdges,
     entry_points: [llmId],
-    exit_points: [toolId],
+    exit_points: [gateId],
   });
 
-  const whileId = uid("react_while");
-  const whileNode: DanNode = {
-    id: whileId,
-    node_type: "while_loop",
-    name: "ReAct Loop",
+  const compositeId = uid("react");
+  const compositeNode: DanNode = {
+    id: compositeId,
+    node_type: "composite",
+    name: "ReAct Agent",
     description: "ReAct: Think → Act loop until done",
     input_ports: [{ name: "input", schema: {}, required: false }],
     output_ports: [{ name: "output", schema: {} }],
     position,
     ui: {},
     metadata: {},
-    condition: "True",
     body_graph: bodyKey,
-    max_iterations: 10,
+    input_mappings: { input: "input" },
+    output_mappings: { done: "output" },
   };
 
   return {
-    node: whileNode,
+    node: compositeNode,
     rootSubGraphKey: bodyKey,
     subGraphs: { [bodyKey]: bodyGraph },
   };
@@ -198,48 +239,6 @@ function planExecuteTemplateFactory(position: Position): TemplateResult {
   };
 }
 
-// -- IfElse Gate: conditional branch ------------------------------------------
-
-function ifElseGateFactory(position: Position): TemplateResult {
-  const id = uid("gate_if_else");
-  const node: DanNode = {
-    id,
-    node_type: "gate",
-    name: "IfElse Gate",
-    description: "Conditional branching",
-    input_ports: [{ name: "input", schema: {}, required: false }],
-    output_ports: [{ name: "true", schema: {} }, { name: "false", schema: {} }],
-    position,
-    ui: {},
-    metadata: {},
-    gate_mode: "if_else",
-    condition: "",
-    max_iterations: 10,
-  };
-  return { node, rootSubGraphKey: "", subGraphs: {} };
-}
-
-// -- While Gate: loop with back-edge ------------------------------------------
-
-function whileGateFactory(position: Position): TemplateResult {
-  const id = uid("gate_while");
-  const node: DanNode = {
-    id,
-    node_type: "gate",
-    name: "While Gate",
-    description: "Loop gate with condition",
-    input_ports: [{ name: "input", schema: {}, required: false }],
-    output_ports: [{ name: "continue", schema: {} }, { name: "done", schema: {} }],
-    position,
-    ui: {},
-    metadata: {},
-    gate_mode: "while",
-    condition: "",
-    max_iterations: 10,
-  };
-  return { node, rootSubGraphKey: "", subGraphs: {} };
-}
-
 // -- Template registry --------------------------------------------------------
 
 export const PREDEFINED_AGENT_TEMPLATES: PaletteTemplate[] = [
@@ -254,17 +253,5 @@ export const PREDEFINED_AGENT_TEMPLATES: PaletteTemplate[] = [
     label: "Plan-Execute",
     description: "LLM planner generates steps, executor runs each one",
     factory: planExecuteTemplateFactory,
-  },
-  {
-    id: "if_else_gate",
-    label: "IfElse Gate",
-    description: "Conditional branching — routes data to true or false output based on a condition",
-    factory: ifElseGateFactory,
-  },
-  {
-    id: "while_gate",
-    label: "While Gate",
-    description: "Loop gate — routes to 'continue' (loop back) or 'done' (exit) based on a condition",
-    factory: whileGateFactory,
   },
 ];

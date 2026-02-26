@@ -293,10 +293,10 @@ export function createDefaultNode(
       return { ...base, node_type: "tool_operator", tool_id: "", tool_config: {} };
     case "code_operator":
       return { ...base, node_type: "code_operator", code: "", language: "python", sandbox_config: {} };
-    case "if_else":
-      return { ...base, node_type: "if_else", condition: "", output_ports: [{ name: "true", schema: {} }, { name: "false", schema: {} }] };
-    case "while_loop":
-      return { ...base, node_type: "while_loop", condition: "", body_graph: "", max_iterations: 10 };
+    case "gate_if_else":
+      return { ...base, node_type: "gate", gate_mode: "if_else", condition: "", max_iterations: 10, output_ports: [{ name: "true", schema: {} }, { name: "false", schema: {} }] };
+    case "gate_while":
+      return { ...base, node_type: "gate", gate_mode: "while", condition: "", max_iterations: 10, output_ports: [{ name: "continue", schema: {} }, { name: "done", schema: {} }] };
     case "for_each":
       return { ...base, node_type: "for_each", body_graph: "", parallelism: 1, merge_strategy: "append" };
     case "reduce":
@@ -332,8 +332,6 @@ export function createDefaultNode(
       };
     case "composite":
       return { ...base, node_type: "composite", body_graph: "", input_mappings: {}, output_mappings: {}, is_blackbox: false };
-    case "gate":
-      return { ...base, node_type: "gate", gate_mode: "if_else", condition: "", max_iterations: 10, output_ports: [{ name: "true", schema: {} }, { name: "false", schema: {} }] };
     case "input":
       return {
         ...base,
@@ -342,5 +340,7 @@ export function createDefaultNode(
         output_ports: [{ name: "input", schema: {} }],
         variables: [{ name: "input", type: "string" as const, default: "", description: "" }],
       };
+    default:
+      throw new Error(`Unknown node type: ${nodeType}`);
   }
 }

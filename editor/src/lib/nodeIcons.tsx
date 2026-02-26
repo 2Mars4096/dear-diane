@@ -17,12 +17,12 @@ const icons: Record<string, JSX.Element> = {
       <path d="M5 4L1.5 8 5 12M11 4l3.5 4L11 12" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   ),
-  if_else: (
+  gate_if_else: (
     <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
       <path d="M8 2v4M8 6L4 10M8 6l4 4M4 10v4M12 10v4" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   ),
-  while_loop: (
+  gate_while: (
     <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
       <path d="M12 8a4 4 0 11-8 0 4 4 0 018 0z" stroke="currentColor" strokeWidth={1.5} />
       <path d="M12 5l1 3h-3" fill="currentColor" />

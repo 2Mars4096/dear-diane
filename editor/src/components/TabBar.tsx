@@ -39,9 +39,11 @@ export default function TabBar() {
   const openTab = useGraphStore((s) => s.openTab);
   const replaceActiveTabGraph = useGraphStore((s) => s.replaceActiveTabGraph);
   const tabCache = useGraphStore((s) => s.tabCache);
+  const loadGraphList = useGraphStore((s) => s.loadGraphList);
 
   const [picker, setPicker] = useState<PickerState | null>(null);
   const [search, setSearch] = useState("");
+  const [refreshingList, setRefreshingList] = useState(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -49,6 +51,15 @@ export default function TabBar() {
     setPicker(null);
     setSearch("");
   }, []);
+
+  const refreshList = useCallback(async () => {
+    setRefreshingList(true);
+    try {
+      await loadGraphList();
+    } finally {
+      setRefreshingList(false);
+    }
+  }, [loadGraphList]);
 
   useEffect(() => {
     if (!picker) return;
@@ -117,8 +128,11 @@ export default function TabBar() {
     return tab.cachedRunStatus ?? tabCache[tab.id]?.runStatus ?? null;
   };
 
-  const togglePicker = (mode: PickerMode, el: HTMLElement) => {
+  const togglePicker = async (mode: PickerMode, el: HTMLElement) => {
     if (picker?.mode === mode) { closePicker(); return; }
+    setRefreshingList(true);
+    await loadGraphList(); // Actively reload from server (picks up newly built graphs)
+    setRefreshingList(false);
     setPicker({ mode, anchorRect: el.getBoundingClientRect() });
   };
 
@@ -193,9 +207,22 @@ export default function TabBar() {
             zIndex: 9999,
           }}
         >
-          {/* Header */}
-          <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-400 border-b border-gray-100">
-            {picker.mode === "new" ? "Open in new tab" : "Switch template"}
+          {/* Header + Refresh */}
+          <div className="flex items-center justify-between px-3 py-1 border-b border-gray-100">
+            <span className="text-[10px] uppercase tracking-wide text-gray-400">
+              {picker.mode === "new" ? "Open in new tab" : "Switch template"}
+            </span>
+            <button
+              onClick={refreshList}
+              disabled={refreshingList}
+              className="p-1 text-gray-400 hover:text-indigo-600 hover:bg-indigo-50 rounded transition-colors disabled:opacity-50"
+              title="Reload graph list from server"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={refreshingList ? "animate-spin" : ""}>
+                <path d="M21 2v6h-6" /><path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+                <path d="M3 22v-6h6" /><path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+              </svg>
+            </button>
           </div>
 
           {/* Search */}

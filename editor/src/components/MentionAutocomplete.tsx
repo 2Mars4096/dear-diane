@@ -24,9 +24,10 @@ interface MentionAutocompleteProps {
 
 const SUBGRAPH_NODE_TYPES = new Set(["composite", "while_loop", "for_each"]);
 
-const typeLabel: Record<string, string> = Object.fromEntries(
-  NODE_TYPE_CATALOG.map((c) => [c.type, c.label]),
-);
+const typeLabel: Record<string, string> = {
+  ...Object.fromEntries(NODE_TYPE_CATALOG.map((c) => [c.type, c.label])),
+  gate: "Gate",
+};
 
 function highlightMatch(name: string, query: string) {
   if (!query) return <>{name}</>;

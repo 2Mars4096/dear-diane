@@ -139,12 +139,15 @@ export default function EditorToolbar() {
       {/* Spacer */}
       <div className="flex-1" />
 
-      {/* Center-right: Refresh, Save, Run, Resume, Disconnect */}
+      {/* Center-right: Refresh (list + tab), Save, Run, Resume, Disconnect */}
       <button
-        onClick={() => refreshTab()}
-        disabled={!graphId}
-        className="px-2 py-1 text-[11px] rounded border border-gray-300 text-gray-500 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
-        title="Refresh current tab (reload graph from server)"
+        onClick={async () => {
+          await loadGraphList();
+          if (graphId) await refreshTab();
+          addToast({ type: "success", message: "Refreshed (list + tab)" });
+        }}
+        className="px-2 py-1 text-[11px] rounded border border-gray-300 text-gray-500 hover:bg-gray-100"
+        title="Reload graph list and current tab (picks up newly built graphs, no restart needed)"
       >
         <RefreshIcon />
       </button>
