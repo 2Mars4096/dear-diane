@@ -25,5 +25,5 @@ if not r or r.get("error"):
     }
 else:
     safe = r
-result = {"result": safe}
+result = safe
 ```

@@ -21,5 +21,5 @@ item = {
     "start_year": int(start_year) if start_year else 2010,
     "end_year": int(end_year) if end_year else 2023,
 }
-result = {"result": item}
+result = item
 ```
