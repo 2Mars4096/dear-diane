@@ -2229,7 +2229,7 @@
               },
               "retry_policy": null,
               "node_type": "code_operator",
-              "code": "params = params if isinstance(params, dict) else {}\nstrategy_type = str(strategy_type) if strategy_type else \"momentum\"\nlookback = int(params.get(\"lookback_months\", params.get(\"lookback\", 12)))\nskip = int(params.get(\"skip_months\", params.get(\"skip\", 1)))\nname = str(strategy_id) if strategy_id else f\"momentum_{lookback}_{skip}\"\nitem = {\n    \"lookback\": lookback,\n    \"skip\": skip,\n    \"name\": name,\n    \"start_year\": int(start_year) if start_year else 2010,\n    \"end_year\": int(end_year) if end_year else 2023,\n}\nresult = {\"result\": item}",
+              "code": "params = params if isinstance(params, dict) else {}\nstrategy_type = str(strategy_type) if strategy_type else \"momentum\"\nlookback = int(params.get(\"lookback_months\", params.get(\"lookback\", 12)))\nskip = int(params.get(\"skip_months\", params.get(\"skip\", 1)))\nname = str(strategy_id) if strategy_id else f\"momentum_{lookback}_{skip}\"\nitem = {\n    \"lookback\": lookback,\n    \"skip\": skip,\n    \"name\": name,\n    \"start_year\": int(start_year) if start_year else 2010,\n    \"end_year\": int(end_year) if end_year else 2023,\n}\nresult = item",
               "language": "python",
               "sandbox_config": {}
             },
@@ -2598,7 +2598,7 @@
               },
               "retry_policy": null,
               "node_type": "code_operator",
-              "code": "try:\n    r = backtest_result if isinstance(backtest_result, dict) else {}\nexcept NameError:\n    r = {}\nif not r or r.get(\"error\"):\n    safe = {\n        \"strategy_name\": r.get(\"strategy_name\", \"unknown\"),\n        \"error\": r.get(\"error\", \"backtest failed\"),\n        \"spread_q5_q1_bps\": 0,\n        \"quintiles\": {},\n        \"dates\": [],\n        \"cumulative_quintiles\": {},\n        \"ls_cumulative\": [],\n    }\nelse:\n    safe = r\nresult = {\"result\": safe}",
+              "code": "try:\n    r = backtest_result if isinstance(backtest_result, dict) else {}\nexcept NameError:\n    r = {}\nif not r or r.get(\"error\"):\n    safe = {\n        \"strategy_name\": r.get(\"strategy_name\", \"unknown\"),\n        \"error\": r.get(\"error\", \"backtest failed\"),\n        \"spread_q5_q1_bps\": 0,\n        \"quintiles\": {},\n        \"dates\": [],\n        \"cumulative_quintiles\": {},\n        \"ls_cumulative\": [],\n    }\nelse:\n    safe = r\nresult = safe",
               "language": "python",
               "sandbox_config": {}
             },
@@ -4036,7 +4036,7 @@
                   },
                   "retry_policy": null,
                   "node_type": "code_operator",
-                  "code": "params = params if isinstance(params, dict) else {}\nstrategy_type = str(strategy_type) if strategy_type else \"momentum\"\nlookback = int(params.get(\"lookback_months\", params.get(\"lookback\", 12)))\nskip = int(params.get(\"skip_months\", params.get(\"skip\", 1)))\nname = str(strategy_id) if strategy_id else f\"momentum_{lookback}_{skip}\"\nitem = {\n    \"lookback\": lookback,\n    \"skip\": skip,\n    \"name\": name,\n    \"start_year\": int(start_year) if start_year else 2010,\n    \"end_year\": int(end_year) if end_year else 2023,\n}\nresult = {\"result\": item}",
+                  "code": "params = params if isinstance(params, dict) else {}\nstrategy_type = str(strategy_type) if strategy_type else \"momentum\"\nlookback = int(params.get(\"lookback_months\", params.get(\"lookback\", 12)))\nskip = int(params.get(\"skip_months\", params.get(\"skip\", 1)))\nname = str(strategy_id) if strategy_id else f\"momentum_{lookback}_{skip}\"\nitem = {\n    \"lookback\": lookback,\n    \"skip\": skip,\n    \"name\": name,\n    \"start_year\": int(start_year) if start_year else 2010,\n    \"end_year\": int(end_year) if end_year else 2023,\n}\nresult = item",
                   "language": "python",
                   "sandbox_config": {}
                 },
@@ -4405,7 +4405,7 @@
                   },
                   "retry_policy": null,
                   "node_type": "code_operator",
-                  "code": "try:\n    r = backtest_result if isinstance(backtest_result, dict) else {}\nexcept NameError:\n    r = {}\nif not r or r.get(\"error\"):\n    safe = {\n        \"strategy_name\": r.get(\"strategy_name\", \"unknown\"),\n        \"error\": r.get(\"error\", \"backtest failed\"),\n        \"spread_q5_q1_bps\": 0,\n        \"quintiles\": {},\n        \"dates\": [],\n        \"cumulative_quintiles\": {},\n        \"ls_cumulative\": [],\n    }\nelse:\n    safe = r\nresult = {\"result\": safe}",
+                  "code": "try:\n    r = backtest_result if isinstance(backtest_result, dict) else {}\nexcept NameError:\n    r = {}\nif not r or r.get(\"error\"):\n    safe = {\n        \"strategy_name\": r.get(\"strategy_name\", \"unknown\"),\n        \"error\": r.get(\"error\", \"backtest failed\"),\n        \"spread_q5_q1_bps\": 0,\n        \"quintiles\": {},\n        \"dates\": [],\n        \"cumulative_quintiles\": {},\n        \"ls_cumulative\": [],\n    }\nelse:\n    safe = r\nresult = safe",
                   "language": "python",
                   "sandbox_config": {}
                 },
