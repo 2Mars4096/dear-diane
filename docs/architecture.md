@@ -421,6 +421,8 @@ result = await engine.resume(graph, run_id="abc123")
 - Async-first: `Engine.run()` is async; parallel fan-out uses `asyncio.gather()`
 - Kahn's algorithm groups nodes into topological levels; nodes in the same level execute concurrently
 - Cycle-aware scheduling for `GateNode(while)` back-edges: detects gate-controlled cycles, iterates cycle regions bounded by `max_iterations`, DAG fast-path preserved for non-cyclic graphs
+- Input injection is virtualized per node (`__input__<node_id>`). Scheduler maps these values into both standard `input_ports` and `InputNode.variables` so `Engine.run(inputs=...)` reaches workflow InputNodes.
+- While-gate `continue/loop` routing is phase-aware: loop bodies wait for the initial gate signal, then consume virtual loop-feedback injections during subsequent iterations.
 - Sub-graph execution is recursive: WhileLoop/ForEach/Composite executors call back into the scheduler
 - Legacy `IfElseNode`/`WhileLoopNode` continue to work (with deprecation warnings); migration helpers in `dan.migration` convert to gate patterns
 
@@ -660,6 +662,8 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - Transactional by default (`all_or_nothing`); partial apply is opt-in
 - Optimistic concurrency via `base_graph_revision` / hash matching
 - `GraphDiffPreview` shows visual diff before applying; accept/reject/partial-accept
+- **Validation gate:** After `GraphMutator.apply()` succeeds, the `apply-mutation` endpoint runs `Graph.model_validate()` + `validate_graph()` before persisting. Fatal validation errors reject the apply; warnings are returned alongside the saved graph.
+- **Auto-retry:** If the LLM's mutation plan fails dry-run validation, the chat manager feeds the errors back to the LLM for one correction attempt before surfacing the failure to the user.
 
 ### Scoped Execution from Chat
 - `/run`, `/run-node @Node`, `/run-subgraph @Node` commands in chat

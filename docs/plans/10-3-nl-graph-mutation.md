@@ -2,7 +2,9 @@
 
 **Parent:** [10-chatbox-nl-workflow](10-chatbox-nl-workflow.md)
 **Status:** completed
-**Goal:** Enable the LLM to modify the workflow graph in response to natural language instructions. The core intelligence layer: user says "add a reviewer after the writer" and the system produces the correct sequence of graph operations (add node, add edges, set prompt) and applies them.
+**Goal:** Enable the LLM to modify the workflow graph in response to natural language instructions.
+
+> **Note:** Remaining unchecked items in this plan are superseded by [10-8-nl-mutation-hardening](10-8-nl-mutation-hardening.md), which addresses validation, port awareness, typed schemas, prompt enrichment, auto-retry, and pattern macros. The core intelligence layer: user says "add a reviewer after the writer" and the system produces the correct sequence of graph operations (add node, add edges, set prompt) and applies them.
 
 ## Tasks
 

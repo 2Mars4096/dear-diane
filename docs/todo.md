@@ -88,6 +88,7 @@
   - [x] [10-5-history-execution](plans/10-5-history-execution.md) — E. Per-workflow chat persistence, thread list UI, graph delta tracking, session rollback metadata *(thread UI, auto-restore, session markers done; cascade delete, offline resilience, tests, docs remaining)*
   - [x] [10-6-scoped-run-from-chat](plans/10-6-scoped-run-from-chat.md) — F. Full/node/sub-graph run API, server-authoritative target resolution, chat command handling, run event streaming into thread
   - [x] [10-7-apply-mutation-flow](plans/10-7-apply-mutation-flow.md) — G. Wire GraphDiffPreview, POST apply-mutation endpoint, chat→preview→apply pipeline, session marker
+  - [x] [10-8-nl-mutation-hardening](plans/10-8-nl-mutation-hardening.md) — Validate-before-save gate, port-aware edges, entry/exit recompute, typed tool schema, prompt enrichment, auto-retry, pattern macros, stale-plan/idempotency hardening, mutation CI, acceptance metrics rollout
 
 ## Phase 7.5 — Author & Distribute (Remaining)
 > CLI, publish as API/MCP, shareable blocks, PyPI package, lightweight skills.
@@ -147,9 +148,18 @@
 - [ ] Loop as context manager — loops manage what context feeds back, not just control flow. Feedback selectors filter what flows from body back to condition.
 
 ## Backlog (unphased)
+- [ ] NL mutation: LLM-in-the-loop CI variant — feed real NL prompts to chat endpoint with test model, check output plan quality (report-only, non-blocking). From 10-8 task 9-4.
+- [ ] NL mutation: capture 3-5 day baseline on `main` via `GET /api/metrics/mutations` before evaluating hardening impact. From 10-8 task 11-2.
+- [ ] NL mutation: set sprint acceptance targets (`apply_success_rate >= 85%`, `post_validate_pass_rate >= 99%`, `avg_user_turns_to_success <= 2.0`) once baseline is collected. From 10-8 task 11-3.
+- [ ] NL mutation: publish end-of-sprint quality report comparing baseline vs post-fix metric deltas. From 10-8 task 11-5.
 - [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
 - [ ] Survey EvoAgentX for reusable multi-agent patterns
 - [ ] Coding assistant proof-of-concept — build Cursor-like agent mode as a DAN graph (~15 node types, ReAct while-loop + tool operators). Validate Ask/Agent/Debug/Plan modes as graph templates.
 - [ ] science-cursor rebuild — extract scholar engines as DAN agents. Build PaperOrchestrator as a DAN network. VS Code extension as thin rendering client.
 - [ ] Copy selection to new workflow — lasso/shift-click, paste into new tab or blank template. Extract subgraph as standalone reusable workflow.
-- Vibe research example (`examples/vibe_research_md/`) — multi-dept workflow, run_multi_dept.py. Design: WORKFLOW.md.
+- [ ] Vibe research example (`examples/vibe_research_md/`) — multi-dept workflow, run_multi_dept.py. Design: WORKFLOW.md.
+  - [x] Debug run-input propagation in loop path (InputNode + while-gate continue scheduling)
+  - [x] Fix custom strategy `KeyError: ['ret']` by normalizing CRSP loader output contract
+  - [x] Remove obsolete legacy strategy-creation files from example folder
+  - [x] Fix checkpoint circular-reference crash in custom strategy tool output
+  - [x] Expand code sandbox builtins (`iter`/`next`) for generated strategy scripts

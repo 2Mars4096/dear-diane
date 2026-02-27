@@ -2,10 +2,16 @@
 
 ## Open Bugs
 
-(none)
+- **Vibe research LLM calls may fail with provider quota/auth errors**: External dependency issue (`vectorengine.ai` returning 401/403 such as `Token not provided` or `insufficient_quota`). Workflow currently continues with fallback-safe outputs, but strategy generation/backtests degrade when LLM nodes fail.
+- **LLM-generated factor code may violate `merge_asof` sorted-key contract**: Some generated `build_factor` scripts still emit unsorted joins (`ValueError: left keys must be sorted`). Prompt guidance improved, but this remains model-output variability until stronger validation/repair is added.
 
 ## Resolved Bugs
 
+- **Custom strategy scripts crashed with `KeyError: ['ret']`**: Fixed — `load_crsp()` now normalizes a canonical `ret` alias (from `return_month` or `return_ex_div_month`) and keeps `mktcap`/`market_cap_month` aliases aligned. This matches strategy-coder contract and prevents `build_factor(...).dropna(subset=["ret"])` failures.
+- **Vibe run crashed when saving checkpoints (`ValueError: Circular reference detected`)**: Fixed — removed self-referential strategy output (`out["result"] = out`) from `_run_strategy_script`, so checkpoint JSON serialization no longer encounters recursive dictionaries.
+- **Generated strategy code failed with `NameError: name 'next' is not defined`**: Fixed — added `iter` and `next` to the sandbox/code executor allowed builtins used by `execute_python()`.
+- **`Engine.run(inputs=...)` lost on InputNode variables**: Fixed — scheduler now injects virtual run inputs into `InputNode.variables` (not just `input_ports`), so workflow inputs like `start_year/end_year/max_factors` propagate correctly.
+- **While loop body ran before initial gate continue signal**: Fixed — skip logic for `gate.continue/loop` now only bypasses gate-source checks when virtual loop-feedback inputs are present, preventing premature first-pass body execution.
 - **Drop position wrong when zoomed/panned**: Fixed — replaced manual `clientX - bounds.left` with `screenToFlowPosition()` from `useReactFlow()` in `GraphCanvas.tsx`.
 - **Node ID collisions after page refresh**: Fixed — replaced module-level `_counter` with `Date.now()` + random suffix in `graphAdapter.ts`.
 - **Delete key doesn't fire reliably**: Fixed — removed wrapper `onKeyDown` handler, added `deleteKeyCode={["Delete", "Backspace"]}` prop to `<ReactFlow>` in `GraphCanvas.tsx`.

@@ -18,7 +18,7 @@ from dan.models.context import MergeStrategy, CompactionStrategy, CompactionRule
 
 **Graph** — A directed acyclic graph (with loops expressed as composite nodes) of typed nodes connected by typed edges. Serialized as `dan_graph_v1` JSON.
 
-**Node** — An operator (atomic unit of work) or a composite (sub-graph that behaves as a single node). 10 node types total.
+**Node** — An operator (atomic unit of work) or a composite (sub-graph that behaves as a single node). 14 node types total.
 
 **Edge** — A typed connection between node ports. Three types: data, control, context.
 
@@ -127,9 +127,9 @@ node = wf.tool(
 
 **Tool functions** must be `async def` and return a `dict` (keys become output port values) or a scalar (mapped to `result` port).
 
-### 3d. IfElse
+### 3d. IfElse (deprecated — use `gate`)
 
-Conditional routing. Evaluates a Python expression against upstream data.
+Conditional routing. Evaluates a Python expression against upstream data. **Deprecated:** use `wf.gate(..., gate_mode="if_else", condition="...")` instead.
 
 ```python
 node = wf.if_else(
@@ -142,9 +142,9 @@ node = wf.if_else(
 
 **Safe eval:** No `__builtins__`; only whitelisted functions (len, min, max, all, any, str, int, float, bool, abs, round, sorted, list, dict, set, tuple).
 
-### 3e. WhileLoop
+### 3e. WhileLoop (deprecated — use `gate`)
 
-Iterative loop with a sub-graph body. See [Sub-Graph Context Managers](#5-sub-graph-context-managers).
+Iterative loop with a sub-graph body. **Deprecated:** use `wf.gate(..., gate_mode="while", condition="...", ...)` instead. See [Sub-Graph Context Managers](#5-sub-graph-context-managers).
 
 ### 3f. ForEach
 
@@ -702,8 +702,8 @@ dan-serve
 | `llm_operator` | `wf.llm()` | `text` | LLM call |
 | `code_operator` | `wf.code()` | `result` | Python execution |
 | `tool_operator` | `wf.tool()` | `result` | Registered function call |
-| `if_else` | `wf.if_else()` | `branch` | Conditional routing |
-| `while_loop` | `wf.while_loop()` | *(declared)* | Iterative loop |
+| `gate` (if_else mode) | `wf.gate()` | `true`, `false` | Conditional routing (replaces `if_else`) |
+| `gate` (while mode) | `wf.gate()` | `continue`, `done` | Iterative loop (replaces `while_loop`) |
 | `for_each` | `wf.for_each()` | `results` | Parallel fan-out |
 | `composite` | `wf.composite()` | *(declared)* | Sub-graph |
 | `reduce` | `wf.reduce()` | `result` | Fan-in aggregation |
@@ -711,6 +711,7 @@ dan-serve
 | `human_in_the_loop` | `wf.human_in_the_loop()` | `response` | Human input |
 | `rag_operator` | `wf.rag()` | `chunks` | Vector-store retrieval |
 | `validator` | `wf.validator()` | `valid` | Data validation with rule routing |
+| `input` | `wf.input()` | `input` | Workflow entry variables |
 
 ### Edge Types
 
@@ -787,6 +788,8 @@ wf.if_else("route", condition="'technical' in text")
 # Wire control edges to different downstream nodes
 ```
 
+> **Note:** `wf.if_else()` is a deprecated alias; use `wf.gate("route", gate_mode="if_else", condition="...")` for new code.
+
 ### Iterative Refinement
 
 ```python
@@ -800,6 +803,8 @@ with wf.while_loop("refine", condition="quality < 0.9", max_iterations=5,
                            "required": ["draft", "quality"]},
              input_ports=[{"name": "draft"}])
 ```
+
+> **Note:** `wf.while_loop()` is a deprecated alias; use `wf.gate("refine", gate_mode="while", condition="...", ...)` for new code.
 
 ### Custom Tool Integration
 
