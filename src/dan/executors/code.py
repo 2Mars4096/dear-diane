@@ -34,6 +34,8 @@ _ALLOWED_BUILTINS: dict[str, Any] = {
     "reversed": reversed,
     "enumerate": enumerate,
     "zip": zip,
+    "iter": iter,
+    "next": next,
     "map": map,
     "filter": filter,
     "range": range,
