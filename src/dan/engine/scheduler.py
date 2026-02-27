@@ -819,6 +819,13 @@ class Engine:
                     ))
 
         virtual_src = f"__input__{node_id}"
+        # InputNode declares external variables in ``variables`` (not input_ports),
+        # so seed those values explicitly from the virtual injected source.
+        if getattr(node, "node_type", None) == "input":
+            for var in getattr(node, "variables", []):
+                var_name = getattr(var, "name", None)
+                if var_name and state.port_data.has(virtual_src, var_name):
+                    inputs[var_name] = state.port_data.get(virtual_src, var_name)
         for port in node.input_ports:
             if state.port_data.has(virtual_src, port.name):
                 inputs[port.name] = state.port_data.get(virtual_src, port.name)
@@ -901,12 +908,16 @@ class Engine:
             source_node = graph.node_by_id(edge.source_node_id)
             if source_node is None or not _is_gate_node(source_node):
                 continue
-            # Back-edge ports (continue/loop on while-gates) should not
-            # trigger skipping — the target is a loop-back node, not an
-            # inactive forward branch.
+            # While-gate continue/loop edges need special handling:
+            # - Initial pass: body must wait until gate emits continue/loop.
+            # - Iteration pass: scheduler injects loop feedback into virtual
+            #   inputs (__input__<node_id>), so body should run even though
+            #   gate outputs were cleared for the next iteration.
             gate_mode = getattr(source_node, "gate_mode", None)
             if gate_mode == "while" and edge.source_port in ("continue", "loop"):
-                continue
+                virtual_src = f"__input__{node_id}"
+                if state.port_data.has(virtual_src, edge.target_port):
+                    continue
             if not state.port_data.has(edge.source_node_id, edge.source_port):
                 return True
 
@@ -1017,6 +1028,13 @@ class Engine:
             for entry_id in sub_graph.entry_points:
                 entry_node = sub_graph.node_by_id(entry_id)
                 if entry_node is not None:
+                    if getattr(entry_node, "node_type", None) == "input":
+                        for var in getattr(entry_node, "variables", []):
+                            var_name = getattr(var, "name", None)
+                            if var_name and var_name in inputs:
+                                sub_state.port_data.set(
+                                    f"__input__{entry_id}", var_name, inputs[var_name]
+                                )
                     for port in entry_node.input_ports:
                         if port.name in inputs:
                             sub_state.port_data.set(
