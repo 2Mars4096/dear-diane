@@ -32,6 +32,12 @@ def build_factor(crsp_path, start_year, end_year, **params) -> pd.DataFrame:
 - CRSP: `load_crsp(crsp_path, start_year, end_year)` — monthly stock returns
 - Compustat: `Path(crsp_path).parent / "compustat_fundamentals_quarterly_*.dta"` — use `pd.read_stata()`. Apply 6-month gap between fiscal period end and portfolio formation to avoid look-ahead bias.
 
+**Reliability rules (STRICT):**
+- CRSP loader provides canonical columns including `ret`; always preserve/return `ret`.
+- Before any `merge_asof`, sort BOTH frames by the join key(s) and reset index to avoid `ValueError: left keys must be sorted`.
+- Use safe defaults (`errors='coerce'`, `dropna` on required columns) and return an empty-but-valid DataFrame with required columns on unrecoverable data issues.
+- Avoid unsupported/runtime-sensitive tricks; prefer plain pandas operations with explicit columns.
+
 **Department-specific guidance:**
 - **FUND**: Book-to-market, earnings yield, ROE, asset growth, investment rate, etc. Merge Compustat with CRSP on gvkey. Lag by 6+ months.
 - **CASH**: Cash flow to assets, accruals (change in non-cash working capital), operating cash flow yield. Compustat-based.

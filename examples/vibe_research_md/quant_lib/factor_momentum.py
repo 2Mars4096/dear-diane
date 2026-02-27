@@ -25,7 +25,12 @@ def build_momentum(
     df = load_crsp(crsp_path, start_year=start_year, end_year=end_year)
     df = df.sort_values(["permno", "date"]).reset_index(drop=True)
 
-    df["ret"] = df["return_month"]
+    if "return_month" in df.columns:
+        df["ret"] = df["return_month"]
+    elif "ret" in df.columns:
+        df["ret"] = df["ret"]
+    else:
+        raise KeyError("CRSP data missing both 'return_month' and 'ret' columns")
     df["ret"] = df["ret"].replace([np.inf, -np.inf], np.nan)
 
     # Past N-month return, skip most recent K months (t-(K+1) to t-(K+N))

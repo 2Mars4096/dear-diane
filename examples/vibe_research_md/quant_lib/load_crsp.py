@@ -23,6 +23,19 @@ def load_crsp(
     df["year"] = df["date"].dt.year
     df["month"] = df["date"].dt.month
 
+    # Contract for strategy scripts: expose a canonical "ret" column.
+    if "ret" not in df.columns:
+        if "return_month" in df.columns:
+            df["ret"] = df["return_month"]
+        elif "return_ex_div_month" in df.columns:
+            df["ret"] = df["return_ex_div_month"]
+
+    # Keep both aliases available for strategy scripts/prompts.
+    if "market_cap_month" in df.columns and "mktcap" not in df.columns:
+        df["mktcap"] = df["market_cap_month"]
+    elif "mktcap" in df.columns and "market_cap_month" not in df.columns:
+        df["market_cap_month"] = df["mktcap"]
+
     if start_year is not None:
         df = df[df["year"] >= start_year]
     if end_year is not None:
