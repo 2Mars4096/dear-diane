@@ -15,8 +15,15 @@ from pydantic import BaseModel, Field
 from dan.models.graph import Graph
 from dan.providers import CompletionResult, StreamChunk
 from dan.providers.registry import ProviderRegistry
-from dan.server.graph_mutator import GraphMutator, MutationPlan
+from dan.server.graph_mutator import (
+    GraphMutator,
+    MutationPlan,
+    _default_node_config,
+    _default_ports,
+)
 from dan.server.graph_store import GraphStore
+
+_MUTATION_AUTO_RETRY = os.environ.get("DAN_MUTATION_AUTO_RETRY", "true").lower() == "true"
 
 __all__ = [
     "NodeSummary",
@@ -42,9 +49,7 @@ NODE_TYPES: list[str] = [
     "code_operator",
     "rag_operator",
     "input",
-    "if_else",
     "gate",
-    "while_loop",
     "for_each",
     "reduce",
     "router",
@@ -55,75 +60,191 @@ NODE_TYPES: list[str] = [
 
 EDGE_TYPES: list[str] = ["data", "control", "context"]
 
-MUTATION_TOOL_SCHEMA: dict[str, Any] = {
-    "type": "function",
-    "function": {
-        "name": "plan_graph_mutations",
-        "description": (
-            "Plan a sequence of graph operations to modify the workflow. "
-            "Use this when the user asks to add, remove, or modify nodes or edges."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "description": {
-                    "type": "string",
-                    "description": "Brief description of the changes",
-                },
-                "reasoning": {
-                    "type": "string",
-                    "description": "Step-by-step reasoning for why these operations are needed",
-                },
-                "operations": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "op": {
-                                "type": "string",
-                                "enum": [
-                                    "add_node",
-                                    "remove_node",
-                                    "edit_node",
-                                    "add_edge",
-                                    "remove_edge",
-                                    "set_position",
-                                ],
-                            },
-                            "node_type": {"type": "string"},
-                            "name": {"type": "string"},
-                            "config": {"type": "object"},
-                            "node_id": {"type": "string"},
-                            "updates": {"type": "object"},
-                            "edge_type": {"type": "string", "default": "data"},
-                            "source_id": {"type": "string"},
-                            "source_port": {"type": "string"},
-                            "target_id": {"type": "string"},
-                            "target_port": {"type": "string"},
-                            "x": {"type": "number"},
-                            "y": {"type": "number"},
+def _build_mutation_tool_schema() -> dict[str, Any]:
+    """Generate the mutation tool schema from source-of-truth tables.
+
+    Uses ``oneOf`` discriminated by ``op`` so each operation carries only the
+    fields it needs, with correct ``required`` constraints.
+    NOTE: some LLM providers don't handle ``oneOf`` well.  If needed, the
+    flat-schema approach (single object with all fields, only ``op`` required)
+    can be substituted here as a fallback.
+    """
+    add_node_schema = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "const": "add_node"},
+            "node_type": {"type": "string", "enum": NODE_TYPES},
+            "name": {"type": "string", "description": "Human-readable node name"},
+            "config": {"type": "object", "description": "Node-type-specific configuration"},
+        },
+        "required": ["op", "node_type", "name"],
+    }
+
+    remove_node_schema = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "const": "remove_node"},
+            "node_id": {"type": "string", "description": "ID of the node to remove"},
+        },
+        "required": ["op", "node_id"],
+    }
+
+    edit_node_schema = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "const": "edit_node"},
+            "node_id": {"type": "string"},
+            "updates": {"type": "object", "description": "Fields to merge into the node"},
+        },
+        "required": ["op", "node_id", "updates"],
+    }
+
+    add_edge_schema = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "const": "add_edge"},
+            "edge_type": {
+                "type": "string",
+                "enum": ["data", "control", "context"],
+                "default": "data",
+            },
+            "source_id": {"type": "string"},
+            "source_port": {"type": "string"},
+            "target_id": {"type": "string"},
+            "target_port": {"type": "string"},
+        },
+        "required": ["op", "source_id", "source_port", "target_id", "target_port"],
+    }
+
+    remove_edge_schema = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "const": "remove_edge"},
+            "source_id": {"type": "string"},
+            "source_port": {"type": "string"},
+            "target_id": {"type": "string"},
+            "target_port": {"type": "string"},
+        },
+        "required": ["op", "source_id", "source_port", "target_id", "target_port"],
+    }
+
+    set_position_schema = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "const": "set_position"},
+            "node_id": {"type": "string"},
+            "x": {"type": "number"},
+            "y": {"type": "number"},
+        },
+        "required": ["op", "node_id", "x", "y"],
+    }
+
+    expand_pattern_schema = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "const": "expand_pattern"},
+            "pattern": {
+                "type": "string",
+                "enum": ["chain", "review_loop", "fan_out", "rag_qa"],
+                "description": "Named pattern to expand into nodes and edges",
+            },
+            "params": {
+                "type": "object",
+                "description": "Pattern-specific parameters (e.g., count, names, prompts)",
+            },
+        },
+        "required": ["op", "pattern"],
+    }
+
+    return {
+        "type": "function",
+        "function": {
+            "name": "plan_graph_mutations",
+            "description": (
+                "Plan a sequence of graph operations to modify the workflow. "
+                "Use this when the user asks to add, remove, or modify nodes or edges."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "Brief description of the changes",
+                    },
+                    "reasoning": {
+                        "type": "string",
+                        "description": "Step-by-step reasoning for why these operations are needed",
+                    },
+                    "operations": {
+                        "type": "array",
+                        "items": {
+                            "oneOf": [
+                                add_node_schema,
+                                remove_node_schema,
+                                edit_node_schema,
+                                add_edge_schema,
+                                remove_edge_schema,
+                                set_position_schema,
+                                expand_pattern_schema,
+                            ],
                         },
-                        "required": ["op"],
                     },
                 },
+                "required": ["description", "operations"],
             },
-            "required": ["description", "operations"],
         },
-    },
-}
+    }
+
+
+MUTATION_TOOL_SCHEMA: dict[str, Any] = _build_mutation_tool_schema()
+
+def _build_node_type_reference() -> str:
+    """Build a concise per-type reference for the system prompt."""
+    lines = []
+    for nt in NODE_TYPES:
+        inp, out = _default_ports(nt)
+        cfg = _default_node_config(nt)
+        in_names = [p["name"] for p in inp]
+        out_names = [p["name"] for p in out]
+        cfg_keys = sorted(cfg.keys()) if cfg else []
+        line = f"- {nt}: in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
+        if cfg_keys:
+            line += f" config={{{', '.join(cfg_keys)}}}"
+        lines.append(line)
+    return "\n".join(lines)
+
+
+NODE_TYPE_REFERENCE: str = _build_node_type_reference()
 
 SYSTEM_PROMPT_TEMPLATE = """\
 You are a graph-aware assistant for DAN (Deep Agent Network), an agentic \
 workflow builder. You help the user understand, debug, and improve their \
 workflow graphs.
 
-## Available node types
-{node_types}
+## Available node types (with default ports and config)
+{node_type_reference}
 
 ## Available edge types
 - data: carries structured data between ports
 - control: encodes routing / flow-control signals (branching, looping)
 - context: connects a node to a shared-context key (read/write/append)
+
+## Operation examples
+
+Add an LLM node:
+{{"op": "add_node", "node_type": "llm_operator", "name": "Summarizer", "config": {{"prompt_template": "Summarize: {{input}}"}}}}
+
+Wire two nodes:
+{{"op": "add_edge", "source_id": "writer", "source_port": "text", "target_id": "reviewer", "target_port": "input"}}
+
+Create a while-loop gate:
+{{"op": "add_node", "node_type": "gate", "name": "Review Gate", "config": {{"gate_mode": "while", "condition": "needs_revision == true", "max_iterations": 5}}}}
+
+## Available patterns (use expand_pattern op)
+- chain: Sequential chain of N LLM nodes (params: count, names, prompts)
+- review_loop: Writer → Reviewer → Gate with back-edge (params: writer_name, reviewer_name, condition, max_iterations)
+- fan_out: Source → ForEach → body processor (params: source_name, body_name, parallelism)
+- rag_qa: RAG retrieval → LLM answer (params: rag_name, collection, top_k, answer_prompt)
 
 ## Current workflow
 {graph_summary}
@@ -136,6 +257,7 @@ use the plan_graph_mutations tool with a precise list of operations. \
 For questions and explanations, respond in plain text without using the tool.
 - If the workflow is empty and the user asks to create one, use the \
 plan_graph_mutations tool to build it from scratch.
+- Always use exact port names from the reference above. Do not guess.
 - Be concise. Use the node/edge vocabulary above.
 """
 
@@ -553,6 +675,104 @@ class ChatManager:
                 dry_result = GraphMutator().dry_run(
                     graph_dict, plan, current_revision=revision,
                 )
+
+                if not dry_result.success and not dry_result.stale_plan and _MUTATION_AUTO_RETRY:
+                    error_summary = "; ".join(e.message for e in dry_result.errors)
+                    logger.info(
+                        "Dry-run failed for plan %s, attempting auto-retry: %s",
+                        plan.plan_id,
+                        error_summary,
+                    )
+                    retry_messages = messages + [
+                        {"role": "assistant", "content": result.text or ""},
+                        {
+                            "role": "user",
+                            "content": (
+                                f"The mutation plan produced these errors:\n{error_summary}\n\n"
+                                "Please produce a corrected plan_graph_mutations call "
+                                "that fixes these issues."
+                            ),
+                        },
+                    ]
+                    try:
+                        retry_result: CompletionResult = await provider.complete(
+                            messages=retry_messages,
+                            model=self._chat_model,
+                            temperature=0.5,
+                            tools=[MUTATION_TOOL_SCHEMA],
+                            tool_choice="auto",
+                        )
+                        retry_mutation = self._extract_mutation_from_result(retry_result)
+                        if retry_mutation is not None:
+                            retry_plan = MutationPlan.model_validate({
+                                "operations": retry_mutation.get("operations", []),
+                                "description": retry_mutation.get("description", ""),
+                                "reasoning": retry_mutation.get("reasoning", ""),
+                                "base_graph_revision": revision,
+                            })
+                            retry_dry = GraphMutator().dry_run(
+                                graph_dict, retry_plan, current_revision=revision,
+                            )
+                            if retry_dry.success:
+                                plan = retry_plan
+                                dry_result = retry_dry
+                                logger.info(
+                                    "Auto-retry succeeded for plan %s", plan.plan_id
+                                )
+                    except Exception as retry_exc:
+                        logger.debug("Auto-retry LLM call failed: %s", retry_exc)
+
+                if dry_result.stale_plan:
+                    logger.info(
+                        "Stale plan for %s, re-planning against current revision",
+                        plan.plan_id,
+                    )
+                    graph_dict = self._graph_store.get_graph(workflow_id)
+                    if graph_dict is not None:
+                        graph = Graph.model_validate(graph_dict)
+                        summary = build_graph_summary(graph, workflow_id)
+                        revision = summary.revision
+                        replan_messages = self._build_messages(summary, message, history)
+                        replan_messages.append({
+                            "role": "user",
+                            "content": (
+                                "The graph has changed since your last plan. "
+                                "Please re-plan the requested changes against "
+                                "the updated workflow."
+                            ),
+                        })
+                        try:
+                            replan_result = await provider.complete(
+                                messages=replan_messages,
+                                model=self._chat_model,
+                                temperature=0.5,
+                                tools=[MUTATION_TOOL_SCHEMA],
+                                tool_choice="auto",
+                            )
+                            replan_mutation = self._extract_mutation_from_result(
+                                replan_result,
+                            )
+                            if replan_mutation is not None:
+                                replan_plan = MutationPlan.model_validate({
+                                    "operations": replan_mutation.get("operations", []),
+                                    "description": replan_mutation.get("description", ""),
+                                    "reasoning": replan_mutation.get("reasoning", ""),
+                                    "base_graph_revision": revision,
+                                })
+                                replan_dry = GraphMutator().dry_run(
+                                    graph_dict,
+                                    replan_plan,
+                                    current_revision=revision,
+                                )
+                                if replan_dry.success:
+                                    plan = replan_plan
+                                    dry_result = replan_dry
+                                    logger.info("Stale-plan re-planning succeeded")
+                        except Exception as replan_exc:
+                            logger.debug(
+                                "Stale-plan re-planning failed: %s", replan_exc,
+                            )
+
                 normalized_usage = _normalize_usage(result.usage)
                 yield ChatMutationEvent(
                     message_id=message_id,
@@ -627,6 +847,14 @@ class ChatManager:
                 dry_result = GraphMutator().dry_run(
                     graph_dict, plan, current_revision=revision,
                 )
+                if not dry_result.success and not dry_result.stale_plan:
+                    error_summary = "; ".join(e.message for e in dry_result.errors)
+                    logger.info(
+                        "Dry-run failed in fallback path for plan %s "
+                        "(no auto-retry in fallback): %s",
+                        plan.plan_id,
+                        error_summary,
+                    )
                 yield ChatMutationEvent(
                     message_id=message_id,
                     content=mutation_data.get("reasoning", ""),
@@ -684,10 +912,9 @@ class ChatManager:
         history: list[dict[str, str]],
     ) -> list[dict[str, str]]:
         graph_text = serialize_for_prompt(summary)
-        node_type_list = ", ".join(NODE_TYPES)
 
         system_content = SYSTEM_PROMPT_TEMPLATE.format(
-            node_types=node_type_list,
+            node_type_reference=NODE_TYPE_REFERENCE,
             graph_summary=graph_text,
         )
 

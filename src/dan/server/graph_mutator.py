@@ -10,16 +10,21 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field
 
+from dan.models.graph import Graph
+from dan.validation.graph import validate_graph
+
 __all__ = [
     "AddEdge",
     "AddNode",
     "EditEdge",
     "EditNode",
+    "ExpandPattern",
     "GraphMutator",
     "GraphOperation",
     "MutationPlan",
     "MutationResult",
     "OperationError",
+    "PATTERN_LIBRARY",
     "RemoveEdge",
     "RemoveNode",
     "ReplaceSubgraph",
@@ -89,6 +94,12 @@ class ReplaceSubgraph(BaseModel):
     new_edges: list[dict[str, Any]]
 
 
+class ExpandPattern(BaseModel):
+    op: Literal["expand_pattern"] = "expand_pattern"
+    pattern: str
+    params: dict[str, Any] = Field(default_factory=dict)
+
+
 GraphOperation = Annotated[
     Union[
         AddNode,
@@ -99,6 +110,7 @@ GraphOperation = Annotated[
         EditEdge,
         SetNodePosition,
         ReplaceSubgraph,
+        ExpandPattern,
     ],
     Field(discriminator="op"),
 ]
@@ -131,6 +143,7 @@ class MutationResult(BaseModel):
     applied_ops: list[int] = Field(default_factory=list)
     errors: list[OperationError] = Field(default_factory=list)
     stale_plan: bool = False
+    validation_warnings: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +151,7 @@ class MutationResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 _OP_SORT_ORDER: dict[str, int] = {
+    "expand_pattern": 0,
     "add_node": 0,
     "set_position": 1,
     "edit_node": 2,
@@ -361,6 +375,195 @@ def _validate_no_dangling_edges(graph: dict[str, Any]) -> list[str]:
     return problems
 
 
+_WARNING_PATTERNS = ("warning", "deprecated", "untyped")
+
+
+def _is_validation_warning(msg: str) -> bool:
+    lower = msg.lower()
+    return any(p in lower for p in _WARNING_PATTERNS)
+
+
+def _recompute_entry_exit_points(graph: dict[str, Any]) -> None:
+    """Recompute entry_points and exit_points based on edge connectivity."""
+    nodes = graph.get("nodes", [])
+    edges = graph.get("edges", [])
+    node_ids = {n["id"] for n in nodes}
+
+    has_incoming = {
+        e["target_node_id"]
+        for e in edges
+        if e.get("edge_type", "data") == "data" and e.get("target_node_id") in node_ids
+    }
+    has_outgoing = {
+        e["source_node_id"]
+        for e in edges
+        if e.get("edge_type", "data") == "data" and e.get("source_node_id") in node_ids
+    }
+
+    graph["entry_points"] = [n["id"] for n in nodes if n["id"] not in has_incoming]
+    graph["exit_points"] = [n["id"] for n in nodes if n["id"] not in has_outgoing]
+
+
+# ---------------------------------------------------------------------------
+# Pattern library — reusable multi-node graph shapes
+# ---------------------------------------------------------------------------
+
+
+def _pattern_chain(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Chain of N LLM nodes connected sequentially."""
+    count = params.get("count", 3)
+    names = params.get("names", [f"Step {i+1}" for i in range(count)])
+    prompts = params.get("prompts", ["" for _ in range(count)])
+    ops: list[dict[str, Any]] = []
+    for i, name in enumerate(names):
+        prompt = prompts[i] if i < len(prompts) else ""
+        ops.append({
+            "op": "add_node",
+            "node_type": "llm_operator",
+            "name": name,
+            "config": {"prompt_template": prompt},
+        })
+    for i in range(len(names) - 1):
+        src_id = _slugify(names[i])
+        tgt_id = _slugify(names[i + 1])
+        ops.append({
+            "op": "add_edge",
+            "source_id": src_id,
+            "source_port": "text",
+            "target_id": tgt_id,
+            "target_port": "input",
+        })
+    return ops
+
+
+def _pattern_review_loop(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Writer -> Reviewer -> Gate (while) with back-edge to Writer."""
+    writer_name = params.get("writer_name", "Writer")
+    reviewer_name = params.get("reviewer_name", "Reviewer")
+    gate_name = params.get("gate_name", "Review Gate")
+    condition = params.get("condition", "needs_revision == true")
+    max_iter = params.get("max_iterations", 5)
+    return [
+        {
+            "op": "add_node",
+            "node_type": "llm_operator",
+            "name": writer_name,
+            "config": {"prompt_template": params.get("writer_prompt", "")},
+        },
+        {
+            "op": "add_node",
+            "node_type": "llm_operator",
+            "name": reviewer_name,
+            "config": {"prompt_template": params.get("reviewer_prompt", "")},
+        },
+        {
+            "op": "add_node",
+            "node_type": "gate",
+            "name": gate_name,
+            "config": {
+                "gate_mode": "while",
+                "condition": condition,
+                "max_iterations": max_iter,
+            },
+        },
+        {
+            "op": "add_edge",
+            "source_id": _slugify(writer_name),
+            "source_port": "text",
+            "target_id": _slugify(reviewer_name),
+            "target_port": "input",
+        },
+        {
+            "op": "add_edge",
+            "source_id": _slugify(reviewer_name),
+            "source_port": "text",
+            "target_id": _slugify(gate_name),
+            "target_port": "input",
+        },
+        {
+            "op": "add_edge",
+            "source_id": _slugify(gate_name),
+            "source_port": "true",
+            "target_id": _slugify(writer_name),
+            "target_port": "input",
+        },
+    ]
+
+
+def _pattern_fan_out(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Source -> ForEach with body LLM -> downstream collector."""
+    source_name = params.get("source_name", "Source")
+    body_name = params.get("body_name", "Processor")
+    return [
+        {
+            "op": "add_node",
+            "node_type": "llm_operator",
+            "name": source_name,
+            "config": {"prompt_template": params.get("source_prompt", "")},
+        },
+        {
+            "op": "add_node",
+            "node_type": "for_each",
+            "name": "Fan Out",
+            "config": {"parallelism": params.get("parallelism", 1)},
+        },
+        {
+            "op": "add_node",
+            "node_type": "llm_operator",
+            "name": body_name,
+            "config": {"prompt_template": params.get("body_prompt", "")},
+        },
+        {
+            "op": "add_edge",
+            "source_id": _slugify(source_name),
+            "source_port": "text",
+            "target_id": "fan-out",
+            "target_port": "items",
+        },
+    ]
+
+
+def _pattern_rag_qa(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """RAG retrieval -> LLM answer node."""
+    rag_name = params.get("rag_name", "Knowledge Base")
+    answer_name = params.get("answer_name", "Answer Generator")
+    collection = params.get("collection", "")
+    top_k = params.get("top_k", 5)
+    return [
+        {
+            "op": "add_node",
+            "node_type": "rag_operator",
+            "name": rag_name,
+            "config": {"collection": collection, "top_k": top_k},
+        },
+        {
+            "op": "add_node",
+            "node_type": "llm_operator",
+            "name": answer_name,
+            "config": {
+                "prompt_template": params.get(
+                    "answer_prompt", "Answer based on: {input}"
+                ),
+            },
+        },
+        {
+            "op": "add_edge",
+            "source_id": _slugify(rag_name),
+            "source_port": "chunks",
+            "target_id": _slugify(answer_name),
+            "target_port": "input",
+        },
+    ]
+
+
+PATTERN_LIBRARY: dict[str, Any] = {
+    "chain": _pattern_chain,
+    "review_loop": _pattern_review_loop,
+    "fan_out": _pattern_fan_out,
+    "rag_qa": _pattern_rag_qa,
+}
+
+
 # ---------------------------------------------------------------------------
 # GraphMutator
 # ---------------------------------------------------------------------------
@@ -415,7 +618,39 @@ class GraphMutator:
         current_revision: str | None = None,
     ) -> MutationResult:
         """Run apply in dry-run mode — returns result + validation without persisting."""
-        return self.apply(graph_dict, plan, current_revision)
+        result = self.apply(graph_dict, plan, current_revision)
+        if not result.success:
+            return result
+
+        try:
+            graph = Graph.model_validate(result.new_graph)
+        except Exception as exc:
+            return MutationResult(
+                success=False,
+                errors=[
+                    OperationError(
+                        op_index=-1,
+                        op_type="validation",
+                        message=f"Graph parse error: {exc}",
+                    )
+                ],
+            )
+
+        raw_errors = validate_graph(graph)
+        fatal = [m for m in raw_errors if not _is_validation_warning(m)]
+        warnings = [m for m in raw_errors if _is_validation_warning(m)]
+
+        if fatal:
+            return MutationResult(
+                success=False,
+                errors=[
+                    OperationError(op_index=-1, op_type="validation", message=msg)
+                    for msg in fatal
+                ],
+            )
+
+        result.validation_warnings = warnings
+        return result
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -459,6 +694,7 @@ class GraphMutator:
                 ],
             )
 
+        _recompute_entry_exit_points(working)
         return MutationResult(success=True, new_graph=working, applied_ops=applied)
 
     def _apply_partial(
@@ -479,6 +715,7 @@ class GraphMutator:
             else:
                 applied.append(orig_idx)
 
+        _recompute_entry_exit_points(working)
         return MutationResult(
             success=len(errors) == 0,
             new_graph=working,
@@ -505,6 +742,8 @@ class GraphMutator:
                 return self._op_set_position(graph, op)
             if isinstance(op, ReplaceSubgraph):
                 return self._op_replace_subgraph(graph, op)
+            if isinstance(op, ExpandPattern):
+                return self._op_expand_pattern(graph, op)
             return f"Unknown operation type: {op.op}"
         except Exception as exc:
             logger.exception("Unexpected error applying %s", op.op)
@@ -564,6 +803,27 @@ class GraphMutator:
             return f"Source node '{op.source_id}' not found"
         if op.target_id not in ids:
             return f"Target node '{op.target_id}' not found"
+
+        source_node = _find_node(graph, op.source_id)
+        target_node = _find_node(graph, op.target_id)
+
+        source_ports = [p["name"] for p in source_node.get("output_ports", [])]
+        if op.source_port not in source_ports:
+            return (
+                f"Source node '{op.source_id}' has no output port '{op.source_port}' "
+                f"(available: {source_ports})"
+            )
+
+        target_ports = [p["name"] for p in target_node.get("input_ports", [])]
+        if op.target_port not in target_ports:
+            target_node.setdefault("input_ports", []).append(
+                {"name": op.target_port, "schema": {}, "required": False}
+            )
+            logger.debug(
+                "Auto-created input port '%s' on node '%s'",
+                op.target_port,
+                op.target_id,
+            )
 
         edge_id = f"{op.source_id}.{op.source_port}->{op.target_id}.{op.target_port}"
 
@@ -639,5 +899,43 @@ class GraphMutator:
 
         for edge_dict in op.new_edges:
             graph.setdefault("edges", []).append(edge_dict)
+
+        return None
+
+    def _op_expand_pattern(
+        self, graph: dict[str, Any], op: ExpandPattern
+    ) -> str | None:
+        if op.pattern not in PATTERN_LIBRARY:
+            available = ", ".join(sorted(PATTERN_LIBRARY.keys()))
+            return f"Unknown pattern '{op.pattern}' (available: {available})"
+
+        pattern_fn = PATTERN_LIBRARY[op.pattern]
+        try:
+            raw_ops = pattern_fn(op.params)
+        except Exception as exc:
+            return f"Pattern expansion error: {exc}"
+
+        _OP_MODELS: dict[str, type[BaseModel]] = {
+            "add_node": AddNode,
+            "remove_node": RemoveNode,
+            "edit_node": EditNode,
+            "add_edge": AddEdge,
+            "remove_edge": RemoveEdge,
+            "edit_edge": EditEdge,
+            "set_position": SetNodePosition,
+        }
+
+        for i, raw_op in enumerate(raw_ops):
+            op_type = raw_op.get("op", "")
+            model_cls = _OP_MODELS.get(op_type)
+            if model_cls is None:
+                return f"Pattern '{op.pattern}' step {i}: unknown op '{op_type}'"
+            try:
+                parsed_op = model_cls.model_validate(raw_op)
+            except Exception as exc:
+                return f"Pattern '{op.pattern}' step {i}: {exc}"
+            err = self._apply_op(graph, parsed_op)
+            if err:
+                return f"Pattern '{op.pattern}' step {i}: {err}"
 
         return None

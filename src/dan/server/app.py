@@ -46,9 +46,13 @@ from dan.server.scoped_run import (
     map_run_event_to_chat_block,
     parse_run_command,
 )
+from dan.server.mutation_metrics import mutation_metrics
 from dan.validation.graph import validate_graph
 
 logger = logging.getLogger(__name__)
+
+_STRICT_MUTATION_VALIDATION = os.environ.get("DAN_STRICT_MUTATION_VALIDATION", "true").lower() == "true"
+_MUTATION_AUTO_RETRY = os.environ.get("DAN_MUTATION_AUTO_RETRY", "true").lower() == "true"
 
 
 def _require_run_manager() -> RunManager:
@@ -609,7 +613,6 @@ async def _run_strategy_script(
     out = run_backtest_from_factor_df(
         factor_df, return_series=return_series, strategy_name=strategy_name
     )
-    out["result"] = out
     return out
 
 
@@ -932,6 +935,7 @@ class ChatMessageRequest(BaseModel):
 
 class ApplyMutationRequest(BaseModel):
     mutation_plan: dict[str, Any]
+    idempotency_key: str | None = None
 
 
 # ------------------------------------------------------------------
@@ -989,6 +993,10 @@ async def delete_graph(graph_id: str):
     return {"graph_id": graph_id, "status": "deleted"}
 
 
+_applied_mutation_keys: set[str] = set()
+_MAX_IDEMPOTENCY_KEYS = 1000
+
+
 @app.post("/api/graphs/{graph_id}/apply-mutation")
 async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
     """Apply a chat-generated mutation plan to the graph. Returns new graph on success."""
@@ -998,6 +1006,18 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
     if _gate_migration_enabled and isinstance(data, dict):
         from dan.migration.gate_migration import migrate_graph
         data = migrate_graph(data)
+
+    if req.idempotency_key:
+        if req.idempotency_key in _applied_mutation_keys:
+            return {
+                "success": True,
+                "new_graph": data,
+                "errors": [],
+                "warnings": [],
+                "stale_plan": False,
+                "idempotent_hit": True,
+            }
+
     try:
         plan = MutationPlan.model_validate(req.mutation_plan)
     except Exception as exc:
@@ -1006,21 +1026,82 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
     revision = compute_graph_revision(data)
     result = GraphMutator().apply(data, plan, current_revision=revision)
 
+    mutation_metrics.record_apply(result.success)
+
     if not result.success:
-        return {
+        resp: dict[str, Any] = {
             "success": False,
             "new_graph": None,
             "errors": [e.model_dump() for e in result.errors],
             "stale_plan": result.stale_plan,
         }
+        if result.stale_plan:
+            resp["message"] = (
+                "The workflow has been modified since this plan was created. "
+                "Please refresh and try again."
+            )
+        return resp
 
-    _graph_store.save_graph(graph_id, result.new_graph)
-    return {
-        "success": True,
-        "new_graph": result.new_graph,
-        "errors": [],
-        "stale_plan": False,
-    }
+    if _STRICT_MUTATION_VALIDATION:
+        try:
+            graph = Graph.model_validate(result.new_graph)
+        except Exception as exc:
+            mutation_metrics.record_validation(False)
+            return {
+                "success": False,
+                "errors": [{"message": f"Graph parse error: {exc}"}],
+                "stale_plan": False,
+            }
+
+        raw_errors = validate_graph(graph)
+        warnings: list[str] = []
+        fatal: list[str] = []
+        for msg in raw_errors:
+            lower = msg.lower()
+            if any(p in lower for p in ("warning", "deprecated", "untyped")):
+                warnings.append(msg)
+            else:
+                fatal.append(msg)
+
+        mutation_metrics.record_validation(len(fatal) == 0)
+
+        if fatal:
+            return {
+                "success": False,
+                "new_graph": None,
+                "errors": [{"message": msg} for msg in fatal],
+                "stale_plan": False,
+            }
+
+        _graph_store.save_graph(graph_id, result.new_graph)
+
+        if req.idempotency_key:
+            _applied_mutation_keys.add(req.idempotency_key)
+            if len(_applied_mutation_keys) > _MAX_IDEMPOTENCY_KEYS:
+                _applied_mutation_keys.pop()
+
+        return {
+            "success": True,
+            "new_graph": result.new_graph,
+            "errors": [],
+            "warnings": warnings,
+            "stale_plan": False,
+        }
+    else:
+        _graph_store.save_graph(graph_id, result.new_graph)
+
+        if req.idempotency_key:
+            _applied_mutation_keys.add(req.idempotency_key)
+            if len(_applied_mutation_keys) > _MAX_IDEMPOTENCY_KEYS:
+                _applied_mutation_keys.pop()
+
+        return {
+            "success": True,
+            "new_graph": result.new_graph,
+            "errors": [],
+            "warnings": [],
+            "stale_plan": False,
+        }
 
 
 @app.post("/api/graphs/{graph_id}/validate")
@@ -1058,6 +1139,16 @@ async def validate_graph_endpoint(graph_id: str):
             errors.append(entry)
 
     return {"errors": errors, "warnings": warnings}
+
+
+@app.get("/api/metrics/mutations")
+async def get_mutation_metrics():
+    return mutation_metrics.summary()
+
+
+@app.post("/api/metrics/mutations/reset")
+async def reset_mutation_metrics():
+    return mutation_metrics.reset()
 
 
 @app.post("/api/graphs/{graph_id}/nodes/{node_id}/add-boundary-validators")
