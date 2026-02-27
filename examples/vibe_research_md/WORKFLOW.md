@@ -5,7 +5,7 @@ Design notes for the vibe research multi-dept example. See `workflow_multi_dept.
 ## Design Summary
 
 - **Orchestrator:** Decides high-level direction and try_more. Department set is fixed for now (MOM, REV, FUND, CASH, OPS, ML), so add/delete is disabled.
-- **Departments:** Run in parallel via each(). Per dept: Strategy Manager → Coder (if custom) or strategy_to_item (if built-in) → run_backtest / run_strategy_script → bug_fixer → aggregator.
+- **Departments:** Run in parallel via each(). Per dept: Strategy Manager → Coder (if custom) or strategy_to_item (if built-in) → run_backtest / run_strategy_script → bug_fixer → output_per_dept. Cross-department merge happens in `merge_dept_results`.
 - **Meta department:** Runs every N main-loop iterations. Monitors department outputs, Sharpe top K, blends (avg rankings), outputs BLEND_*.parquet.
 - **run_strategy_script:** Script-as-param tool. Executes code, validates factor schema, runs backtest.
 - **Factor schema:** date, permno, ret, factor|mom. Validated in run_strategy_script.
