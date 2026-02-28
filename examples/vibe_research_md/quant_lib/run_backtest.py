@@ -29,6 +29,8 @@ def main() -> int:
     parser.add_argument("--end", type=int, default=2024)
     parser.add_argument("--lookback", type=int, default=12)
     parser.add_argument("--skip", type=int, default=1)
+    parser.add_argument("--min-price", type=float, default=1.0, help="Minimum |price| at portfolio formation")
+    parser.add_argument("--name", default="", help="Optional strategy name override")
     parser.add_argument("--data-dir", help="Override data dir (parent of crsp/compustat)")
     parser.add_argument("--series", action="store_true", help="Include cumulative returns and LS series")
     parser.add_argument("--save-factor-dir", help="Save factor parquet to this dir (filename: momentum_Lm_skipS.parquet)")
@@ -46,22 +48,34 @@ def main() -> int:
         crsp_path=crsp_path,
         lookback_months=args.lookback,
         skip_months=args.skip,
+        min_price=args.min_price,
         return_series=args.series,
     )
+    strategy_name = str(args.name).strip()
+    if strategy_name:
+        result["strategy_name"] = strategy_name
+
     if args.save_factor_dir:
         from quant_lib.factor_momentum import build_momentum
         save_dir = Path(args.save_factor_dir)
         save_dir.mkdir(parents=True, exist_ok=True)
-        name = f"momentum_{args.lookback}m_skip{args.skip}"
+        label = strategy_name if strategy_name else (args.factor if args.factor != "momentum" else "momentum")
+        safe_label = "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in label)
+        name = f"{safe_label}_{args.lookback}m_skip{args.skip}" if not strategy_name else safe_label
+        is_reversal = str(args.factor).lower() in ("reversal", "rev", "short_term_reversal")
         mom = build_momentum(
             crsp_path=crsp_path,
             start_year=args.start,
             end_year=args.end,
             lookback_months=args.lookback,
             skip_months=args.skip,
+            negate=is_reversal,
+            min_price=args.min_price,
         )
         if not mom.empty:
-            mom.to_parquet(save_dir / f"{name}.parquet", index=False)
+            factor_path = save_dir / f"{name}.parquet"
+            mom.to_parquet(factor_path, index=False)
+            result["factor_saved_path"] = str(factor_path)
     print(json.dumps(result, indent=2))
     return 0 if result.get("quintiles") else 1
 

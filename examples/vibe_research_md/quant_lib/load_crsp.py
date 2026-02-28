@@ -35,6 +35,10 @@ def load_crsp(
         df["mktcap"] = df["market_cap_month"]
     elif "mktcap" in df.columns and "market_cap_month" not in df.columns:
         df["market_cap_month"] = df["mktcap"]
+    if "close_price_month" in df.columns and "prc" not in df.columns:
+        df["prc"] = df["close_price_month"]
+    elif "prc" in df.columns and "close_price_month" not in df.columns:
+        df["close_price_month"] = df["prc"]
 
     if start_year is not None:
         df = df[df["year"] >= start_year]
