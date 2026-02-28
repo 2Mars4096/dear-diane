@@ -1,6 +1,7 @@
 import { useState, useMemo } from "react";
 import { useGraphStore } from "../store/useGraphStore";
 import type { DanNode } from "../types/graph";
+import { resolveGraphAtStack } from "../lib/graphAdapter";
 
 export default function PortMappingOverlay() {
   const layerStack = useGraphStore((s) => s.layerStack);
@@ -10,7 +11,9 @@ export default function PortMappingOverlay() {
   const mappings = useMemo(() => {
     if (!danGraph || layerStack.length === 0) return null;
     const parentEntry = layerStack[layerStack.length - 1];
-    const parentNode = danGraph.nodes.find((n) => n.id === parentEntry.nodeId);
+    const parentGraph = resolveGraphAtStack(danGraph, layerStack.slice(0, -1));
+    if (!parentGraph) return null;
+    const parentNode = parentGraph.nodes.find((n: { id: string }) => n.id === parentEntry.nodeId);
     if (!parentNode) return null;
     const d = parentNode as unknown as DanNode;
     if (d.node_type !== "composite") return null;

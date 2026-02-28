@@ -2,12 +2,15 @@ import { type EdgeProps, BaseEdge, getSmoothStepPath } from "@xyflow/react";
 import { useGraphStore } from "../store/useGraphStore";
 
 export default function AnimatedEdge({
+  id,
   sourceX,
   sourceY,
   targetX,
   targetY,
   sourcePosition,
   targetPosition,
+  sourceHandleId,
+  targetHandleId,
   style,
   markerEnd,
   source,
@@ -15,14 +18,27 @@ export default function AnimatedEdge({
 }: EdgeProps) {
   const nodeStatuses = useGraphStore((s) => s.nodeStatuses);
   const runStatus = useGraphStore((s) => s.runStatus);
+  const allEdges = useGraphStore((s) => s.edges);
+
+  const siblingEdgesFromSource = allEdges.filter((e) => e.source === source);
+  const sourceIndex = siblingEdgesFromSource.findIndex((e) => e.id === id);
+  const sourceCount = siblingEdgesFromSource.length;
+
+  const siblingEdgesToTarget = allEdges.filter((e) => e.target === target);
+  const targetIndex = siblingEdgesToTarget.findIndex((e) => e.id === id);
+  const targetCount = siblingEdgesToTarget.length;
+
+  const sourceOffset = sourceCount > 1 ? (sourceIndex - (sourceCount - 1) / 2) * 8 : 0;
+  const targetOffset = targetCount > 1 ? (targetIndex - (targetCount - 1) / 2) * 8 : 0;
 
   const [edgePath] = getSmoothStepPath({
     sourceX,
-    sourceY,
+    sourceY: sourceY + sourceOffset,
     targetX,
-    targetY,
+    targetY: targetY + targetOffset,
     sourcePosition,
     targetPosition,
+    borderRadius: 8,
   });
 
   const isActive =

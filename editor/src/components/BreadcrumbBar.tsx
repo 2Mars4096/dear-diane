@@ -1,4 +1,5 @@
 import { useGraphStore } from "../store/useGraphStore";
+import { MAX_DRILL_DEPTH } from "../lib/graphAdapter";
 
 export default function BreadcrumbBar() {
   const layerStack = useGraphStore((s) => s.layerStack);
@@ -24,6 +25,9 @@ export default function BreadcrumbBar() {
             {isLast ? (
               <span className="text-gray-700 font-medium">
                 {layer.nodeName || layer.graphKey}
+                {isLast && layerStack.length >= MAX_DRILL_DEPTH && (
+                  <span className="ml-1 text-[10px] text-gray-400" title="Maximum drill-in depth">⊘</span>
+                )}
               </span>
             ) : (
               <button

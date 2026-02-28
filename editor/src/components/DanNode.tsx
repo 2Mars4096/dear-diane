@@ -1,6 +1,8 @@
-import { memo, useState, useRef, useEffect } from "react";
+import { memo, useState, useRef, useEffect, useMemo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
 import { portHandleId } from "../lib/graphAdapter";
+import { orderPorts } from "../lib/portOrdering";
+import { computePortReorder } from "../lib/layout";
 import { useGraphStore } from "../store/useGraphStore";
 import { NodeIcon } from "../lib/nodeIcons";
 import type { DanNode, InputVariable } from "../types/graph";
@@ -37,6 +39,8 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   const updateNodeData = useGraphStore((s) => s.updateNodeData);
   const inputNodeValues = useGraphStore((s) => s.inputNodeValues);
   const setInputNodeValue = useGraphStore((s) => s.setInputNodeValue);
+  const allEdges = useGraphStore((s) => s.edges);
+  const allNodes = useGraphStore((s) => s.nodes);
   const validationErrors = useGraphStore((s) => s.validationErrors);
   const nodeUsage = useGraphStore((s) => s.nodeUsage);
   const nodeCosts = useGraphStore((s) => s.nodeCosts);
@@ -100,6 +104,11 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   }
 
   const iteration = nodeIterations[id];
+  const portReorderMap = useMemo(() => computePortReorder(allNodes, allEdges), [allNodes, allEdges]);
+  const myReorder = portReorderMap.get(id);
+  const orderedInputPorts = orderPorts(d.input_ports ?? [], allEdges, allNodes, id, "input", d.node_type, myReorder);
+  const orderedOutputPorts = orderPorts(d.output_ports ?? [], allEdges, allNodes, id, "output", d.node_type);
+
   const isBlackbox = !!(d as Record<string, unknown>).is_blackbox;
   const hasBodyGraph =
     (d.node_type === "while_loop" ||
@@ -211,7 +220,7 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
       {/* Body — port labels */}
       <div className="flex justify-between px-2 py-1.5 text-[11px] text-gray-600 gap-4">
         <div className="flex flex-col gap-0.5">
-          {(d.input_ports ?? []).map((p) => (
+          {orderedInputPorts.map((p) => (
             <div key={p.name} className="relative">
               <Handle
                 type="target"
@@ -224,7 +233,7 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
           ))}
         </div>
         <div className="flex flex-col gap-0.5 items-end">
-          {(d.output_ports ?? []).map((p) => {
+          {orderedOutputPorts.map((p) => {
             let handleColor = "!bg-gray-400";
             if (d.node_type === "gate") {
               if (p.name === "true" || p.name === "continue") handleColor = "!bg-green-400";

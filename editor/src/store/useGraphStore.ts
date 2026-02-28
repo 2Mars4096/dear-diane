@@ -26,6 +26,10 @@ import {
   EDGE_COLORS,
   injectLoopGroups,
   stripLoopGroups,
+  resolveGraphAtStack,
+  deepSetSubGraph,
+  MAX_DRILL_DEPTH,
+  type LayerStackEntry,
 } from "../lib/graphAdapter";
 import { PREDEFINED_AGENT_TEMPLATES } from "../lib/paletteTemplates";
 import { layoutGraph, needsAutoLayout } from "../lib/layout";
@@ -518,8 +522,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
           updated = { ...updated, metadata: restMeta as unknown as DanGraph["metadata"] };
         }
       } else {
-        const activeKey = layerStack[layerStack.length - 1].graphKey;
-        const subBase = (danGraph.sub_graphs?.[activeKey] ?? danGraph) as unknown as DanGraph;
+        const subBase = resolveGraphAtStack(danGraph, layerStack);
+        if (!subBase) {
+          get().addToast({ type: "error", message: "Cannot save — layer path invalid. Reset to root." });
+          const { nodes: rootNodes, edges: rootEdges } = danGraphToReactFlow(danGraph);
+          set({ layerStack: [], nodes: rootNodes, edges: rootEdges, loopGroups: [], savingGraph: false, selectedNodeId: null, selectedEdgeId: null });
+          return false;
+        }
         let updatedSub = reactFlowToDanGraph(cleanNodes, cleanEdges, subBase);
         if (loopGroups.length > 0) {
           updatedSub = { ...updatedSub, metadata: { ...updatedSub.metadata, loop_groups: loopGroups } };
@@ -528,10 +537,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
           const { loop_groups: _removed, ...restMeta } = meta;
           updatedSub = { ...updatedSub, metadata: restMeta as unknown as DanGraph["metadata"] };
         }
-        updated = {
-          ...danGraph,
-          sub_graphs: { ...danGraph.sub_graphs, [activeKey]: updatedSub as unknown as DanGraph },
-        };
+        updated = deepSetSubGraph(danGraph, layerStack, updatedSub);
       }
       await api.updateGraph(graphId, updated as unknown as Record<string, unknown>);
       set({ danGraph: updated, dirty: false });
@@ -1083,10 +1089,22 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const bodyGraphKey = (d as Record<string, unknown>).body_graph as string | undefined;
     const isBlackbox = (d as Record<string, unknown>).is_blackbox as boolean | undefined;
     if (!bodyGraphKey || isBlackbox) return;
-    const subGraph = danGraph.sub_graphs?.[bodyGraphKey];
+    if (layerStack.length >= MAX_DRILL_DEPTH) {
+      get().addToast({ type: "info", message: "Maximum drill-in depth reached" });
+      return;
+    }
+    const currentGraph = resolveGraphAtStack(danGraph, layerStack);
+    if (!currentGraph) {
+      set({ layerStack: [], selectedNodeId: null, selectedEdgeId: null });
+      const { nodes: rootNodes, edges: rootEdges } = danGraphToReactFlow(danGraph);
+      set({ nodes: rootNodes, edges: rootEdges, loopGroups: [] });
+      get().addToast({ type: "warning", message: "Navigation error — reset to root" });
+      return;
+    }
+    const subGraph = currentGraph.sub_graphs?.[bodyGraphKey] as unknown as DanGraph | undefined;
     if (!subGraph) return;
     const newStack = [...layerStack, { graphKey: bodyGraphKey, nodeId, nodeName: d.name }];
-    const sg = subGraph as unknown as DanGraph;
+    const sg = subGraph;
     const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(sg);
 
     if (d.node_type === "while_loop" || d.node_type === "for_each") {
@@ -1166,12 +1184,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const { danGraph, layerStack } = get();
     if (!danGraph || layerStack.length === 0) return;
     const newStack = layerStack.slice(0, -1);
-    let currentGraph: DanGraph;
-    if (newStack.length === 0) {
-      currentGraph = danGraph;
-    } else {
-      const lastKey = newStack[newStack.length - 1].graphKey;
-      currentGraph = (danGraph.sub_graphs?.[lastKey] as unknown as DanGraph) ?? danGraph;
+    const currentGraph = resolveGraphAtStack(danGraph, newStack);
+    if (!currentGraph) {
+      set({ layerStack: [], selectedNodeId: null, selectedEdgeId: null });
+      const { nodes: rootNodes, edges: rootEdges } = danGraphToReactFlow(danGraph);
+      set({ nodes: rootNodes, edges: rootEdges, loopGroups: [] });
+      get().addToast({ type: "warning", message: "Navigation error — reset to root" });
+      return;
     }
     const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(currentGraph);
     let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;
@@ -1196,8 +1215,14 @@ export const useGraphStore = create<GraphState>((set, get) => {
       targetGraph = danGraph;
     } else {
       newStack = layerStack.slice(0, index + 1);
-      const lastKey = newStack[newStack.length - 1].graphKey;
-      targetGraph = (danGraph.sub_graphs?.[lastKey] as unknown as DanGraph) ?? danGraph;
+      const resolved = resolveGraphAtStack(danGraph, newStack);
+      if (!resolved) {
+        newStack = [];
+        targetGraph = danGraph;
+        get().addToast({ type: "warning", message: "Navigation error — reset to root" });
+      } else {
+        targetGraph = resolved;
+      }
     }
     const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(targetGraph);
     let finalNodes = needsAutoLayout(rfNodes) ? layoutGraph(rfNodes, rfEdges) : rfNodes;

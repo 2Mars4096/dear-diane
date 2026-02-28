@@ -78,6 +78,19 @@ export function danGraphToReactFlow(graph: DanGraph): { nodes: Node[]; edges: Ed
     }
   }
 
+  const seenDataEdgePairs = new Set<string>();
+  for (const rfEdge of rfEdges) {
+    const danEdge = (rfEdge.data?.danEdge ?? {}) as Record<string, unknown>;
+    if ((danEdge.edge_type ?? "data") === "data" && rfEdge.label) {
+      const pairKey = `${rfEdge.source}::${rfEdge.target}`;
+      if (seenDataEdgePairs.has(pairKey)) {
+        rfEdge.label = undefined;
+      } else {
+        seenDataEdgePairs.add(pairKey);
+      }
+    }
+  }
+
   return { nodes: rfNodes, edges: rfEdges };
 }
 
@@ -265,6 +278,57 @@ export function stripLoopGroups(
           ? { ...e, hidden: false, data: { ...e.data, _groupHidden: undefined } }
           : e,
       ),
+  };
+}
+
+// -- Layer-stack resolution --------------------------------------------------
+
+export type LayerStackEntry = { graphKey: string; nodeId: string; nodeName?: string };
+
+export const MAX_DRILL_DEPTH = 3;
+
+/**
+ * Walk the layer stack to resolve the graph at a given depth.
+ * Returns null if any key is missing or depth exceeds MAX_DRILL_DEPTH.
+ */
+export function resolveGraphAtStack(
+  root: DanGraph,
+  stack: LayerStackEntry[],
+): DanGraph | null {
+  if (stack.length === 0) return root;
+  if (stack.length > MAX_DRILL_DEPTH) return null;
+  let current: DanGraph = root;
+  for (const entry of stack) {
+    const sub = current.sub_graphs?.[entry.graphKey] as unknown as DanGraph | undefined;
+    if (!sub) return null;
+    current = sub;
+  }
+  return current;
+}
+
+/**
+ * Immutable deep update: set a sub-graph at the depth indicated by the layer stack.
+ * Returns a new root DanGraph.
+ */
+export function deepSetSubGraph(
+  root: DanGraph,
+  stack: LayerStackEntry[],
+  updatedSub: DanGraph,
+): DanGraph {
+  if (stack.length === 0) return updatedSub;
+
+  const key = stack[0].graphKey;
+  const childGraph = (root.sub_graphs?.[key] as unknown as DanGraph) ?? root;
+  const updatedChild = stack.length === 1
+    ? updatedSub
+    : deepSetSubGraph(childGraph, stack.slice(1), updatedSub);
+
+  return {
+    ...root,
+    sub_graphs: {
+      ...root.sub_graphs,
+      [key]: updatedChild as unknown as DanGraph,
+    },
   };
 }
 

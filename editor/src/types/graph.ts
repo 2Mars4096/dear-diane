@@ -83,6 +83,8 @@ export interface GateNode extends NodeBase {
   gate_mode: "if_else" | "while";
   condition: string;
   max_iterations?: number;
+  state_schema?: Record<string, unknown> | null;
+  state_defaults?: Record<string, unknown> | null;
 }
 
 export interface WhileLoopNode extends NodeBase {
@@ -198,6 +200,7 @@ export interface EdgeBase {
 
 export interface DataEdge extends EdgeBase {
   edge_type: "data";
+  spread?: boolean;
 }
 
 export interface ControlEdge extends EdgeBase {
