@@ -565,55 +565,209 @@ async def _run_strategy_script(
 
     project_root = Path(__file__).resolve().parents[3]
     vibe_root = project_root / "examples" / "vibe_research_md"
+    safe_strategy_name = "".join(
+        ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in str(strategy_name or "custom")
+    )
+    script_saved_path = ""
+    script_save_error = ""
+
+    def _attach_script_metadata(payload: dict[str, Any]) -> dict[str, Any]:
+        if script_saved_path:
+            payload["script_saved_path"] = script_saved_path
+        if script_save_error:
+            payload["script_save_error"] = script_save_error
+        return payload
+
     for p in (project_root, vibe_root):
         if str(p) not in sys.path:
             sys.path.insert(0, str(p))
 
+    # Save generated strategy script before execution for reproducibility.
+    try:
+        save_script_dir = kwargs.get("save_script_dir") or kwargs.get("script_dir")
+        if not save_script_dir:
+            save_script_dir = project_root / "examples" / "vibe_research_md" / "output" / "scripts"
+        script_dir = Path(save_script_dir)
+        script_dir.mkdir(parents=True, exist_ok=True)
+        script_path = script_dir / f"{safe_strategy_name}.py"
+        script_path.write_text(str(code), encoding="utf-8")
+        script_saved_path = str(script_path)
+    except Exception as e:
+        script_save_error = str(e)
+
     try:
         from examples.vibe_research_md.quant_lib.config import CRSP_PATH, DATA_DIR
         from examples.vibe_research_md.quant_lib.load_crsp import load_crsp
+        from examples.vibe_research_md.quant_lib.load_compustat import load_compustat
         from examples.vibe_research_md.quant_lib.factor_schema import validate_factor_df
         from examples.vibe_research_md.quant_lib.backtest import run_backtest_from_factor_df
         import pandas as pd
         import numpy as np
     except ImportError as e:
-        return {"quintiles": [], "error": f"quant_lib import failed: {e}"}
+        return _attach_script_metadata({"quintiles": [], "error": f"quant_lib import failed: {e}"})
+
+    def _normalize_compustat_param_aliases(raw: dict[str, Any]) -> dict[str, Any]:
+        alias = {
+            "at": "atq",
+            "ceq": "ceqq",
+            "seq": "seqq",
+            "sale": "saleq",
+            "revt": "revtq",
+            "ib": "ibq",
+            "ni": "niq",
+            "csho": "cshoq",
+            "mkvalt": "mkvaltq",
+        }
+        out = dict(raw)
+        for key in ("compustat_book_equity_field", "numerator_field", "denominator_field", "asset_field"):
+            val = out.get(key)
+            if isinstance(val, str):
+                out[key] = alias.get(val.lower(), val)
+        return out
+
+    original_merge_asof = pd.merge_asof
+
+    def _normalize_asof_tolerance(val: Any) -> Any:
+        """Normalize merge_asof tolerance to timedelta-like when possible.
+
+        Generated scripts sometimes pass `pd.DateOffset(months=...)`, which is not
+        accepted by pandas merge_asof with datetime64 keys. Convert to a concrete
+        Timedelta approximation so joins proceed instead of hard-failing.
+        """
+        if val is None:
+            return None
+        if isinstance(val, pd.DateOffset):
+            try:
+                base = pd.Timestamp("2000-01-01")
+                td = (base + val) - base
+                if isinstance(td, pd.Timedelta):
+                    return abs(td)
+            except Exception:
+                pass
+            return None
+        return val
+
+    def safe_merge_asof(left, right, on, by=None, **kw):
+        """merge_asof that auto-sorts and repairs common tolerance incompatibilities."""
+        sort_cols = [on]
+        if by is not None:
+            if isinstance(by, (list, tuple)):
+                sort_cols = [on] + list(by)
+            else:
+                sort_cols = [on, by]
+        left = left.sort_values(sort_cols).reset_index(drop=True)
+        right = right.sort_values(sort_cols).reset_index(drop=True)
+
+        if "tolerance" in kw:
+            tol = _normalize_asof_tolerance(kw.get("tolerance"))
+            if tol is None:
+                kw.pop("tolerance", None)
+            else:
+                kw["tolerance"] = tol
+
+        try:
+            return original_merge_asof(left, right, on=on, by=by, **kw)
+        except Exception as exc:
+            # Last-chance compatibility fallback for generated code variance.
+            if "tolerance" in kw and "incompatible tolerance" in str(exc).lower():
+                kw.pop("tolerance", None)
+                return original_merge_asof(left, right, on=on, by=by, **kw)
+            raise
 
     crsp_path = str(DATA_DIR / "crsp_security_month_returns.csv.gz")
     if data_dir:
         crsp_path = str(Path(data_dir) / "crsp_security_month_returns.csv.gz")
-    params = params or {}
+    params = _normalize_compustat_param_aliases(params or {})
+    raw_min_price = kwargs.get("min_price")
+    if raw_min_price is None and isinstance(params, dict):
+        raw_min_price = params.get("min_price_filter", params.get("min_price"))
+    try:
+        min_price = float(raw_min_price) if raw_min_price is not None else 1.0
+    except (TypeError, ValueError):
+        min_price = 1.0
 
     namespace = {
         "pd": pd,
         "np": np,
         "Path": Path,
         "load_crsp": load_crsp,
+        "load_compustat": load_compustat,
+        "safe_merge_asof": safe_merge_asof,
         "CRSP_PATH": crsp_path,
         "build_factor": None,
     }
 
-    exec_out = execute_python(code, namespace, include_namespace=True)
-    if exec_out.get("error"):
-        return {"quintiles": [], "error": f"Strategy script failed to compile/run: {exec_out['error']}"}
-
-    build_factor = exec_out.get("namespace", {}).get("build_factor")
-    if not callable(build_factor):
-        return {"quintiles": [], "error": "Code must define build_factor(crsp_path, start_year, end_year, **params) -> pd.DataFrame"}
-
+    pd.merge_asof = safe_merge_asof
     try:
-        factor_df = build_factor(crsp_path, start_year, end_year, **params)
-    except Exception as e:
-        return {"quintiles": [], "error": f"build_factor failed: {e}"}
+        exec_out = execute_python(code, namespace, include_namespace=True)
+        if exec_out.get("error"):
+            return _attach_script_metadata({
+                "quintiles": [],
+                "error": f"Strategy script failed to compile/run: {exec_out['error']}",
+            })
+
+        build_factor = exec_out.get("namespace", {}).get("build_factor")
+        if not callable(build_factor):
+            return _attach_script_metadata({
+                "quintiles": [],
+                "error": "Code must define build_factor(crsp_path, start_year, end_year, **params) -> pd.DataFrame",
+            })
+
+        import contextlib
+        import io
+
+        bf_stdout = io.StringIO()
+        bf_stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(bf_stdout), contextlib.redirect_stderr(bf_stderr):
+                factor_df = build_factor(crsp_path, start_year, end_year, **params)
+        except Exception as e:
+            script_output = (bf_stdout.getvalue() + "\n" + bf_stderr.getvalue()).strip()
+            msg = f"build_factor failed: {e}"
+            if script_output:
+                msg += f" | script_output: {script_output[:500]}"
+            return _attach_script_metadata({"quintiles": [], "error": msg})
+    finally:
+        pd.merge_asof = original_merge_asof
+
+    build_factor_log = (bf_stdout.getvalue() + "\n" + bf_stderr.getvalue()).strip()
+    if factor_df is None or getattr(factor_df, "empty", True):
+        msg = "build_factor returned empty factor dataframe"
+        if build_factor_log:
+            msg += f" | script_output: {build_factor_log[:500]}"
+        return _attach_script_metadata({"quintiles": [], "error": msg})
 
     valid, err = validate_factor_df(factor_df)
     if not valid:
-        return {"quintiles": [], "error": f"Invalid factor format: {err}"}
+        return _attach_script_metadata({"quintiles": [], "error": f"Invalid factor format: {err}"})
+
+    factor_saved_path = ""
+    factor_save_error = ""
+    try:
+        save_factor_dir = kwargs.get("save_factor_dir") or kwargs.get("out_dir")
+        if not save_factor_dir:
+            save_factor_dir = project_root / "examples" / "vibe_research_md" / "output" / "factors"
+        save_dir = Path(save_factor_dir)
+        save_dir.mkdir(parents=True, exist_ok=True)
+        factor_path = save_dir / f"{safe_strategy_name}.parquet"
+        factor_df.to_parquet(factor_path, index=False)
+        factor_saved_path = str(factor_path)
+    except Exception as e:
+        factor_save_error = str(e)
 
     out = run_backtest_from_factor_df(
-        factor_df, return_series=return_series, strategy_name=strategy_name
+        factor_df,
+        return_series=return_series,
+        strategy_name=strategy_name,
+        crsp_path=crsp_path,
+        min_price=min_price,
     )
-    return out
+    if build_factor_log:
+        out["build_factor_log"] = build_factor_log[:2000]
+    out["factor_saved_path"] = factor_saved_path
+    if factor_save_error:
+        out["factor_save_error"] = factor_save_error
+    return _attach_script_metadata(out)
 
 
 async def _get_department_state(**kwargs: Any) -> dict[str, Any]:
@@ -679,11 +833,20 @@ async def _run_backtest(
 ) -> dict[str, Any]:
     """Run factor backtest using quant_lib (CRSP data from auto-quant)."""
     factor = factor_type or factor
+    strategy_name = ""
+    raw_min_price = kwargs.get("min_price", kwargs.get("min_price_filter", 1.0))
     if isinstance(item, dict):
         lookback_months = int(item.get("lookback", lookback_months))
         skip_months = int(item.get("skip", skip_months))
         start_year = int(item.get("start_year", start_year))
         end_year = int(item.get("end_year", end_year))
+        factor = item.get("factor_type", factor)
+        strategy_name = str(item.get("name", "")).strip()
+        raw_min_price = item.get("min_price_filter", item.get("min_price", raw_min_price))
+    try:
+        min_price = float(raw_min_price)
+    except (TypeError, ValueError):
+        min_price = 1.0
     project_root = Path(__file__).resolve().parents[3]
     script = project_root / "examples" / "vibe_research_md" / "quant_lib" / "run_backtest.py"
     if not script.exists():
@@ -696,7 +859,10 @@ async def _run_backtest(
         "--end", str(end_year),
         "--lookback", str(lookback_months),
         "--skip", str(skip_months),
+        "--min-price", str(min_price),
     ]
+    if strategy_name:
+        cmd.extend(["--name", strategy_name])
     if return_series:
         cmd.append("--series")
     if data_dir:
@@ -716,7 +882,10 @@ async def _run_backtest(
         out = stdout.decode("utf-8", errors="replace")
         if proc.returncode != 0:
             return {"quintiles": [], "error": stderr.decode("utf-8", errors="replace")[:500]}
-        return json.loads(out)
+        payload = json.loads(out)
+        if strategy_name and isinstance(payload, dict):
+            payload["strategy_name"] = strategy_name
+        return payload
     except asyncio.TimeoutError:
         return {"quintiles": [], "error": "Backtest timed out after 120s"}
     except json.JSONDecodeError as e:
@@ -993,7 +1162,7 @@ async def delete_graph(graph_id: str):
     return {"graph_id": graph_id, "status": "deleted"}
 
 
-_applied_mutation_keys: set[str] = set()
+_applied_mutation_keys: set[tuple[str, str]] = set()
 _MAX_IDEMPOTENCY_KEYS = 1000
 
 
@@ -1008,7 +1177,8 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
         data = migrate_graph(data)
 
     if req.idempotency_key:
-        if req.idempotency_key in _applied_mutation_keys:
+        idem_key = (graph_id, req.idempotency_key)
+        if idem_key in _applied_mutation_keys:
             return {
                 "success": True,
                 "new_graph": data,
@@ -1026,9 +1196,8 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
     revision = compute_graph_revision(data)
     result = GraphMutator().apply(data, plan, current_revision=revision)
 
-    mutation_metrics.record_apply(result.success)
-
     if not result.success:
+        mutation_metrics.record_apply(False)
         resp: dict[str, Any] = {
             "success": False,
             "new_graph": None,
@@ -1046,6 +1215,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
         try:
             graph = Graph.model_validate(result.new_graph)
         except Exception as exc:
+            mutation_metrics.record_apply(False)
             mutation_metrics.record_validation(False)
             return {
                 "success": False,
@@ -1066,6 +1236,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
         mutation_metrics.record_validation(len(fatal) == 0)
 
         if fatal:
+            mutation_metrics.record_apply(False)
             return {
                 "success": False,
                 "new_graph": None,
@@ -1073,10 +1244,11 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
                 "stale_plan": False,
             }
 
+        mutation_metrics.record_apply(True)
         _graph_store.save_graph(graph_id, result.new_graph)
 
         if req.idempotency_key:
-            _applied_mutation_keys.add(req.idempotency_key)
+            _applied_mutation_keys.add((graph_id, req.idempotency_key))
             if len(_applied_mutation_keys) > _MAX_IDEMPOTENCY_KEYS:
                 _applied_mutation_keys.pop()
 
@@ -1088,10 +1260,11 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
             "stale_plan": False,
         }
     else:
+        mutation_metrics.record_apply(True)
         _graph_store.save_graph(graph_id, result.new_graph)
 
         if req.idempotency_key:
-            _applied_mutation_keys.add(req.idempotency_key)
+            _applied_mutation_keys.add((graph_id, req.idempotency_key))
             if len(_applied_mutation_keys) > _MAX_IDEMPOTENCY_KEYS:
                 _applied_mutation_keys.pop()
 
