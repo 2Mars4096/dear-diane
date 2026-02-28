@@ -109,6 +109,8 @@ result = {"total": total, "count": len(items)}
 
 **Scope:** Input port values are injected as local variables. The code must set `result` (dict for multi-port output, or scalar for single `result` port).
 
+**Port defaults:** Optional input ports (`required=False`) with a `json_schema` type receive type-appropriate defaults when not wired: `array` → `[]`, `object` → `{}`, `number`/`integer` → `0`, `string` → `""`, `boolean` → `False`. An `inputs` dict is also injected so code can use `inputs.get("field", fallback)`.
+
 ### 3c. Tool Operator
 
 Dispatches to a registered async function via `ToolRegistry`.
@@ -261,6 +263,16 @@ wf.context_edge(
     context_key="shared_memory",
     mode=ContextMode.WRITE,                 # READ, WRITE, or APPEND
 )
+```
+
+### 4e. Spread Edges
+
+A data edge with `spread=True` destructures a source dict into individual target input port values. The target "landing port" still receives the full dict. Explicit scalar edges take precedence over spread fields.
+
+```python
+wf.edge(merge["state"], governor["state"], spread=True)
+# or shorthand:
+wf.spread_edge(merge["state"], governor["state"])
 ```
 
 ---
@@ -717,7 +729,7 @@ dan-serve
 
 | `edge_type` | Builder method | Purpose |
 |---|---|---|
-| `data` | `wf.edge()`, f-string, `>>` | Schema-validated data flow |
+| `data` | `wf.edge()`, `wf.spread_edge()`, f-string, `>>` | Schema-validated data flow (optional `spread=True` for dict destructuring) |
 | `control` | `wf.control_edge()` | Conditional routing |
 | `context` | `wf.context_edge()` | Shared state read/write |
 
@@ -848,6 +860,32 @@ with report_wf.for_each("sections", items=planner["sections"]) as body:
 
 See `examples/equity_research.py` for a full 3-level example using all edge types.
 
+### 5e. Loop-Scoped State (GateNode)
+
+`GateNode` (while mode) supports optional `state_schema` and `state_defaults` for automatic loop-scoped state management:
+
+```python
+gate = wf.gate(
+    "iterate",
+    gate_mode="while",
+    condition="counter < 5",
+    state_schema={"counter": {"type": "integer"}, "results": {"type": "array"}},
+    state_defaults={"counter": 0, "results": []},
+)
+```
+
+When `state_schema` is present, the engine maintains a state bag scoped to the loop via `LocalStateManager`. Body nodes automatically receive state fields as inputs and their outputs matching `state_schema` keys are written back. The gate condition evaluates against scope fields directly — no manual state-threading edges or unpack/repack code nodes needed.
+
+Also available on the deprecated `wf.while_loop(... state_schema={...}, state_defaults={...})`.
+
+**Markdown flow syntax:**
+
+```
+orchestrator | loop(body_agent, until: "done", max: 5, state: '{"counter": {"type": "integer"}}', defaults: '{"counter": 0}')
+```
+
+The `state` and `defaults` kwargs accept JSON strings that map to `state_schema` and `state_defaults` on the generated `GateNode`.
+
 ### Referencing Composite Node Outputs
 
 When wiring edges from `for_each` or `while_loop` nodes, create a `NodeRef` manually:
@@ -861,7 +899,58 @@ wf.edge(ref["results"], downstream["input"])
 
 ---
 
-## 12. Import Map
+## 12. Workflow Generation Playbook
+
+Use this when an LLM is asked to generate workflow markdown (`workflow.md`, agent `.md` files) or Python builder scripts.
+
+### 12a. Non-Negotiable Rules
+
+1. **Make ports explicit and typed.**
+   - In markdown agents, always include `> Accepts:` / `> Returns:` with concrete types.
+   - In Python builder code, prefer explicit `input_ports` / `output_ports` with `json_schema` for non-trivial nodes.
+2. **Treat compiler warnings as failures during generation.**
+   - Do not accept outputs that rely on auto-wiring fallback or untyped edges.
+   - Regenerate until `validate_graph()` has no fatal issues and no schema-safety warnings.
+3. **Use explicit gate ports for loop routing.**
+   - For while-style loops, wire `gate["continue"]` and `gate["done"]` explicitly.
+   - Do **not** rely on shorthand chaining (`>>`) for gate-loop control edges.
+4. **Prefer deterministic contracts over implicit behavior.**
+   - Stable node IDs, stable artifact names, stable output keys.
+   - No hidden assumptions about default ports in critical paths.
+
+### 12b. Markdown Authoring Guidance
+
+- **Flow lines:** Use explicit `.port` syntax whenever there is branching, merging, or similarly named ports.
+- **Loop semantics:** `loop(body, until: "...")` means *stop when condition is true*.
+- **Loop state:** When needed, include `state:` and `defaults:` JSON strings in `loop(...)`.
+- **ForEach bodies:** If body logic has multiple steps, wrap it as a composite agent and use `each(composite_body, parallel: N)`.
+- **Context-heavy workflows:** Keep a Python/JSON canonical source if you depend on context/control edges; markdown decompilation currently prioritizes data-flow readability over perfect round-trip for those edge types.
+
+### 12c. Python Builder Guidance
+
+- Build nodes first, then wire explicit edges (`wf.edge(...)`) for critical paths.
+- Use `wf.gate(..., gate_mode="if_else"|"while")` instead of deprecated aliases.
+- Avoid relying on inferred defaults for complex composites; provide mappings and ports explicitly.
+- For imported workflows (`import_workflow`), verify outer port schemas/mappings after import.
+
+### 12d. Script Generation Guidance (Code/Tool Nodes)
+
+- Generated code should be deterministic and side-effect aware.
+- Always return a structured `result` dict with stable keys.
+- Capture and propagate diagnostics (`stdout`, `stderr`, explicit error fields).
+- Persist generated scripts/artifacts before execution when reproducibility matters.
+
+### 12e. Recommended Generation Loop
+
+1. Generate markdown or builder script.
+2. Compile to `Graph`.
+3. Validate (`validate_graph`).
+4. Run a tiny smoke execution on representative inputs.
+5. (If markdown) decompile/round-trip check before shipping.
+
+---
+
+## 13. Import Map
 
 ```python
 # Builder
