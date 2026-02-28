@@ -53,12 +53,14 @@
 ## Phase 4 — Core Hardening
 > Make existing nodes robust and the platform practically usable. Fill gaps that prevent real workflows from running reliably.
 
-- [x] [7-core-hardening](plans/7-core-hardening.md) — retry/fallback, multi-provider LLM, built-in tools, templates, observability
+- [ ] [7-core-hardening](plans/7-core-hardening.md) — retry/fallback, multi-provider LLM, built-in tools, templates, observability, node state simplification
   - [x] [7-1-runtime-reliability](plans/7-1-runtime-reliability.md) — `RetryPolicy` model on `NodeBase`, ToolExecutor retry/backoff, fallback model, halt semantics, concurrency audit
   - [x] [7-2-multi-provider-llm](plans/7-2-multi-provider-llm.md) — provider registry (OpenAI, Anthropic, Google), per-node model dispatch, key management, cost table
   - [x] [7-3-built-in-tools](plans/7-3-built-in-tools.md) — `dan.tools` package (11 tools: file, web, shell, PDF, utility), auto-registration, ACI quality
   - [x] [7-4-templates-observability](plans/7-4-templates-observability.md) — 5 workflow templates, per-node token/cost display, LogPanel enhancements
   - [ ] [7-5-general-tool-design](plans/7-5-general-tool-design.md) — Generic run_python tool, deprecate plot_backtest/save_grid_csv; agent-generated code
+  - [ ] [7-6-node-state-simplification](plans/7-6-node-state-simplification.md) — Loop-scoped state bag, code node port defaults, struct (spread) edges; eliminate state-threading boilerplate
+  - [ ] [7-7-editor-navigation-layout-hardening](plans/7-7-editor-navigation-layout-hardening.md) — Nested drill-in/out/save fix (depth-3 cap), deterministic port ordering (logic+rules), edge routing optimization
 
 ## Phase 5 — Markdown Agent Format
 > A third authoring surface alongside the Python builder DSL and the visual editor. One `.md` per agent (frontmatter + natural language), one workflow `.md` to wire them. All three surfaces compile to the same `dan_graph_v1` JSON and coexist — markdown is the most accessible and LLM-generatable format.
@@ -148,6 +150,8 @@
 - [ ] Loop as context manager — loops manage what context feeds back, not just control flow. Feedback selectors filter what flows from body back to condition.
 
 ## Backlog (unphased)
+- [ ] Core node/workflow API hardening follow-up (from 2026-02-27 review): fix while-gate default chain/f-string output port behavior, align ContextEdge read permission validation with runtime target-side semantics, make markdown loop decompile/compile round-trip lossless (`until` inversion + state/defaults), and add strict mode for flow-parse/auto-wire warnings.
+- [ ] **Async loop design** — Orchestrator runs independently with access to current progress and can emit commands anytime; departments work in tandem (parallel, no cross-deps). Today: orchestrator runs once per iteration at the start, then all depts run; iterations are strictly sequential. Target: orchestrator as long-running/streaming process that pushes work to departments as they become free, or event-driven model where orchestrator and depts can overlap.
 - [ ] NL mutation: LLM-in-the-loop CI variant — feed real NL prompts to chat endpoint with test model, check output plan quality (report-only, non-blocking). From 10-8 task 9-4.
 - [ ] NL mutation: capture 3-5 day baseline on `main` via `GET /api/metrics/mutations` before evaluating hardening impact. From 10-8 task 11-2.
 - [ ] NL mutation: set sprint acceptance targets (`apply_success_rate >= 85%`, `post_validate_pass_rate >= 99%`, `avg_user_turns_to_success <= 2.0`) once baseline is collected. From 10-8 task 11-3.
@@ -157,9 +161,21 @@
 - [ ] Coding assistant proof-of-concept — build Cursor-like agent mode as a DAN graph (~15 node types, ReAct while-loop + tool operators). Validate Ask/Agent/Debug/Plan modes as graph templates.
 - [ ] science-cursor rebuild — extract scholar engines as DAN agents. Build PaperOrchestrator as a DAN network. VS Code extension as thin rendering client.
 - [ ] Copy selection to new workflow — lasso/shift-click, paste into new tab or blank template. Extract subgraph as standalone reusable workflow.
-- [ ] Vibe research example (`examples/vibe_research_md/`) — multi-dept workflow, run_multi_dept.py. Design: WORKFLOW.md.
+- [x] Vibe research example (`examples/vibe_research_md/`) — multi-dept workflow, run_multi_dept.py. Design: WORKFLOW.md.
   - [x] Debug run-input propagation in loop path (InputNode + while-gate continue scheduling)
   - [x] Fix custom strategy `KeyError: ['ret']` by normalizing CRSP loader output contract
   - [x] Remove obsolete legacy strategy-creation files from example folder
   - [x] Fix checkpoint circular-reference crash in custom strategy tool output
   - [x] Expand code sandbox builtins (`iter`/`next`) for generated strategy scripts
+  - [x] v2 rewrite: fixed 6 departments, state_schema loop state, orchestrator dynamic themes/halt
+  - [x] Normalize state_schema key convention (flat key→schema map)
+  - [x] Generate per-department plots inside the department pipeline (`bug_fixer`) immediately after backtest output is available
+  - [x] Harden FUND custom strategy execution (`run_strategy_script`): safe `merge_asof`, Compustat alias normalization, and factor parquet persistence for custom strategies
+  - [x] Serialize department execution one-by-one (MOM→REV→FUND) and update tracking results immediately after each backtest
+  - [x] Make `max_factors` cap attempts (not only successful results), align builtin `strategy_name` with department IDs, and persist immediate result JSON snapshots in `output/results/`
+  - [x] Align department composite output contract: `save_tracking.result` now passes through backtest/plot fields required by downstream `merge`/governor
+  - [x] Handle generated `merge_asof(tolerance=pd.DateOffset(...))` incompatibility in custom strategy runtime to avoid FUND build failures
+  - [x] Isolate `skip` branch from `bug_fixer` gate wiring so normal department runs still execute immediate plotting
+  - [x] Enforce CRSP formation-month minimum price filter (`|price| >= 1`) across builtin and custom backtests
+  - [x] Persist generated custom strategy scripts before execution (`output/scripts/{strategy}.py`) and pass script paths through department outputs
+  - [x] Capture generated `build_factor` stdout/stderr and fail fast on empty factor outputs to avoid silent “factor-only/no-plot” runs
