@@ -37,6 +37,7 @@ class DataEdge(EdgeBase):
     """
 
     edge_type: Literal["data"] = "data"
+    spread: bool = False
 
 
 class ControlEdge(EdgeBase):

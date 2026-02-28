@@ -311,6 +311,8 @@ class WorkflowBuilder:
         condition: str,
         gate_mode: str = "if_else",
         max_iterations: int = 10,
+        state_schema: dict[str, Any] | None = None,
+        state_defaults: dict[str, Any] | None = None,
         name: str | None = None,
         description: str = "",
         input_ports: list[dict[str, Any]] | None = None,
@@ -326,6 +328,10 @@ class WorkflowBuilder:
             "gate_mode": gate_mode,
             "max_iterations": max_iterations,
         }
+        if state_schema is not None:
+            kwargs["state_schema"] = state_schema
+        if state_defaults is not None:
+            kwargs["state_defaults"] = state_defaults
         pn = _PendingNode(
             id=node_id,
             node_type="gate",
@@ -824,7 +830,7 @@ class WorkflowBuilder:
 
     # ── Explicit edge wiring ───────────────────────────────────────
 
-    def edge(self, source: PortRef, target: PortRef) -> None:
+    def edge(self, source: PortRef, target: PortRef, *, spread: bool = False) -> None:
         """Explicitly wire a source port to a target port."""
         self._edges.append(_PendingEdge(
             source_node_id=source.node_id,
@@ -832,7 +838,12 @@ class WorkflowBuilder:
             target_node_id=target.node_id,
             target_port=target.port_name,
             edge_type="data",
+            spread=spread,
         ))
+
+    def spread_edge(self, source: PortRef, target: PortRef) -> None:
+        """Shorthand for ``self.edge(source, target, spread=True)``."""
+        return self.edge(source, target, spread=True)
 
     def control_edge(
         self,

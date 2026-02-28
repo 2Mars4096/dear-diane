@@ -64,6 +64,7 @@ class AddEdge(BaseModel):
     source_port: str
     target_id: str
     target_port: str
+    spread: bool = False
 
 
 class RemoveEdge(BaseModel):
@@ -168,8 +169,13 @@ _OP_SORT_ORDER: dict[str, int] = {
 # ---------------------------------------------------------------------------
 
 
-def _default_ports(node_type: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return default (input_ports, output_ports) for a node type."""
+def _default_ports(
+    node_type: str, config: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Return default (input_ports, output_ports) for a node type.
+
+    For ``gate`` nodes, the output ports depend on ``gate_mode`` in *config*.
+    """
     table: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {
         "llm_operator": (
             [{"name": "input", "schema": {}, "required": False}],
@@ -190,6 +196,10 @@ def _default_ports(node_type: str) -> tuple[list[dict[str, Any]], list[dict[str,
         "gate": (
             [{"name": "input", "schema": {}, "required": False}],
             [{"name": "true", "schema": {}}, {"name": "false", "schema": {}}],
+        ),
+        "gate__while": (
+            [{"name": "input", "schema": {}, "required": False}],
+            [{"name": "continue", "schema": {}}, {"name": "done", "schema": {}}],
         ),
         "while_loop": (
             [{"name": "input", "schema": {}, "required": False}],
@@ -232,7 +242,10 @@ def _default_ports(node_type: str) -> tuple[list[dict[str, Any]], list[dict[str,
         [{"name": "input", "schema": {}, "required": False}],
         [{"name": "output", "schema": {}}],
     )
-    inputs, outputs = table.get(node_type, fallback)
+    lookup_key = node_type
+    if node_type == "gate" and config and config.get("gate_mode") == "while":
+        lookup_key = "gate__while"
+    inputs, outputs = table.get(lookup_key, fallback)
     return copy.deepcopy(inputs), copy.deepcopy(outputs)
 
 
@@ -441,7 +454,7 @@ def _pattern_review_loop(params: dict[str, Any]) -> list[dict[str, Any]]:
     writer_name = params.get("writer_name", "Writer")
     reviewer_name = params.get("reviewer_name", "Reviewer")
     gate_name = params.get("gate_name", "Review Gate")
-    condition = params.get("condition", "needs_revision == true")
+    condition = params.get("condition", "needs_revision == True")
     max_iter = params.get("max_iterations", 5)
     return [
         {
@@ -483,7 +496,7 @@ def _pattern_review_loop(params: dict[str, Any]) -> list[dict[str, Any]]:
         {
             "op": "add_edge",
             "source_id": _slugify(gate_name),
-            "source_port": "true",
+            "source_port": "continue",
             "target_id": _slugify(writer_name),
             "target_port": "input",
         },
@@ -665,6 +678,11 @@ class GraphMutator:
         indexed.sort(key=lambda pair: _OP_SORT_ORDER.get(pair[1].op, 99))
         return indexed
 
+    _STRUCTURAL_OPS = frozenset({
+        "add_node", "remove_node", "add_edge", "remove_edge",
+        "edit_edge", "replace_subgraph", "expand_pattern",
+    })
+
     def _apply_all_or_nothing(
         self,
         working: dict[str, Any],
@@ -672,6 +690,7 @@ class GraphMutator:
     ) -> MutationResult:
         errors: list[OperationError] = []
         applied: list[int] = []
+        has_structural = False
 
         for orig_idx, op in sorted_ops:
             err = self._apply_op(working, op)
@@ -679,6 +698,8 @@ class GraphMutator:
                 errors.append(OperationError(op_index=orig_idx, op_type=op.op, message=err))
             else:
                 applied.append(orig_idx)
+                if op.op in self._STRUCTURAL_OPS:
+                    has_structural = True
 
         if errors:
             return MutationResult(success=False, new_graph=None, errors=errors)
@@ -694,7 +715,8 @@ class GraphMutator:
                 ],
             )
 
-        _recompute_entry_exit_points(working)
+        if has_structural:
+            _recompute_entry_exit_points(working)
         return MutationResult(success=True, new_graph=working, applied_ops=applied)
 
     def _apply_partial(
@@ -704,6 +726,7 @@ class GraphMutator:
     ) -> MutationResult:
         errors: list[OperationError] = []
         applied: list[int] = []
+        has_structural = False
 
         for orig_idx, op in sorted_ops:
             snapshot = copy.deepcopy(working)
@@ -714,8 +737,11 @@ class GraphMutator:
                 working.update(snapshot)
             else:
                 applied.append(orig_idx)
+                if op.op in self._STRUCTURAL_OPS:
+                    has_structural = True
 
-        _recompute_entry_exit_points(working)
+        if has_structural:
+            _recompute_entry_exit_points(working)
         return MutationResult(
             success=len(errors) == 0,
             new_graph=working,
@@ -755,9 +781,9 @@ class GraphMutator:
         existing_ids = _node_ids(graph)
         node_id = _generate_node_id(op.name, existing_ids)
 
-        input_ports, output_ports = _default_ports(op.node_type)
         config = _default_node_config(op.node_type)
         config.update(op.config)
+        input_ports, output_ports = _default_ports(op.node_type, config)
 
         node: dict[str, Any] = {
             "id": node_id,
@@ -841,6 +867,8 @@ class GraphMutator:
             "ui": {},
             "metadata": {},
         }
+        if op.edge_type == "data" and op.spread:
+            edge["spread"] = True
         graph.setdefault("edges", []).append(edge)
         return None
 

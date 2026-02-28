@@ -81,6 +81,7 @@ class ExecutionContext:
         self.layer_path = layer_path
         self.provider_registry = provider_registry
         self.embedding_registry = embedding_registry
+        self.active_loop_scope_id: str | None = None
 
     # -- 5-3: Rich logging -----------------------------------------------------
     async def emit_event(

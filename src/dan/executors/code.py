@@ -20,6 +20,11 @@ _ALLOWED_BUILTINS: dict[str, Any] = {
     "__import__": builtins.__import__,
     "NameError": NameError,
     "Exception": Exception,
+    "ValueError": ValueError,
+    "TypeError": TypeError,
+    "KeyError": KeyError,
+    "IndexError": IndexError,
+    "AttributeError": AttributeError,
     "json": __import__("json"),
     "Path": __import__("pathlib").Path,
     "len": len,
@@ -55,6 +60,24 @@ _ALLOWED_BUILTINS: dict[str, Any] = {
 }
 
 _runner = SandboxRunner()
+
+
+def _default_for_schema(json_schema: dict | None) -> Any:
+    """Return a type-appropriate default for an optional port based on its JSON schema."""
+    if not json_schema:
+        return None
+    schema_type = json_schema.get("type")
+    if schema_type == "array":
+        return []
+    if schema_type == "object":
+        return {}
+    if schema_type in ("number", "integer"):
+        return 0
+    if schema_type == "string":
+        return ""
+    if schema_type == "boolean":
+        return False
+    return None
 
 
 class CodeExecutor:
@@ -96,6 +119,10 @@ class CodeExecutor:
             )
 
         namespace: dict[str, Any] = {"__builtins__": _ALLOWED_BUILTINS}
+        for port in node.input_ports:
+            if port.name not in inputs and not port.required:
+                inputs[port.name] = _default_for_schema(port.json_schema)
+        namespace["inputs"] = dict(inputs)
         namespace.update(inputs)
 
         stdout_capture = io.StringIO()
@@ -159,6 +186,10 @@ class CodeExecutor:
                 "memory_mb": config.memory_mb,
             },
         )
+
+        for port in node.input_ports:
+            if port.name not in inputs and not port.required:
+                inputs[port.name] = _default_for_schema(port.json_schema)
 
         sandbox_result, structured_output = await _runner.run(
             code=node.code, config=config, inputs=inputs,

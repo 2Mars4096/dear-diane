@@ -64,9 +64,14 @@ class PortDataStore:
         for edge in graph.edges_to(node_id):
             if isinstance(edge, DataEdge):
                 if self.has(edge.source_node_id, edge.source_port):
-                    inputs[edge.target_port] = self.get(
-                        edge.source_node_id, edge.source_port
-                    )
+                    value = self.get(edge.source_node_id, edge.source_port)
+                    if edge.spread and isinstance(value, dict):
+                        inputs[edge.target_port] = value
+                        for k, v in value.items():
+                            if k not in inputs:
+                                inputs[k] = v
+                    else:
+                        inputs[edge.target_port] = value
         return inputs
 
     def snapshot(self) -> dict[str, Any]:

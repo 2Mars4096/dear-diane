@@ -24,6 +24,15 @@ from dan.models.nodes import NodeBase
 from dan.models.ports import OutputPort
 
 
+def _normalize_state_schema(schema: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Accept both full JSON Schema and flat key→schema map; always return flat."""
+    if schema is None:
+        return None
+    if schema.get("type") == "object" and "properties" in schema:
+        return schema["properties"]
+    return schema
+
+
 # ---------------------------------------------------------------------------
 # Input node — pre-run configuration surface for workflow inputs
 # ---------------------------------------------------------------------------
@@ -88,6 +97,8 @@ class GateNode(NodeBase):
         ge=1,
         description="Max loop iterations (while mode only)",
     )
+    state_schema: dict[str, Any] | None = None
+    state_defaults: dict[str, Any] | None = None
 
     def model_post_init(self, __context: Any) -> None:
         if not self.output_ports:
@@ -101,6 +112,7 @@ class GateNode(NodeBase):
                     OutputPort(name="continue", description="Loop back — condition still true"),
                     OutputPort(name="done", description="Exit loop — condition is false"),
                 ]
+        self.state_schema = _normalize_state_schema(self.state_schema)
 
 
 class ReduceNode(NodeBase):
@@ -192,6 +204,11 @@ class WhileLoopNode(NodeBase):
     condition: str = Field(description="Expression re-evaluated after each iteration")
     body_graph: str = Field(description="Key into Graph.sub_graphs")
     max_iterations: int = 10
+    state_schema: dict[str, Any] | None = None
+    state_defaults: dict[str, Any] | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        self.state_schema = _normalize_state_schema(self.state_schema)
 
     # Composite-node contract
     external_input_schema: dict[str, Any] | None = None

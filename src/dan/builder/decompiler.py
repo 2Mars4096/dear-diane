@@ -161,8 +161,9 @@ class _Decompiler:
                     continue
                 src_var = self.var_names.get(edge.source_node_id, edge.source_node_id)
                 tgt_var = self.var_names.get(edge.target_node_id, edge.target_node_id)
+                spread_arg = ", spread=True" if getattr(edge, "spread", False) else ""
                 lines.append(
-                    f'wf.edge({src_var}["{edge.source_port}"], {tgt_var}["{edge.target_port}"])'
+                    f'wf.edge({src_var}["{edge.source_port}"], {tgt_var}["{edge.target_port}"]{spread_arg})'
                 )
             elif isinstance(edge, ControlEdge):
                 lines.append(self._emit_control_edge(edge))
@@ -241,6 +242,10 @@ class _Decompiler:
                 kwargs.append(f"gate_mode={node.gate_mode!r}")
             if node.max_iterations != 10:
                 kwargs.append(f"max_iterations={node.max_iterations!r}")
+            if getattr(node, "state_schema", None):
+                kwargs.append(f"state_schema={node.state_schema!r}")
+            if getattr(node, "state_defaults", None):
+                kwargs.append(f"state_defaults={node.state_defaults!r}")
         elif nt == "reduce":
             method = "wf.reduce"
             kwargs.append(f"reducer={node.reducer!r}")
@@ -438,7 +443,8 @@ class _Decompiler:
                         continue
                     src_var = _to_var_name(edge.source_node_id)
                     tgt_var = _to_var_name(edge.target_node_id)
-                    lines.append(f'{inner_pad}{body_var}.edge({src_var}["{edge.source_port}"], {tgt_var}["{edge.target_port}"])')
+                    spread_arg = ", spread=True" if getattr(edge, "spread", False) else ""
+                    lines.append(f'{inner_pad}{body_var}.edge({src_var}["{edge.source_port}"], {tgt_var}["{edge.target_port}"]{spread_arg})')
                 elif isinstance(edge, ControlEdge):
                     src_var = _to_var_name(edge.source_node_id)
                     tgt_var = _to_var_name(edge.target_node_id)

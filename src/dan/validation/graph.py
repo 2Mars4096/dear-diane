@@ -186,6 +186,17 @@ def _check_data_edge_schemas(graph: "Graph") -> list[str]:
         if src_port is None or tgt_port is None:
             continue
 
+        if getattr(edge, 'spread', False):
+            src_type = (src_port.json_schema or {}).get("type") if src_port.json_schema else None
+            tgt_type = (tgt_port.json_schema or {}).get("type") if tgt_port.json_schema else None
+            if (src_type is not None and src_type != "object") or (tgt_type is not None and tgt_type != "object"):
+                errors.append(
+                    f"Edge '{edge.id}': spread edge requires object-type ports "
+                    f"(source '{edge.source_port}' type={src_type!r}, "
+                    f"target '{edge.target_port}' type={tgt_type!r})"
+                )
+            continue
+
         src_empty = not src_port.json_schema
         tgt_empty = not tgt_port.json_schema
         if src_empty or tgt_empty:

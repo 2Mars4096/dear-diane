@@ -471,6 +471,8 @@ def _compile_flow(
                 condition=while_condition,
                 max_iterations=max(1, stmt.max_iterations),
                 input_ports=[InputPort(name=DEFAULT_INPUT_PORT, required=True)],
+                state_schema=stmt.state_schema,
+                state_defaults=stmt.state_defaults,
                 metadata=_source_metadata(stmt.source),
             )
             nodes_by_id[gate_id] = gate_node  # add immediately so subsequent flow can reference gate (e.g. gate.done → next)

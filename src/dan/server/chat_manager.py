@@ -112,6 +112,11 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
             "source_port": {"type": "string"},
             "target_id": {"type": "string"},
             "target_port": {"type": "string"},
+            "spread": {
+                "type": "boolean",
+                "default": False,
+                "description": "If true, the source dict is destructured and its keys are spread into the target node's matching input ports",
+            },
         },
         "required": ["op", "source_id", "source_port", "target_id", "target_port"],
     }
@@ -207,9 +212,19 @@ def _build_node_type_reference() -> str:
         in_names = [p["name"] for p in inp]
         out_names = [p["name"] for p in out]
         cfg_keys = sorted(cfg.keys()) if cfg else []
-        line = f"- {nt}: in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
-        if cfg_keys:
-            line += f" config={{{', '.join(cfg_keys)}}}"
+        if nt == "gate":
+            inp_w, out_w = _default_ports("gate", {"gate_mode": "while"})
+            out_w_names = [p["name"] for p in out_w]
+            line = (
+                f"- gate (if_else mode): in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
+                f" config={{{', '.join(cfg_keys)}}}\n"
+                f"- gate (while mode): in=[{', '.join(in_names)}] out=[{', '.join(out_w_names)}]"
+                f" config={{{', '.join(cfg_keys)}}}"
+            )
+        else:
+            line = f"- {nt}: in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
+            if cfg_keys:
+                line += f" config={{{', '.join(cfg_keys)}}}"
         lines.append(line)
     return "\n".join(lines)
 
@@ -237,8 +252,8 @@ Add an LLM node:
 Wire two nodes:
 {{"op": "add_edge", "source_id": "writer", "source_port": "text", "target_id": "reviewer", "target_port": "input"}}
 
-Create a while-loop gate:
-{{"op": "add_node", "node_type": "gate", "name": "Review Gate", "config": {{"gate_mode": "while", "condition": "needs_revision == true", "max_iterations": 5}}}}
+Create a while-loop gate (output ports: continue, done):
+{{"op": "add_node", "node_type": "gate", "name": "Review Gate", "config": {{"gate_mode": "while", "condition": "needs_revision == True", "max_iterations": 5}}}}
 
 ## Available patterns (use expand_pattern op)
 - chain: Sequential chain of N LLM nodes (params: count, names, prompts)

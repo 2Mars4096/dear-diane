@@ -107,6 +107,7 @@ class _PendingEdge:
     condition: str | None = None
     context_key: str | None = None
     mode: ContextMode | str | None = None
+    spread: bool = False
 
 
 @dataclass
@@ -383,6 +384,7 @@ def _build_edge(edge: _PendingEdge, index: int) -> DataEdge | ControlEdge | Cont
             source_port=edge.source_port,
             target_node_id=edge.target_node_id,
             target_port=edge.target_port,
+            spread=edge.spread,
         )
     if edge.edge_type == "control":
         return ControlEdge(

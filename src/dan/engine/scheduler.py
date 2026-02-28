@@ -693,65 +693,85 @@ class Engine:
         global_sem: asyncio.Semaphore | None = None,
     ) -> None:
         """Re-execute cycle region nodes until gate emits 'done' or max iterations."""
-        for iteration in range(1, max_iterations):
-            await self._emit(EngineEvent(
-                event_type=EventType.ITERATION_STARTED,
-                run_id=state.run_id,
-                node_id=gate_id,
-                node_type="gate",
-                data={"iteration": iteration, "max_iterations": max_iterations},
-            ))
+        gate_node = graph.node_by_id(gate_id)
+        has_state_schema = (
+            gate_node is not None
+            and getattr(gate_node, 'state_schema', None) is not None
+        )
 
-            continue_data = state.port_data.get_node_outputs(gate_id).get("continue")
-            if continue_data is None:
-                continue_data = state.port_data.get_node_outputs(gate_id).get("loop")
+        if has_state_schema:
+            context.active_loop_scope_id = gate_id
 
-            for cn in cycle_nodes:
-                state.port_data.clear_node(cn)
-                state.mark(cn, NodeStatus.PENDING)
+        try:
+            for iteration in range(1, max_iterations):
+                if has_state_schema:
+                    context.local_state.update_scope(gate_id, {"iteration": iteration})
 
-            if isinstance(continue_data, dict):
-                for port_name, value in continue_data.items():
-                    state.port_data.set(
-                        f"__input__{back_edge_target}", port_name, value,
-                    )
+                await self._emit(EngineEvent(
+                    event_type=EventType.ITERATION_STARTED,
+                    run_id=state.run_id,
+                    node_id=gate_id,
+                    node_type="gate",
+                    data={"iteration": iteration, "max_iterations": max_iterations},
+                ))
 
-            cycle_levels = [
-                [nid for nid in level if nid in cycle_nodes]
-                for level in levels
-            ]
+                continue_data = state.port_data.get_node_outputs(gate_id).get("continue")
+                if continue_data is None:
+                    continue_data = state.port_data.get_node_outputs(gate_id).get("loop")
 
-            for level in cycle_levels:
-                ready = [
-                    nid for nid in level
-                    if state.node_statuses.get(nid) == NodeStatus.PENDING
+                for cn in cycle_nodes:
+                    state.port_data.clear_node(cn)
+                    state.mark(cn, NodeStatus.PENDING)
+
+                if isinstance(continue_data, dict):
+                    for port_name, value in continue_data.items():
+                        state.port_data.set(
+                            f"__input__{back_edge_target}", port_name, value,
+                        )
+
+                cycle_levels = [
+                    [nid for nid in level if nid in cycle_nodes]
+                    for level in levels
                 ]
-                if not ready:
-                    continue
-                tasks = [
-                    self._guarded_execute_node(nid, graph, state, context, global_sem)
-                    for nid in ready
-                ]
-                await asyncio.gather(*tasks)
 
-                if self._check_halt(state):
-                    return
+                for level in cycle_levels:
+                    ready = [
+                        nid for nid in level
+                        if state.node_statuses.get(nid) == NodeStatus.PENDING
+                    ]
+                    if not ready:
+                        continue
+                    tasks = [
+                        self._guarded_execute_node(nid, graph, state, context, global_sem)
+                        for nid in ready
+                    ]
+                    await asyncio.gather(*tasks)
 
-            gate_outputs = state.port_data.get_node_outputs(gate_id)
-            exiting = "done" in gate_outputs or "false" in gate_outputs
-            await self._emit(EngineEvent(
-                event_type=EventType.ITERATION_COMPLETED,
-                run_id=state.run_id,
-                node_id=gate_id,
-                node_type="gate",
-                data={
-                    "iteration": iteration,
-                    "max_iterations": max_iterations,
-                    "exit": exiting,
-                },
-            ))
-            if exiting:
-                break
+                    if self._check_halt(state):
+                        return
+
+                gate_outputs = state.port_data.get_node_outputs(gate_id)
+                exiting = "done" in gate_outputs or "false" in gate_outputs
+                await self._emit(EngineEvent(
+                    event_type=EventType.ITERATION_COMPLETED,
+                    run_id=state.run_id,
+                    node_id=gate_id,
+                    node_type="gate",
+                    data={
+                        "iteration": iteration,
+                        "max_iterations": max_iterations,
+                        "exit": exiting,
+                    },
+                ))
+                if exiting:
+                    if has_state_schema:
+                        final_scope = context.local_state.get_scope(gate_id)
+                        for port_name, value in final_scope.items():
+                            state.port_data.set(gate_id, port_name, value)
+                    break
+        finally:
+            if has_state_schema:
+                context.active_loop_scope_id = None
 
     async def _execute_node(
         self,
@@ -832,6 +852,15 @@ class Engine:
 
         self._read_context_edges(node_id, graph, context, inputs)
 
+        if context.active_loop_scope_id:
+            _gate = graph.node_by_id(context.active_loop_scope_id)
+            if _gate and getattr(_gate, 'state_schema', None):
+                _scope = context.local_state.get_scope(context.active_loop_scope_id)
+                _defaults = getattr(_gate, 'state_defaults', None) or {}
+                for _k in _gate.state_schema:
+                    if _k not in inputs:
+                        inputs[_k] = _scope.get(_k, _defaults.get(_k))
+
         if node_type_str is None or not self.executor_registry.has(node_type_str):
             state.mark(node_id, NodeStatus.FAILED)
             state.node_errors[node_id] = f"No executor for node_type '{node_type_str}'"
@@ -862,6 +891,13 @@ class Engine:
 
         for port_name, value in result.outputs.items():
             state.port_data.set(node_id, port_name, value)
+
+        if context.active_loop_scope_id:
+            _gate = graph.node_by_id(context.active_loop_scope_id)
+            if _gate and getattr(_gate, 'state_schema', None):
+                _updates = {k: v for k, v in result.outputs.items() if k in _gate.state_schema}
+                if _updates:
+                    context.local_state.update_scope(context.active_loop_scope_id, _updates)
 
         self._write_context_edges(node_id, graph, context, result.outputs)
 

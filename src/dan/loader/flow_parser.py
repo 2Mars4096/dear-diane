@@ -5,6 +5,7 @@ Parses ``## Flow`` lines into typed :class:`FlowStatement` objects.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
@@ -175,9 +176,27 @@ def _parse_loop(source_agent: str, args_raw: str, line: str, source: SourceLocat
     if not condition:
         raise FlowParseError("loop() requires an 'until' condition", line=line)
     max_iter = int(kwargs.get("max", "10"))
+
+    state_schema: dict | None = None
+    state_defaults: dict | None = None
+    raw_schema = kwargs.get("state")
+    raw_defaults = kwargs.get("defaults")
+    if raw_schema:
+        try:
+            state_schema = json.loads(raw_schema)
+        except json.JSONDecodeError as exc:
+            raise FlowParseError(f"Invalid JSON in loop() state: {exc}", line=line) from exc
+    if raw_defaults:
+        try:
+            state_defaults = json.loads(raw_defaults)
+        except json.JSONDecodeError as exc:
+            raise FlowParseError(f"Invalid JSON in loop() defaults: {exc}", line=line) from exc
+
     return LoopStatement(
         source_agent=source_agent, body_agent=body,
-        condition=condition, max_iterations=max_iter, source=source,
+        condition=condition, max_iterations=max_iter,
+        state_schema=state_schema, state_defaults=state_defaults,
+        source=source,
     )
 
 

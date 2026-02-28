@@ -115,12 +115,14 @@ class EachStatement:
 
 @dataclass
 class LoopStatement:
-    """``agent_a | loop(agent_b, until: "cond", max: N)`` — gate-style while."""
+    """``agent_a | loop(agent_b, until: "cond", max: N, state: "{...}", defaults: "{...}")``."""
 
     source_agent: str
     body_agent: str
     condition: str = ""
     max_iterations: int = 10
+    state_schema: dict | None = None
+    state_defaults: dict | None = None
     source: SourceLocation | None = None
 
 

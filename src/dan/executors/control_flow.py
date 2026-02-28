@@ -87,24 +87,40 @@ class GateExecutor:
     ) -> NodeResult:
         assert isinstance(node, GateNode)
 
-        condition_vars = dict(inputs)
-        # Flatten dict inputs for condition evaluation: {"result": {...}} or plain {...}
-        for _port, val in inputs.items():
-            if isinstance(val, dict):
-                condition_vars.update(val.get("result", val))
-                break
-        # Single value on "input" port: if condition is a simple var name, map it (e.g. if(use_builtin))
-        cond = (node.condition or "").strip()
-        if cond and cond not in condition_vars and "input" in inputs:
-            val = inputs["input"]
-            if val is not None and not isinstance(val, dict):
-                condition_vars[cond] = val
-        # Safe default for loop conditions that reference try_more
-        if "try_more" not in condition_vars and "try_more" in (node.condition or ""):
-            condition_vars["try_more"] = True
+        scope: dict[str, Any] = {}
         if node.gate_mode == "while":
             scope = context.local_state.get_scope(node.id)
-            iteration = scope.get("gate_iteration", 0)
+            if getattr(node, 'state_schema', None) and not scope:
+                defaults = getattr(node, 'state_defaults', None) or {}
+                init_state = dict(defaults)
+                for k in node.state_schema:
+                    if k in inputs:
+                        init_state[k] = inputs[k]
+                context.local_state.set_scope(node.id, init_state)
+                scope = context.local_state.get_scope(node.id)
+
+        if getattr(node, 'state_schema', None) and scope:
+            condition_vars = dict(scope)
+            condition_vars.update(inputs)
+        else:
+            condition_vars = dict(inputs)
+            for _port, val in inputs.items():
+                if isinstance(val, dict):
+                    condition_vars.update(val.get("result", val))
+                    break
+            cond = (node.condition or "").strip()
+            if cond and cond not in condition_vars and "input" in inputs:
+                val = inputs["input"]
+                if val is not None and not isinstance(val, dict):
+                    condition_vars[cond] = val
+            if "try_more" not in condition_vars and "try_more" in (node.condition or ""):
+                condition_vars["try_more"] = True
+
+        if node.gate_mode == "while":
+            if getattr(node, 'state_schema', None):
+                iteration = scope.get("iteration", 0)
+            else:
+                iteration = scope.get("gate_iteration", 0)
             condition_vars["iteration"] = iteration
 
         try:
@@ -188,7 +204,18 @@ class WhileLoopExecutor:
         scope.setdefault("iteration", 0)
         scope.setdefault("history", [])
 
-        working_data = dict(inputs)
+        _has_schema = getattr(node, 'state_schema', None) is not None
+        if _has_schema:
+            _defaults = getattr(node, 'state_defaults', None) or {}
+            for _k in node.state_schema:
+                if _k not in scope:
+                    scope[_k] = _defaults.get(_k, inputs.get(_k))
+
+        if _has_schema:
+            working_data = dict(scope)
+            working_data.update(inputs)
+        else:
+            working_data = dict(inputs)
         start_time = time.monotonic()
         max_iter = node.max_iterations
         if node.failure_policy.max_iterations is not None:
@@ -206,7 +233,11 @@ class WhileLoopExecutor:
                 data={"iteration": iteration, "max_iterations": max_iter, "condition": node.condition},
             )
 
-            condition_vars = {**working_data, "iteration": iteration}
+            if _has_schema:
+                condition_vars = dict(scope)
+                condition_vars["iteration"] = iteration
+            else:
+                condition_vars = {**working_data, "iteration": iteration}
             try:
                 should_continue = evaluate_condition(node.condition, condition_vars)
             except ConditionError as exc:
@@ -224,7 +255,13 @@ class WhileLoopExecutor:
             )
 
             scope["history"].append(body_output)
-            working_data = {**working_data, **body_output}
+            if _has_schema:
+                _schema_updates = {k: v for k, v in body_output.items() if k in node.state_schema}
+                scope.update(_schema_updates)
+                working_data = dict(scope)
+                working_data.update(body_output)
+            else:
+                working_data = {**working_data, **body_output}
 
             await context.emit_event(
                 event_type="iteration_completed",
