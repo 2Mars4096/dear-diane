@@ -1,19 +1,21 @@
 ---
 name: Vibe Research — Multi-Department Adaptive
-description: Orchestrator oversees project, manages departments (max 6), strategy manager per department, script-as-param for custom strategies. Meta department (blend top K by Sharpe) runs every N iterations.
+description: >
+  Orchestrator oversees 3 fixed departments (MOM, REV, FUND) for testing.
+  Each iteration the orchestrator assigns themes and halt/continue decisions.
+  Departments execute one-by-one (MOM→REV→FUND); results merge and governor
+  decides whether to continue. Loop state managed via state_schema.
 format_version: 1
-tags: [vibe-research, multi-department, orchestrator, strategy-manager, run-strategy-script]
+tags: [vibe-research, multi-department, orchestrator, strategy-manager, state-schema]
 ---
 
 ## Agents
 
-- [entry_multi_dept](entry_multi_dept.md)
-- [orchestrator_and_departments](iteration_multi_dept.md)
+- [entry](entry.md)
+- [iteration](iteration.md)
 - [write_csv](write_csv.md)
-- [plot_one](plot_one.md)
 
 ## Flow
 
-entry_multi_dept | loop(orchestrator_and_departments, until: "not try_more", max: 60)
-entry_multi_dept_loop_orchestrator_and_departments.done → write_csv.input
-write_csv | each(plot_one, parallel: 2)
+entry | loop(iteration, until: "not try_more", max: 60, state: '{"results":{"type":"array"},"strategies_tried":{"type":"array"},"iteration":{"type":"integer"},"try_more":{"type":"boolean"},"start_year":{"type":"integer"},"end_year":{"type":"integer"},"max_factors":{"type":"integer"}}', defaults: '{"results":[],"strategies_tried":[],"iteration":0,"try_more":true,"start_year":2010,"end_year":2023,"max_factors":20}')
+entry_loop_iteration.done → write_csv.input
