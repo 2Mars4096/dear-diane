@@ -61,6 +61,7 @@
   - [ ] [7-5-general-tool-design](plans/7-5-general-tool-design.md) — Generic run_python tool, deprecate plot_backtest/save_grid_csv; agent-generated code
   - [ ] [7-6-node-state-simplification](plans/7-6-node-state-simplification.md) — Loop-scoped state bag, code node port defaults, struct (spread) edges; eliminate state-threading boilerplate
   - [ ] [7-7-editor-navigation-layout-hardening](plans/7-7-editor-navigation-layout-hardening.md) — Nested drill-in/out/save fix (depth-3 cap), deterministic port ordering (logic+rules), edge routing optimization
+  - [ ] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Loader/validation/builder/mutator correctness; round-trip, gate defaults, strict mode, mutator warn
 
 ## Phase 5 — Markdown Agent Format
 > A third authoring surface alongside the Python builder DSL and the visual editor. One `.md` per agent (frontmatter + natural language), one workflow `.md` to wire them. All three surfaces compile to the same `dan_graph_v1` JSON and coexist — markdown is the most accessible and LLM-generatable format.
@@ -150,7 +151,11 @@
 - [ ] Loop as context manager — loops manage what context feeds back, not just control flow. Feedback selectors filter what flows from body back to condition.
 
 ## Backlog (unphased)
-- [ ] Core node/workflow API hardening follow-up (from 2026-02-27 review): fix while-gate default chain/f-string output port behavior, align ContextEdge read permission validation with runtime target-side semantics, make markdown loop decompile/compile round-trip lossless (`until` inversion + state/defaults), and add strict mode for flow-parse/auto-wire warnings.
+- [ ] **Async parallel subagents** — run subagents concurrently; orchestration layer schedules and fans out work to multiple subagents in parallel, with proper fan-in semantics.
+- [ ] **Meta orchestrator / AI assistant mode** — meta orchestrator that interprets user needs and self-builds a workflow to satisfy them. Workflow is dynamically constructed from natural language intent rather than pre-authored.
+- [ ] **Manager vs worker node distinction** — manager nodes orchestrate and may spawn new nodes; worker nodes only execute and do not hire new nodes. Bottom-layer nodes are workers. Enables token/node budget caps (e.g. limit total tokens or total nodes used).
+- [ ] **Optimize token usage** — reduce token consumption across workflows (prompt compression, context pruning, caching, smaller models for simple tasks, truncation policies).
+- [ ] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics; core mechanisms for convenient workflow building
 - [ ] **Async loop design** — Orchestrator runs independently with access to current progress and can emit commands anytime; departments work in tandem (parallel, no cross-deps). Today: orchestrator runs once per iteration at the start, then all depts run; iterations are strictly sequential. Target: orchestrator as long-running/streaming process that pushes work to departments as they become free, or event-driven model where orchestrator and depts can overlap.
 - [ ] NL mutation: LLM-in-the-loop CI variant — feed real NL prompts to chat endpoint with test model, check output plan quality (report-only, non-blocking). From 10-8 task 9-4.
 - [ ] NL mutation: capture 3-5 day baseline on `main` via `GET /api/metrics/mutations` before evaluating hardening impact. From 10-8 task 11-2.

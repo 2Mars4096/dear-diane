@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-02-28
+- [docs] **Plan 7-8 workflow node API hardening:** Created `docs/plans/7-8-workflow-node-api-hardening.md` — 8 task groups addressing markdown loop round-trip (until inversion + state/defaults), ContextEdge read validation alignment, gate while-mode default output, flow parse strict mode, mutator port auto-create diagnostics, ambiguous bare-edge fail in strict mode, and decompiler control/context documentation. Goal: core mechanisms strong enough that users can describe workflows in their mind and build them easily with existing nodes, logical nodes, and tools. Registered as sub-plan of 7-core-hardening; updated todo.md and 7-core-hardening.md.
+
 ## 2026-02-27
 - [docs] **LLM generation playbook added to API guide:** Expanded `docs/llm-api-guide.md` with a dedicated workflow/script generation section (explicit typing/wiring rules, gate-loop authoring guidance, markdown vs Python generation caveats, and a recommended generate→compile→validate→smoke-test loop) to reduce silent miswiring and improve reproducibility for LLM-authored workflows.
 - [feat] **Custom strategy script artifacts are now persisted before execution:** `_run_strategy_script` now saves incoming code to `examples/vibe_research_md/output/scripts/{strategy}.py` before running it, and returns `script_saved_path`/`script_save_error`. Workflow nodes were updated so these fields survive error normalization (`bug_fixer`) and are passed through persistence/output (`save_tracking`), making custom-factor runs directly reproducible.

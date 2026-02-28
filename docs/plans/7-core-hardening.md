@@ -14,6 +14,7 @@
 | [7-5](7-5-general-tool-design.md) | General Tool Design | Generic run_python, deprecate plot_backtest/save_grid_csv; agent-generated code | `app.py`, `dan.tools`, `SandboxRunner` |
 | [7-6](7-6-node-state-simplification.md) | Node State Simplification | Loop-scoped state bag, code node port defaults, struct (spread) edges | `models/control_flow.py`, `engine/scheduler.py`, `executors/code.py`, `models/edges.py`, `engine/state.py` |
 | [7-7](7-7-editor-navigation-layout-hardening.md) | Editor Navigation & Layout Hardening | Nested drill-in/out/save (depth 3 cap), port ordering (logic+rules), edge routing polish | `graphAdapter.ts`, `useGraphStore.ts`, `DanNode.tsx`, `PortMappingOverlay.tsx`, `layout.ts`, `AnimatedEdge.tsx` |
+| [7-8](7-8-workflow-node-api-hardening.md) | Workflow Node API Hardening | Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics | `loader/`, `validation/`, `builder/`, `graph_mutator.py` |
 
 ## Dependencies / Sequencing
 
@@ -36,6 +37,7 @@
 - **7-5** (general tool design) — independent, engine-side
 - **7-6** (node state simplification) — independent, engine-side
 - **7-7** (editor navigation & layout hardening) — independent, editor-only; no engine dependency
+- **7-8** (workflow node API hardening) — loader/validation/builder/mutator correctness; enables convenient workflow building (describe intent → compile → validate → run)
 
 ## Shared Decisions
 
