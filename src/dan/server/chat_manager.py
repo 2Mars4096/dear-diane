@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import uuid
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Literal
 
 from pydantic import BaseModel, Field
 
@@ -18,6 +18,7 @@ from dan.providers.registry import ProviderRegistry
 from dan.server.graph_mutator import (
     GraphMutator,
     MutationPlan,
+    PATTERN_LIBRARY,
     _default_node_config,
     _default_ports,
 )
@@ -39,6 +40,10 @@ __all__ = [
     "build_graph_summary",
     "serialize_for_prompt",
     "compute_graph_revision",
+    "BUILD_FROM_INTENT_PROMPT",
+    "EMPTY_GRAPH_SUMMARY_PLACEHOLDER",
+    "WORKFLOW_TEMPLATES",
+    "_coerce_strict_edges",
 ]
 
 logger = logging.getLogger(__name__)
@@ -51,6 +56,8 @@ NODE_TYPES: list[str] = [
     "input",
     "gate",
     "for_each",
+    "parallel_subagents",
+    "orchestrator",
     "reduce",
     "router",
     "human_in_the_loop",
@@ -116,6 +123,11 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
                 "type": "boolean",
                 "default": False,
                 "description": "If true, the source dict is destructured and its keys are spread into the target node's matching input ports",
+            },
+            "strict": {
+                "type": "boolean",
+                "default": False,
+                "description": "If true, fail when target_port does not exist instead of auto-creating. Use for programmatic use to catch typos.",
             },
         },
         "required": ["op", "source_id", "source_port", "target_id", "target_port"],
@@ -276,6 +288,101 @@ plan_graph_mutations tool to build it from scratch.
 - Be concise. Use the node/edge vocabulary above.
 """
 
+# Build-from-intent mode: intent-first workflow creation (no existing graph context)
+BUILD_FROM_INTENT_PROMPT = """\
+You are a workflow architect for DAN (Deep Agent Network). The user wants to \
+create a new workflow from scratch. Your job is to decompose their intent into \
+tasks, stages, node types, and data flow, then produce a mutation plan.
+
+## Task decomposition
+1. Identify the high-level goal (e.g. "paper writing", "RAG QA", "multi-step analysis")
+2. Break into stages: input → processing → output; add review/iteration loops if needed
+3. Map stages to node types: llm_operator, rag_operator, gate, for_each, etc.
+4. Define data flow: which ports connect (input → text, text → input, etc.)
+
+## Available node types (with default ports and config)
+{node_type_reference}
+
+## Available edge types
+- data: carries structured data between ports
+- control: routing / flow-control (branching, looping)
+- context: shared-context key (read/write/append)
+
+## Pattern library (use expand_pattern op)
+- chain: Sequential N LLM nodes (params: count, names, prompts)
+- review_loop: Writer → Reviewer → Gate with back-edge (params: writer_name, reviewer_name, condition, max_iterations)
+- fan_out: Source → ForEach → body processor (params: source_name, body_name, parallelism)
+- rag_qa: RAG retrieval → LLM answer (params: rag_name, collection, top_k, answer_prompt)
+
+## Intent → pattern mapping
+- Paper writing / document drafting: use review_loop + chain (e.g. outline → draft → review → revise)
+- RAG QA / knowledge retrieval: use rag_qa pattern
+- Multi-step analysis / summarization: use chain with count and prompts
+- Parallel processing over items: use fan_out
+
+## Available templates
+Pre-built workflow templates (use expand_pattern with template operations):
+- paper_writing: review_loop (Drafter→Reviewer→Gate) + chain of 3 (Outline→Draft→Final Polish)
+- rag_qa: RAG retrieval → LLM answer
+- chain_3: simple 3-node sequential chain
+
+You can apply a template as a starting point, then add/remove/edit nodes to customize.
+
+## Current state
+{graph_summary}
+
+## Guidelines
+- Use plan_graph_mutations to produce a complete workflow. Target the empty graph.
+- When intent is ambiguous, propose sensible defaults (e.g. paper sections: intro, methods, results, discussion).
+- Prefer expand_pattern for known shapes; use add_node/add_edge for custom flows.
+- Use strict=true in add_edge operations when building from intent (fail fast on typos).
+- Always use exact port names from the reference. Do not guess.
+- Be concise. Produce a runnable workflow in one plan.
+"""
+
+# Placeholder for build-from-intent mode (no graph context)
+EMPTY_GRAPH_SUMMARY_PLACEHOLDER = (
+    "Workflow is empty (0 nodes, 0 edges). Create from scratch using plan_graph_mutations."
+)
+
+# ---------------------------------------------------------------------------
+# Workflow templates — pre-built mutation operation sequences
+# ---------------------------------------------------------------------------
+
+WORKFLOW_TEMPLATES: dict[str, list[dict]] = {
+    "paper_writing": [
+        {"op": "expand_pattern", "pattern": "review_loop", "params": {
+            "writer_name": "Drafter",
+            "reviewer_name": "Reviewer",
+            "condition": "needs_revision == True",
+            "max_iterations": 3,
+        }},
+        {"op": "expand_pattern", "pattern": "chain", "params": {
+            "count": 3,
+            "names": ["Outline", "Draft", "Final Polish"],
+            "prompts": [
+                "Create a structured outline for: {input}",
+                "Write a full draft based on: {input}",
+                "Polish and finalize the document: {input}",
+            ],
+        }},
+    ],
+    "rag_qa": [
+        {"op": "expand_pattern", "pattern": "rag_qa", "params": {
+            "rag_name": "Knowledge Base",
+            "answer_name": "Answer Generator",
+            "top_k": 5,
+            "answer_prompt": "Answer the question based on the retrieved context:\n{input}",
+        }},
+    ],
+    "chain_3": [
+        {"op": "expand_pattern", "pattern": "chain", "params": {
+            "count": 3,
+            "names": ["Step 1", "Step 2", "Step 3"],
+        }},
+    ],
+}
+
 
 # ---------------------------------------------------------------------------
 # Graph summary models
@@ -370,6 +477,11 @@ def compute_graph_revision(graph_dict: dict) -> str:
 
 
 def build_graph_summary(graph: Graph, workflow_id: str) -> GraphSummary:
+    """Build a GraphSummary from a Graph. Handles empty graph (nodes=[], edges=[]).
+
+    For empty graph, returns valid GraphSummary with node_count=0, edge_count=0,
+    and revision from hash of the canonical empty structure.
+    """
     nodes: list[NodeSummary] = []
     for n in graph.nodes:
         model_val: str | None = getattr(n, "model", None)
@@ -535,6 +647,20 @@ def _try_parse_mutation_json(text: str) -> dict[str, Any] | None:
     return None
 
 
+def _coerce_strict_edges(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Set strict=True on all add_edge ops when building from intent.
+
+    Fail-fast on port typos during build mode rather than silently
+    auto-creating ports that may not exist.
+    """
+    result = []
+    for op in operations:
+        if op.get("op") == "add_edge" and not op.get("strict"):
+            op = {**op, "strict": True}
+        result.append(op)
+    return result
+
+
 class ChatManager:
     def __init__(
         self,
@@ -556,6 +682,7 @@ class ChatManager:
         history: list[dict[str, str]],
         thread_id: str | None = None,
         client_graph_revision: str | None = None,
+        mode: Literal["mutate", "build"] = "mutate",
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream a text-only LLM response (no function calling)."""
         try:
@@ -579,7 +706,7 @@ class ChatManager:
                     summary.revision,
                 )
 
-            messages = self._build_messages(summary, message, history)
+            messages = self._build_messages(summary, message, history, mode=mode)
 
             provider = self._providers.resolve(self._chat_model)
             stream: AsyncIterator[StreamChunk] = await provider.stream(
@@ -627,6 +754,7 @@ class ChatManager:
         history: list[dict[str, str]],
         thread_id: str | None = None,
         client_graph_revision: str | None = None,
+        mode: Literal["mutate", "build"] = "mutate",
     ) -> AsyncIterator[ChatStreamEvent]:
         """Process a user message using LLM function calling for graph mutations.
 
@@ -655,7 +783,7 @@ class ChatManager:
                     revision,
                 )
 
-            messages = self._build_messages(summary, message, history)
+            messages = self._build_messages(summary, message, history, mode=mode)
             provider = self._providers.resolve(self._chat_model)
             message_id = uuid.uuid4().hex[:12]
 
@@ -681,8 +809,13 @@ class ChatManager:
 
             mutation_data = self._extract_mutation_from_result(result)
             if mutation_data is not None:
+                # Inject base_graph_revision from current graph (incl. empty).
+                # When building from scratch, revision = compute_graph_revision(empty_graph).
+                ops = mutation_data.get("operations", [])
+                if mode == "build":
+                    ops = _coerce_strict_edges(ops)
                 plan = MutationPlan.model_validate({
-                    "operations": mutation_data.get("operations", []),
+                    "operations": ops,
                     "description": mutation_data.get("description", ""),
                     "reasoning": mutation_data.get("reasoning", ""),
                     "base_graph_revision": revision,
@@ -747,7 +880,7 @@ class ChatManager:
                         graph = Graph.model_validate(graph_dict)
                         summary = build_graph_summary(graph, workflow_id)
                         revision = summary.revision
-                        replan_messages = self._build_messages(summary, message, history)
+                        replan_messages = self._build_messages(summary, message, history, mode=mode)
                         replan_messages.append({
                             "role": "user",
                             "content": (
@@ -925,10 +1058,22 @@ class ChatManager:
         summary: GraphSummary,
         user_message: str,
         history: list[dict[str, str]],
+        mode: Literal["mutate", "build"] = "mutate",
     ) -> list[dict[str, str]]:
-        graph_text = serialize_for_prompt(summary)
+        is_empty = summary.node_count == 0 and summary.edge_count == 0
+        use_build_prompt = mode == "build" or is_empty
+        if use_build_prompt:
+            graph_text = (
+                EMPTY_GRAPH_SUMMARY_PLACEHOLDER
+                if is_empty
+                else serialize_for_prompt(summary)
+            )
+            template = BUILD_FROM_INTENT_PROMPT
+        else:
+            graph_text = serialize_for_prompt(summary)
+            template = SYSTEM_PROMPT_TEMPLATE
 
-        system_content = SYSTEM_PROMPT_TEMPLATE.format(
+        system_content = template.format(
             node_type_reference=NODE_TYPE_REFERENCE,
             graph_summary=graph_text,
         )

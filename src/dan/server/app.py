@@ -17,7 +17,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from dotenv import load_dotenv
 
@@ -1100,6 +1100,7 @@ class ChatMessageRequest(BaseModel):
     thread_id: str | None = None
     history: list[dict[str, str]] = []
     client_graph_revision: str | None = None
+    mode: Literal["mutate", "build"] = "mutate"
 
 
 class ApplyMutationRequest(BaseModel):
@@ -1184,6 +1185,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
                 "new_graph": data,
                 "errors": [],
                 "warnings": [],
+                "diagnostics": [],
                 "stale_plan": False,
                 "idempotent_hit": True,
             }
@@ -1257,6 +1259,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
             "new_graph": result.new_graph,
             "errors": [],
             "warnings": warnings,
+            "diagnostics": result.diagnostics,
             "stale_plan": False,
         }
     else:
@@ -1273,6 +1276,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
             "new_graph": result.new_graph,
             "errors": [],
             "warnings": [],
+            "diagnostics": result.diagnostics,
             "stale_plan": False,
         }
 
@@ -1643,6 +1647,7 @@ async def chat_message(req: ChatMessageRequest):
                 history=req.history,
                 thread_id=req.thread_id,
                 client_graph_revision=req.client_graph_revision,
+                mode=req.mode,
             ):
                 await queue.put(event.model_dump())
         except Exception as exc:

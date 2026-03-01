@@ -65,6 +65,7 @@ class AddEdge(BaseModel):
     target_id: str
     target_port: str
     spread: bool = False
+    strict: bool = False
 
 
 class RemoveEdge(BaseModel):
@@ -145,6 +146,7 @@ class MutationResult(BaseModel):
     errors: list[OperationError] = Field(default_factory=list)
     stale_plan: bool = False
     validation_warnings: list[str] = Field(default_factory=list)
+    diagnostics: list[str] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -207,6 +209,14 @@ def _default_ports(
         ),
         "for_each": (
             [{"name": "items", "schema": {}, "required": False}],
+            [{"name": "results", "schema": {}}],
+        ),
+        "parallel_subagents": (
+            [{"name": "input", "schema": {}, "required": False}],
+            [{"name": "results", "schema": {}}],
+        ),
+        "orchestrator": (
+            [{"name": "input", "schema": {}, "required": False}],
             [{"name": "results", "schema": {}}],
         ),
         "reduce": (
@@ -289,6 +299,19 @@ def _default_node_config(node_type: str) -> dict[str, Any]:
             "body_graph": "",
             "parallelism": 1,
             "merge_strategy": "append",
+        },
+        "parallel_subagents": {
+            "branch_graphs": [],
+            "parallelism": 1,
+            "merge_strategy": "append",
+            "input_mappings": {},
+            "branch_inputs": {},
+        },
+        "orchestrator": {
+            "teams": {},
+            "orchestrator_prompt": "",
+            "completion_condition": "all_done",
+            "max_iterations": 100,
         },
         "reduce": {
             "reducer": "",
@@ -495,6 +518,7 @@ def _pattern_review_loop(params: dict[str, Any]) -> list[dict[str, Any]]:
         },
         {
             "op": "add_edge",
+            "edge_type": "control",
             "source_id": _slugify(gate_name),
             "source_port": "continue",
             "target_id": _slugify(writer_name),
@@ -690,10 +714,11 @@ class GraphMutator:
     ) -> MutationResult:
         errors: list[OperationError] = []
         applied: list[int] = []
+        diagnostics: list[str] = []
         has_structural = False
 
         for orig_idx, op in sorted_ops:
-            err = self._apply_op(working, op)
+            err = self._apply_op(working, op, diagnostics)
             if err:
                 errors.append(OperationError(op_index=orig_idx, op_type=op.op, message=err))
             else:
@@ -717,7 +742,12 @@ class GraphMutator:
 
         if has_structural:
             _recompute_entry_exit_points(working)
-        return MutationResult(success=True, new_graph=working, applied_ops=applied)
+        return MutationResult(
+            success=True,
+            new_graph=working,
+            applied_ops=applied,
+            diagnostics=diagnostics,
+        )
 
     def _apply_partial(
         self,
@@ -726,11 +756,12 @@ class GraphMutator:
     ) -> MutationResult:
         errors: list[OperationError] = []
         applied: list[int] = []
+        diagnostics: list[str] = []
         has_structural = False
 
         for orig_idx, op in sorted_ops:
             snapshot = copy.deepcopy(working)
-            err = self._apply_op(working, op)
+            err = self._apply_op(working, op, diagnostics)
             if err:
                 errors.append(OperationError(op_index=orig_idx, op_type=op.op, message=err))
                 working.clear()
@@ -747,9 +778,15 @@ class GraphMutator:
             new_graph=working,
             applied_ops=applied,
             errors=errors,
+            diagnostics=diagnostics,
         )
 
-    def _apply_op(self, graph: dict[str, Any], op: GraphOperation) -> str | None:
+    def _apply_op(
+        self,
+        graph: dict[str, Any],
+        op: GraphOperation,
+        diagnostics: list[str] | None = None,
+    ) -> str | None:
         """Apply a single operation to *graph* in place. Return error message or None."""
         try:
             if isinstance(op, AddNode):
@@ -759,7 +796,7 @@ class GraphMutator:
             if isinstance(op, EditNode):
                 return self._op_edit_node(graph, op)
             if isinstance(op, AddEdge):
-                return self._op_add_edge(graph, op)
+                return self._op_add_edge(graph, op, diagnostics)
             if isinstance(op, RemoveEdge):
                 return self._op_remove_edge(graph, op)
             if isinstance(op, EditEdge):
@@ -769,7 +806,7 @@ class GraphMutator:
             if isinstance(op, ReplaceSubgraph):
                 return self._op_replace_subgraph(graph, op)
             if isinstance(op, ExpandPattern):
-                return self._op_expand_pattern(graph, op)
+                return self._op_expand_pattern(graph, op, diagnostics)
             return f"Unknown operation type: {op.op}"
         except Exception as exc:
             logger.exception("Unexpected error applying %s", op.op)
@@ -823,7 +860,14 @@ class GraphMutator:
         node.update(op.updates)
         return None
 
-    def _op_add_edge(self, graph: dict[str, Any], op: AddEdge) -> str | None:
+    def _op_add_edge(
+        self,
+        graph: dict[str, Any],
+        op: AddEdge,
+        diagnostics: list[str] | None = None,
+    ) -> str | None:
+        """Add edge; when target_port is missing, auto-create (unless strict) and append to diagnostics.
+        When diagnostics is provided, appends warning messages in-place (e.g. auto-created port)."""
         ids = _node_ids(graph)
         if op.source_id not in ids:
             return f"Source node '{op.source_id}' not found"
@@ -842,14 +886,22 @@ class GraphMutator:
 
         target_ports = [p["name"] for p in target_node.get("input_ports", [])]
         if op.target_port not in target_ports:
+            if op.strict:
+                return (
+                    f"Target node '{op.target_id}' has no input port '{op.target_port}'. "
+                    f"Available ports: {target_ports}. "
+                    "Use strict=False to auto-create (not recommended)."
+                )
             target_node.setdefault("input_ports", []).append(
                 {"name": op.target_port, "schema": {}, "required": False}
             )
-            logger.debug(
-                "Auto-created input port '%s' on node '%s'",
-                op.target_port,
-                op.target_id,
+            msg = (
+                f"Auto-created input port '{op.target_port}' on node '{op.target_id}' "
+                "(port not declared). Verify spelling."
             )
+            if diagnostics is not None:
+                diagnostics.append(msg)
+            logger.debug("Auto-created input port '%s' on node '%s'", op.target_port, op.target_id)
 
         edge_id = f"{op.source_id}.{op.source_port}->{op.target_id}.{op.target_port}"
 
@@ -931,7 +983,10 @@ class GraphMutator:
         return None
 
     def _op_expand_pattern(
-        self, graph: dict[str, Any], op: ExpandPattern
+        self,
+        graph: dict[str, Any],
+        op: ExpandPattern,
+        diagnostics: list[str] | None = None,
     ) -> str | None:
         if op.pattern not in PATTERN_LIBRARY:
             available = ", ".join(sorted(PATTERN_LIBRARY.keys()))
@@ -962,7 +1017,7 @@ class GraphMutator:
                 parsed_op = model_cls.model_validate(raw_op)
             except Exception as exc:
                 return f"Pattern '{op.pattern}' step {i}: {exc}"
-            err = self._apply_op(graph, parsed_op)
+            err = self._apply_op(graph, parsed_op, diagnostics)
             if err:
                 return f"Pattern '{op.pattern}' step {i}: {err}"
 
