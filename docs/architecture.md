@@ -20,14 +20,14 @@ deep-agent-network/
     todo.md                      # High-level task list, links to plan files
     bugs.md                      # Known issues and failed approaches
     llm-api-guide.md             # LLM-facing API reference (auto-updated on API changes)
-    plans/                       # Numbered detailed plans (just-in-time)
+    plans/                       # Numbered detailed plans (just-in-time); 11 = Phase 7.1 structure review
   src/dan/                       # Python package
     __init__.py                  # Top-level package exports
     models/                      # Phase 0 — formal type system
       ports.py                   # InputPort, OutputPort
       context.py                 # NodeLocalState, SharedContextDeclaration, ArtifactRef, ContextProjection, policies
       nodes.py                   # NodeBase, LLMOperator, ToolOperator, CodeOperator
-      control_flow.py            # GateNode (unified if_else/while), IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop, ValidatorNode, CompositeNode
+      control_flow.py            # GateNode (unified if_else/while), IfElse, WhileLoop, ForEach, ParallelSubagentsNode, OrchestratorNode, Reduce, Router, HumanInTheLoop, ValidatorNode, CompositeNode
       edges.py                   # DataEdge, ControlEdge, ContextEdge
       graph.py                   # Graph container, Node/Edge discriminated unions, dan_graph_v1 contract
     validation/
@@ -86,7 +86,7 @@ deep-agent-network/
       tool.py                    # ToolExecutor + ToolRegistry — function dispatch
       code.py                    # CodeExecutor — sandboxed Python exec
       rag.py                     # RAGExecutor — embed query → vector search → chunk retrieval, event emission, store caching
-      control_flow.py            # GateExecutor (unified branching/looping), IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop
+      control_flow.py            # GateExecutor (unified branching/looping), IfElse, WhileLoop, ForEach, ParallelSubagents, Orchestrator, Reduce, Router, HumanInTheLoop
       validator.py               # ValidatorExecutor — rule-based data validation with valid/invalid routing
     builder/                     # Phase 1.5 — fluent workflow builder DSL
       __init__.py                # Public API: workflow(), WorkflowBuilder, NodeRef, PortRef, decompile(), namespace_graph, derive_ports
@@ -115,6 +115,8 @@ deep-agent-network/
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
       run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing
       scoped_run.py              # Scoped execution: full/node/subgraph run builder
+      layout.py                  # Topological layout for graph JSON (DAN_LAYOUT_ON_LOAD)
+      mutation_metrics.py        # Mutation quality metrics for chat/LLM feedback
   editor/                        # Phase 2+3.5 — React Flow visual editor
     package.json                 # Dependencies: react, @xyflow/react, zustand, tailwindcss, dagre, allotment, highlight.js, lucide-react
     vite.config.ts               # Vite config: Tailwind plugin, /api proxy to backend
@@ -128,9 +130,10 @@ deep-agent-network/
       lib/connectionValidation.ts # isValidConnection — no self-connect, no duplicates
       lib/graphImporter.ts       # Workflow-as-node: converts saved graph into CompositeNode with autonomous-entry filtering, node-aware port mappings, entry/exit validation
       lib/layout.ts              # Auto-layout via dagre (LR direction)
-      lib/nodeIcons.tsx          # Inline SVG icons for all 14 node types
+      lib/nodeIcons.tsx          # Inline SVG icons for all 16 node types
       lib/mentionParser.ts       # @mention serialization (`@[name](type:id)`), parsing, cursor detection, co-navigation dispatch, type colors
       lib/graphDiff.ts           # Before/after graph diff computation
+      lib/portOrdering.ts        # Deterministic port ordering (orderPorts, computePortReorder) for DanNode display
       store/useGraphStore.ts     # Zustand store — graph, selection, run state, events, layers, toasts, timings, clipboard, history, port ops, loop iterations, streaming, human input, workflow import
       hooks/useKeyboardShortcuts.ts # Keyboard shortcuts: save, undo/redo, copy/paste/duplicate
       components/DanNode.tsx     # Custom node: port handles, status ring, pulse/glow, duration badge, icons, dimming, inline rename, loop badges/counters
@@ -140,6 +143,9 @@ deep-agent-network/
       components/ContextMenu.tsx  # Right-click context menu: canvas/node/edge actions (paste, copy, delete, edge type)
       components/GraphCanvas.tsx  # Main canvas: drop handling, drill-in, validation, animated edges, context menu, edge reconnection
       components/EditorToolbar.tsx # Merged toolbar: graph selector + run controls + auto-layout
+      components/TabBar.tsx       # Horizontal workflow tabs with run status badge, close, "+ New" template picker
+      components/CommandPalette.tsx # Cmd+K modal: search nodes by name/type, center viewport on select
+      components/LoopGroupNode.tsx  # Collapsed/expanded loop group visualization (visual-only node)
       components/RunInputsDialog.tsx # Modal for collecting entry-point input variables before run
       components/BreadcrumbBar.tsx # Layer navigation: Root > Node1 > Node2
       components/PortMappingOverlay.tsx # Input/output port mapping display when drilled in
@@ -180,7 +186,17 @@ deep-agent-network/
   .cursor/rules/                 # AI agent rules
 ```
 
+## Import and API Conventions
+
+- **Top-level `dan`:** Exposes models (InputPort, OutputPort, node/edge types, Graph, NodeTypeRegistry). Does not expose Engine, builder, loader, or mutator.
+- **Subpackages:** `dan.engine` (Engine, EngineConfig, RunResult, ExecutionContext, etc.), `dan.builder` (workflow, decompile, NodeRef, PortRef), `dan.loader` (load, compile_workflow), `dan.validation` (internal). Public vs internal is implicit — `dan.engine.scheduler` is importable but not re-exported at package level.
+- **Graph schema:** snake_case everywhere (Python models, JSON, TypeScript graph.ts). REST/WebSocket payloads use snake_case; chat message format uses camelCase↔snake_case conversion at API boundary.
+
 ## Core Abstractions
+
+### Object Design Principles (NodeBase)
+
+All 16 node types inherit from `NodeBase` with fields: `id`, `name`, `description`, `input_ports`, `output_ports`, `position`, `ui`, `metadata`, `retry_policy`, `read_set`, `write_set`. Composite/loop nodes override `read_set`/`write_set` for context declarations. GateNode and ValidatorNode use `model_post_init` to set default output ports when empty. InputNode uses `variables` instead of `input_ports` for external inputs. Sub-graph keys follow `{parent_id}__body` or `{parent_id}__{branch_name}`.
 
 ### Two-Level Node Model (inspired by AFlow)
 
@@ -202,6 +218,7 @@ deep-agent-network/
 | If/Else | Route based on condition evaluated on upstream data |
 | While Loop | Repeat until condition met or max iterations reached |
 | For-Each / Map | Fan-out: apply sub-graph to each item in a list, in parallel |
+| Parallel Subagents | Fan-out: run heterogeneous sub-graphs concurrently, merge at fan-in |
 | Reduce | Fan-in: aggregate results from parallel branches |
 | Router | LLM-powered routing — model decides which branch |
 | Human-in-the-Loop | Pause execution, wait for human input, resume |
@@ -245,7 +262,7 @@ Every composite/loop node declares:
 - `external_input_schema` / `external_output_schema` — what the parent sees
 - `control_state` — iteration count, stop flags, thresholds (loop controller only)
 - `local_working_set` — latest working data, not full history
-- `read_set` / `write_set` — declared dependencies on shared context store
+- `read_set` / `write_set` — declared dependencies on shared context store (composite/loop nodes; atomic operators inherit from NodeBase for context-edge targets)
 - `compaction_rule` — how local history is summarized between iterations
 
 ### Context Policies
@@ -432,7 +449,7 @@ result = await engine.resume(graph, run_id="abc123")
 
 - `NodeExecutor` is a `Protocol` with `async execute(node, inputs, context) -> NodeResult`
 - `ExecutorRegistry` maps `node_type` strings to executor instances; users can register custom executors
-- Built-in executors for all 14 node types (including `CompositeExecutor`, `RAGExecutor`, `ValidatorExecutor`) auto-registered on Engine creation
+- Built-in executors for all 16 node types (including `CompositeExecutor`, `ParallelSubagentsExecutor`, `OrchestratorExecutor`, `RAGExecutor`, `ValidatorExecutor`) auto-registered on Engine creation
 
 ### LLM Integration
 
@@ -544,6 +561,11 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 | DELETE | `/api/graphs/{id}` | Delete graph |
 | POST | `/api/graphs/{id}/nodes/{nid}/add-boundary-validators` | Insert entry/exit validator nodes around a composite |
 | POST | `/api/graphs/{id}/apply-mutation` | Apply chat-generated mutation plan (GraphMutator.apply), persist, return new graph |
+| POST | `/api/graphs/{id}/validate` | Validate graph (design-time checks), return errors/warnings |
+| GET | `/api/graphs/{id}/export/markdown` | Export graph as markdown workflow |
+| GET | `/api/graphs/{id}/export/python` | Export graph as Python builder code |
+| GET | `/api/metrics/mutations` | Get mutation quality metrics (apply_success_rate, etc.) |
+| POST | `/api/metrics/mutations/reset` | Reset mutation metrics |
 | GET | `/api/rag/collections` | List RAG collections |
 | POST | `/api/rag/collections` | Create collection with documents |
 | GET | `/api/rag/collections/{name}/stats` | Collection stats |
@@ -577,7 +599,7 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 Bidirectional conversion layer (`graphAdapter.ts`):
 - DAN `input_ports`/`output_ports` map to React Flow handles via `port:<name>` ID convention
 - 3 edge types visually differentiated: data (indigo), control (amber), context (emerald, animated)
-- All 14 node types rendered through a single `DanNode` custom component with per-type color coding
+- All 16 node types rendered through a single `DanNode` custom component with per-type color coding
 - Node execution status shown as colored rings (yellow=running, green=completed, red=failed)
 
 ### UI Layout
@@ -637,7 +659,7 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - **Loading states** — `loadingGraph`/`savingGraph` flags; `Spinner.tsx` component
 - **Connection validation** — `isValidConnection` (no self-connect, no duplicates, port existence)
 - **Merged toolbar** — `EditorToolbar.tsx` combines GraphSwitcher + RunPanel into one bar (DAN branding, graph selector, save/run/resume, status, auto-layout)
-- **Node type icons** — inline SVG icons for all 10 node types (in DanNode header and palette)
+- **Node type icons** — inline SVG icons for all 16 node types (in DanNode header and palette)
 - **Keyboard shortcuts** — Cmd/Ctrl+S → save
 - **Edge labels** — data edges show `source_port → target_port`
 - **Auto-layout** — dagre-based (LR direction, `applyAutoLayout` store action)
@@ -666,6 +688,13 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - `GraphDiffPreview` shows visual diff before applying; accept/reject/partial-accept
 - **Validation gate:** After `GraphMutator.apply()` succeeds, the `apply-mutation` endpoint runs `Graph.model_validate()` + `validate_graph()` before persisting. Fatal validation errors reject the apply; warnings are returned alongside the saved graph.
 - **Auto-retry:** If the LLM's mutation plan fails dry-run validation, the chat manager feeds the errors back to the LLM for one correction attempt before surfacing the failure to the user.
+
+### Build-from-Intent Mode
+- **Two-mode chat:** `ChatMessageRequest.mode` accepts `"mutate"` (default) or `"build"`. Mode `"build"` uses `BUILD_FROM_INTENT_PROMPT` (intent-first workflow creation); `"mutate"` uses `SYSTEM_PROMPT_TEMPLATE` (graph-aware editing). Empty graphs auto-switch to build mode regardless of the `mode` parameter.
+- **Intent-first prompt:** `BUILD_FROM_INTENT_PROMPT` guides the LLM through task decomposition (goal → stages → node types → data flow), references the pattern library (chain, review_loop, fan_out, rag_qa), and maps common intents to patterns (paper writing → review_loop + chain, RAG QA → rag_qa).
+- **Template registry:** `WORKFLOW_TEMPLATES` dict maps template names (paper_writing, rag_qa, chain_3) to pre-built `expand_pattern` operation sequences. Templates reduce LLM variability for common workflows.
+- **Empty-graph bootstrap:** `build_graph_summary` handles empty graphs (nodes=[], edges=[]) — returns valid `GraphSummary` with `node_count=0` and a deterministic revision hash. `base_graph_revision` is injected from the empty graph state so the mutator's stale-plan check works for build-from-scratch.
+- **Editor UX:** "Build with AI" entry point in TabBar creates a blank graph and opens the chat in build mode. After the LLM returns a mutation plan, the editor shows a diff preview (empty → new graph), and auto-switches to mutate mode on apply.
 
 ### Scoped Execution from Chat
 - `/run`, `/run-node @Node`, `/run-subgraph @Node` commands in chat

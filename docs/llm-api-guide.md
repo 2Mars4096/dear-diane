@@ -18,7 +18,7 @@ from dan.models.context import MergeStrategy, CompactionStrategy, CompactionRule
 
 **Graph** — A directed acyclic graph (with loops expressed as composite nodes) of typed nodes connected by typed edges. Serialized as `dan_graph_v1` JSON.
 
-**Node** — An operator (atomic unit of work) or a composite (sub-graph that behaves as a single node). 14 node types total.
+**Node** — An operator (atomic unit of work) or a composite (sub-graph that behaves as a single node). 15 node types total.
 
 **Edge** — A typed connection between node ports. Three types: data, control, context.
 
@@ -27,6 +27,8 @@ from dan.models.context import MergeStrategy, CompactionStrategy, CompactionRule
 **Engine** — Async execution runtime. Topological scheduling, parallel fan-out, checkpointing.
 
 **Builder DSL** — Fluent Python API for constructing graphs programmatically.
+
+**InputNode:** Not created via `wf.input()` — `wf.input` is a *property* (returns `PortRef` for sub-graph entry). InputNode is created by the loader (markdown compile) or scoped_run; the builder DSL does not expose a node-creation method for it.
 
 ---
 
@@ -202,6 +204,47 @@ node = wf.human_in_the_loop(
 
 **Default output port:** `response`.
 
+### 3k. Parallel Subagents
+
+Runs multiple heterogeneous sub-graphs concurrently and merges results at fan-in. Unlike ForEach (same body over a list), each branch is a distinct sub-graph with its own logic. See [Sub-Graph Context Managers](#5-sub-graph-context-managers) for builder syntax.
+
+| Config Field | Type | Default | Purpose |
+|---|---|---|---|
+| `branch_graphs` | `list[str]` | *(required)* | Keys into `Graph.sub_graphs`; each runs concurrently |
+| `parallelism` | `int` | `1` | Max concurrent branches |
+| `merge_strategy` | `MergeStrategy` | `APPEND` | How to combine branch outputs: `APPEND` (list), `LAST_WRITE_WINS` (dict merge), `REDUCER` (expression) |
+| `reducer` | `str \| None` | `None` | Expression over `{"inputs": branch_outputs}` when `merge_strategy=REDUCER` |
+| `input_mappings` | `dict[str, str]` | `{}` | outer_port → inner_entry_port (shared input to all branches) |
+| `branch_inputs` | `dict[str, dict]` | `{}` | branch_key → {port: value} per-branch overrides |
+| `failure_policy` | `FailurePolicy` | `FailurePolicy()` | Timeout, max_iterations, stagnation thresholds |
+
+**Ports:** Input: `input` (shared data). Output: `results` (merged branch outputs).
+
+**Events emitted:** `parallel_branch_started`, `parallel_branch_completed` (with `branch_key` in data), `parallel_fan_in_completed`.
+
+**Default output port:** `results`.
+
+### 3l. Orchestrator
+
+Async runtime orchestrator that runs concurrently with subgraph teams. Unlike ParallelSubagents (fire-and-forget fan-out), the orchestrator actively monitors events from teams and can communicate back via shared context — like a real-world manager coordinating parallel teams.
+
+| Config Field | Type | Default | Purpose |
+|---|---|---|---|
+| `teams` | `dict[str, str]` | *(required)* | Maps team name to sub_graph key; each team runs concurrently |
+| `orchestrator_prompt` | `str` | `""` | System prompt for orchestrator LLM decisions |
+| `orchestrator_model` | `str \| None` | `None` | LLM model for orchestrator (engine default if None) |
+| `completion_condition` | `Literal["all_done", "any_done", "orchestrator_halt"]` | `"all_done"` | When to stop |
+| `max_iterations` | `int` | `100` | Safety bound on orchestrator event loop iterations |
+| `timeout_seconds` | `float \| None` | `None` | Overall timeout |
+| `input_mappings` | `dict[str, str]` | `{}` | outer_port → inner_entry_port (shared input to all teams) |
+| `team_inputs` | `dict[str, dict]` | `{}` | team_name → {port: value} per-team overrides |
+
+**Ports:** Input: `input` (shared data). Output: `results` (per-team results dict), `orchestrator_log` (event log), `team_status` (status per team).
+
+**Events emitted:** `parallel_branch_started` (with `team_name` in data), `parallel_fan_in_completed`.
+
+**Default output port:** `results`.
+
 ---
 
 ## 4. Edge Wiring — Four Mechanisms
@@ -264,6 +307,8 @@ wf.context_edge(
     mode=ContextMode.WRITE,                 # READ, WRITE, or APPEND
 )
 ```
+
+**Context edge semantics:** For `READ` mode, the **target** node consumes the context (the scheduler injects values on incoming edges of the target). The target must declare the key in its `read_set`. For `WRITE` and `APPEND`, the **source** node produces the context; the source must declare the key in its `write_set`.
 
 ### 4e. Spread Edges
 
@@ -362,7 +407,61 @@ with wf.composite(
     s1 >> s2
 ```
 
-### 5d. Import Workflow as Composite Node
+### 5d. Parallel Subagents
+
+```python
+from dan.models.context import MergeStrategy, FailurePolicy
+
+with wf.parallel_subagents(
+    "teams",
+    parallelism=3,                          # max concurrent branches (default: 1)
+    merge_strategy=MergeStrategy.APPEND,    # APPEND | LAST_WRITE_WINS | REDUCER
+    failure_policy=FailurePolicy(timeout_seconds=120),
+) as parallel:
+    with parallel.branch("researcher") as sub:
+        sub.llm("research", prompt="Research: {input}")
+    with parallel.branch("analyst") as sub:
+        sub.llm("analyze", prompt="Analyze: {input}")
+    with parallel.branch("writer") as sub:
+        sub.llm("write", prompt="Write about: {input}")
+
+# Reference the parallel node's output
+from dan.builder.refs import NodeRef
+teams_ref = NodeRef("teams", "parallel_subagents", wf)
+wf.edge(teams_ref["results"], downstream["input"])
+```
+
+**Default output port:** `results` (merged list or dict depending on `merge_strategy`).
+
+**Per-branch overrides:** Use `branch_inputs` to inject branch-specific values alongside shared inputs from `input_mappings`.
+
+### 5e. Orchestrator
+
+```python
+with wf.orchestrator(
+    "coordinator",
+    orchestrator_prompt="Monitor team progress and coordinate",
+    completion_condition="all_done",       # all_done | any_done | orchestrator_halt
+    max_iterations=100,
+    timeout_seconds=300,
+    input_mappings={"input": "topic"},     # route outer "input" to inner "topic"
+) as orch:
+    with orch.team("researcher") as sub:
+        sub.llm("research", prompt="Research: {input}")
+    with orch.team("analyst") as sub:
+        sub.llm("analyze", prompt="Analyze: {input}")
+
+# Reference the orchestrator node's output
+from dan.builder.refs import NodeRef
+coord_ref = NodeRef("coordinator", "orchestrator", wf)
+wf.edge(coord_ref["results"], downstream["input"])
+```
+
+**Default output port:** `results` (dict mapping team names to their outputs).
+
+**Key difference from `parallel_subagents`:** The orchestrator runs an event-processing loop concurrently with teams, receiving events asynchronously via `asyncio.Queue`. It can write back to shared context for bidirectional communication.
+
+### 5f. Import Workflow as Composite Node
 
 ```python
 # Build a standalone workflow
@@ -697,6 +796,11 @@ dan-serve
 | GET | `/api/graphs/{id}` | Load graph JSON |
 | PUT | `/api/graphs/{id}` | Save graph JSON |
 | DELETE | `/api/graphs/{id}` | Delete graph |
+| POST | `/api/graphs/{id}/validate` | Validate graph (design-time checks), return errors/warnings |
+| GET | `/api/graphs/{id}/export/markdown` | Export graph as markdown workflow |
+| GET | `/api/graphs/{id}/export/python` | Export graph as Python builder code |
+| GET | `/api/metrics/mutations` | Get mutation quality metrics |
+| POST | `/api/metrics/mutations/reset` | Reset mutation metrics |
 | POST | `/api/runs` | Start execution (body: `{"graph_id": "...", "inputs": {...}}`) |
 | POST | `/api/runs/{id}/resume` | Resume checkpointed run |
 | GET | `/api/runs/{id}` | Get run status snapshot |
@@ -716,14 +820,16 @@ dan-serve
 | `tool_operator` | `wf.tool()` | `result` | Registered function call |
 | `gate` (if_else mode) | `wf.gate()` | `true`, `false` | Conditional routing (replaces `if_else`) |
 | `gate` (while mode) | `wf.gate()` | `continue`, `done` | Iterative loop (replaces `while_loop`) |
-| `for_each` | `wf.for_each()` | `results` | Parallel fan-out |
+| `for_each` | `wf.for_each()` | `results` | Parallel fan-out over list |
+| `parallel_subagents` | `wf.parallel_subagents()` | `results` | Heterogeneous parallel branches |
+| `orchestrator` | `wf.orchestrator()` | `results` | Async orchestrator with concurrent teams |
 | `composite` | `wf.composite()` | *(declared)* | Sub-graph |
 | `reduce` | `wf.reduce()` | `result` | Fan-in aggregation |
 | `router` | `wf.router()` | `route` | LLM-powered routing |
 | `human_in_the_loop` | `wf.human_in_the_loop()` | `response` | Human input |
 | `rag_operator` | `wf.rag()` | `chunks` | Vector-store retrieval |
 | `validator` | `wf.validator()` | `valid` | Data validation with rule routing |
-| `input` | `wf.input()` | `input` | Workflow entry variables |
+| `input` | *(loader/scoped_run only)* | *(variable-based)* | Workflow entry variables — created by loader or scoped_run, not by builder |
 
 ### Edge Types
 
@@ -737,7 +843,7 @@ dan-serve
 
 | Enum | Values | Used in |
 |---|---|---|
-| `MergeStrategy` | `APPEND`, `LAST_WRITE_WINS`, `REDUCER` | `wf.for_each(merge_strategy=...)` |
+| `MergeStrategy` | `APPEND`, `LAST_WRITE_WINS`, `REDUCER` | `wf.for_each()`, `wf.parallel_subagents()` |
 | `CompactionStrategy` | `SLIDING_WINDOW`, `KEEP_LAST`, `SUMMARIZE`, `DIFF_BASED`, `NONE` | `CompactionRule(strategy=...)` |
 | `ContextMode` | `READ`, `WRITE`, `APPEND` | `wf.context_edge(mode=...)` |
 
@@ -779,7 +885,7 @@ b = wf.llm("step2", prompt=f"Expand on: {a}")
 c = wf.llm("step3", prompt=f"Finalize: {b}")
 ```
 
-### Parallel Fan-Out → Reduce
+### Parallel Fan-Out → Reduce (ForEach)
 
 ```python
 wf = workflow("parallel")
@@ -790,6 +896,38 @@ with wf.for_each("process", items=source["items"], parallelism=5,
     body.llm("analyze", prompt="Analyze: {item}",
              input_ports=[{"name": "item"}, {"name": "index"}])
 ```
+
+### Heterogeneous Parallel Branches (Parallel Subagents)
+
+```python
+wf = workflow("teams")
+source = wf.llm("coordinator", prompt="Prepare topic: {input}")
+with wf.parallel_subagents("teams", parallelism=2, merge_strategy=MergeStrategy.APPEND) as parallel:
+    with parallel.branch("researcher") as sub:
+        sub.llm("r", prompt="Research: {input}")
+    with parallel.branch("analyst") as sub:
+        sub.llm("a", prompt="Analyze: {input}")
+teams = NodeRef("teams", "parallel_subagents", wf)
+source >> teams  # wire input to parallel node
+```
+
+### Async Orchestrator (Concurrent Teams with Event Monitoring)
+
+```python
+wf = workflow("managed_teams")
+with wf.orchestrator("manager",
+    completion_condition="all_done",
+    timeout_seconds=300,
+    input_mappings={"input": "topic"},
+) as orch:
+    with orch.team("researcher") as sub:
+        sub.llm("r", prompt="Research: {input}")
+    with orch.team("analyst") as sub:
+        sub.llm("a", prompt="Analyze: {input}")
+manager = NodeRef("manager", "orchestrator", wf)
+```
+
+> **Difference from parallel_subagents:** The orchestrator spawns teams as `asyncio.create_task` (not `asyncio.gather`), runs its own event-processing loop concurrently, and can react to team events in real-time via an `asyncio.Queue`.
 
 ### Conditional Branching
 
@@ -860,7 +998,7 @@ with report_wf.for_each("sections", items=planner["sections"]) as body:
 
 See `examples/equity_research.py` for a full 3-level example using all edge types.
 
-### 5e. Loop-Scoped State (GateNode)
+### 5f. Loop-Scoped State (GateNode)
 
 `GateNode` (while mode) supports optional `state_schema` and `state_defaults` for automatic loop-scoped state management:
 
@@ -905,16 +1043,19 @@ Use this when an LLM is asked to generate workflow markdown (`workflow.md`, agen
 
 ### 12a. Non-Negotiable Rules
 
-1. **Make ports explicit and typed.**
+1. **Use strict mode for LLM-generated and new workflows.**
+   - Call `compile_workflow(path, strict=True)` or `load(path, strict=True)` when compiling markdown workflows.
+   - Strict mode treats parse warnings and ambiguous bare-edge auto-wire as fatal errors, preventing partial graphs and silent single-port wiring.
+2. **Make ports explicit and typed.**
    - In markdown agents, always include `> Accepts:` / `> Returns:` with concrete types.
    - In Python builder code, prefer explicit `input_ports` / `output_ports` with `json_schema` for non-trivial nodes.
-2. **Treat compiler warnings as failures during generation.**
+3. **Treat compiler warnings as failures during generation.**
    - Do not accept outputs that rely on auto-wiring fallback or untyped edges.
    - Regenerate until `validate_graph()` has no fatal issues and no schema-safety warnings.
-3. **Use explicit gate ports for loop routing.**
-   - For while-style loops, wire `gate["continue"]` and `gate["done"]` explicitly.
-   - Do **not** rely on shorthand chaining (`>>`) for gate-loop control edges.
-4. **Prefer deterministic contracts over implicit behavior.**
+4. **Use explicit gate ports for loop routing.**
+   - For while-mode gates, `gate >> body` now works (default output is `continue`).
+   - Explicit `gate["continue"]` and `gate["done"]` are still recommended for clarity but not required.
+5. **Prefer deterministic contracts over implicit behavior.**
    - Stable node IDs, stable artifact names, stable output keys.
    - No hidden assumptions about default ports in critical paths.
 
@@ -924,7 +1065,8 @@ Use this when an LLM is asked to generate workflow markdown (`workflow.md`, agen
 - **Loop semantics:** `loop(body, until: "...")` means *stop when condition is true*.
 - **Loop state:** When needed, include `state:` and `defaults:` JSON strings in `loop(...)`.
 - **ForEach bodies:** If body logic has multiple steps, wrap it as a composite agent and use `each(composite_body, parallel: N)`.
-- **Context-heavy workflows:** Keep a Python/JSON canonical source if you depend on context/control edges; markdown decompilation currently prioritizes data-flow readability over perfect round-trip for those edge types.
+- **Parallel branches:** Use `source | parallel(team_a, team_b, merge: append, parallel: 2)` for heterogeneous parallel subagents. Each branch references an agent (composite or atomic).
+- **Context-heavy workflows:** Markdown decompilation prioritizes data-flow readability. Control and context edges are emitted as comments (`<!-- SKIPPED -->`). Round-trip is not lossless for workflows that use those edges. For full round-trip of context-heavy or control-heavy workflows, keep a Python/JSON canonical source.
 
 ### 12c. Python Builder Guidance
 
@@ -943,10 +1085,60 @@ Use this when an LLM is asked to generate workflow markdown (`workflow.md`, agen
 ### 12e. Recommended Generation Loop
 
 1. Generate markdown or builder script.
-2. Compile to `Graph`.
+2. Compile to `Graph` (use `compile_workflow(path, strict=True)` or `load(path, strict=True)` for markdown).
 3. Validate (`validate_graph`).
 4. Run a tiny smoke execution on representative inputs.
 5. (If markdown) decompile/round-trip check before shipping.
+
+### 12f. Build-from-Intent Mode (Chat API)
+
+Build-from-intent creates workflows from natural language. It can be triggered two ways:
+
+1. **Automatically** — when the graph is empty (0 nodes, 0 edges), the chat switches to build mode regardless of the `mode` parameter.
+2. **Explicitly** — set `mode="build"` on the chat API request. This forces build mode even on non-empty graphs (useful for rebuilding).
+
+#### API Usage
+
+```bash
+# POST /api/chat/message
+{
+  "workflow_id": "my-workflow",
+  "message": "Create a paper writing pipeline with review loop",
+  "mode": "build",          # "build" or "mutate" (default: "mutate")
+  "history": [],
+  "thread_id": null,
+  "client_graph_revision": null
+}
+```
+
+When `mode="build"`, the LLM receives `BUILD_FROM_INTENT_PROMPT` with:
+- **Task decomposition guidance** — break intent into stages, map to node types and data flow
+- **Pattern library** — chain, review_loop, fan_out, rag_qa (use `expand_pattern` ops)
+- **Intent→pattern mapping** — paper writing → review_loop + chain, RAG QA → rag_qa, multi-step → chain
+- **Available templates** — pre-built operation sequences (see below)
+
+When `mode="mutate"` (default), the LLM receives `SYSTEM_PROMPT_TEMPLATE` with the current graph summary for modification.
+
+#### Available Templates
+
+Pre-built workflow templates (`WORKFLOW_TEMPLATES`) that the LLM can reference:
+
+| Template | Pattern(s) | Description |
+|---|---|---|
+| `paper_writing` | `review_loop` + `chain(3)` | Drafter→Reviewer→Gate loop + Outline→Draft→Final Polish chain |
+| `rag_qa` | `rag_qa` | RAG retrieval → LLM answer |
+| `chain_3` | `chain(3)` | Simple 3-node sequential chain (Step 1 → Step 2 → Step 3) |
+
+#### Build Flow
+
+1. User sends message with `mode="build"` (or graph is empty)
+2. LLM produces a `plan_graph_mutations` call targeting the empty/existing graph
+3. Backend injects `base_graph_revision` from the current graph state (handles empty graphs)
+4. `GraphMutator.dry_run()` validates the plan; auto-retry on failure
+5. Client receives `ChatMutationEvent` with the plan and diff preview
+6. Client applies the mutation, switches to `mode="mutate"` for follow-up edits
+
+Use `strict=true` in `add_edge` operations when building from intent to fail fast on port typos.
 
 ---
 
@@ -975,7 +1167,8 @@ from dan.executors.tool import ToolExecutor, ToolRegistry
 # Models
 from dan.models.nodes import LLMOperator, ToolOperator, CodeOperator, NodeBase
 from dan.models.control_flow import (
-    IfElseNode, WhileLoopNode, ForEachNode, CompositeNode,
+    InputNode, GateNode, IfElseNode, WhileLoopNode, ForEachNode, CompositeNode,
+    ParallelSubagentsNode, ValidatorNode,
     ReduceNode, RouterNode, HumanInTheLoopNode,
 )
 from dan.models.edges import DataEdge, ControlEdge, ContextEdge
