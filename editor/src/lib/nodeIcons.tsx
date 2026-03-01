@@ -36,6 +36,14 @@ const icons: Record<string, JSX.Element> = {
       <rect x="9" y="9" width="5" height="5" rx="1" stroke="currentColor" strokeWidth={1.3} />
     </svg>
   ),
+  parallel_subagents: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <path d="M2 4h4v4H2V4z" stroke="currentColor" strokeWidth={1.3} fill="none" />
+      <path d="M10 4h4v4h-4V4z" stroke="currentColor" strokeWidth={1.3} fill="none" />
+      <path d="M6 8l4-2" stroke="currentColor" strokeWidth={1} strokeLinecap="round" />
+      <path d="M6 8v4h4V8" stroke="currentColor" strokeWidth={1.3} fill="none" />
+    </svg>
+  ),
   reduce: (
     <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
       <path d="M3 3l5 5M13 3L8 8M8 8v6" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />

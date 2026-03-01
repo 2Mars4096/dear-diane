@@ -97,7 +97,7 @@ export default function ContextMenu({ type, position, targetId, onClose }: Conte
       const targetNode = nodes.find((n) => n.id === targetId);
       if (targetNode) {
         const nd = targetNode.data as Record<string, unknown>;
-        const isCompositeStyle = nd.node_type === "composite" || nd.node_type === "while_loop" || nd.node_type === "for_each";
+        const isCompositeStyle = nd.node_type === "composite" || nd.node_type === "while_loop" || nd.node_type === "for_each" || nd.node_type === "parallel_subagents";
         const hasSchema = nd.external_input_schema || nd.external_output_schema;
         if (isCompositeStyle && hasSchema) {
           items.push({

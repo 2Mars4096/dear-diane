@@ -1,5 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import { useGraphStore } from "../store/useGraphStore";
+import { resolveGraphAtStack } from "../lib/graphAdapter";
 import type { DanNode, InputPort, OutputPort, RetryPolicy } from "../types/graph";
 
 const SKIP_FIELDS = new Set([
@@ -16,6 +17,10 @@ const SKIP_FIELDS = new Set([
 const LARGE_TEXT_FIELDS = new Set(["prompt_template", "code", "system_prompt"]);
 
 const GATE_DEDICATED_FIELDS = new Set(["gate_mode", "condition", "max_iterations"]);
+
+const PARALLEL_SUBAGENTS_DEDICATED_FIELDS = new Set([
+  "branch_graphs", "input_mappings", "branch_inputs", "merge_strategy", "reducer", "parallelism", "failure_policy",
+]);
 
 const SCHEMA_TYPES = ["string", "number", "boolean", "array", "object"] as const;
 
@@ -712,6 +717,284 @@ function ValidatorConfigSection({ nodeId, data }: { nodeId: string; data: Record
   );
 }
 
+// -- Parallel Subagents Config Section ---------------------------------------
+
+const MERGE_STRATEGIES = ["append", "last_write_wins", "reducer"] as const;
+
+function ParallelSubagentsConfigSection({ nodeId, data }: { nodeId: string; data: Record<string, unknown> }) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const createEmptySubGraph = useGraphStore((s) => s.createEmptySubGraph);
+  const danGraph = useGraphStore((s) => s.danGraph);
+  const layerStack = useGraphStore((s) => s.layerStack);
+  const [branchInputsOpen, setBranchInputsOpen] = useState(false);
+  const [failurePolicyOpen, setFailurePolicyOpen] = useState(false);
+
+  const branchGraphs = (data.branch_graphs ?? []) as string[];
+  const inputMappings = (data.input_mappings ?? {}) as Record<string, string>;
+  const branchInputs = (data.branch_inputs ?? {}) as Record<string, Record<string, string>>;
+  const mergeStrategy = (data.merge_strategy as string) ?? "append";
+  const reducer = (data.reducer as string) ?? "";
+  const parallelism = (data.parallelism as number) ?? 1;
+  const failurePolicy = (data.failure_policy ?? {}) as Record<string, number | null | undefined>;
+
+  const currentGraph = useMemo(() => {
+    if (!danGraph) return null;
+    return resolveGraphAtStack(danGraph, layerStack);
+  }, [danGraph, layerStack]);
+  const availableSubGraphKeys = Object.keys(currentGraph?.sub_graphs ?? {});
+
+  const update = (patch: Record<string, unknown>) => {
+    updateNodeData(nodeId, patch as unknown as Partial<DanNode>);
+  };
+
+  const setBranchGraphs = (list: string[]) => {
+    update({ branch_graphs: list });
+  };
+
+  const addBranch = () => {
+    const key = `branch_${Date.now()}`;
+    createEmptySubGraph(key);
+    setBranchGraphs([...branchGraphs, key]);
+  };
+
+  const removeBranch = (idx: number) => {
+    setBranchGraphs(branchGraphs.filter((_, i) => i !== idx));
+  };
+
+  const updateBranchKey = (idx: number, newKey: string) => {
+    const updated = [...branchGraphs];
+    updated[idx] = newKey;
+    setBranchGraphs(updated);
+  };
+
+  const setInputMappings = (mappings: Record<string, string>) => {
+    update({ input_mappings: mappings });
+  };
+
+  const addInputMapping = () => {
+    const existing = Object.keys(inputMappings);
+    let outer = "input";
+    let idx = 0;
+    while (existing.includes(outer)) {
+      idx++;
+      outer = `input_${idx}`;
+    }
+    setInputMappings({ ...inputMappings, [outer]: "input" });
+  };
+
+  const updateInputMapping = (outer: string, inner: string) => {
+    setInputMappings({ ...inputMappings, [outer]: inner });
+  };
+
+  const removeInputMapping = (outer: string) => {
+    const next = { ...inputMappings };
+    delete next[outer];
+    setInputMappings(next);
+  };
+
+  return (
+    <div className="mt-3">
+      <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Parallel Subagents</h3>
+      <div className="flex flex-col gap-2 pl-2 border-l border-purple-200">
+        {/* Branch list (sub_graph keys) */}
+        <div>
+          <span className="text-[11px] font-medium text-gray-500">branch_graphs</span>
+          <div className="flex flex-col gap-1 mt-0.5">
+            {branchGraphs.map((key, i) => (
+              <div key={i} className="flex items-center gap-1">
+                <input
+                  type="text"
+                  list={`parallel-branch-list-${nodeId}`}
+                  value={key}
+                  onChange={(e) => updateBranchKey(i, e.target.value)}
+                  placeholder="sub_graph key"
+                  className="flex-1 min-w-0 border rounded px-1.5 py-0.5 text-xs font-mono"
+                  title="Key into Graph.sub_graphs — pick existing or type new"
+                />
+                <datalist id={`parallel-branch-list-${nodeId}`}>
+                  {availableSubGraphKeys.map((k) => (
+                    <option key={k} value={k} />
+                  ))}
+                </datalist>
+                <button
+                  onClick={() => removeBranch(i)}
+                  className="text-gray-400 hover:text-red-500 text-sm leading-none px-0.5 shrink-0"
+                  title="Remove branch"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button onClick={addBranch} className="text-xs text-blue-500 hover:text-blue-700 mt-0.5">
+              + Add Branch
+            </button>
+          </div>
+        </div>
+
+        {/* Input mappings */}
+        <div>
+          <span className="text-[11px] font-medium text-gray-500">input_mappings</span>
+          <p className="text-[10px] text-gray-400 mt-0.5">outer_port → inner_entry_port (shared to all branches)</p>
+          <div className="flex flex-col gap-1 mt-0.5">
+            {Object.entries(inputMappings).map(([outer, inner]) => (
+              <div key={outer} className="flex items-center gap-1">
+                <span className="text-[10px] font-mono w-16 truncate shrink-0">{outer}</span>
+                <span className="text-gray-400">→</span>
+                <input
+                  type="text"
+                  value={inner}
+                  onChange={(e) => updateInputMapping(outer, e.target.value)}
+                  className="flex-1 min-w-0 border rounded px-1.5 py-0.5 text-xs font-mono"
+                  placeholder="inner port"
+                />
+                <button
+                  onClick={() => removeInputMapping(outer)}
+                  className="text-gray-400 hover:text-red-500 text-sm leading-none px-0.5 shrink-0"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            <button onClick={addInputMapping} className="text-xs text-blue-500 hover:text-blue-700 mt-0.5">
+              + Add Mapping
+            </button>
+          </div>
+        </div>
+
+        {/* Merge strategy */}
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">merge_strategy</span>
+          <select
+            value={mergeStrategy}
+            onChange={(e) => update({ merge_strategy: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            {MERGE_STRATEGIES.map((s) => (
+              <option key={s} value={s}>{s}</option>
+            ))}
+          </select>
+        </label>
+
+        {mergeStrategy === "reducer" && (
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">reducer</span>
+            <input
+              type="text"
+              value={reducer}
+              onChange={(e) => update({ reducer: e.target.value || null })}
+              placeholder='e.g. inputs[0]'
+              className="border rounded px-2 py-1 text-xs font-mono"
+            />
+          </label>
+        )}
+
+        {/* Parallelism */}
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">parallelism</span>
+          <input
+            type="number"
+            min={1}
+            value={parallelism}
+            onChange={(e) => update({ parallelism: parseInt(e.target.value) || 1 })}
+            className="border rounded px-2 py-1 text-xs"
+          />
+        </label>
+
+        {/* Branch inputs (per-branch overrides) — collapsible */}
+        <div>
+          <button
+            onClick={() => setBranchInputsOpen(!branchInputsOpen)}
+            className="text-[10px] text-gray-400 hover:text-gray-600"
+          >
+            {branchInputsOpen ? "▾ branch_inputs" : "▸ branch_inputs"}
+          </button>
+          {branchInputsOpen && (
+            <textarea
+              value={JSON.stringify(branchInputs, null, 2)}
+              onChange={(e) => {
+                try {
+                  update({ branch_inputs: JSON.parse(e.target.value || "{}") });
+                } catch { /* keep typing */ }
+              }}
+              className="mt-1 w-full border rounded px-1.5 py-0.5 text-[10px] font-mono h-16 resize-y"
+              placeholder='{"branch_a": {"port": "value"}}'
+            />
+          )}
+        </div>
+
+        {/* Failure policy — collapsible */}
+        <div>
+          <button
+            onClick={() => setFailurePolicyOpen(!failurePolicyOpen)}
+            className="text-[10px] text-gray-400 hover:text-gray-600"
+          >
+            {failurePolicyOpen ? "▾ failure_policy" : "▸ failure_policy"}
+          </button>
+          {failurePolicyOpen && (
+            <div className="flex flex-col gap-1.5 mt-1 pl-2 border-l border-gray-200">
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">max_iterations</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={failurePolicy.max_iterations ?? ""}
+                  onChange={(e) =>
+                    update({
+                      failure_policy: {
+                        ...failurePolicy,
+                        max_iterations: e.target.value ? parseInt(e.target.value) : null,
+                      },
+                    })
+                  }
+                  placeholder="None"
+                  className="border rounded px-2 py-1 text-xs"
+                />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">timeout_seconds</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.1}
+                  value={failurePolicy.timeout_seconds ?? ""}
+                  onChange={(e) =>
+                    update({
+                      failure_policy: {
+                        ...failurePolicy,
+                        timeout_seconds: e.target.value ? parseFloat(e.target.value) : null,
+                      },
+                    })
+                  }
+                  placeholder="None"
+                  className="border rounded px-2 py-1 text-xs"
+                />
+              </label>
+              <label className="flex flex-col gap-0.5">
+                <span className="text-[11px] font-medium text-gray-500">stagnation_threshold</span>
+                <input
+                  type="number"
+                  min={0}
+                  value={failurePolicy.stagnation_threshold ?? ""}
+                  onChange={(e) =>
+                    update({
+                      failure_policy: {
+                        ...failurePolicy,
+                        stagnation_threshold: e.target.value ? parseInt(e.target.value) : null,
+                      },
+                    })
+                  }
+                  placeholder="None"
+                  className="border rounded px-2 py-1 text-xs"
+                />
+              </label>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // -- Main Component ----------------------------------------------------------
 
 export default function ConfigPanel() {
@@ -748,7 +1031,10 @@ export default function ConfigPanel() {
     const d = node.data as unknown as DanNode;
 
     const editableFields = Object.entries(d).filter(
-      ([k]) => !SKIP_FIELDS.has(k) && !(d.node_type === "gate" && GATE_DEDICATED_FIELDS.has(k)),
+      ([k]) =>
+        !SKIP_FIELDS.has(k) &&
+        !(d.node_type === "gate" && GATE_DEDICATED_FIELDS.has(k)) &&
+        !(d.node_type === "parallel_subagents" && PARALLEL_SUBAGENTS_DEDICATED_FIELDS.has(k)),
     );
 
     return (
@@ -961,6 +1247,11 @@ export default function ConfigPanel() {
         {/* 9-3: Validator config — rules, on_failure, strict_mode */}
         {d.node_type === "validator" && (
           <ValidatorConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
+        )}
+
+        {/* 7-9: Parallel Subagents config — branch_graphs, input_mappings, merge_strategy, parallelism, failure_policy */}
+        {d.node_type === "parallel_subagents" && (
+          <ParallelSubagentsConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
         )}
 
         {/* 7-1: Retry policy — configurable for all node types */}

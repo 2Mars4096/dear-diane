@@ -49,6 +49,8 @@ export interface ApplyMutationResult {
   success: boolean;
   new_graph: Record<string, unknown> | null;
   errors: Array<{ op_index?: number; op_type?: string; message?: string }>;
+  warnings?: string[];
+  diagnostics?: string[];
   stale_plan?: boolean;
 }
 
@@ -146,6 +148,7 @@ export const sendChatMessage = (
   history: Array<{ role: string; content: string }> = [],
   threadId?: string | null,
   clientGraphRevision?: string | null,
+  mode: "mutate" | "build" = "mutate",
 ) =>
   request<ChatMessageResponse>("/chat/message", {
     method: "POST",
@@ -155,6 +158,7 @@ export const sendChatMessage = (
       history,
       thread_id: threadId,
       client_graph_revision: clientGraphRevision,
+      mode,
     }),
   });
 

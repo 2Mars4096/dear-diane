@@ -363,6 +363,18 @@ export function createDefaultNode(
       return { ...base, node_type: "gate", gate_mode: "while", condition: "", max_iterations: 10, output_ports: [{ name: "continue", schema: {} }, { name: "done", schema: {} }] };
     case "for_each":
       return { ...base, node_type: "for_each", body_graph: "", parallelism: 1, merge_strategy: "append" };
+    case "parallel_subagents":
+      return {
+        ...base,
+        node_type: "parallel_subagents",
+        branch_graphs: [],
+        input_mappings: {},
+        branch_inputs: {},
+        merge_strategy: "append",
+        reducer: null,
+        parallelism: 1,
+        failure_policy: {},
+      };
     case "reduce":
       return { ...base, node_type: "reduce", reducer: "" };
     case "router":

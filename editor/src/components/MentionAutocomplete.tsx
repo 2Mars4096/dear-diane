@@ -22,7 +22,7 @@ interface MentionAutocompleteProps {
   onDismiss: () => void;
 }
 
-const SUBGRAPH_NODE_TYPES = new Set(["composite", "while_loop", "for_each"]);
+const SUBGRAPH_NODE_TYPES = new Set(["composite", "while_loop", "for_each", "parallel_subagents"]);
 
 const typeLabel: Record<string, string> = {
   ...Object.fromEntries(NODE_TYPE_CATALOG.map((c) => [c.type, c.label])),

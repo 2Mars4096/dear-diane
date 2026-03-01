@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
+import { Sparkles } from "lucide-react";
 import { useGraphStore } from "../store/useGraphStore";
 import { PREDEFINED_AGENT_TEMPLATES } from "../lib/paletteTemplates";
 
@@ -39,6 +40,7 @@ export default function TabBar() {
   const closeTab = useGraphStore((s) => s.closeTab);
   const openTab = useGraphStore((s) => s.openTab);
   const openTabFromTemplate = useGraphStore((s) => s.openTabFromTemplate);
+  const openBuildWithAI = useGraphStore((s) => s.openBuildWithAI);
   const replaceActiveTabGraph = useGraphStore((s) => s.replaceActiveTabGraph);
   const tabCache = useGraphStore((s) => s.tabCache);
   const loadGraphList = useGraphStore((s) => s.loadGraphList);
@@ -255,6 +257,15 @@ export default function TabBar() {
                   >
                     <span className="text-gray-400 text-[10px]">+</span>
                     <span>Blank</span>
+                  </button>
+                )}
+                {(!search || "build with ai".includes(search.toLowerCase())) && (
+                  <button
+                    onClick={() => { openBuildWithAI(); closePicker(); }}
+                    className="flex items-center gap-1.5 w-full text-left px-3 py-1.5 text-xs text-purple-700 hover:bg-purple-50 border-b border-gray-100 font-medium"
+                  >
+                    <Sparkles size={10} className="text-purple-500" />
+                    <span>Build with AI</span>
                   </button>
                 )}
                 {PREDEFINED_AGENT_TEMPLATES.filter(

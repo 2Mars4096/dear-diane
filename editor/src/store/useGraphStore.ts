@@ -231,6 +231,9 @@ interface GraphState {
   // -- 6-7: Workflow as node
   addGraphAsNode: (graphId: string, position: { x: number; y: number }) => Promise<void>;
 
+  // -- 7-9: Create empty sub-graph for parallel_subagents
+  createEmptySubGraph: (graphKey: string) => void;
+
   // -- 9-3: Boundary validators
   addBoundaryValidators: (nodeId: string) => Promise<void>;
 
@@ -257,6 +260,11 @@ interface GraphState {
   switchTab: (tabId: string) => Promise<void>;
   refreshTab: () => Promise<void>;
   restoreTabs: () => Promise<void>;
+
+  // -- 10-9: Build-from-intent chat mode
+  chatMode: "build" | "mutate";
+  setChatMode: (mode: "build" | "mutate") => void;
+  openBuildWithAI: () => Promise<void>;
 }
 
 // -- 7-4: Cost estimation (mirrors src/dan/providers/costs.py) ------------------
@@ -408,6 +416,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
   // -- 6-10: Loop groups
   loopGroups: [],
+
+  // -- 10-9: Build-from-intent
+  chatMode: "mutate" as const,
 
   // -- 6-9: Tab state
   tabs: [],
@@ -1086,9 +1097,12 @@ export const useGraphStore = create<GraphState>((set, get) => {
     const rfNode = nodes.find((n) => n.id === nodeId);
     if (!rfNode) return;
     const d = rfNode.data as unknown as DanNode;
-    const bodyGraphKey = (d as Record<string, unknown>).body_graph as string | undefined;
-    const isBlackbox = (d as Record<string, unknown>).is_blackbox as boolean | undefined;
-    if (!bodyGraphKey || isBlackbox) return;
+    const dr = d as unknown as Record<string, unknown>;
+    const bodyGraphKey = dr.body_graph as string | undefined;
+    const branchGraphs = dr.branch_graphs as string[] | undefined;
+    const isBlackbox = dr.is_blackbox as boolean | undefined;
+    const graphKey = bodyGraphKey ?? (d.node_type === "parallel_subagents" && branchGraphs?.length ? branchGraphs[0] : undefined);
+    if (!graphKey || isBlackbox) return;
     if (layerStack.length >= MAX_DRILL_DEPTH) {
       get().addToast({ type: "info", message: "Maximum drill-in depth reached" });
       return;
@@ -1101,9 +1115,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
       get().addToast({ type: "warning", message: "Navigation error — reset to root" });
       return;
     }
-    const subGraph = currentGraph.sub_graphs?.[bodyGraphKey] as unknown as DanGraph | undefined;
+    const subGraph = currentGraph.sub_graphs?.[graphKey] as unknown as DanGraph | undefined;
     if (!subGraph) return;
-    const newStack = [...layerStack, { graphKey: bodyGraphKey, nodeId, nodeName: d.name }];
+    const newStack = [...layerStack, { graphKey, nodeId, nodeName: d.name }];
     const sg = subGraph;
     const { nodes: rfNodes, edges: rfEdges } = danGraphToReactFlow(sg);
 
@@ -1289,6 +1303,33 @@ export const useGraphStore = create<GraphState>((set, get) => {
     } catch (err: unknown) {
       get().addToast({ type: "error", message: (err as Error).message ?? "Failed to import graph" });
     }
+  },
+
+  // -- 7-9: Create empty sub-graph for parallel_subagents branch -------------
+
+  createEmptySubGraph: (graphKey: string) => {
+    const { danGraph, layerStack } = get();
+    if (!danGraph) return;
+    const currentGraph = resolveGraphAtStack(danGraph, layerStack);
+    if (!currentGraph || currentGraph.sub_graphs?.[graphKey]) return;
+    get().pushSnapshot();
+    const emptySub: DanGraph = {
+      version: "dan_graph_v1",
+      metadata: { name: graphKey },
+      nodes: [],
+      edges: [],
+      sub_graphs: {},
+      entry_points: [],
+      exit_points: [],
+      shared_context: [],
+      artifact_refs: [],
+    };
+    const updatedCurrent = {
+      ...currentGraph,
+      sub_graphs: { ...currentGraph.sub_graphs, [graphKey]: emptySub },
+    };
+    const updated = deepSetSubGraph(danGraph, layerStack, updatedCurrent);
+    set({ danGraph: updated, dirty: true });
   },
 
   // -- 9-3: Boundary validators -----------------------------------------------
@@ -1546,6 +1587,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
     set({ loopGroups: updatedGroups, nodes, edges, dirty: true });
   },
 
+  // -- 10-9: Build-from-intent chat mode
+  setChatMode: (mode) => set({ chatMode: mode }),
+
+  openBuildWithAI: async () => {
+    const autoId = `build-${Math.random().toString(36).slice(2, 8)}`;
+    await get().createGraph(autoId);
+    if (get().graphId === autoId) {
+      set({ chatMode: "build" });
+    }
+  },
+
   // -- 6-1: History (undo/redo) -------------------------------------------------
 
   pushSnapshot: () => {
@@ -1649,6 +1701,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       selectedNodeIds: new Set<string>(),
       layerStack: [],
       loopGroups: [],
+      chatMode: "mutate" as const,
     }));
 
     if (!isBlank) {

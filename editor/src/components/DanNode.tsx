@@ -15,6 +15,7 @@ const TYPE_COLORS: Record<string, string> = {
   if_else: "#f59e0b",
   while_loop: "#f97316",
   for_each: "#ef4444",
+  parallel_subagents: "#d946ef",
   reduce: "#ec4899",
   router: "#14b8a6",
   human_in_the_loop: "#06b6d4",
@@ -109,12 +110,17 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   const orderedInputPorts = orderPorts(d.input_ports ?? [], allEdges, allNodes, id, "input", d.node_type, myReorder);
   const orderedOutputPorts = orderPorts(d.output_ports ?? [], allEdges, allNodes, id, "output", d.node_type);
 
-  const isBlackbox = !!(d as Record<string, unknown>).is_blackbox;
+  const dRecord = d as unknown as Record<string, unknown>;
+  const isBlackbox = !!dRecord.is_blackbox;
   const hasBodyGraph =
     (d.node_type === "while_loop" ||
       d.node_type === "for_each" ||
       d.node_type === "composite") &&
-    !!d.body_graph;
+    !!dRecord.body_graph;
+  const hasBranchGraphs =
+    d.node_type === "parallel_subagents" &&
+    Array.isArray(dRecord.branch_graphs) &&
+    (dRecord.branch_graphs as string[]).length > 0;
 
   return (
     <div
@@ -159,7 +165,7 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
         {hasBodyGraph && isBlackbox && (
           <span className="ml-1 text-[10px] opacity-80" title="Blackbox — no drill-in">&#x1F512;</span>
         )}
-        {hasBodyGraph && !isBlackbox && (
+        {(hasBodyGraph || hasBranchGraphs) && !isBlackbox && (
           <span className="ml-1 text-[10px] opacity-80" title="Double-click to drill in">&#x25B6;</span>
         )}
         {(d.node_type === "while_loop" || d.node_type === "for_each") && (
@@ -195,6 +201,18 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
           {iteration && (
             <span className="ml-auto font-mono bg-red-100 px-1 rounded">
               {iteration.current}/{iteration.total ?? "?"}
+            </span>
+          )}
+        </div>
+      )}
+
+      {d.node_type === "parallel_subagents" && (
+        <div className="px-2 py-0.5 text-[10px] text-purple-600 bg-purple-50 flex items-center gap-1.5">
+          <span className="opacity-70">&#x2225;</span>
+          <span>parallel</span>
+          {hasBranchGraphs && (
+            <span className="ml-auto font-mono bg-purple-100 px-1 rounded">
+              {(dRecord.branch_graphs as string[])?.length ?? 0} branches
             </span>
           )}
         </div>

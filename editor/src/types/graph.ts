@@ -133,6 +133,17 @@ export interface CompositeNode extends NodeBase {
   external_output_schema?: Record<string, unknown> | null;
 }
 
+export interface ParallelSubagentsNode extends NodeBase {
+  node_type: "parallel_subagents";
+  branch_graphs: string[];
+  input_mappings: Record<string, string>;
+  branch_inputs?: Record<string, Record<string, string>>;
+  merge_strategy?: string;
+  reducer?: string | null;
+  parallelism?: number;
+  failure_policy?: { max_iterations?: number | null; timeout_seconds?: number | null; stagnation_threshold?: number | null };
+}
+
 export interface RagOperator extends NodeBase {
   node_type: "rag_operator";
   collection: string;
@@ -181,6 +192,7 @@ export type DanNode =
   | RouterNode
   | HumanInTheLoopNode
   | CompositeNode
+  | ParallelSubagentsNode
   | RagOperator
   | ValidatorNode
   | InputNodeType;
@@ -265,6 +277,7 @@ export const NODE_TYPE_CATALOG = [
   { type: "gate_if_else", label: "If/Else Gate", category: "control" },
   { type: "gate_while", label: "While Gate", category: "control" },
   { type: "for_each", label: "For Each", category: "control" },
+  { type: "parallel_subagents", label: "Parallel Subagents", category: "control" },
   { type: "reduce", label: "Reduce", category: "control" },
   { type: "router", label: "Router", category: "control" },
   { type: "human_in_the_loop", label: "Human in the Loop", category: "control" },
@@ -309,6 +322,11 @@ export const NODE_DESCRIPTIONS: Record<
   for_each: {
     description: "Fan out a sub-graph over list items",
     inputs: ["items"],
+    outputs: ["results"],
+  },
+  parallel_subagents: {
+    description: "Run multiple sub-graphs concurrently; merge at fan-in",
+    inputs: ["input"],
     outputs: ["results"],
   },
   reduce: {

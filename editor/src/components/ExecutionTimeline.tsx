@@ -8,6 +8,7 @@ const TYPE_COLORS: Record<string, string> = {
   if_else: "#f59e0b",
   while_loop: "#f97316",
   for_each: "#ef4444",
+  parallel_subagents: "#d946ef",
   reduce: "#ec4899",
   router: "#14b8a6",
   human_in_the_loop: "#06b6d4",

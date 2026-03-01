@@ -16,10 +16,12 @@ export default function PortMappingOverlay() {
     const parentNode = parentGraph.nodes.find((n: { id: string }) => n.id === parentEntry.nodeId);
     if (!parentNode) return null;
     const d = parentNode as unknown as DanNode;
-    if (d.node_type !== "composite") return null;
+    if (d.node_type !== "composite" && d.node_type !== "parallel_subagents") return null;
 
     const inputMappings = (d as unknown as Record<string, unknown>).input_mappings as Record<string, string> | undefined;
-    const outputMappings = (d as unknown as Record<string, unknown>).output_mappings as Record<string, string> | undefined;
+    const outputMappings = (d.node_type === "composite")
+      ? (d as unknown as Record<string, unknown>).output_mappings as Record<string, string> | undefined
+      : undefined;
 
     if (!inputMappings && !outputMappings) return null;
     const inputs = Object.entries(inputMappings ?? {});

@@ -160,11 +160,16 @@ export default function GraphCanvas() {
         onPaneClick={() => { setSelectedNode(null); setSelectedEdge(null); setContextMenu(null); }}
         onNodeDoubleClick={(_, node) => {
           const d = node.data as unknown as DanNodeType;
+          const dr = d as unknown as Record<string, unknown>;
           const hasBody =
             (d.node_type === "while_loop" || d.node_type === "for_each" || d.node_type === "composite") &&
-            !!(d as Record<string, unknown>).body_graph &&
-            !(d as Record<string, unknown>).is_blackbox;
-          if (hasBody) drillIn(node.id);
+            !!dr.body_graph &&
+            !dr.is_blackbox;
+          const hasBranches =
+            d.node_type === "parallel_subagents" &&
+            Array.isArray(dr.branch_graphs) &&
+            (dr.branch_graphs as string[]).length > 0;
+          if (hasBody || hasBranches) drillIn(node.id);
         }}
         onPaneContextMenu={(e) => {
           e.preventDefault();

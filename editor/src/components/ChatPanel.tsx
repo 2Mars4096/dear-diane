@@ -15,6 +15,8 @@ import {
   Trash2,
   History,
   Loader2,
+  Sparkles,
+  Play,
 } from "lucide-react";
 import { useGraphStore } from "../store/useGraphStore";
 import type { ChatMessage, ChatStreamEvent } from "../types/chat";
@@ -39,6 +41,12 @@ const EXAMPLE_PROMPTS = [
   "Add a reviewer node after the writer",
   "Connect the output of Planner to Drafter",
   "Create a 3-node research pipeline",
+];
+
+const BUILD_PROMPTS = [
+  "Create a research pipeline with planner, researcher, and writer",
+  "Build a review loop for paper writing with feedback",
+  "Design a RAG QA workflow with retrieval and answering",
 ];
 
 // ---------------------------------------------------------------------------
@@ -110,6 +118,7 @@ export default function ChatPanel() {
   const danGraph = useGraphStore((s) => s.danGraph);
   const loadGraph = useGraphStore((s) => s.loadGraph);
   const pushSnapshot = useGraphStore((s) => s.pushSnapshot);
+  const chatMode = useGraphStore((s) => s.chatMode);
 
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -137,6 +146,7 @@ export default function ChatPanel() {
     useState<ChatMessage | null>(null);
   const [isApplying, setIsApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [buildJustCompleted, setBuildJustCompleted] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const applyingRef = useRef(false);
@@ -236,6 +246,18 @@ export default function ChatPanel() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    if (chatMode === "build") {
+      setChatOpen(true);
+      setShowThreadList(false);
+      setMessages([]);
+      setActiveThreadId(null);
+      setThreadTitle("");
+      setError(null);
+      setBuildJustCompleted(false);
+    }
+  }, [chatMode]);
 
   // -------------------------------------------------------------------------
   // Textarea auto-resize
@@ -386,6 +408,7 @@ export default function ChatPanel() {
       setInputText("");
       setIsStreaming(true);
       setError(null);
+      setBuildJustCompleted(false);
 
       const capturedGraphId = graphId;
 
@@ -401,6 +424,7 @@ export default function ChatPanel() {
               content: m.content,
             })),
             thread_id: threadId,
+            mode: useGraphStore.getState().chatMode,
           }),
         });
 
@@ -680,6 +704,14 @@ export default function ChatPanel() {
           );
           return;
         }
+        if (res.diagnostics?.length) {
+          const addToast = useGraphStore.getState().addToast;
+          const msg =
+            res.diagnostics.length === 1
+              ? res.diagnostics[0]
+              : `${res.diagnostics.length} warnings: ${res.diagnostics[0]}${res.diagnostics.length > 1 ? "…" : ""}`;
+          addToast({ type: "warning", message: msg });
+        }
         pushSnapshot();
         await loadGraph(graphId);
         const updated = messages.map((m) =>
@@ -703,6 +735,10 @@ export default function ChatPanel() {
         }
         setPreviewingMessage(null);
         setApplyError(null);
+        if (useGraphStore.getState().chatMode === "build") {
+          useGraphStore.getState().setChatMode("mutate");
+          setBuildJustCompleted(true);
+        }
       } catch (err) {
         setApplyError(err instanceof Error ? err.message : "Apply failed");
       } finally {
@@ -856,10 +892,19 @@ export default function ChatPanel() {
               </div>
             </div>
 
+            {/* Build mode banner */}
+            {chatMode === "build" && (
+              <div className="px-3 py-1.5 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-indigo-100 flex items-center gap-2 flex-shrink-0">
+                <Sparkles size={12} className="text-indigo-500" />
+                <span className="text-[11px] font-medium text-indigo-700">Build Mode</span>
+                <span className="text-[10px] text-indigo-400 ml-auto">Describe your workflow intent</span>
+              </div>
+            )}
+
             {/* Messages area */}
             <div className="flex-1 overflow-y-auto px-3 py-3 min-h-0">
               {messages.length === 0 ? (
-                <EmptyState onSelect={(t) => sendMessage(t)} />
+                <EmptyState onSelect={(t) => sendMessage(t)} mode={chatMode} />
               ) : (
                 <>
                   {messages.map((m) => (
@@ -937,6 +982,22 @@ export default function ChatPanel() {
                   )}
                 </>
               )}
+              {buildJustCompleted && graphId && (
+                <div className="flex flex-col items-center gap-2 my-4 px-4 py-3 bg-green-50 rounded-xl border border-green-100">
+                  <span className="text-xs text-green-700 font-medium">Workflow built successfully</span>
+                  <button
+                    onClick={() => {
+                      setBuildJustCompleted(false);
+                      useGraphStore.getState().startRun();
+                    }}
+                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shadow-sm"
+                  >
+                    <Play size={12} />
+                    Run this workflow
+                  </button>
+                  <span className="text-[10px] text-gray-400">or continue chatting to refine</span>
+                </div>
+              )}
               <div ref={messagesEndRef} />
             </div>
 
@@ -953,7 +1014,7 @@ export default function ChatPanel() {
                   onKeyDown={handleKeyDown}
                   onKeyUp={checkMention}
                   onClick={checkMention}
-                  placeholder="Ask about your workflow… (@ to mention)"
+                  placeholder={chatMode === "build" ? "Describe the workflow you want to build…" : "Ask about your workflow… (@ to mention)"}
                   rows={1}
                   disabled={isStreaming}
                   className="flex-1 resize-none text-sm text-gray-900 placeholder-gray-400 bg-transparent outline-none min-h-[24px] max-h-[160px] leading-snug disabled:opacity-50"
@@ -1111,20 +1172,28 @@ function ThreadRow({
   );
 }
 
-function EmptyState({ onSelect }: { onSelect: (text: string) => void }) {
+function EmptyState({ onSelect, mode }: { onSelect: (text: string) => void; mode: "build" | "mutate" }) {
+  const isBuild = mode === "build";
+  const prompts = isBuild ? BUILD_PROMPTS : EXAMPLE_PROMPTS;
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-4">
       <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center mb-3">
-        <MessageSquare size={20} className="text-indigo-400" />
+        {isBuild ? (
+          <Sparkles size={20} className="text-indigo-400" />
+        ) : (
+          <MessageSquare size={20} className="text-indigo-400" />
+        )}
       </div>
       <h3 className="text-sm font-semibold text-gray-700 mb-1">
-        Workflow Assistant
+        {isBuild ? "Build a Workflow" : "Workflow Assistant"}
       </h3>
       <p className="text-xs text-gray-400 mb-4 max-w-[260px]">
-        Ask questions about your graph or describe changes you'd like to make.
+        {isBuild
+          ? "Describe what workflow you want to build and AI will create it for you."
+          : "Ask questions about your graph or describe changes you'd like to make."}
       </p>
       <div className="flex flex-col gap-1.5 w-full">
-        {EXAMPLE_PROMPTS.map((prompt) => (
+        {prompts.map((prompt) => (
           <button
             key={prompt}
             onClick={() => onSelect(prompt)}
