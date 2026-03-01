@@ -14,6 +14,9 @@
 | [10-5](10-5-history-execution.md) | Chat History & Session Integration | Per-workflow message persistence, history list UI, graph delta tracking, session-scoped rollback metadata | new `src/dan/server/chat_store.py`, `ChatPanel.tsx`, `useGraphStore.ts` |
 | [10-6](10-6-scoped-run-from-chat.md) | Scoped Run Execution from Chat | Full/node/sub-graph run API, target resolution, chat command handling, run event streaming into thread | new `src/dan/server/scoped_run.py`, `chat_manager.py`, `run_manager.py`, `app.py` |
 | [10-7](10-7-apply-mutation-flow.md) | Apply Mutation Flow | Wire GraphDiffPreview, apply-mutation endpoint, chat→preview→apply pipeline, undo/session marker | `app.py`, `editor/src/lib/api.ts`, `ChatMessage.tsx`, `ChatPanel.tsx` |
+| [10-8](10-8-nl-mutation-hardening.md) | NL Mutation Hardening | Validate-before-save, port-aware edges, entry/exit recompute, typed tool schema, pattern macros, mutation CI | `graph_mutator.py`, `chat_manager.py`, `llm-api-guide.md` |
+| [10-9](10-9-meta-orchestrator.md) | Meta Orchestrator | Zero-to-workflow from natural language intent; self-builds workflow from scratch | `chat_manager.py`, `graph_mutator.py`, ChatPanel |
+| [10-10](10-10-domain-nl-authoring.md) | Domain NL Authoring | `data_ingest` pattern, rich INFORMS paper-writing template, lightweight skill injection, `BUILD_FROM_INTENT_PROMPT` quality, multi-turn clarification | `graph_mutator.py`, `chat_manager.py`, `llm-api-guide.md` |
 
 ## Dependencies / Sequencing
 

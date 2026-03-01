@@ -1,7 +1,7 @@
 # 7-8: Workflow Node API Hardening
 
 **Parent:** [7-core-hardening](7-core-hardening.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Fix correctness gaps in the workflow authoring pipeline (loader, validation, builder, mutator) so that **users can describe workflows in their mind** and we can use existing nodes, logical nodes, and tools to **easily, logically, and structurally** build them. Core mechanisms must be comprehensive and strong — round-trip lossless, validation aligned with runtime, sensible defaults, and fail-fast feedback when ambiguous.
 
 ## Design Principle: Convenient Workflow Building
@@ -23,16 +23,16 @@ This plan addresses all of the above so the core pipeline is trustworthy and aut
 
 **Bug:** [docs/bugs.md](../bugs.md) — decompiler writes gate condition into `until` without inversion; omits `state`/`defaults`.
 
-- [ ] 1-1. **Decompiler: invert `gate.condition` → `until`**
+- [x] 1-1. **Decompiler: invert `gate.condition` → `until`**
   - Compiler stores `not (cond)` in gate; decompiler must emit `cond` for `until`.
   - Rule: if `gate.condition` matches `not (...)` pattern, strip one layer and emit inner expression.
   - Edge cases: nested `not (not (x))` → emit `x`; document in code and llm-api-guide.
-- [ ] 1-2. **Decompiler: emit `state:` and `defaults:` when present**
+- [x] 1-2. **Decompiler: emit `state:` and `defaults:` when present**
   - When gate has `state_schema` / `state_defaults`, add to loop() output as JSON strings.
   - Flow parser already supports these kwargs (flow_parser.py lines 179–192).
-- [ ] 1-3. **Round-trip test**
+- [x] 1-3. **Round-trip test**
   - `md → graph → md' → graph'` with semantic equivalence (same nodes, edges, gate condition meaning, state schema).
-- [ ] 1-4. **Document inversion rule** in decompiler and llm-api-guide (12b Loop semantics).
+- [x] 1-4. **Document inversion rule** in decompiler and llm-api-guide (12b Loop semantics).
 
 **Primary files:** `src/dan/loader/decompiler.py`, `tests/` (round-trip).
 
@@ -42,10 +42,10 @@ This plan addresses all of the above so the core pipeline is trustworthy and aut
 
 **Bug:** [docs/bugs.md](../bugs.md) — validator checks `source_node_id` read_set; runtime injects on `target_node_id`.
 
-- [ ] 2-1. **Fix `_check_context_edge_permissions`**
+- [x] 2-1. **Fix `_check_context_edge_permissions`**
   - For `ContextMode.READ`: validate `target_node_id`'s `read_set` (consumer of context).
   - For `WRITE`/`APPEND`: keep validating `source_node_id`'s `write_set` (unchanged).
-- [ ] 2-2. **Update llm-api-guide** — document context-edge semantics: read = target consumes, write = source produces.
+- [x] 2-2. **Update llm-api-guide** — document context-edge semantics: read = target consumes, write = source produces.
 
 **Primary files:** `src/dan/validation/graph.py`, `docs/llm-api-guide.md`.
 
@@ -55,13 +55,13 @@ This plan addresses all of the above so the core pipeline is trustworthy and aut
 
 **Bug:** [docs/bugs.md](../bugs.md) — builder `DEFAULT_OUTPUT_PORTS["gate"] = "true"`; while-mode gates have `continue`/`done`.
 
-- [ ] 3-1. **Builder: mode-aware default output for gate**
+- [x] 3-1. **Builder: mode-aware default output for gate**
   - In `dan.builder.compiler`: `default_output_port` must consider `gate_mode` when node_type is `gate`.
   - `gate_mode="while"` → `"continue"` (typical loop body chain); `gate_mode="if_else"` → `"true"`.
   - Requires builder/compiler to have access to gate_mode at chain resolution time (NodeRef or pending node kwargs).
-- [ ] 3-2. **Loader parity check**
+- [x] 3-2. **Loader parity check**
   - Loader already has mode-aware `_default_output_port` (lines 1038–1041). Verify behavior is consistent; loader uses `"done"` for while-gate default (exit chain). Confirm no regressions.
-- [ ] 3-3. **Update llm-api-guide playbook**
+- [x] 3-3. **Update llm-api-guide playbook**
   - Relax 12a rule 3: after fix, `gate >> body` works for while-mode gates; explicit `gate["continue"]` still recommended for clarity but not required.
 
 **Primary files:** `src/dan/builder/compiler.py`, `src/dan/builder/builder.py`, `docs/llm-api-guide.md`.
@@ -72,13 +72,13 @@ This plan addresses all of the above so the core pipeline is trustworthy and aut
 
 **Bug:** [docs/bugs.md](../bugs.md) — parse failures are warnings; compilation continues with partially wired graphs.
 
-- [ ] 4-1. **Add `strict` parameter**
+- [x] 4-1. **Add `strict` parameter**
   - `compile_workflow(path, strict=False)` or `WorkflowSpec(..., strict_parse=False)`.
   - When `strict=True`: parse failures and parse_warnings → `BuildError` / fatal diagnostics; compilation stops.
-- [ ] 4-2. **Default and migration**
+- [x] 4-2. **Default and migration**
   - Default `strict=False` for backward compatibility.
   - Document in llm-api-guide: recommend `strict=True` for LLM-generated and new workflows.
-- [ ] 4-3. **Scope**
+- [x] 4-3. **Scope**
   - Strict mode: flow parse errors + parse_warnings (invalid flow lines). Optionally include auto-wire ambiguity warnings as fatal in strict mode (task 6).
 
 **Primary files:** `src/dan/loader/compiler.py`, `src/dan/loader/parser.py`, `docs/llm-api-guide.md`.
@@ -89,10 +89,10 @@ This plan addresses all of the above so the core pipeline is trustworthy and aut
 
 **Bug:** [docs/bugs.md](../bugs.md) — typo in target_port silently creates untyped optional port.
 
-- [ ] 5-1. **Add diagnostic on auto-create**
+- [x] 5-1. **Add diagnostic on auto-create**
   - When mutator auto-creates a port, add a non-fatal diagnostic: "Auto-created input port 'X' on node 'Y' (port not declared). Verify spelling."
   - Return diagnostic in mutation response so chat/UI can surface it.
-- [ ] 5-2. **Optional strict mode for mutations**
+- [x] 5-2. **Optional strict mode for mutations**
   - `add_edge` op: when `strict=True`, fail with clear error instead of auto-creating.
   - Default: permissive (auto-create + warn) for conversational convenience; strict opt-in for programmatic use.
 
@@ -104,10 +104,10 @@ This plan addresses all of the above so the core pipeline is trustworthy and aut
 
 **Context:** Loader emits warning when multiple ports match; uses first alphabetically. merge→governor historically dropped `new_strategies` this way.
 
-- [ ] 6-1. **Strict mode: ambiguous auto-wire → error**
+- [x] 6-1. **Strict mode: ambiguous auto-wire → error**
   - When `strict=True` and `len(matches) > 1`, emit error (not warning): "Ambiguous: A → B has multiple matching ports {X, Y}. Use explicit .port syntax."
   - Prevents silent single-port wiring when user intended both.
-- [ ] 6-2. **Improve hint message**
+- [x] 6-2. **Improve hint message**
   - Non-strict: keep warning but strengthen hint: "Use explicit 'A.port_x → B.port_y' to wire all intended ports."
 
 **Primary files:** `src/dan/loader/compiler.py`, `_resolve_ports`, `_auto_wire`.
@@ -118,9 +118,9 @@ This plan addresses all of the above so the core pipeline is trustworthy and aut
 
 **Context:** Control and context edges emit `<!-- SKIPPED -->` comments; round-trip not lossless for those workflows.
 
-- [ ] 7-1. **Document as known limitation**
+- [x] 7-1. **Document as known limitation**
   - In llm-api-guide 12b: "Context-heavy workflows: markdown decompilation prioritizes data-flow readability. Control/context edges are emitted as comments. For full round-trip of those workflows, keep a Python/JSON canonical source."
-- [ ] 7-2. **Future: extend markdown syntax** (out of scope for 7-8)
+- [x] 7-2. **Future: extend markdown syntax** (out of scope for 7-8)
   - If needed later: add flow syntax for context read/write, control edges. Requires format extension.
 
 **Primary files:** `docs/llm-api-guide.md`.
@@ -129,10 +129,10 @@ This plan addresses all of the above so the core pipeline is trustworthy and aut
 
 ### 8. Tests and docs
 
-- [ ] 8-1. **Round-trip tests** — loop with state_schema/defaults, until inversion, semantic equivalence.
-- [ ] 8-2. **Unit tests** — ContextEdge validation (read=target, write=source), gate default port by mode.
-- [ ] 8-3. **Integration** — strict mode compile fails on invalid flow line; mutator diagnostic on auto-create.
-- [ ] 8-4. **Update changelog, architecture, bugs** — per project tracking rules.
+- [x] 8-1. **Round-trip tests** — loop with state_schema/defaults, until inversion, semantic equivalence.
+- [x] 8-2. **Unit tests** — ContextEdge validation (read=target, write=source), gate default port by mode.
+- [x] 8-3. **Integration** — strict mode compile fails on invalid flow line; mutator diagnostic on auto-create.
+- [x] 8-4. **Update changelog, architecture, bugs** — per project tracking rules.
 
 ---
 

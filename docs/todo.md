@@ -61,7 +61,8 @@
   - [ ] [7-5-general-tool-design](plans/7-5-general-tool-design.md) — Generic run_python tool, deprecate plot_backtest/save_grid_csv; agent-generated code
   - [ ] [7-6-node-state-simplification](plans/7-6-node-state-simplification.md) — Loop-scoped state bag, code node port defaults, struct (spread) edges; eliminate state-threading boilerplate
   - [ ] [7-7-editor-navigation-layout-hardening](plans/7-7-editor-navigation-layout-hardening.md) — Nested drill-in/out/save fix (depth-3 cap), deterministic port ordering (logic+rules), edge routing optimization
-  - [ ] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Loader/validation/builder/mutator correctness; round-trip, gate defaults, strict mode, mutator warn
+  - [ ] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Loader/validation/builder/mutator correctness; round-trip, gate defaults (Task 3 done), strict mode, mutator warn
+  - [x] [7-9-async-parallel-subagents](plans/7-9-async-parallel-subagents.md) — Run subagents concurrently; orchestration layer fans out to multiple subagents in parallel with proper fan-in semantics (Task 3 checkpoint/resume and 5-3 visualization deferred)
 
 ## Phase 5 — Markdown Agent Format
 > A third authoring surface alongside the Python builder DSL and the visual editor. One `.md` per agent (frontmatter + natural language), one workflow `.md` to wire them. All three surfaces compile to the same `dan_graph_v1` JSON and coexist — markdown is the most accessible and LLM-generatable format.
@@ -92,6 +93,17 @@
   - [x] [10-6-scoped-run-from-chat](plans/10-6-scoped-run-from-chat.md) — F. Full/node/sub-graph run API, server-authoritative target resolution, chat command handling, run event streaming into thread
   - [x] [10-7-apply-mutation-flow](plans/10-7-apply-mutation-flow.md) — G. Wire GraphDiffPreview, POST apply-mutation endpoint, chat→preview→apply pipeline, session marker
   - [x] [10-8-nl-mutation-hardening](plans/10-8-nl-mutation-hardening.md) — Validate-before-save gate, port-aware edges, entry/exit recompute, typed tool schema, prompt enrichment, auto-retry, pattern macros, stale-plan/idempotency hardening, mutation CI, acceptance metrics rollout
+  - [x] [10-9-meta-orchestrator](plans/10-9-meta-orchestrator.md) — Meta orchestrator interprets user needs and self-builds a workflow from natural language intent; zero-to-workflow from scratch
+  - [ ] [10-10-domain-nl-authoring](plans/10-10-domain-nl-authoring.md) — `data_ingest` pattern, full INFORMS paper-writing template, lightweight skill injection (`apply_skill` op), `BUILD_FROM_INTENT_PROMPT` quality improvements, multi-turn clarification
+
+## Phase 7.1 — Structure Review (Intermediate)
+> Audit and patch only — no new features. Review file organization and object/data structure design for maintainability and correctness before scaling.
+
+- [x] [11-structure-review](plans/11-structure-review.md) — files + objects audit; review-and-patch phase (implemented via parallel subagents)
+  - [x] [11-1-object-audit](plans/11-1-object-audit.md) — Node types, graph schema, edges, execution state, API contracts, TS parity
+  - [x] [11-2-file-audit](plans/11-2-file-audit.md) — Directory layout, module boundaries, imports, separation of concerns
+  - [x] [11-3-cross-cutting-audit](plans/11-3-cross-cutting-audit.md) — Serialization paths, naming, validation contracts, schema evolution, legacy code
+  - [x] [11-4-documentation](plans/11-4-documentation.md) — Update architecture, llm-api-guide, findings in bugs.md
 
 ## Phase 7.5 — Author & Distribute (Remaining)
 > CLI, publish as API/MCP, shareable blocks, PyPI package, lightweight skills.
@@ -106,7 +118,7 @@
 ## Phase 8 — Observe & Recover
 > Execution persistence, debugging tools, and iterative refinement capabilities.
 
-- [ ] 11: Observe & recover → (not yet planned)
+- [ ] 14: Observe & recover → (not yet planned)
 - [ ] Run history / comparison — persist run artifacts (events, outputs, tokens, latency) to disk. History list in editor. Side-by-side comparison for iterative prompt tuning.
 - [ ] Action audit log — persistent, queryable log of every action (tool calls, LLM outputs, decisions). Debugging + compliance + post-run analysis.
 - [ ] Checkpoints as portals — tweak downstream subgraph and re-run from checkpoint without restarting. Extends existing checkpoint/resume for partial re-runs.
@@ -151,8 +163,6 @@
 - [ ] Loop as context manager — loops manage what context feeds back, not just control flow. Feedback selectors filter what flows from body back to condition.
 
 ## Backlog (unphased)
-- [ ] **Async parallel subagents** — run subagents concurrently; orchestration layer schedules and fans out work to multiple subagents in parallel, with proper fan-in semantics.
-- [ ] **Meta orchestrator / AI assistant mode** — meta orchestrator that interprets user needs and self-builds a workflow to satisfy them. Workflow is dynamically constructed from natural language intent rather than pre-authored.
 - [ ] **Manager vs worker node distinction** — manager nodes orchestrate and may spawn new nodes; worker nodes only execute and do not hire new nodes. Bottom-layer nodes are workers. Enables token/node budget caps (e.g. limit total tokens or total nodes used).
 - [ ] **Optimize token usage** — reduce token consumption across workflows (prompt compression, context pruning, caching, smaller models for simple tasks, truncation policies).
 - [ ] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics; core mechanisms for convenient workflow building
