@@ -230,7 +230,11 @@ def _check_context_declarations(graph: "Graph") -> list[str]:
 
 
 def _check_context_edge_permissions(graph: "Graph") -> list[str]:
-    """Verify ContextEdge modes match the source node's declared read_set / write_set."""
+    """Verify ContextEdge modes match node read_set / write_set declarations.
+
+    READ: target consumes context (scheduler injects on incoming edges of target).
+    WRITE/APPEND: source produces context.
+    """
     errors: list[str] = []
     node_map = {n.id: n for n in graph.nodes}
 
@@ -238,27 +242,31 @@ def _check_context_edge_permissions(graph: "Graph") -> list[str]:
         if not isinstance(edge, ContextEdge):
             continue
         src_node = node_map.get(edge.source_node_id)
-        if src_node is None:
-            continue
-
-        read_keys: set[str] = set()
-        write_keys: set[str] = set()
-        if hasattr(src_node, "read_set"):
-            read_keys = {d.key for d in src_node.read_set}
-        if hasattr(src_node, "write_set"):
-            write_keys = {d.key for d in src_node.write_set}
-
+        tgt_node = node_map.get(edge.target_node_id)
         key = edge.context_key
-        if edge.mode == ContextMode.READ and key not in read_keys:
-            errors.append(
-                f"ContextEdge '{edge.id}': node '{src_node.id}' reads context key "
-                f"'{key}' but does not declare it in read_set"
-            )
-        if edge.mode in (ContextMode.WRITE, ContextMode.APPEND) and key not in write_keys:
-            errors.append(
-                f"ContextEdge '{edge.id}': node '{src_node.id}' writes context key "
-                f"'{key}' but does not declare it in write_set"
-            )
+
+        if edge.mode == ContextMode.READ:
+            if tgt_node is None:
+                continue
+            read_keys: set[str] = set()
+            if hasattr(tgt_node, "read_set"):
+                read_keys = {d.key for d in tgt_node.read_set}
+            if key not in read_keys:
+                errors.append(
+                    f"ContextEdge '{edge.id}': node '{tgt_node.id}' reads context key "
+                    f"'{key}' but does not declare it in read_set"
+                )
+        elif edge.mode in (ContextMode.WRITE, ContextMode.APPEND):
+            if src_node is None:
+                continue
+            write_keys: set[str] = set()
+            if hasattr(src_node, "write_set"):
+                write_keys = {d.key for d in src_node.write_set}
+            if key not in write_keys:
+                errors.append(
+                    f"ContextEdge '{edge.id}': node '{src_node.id}' writes context key "
+                    f"'{key}' but does not declare it in write_set"
+                )
 
     return errors
 

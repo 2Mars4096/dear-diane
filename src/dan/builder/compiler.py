@@ -24,6 +24,8 @@ from dan.models.control_flow import (
     GateNode,
     HumanInTheLoopNode,
     IfElseNode,
+    OrchestratorNode,
+    ParallelSubagentsNode,
     ReduceNode,
     RouterNode,
     ValidatorNode,
@@ -54,6 +56,8 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "gate": "true",
     "while_loop": "result",
     "for_each": "results",
+    "parallel_subagents": "results",
+    "orchestrator": "results",
     "reduce": "result",
     "router": "route",
     "human_in_the_loop": "response",
@@ -68,7 +72,15 @@ DEFAULT_INPUT_PORTS: dict[str, str] = {
 }
 
 
-def default_output_port(node_type: str) -> str:
+def default_output_port(node_type: str, gate_mode: str | None = None) -> str:
+    """Return the default output port for a node type.
+
+    For gate nodes, gate_mode affects the result:
+    - gate_mode='while' -> 'continue' (typical loop body chain: gate >> body)
+    - otherwise -> 'true' (if_else mode or fallback)
+    """
+    if node_type == "gate":
+        return "continue" if gate_mode == "while" else "true"
     return DEFAULT_OUTPUT_PORTS.get(node_type, "result")
 
 
@@ -355,6 +367,10 @@ def _build_node(pn: _PendingNode) -> NodeBase:
         return ValidatorNode(**common, **kwargs)
     elif pn.node_type == "composite":
         return CompositeNode(**common, **kwargs)
+    elif pn.node_type == "parallel_subagents":
+        return ParallelSubagentsNode(**common, **kwargs)
+    elif pn.node_type == "orchestrator":
+        return OrchestratorNode(**common, **kwargs)
     else:
         raise BuildError([f"Unknown node_type: {pn.node_type!r}"])
 

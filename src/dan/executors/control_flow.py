@@ -1,4 +1,4 @@
-"""Control-flow executors — IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop, Composite."""
+"""Control-flow executors — IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop, Composite, Orchestrator."""
 
 from __future__ import annotations
 
@@ -10,15 +10,18 @@ import uuid as _uuid
 import warnings
 from typing import Any
 
-from dan.engine.conditions import ConditionError, evaluate_condition
+from dan.engine.conditions import ConditionError, evaluate_condition, evaluate_expression
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
+from dan.engine.events import EventType
 from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
     GateNode,
     HumanInTheLoopNode,
     IfElseNode,
+    OrchestratorNode,
+    ParallelSubagentsNode,
     ReduceNode,
     RouterNode,
     WhileLoopNode,
@@ -341,6 +344,131 @@ class WhileLoopExecutor:
 
 
 # ---------------------------------------------------------------------------
+# ParallelSubagents
+# ---------------------------------------------------------------------------
+
+
+class ParallelSubagentsExecutor:
+    """Runs multiple sub-graphs concurrently; merges results at fan-in."""
+
+    async def execute(
+        self,
+        node: NodeBase,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        assert isinstance(node, ParallelSubagentsNode)
+
+        if not node.branch_graphs:
+            return NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error="parallel_subagents node has no branches",
+            )
+
+        def _branch_inputs(branch_key: str) -> dict[str, Any]:
+            inner: dict[str, Any] = {}
+            for outer_port, inner_port in node.input_mappings.items():
+                if outer_port in inputs:
+                    inner[inner_port] = inputs[outer_port]
+            overrides = node.branch_inputs.get(branch_key, {})
+            inner.update(overrides)
+            return inner
+
+        semaphore = asyncio.Semaphore(node.parallelism)
+
+        async def run_branch(branch_key: str) -> dict[str, Any]:
+            async with semaphore:
+                await context.emit_event(
+                    event_type="parallel_branch_started",
+                    node_id=node.id,
+                    node_type="parallel_subagents",
+                    data={"branch_key": branch_key},
+                )
+                result = await context.run_subgraph(
+                    branch_key, _branch_inputs(branch_key), parent_node_id=node.id
+                )
+                await context.emit_event(
+                    event_type="parallel_branch_completed",
+                    node_id=node.id,
+                    node_type="parallel_subagents",
+                    data={"branch_key": branch_key},
+                )
+                return result
+
+        tasks = [run_branch(bk) for bk in node.branch_graphs]
+
+        timeout = node.failure_policy.timeout_seconds
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*tasks, return_exceptions=True),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            return NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error=f"parallel_subagents timed out after {timeout}s",
+            )
+
+        outputs_list: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for i, r in enumerate(results):
+            branch_key = node.branch_graphs[i]
+            if isinstance(r, Exception):
+                errors.append(f"{branch_key}: {r}")
+            else:
+                outputs_list.append(r)
+
+        if errors and not outputs_list:
+            return NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error=f"All parallel subagent branches failed: {'; '.join(errors)}",
+            )
+
+        merged = self._merge(outputs_list, node.merge_strategy, node.reducer)
+
+        await context.emit_event(
+            event_type="parallel_fan_in_completed",
+            node_id=node.id,
+            node_type="parallel_subagents",
+            data={"branch_count": len(node.branch_graphs), "succeeded": len(outputs_list)},
+        )
+
+        return NodeResult(
+            outputs={"results": merged},
+            status=NodeStatus.COMPLETED,
+            metadata={
+                "branch_count": len(node.branch_graphs),
+                "succeeded": len(outputs_list),
+                "failed": len(errors),
+            },
+        )
+
+    @staticmethod
+    def _merge(
+        results: list[dict[str, Any]],
+        strategy: MergeStrategy,
+        reducer: str | None = None,
+    ) -> Any:
+        if strategy == MergeStrategy.APPEND:
+            return results
+        if strategy == MergeStrategy.LAST_WRITE_WINS:
+            merged: dict[str, Any] = {}
+            for r in results:
+                merged.update(r)
+            return merged
+        if strategy == MergeStrategy.REDUCER:
+            if not reducer:
+                raise ConditionError(
+                    "merge_strategy is REDUCER but no reducer expression provided"
+                )
+            return evaluate_expression(reducer, {"inputs": results})
+        return results
+
+
+# ---------------------------------------------------------------------------
 # ForEach
 # ---------------------------------------------------------------------------
 
@@ -450,7 +578,7 @@ class ReduceExecutor:
         assert isinstance(node, ReduceNode)
 
         try:
-            result = evaluate_condition(node.reducer, {"inputs": inputs})
+            result = evaluate_expression(node.reducer, {"inputs": inputs})
         except ConditionError as exc:
             return NodeResult(
                 outputs={},
@@ -699,4 +827,197 @@ class CompositeExecutor:
         return NodeResult(
             outputs=mapped_outputs,
             status=NodeStatus.COMPLETED,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+
+class OrchestratorExecutor:
+    """Runs subgraph teams concurrently with an async event-processing loop.
+
+    Unlike ParallelSubagentsExecutor (fire-and-forget gather), the orchestrator
+    spawns teams as background asyncio tasks, then runs its own event loop
+    concurrently — receiving events from teams and optionally writing back
+    to shared context for bidirectional communication.
+    """
+
+    async def execute(
+        self,
+        node: NodeBase,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        assert isinstance(node, OrchestratorNode)
+
+        if not node.teams:
+            return NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error="orchestrator node has no teams",
+            )
+
+        event_queue: asyncio.Queue = asyncio.Queue()
+
+        original_callback = context._event_callback
+
+        async def routing_callback(event: Any) -> None:
+            if original_callback:
+                await original_callback(event)
+            await event_queue.put(event)
+
+        context._event_callback = routing_callback
+
+        def _team_inputs(team_name: str) -> dict[str, Any]:
+            inner: dict[str, Any] = {}
+            for outer_port, inner_port in node.input_mappings.items():
+                if outer_port in inputs:
+                    inner[inner_port] = inputs[outer_port]
+            overrides = node.team_inputs.get(team_name, {})
+            inner.update(overrides)
+            return inner
+
+        team_tasks: dict[str, asyncio.Task] = {}
+        team_results: dict[str, Any] = {}
+        team_status: dict[str, str] = {}
+
+        for team_name, sub_key in node.teams.items():
+            team_status[team_name] = "running"
+            task = asyncio.create_task(
+                context.run_subgraph(sub_key, _team_inputs(team_name), parent_node_id=node.id)
+            )
+            team_tasks[team_name] = task
+
+            await context.emit_event(
+                event_type="parallel_branch_started",
+                node_id=node.id,
+                node_type="orchestrator",
+                data={"branch_key": sub_key, "team_name": team_name},
+            )
+
+        for team_name, task in team_tasks.items():
+            def _on_done(t: asyncio.Task, tn: str = team_name) -> None:
+                if t.cancelled():
+                    team_status[tn] = "failed"
+                    team_results[tn] = {"error": "cancelled"}
+                elif t.exception():
+                    team_status[tn] = "failed"
+                    team_results[tn] = {"error": str(t.exception())}
+                else:
+                    team_status[tn] = "completed"
+                    team_results[tn] = t.result()
+            task.add_done_callback(_on_done)
+
+        orchestrator_log: list[dict] = []
+        iteration = 0
+
+        timeout = node.timeout_seconds
+        start_time = asyncio.get_event_loop().time()
+
+        try:
+            while iteration < node.max_iterations:
+                iteration += 1
+
+                if timeout and (asyncio.get_event_loop().time() - start_time) > timeout:
+                    for t in team_tasks.values():
+                        if not t.done():
+                            t.cancel()
+                    break
+
+                if node.completion_condition == "all_done":
+                    if all(s != "running" for s in team_status.values()):
+                        break
+                elif node.completion_condition == "any_done":
+                    if any(s == "completed" for s in team_status.values()):
+                        for t in team_tasks.values():
+                            if not t.done():
+                                t.cancel()
+                        break
+
+                events_batch: list[Any] = []
+                try:
+                    while True:
+                        event = event_queue.get_nowait()
+                        events_batch.append(event)
+                except asyncio.QueueEmpty:
+                    pass
+
+                if events_batch:
+                    for event in events_batch:
+                        evt_type = event.event_type
+                        evt_type_str = evt_type.value if hasattr(evt_type, "value") else str(evt_type)
+                        orchestrator_log.append({
+                            "iteration": iteration,
+                            "event_type": evt_type_str,
+                            "node_id": event.node_id,
+                            "data": event.data,
+                        })
+
+                        if evt_type == EventType.NODE_COMPLETED:
+                            layer = event.data.get("layer_path", [])
+                            team_for = None
+                            for tn, sk in node.teams.items():
+                                if layer and sk == layer[0]:
+                                    team_for = tn
+                                    break
+                            if team_for:
+                                try:
+                                    context.shared_context.write(
+                                        f"__orchestrator__{node.id}__received__{team_for}",
+                                        event.data,
+                                    )
+                                except KeyError:
+                                    pass
+                else:
+                    await asyncio.sleep(0.05)
+        finally:
+            context._event_callback = original_callback
+
+        pending = [t for t in team_tasks.values() if not t.done()]
+        if pending:
+            done, still_pending = await asyncio.wait(pending, timeout=2.0)
+            for t in still_pending:
+                t.cancel()
+
+        for team_name in node.teams:
+            if team_name not in team_results:
+                task = team_tasks[team_name]
+                if task.done() and not task.cancelled():
+                    exc = task.exception()
+                    if exc:
+                        team_results[team_name] = {"error": str(exc)}
+                    else:
+                        team_results[team_name] = task.result()
+                else:
+                    team_results[team_name] = {"error": "cancelled or not completed"}
+
+        await context.emit_event(
+            event_type="parallel_fan_in_completed",
+            node_id=node.id,
+            node_type="orchestrator",
+            data={
+                "team_count": len(node.teams),
+                "completed": sum(1 for s in team_status.values() if s == "completed"),
+                "failed": sum(1 for s in team_status.values() if s == "failed"),
+            },
+        )
+
+        has_failures = any(s == "failed" for s in team_status.values())
+        all_failed = all(s == "failed" for s in team_status.values())
+
+        return NodeResult(
+            outputs={
+                "results": team_results,
+                "orchestrator_log": orchestrator_log,
+                "team_status": dict(team_status),
+            },
+            status=NodeStatus.FAILED if all_failed else NodeStatus.COMPLETED,
+            error="All teams failed" if all_failed else None,
+            metadata={
+                "team_count": len(node.teams),
+                "iterations": iteration,
+                "team_status": dict(team_status),
+            },
         )

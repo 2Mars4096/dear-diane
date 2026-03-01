@@ -46,15 +46,24 @@ def evaluate_condition(expr: str, variables: dict[str, Any]) -> bool:
 
     Raises ConditionError on any evaluation failure.
     """
+    return bool(evaluate_expression(expr, variables))
+
+
+def evaluate_expression(expr: str, variables: dict[str, Any]) -> Any:
+    """Evaluate *expr* as a Python expression and return the raw result.
+
+    *variables* maps names to values; these are the only names visible
+    inside the expression (plus the safe builtins above).
+
+    Raises ConditionError on any evaluation failure.
+    """
     namespace: dict[str, Any] = {"__builtins__": {}}
     namespace.update(_SAFE_BUILTINS)
     namespace.update(variables)
 
     try:
-        result = eval(expr, namespace)  # noqa: S307
+        return eval(expr, namespace)  # noqa: S307
     except Exception as exc:
         raise ConditionError(
-            f"Failed to evaluate condition '{expr}': {exc}"
+            f"Failed to evaluate expression '{expr}': {exc}"
         ) from exc
-
-    return bool(result)

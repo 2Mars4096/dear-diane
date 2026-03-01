@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -69,7 +70,7 @@ class _DecompileContext:
         self._prepare_foreach_bodies()
 
         for node in self.graph.nodes:
-            if node.node_type in ("input", "gate", "for_each"):
+            if node.node_type in ("input", "gate", "for_each", "parallel_subagents", "orchestrator"):
                 continue
             self._write_agent_file(node)
 
@@ -78,7 +79,7 @@ class _DecompileContext:
 
     def _assign_filenames(self) -> None:
         for node in self.graph.nodes:
-            if node.node_type in ("input", "gate", "for_each"):
+            if node.node_type in ("input", "gate", "for_each", "parallel_subagents", "orchestrator"):
                 continue
             self._allocate_filename(node.id)
 
@@ -130,6 +131,16 @@ class _DecompileContext:
                     self._write_subgraph_node_files(sub, written)
                     if node.id in self._foreach_body_agents:
                         self._write_foreach_composite(node, sub)
+            elif node.node_type == "parallel_subagents":
+                for branch_key in getattr(node, "branch_graphs", []):
+                    sub = self.graph.sub_graphs.get(branch_key)
+                    if sub:
+                        self._write_subgraph_node_files(sub, written)
+            elif node.node_type == "orchestrator":
+                for sub_key in getattr(node, "teams", {}).values():
+                    sub = self.graph.sub_graphs.get(sub_key)
+                    if sub:
+                        self._write_subgraph_node_files(sub, written)
 
     def _write_subgraph_node_files(self, sub_graph: Graph, written: set[str]) -> None:
         for sn in sub_graph.nodes:
@@ -416,6 +427,12 @@ def _build_flow_lines(
                 lines.append(line)
 
     for node in graph.nodes:
+        if node.node_type == "parallel_subagents":
+            line = _decompile_parallel(node, graph, data_edges, emitted_edges)
+            if line:
+                lines.append(line)
+
+    for node in graph.nodes:
         if node.node_type != "gate":
             continue
         gate_mode = getattr(node, "gate_mode", "if_else")
@@ -436,7 +453,9 @@ def _build_flow_lines(
         out_edges[edge.source_node_id].append(edge)
         in_edges[edge.target_node_id].append(edge)
 
-    skip_nodes = gate_ids | {n.id for n in graph.nodes if n.node_type in ("input", "for_each")}
+    skip_nodes = gate_ids | {
+        n.id for n in graph.nodes if n.node_type in ("input", "for_each", "parallel_subagents", "orchestrator")
+    }
     visited: set[str] = set()
 
     chain_heads = [
@@ -513,14 +532,105 @@ def _decompile_foreach(
     return f"{source_agent} | each({body_agent}{par_str})"
 
 
+def _decompile_parallel(
+    node: NodeBase,
+    graph: Graph,
+    data_edges: list[DataEdge],
+    emitted: set[str],
+) -> str | None:
+    branch_graphs = getattr(node, "branch_graphs", [])
+    if not branch_graphs:
+        return None
+
+    branch_agents: list[str] = []
+    for sub_key in branch_graphs:
+        sub = graph.sub_graphs.get(sub_key)
+        if not sub or not sub.nodes:
+            continue
+        real_nodes = [n for n in sub.nodes if n.node_type != "input"]
+        if not real_nodes:
+            continue
+        branch_agents.append(real_nodes[0].id)
+
+    if not branch_agents:
+        return None
+
+    parallel = getattr(node, "parallelism", 1)
+    merge = getattr(node, "merge_strategy", "append")
+    merge_val = merge.value if hasattr(merge, "value") else str(merge)
+
+    source_agent = None
+    for edge in data_edges:
+        if edge.target_node_id == node.id:
+            source_agent = edge.source_node_id
+            emitted.add(edge.id)
+            break
+
+    if source_agent is None:
+        return None
+
+    for edge in data_edges:
+        if edge.source_node_id == node.id:
+            emitted.add(edge.id)
+
+    args_str = ", ".join(branch_agents)
+    extra: list[str] = []
+    if merge_val != "append":
+        extra.append(f"merge: {merge_val}")
+    if parallel > 1:
+        extra.append(f"parallel: {parallel}")
+    full_args = f"{args_str}, {', '.join(extra)}" if extra else args_str
+    return f"{source_agent} | parallel({full_args})"
+
+
+def _escape_json_for_flow_string(raw: str) -> str:
+    """Escape JSON string for embedding in a double-quoted flow kwarg.
+
+    Escapes backslash first, then double-quote. Handles control chars
+    (\\n, \\r, \\t) via the backslash pass since json.dumps emits them escaped.
+    """
+    return raw.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _invert_until_condition(condition: str) -> str:
+    """Strip one layer of not (...) from gate.condition for loop until round-trip.
+
+    The compiler stores ``not (cond)`` in gate.condition for loop(until: cond).
+    This helper inverts that so decompiled markdown emits the original until
+    expression. Handles: not (x) → x, not (not (x)) → not (x), and nested parens.
+    Unclosed parens (e.g. ``not (x``): returns original unchanged.
+    """
+    s = condition.strip()
+    m = re.match(r"^not\s*\(\s*", s)
+    if not m:
+        return s
+    start = m.end()
+    depth = 1
+    i = start
+    while i < len(s) and depth > 0:
+        if s[i] == "(":
+            depth += 1
+        elif s[i] == ")":
+            depth -= 1
+        i += 1
+    if depth == 0:
+        if s[i:].strip():
+            return s
+        return s[start : i - 1].strip()
+    return s
+
+
 def _decompile_while_gate(
     gate: NodeBase,
     graph: Graph,
     data_edges: list[DataEdge],
     emitted: set[str],
 ) -> str | None:
-    condition = getattr(gate, "condition", "")
+    raw_condition = getattr(gate, "condition", "")
+    until_condition = _invert_until_condition(raw_condition)
     max_iter = getattr(gate, "max_iterations", 10)
+    state_schema = getattr(gate, "state_schema", None)
+    state_defaults = getattr(gate, "state_defaults", None)
 
     source_agent = None
     body_agent = None
@@ -555,9 +665,19 @@ def _decompile_while_gate(
         if edge.target_node_id == gate.id or edge.source_node_id == gate.id:
             emitted.add(edge.id)
 
-    escaped_condition = condition.replace('"', '\\"')
-    max_str = f", max: {max_iter}" if max_iter != 10 else ""
-    return f'{source_agent} | loop({body_agent}, until: "{escaped_condition}"{max_str})'
+    escaped_condition = until_condition.replace('"', '\\"')
+    kwargs_parts: list[str] = [f'until: "{escaped_condition}"']
+    if max_iter != 10:
+        kwargs_parts.append(f"max: {max_iter}")
+    if state_schema:
+        raw = json.dumps(state_schema)
+        escaped_json = _escape_json_for_flow_string(raw)
+        kwargs_parts.append(f'state: "{escaped_json}"')
+    if state_defaults:
+        raw = json.dumps(state_defaults)
+        escaped_json = _escape_json_for_flow_string(raw)
+        kwargs_parts.append(f'defaults: "{escaped_json}"')
+    return f"{source_agent} | loop({body_agent}, {', '.join(kwargs_parts)})"
 
 
 def _decompile_if_gate(

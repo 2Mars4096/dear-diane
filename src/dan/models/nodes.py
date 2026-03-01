@@ -6,6 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from dan.models.context import ContextDeclaration
 from dan.models.ports import InputPort, OutputPort
 
 
@@ -60,6 +61,14 @@ class NodeBase(BaseModel):
     )
     metadata: dict[str, Any] = Field(default_factory=dict)
     retry_policy: RetryPolicy | None = None
+    read_set: list[ContextDeclaration] = Field(
+        default_factory=list,
+        description="Context keys this node reads (for READ-mode context edges targeting this node)",
+    )
+    write_set: list[ContextDeclaration] = Field(
+        default_factory=list,
+        description="Context keys this node writes (for WRITE/APPEND-mode context edges from this node)",
+    )
 
 
 # ---------------------------------------------------------------------------

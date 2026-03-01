@@ -15,6 +15,7 @@ from dan.loader.models import (
     FlowStatement,
     IfStatement,
     LoopStatement,
+    ParallelStatement,
     SourceLocation,
 )
 
@@ -163,7 +164,10 @@ def _parse_each(source_agent: str, args_raw: str, line: str, source: SourceLocat
     if not body:
         raise FlowParseError("each() requires a body agent", line=line)
     _validate_agent_name(body, line)
-    parallel = int(kwargs.get("parallel", "1"))
+    try:
+        parallel = int(kwargs.get("parallel", "1"))
+    except ValueError:
+        raise FlowParseError(f"each() requires an integer for 'parallel', got {kwargs.get('parallel')!r}", line=line)
     return EachStatement(source_agent=source_agent, body_agent=body, parallel=parallel, source=source)
 
 
@@ -175,7 +179,10 @@ def _parse_loop(source_agent: str, args_raw: str, line: str, source: SourceLocat
     condition = kwargs.get("until", "")
     if not condition:
         raise FlowParseError("loop() requires an 'until' condition", line=line)
-    max_iter = int(kwargs.get("max", "10"))
+    try:
+        max_iter = int(kwargs.get("max", "10"))
+    except ValueError:
+        raise FlowParseError(f"loop() requires an integer for 'max', got {kwargs.get('max')!r}", line=line)
 
     state_schema: dict | None = None
     state_defaults: dict | None = None
@@ -200,6 +207,75 @@ def _parse_loop(source_agent: str, args_raw: str, line: str, source: SourceLocat
     )
 
 
+def _parse_parallel(
+    source_agent: str, args_raw: str, line: str, source: SourceLocation | None
+) -> ParallelStatement:
+    """Parse parallel(branch_a, branch_b, merge: append, parallel: 2)."""
+    raw = args_raw.strip()
+    branch_agents: list[str] = []
+    kwargs: dict[str, str] = {}
+    pos = 0
+
+    def _skip_ws() -> None:
+        nonlocal pos
+        while pos < len(raw) and raw[pos] in " \t":
+            pos += 1
+
+    while pos < len(raw):
+        _skip_ws()
+        if pos >= len(raw):
+            break
+        kw_match = re.match(r"([A-Za-z_]\w*)\s*:\s*", raw[pos:])
+        if kw_match:
+            key = kw_match.group(1)
+            pos += kw_match.end()
+            _skip_ws()
+            if pos < len(raw) and raw[pos] in ('"', "'"):
+                val, rest = _extract_quoted_string(raw[pos:], line)
+                pos = len(raw) - len(rest)
+            else:
+                end = pos
+                while end < len(raw) and raw[end] not in ",:":
+                    end += 1
+                val = raw[pos:end].strip()
+                pos = end
+            kwargs[key] = val
+        else:
+            end = pos
+            while end < len(raw) and raw[end] not in ",:":
+                end += 1
+            agent = raw[pos:end].strip()
+            if agent:
+                _validate_agent_name(agent, line)
+                branch_agents.append(agent)
+            pos = end
+        _skip_ws()
+        if pos < len(raw) and raw[pos] == ",":
+            pos += 1
+
+    if not branch_agents:
+        raise FlowParseError("parallel() requires at least one branch agent", line=line)
+
+    merge = kwargs.get("merge", "append")
+    if merge == "reducer":
+        raise FlowParseError(
+            "parallel() merge: reducer is not supported in flow syntax "
+            "(use builder DSL with an explicit reducer expression)",
+            line=line,
+        )
+    try:
+        parallel = int(kwargs.get("parallel", "1"))
+    except ValueError:
+        raise FlowParseError(f"parallel() requires an integer for 'parallel', got {kwargs.get('parallel')!r}", line=line)
+    return ParallelStatement(
+        source_agent=source_agent,
+        branch_agents=branch_agents,
+        merge=merge,
+        parallel=max(1, parallel),
+        source=source,
+    )
+
+
 def _parse_if(source_agent: str, args_raw: str, line: str, source: SourceLocation | None) -> IfStatement:
     cond, kwargs = _parse_kwargs(args_raw, line)
     if cond is None:
@@ -220,6 +296,7 @@ _PIPE_DISPATCH: dict[str, type] = {
     "each": EachStatement,
     "loop": LoopStatement,
     "if": IfStatement,
+    "parallel": ParallelStatement,
 }
 
 
@@ -240,6 +317,8 @@ def parse_flow_line(line: str, source: SourceLocation | None = None) -> FlowStat
             return _parse_loop(source_agent, args_raw, line, source)
         if op == "if":
             return _parse_if(source_agent, args_raw, line, source)
+        if op == "parallel":
+            return _parse_parallel(source_agent, args_raw, line, source)
 
         raise FlowParseError(f"Unknown pipe operator: {op!r}", line=line)
 

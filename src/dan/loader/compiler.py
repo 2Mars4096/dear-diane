@@ -16,6 +16,7 @@ from dan.loader.models import (
     FlowStatement,
     IfStatement,
     LoopStatement,
+    ParallelStatement,
     PortSpec,
     SourceLocation,
 )
@@ -26,7 +27,7 @@ from dan.loader.types import (
     infer_schema_from_name,
     load_linked_schema,
 )
-from dan.models.context import SharedContextDeclaration
+from dan.models.context import MergeStrategy, SharedContextDeclaration
 from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
@@ -34,6 +35,8 @@ from dan.models.control_flow import (
     HumanInTheLoopNode,
     InputNode,
     InputVariable,
+    OrchestratorNode,
+    ParallelSubagentsNode,
     RouterNode,
 )
 from dan.models.edges import DataEdge
@@ -47,6 +50,8 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "code_operator": "result",
     "gate": "true",
     "for_each": "results",
+    "parallel_subagents": "results",
+    "orchestrator": "results",
     "router": "route",
     "human_in_the_loop": "response",
     "composite": "result",
@@ -69,8 +74,12 @@ def compile(path: str | Path) -> Graph:
     return result.graph
 
 
-def compile_workflow(workflow_path: str | Path) -> CompileResult:
-    """Compile a workflow markdown file into a Graph with diagnostics."""
+def compile_workflow(workflow_path: str | Path, *, strict: bool = False) -> CompileResult:
+    """Compile a workflow markdown file into a Graph with diagnostics.
+
+    When strict=True, parse warnings and ambiguous bare-edge auto-wire become
+    fatal errors; compilation stops and returns graph=None.
+    """
     workflow_file = Path(workflow_path)
     diagnostics: list[Diagnostic] = []
 
@@ -85,7 +94,13 @@ def compile_workflow(workflow_path: str | Path) -> CompileResult:
         return CompileResult(graph=None, diagnostics=diagnostics)
 
     for msg, src in workflow_spec.parse_warnings:
-        _emit_warning(diagnostics, msg, source=src)
+        if strict:
+            _emit_error(diagnostics, msg, source=src)
+        else:
+            _emit_warning(diagnostics, msg, source=src)
+
+    if strict and workflow_spec.parse_warnings:
+        return CompileResult(graph=None, diagnostics=diagnostics)
 
     workflow_dir = workflow_file.parent
     agent_specs: dict[str, AgentSpec] = {}
@@ -119,7 +134,7 @@ def compile_workflow(workflow_path: str | Path) -> CompileResult:
                 source=spec.source,
             )
             continue
-        node, nested_sub_graphs = _compile_agent(name, spec, diagnostics)
+        node, nested_sub_graphs = _compile_agent(name, spec, diagnostics, strict=strict)
         if node is None:
             continue
         nodes_by_id[name] = node
@@ -140,6 +155,7 @@ def compile_workflow(workflow_path: str | Path) -> CompileResult:
         agent_specs,
         diagnostics,
         edge_counter,
+        strict=strict,
     )
     for node in flow_nodes:
         if node.id in nodes_by_id:
@@ -156,7 +172,7 @@ def compile_workflow(workflow_path: str | Path) -> CompileResult:
             continue
         sub_graphs[key] = sub_graph
 
-    _auto_wire(list(nodes_by_id.values()), flow_edges, diagnostics)
+    _auto_wire(list(nodes_by_id.values()), flow_edges, diagnostics, strict=strict)
     input_node = _create_input_node(
         list(nodes_by_id.values()),
         flow_edges,
@@ -216,6 +232,8 @@ def _compile_agent(
     name: str,
     spec: AgentSpec,
     diagnostics: list[Diagnostic],
+    *,
+    strict: bool = False,
 ) -> tuple[NodeBase | None, dict[str, Graph]]:
     input_ports = _build_input_ports(spec, diagnostics)
     output_ports = _build_output_ports(spec, diagnostics)
@@ -280,7 +298,7 @@ def _compile_agent(
         )
     elif spec.agent_type == "composite":
         sub_key = f"{name}__body"
-        sub_graph = _compile_composite_subgraph(name, spec, diagnostics)
+        sub_graph = _compile_composite_subgraph(name, spec, diagnostics, strict=strict)
         nested_sub_graphs[sub_key] = sub_graph
         node = CompositeNode(
             id=name,
@@ -312,7 +330,7 @@ def _compile_agent(
 
 
 def _agents_used_outside_each_body(statements: list[FlowStatement]) -> set[str]:
-    """Agents that appear in chains, if/else, or loop (not only as each body)."""
+    """Agents that appear in chains, if/else, loop, or parallel (not only as each body)."""
     used: set[str] = set()
     for stmt in statements:
         if isinstance(stmt, ChainStatement):
@@ -323,6 +341,8 @@ def _agents_used_outside_each_body(statements: list[FlowStatement]) -> set[str]:
             used.update((stmt.then_agent, stmt.else_agent))
         elif isinstance(stmt, LoopStatement):
             used.add(stmt.body_agent)
+        elif isinstance(stmt, ParallelStatement):
+            used.add(stmt.source_agent)  # branches live in subgraphs only
     return used
 
 
@@ -332,6 +352,8 @@ def _compile_flow(
     agent_specs: dict[str, AgentSpec],
     diagnostics: list[Diagnostic],
     edge_counter: list[int],
+    *,
+    strict: bool = False,
 ) -> tuple[list[DataEdge], list[NodeBase], dict[str, Graph]]:
     edges: list[DataEdge] = []
     generated_nodes: list[NodeBase] = []
@@ -348,6 +370,7 @@ def _compile_flow(
                     nodes_by_id,
                     diagnostics,
                     edge_counter,
+                    strict=strict,
                 )
             )
             continue
@@ -593,6 +616,110 @@ def _compile_flow(
             )
             continue
 
+        if isinstance(stmt, ParallelStatement):
+            if stmt.source_agent not in nodes_by_id:
+                _emit_error(
+                    diagnostics,
+                    f"Unknown source agent '{stmt.source_agent}' in parallel()",
+                    source=stmt.source,
+                )
+                continue
+            for branch_agent in stmt.branch_agents:
+                if branch_agent not in nodes_by_id or branch_agent not in agent_specs:
+                    _emit_error(
+                        diagnostics,
+                        f"Unknown branch agent '{branch_agent}' in parallel()",
+                        source=stmt.source,
+                    )
+                    continue
+
+            parallel_id = _ensure_unique_id(
+                f"{stmt.source_agent}_parallel",
+                set(nodes_by_id) | generated_ids,
+            )
+            generated_ids.add(parallel_id)
+
+            branch_graphs: list[str] = []
+            for branch_agent in stmt.branch_agents:
+                branch_spec = agent_specs[branch_agent]
+                branch_node, nested = _compile_agent(
+                    branch_agent, branch_spec, diagnostics
+                )
+                if branch_node is None:
+                    _emit_error(
+                        diagnostics,
+                        f"Could not compile branch agent '{branch_agent}' for parallel()",
+                        source=stmt.source,
+                    )
+                    continue
+
+                sub_key = _ensure_unique_id(
+                    f"{parallel_id}__{branch_agent}",
+                    set(generated_subgraphs) | generated_subgraph_ids,
+                )
+                generated_subgraph_ids.add(sub_key)
+
+                branch_graph = Graph(
+                    metadata=GraphMetadata(name=f"{parallel_id}_{branch_agent}"),
+                    nodes=[branch_node],
+                    edges=[],
+                    sub_graphs=nested,
+                    entry_points=[branch_node.id],
+                    exit_points=[branch_node.id],
+                )
+                generated_subgraphs[sub_key] = branch_graph
+                branch_graphs.append(sub_key)
+
+            if not branch_graphs:
+                continue
+
+            _VALID_MERGE_STRATEGIES = {"append", "last_write_wins", "reducer"}
+            merge_str = stmt.merge or "append"
+            if merge_str not in _VALID_MERGE_STRATEGIES:
+                _emit_error(
+                    diagnostics,
+                    f"Unknown merge strategy '{merge_str}' in parallel(); expected one of {sorted(_VALID_MERGE_STRATEGIES)}",
+                    source=stmt.source,
+                )
+            merge_strategy = MergeStrategy.APPEND
+            if merge_str == "last_write_wins":
+                merge_strategy = MergeStrategy.LAST_WRITE_WINS
+            elif merge_str == "reducer":
+                merge_strategy = MergeStrategy.REDUCER
+
+            parallel_node = ParallelSubagentsNode(
+                id=parallel_id,
+                name=parallel_id,
+                branch_graphs=branch_graphs,
+                parallelism=max(1, stmt.parallel),
+                merge_strategy=merge_strategy,
+                input_ports=[
+                    InputPort(name=DEFAULT_INPUT_PORT, required=True),
+                ],
+                output_ports=[
+                    OutputPort(name="results", json_schema={}),
+                ],
+                metadata=_source_metadata(stmt.source),
+            )
+            generated_nodes.append(parallel_node)
+            nodes_by_id[parallel_id] = parallel_node
+
+            source_node = nodes_by_id[stmt.source_agent]
+            edges.append(
+                _make_data_edge(
+                    stmt.source_agent,
+                    _default_output_port(source_node),
+                    parallel_id,
+                    DEFAULT_INPUT_PORT,
+                    edge_counter,
+                    stmt.source,
+                )
+            )
+            for branch_agent in stmt.branch_agents:
+                if branch_agent not in agents_used_outside_each:
+                    nodes_by_id.pop(branch_agent, None)
+            continue
+
         _emit_error(
             diagnostics,
             f"Unsupported flow statement '{type(stmt).__name__}'",
@@ -607,6 +734,8 @@ def _compile_chain_statement(
     nodes_by_id: dict[str, NodeBase],
     diagnostics: list[Diagnostic],
     edge_counter: list[int],
+    *,
+    strict: bool = False,
 ) -> list[DataEdge]:
     edges: list[DataEdge] = []
     if len(stmt.agents) < 2:
@@ -649,6 +778,7 @@ def _compile_chain_statement(
             explicit_target_port,
             diagnostics,
             stmt.source,
+            strict=strict,
         )
         edges.append(
             _make_data_edge(
@@ -670,6 +800,8 @@ def _resolve_chain_ports(
     explicit_target_port: str | None,
     diagnostics: list[Diagnostic],
     source: SourceLocation | None,
+    *,
+    strict: bool = False,
 ) -> tuple[str, str]:
     source_names = {port.name for port in source_node.output_ports}
     target_names = {port.name for port in target_node.input_ports}
@@ -703,15 +835,26 @@ def _resolve_chain_ports(
     if len(matches) == 1:
         return matches[0], matches[0]
     if len(matches) > 1:
-        _emit_warning(
-            diagnostics,
-            (
-                f"Ambiguous auto-wire for '{source_node.id} -> {target_node.id}': "
-                f"multiple shared ports {matches}; using '{matches[0]}'"
-            ),
-            source=source,
-            hint="Use explicit .port syntax to disambiguate",
-        )
+        ports_str = ", ".join(matches)
+        if strict:
+            _emit_error(
+                diagnostics,
+                (
+                    f"Ambiguous: {source_node.id} → {target_node.id} has multiple matching ports "
+                    f"{{{ports_str}}}. Use explicit .port syntax."
+                ),
+                source=source,
+            )
+        else:
+            _emit_warning(
+                diagnostics,
+                (
+                    f"Ambiguous auto-wire for '{source_node.id} -> {target_node.id}': "
+                    f"multiple shared ports {matches}; using '{matches[0]}'"
+                ),
+                source=source,
+                hint="Use explicit 'A.port_x → B.port_y' to wire all intended ports.",
+            )
         return matches[0], matches[0]
 
     return _default_output_port(source_node), _default_input_port(target_node)
@@ -721,6 +864,8 @@ def _auto_wire(
     nodes: list[NodeBase],
     edges: list[DataEdge],
     diagnostics: list[Diagnostic],
+    *,
+    strict: bool = False,
 ) -> None:
     node_map = {node.id: node for node in nodes}
     for edge in edges:
@@ -744,13 +889,24 @@ def _auto_wire(
         if len(matches) > 1:
             edge.source_port = matches[0]
             edge.target_port = matches[0]
-            _emit_warning(
-                diagnostics,
-                (
-                    f"Ambiguous auto-wire fallback for '{edge.source_node_id} -> {edge.target_node_id}': "
-                    f"using shared port '{matches[0]}'"
-                ),
-            )
+            ports_str = ", ".join(matches)
+            if strict:
+                _emit_error(
+                    diagnostics,
+                    (
+                        f"Ambiguous: {edge.source_node_id} → {edge.target_node_id} has multiple "
+                        f"matching ports {{{ports_str}}}. Use explicit .port syntax."
+                    ),
+                )
+            else:
+                _emit_warning(
+                    diagnostics,
+                    (
+                        f"Ambiguous auto-wire fallback for '{edge.source_node_id} -> {edge.target_node_id}': "
+                        f"using shared port '{matches[0]}'"
+                    ),
+                    hint="Use explicit 'A.port_x → B.port_y' to wire all intended ports.",
+                )
             continue
 
         if not source_valid:
@@ -852,6 +1008,8 @@ def _compile_composite_subgraph(
     parent_name: str,
     spec: AgentSpec,
     diagnostics: list[Diagnostic],
+    *,
+    strict: bool = False,
 ) -> Graph:
     base_dir = spec.file_path.parent if spec.file_path else Path.cwd()
     internal_specs: dict[str, AgentSpec] = {}
@@ -906,13 +1064,14 @@ def _compile_composite_subgraph(
         internal_specs,
         diagnostics,
         edge_counter,
+        strict=strict,
     )
     for node in flow_nodes:
         if node.id not in nodes_by_id:
             nodes_by_id[node.id] = node
     sub_graphs.update(flow_subgraphs)
 
-    _auto_wire(list(nodes_by_id.values()), edges, diagnostics)
+    _auto_wire(list(nodes_by_id.values()), edges, diagnostics, strict=strict)
     input_node = _create_input_node(list(nodes_by_id.values()), edges, diagnostics, edge_counter)
     if input_node is not None:
         nodes_by_id[input_node.id] = input_node

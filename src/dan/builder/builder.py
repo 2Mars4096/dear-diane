@@ -175,6 +175,8 @@ class WorkflowBuilder:
         language: str = "python",
         name: str | None = None,
         description: str = "",
+        read_set: list[ContextDeclaration] | None = None,
+        write_set: list[ContextDeclaration] | None = None,
         input_ports: list[dict[str, Any]] | None = None,
         output_ports: list[dict[str, Any]] | None = None,
     ) -> NodeRef:
@@ -187,6 +189,10 @@ class WorkflowBuilder:
             "code": code,
             "language": language,
         }
+        if read_set is not None:
+            kwargs["read_set"] = read_set
+        if write_set is not None:
+            kwargs["write_set"] = write_set
         pn = _PendingNode(
             id=node_id,
             node_type="code_operator",
@@ -340,7 +346,7 @@ class WorkflowBuilder:
             explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
         )
         self._add_node(pn)
-        return NodeRef(node_id, "gate", self)
+        return NodeRef(node_id, "gate", self, gate_mode=gate_mode)
 
     def reduce(
         self,
@@ -619,6 +625,102 @@ class WorkflowBuilder:
 
         if items is not None:
             self._port_ref_connections.append((items, node_id, "items"))
+
+    @contextmanager
+    def parallel_subagents(
+        self,
+        node_id: str,
+        *,
+        merge_strategy: MergeStrategy = MergeStrategy.APPEND,
+        parallelism: int = 1,
+        failure_policy: FailurePolicy | None = None,
+        reducer: str | None = None,
+        input_mappings: dict[str, str] | None = None,
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> Generator["_ParallelSubagentsContext", None, None]:
+        """Context manager for parallel subagent branches.
+
+        Each branch is defined via ``parallel.branch(key)``. All branches run
+        concurrently; results merge at fan-in per ``merge_strategy``.
+
+        Example::
+
+            with wf.parallel_subagents("teams", parallelism=2) as parallel:
+                with parallel.branch("researcher") as sub:
+                    sub.llm("r", prompt="Research: {input}")
+                with parallel.branch("analyst") as sub:
+                    sub.llm("a", prompt="Analyze: {input}")
+        """
+        from dan.models.ports import InputPort, OutputPort
+
+        ctx = _ParallelSubagentsContext(
+            self,
+            node_id,
+            merge_strategy=merge_strategy,
+            parallelism=parallelism,
+            failure_policy=failure_policy,
+            reducer=reducer,
+            input_mappings=input_mappings or {},
+            name=name,
+            description=description,
+            input_ports=input_ports,
+            output_ports=output_ports,
+        )
+        yield ctx
+        ctx._finalize()
+
+    @contextmanager
+    def orchestrator(
+        self,
+        node_id: str,
+        *,
+        orchestrator_prompt: str = "",
+        orchestrator_model: str | None = None,
+        completion_condition: str = "all_done",
+        max_iterations: int = 100,
+        timeout_seconds: float | None = None,
+        input_mappings: dict[str, str] | None = None,
+        name: str | None = None,
+        description: str = "",
+        failure_policy: FailurePolicy | None = None,
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> Generator["_OrchestratorContext", None, None]:
+        """Context manager for an async runtime orchestrator.
+
+        Each team is defined via ``orch.team(name, key)``.  All teams run
+        concurrently; the orchestrator monitors events asynchronously.
+
+        Example::
+
+            with wf.orchestrator("coord", completion_condition="all_done") as orch:
+                with orch.team("researcher") as sub:
+                    sub.llm("r", prompt="Research: {input}")
+                with orch.team("analyst") as sub:
+                    sub.llm("a", prompt="Analyze: {input}")
+        """
+        from dan.models.ports import InputPort, OutputPort
+
+        ctx = _OrchestratorContext(
+            self,
+            node_id,
+            orchestrator_prompt=orchestrator_prompt,
+            orchestrator_model=orchestrator_model,
+            completion_condition=completion_condition,
+            max_iterations=max_iterations,
+            timeout_seconds=timeout_seconds,
+            input_mappings=input_mappings or {},
+            failure_policy=failure_policy,
+            name=name,
+            description=description,
+            input_ports=input_ports,
+            output_ports=output_ports,
+        )
+        yield ctx
+        ctx._finalize()
 
     @contextmanager
     def composite(
@@ -949,7 +1051,7 @@ class WorkflowBuilder:
 
     def _register_chain(self, src: NodeRef, dst: NodeRef) -> None:
         """Called by NodeRef.__rshift__ to register a >> edge."""
-        src_port = default_output_port(src.node_type)
+        src_port = default_output_port(src.node_type, getattr(src, "gate_mode", None))
         dst_port = default_input_port(dst.node_type)
         self._edges.append(_PendingEdge(
             source_node_id=src.node_id,
@@ -973,6 +1075,178 @@ class WorkflowBuilder:
             artifact_refs=list(self._artifact_refs),
             validate=True,
         )
+
+
+class _ParallelSubagentsContext:
+    """Context object for defining parallel subagent branches."""
+
+    def __init__(
+        self,
+        builder: WorkflowBuilder,
+        node_id: str,
+        *,
+        merge_strategy: MergeStrategy,
+        parallelism: int,
+        failure_policy: FailurePolicy | None,
+        reducer: str | None,
+        input_mappings: dict[str, str],
+        name: str | None,
+        description: str,
+        input_ports: list[dict[str, Any]] | None,
+        output_ports: list[dict[str, Any]] | None,
+    ) -> None:
+        self._builder = builder
+        self._node_id = node_id
+        self._merge_strategy = merge_strategy
+        self._parallelism = parallelism
+        self._failure_policy = failure_policy
+        self._reducer = reducer
+        self._input_mappings = input_mappings
+        self._name = name
+        self._description = description
+        self._input_ports = input_ports
+        self._output_ports = output_ports
+        self._branch_keys: list[str] = []
+        self._sub_graphs: list[tuple[str, Graph]] = []
+
+    @contextmanager
+    def branch(self, key: str) -> Generator[WorkflowBuilder, None, None]:
+        """Define a branch sub-graph. Yields a WorkflowBuilder for the branch."""
+        sub_key = f"{self._node_id}_{key}"
+        sub = WorkflowBuilder(sub_key, _parent=self._builder, _scope_type="parallel_branch")
+        sub._entry_input_ref = PortRef("__entry__", "input", sub)
+        yield sub
+        sub_graph = sub._compile_as_subgraph()
+        self._branch_keys.append(key)
+        self._sub_graphs.append((sub_key, sub_graph))
+
+    def define_branch(self, key: str, graph: Graph) -> None:
+        """Add a pre-built Graph as a branch (alternative to branch() context manager)."""
+        sub_key = f"{self._node_id}_{key}"
+        self._branch_keys.append(key)
+        self._sub_graphs.append((sub_key, graph))
+
+    def _finalize(self) -> None:
+        """Create the parallel_subagents node and register sub_graphs."""
+        from dan.models.ports import InputPort, OutputPort
+
+        branch_graphs = [sub_key for sub_key, _ in self._sub_graphs]
+        if not branch_graphs:
+            raise BuildError([f"parallel_subagents({self._node_id!r}) has no branches"])
+
+        kwargs: dict[str, Any] = {
+            "name": self._name or self._node_id,
+            "description": self._description,
+            "branch_graphs": branch_graphs,
+            "parallelism": self._parallelism,
+            "merge_strategy": self._merge_strategy,
+            "input_mappings": self._input_mappings,
+        }
+        if self._failure_policy is not None:
+            kwargs["failure_policy"] = self._failure_policy
+        if self._reducer is not None:
+            kwargs["reducer"] = self._reducer
+
+        pn = _PendingNode(
+            id=self._node_id,
+            node_type="parallel_subagents",
+            kwargs=kwargs,
+            explicit_input_ports=[InputPort(**p) for p in (self._input_ports or [])],
+            explicit_output_ports=[OutputPort(**p) for p in (self._output_ports or [])],
+        )
+        self._builder._add_node(pn)
+        for sub_key, sub_graph in self._sub_graphs:
+            self._builder._sub_graphs.append(_PendingSubGraph(
+                parent_node_id=self._node_id,
+                sub_graph_key=sub_key,
+                graph=sub_graph,
+            ))
+
+
+class _OrchestratorContext:
+    """Context object for defining orchestrator teams."""
+
+    def __init__(
+        self,
+        builder: WorkflowBuilder,
+        node_id: str,
+        *,
+        orchestrator_prompt: str,
+        orchestrator_model: str | None,
+        completion_condition: str,
+        max_iterations: int,
+        timeout_seconds: float | None,
+        input_mappings: dict[str, str],
+        failure_policy: FailurePolicy | None,
+        name: str | None,
+        description: str,
+        input_ports: list[dict[str, Any]] | None,
+        output_ports: list[dict[str, Any]] | None,
+    ) -> None:
+        self._builder = builder
+        self._node_id = node_id
+        self._orchestrator_prompt = orchestrator_prompt
+        self._orchestrator_model = orchestrator_model
+        self._completion_condition = completion_condition
+        self._max_iterations = max_iterations
+        self._timeout_seconds = timeout_seconds
+        self._input_mappings = input_mappings
+        self._failure_policy = failure_policy
+        self._name = name
+        self._description = description
+        self._input_ports = input_ports
+        self._output_ports = output_ports
+        self._teams: dict[str, str] = {}
+        self._sub_graphs: list[tuple[str, Graph]] = []
+
+    @contextmanager
+    def team(self, team_name: str) -> Generator[WorkflowBuilder, None, None]:
+        """Define a team sub-graph. Yields a WorkflowBuilder for the team."""
+        sub_key = f"{self._node_id}_{team_name}"
+        sub = WorkflowBuilder(sub_key, _parent=self._builder, _scope_type="orchestrator_team")
+        sub._entry_input_ref = PortRef("__entry__", "input", sub)
+        yield sub
+        sub_graph = sub._compile_as_subgraph()
+        self._teams[team_name] = sub_key
+        self._sub_graphs.append((sub_key, sub_graph))
+
+    def _finalize(self) -> None:
+        """Create the orchestrator node and register sub_graphs."""
+        from dan.models.ports import InputPort, OutputPort
+
+        if not self._teams:
+            raise BuildError([f"orchestrator({self._node_id!r}) has no teams"])
+
+        kwargs: dict[str, Any] = {
+            "name": self._name or self._node_id,
+            "description": self._description,
+            "teams": dict(self._teams),
+            "orchestrator_prompt": self._orchestrator_prompt,
+            "completion_condition": self._completion_condition,
+            "max_iterations": self._max_iterations,
+            "input_mappings": self._input_mappings,
+        }
+        if self._orchestrator_model is not None:
+            kwargs["orchestrator_model"] = self._orchestrator_model
+        if self._timeout_seconds is not None:
+            kwargs["timeout_seconds"] = self._timeout_seconds
+        if self._failure_policy is not None:
+            kwargs["failure_policy"] = self._failure_policy
+
+        pn = _PendingNode(
+            id=self._node_id,
+            node_type="orchestrator",
+            kwargs=kwargs,
+            explicit_input_ports=[InputPort(**p) for p in (self._input_ports or [])],
+            explicit_output_ports=[OutputPort(**p) for p in (self._output_ports or [])],
+        )
+        self._builder._add_node(pn)
+        for sub_key, sub_graph in self._sub_graphs:
+            self._builder._sub_graphs.append(_PendingSubGraph(
+                parent_node_id=self._node_id,
+                sub_graph_key=sub_key,
+                graph=sub_graph,
+            ))
 
 
 class _ValidatedCompositeRef:
@@ -1063,7 +1337,7 @@ class _ValidatedCompositeRef:
         if not isinstance(other, NodeRef):
             return NotImplemented
 
-        src_port = default_output_port(other.node_type)
+        src_port = default_output_port(other.node_type, getattr(other, "gate_mode", None))
         dst_id = self.node_id
         dst_type = self.node_type
         dst_port = default_input_port(dst_type)

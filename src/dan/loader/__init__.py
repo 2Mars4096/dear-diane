@@ -23,9 +23,9 @@ if TYPE_CHECKING:
 __all__ = ["load", "load_agents", "compile_workflow"]
 
 
-def load(path: str | Path) -> "Graph":
+def load(path: str | Path, *, strict: bool = False) -> "Graph":
     """Load a workflow markdown file and compile it to a Graph."""
-    result = compile_workflow(path)
+    result = compile_workflow(path, strict=strict)
     if result.graph is None:
         from dan.loader.diagnostics import format_diagnostics
 
@@ -36,11 +36,15 @@ def load(path: str | Path) -> "Graph":
     return result.graph
 
 
-def compile_workflow(path: str | Path) -> "CompileResult":
-    """Compile a workflow markdown file into a CompileResult."""
+def compile_workflow(path: str | Path, *, strict: bool = False) -> "CompileResult":
+    """Compile a workflow markdown file into a CompileResult.
+
+    When strict=True, parse warnings and ambiguous bare-edge auto-wire become
+    fatal errors; compilation stops and returns graph=None.
+    """
     from dan.loader.compiler import compile_workflow as _compile_workflow
 
-    return _compile_workflow(Path(path))
+    return _compile_workflow(Path(path), strict=strict)
 
 
 def load_agents(directory: str | Path) -> dict[str, "AgentSpec"]:

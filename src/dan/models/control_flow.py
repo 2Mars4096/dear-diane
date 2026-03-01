@@ -218,6 +218,7 @@ class WhileLoopNode(NodeBase):
         description="JSON Schema for iteration count, stop flags, thresholds",
     )
     local_state: NodeLocalState = Field(default_factory=NodeLocalState)
+    # Override NodeBase defaults; same semantics for composite/loop context contract
     read_set: list[ContextDeclaration] = Field(default_factory=list)
     write_set: list[ContextDeclaration] = Field(default_factory=list)
     compaction_rule: CompactionRule | None = None
@@ -244,6 +245,98 @@ class ForEachNode(NodeBase):
         default_factory=dict,
         description="JSON Schema for branch count, completion tracking",
     )
+    local_state: NodeLocalState = Field(default_factory=NodeLocalState)
+    # Override NodeBase; same semantics for composite/loop context contract
+    read_set: list[ContextDeclaration] = Field(default_factory=list)
+    write_set: list[ContextDeclaration] = Field(default_factory=list)
+    compaction_rule: CompactionRule | None = None
+    failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
+    projections: list[ContextProjection] = Field(default_factory=list)
+
+
+class ParallelSubagentsNode(NodeBase):
+    """Runs multiple sub-graphs concurrently; results merge at fan-in.
+
+    Each branch is a key into ``Graph.sub_graphs``. All branches run
+    asynchronously via asyncio.gather; merge_strategy controls fan-in.
+    """
+
+    node_type: Literal["parallel_subagents"] = "parallel_subagents"
+
+    branch_graphs: list[str] = Field(
+        description="Keys into Graph.sub_graphs; each runs concurrently",
+    )
+    parallelism: int = Field(default=1, ge=1, description="Max concurrent branches")
+    merge_strategy: MergeStrategy = MergeStrategy.APPEND
+    reducer: str | None = Field(
+        default=None,
+        description="Expression over {'inputs': branch_outputs} when merge_strategy=REDUCER",
+    )
+
+    input_mappings: dict[str, str] = Field(
+        default_factory=dict,
+        description="outer_port_name → inner_entry_port_name (shared input to all branches)",
+    )
+    branch_inputs: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="branch_key → {port: value} per-branch overrides",
+    )
+
+    # Composite-node contract
+    external_input_schema: dict[str, Any] | None = None
+    external_output_schema: dict[str, Any] | None = None
+    control_state_schema: dict[str, Any] = Field(default_factory=dict)
+    local_state: NodeLocalState = Field(default_factory=NodeLocalState)
+    read_set: list[ContextDeclaration] = Field(default_factory=list)
+    write_set: list[ContextDeclaration] = Field(default_factory=list)
+    compaction_rule: CompactionRule | None = None
+    failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
+    projections: list[ContextProjection] = Field(default_factory=list)
+
+
+class OrchestratorNode(NodeBase):
+    """Async runtime orchestrator — runs concurrently with subgraph teams.
+
+    Unlike ParallelSubagentsNode (fire-and-forget fan-out), the orchestrator
+    actively monitors events and can send inputs to teams mid-execution.
+    """
+
+    node_type: Literal["orchestrator"] = "orchestrator"
+
+    teams: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps team name to sub_graph key; each team runs as a concurrent subgraph",
+    )
+
+    orchestrator_prompt: str = Field(
+        default="",
+        description="System prompt for the LLM orchestrator making routing decisions",
+    )
+    orchestrator_model: str | None = Field(
+        default=None,
+        description="LLM model for orchestrator decisions (uses engine default if None)",
+    )
+
+    completion_condition: Literal["all_done", "any_done", "orchestrator_halt"] = Field(
+        default="all_done",
+        description="When to stop: all teams done, any team done, or orchestrator decides",
+    )
+    max_iterations: int = Field(default=100, ge=1, description="Safety bound on orchestrator loop iterations")
+    timeout_seconds: float | None = Field(default=None, description="Overall timeout")
+
+    input_mappings: dict[str, str] = Field(
+        default_factory=dict,
+        description="outer_port_name → inner_entry_port_name (shared input to all teams)",
+    )
+    team_inputs: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="team_name → {port: value} per-team overrides",
+    )
+
+    # Composite-node contract
+    external_input_schema: dict[str, Any] | None = None
+    external_output_schema: dict[str, Any] | None = None
+    control_state_schema: dict[str, Any] = Field(default_factory=dict)
     local_state: NodeLocalState = Field(default_factory=NodeLocalState)
     read_set: list[ContextDeclaration] = Field(default_factory=list)
     write_set: list[ContextDeclaration] = Field(default_factory=list)
@@ -283,6 +376,7 @@ class CompositeNode(NodeBase):
         description="JSON Schema for internal control state",
     )
     local_state: NodeLocalState = Field(default_factory=NodeLocalState)
+    # Override NodeBase; same semantics for composite/loop context contract
     read_set: list[ContextDeclaration] = Field(default_factory=list)
     write_set: list[ContextDeclaration] = Field(default_factory=list)
     compaction_rule: CompactionRule | None = None

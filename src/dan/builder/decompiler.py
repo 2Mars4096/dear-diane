@@ -21,6 +21,8 @@ from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
     GateNode,
+    OrchestratorNode,
+    ParallelSubagentsNode,
     ValidatorNode,
     WhileLoopNode,
 )
@@ -114,7 +116,7 @@ class _Decompiler:
             node = self.node_map[node_id]
             var = self.var_names[node_id]
 
-            if isinstance(node, (WhileLoopNode, ForEachNode, CompositeNode)):
+            if isinstance(node, (WhileLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode)):
                 body_var = f"_{var}_body"
                 node_lines = self._emit_subgraph_node(node, body_var)
                 lines.extend(node_lines)
@@ -129,7 +131,7 @@ class _Decompiler:
         # Emit >> chains (only for non-subgraph nodes)
         subgraph_node_ids = {
             n.id for n in self.graph.nodes
-            if isinstance(n, (WhileLoopNode, ForEachNode, CompositeNode))
+            if isinstance(n, (WhileLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode))
         }
         emitted_chain_pairs: set[tuple[str, str]] = set()
         for chain in chains:
@@ -299,6 +301,15 @@ class _Decompiler:
             port_dicts = [self._serialize_output_port(p) for p in node.output_ports]
             if port_dicts:
                 kwargs.append(f"output_ports={port_dicts!r}")
+        # Context declarations (for nodes that consume/produce context)
+        if hasattr(node, "read_set") and node.read_set:
+            kwargs.append(
+                f"read_set={[self._serialize_context_decl(d) for d in node.read_set]!r}"
+            )
+        if hasattr(node, "write_set") and node.write_set:
+            kwargs.append(
+                f"write_set={[self._serialize_context_decl(d) for d in node.write_set]!r}"
+            )
 
         all_args = ", ".join(args + kwargs)
         return f"{method}({all_args})"
@@ -399,9 +410,101 @@ class _Decompiler:
             kw_str = f", {', '.join(kwargs_parts)}" if kwargs_parts else ""
             lines.append(f"{pad}with wf.composite({node.id!r}{kw_str}) as {body_var}:")
 
+        elif nt == "parallel_subagents":
+            kwargs_parts = [
+                f"merge_strategy={node.merge_strategy.value!r}",
+                f"parallelism={node.parallelism!r}",
+            ]
+            if node.name and node.name != node.id:
+                kwargs_parts.insert(0, f"name={node.name!r}")
+            if node.description:
+                kwargs_parts.append(f"description={node.description!r}")
+            if node.failure_policy and any(
+                getattr(node.failure_policy, k) is not None
+                for k in ("max_iterations", "timeout_seconds", "stagnation_threshold")
+            ):
+                fp = node.failure_policy.model_dump(mode="json", exclude_none=True)
+                kwargs_parts.append(f"failure_policy={fp!r}")
+            if node.reducer:
+                kwargs_parts.append(f"reducer={node.reducer!r}")
+            if node.input_mappings:
+                kwargs_parts.append(f"input_mappings={node.input_mappings!r}")
+            if node.input_ports:
+                kwargs_parts.append(
+                    f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+                )
+            if node.output_ports:
+                kwargs_parts.append(
+                    f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+                )
+            lines.append(f"{pad}with wf.parallel_subagents({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
+
+        elif nt == "orchestrator":
+            kwargs_parts = []
+            if node.name and node.name != node.id:
+                kwargs_parts.append(f"name={node.name!r}")
+            if node.orchestrator_prompt:
+                kwargs_parts.append(f"orchestrator_prompt={node.orchestrator_prompt!r}")
+            if node.orchestrator_model:
+                kwargs_parts.append(f"orchestrator_model={node.orchestrator_model!r}")
+            if node.completion_condition != "all_done":
+                kwargs_parts.append(f"completion_condition={node.completion_condition!r}")
+            if node.max_iterations != 100:
+                kwargs_parts.append(f"max_iterations={node.max_iterations!r}")
+            if node.timeout_seconds is not None:
+                kwargs_parts.append(f"timeout_seconds={node.timeout_seconds!r}")
+            if node.input_mappings:
+                kwargs_parts.append(f"input_mappings={node.input_mappings!r}")
+            if node.description:
+                kwargs_parts.append(f"description={node.description!r}")
+            kw_str = f", {', '.join(kwargs_parts)}" if kwargs_parts else ""
+            lines.append(f"{pad}with wf.orchestrator({node.id!r}{kw_str}) as {body_var}:")
+
         # Resolve the body sub-graph from the root graph (handles nested graphs)
-        sub_graph = self._resolve_sub_graph(node.body_graph)
+        body_graph_key = getattr(node, "body_graph", None)
+        branch_graphs = getattr(node, "branch_graphs", None)
+        teams = getattr(node, "teams", None)
+        if nt == "parallel_subagents" and branch_graphs:
+            sub_graph = None  # Handled below per-branch
+        elif nt == "orchestrator" and teams:
+            sub_graph = None  # Handled below per-team
+        else:
+            sub_graph = self._resolve_sub_graph(body_graph_key) if body_graph_key else None
+
         inner_pad = pad + "    "
+        if nt == "orchestrator" and teams:
+            for team_name, sub_key in teams.items():
+                team_sub = self._resolve_sub_graph(sub_key)
+                if team_sub and team_sub.nodes:
+                    team_var = f"_{body_var}_{team_name}"
+                    lines.append(f"{inner_pad}with {body_var}.team({team_name!r}) as {team_var}:")
+                    team_lines = self._emit_parallel_branch_content(
+                        team_sub, team_var, indent + 2
+                    )
+                    lines.extend(team_lines)
+                else:
+                    team_var = f"_{body_var}_{team_name}"
+                    lines.append(f"{inner_pad}with {body_var}.team({team_name!r}) as {team_var}:")
+                    lines.append(f"{inner_pad}    pass")
+            return lines
+
+        if nt == "parallel_subagents" and branch_graphs:
+            prefix = f"{node.id}_"
+            for sub_key in branch_graphs:
+                branch_key = sub_key[len(prefix):] if sub_key.startswith(prefix) else sub_key
+                sub_graph = self._resolve_sub_graph(sub_key)
+                if sub_graph and sub_graph.nodes:
+                    branch_var = f"_{body_var}_{branch_key}"
+                    lines.append(f"{inner_pad}with {body_var}.branch({branch_key!r}) as {branch_var}:")
+                    branch_lines = self._emit_parallel_branch_content(
+                        sub_graph, branch_var, indent + 2
+                    )
+                    lines.extend(branch_lines)
+                else:
+                    lines.append(f"{inner_pad}with {body_var}.branch({branch_key!r}) as {branch_var}:")
+                    lines.append(f"{inner_pad}    pass")
+            return lines
+
         if sub_graph and sub_graph.nodes:
             sub_ordered = self._topological_sort_graph(sub_graph)
             emitted_in_chain: set[str] = set()
@@ -466,6 +569,83 @@ class _Decompiler:
 
         return lines
 
+    def _emit_parallel_branch_content(
+        self, sub_graph: Graph, scope_var: str, indent: int
+    ) -> list[str]:
+        """Emit the content of a parallel branch (nodes, chains, edges)."""
+        lines: list[str] = []
+        inner_pad = "    " * indent
+        sub_ordered = self._topological_sort_graph(sub_graph)
+        emitted_in_chain: set[str] = set()
+        for sub_nid in sub_ordered:
+            if sub_nid in emitted_in_chain:
+                continue
+            sub_node = sub_graph.node_by_id(sub_nid)
+            if sub_node is None:
+                continue
+            sub_var = _to_var_name(sub_nid)
+            if isinstance(
+                sub_node,
+                (WhileLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode),
+            ):
+                nested_body_var = f"_{sub_var}_body"
+                nested_lines = self._emit_subgraph_node(sub_node, nested_body_var, indent=indent)
+                lines.extend(nested_lines)
+                lines.append(
+                    f"{inner_pad}{sub_var} = NodeRef({sub_node.id!r}, {sub_node.node_type!r}, {scope_var})"
+                )
+            else:
+                call = self._emit_node_call(sub_node)
+                call = call.replace("wf.", f"{scope_var}.", 1)
+                lines.append(f"{inner_pad}{sub_var} = {call}")
+
+        sub_chains = self._detect_chains_in(sub_graph)
+        emitted_chain_pairs: set[tuple[str, str]] = set()
+        sub_node_map = {n.id: n for n in sub_graph.nodes}
+        subgraph_node_ids = {
+            n.id for n in sub_graph.nodes
+            if isinstance(n, (WhileLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode))
+        }
+        for chain in sub_chains:
+            filtered = [nid for nid in chain if nid not in subgraph_node_ids]
+            if len(filtered) >= 2:
+                chain_str = " >> ".join(_to_var_name(nid) for nid in filtered)
+                lines.append(f"{inner_pad}{chain_str}")
+                for i in range(len(filtered) - 1):
+                    emitted_chain_pairs.add((filtered[i], filtered[i + 1]))
+
+        for edge in sub_graph.edges:
+            if isinstance(edge, DataEdge):
+                pair = (edge.source_node_id, edge.target_node_id)
+                if pair in emitted_chain_pairs and self._is_default_data_edge_in(
+                    edge, sub_node_map
+                ):
+                    continue
+                src_var = _to_var_name(edge.source_node_id)
+                tgt_var = _to_var_name(edge.target_node_id)
+                spread_arg = ", spread=True" if getattr(edge, "spread", False) else ""
+                lines.append(
+                    f'{inner_pad}{scope_var}.edge({src_var}["{edge.source_port}"], '
+                    f'{tgt_var}["{edge.target_port}"]{spread_arg})'
+                )
+            elif isinstance(edge, ControlEdge):
+                src_var = _to_var_name(edge.source_node_id)
+                tgt_var = _to_var_name(edge.target_node_id)
+                cond_arg = f", condition={edge.condition!r}" if edge.condition else ""
+                lines.append(
+                    f'{inner_pad}{scope_var}.control_edge({src_var}["{edge.source_port}"], '
+                    f'{tgt_var}["{edge.target_port}"]{cond_arg})'
+                )
+            elif isinstance(edge, ContextEdge):
+                src_var = _to_var_name(edge.source_node_id)
+                tgt_var = _to_var_name(edge.target_node_id)
+                lines.append(
+                    f'{inner_pad}{scope_var}.context_edge({src_var}["{edge.source_port}"], '
+                    f'{tgt_var}["{edge.target_port}"], '
+                    f"context_key={edge.context_key!r}, mode={edge.mode.value!r})"
+                )
+        return lines
+
     def _resolve_sub_graph(self, key: str) -> Graph | None:
         """Find a sub-graph by key, searching recursively through nested sub-graphs."""
         if key in self.graph.sub_graphs:
@@ -484,8 +664,9 @@ class _Decompiler:
         tgt_node = node_map.get(edge.target_node_id)
         if src_node is None or tgt_node is None:
             return False
+        gate_mode = getattr(src_node, "gate_mode", None) if src_node else None
         return (
-            edge.source_port == default_output_port(src_node.node_type)
+            edge.source_port == default_output_port(src_node.node_type, gate_mode)
             and edge.target_port == default_input_port(tgt_node.node_type)
         )
 
@@ -577,8 +758,9 @@ class _Decompiler:
         tgt_node = self.node_map.get(edge.target_node_id)
         if src_node is None or tgt_node is None:
             return False
+        gate_mode = getattr(src_node, "gate_mode", None) if src_node else None
         return (
-            edge.source_port == default_output_port(src_node.node_type)
+            edge.source_port == default_output_port(src_node.node_type, gate_mode)
             and edge.target_port == default_input_port(tgt_node.node_type)
         )
 

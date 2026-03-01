@@ -137,7 +137,18 @@ class IfStatement:
     source: SourceLocation | None = None
 
 
-FlowStatement = ChainStatement | EachStatement | LoopStatement | IfStatement
+@dataclass
+class ParallelStatement:
+    """``agent_a | parallel(team_a, team_b, merge: append, parallel: 2)`` — parallel branches."""
+
+    source_agent: str
+    branch_agents: list[str]
+    merge: str = "append"
+    parallel: int = 1
+    source: SourceLocation | None = None
+
+
+FlowStatement = ChainStatement | EachStatement | LoopStatement | IfStatement | ParallelStatement
 
 
 # ---------------------------------------------------------------------------

@@ -47,6 +47,10 @@ class EventType(str, Enum):
     VALIDATION_RESULT = "validation_result"
     # -- 6-14: Dead-edge warnings -----------------------------------------------
     DEAD_EDGE_WARNING = "dead_edge_warning"
+    # -- 7-9: Async parallel subagents -----------------------------------------
+    PARALLEL_BRANCH_STARTED = "parallel_branch_started"
+    PARALLEL_BRANCH_COMPLETED = "parallel_branch_completed"
+    PARALLEL_FAN_IN_COMPLETED = "parallel_fan_in_completed"
 
 
 @dataclass(frozen=True)
