@@ -1,0 +1,35 @@
+{
+  "id": "64b1819ac042",
+  "workflow_id": "paper_writing",
+  "title": "Help me develop a new agent that can track the mac…",
+  "messages": [
+    {
+      "id": "171844b2-e0f9-45e2-8cb5-a2ecf99d36ff",
+      "role": "user",
+      "content": "help me add a workflow to monitor macro news that could affect U.S. stocks",
+      "mentions": [],
+      "mutation_plan": null,
+      "dry_run_result": null,
+      "mutation_id": null,
+      "mutation_status": null,
+      "token_usage": null,
+      "timestamp": "2026-03-02T05:34:18.078000Z",
+      "run_ref": null
+    },
+    {
+      "id": "c6982004-0268-443a-8820-4e704918020b",
+      "role": "assistant",
+      "content": "",
+      "mentions": [],
+      "mutation_plan": null,
+      "dry_run_result": null,
+      "mutation_id": null,
+      "mutation_status": null,
+      "token_usage": null,
+      "timestamp": "2026-03-02T05:34:18.078000Z",
+      "run_ref": null
+    }
+  ],
+  "created_at": "2026-03-02T05:22:15.364616Z",
+  "updated_at": "2026-03-02T05:35:52.508955Z"
+}
