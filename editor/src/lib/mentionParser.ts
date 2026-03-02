@@ -1,6 +1,15 @@
+export type MentionType =
+  | "node"
+  | "workflow"
+  | "subgraph"
+  | "file"
+  | "code"
+  | "docs"
+  | "chat";
+
 export interface MentionRef {
   name: string;
-  type: "node" | "workflow" | "subgraph";
+  type: MentionType;
   id: string;
 }
 
@@ -8,7 +17,7 @@ export type MentionSegment =
   | { type: "text"; content: string }
   | { type: "mention"; mention: MentionRef };
 
-const MENTION_RE = /@\[([^\]]+)\]\((node|workflow|subgraph):([^)]+)\)/g;
+const MENTION_RE = /@\[([^\]]+)\]\((node|workflow|subgraph|file|code|docs|chat):([^)]+)\)/g;
 
 export function serializeMention(mention: MentionRef): string {
   return `@[${mention.name}](${mention.type}:${mention.id})`;
@@ -103,9 +112,7 @@ export function navigateToMention(
   }
 }
 
-export function mentionTypeColor(
-  type: "node" | "workflow" | "subgraph",
-): string {
+export function mentionTypeColor(type: MentionType): string {
   switch (type) {
     case "node":
       return "bg-blue-100 text-blue-700";
@@ -113,5 +120,13 @@ export function mentionTypeColor(
       return "bg-green-100 text-green-700";
     case "subgraph":
       return "bg-amber-100 text-amber-700";
+    case "file":
+      return "bg-purple-100 text-purple-700";
+    case "code":
+      return "bg-cyan-100 text-cyan-700";
+    case "docs":
+      return "bg-emerald-100 text-emerald-700";
+    case "chat":
+      return "bg-rose-100 text-rose-700";
   }
 }
