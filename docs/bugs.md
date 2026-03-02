@@ -6,6 +6,11 @@
 
 ## Resolved Bugs
 
+- **`_rag_index_documents` sent `list[str]` to `Indexer.create_index` (expects `list[dict]` with `"text"` key):** Indexer silently failed to build a collection. Fixed by wrapping document content as `{"text": ..., "metadata": ...}`.
+- **`_rag_index_documents` bypassed workspace sandboxing:** Absolute `pdf_dir` was resolved as-is via `Path(workspace) / pdf_dir`, escaping `DAN_WORKSPACE_ROOT`. Fixed by rejecting absolute paths and verifying the resolved path stays under the workspace root.
+- **`TOOL_PORT_MANIFESTS` mismatched `compile_latex`/`save_paper`/`package_submission` signatures:** Manifests declared generic `input`/`tex_content` ports while tools required `title`, `content`, `tex_path`, `bib_path` as separate arguments. Caused `TypeError` at runtime. Fixed by aligning manifests with actual function signatures and adding structured output ports.
+- **`data_ingest` pattern wired `list_directory` dict output into `rag_index_documents` string param:** `list_directory.result` is `{"entries": [...], "count": N}` but was connected to `pdf_dir` (string). Caused `TypeError`. Fixed by removing the intermediate `list_directory` node — `rag_index_documents` does its own file discovery internally.
+- **`informs_paper_writing` template implicitly auto-created `context` port on Outline Planner:** `add_edge` targeting a nonexistent port generated a diagnostic warning and contradicted strict-mode hardening. Fixed by declaring explicit `input_ports` config on the Outline Planner node.
 - **Flow parser crashed on non-integer `parallel`/`max` kwargs:** `each()`, `loop()`, and `parallel()` called `int()` directly on kwargs without catching `ValueError`. Fixed by wrapping in try/except and raising `FlowParseError` with the offending value.
 - **Editor ConfigPanel: clearing input mapping text deleted the row:** `updateInputMapping` deleted the mapping when inner port was empty string, causing the input row to vanish mid-edit. Fixed by always storing the value; deletion is via the explicit `×` button.
 - **Loader silently accepted unknown merge strategy in parallel():** An unrecognized `merge:` value (e.g. `merge: unknown`) silently defaulted to APPEND. Fixed by emitting a diagnostic error listing valid strategies.

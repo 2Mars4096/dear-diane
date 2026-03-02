@@ -38,7 +38,7 @@ cp .env.example .env
 # Edit .env with your LLM provider credentials:
 #   DAN_LLM_BASE_URL=https://api.vectorengine.ai/v1
 #   DAN_LLM_API_KEY=your-key
-#   DAN_LLM_DEFAULT_MODEL=claude-sonnet-4-6
+#   DAN_LLM_MODEL=claude-sonnet-4-6
 ```
 
 ### Run the Visual Editor

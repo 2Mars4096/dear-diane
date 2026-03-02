@@ -110,8 +110,9 @@ deep-agent-network/
       app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry
       exec.py                    # execute_python() — shared Python executor for run_python and run_strategy_script
       graph_store.py             # Filesystem-based graph JSON persistence
-      graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run
-      chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA), text-streaming fallback
+      graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run; TOOL_PORT_MANIFESTS for tool-specific port declarations; ApplySkill mutation op
+      skill_library.py           # SKILL_LIBRARY: domain-specific prompt-injection skills (management_science_writing, informs_latex_style) targeted by node tags
+      chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history)
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
       run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing
       scoped_run.py              # Scoped execution: full/node/subgraph run builder
@@ -155,7 +156,9 @@ deep-agent-network/
       components/HumanInputDialog.tsx # Modal popup for mid-run human-in-the-loop input submission
       components/MentionAutocomplete.tsx # Floating @ mention dropdown: nodes/workflows/subgraphs, keyboard nav, fuzzy filter
       components/ChatPanel.tsx        # Resizable chat sidebar: message send/stream, @ mention integration, mutation event handling + GraphDiffPreview
-      components/ChatMessage.tsx      # Message bubble: markdown render, mention chips with click-to-navigate, clickable mutation badge
+      components/ChatMessage.tsx      # Message bubble: markdown render, mention chips with click-to-navigate, tool call cards, run output blocks
+      components/ToolCallCard.tsx     # Expandable tool call card: status icon, args/output sections, operations list, duration badge
+      components/RunOutputBlock.tsx   # Structured run output: per-node status, collapsible output, timing, "View logs" link
       components/GraphDiffPreview.tsx  # Mutation diff preview modal: accept/reject/partial-accept
       components/ToastContainer.tsx   # Fixed bottom-right toast notifications
       components/Spinner.tsx          # Reusable loading spinner
@@ -679,6 +682,7 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - Graph-aware system prompt: serializes current workflow as `GraphSummary` for LLM context
 - `@` mention system: reference nodes, workflows, sub-graphs with Cursor-style autocomplete
 - Thread management: per-workflow persistent chat history, thread list, auto-restore
+- **Context window management:** `compact_history()` transparently compacts chat history to fit within model context window. 4-phase sliding window: (1) system prompt always kept, (2) recent N messages in full, (3) older assistant messages truncated (first + last sentence), (4) oldest dropped. `MODEL_CONTEXT_WINDOWS` lookup table (20 models). Configurable via `DAN_CHAT_MAX_CONTEXT_RATIO` (default 0.8) and `DAN_CHAT_RECENT_MESSAGES` (default 10). Token counting via `tiktoken` with `len//4` fallback. Header shows "~Xk / Yk" context usage indicator.
 
 ### NL→Graph Mutation Engine
 - `GraphMutator` applies atomic operations (add/remove/edit nodes and edges) to graph dicts
@@ -688,6 +692,9 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - `GraphDiffPreview` shows visual diff before applying; accept/reject/partial-accept
 - **Validation gate:** After `GraphMutator.apply()` succeeds, the `apply-mutation` endpoint runs `Graph.model_validate()` + `validate_graph()` before persisting. Fatal validation errors reject the apply; warnings are returned alongside the saved graph.
 - **Auto-retry:** If the LLM's mutation plan fails dry-run validation, the chat manager feeds the errors back to the LLM for one correction attempt before surfacing the failure to the user.
+- **`TOOL_PORT_MANIFESTS`** — tool-specific port declarations for 10 common tools (`file_read`, `list_directory`, `pdf_read`, `compile_latex`, `save_paper`, `package_submission`, `citation_verifier`, `check_latex_deps`, `rag_index_documents`, `web_search`). Used by `_default_ports` to auto-declare input/output ports for `tool_operator` nodes by `tool_id`.
+- **`ApplySkill` mutation op** — targets nodes by ID or `metadata.tags`; injects domain-specific prompt prefixes from `SKILL_LIBRARY` (in `skill_library.py`) into `system_prompt` (or `prompt_template` fallback). Skills: `management_science_writing`, `informs_latex_style`.
+- **`clarify_intent()`** — `ChatManager` method that detects underspecified build-mode intents and asks the user for clarification before planning.
 
 ### Build-from-Intent Mode
 - **Two-mode chat:** `ChatMessageRequest.mode` accepts `"mutate"` (default) or `"build"`. Mode `"build"` uses `BUILD_FROM_INTENT_PROMPT` (intent-first workflow creation); `"mutate"` uses `SYSTEM_PROMPT_TEMPLATE` (graph-aware editing). Empty graphs auto-switch to build mode regardless of the `mode` parameter.

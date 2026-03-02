@@ -1,7 +1,7 @@
 # 10-2: `@` Mention & Co-Navigation
 
 **Parent:** [10-chatbox-nl-workflow](10-chatbox-nl-workflow.md)
-**Status:** completed
+**Status:** completed — core mention UI (autocomplete, chips, basic navigation) done; canvas→chat suggestions, backend mention resolution, tests, and docs deferred to Phase 7.2 (plan 12-*)
 **Goal:** Add a Cursor-style `@` mention system to the chat panel. Users type `@` to reference specific nodes, saved workflows, or sub-graphs. Mentions create bidirectional links between chat and canvas — click a mention to navigate, select a node to suggest a mention.
 
 ## Tasks
@@ -9,7 +9,7 @@
 - [x] 1. `@` trigger detection
   - [x] 1-1. In the chat input textarea, detect when user types `@` (not preceded by a word character, to avoid triggering mid-word)
   - [x] 1-2. After `@`, capture the search query (characters typed after `@` until space, Enter, or Escape)
-  - [ ] 1-3. Debounce filtering: 100ms debounce on keystroke to avoid excessive re-filtering
+  - [ ] 1-3. Debounce filtering: 100ms debounce on keystroke to avoid excessive re-filtering *(deferred to 12-3)*
   - [x] 1-4. Escape or clicking outside dismisses the autocomplete without inserting a mention
 
 - [x] 2. Autocomplete dropdown component
@@ -26,40 +26,40 @@
   - [x] 3-1. When user selects an item from autocomplete, replace `@query` with a styled mention chip (inline element in the textarea). Chip shows icon + name, styled with a colored background (blue for nodes, green for workflows, amber for sub-graphs).
   - [x] 3-2. Implementation options: (a) ContentEditable div with inline chip spans, (b) textarea with chip rendering via overlay, (c) use a rich-text input library (e.g., Slate, TipTap). Prefer the simplest approach that supports inline chips + plain text.
   - [x] 3-3. Mention data model: `{ type: "node" | "workflow" | "subgraph", id: string, name: string }`. Stored in message alongside plain text. Serialized as `@[name](type:id)` in the message string sent to backend.
-  - [ ] 3-4. Backspace on a chip deletes the entire chip (atomic delete)
+  - [ ] 3-4. Backspace on a chip deletes the entire chip (atomic delete) *(deferred to 12-3)*
   - [x] 3-5. Multiple mentions per message supported
 
 - [x] 4. Mention rendering in message history
   - [x] 4-1. In `ChatMessage.tsx`, parse `@[name](type:id)` tokens and render as styled chips (same visual as input chips but non-editable)
   - [x] 4-2. Chips in messages are clickable (triggers co-navigation, task 5)
-  - [ ] 4-3. If the referenced node/workflow no longer exists (deleted since message was sent), render chip with strikethrough style and "(deleted)" suffix
+  - [ ] 4-3. If the referenced node/workflow no longer exists (deleted since message was sent), render chip with strikethrough style and "(deleted)" suffix *(deferred to 12-3)*
 
 - [x] 5. Click mention → canvas navigation
   - [x] 5-1. Clicking a node mention chip: select the node on canvas (`setSelectedNode`), center viewport on it (`fitView` with padding focused on the node), flash/highlight the node briefly (CSS pulse animation, 1s)
-  - [ ] 5-2. If the mentioned node is inside a sub-graph (not at current layer), auto-drill-in to the correct layer first, then select
-  - [ ] 5-3. Clicking a workflow mention: open the workflow in a new tab (via `openTab`) or switch to existing tab if already open
+  - [ ] 5-2. If the mentioned node is inside a sub-graph (not at current layer), auto-drill-in to the correct layer first, then select *(deferred to 12-3)*
+  - [ ] 5-3. Clicking a workflow mention: open the workflow in a new tab (via `openTab`) or switch to existing tab if already open *(deferred to 12-3)*
   - [x] 5-4. Clicking a sub-graph mention: drill into that sub-graph (`drillIn` action)
 
-- [ ] 6. Canvas → chat mention suggestion
+- [ ] 6. Canvas → chat mention suggestion *(deferred to 12-3)*
   - [ ] 6-1. When a node is selected on the canvas AND the chat panel is open AND the chat input is focused, show a subtle hint chip above the input: "Mention @NodeName" (clickable to insert)
   - [ ] 6-2. When multiple nodes are selected (multi-select), show chips for all selected nodes
   - [ ] 6-3. Right-click context menu on a node: add "Mention in chat" action. Inserts `@[NodeName](node:id)` into the chat input at cursor position and focuses the input.
-  - [ ] 6-4. Optional: drag a node from canvas onto the chat input to create a mention (stretch goal)
+  - [ ] 6-4. Optional: drag a node from canvas onto the chat input to create a mention *(stretch — deferred to Backlog)*
 
-- [ ] 7. Mention resolution for backend
+- [ ] 7. Mention resolution for backend *(deferred to 12-3)*
   - [ ] 7-1. Client sends mention references only (`type`, `id`, display `name`) alongside message text; backend resolves them against server-side graph/workflow state.
   - [ ] 7-2. Node mentions: backend expands `@[name](node:id)` into structured node context (type, model/prompt config, ports, adjacent edges) and injects that into LLM context.
   - [ ] 7-3. Workflow mentions: backend loads referenced workflow from `GraphStore` and injects summary context.
   - [ ] 7-4. Multiple mentions: each resolved independently and included as separate context blocks. Dedup if same entity appears multiple times.
   - [ ] 7-5. Context budget: mentioned entities get priority in graph context serialization. Non-mentioned nodes are compressed when total context exceeds budget.
 
-- [ ] 8. Tests
+- [ ] 8. Tests *(deferred to 12-6)*
   - [ ] 8-1. Mention parsing: `@[name](type:id)` → structured mention object, round-trip serialization
   - [ ] 8-2. Fuzzy matching: test substring filter, case insensitivity, empty query shows all
   - [ ] 8-3. Mention resolution: test full node context expansion, missing node handling, budget enforcement
   - [ ] 8-4. Frontend: verify autocomplete appears on `@`, keyboard navigation works, chip insertion/deletion works (component test or manual)
 
-- [ ] 9. Docs sync
+- [ ] 9. Docs sync *(deferred — update when features land)*
   - [ ] 9-1. `architecture.md`: document MentionAutocomplete component, mention serialization format
   - [ ] 9-2. `changelog.md`: implementation entry
 
@@ -71,6 +71,7 @@
 
 ## Notes
 
+- **Deferred to Phase 7.2:** Debounce, atomic backspace, deleted-ref rendering, auto-drill-in, workflow-mention navigation, canvas→chat suggestions, backend mention resolution (all → 12-3), tests (→ 12-6), docs (→ when features land). Canvas drag-to-mention (6-4) moved to Backlog as stretch goal.
 - Cursor's `@` mention is the gold standard for UX. Key qualities: instant response, clear visual distinction, seamless keyboard flow (type `@`, filter, Enter, keep typing).
 - ContentEditable is powerful but complex. A textarea with an overlay for chip rendering might be simpler and more reliable. Evaluate during implementation.
 - The mention system is reusable beyond chat — future phases could use it in node prompt editors, condition expressions, or markdown flow notation.

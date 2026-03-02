@@ -767,7 +767,7 @@ async def main():
         config=EngineConfig(
             llm_base_url=os.getenv("DAN_LLM_BASE_URL", "https://api.vectorengine.ai/v1"),
             llm_api_key=os.getenv("DAN_LLM_API_KEY", ""),
-            llm_default_model=os.getenv("DAN_LLM_DEFAULT_MODEL", "claude-sonnet-4-6"),
+            llm_default_model=os.getenv("DAN_LLM_MODEL", "claude-sonnet-4-6"),
             checkpoint_enabled=False,
         ),
         executor_registry=exec_reg,
@@ -1064,7 +1064,7 @@ Use this when an LLM is asked to generate workflow markdown (`workflow.md`, agen
 - **Flow lines:** Use explicit `.port` syntax whenever there is branching, merging, or similarly named ports.
 - **Loop semantics:** `loop(body, until: "...")` means *stop when condition is true*.
 - **Loop state:** When needed, include `state:` and `defaults:` JSON strings in `loop(...)`.
-- **ForEach bodies:** If body logic has multiple steps, wrap it as a composite agent and use `each(composite_body, parallel: N)`.
+- **ForEach:** Use `source | each(body, parallel: N)`; to wire a specific array port (e.g. sections) use `source.port | each(...)` (e.g. `outline_planner.sections | each(section_writer, parallel: 4)`). Wire the each node’s output with `each_node_id → next_agent` (e.g. `outline_planner_each_section_writer → assembler`). If body logic has multiple steps, wrap it as a composite agent.
 - **Parallel branches:** Use `source | parallel(team_a, team_b, merge: append, parallel: 2)` for heterogeneous parallel subagents. Each branch references an agent (composite or atomic).
 - **Context-heavy workflows:** Markdown decompilation prioritizes data-flow readability. Control and context edges are emitted as comments (`<!-- SKIPPED -->`). Round-trip is not lossless for workflows that use those edges. For full round-trip of context-heavy or control-heavy workflows, keep a Python/JSON canonical source.
 
@@ -1112,10 +1112,12 @@ Build-from-intent creates workflows from natural language. It can be triggered t
 ```
 
 When `mode="build"`, the LLM receives `BUILD_FROM_INTENT_PROMPT` with:
-- **Task decomposition guidance** — break intent into stages, map to node types and data flow
-- **Pattern library** — chain, review_loop, fan_out, rag_qa (use `expand_pattern` ops)
-- **Intent→pattern mapping** — paper writing → review_loop + chain, RAG QA → rag_qa, multi-step → chain
+- **Task decomposition guidance** — break intent into stages, map to node types and data flow; dual-branch composition (`data_ingest` + `data_analysis` + drafting/review/compile)
+- **Pattern library** — chain, review_loop, fan_out, rag_qa, data_ingest, data_analysis (use `expand_pattern` ops)
+- **Intent→pattern mapping** — paper writing → review_loop + chain, RAG QA → rag_qa, multi-step → chain, Management Science → `informs_paper_writing` + `apply_skill(management_science_writing)`
 - **Available templates** — pre-built operation sequences (see below)
+- **Path-policy guidance** — if user-provided path is outside workspace, ask user to import/mount/copy into workspace
+- **Skills** — domain-specific prompt injections via `apply_skill` op (see below)
 
 When `mode="mutate"` (default), the LLM receives `SYSTEM_PROMPT_TEMPLATE` with the current graph summary for modification.
 
@@ -1128,6 +1130,40 @@ Pre-built workflow templates (`WORKFLOW_TEMPLATES`) that the LLM can reference:
 | `paper_writing` | `review_loop` + `chain(3)` | Drafter→Reviewer→Gate loop + Outline→Draft→Final Polish chain |
 | `rag_qa` | `rag_qa` | RAG retrieval → LLM answer |
 | `chain_3` | `chain(3)` | Simple 3-node sequential chain (Step 1 → Step 2 → Step 3) |
+| `informs_paper_writing` | `data_ingest` + `data_analysis` + review loop + LaTeX pipeline | 19-node fully-wired template: Input(topic,pdf_dir,data_path) → data_ingest → data_analysis → outline/draft/review → LaTeX assembly → check_latex_deps → citation_verifier → compile_latex → save_paper → package_submission. Includes HumanInTheLoop and Management Science-calibrated prompts. |
+| `rag_research` | `data_ingest` + LLM synthesis | Ingest papers at a path, retrieve, and synthesize understanding. |
+
+#### New Patterns
+
+| Pattern | Parameters | Description |
+|---|---|---|
+| `data_ingest` | `input_var` (str), `collection` (str), `rag_name` (str), `top_k` (int) | Two-stage flow: filesystem discovery/read + RAG index build + retrieval-ready outputs. Creates InputNode → list_directory tool → pdf_read tool → rag_index_documents tool → rag_operator. |
+| `data_analysis` | `input_var` (str) | Path-aware data branch: InputNode(data_path) → file_read tool → preprocess code → methods_results_summary LLM (structured output). |
+
+#### New Mutation Operation: `apply_skill`
+
+Injects domain-specific prompt prefixes into targeted nodes:
+
+```json
+{
+  "op": "apply_skill",
+  "skill": "management_science_writing",
+  "target_nodes": ["draft_section", "review_draft"],
+  "target_tag": "writing"
+}
+```
+
+- `skill` — key from `SKILL_LIBRARY` (`management_science_writing`, `informs_latex_style`)
+- `target_nodes` — list of node IDs to inject the skill prompt into (optional)
+- `target_tag` — target all nodes with this value in `metadata.tags` (optional)
+- Injection: prepends skill prompt to `system_prompt` (or `prompt_template` fallback)
+
+#### Available Skills
+
+| Skill | Target Tags | Description |
+|---|---|---|
+| `management_science_writing` | `writing`, `review` | Management Science journal conventions: contribution framing, methods rigor, reviewer criteria |
+| `informs_latex_style` | `latex` | INFORMS LaTeX formatting: `informs3.cls`, `plainnat` bibliography, submission package conventions |
 
 #### Build Flow
 

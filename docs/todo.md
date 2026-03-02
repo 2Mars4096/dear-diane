@@ -86,15 +86,15 @@
 
 - [x] [10-chatbox-nl-workflow](plans/10-chatbox-nl-workflow.md) — conversational workflow authoring: chat panel, `@` mentions, NL→graph mutations, diff preview, session history, scoped run-from-chat
   - [x] [10-1-chat-panel-backend](plans/10-1-chat-panel-backend.md) — A. Chat panel React component, backend message endpoint, LLM integration, graph-aware system prompt, streaming
-  - [x] [10-2-mention-co-navigation](plans/10-2-mention-co-navigation.md) — B. `@` autocomplete (nodes/workflows/sub-graphs), mention chips, click→canvas navigation, canvas→chat suggestion
+  - [x] [10-2-mention-co-navigation](plans/10-2-mention-co-navigation.md) — B. `@` autocomplete (nodes/workflows/sub-graphs), mention chips, click→canvas navigation, canvas→chat suggestion *(core UI done; canvas→chat, backend resolution, tests deferred to 12-3/12-6)*
   - [x] [10-3-nl-graph-mutation](plans/10-3-nl-graph-mutation.md) — C. Graph operation primitives, LLM function-calling schema, multi-step mutation planning, validation, error recovery
   - [x] [10-4-graph-diff-confirmation](plans/10-4-graph-diff-confirmation.md) — D. Before/after diff computation, visual diff preview, accept/reject/partial-accept, undo integration, session-scoped conversation rollback
-  - [x] [10-5-history-execution](plans/10-5-history-execution.md) — E. Per-workflow chat persistence, thread list UI, graph delta tracking, session rollback metadata *(thread UI, auto-restore, session markers done; cascade delete, offline resilience, tests, docs remaining)*
-  - [x] [10-6-scoped-run-from-chat](plans/10-6-scoped-run-from-chat.md) — F. Full/node/sub-graph run API, server-authoritative target resolution, chat command handling, run event streaming into thread
+  - [x] [10-5-history-execution](plans/10-5-history-execution.md) — E. Per-workflow chat persistence, thread list UI, graph delta tracking, session rollback metadata *(core persistence, thread UI, auto-restore, session markers done; delta tracking UI, cascade delete, offline resilience, tests, docs deferred to 12-*)*
+  - [x] [10-6-scoped-run-from-chat](plans/10-6-scoped-run-from-chat.md) — F. Full/node/sub-graph run API, server-authoritative target resolution, chat command handling, run event streaming into thread *(core API, scoped builder, command parser, event mapper done; output mapping, NL intent, rate guard, tests, docs deferred to 12-*)*
   - [x] [10-7-apply-mutation-flow](plans/10-7-apply-mutation-flow.md) — G. Wire GraphDiffPreview, POST apply-mutation endpoint, chat→preview→apply pipeline, session marker
   - [x] [10-8-nl-mutation-hardening](plans/10-8-nl-mutation-hardening.md) — Validate-before-save gate, port-aware edges, entry/exit recompute, typed tool schema, prompt enrichment, auto-retry, pattern macros, stale-plan/idempotency hardening, mutation CI, acceptance metrics rollout
   - [x] [10-9-meta-orchestrator](plans/10-9-meta-orchestrator.md) — Meta orchestrator interprets user needs and self-builds a workflow from natural language intent; zero-to-workflow from scratch
-  - [ ] [10-10-domain-nl-authoring](plans/10-10-domain-nl-authoring.md) — `data_ingest` pattern, full INFORMS paper-writing template, lightweight skill injection (`apply_skill` op), `BUILD_FROM_INTENT_PROMPT` quality improvements, multi-turn clarification
+  - [x] [10-10-domain-nl-authoring](plans/10-10-domain-nl-authoring.md) — RAG-ready `data_ingest` (with indexing), path-aware `data_analysis` branch, sub-graph-safe template generation, strict tool-port hardening, INFORMS template + `apply_skill`, build-mode clarification, artifact-level acceptance gates
 
 ## Phase 7.1 — Structure Review (Intermediate)
 > Audit and patch only — no new features. Review file organization and object/data structure design for maintainability and correctness before scaling.
@@ -105,20 +105,21 @@
   - [x] [11-3-cross-cutting-audit](plans/11-3-cross-cutting-audit.md) — Serialization paths, naming, validation contracts, schema evolution, legacy code
   - [x] [11-4-documentation](plans/11-4-documentation.md) — Update architecture, llm-api-guide, findings in bugs.md
 
-## Phase 7.5 — Author & Distribute (Remaining)
-> CLI, publish as API/MCP, shareable blocks, PyPI package, lightweight skills.
+## Phase 7.2 — Cursor-Parity Chat Experience
+> Evolve the chatbox from a graph-editing assistant into a full-featured conversational development surface. Multi-mode interaction (Ask/Agent/Plan/Debug), rich context mentions (@Files/@Code/@Docs/@Web/@Past Chats), inline tool display with approval, conversation lifecycle (stop/queue/checkpoint/export/search), and measurable quality harness.
 
-- [ ] 10-R: Author & distribute (remaining) → (not yet planned)
-- [ ] CLI mode — run workflows in terminal/background. Supervisor-style: start, check progress, inspect logs without blocking. Complements visual editor for headless/CI/server deployments.
-- [ ] Publish workflow as API/MCP — build a workflow, publish as a callable MCP server or HTTP endpoint. Turns workflows into consumable services (Coze-style).
-- [ ] Shareable blocks — publish and import reusable agent-blocks. Registry/marketplace for community sharing.
-- [ ] PyPI package — `pip install dan` with stable public API.
-- [ ] Lightweight skills (prompt injection) — skills as prompt-prefix injections scoped by node tag/type. No full hyperedge hooks; just "prepend this text to LLM nodes tagged X."
+- [x] [12-cursor-parity-chat](plans/12-cursor-parity-chat.md) — Cursor-parity chat: modes, context, tools, lifecycle, quality *(core complete; stretch items deferred — see individual sub-plans)*
+  - [x] [12-1-chat-reliability-polish](plans/12-1-chat-reliability-polish.md) — A. Fix trust gaps: revision concurrency, history compaction, dead CTAs, env vars, integration tests, plan doc reconciliation
+  - [x] [12-2-multi-mode-chat](plans/12-2-multi-mode-chat.md) — B. Ask / Agent / Plan / Debug chat modes with mode-specific prompts and tool availability *(tasks 1–6 done; per-thread mode persistence, keyboard shortcuts, debug-fix tag, auto-mode detection deferred)*
+  - [x] [12-3-rich-context-mentions](plans/12-3-rich-context-mentions.md) — C. @Files, @Code, @Docs, @Past Chats + server-side resolution + context budget *(tasks 1–5,7 done; @Web [task 6] and autocomplete UX polish [task 8] deferred)*
+  - [x] [12-4-tool-display-execution](plans/12-4-tool-display-execution.md) — D. Inline tool call rendering, run output streaming *(tasks 1-4 done; approval gates [task 5] and sandbox display [task 6] deferred)*
+  - [x] [12-5-conversation-lifecycle](plans/12-5-conversation-lifecycle.md) — E. Stop generation, checkpoints (basic), export, search, pin threads *(message queue [task 2], thread branching [task 7], restore checkpoints deferred)*
+  - [x] [12-6-chat-quality-harness](plans/12-6-chat-quality-harness.md) — F. Regression tests, provider compatibility matrix, mutation metrics baseline (92 tests) *(latency benchmarks + E2E smoke tests deferred)*
 
 ## Phase 8 — Observe & Recover
 > Execution persistence, debugging tools, and iterative refinement capabilities.
 
-- [ ] 14: Observe & recover → (not yet planned)
+- [ ] 8: Observe & recover → (not yet planned)
 - [ ] Run history / comparison — persist run artifacts (events, outputs, tokens, latency) to disk. History list in editor. Side-by-side comparison for iterative prompt tuning.
 - [ ] Action audit log — persistent, queryable log of every action (tool calls, LLM outputs, decisions). Debugging + compliance + post-run analysis.
 - [ ] Checkpoints as portals — tweak downstream subgraph and re-run from checkpoint without restarting. Extends existing checkpoint/resume for partial re-runs.
@@ -128,15 +129,25 @@
 ## Phase 9 — Application Layer
 > Higher-level coordination patterns and external integrations.
 
-- [ ] 12: Application layer → (not yet planned)
+- [ ] 9: Application layer → (not yet planned)
 - [ ] Agent teams — group-chat style multi-agent coordination with "@" routing, handoffs, and conversational context.
 - [ ] Messaging/comm integrations — email, Slack, Discord, Telegram, WhatsApp adapters. Trigger workflows from external messages.
 - [ ] User system — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments.
 
-## Phase 10 — Deep Systems
+## Phase 10 — Author & Distribute
+> CLI, publish as API/MCP, shareable blocks, PyPI package, lightweight skills.
+
+- [ ] 10-R: Author & distribute (remaining) → (not yet planned)
+- [ ] CLI mode — run workflows in terminal/background. Supervisor-style: start, check progress, inspect logs without blocking. Complements visual editor for headless/CI/server deployments.
+- [ ] Publish workflow as API/MCP — build a workflow, publish as a callable MCP server or HTTP endpoint. Turns workflows into consumable services (Coze-style).
+- [ ] Shareable blocks — publish and import reusable agent-blocks. Registry/marketplace for community sharing.
+- [ ] PyPI package — `pip install dan` with stable public API.
+- [ ] Lightweight skills (prompt injection) — skills as prompt-prefix injections scoped by node tag/type. No full hyperedge hooks; just "prepend this text to LLM nodes tagged X."
+
+## Phase 11 — Deep Systems
 > Architectural additions for advanced use cases. Build when real workflows demand them.
 
-- [ ] 13: Deep systems → (not yet planned)
+- [ ] 11: Deep systems → (not yet planned)
 - [ ] Context scoping across agent boundaries — formalize four scopes (global, local, pass_down, emit_up) with explicit schemas at every agent boundary. Upward signals (sticky → global, non-sticky → one layer up). Agent boundary contract: accepts, returns, reads_global, writes_global, signals.
 - [ ] Memory system for long chains — short-term vs. long-term memory (encoding, consolidation, retrieval). How nodes recall distant context, how completed sub-graph results compress into retrievable memory. Research: MemGPT, AgentNet, hippocampal indexing.
 - [ ] Memory policy defaults (agreed)
@@ -167,11 +178,11 @@
 - [ ] **Optimize token usage** — reduce token consumption across workflows (prompt compression, context pruning, caching, smaller models for simple tasks, truncation policies).
 - [ ] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics; core mechanisms for convenient workflow building
 - [ ] **Async loop design** — Orchestrator runs independently with access to current progress and can emit commands anytime; departments work in tandem (parallel, no cross-deps). Today: orchestrator runs once per iteration at the start, then all depts run; iterations are strictly sequential. Target: orchestrator as long-running/streaming process that pushes work to departments as they become free, or event-driven model where orchestrator and depts can overlap.
-- [ ] NL mutation: LLM-in-the-loop CI variant — feed real NL prompts to chat endpoint with test model, check output plan quality (report-only, non-blocking). From 10-8 task 9-4.
-- [ ] NL mutation: capture 3-5 day baseline on `main` via `GET /api/metrics/mutations` before evaluating hardening impact. From 10-8 task 11-2.
-- [ ] NL mutation: set sprint acceptance targets (`apply_success_rate >= 85%`, `post_validate_pass_rate >= 99%`, `avg_user_turns_to_success <= 2.0`) once baseline is collected. From 10-8 task 11-3.
-- [ ] NL mutation: publish end-of-sprint quality report comparing baseline vs post-fix metric deltas. From 10-8 task 11-5.
+- [ ] NL mutation quality tracking bundle — now tracked under [12-6-chat-quality-harness](plans/12-6-chat-quality-harness.md) (CI variant, baseline capture, acceptance targets, end-of-phase report).
 - [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
+- [ ] Thread timeline view — vertical timeline of graph evolution through conversation (stretch, from 10-5 task 5-3)
+- [ ] Canvas drag-to-mention — drag node from canvas onto chat input to create mention (stretch, from 10-2 task 6-4)
+- [ ] **Self-evolving orchestrator** — orchestrator persists error memories across runs (artifact store + RAG retrieval), reflects on failures to extract causal principles, and injects retrieved lessons into future decisions via prompt augmentation. Three layers: (A) persistent error memory store, (B) reflection node that distills failures into actionable principles, (C) dynamic prompt injection of relevant past mistakes before orchestrator routing decisions. Eventually: reflection generates hyperedge rules that constrain future behavior. Depends on memory system (Phase 11) for full cross-run persistence; prompt-augmentation variant works with existing RAG infra.
 - [ ] Survey EvoAgentX for reusable multi-agent patterns
 - [ ] Coding assistant proof-of-concept — build Cursor-like agent mode as a DAN graph (~15 node types, ReAct while-loop + tool operators). Validate Ask/Agent/Debug/Plan modes as graph templates.
 - [ ] science-cursor rebuild — extract scholar engines as DAN agents. Build PaperOrchestrator as a DAN network. VS Code extension as thin rendering client.
