@@ -446,10 +446,16 @@ def _compile_flow(
             nodes_by_id[foreach_id] = foreach_node  # so subsequent flow can reference each node (e.g. each.results → merge)
 
             source_node = nodes_by_id[stmt.source_agent]
+            source_port = (
+                stmt.source_port
+                if stmt.source_port
+                and any(p.name == stmt.source_port for p in source_node.output_ports)
+                else _default_output_port(source_node)
+            )
             edges.append(
                 _make_data_edge(
                     stmt.source_agent,
-                    _default_output_port(source_node),
+                    source_port,
                     foreach_id,
                     "items",
                     edge_counter,

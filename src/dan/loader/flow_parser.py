@@ -23,7 +23,8 @@ __all__ = ["FlowParseError", "parse_flow_line", "parse_flow_lines"]
 
 AGENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 ARROW_SPLIT_RE = re.compile(r"\s*(?:→|->)\s*")
-PIPE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_-]*)\s*\|\s*(\w+)\((.+)\)\s*$", re.DOTALL)
+# Source segment may be "agent" or "agent.port" for each()
+PIPE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*)\s*\|\s*(\w+)\((.+)\)\s*$", re.DOTALL)
 
 
 class FlowParseError(Exception):
@@ -159,7 +160,13 @@ def _parse_chain(line: str, source: SourceLocation | None) -> ChainStatement:
     return ChainStatement(agents=agents, port_pairs=ports, source=source)
 
 
-def _parse_each(source_agent: str, args_raw: str, line: str, source: SourceLocation | None) -> EachStatement:
+def _parse_each(
+    source_agent: str,
+    args_raw: str,
+    line: str,
+    source: SourceLocation | None,
+    source_port: str | None = None,
+) -> EachStatement:
     body, kwargs = _parse_kwargs(args_raw, line)
     if not body:
         raise FlowParseError("each() requires a body agent", line=line)
@@ -168,7 +175,13 @@ def _parse_each(source_agent: str, args_raw: str, line: str, source: SourceLocat
         parallel = int(kwargs.get("parallel", "1"))
     except ValueError:
         raise FlowParseError(f"each() requires an integer for 'parallel', got {kwargs.get('parallel')!r}", line=line)
-    return EachStatement(source_agent=source_agent, body_agent=body, parallel=parallel, source=source)
+    return EachStatement(
+        source_agent=source_agent,
+        body_agent=body,
+        parallel=parallel,
+        source_port=source_port,
+        source=source,
+    )
 
 
 def _parse_loop(source_agent: str, args_raw: str, line: str, source: SourceLocation | None) -> LoopStatement:
@@ -308,11 +321,11 @@ def parse_flow_line(line: str, source: SourceLocation | None = None) -> FlowStat
 
     m = PIPE_RE.match(line)
     if m:
-        source_agent, op, args_raw = m.group(1), m.group(2), m.group(3)
-        _validate_agent_name(source_agent, line)
+        source_part, op, args_raw = m.group(1).strip(), m.group(2), m.group(3)
+        source_agent, source_port = _parse_segment(source_part, line)
 
         if op == "each":
-            return _parse_each(source_agent, args_raw, line, source)
+            return _parse_each(source_agent, args_raw, line, source, source_port=source_port)
         if op == "loop":
             return _parse_loop(source_agent, args_raw, line, source)
         if op == "if":

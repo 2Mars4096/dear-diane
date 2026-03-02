@@ -105,11 +105,12 @@ class ChainStatement:
 
 @dataclass
 class EachStatement:
-    """``agent_a | each(agent_b, parallel: N)`` — fan-out over items."""
+    """``agent_a | each(agent_b, parallel: N)`` or ``agent_a.port | each(...)`` — fan-out over items."""
 
     source_agent: str
     body_agent: str
     parallel: int = 1
+    source_port: str | None = None  # when set, wire this output port to items (e.g. sections)
     source: SourceLocation | None = None
 
 
