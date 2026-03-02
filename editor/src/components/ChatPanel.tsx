@@ -17,9 +17,19 @@ import {
   Loader2,
   Sparkles,
   Play,
+  Square,
+  Download,
+  Search,
+  Pin,
+  Copy,
+  HelpCircle,
+  FileText,
+  Bug,
+  CheckCircle2,
+  PencilLine,
 } from "lucide-react";
 import { useGraphStore } from "../store/useGraphStore";
-import type { ChatMessage, ChatStreamEvent } from "../types/chat";
+import type { ChatMessage, ChatStreamEvent, ToolCallInfo } from "../types/chat";
 import type { ChatThreadSummary } from "../lib/api";
 import * as api from "../lib/api";
 import type { ApplyMutationResult } from "../lib/api";
@@ -30,12 +40,54 @@ import { computeGraphDiff } from "../lib/graphDiff";
 import {
   findMentionQuery,
   insertMention,
+  parseMentions,
   type MentionRef,
 } from "../lib/mentionParser";
+
+function normalizeForCanonicalJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeForCanonicalJson(item));
+  }
+  if (value && typeof value === "object") {
+    const obj = value as Record<string, unknown>;
+    const normalized: Record<string, unknown> = {};
+    for (const key of Object.keys(obj).sort()) {
+      const v = obj[key];
+      if (v === undefined) continue;
+      normalized[key] = normalizeForCanonicalJson(v);
+    }
+    return normalized;
+  }
+  return value;
+}
+
+async function computeClientGraphRevision(
+  graph: unknown,
+): Promise<string | undefined> {
+  try {
+    if (!globalThis.crypto?.subtle) return undefined;
+    const canonical = JSON.stringify(normalizeForCanonicalJson(graph));
+    const data = new TextEncoder().encode(canonical);
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
+    const hex = Array.from(new Uint8Array(digest))
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+    return hex.slice(0, 16);
+  } catch {
+    return undefined;
+  }
+}
 
 const DEFAULT_WIDTH = 380;
 const MIN_WIDTH = 280;
 const MAX_WIDTH = 640;
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${n}`;
+}
 
 const EXAMPLE_PROMPTS = [
   "Add a reviewer node after the writer",
@@ -48,6 +100,33 @@ const BUILD_PROMPTS = [
   "Build a review loop for paper writing with feedback",
   "Design a RAG QA workflow with retrieval and answering",
 ];
+
+const ASK_PROMPTS = [
+  "What does this workflow do?",
+  "How does data flow from input to output?",
+  "Explain the review loop structure",
+];
+
+const PLAN_PROMPTS = [
+  "Plan adding a validation step before output",
+  "Design a review loop with 3 iterations",
+  "Plan restructuring the data pipeline",
+];
+
+const DEBUG_PROMPTS = [
+  "Why did my last run fail?",
+  "Check for missing connections",
+  "Diagnose errors in my workflow",
+];
+
+type ChatMode = "ask" | "agent" | "plan" | "debug";
+
+const MODE_CONFIG: Record<ChatMode, { label: string; icon: typeof Sparkles; color: string }> = {
+  agent: { label: "Agent", icon: Sparkles, color: "indigo" },
+  ask: { label: "Ask", icon: HelpCircle, color: "sky" },
+  plan: { label: "Plan", icon: FileText, color: "amber" },
+  debug: { label: "Debug", icon: Bug, color: "rose" },
+};
 
 // ---------------------------------------------------------------------------
 // Backend ↔ frontend message conversion
@@ -74,12 +153,22 @@ function toBackendMessage(m: ChatMessage): Record<string, unknown> {
         }
       : null,
     mentions: m.mentions ?? [],
+    tool_calls: m.toolCalls?.map((tc) => ({
+      id: tc.id,
+      tool_name: tc.toolName,
+      args_preview: tc.argsPreview,
+      status: tc.status,
+      output_preview: tc.outputPreview ?? null,
+      duration_ms: tc.durationMs ?? null,
+    })) ?? [],
+    run_events: m.runEvents ?? [],
   };
 }
 
 function fromBackendMessage(m: Record<string, unknown>): ChatMessage {
   const tu = m.token_usage as Record<string, number> | null;
   const rr = m.run_ref as Record<string, string> | null;
+  const rawTc = m.tool_calls as Array<Record<string, unknown>> | undefined;
   return {
     id: m.id as string,
     role: m.role as ChatMessage["role"],
@@ -95,6 +184,15 @@ function fromBackendMessage(m: Record<string, unknown>): ChatMessage {
       ? { runId: rr.run_id, scope: rr.scope, status: rr.status }
       : null,
     mentions: (m.mentions as ChatMessage["mentions"]) ?? [],
+    toolCalls: rawTc?.map((tc) => ({
+      id: tc.id as string,
+      toolName: (tc.tool_name as string) ?? "",
+      argsPreview: (tc.args_preview as string) ?? "",
+      status: (tc.status as ToolCallInfo["status"]) ?? "success",
+      outputPreview: tc.output_preview as string | undefined,
+      durationMs: tc.duration_ms as number | undefined,
+    })),
+    runEvents: (m.run_events as ChatMessage["runEvents"]) ?? undefined,
   };
 }
 
@@ -119,6 +217,7 @@ export default function ChatPanel() {
   const loadGraph = useGraphStore((s) => s.loadGraph);
   const pushSnapshot = useGraphStore((s) => s.pushSnapshot);
   const chatMode = useGraphStore((s) => s.chatMode);
+  const chatFocusTrigger = useGraphStore((s) => s.chatFocusTrigger);
 
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -147,14 +246,33 @@ export default function ChatPanel() {
   const [isApplying, setIsApplying] = useState(false);
   const [applyError, setApplyError] = useState<string | null>(null);
   const [buildJustCompleted, setBuildJustCompleted] = useState(false);
+  const [contextWindow, setContextWindow] = useState(0);
+  const [staleRevision, setStaleRevision] = useState(false);
+  const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState<
+    Array<{
+      thread_id: string;
+      thread_title: string;
+      workflow_id: string;
+      message_id: string;
+      message_preview: string;
+      timestamp: string;
+    }>
+  >([]);
+  const [isSearching, setIsSearching] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
   const applyingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const dragging = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
   const prevGraphIdRef = useRef<string | null>(null);
+  const activeChannelIdRef = useRef<string | null>(null);
+  activeChannelIdRef.current = activeChannelId;
 
   activeThreadIdRef.current = activeThreadId;
 
@@ -166,12 +284,8 @@ export default function ChatPanel() {
     setLoadingThreads(true);
     try {
       const { threads: list } = await api.listChatThreads(wfId);
-      const sorted = [...list].sort(
-        (a, b) =>
-          new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
-      );
-      setThreads(sorted);
-      return sorted;
+      setThreads(list);
+      return list;
     } catch (err) {
       console.warn("Failed to fetch threads:", err);
       return [];
@@ -248,7 +362,7 @@ export default function ChatPanel() {
   }, [messages]);
 
   useEffect(() => {
-    if (chatMode === "build") {
+    if (chatFocusTrigger > 0) {
       setChatOpen(true);
       setShowThreadList(false);
       setMessages([]);
@@ -257,7 +371,7 @@ export default function ChatPanel() {
       setError(null);
       setBuildJustCompleted(false);
     }
-  }, [chatMode]);
+  }, [chatFocusTrigger]);
 
   // -------------------------------------------------------------------------
   // Textarea auto-resize
@@ -292,7 +406,7 @@ export default function ChatPanel() {
 
   const handleMentionSelect = useCallback(
     (mention: {
-      type: "node" | "workflow" | "subgraph";
+      type: string;
       id: string;
       name: string;
     }) => {
@@ -358,6 +472,15 @@ export default function ChatPanel() {
     [panelWidth],
   );
 
+  const lastPromptTokens = (() => {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "assistant" && messages[i].tokenUsage) {
+        return messages[i].tokenUsage!.prompt;
+      }
+    }
+    return 0;
+  })();
+
   const totalTokens = messages.reduce((sum, m) => {
     if (!m.tokenUsage) return sum;
     return sum + m.tokenUsage.prompt + m.tokenUsage.completion;
@@ -368,7 +491,7 @@ export default function ChatPanel() {
   // -------------------------------------------------------------------------
 
   const sendMessage = useCallback(
-    async (text?: string) => {
+    async (text?: string, historyOverride?: ChatMessage[], modeOverride?: ChatMode) => {
       const content = (text ?? inputText).trim();
       if (!content || isStreaming) return;
 
@@ -408,9 +531,14 @@ export default function ChatPanel() {
       setInputText("");
       setIsStreaming(true);
       setError(null);
+      setStaleRevision(false);
       setBuildJustCompleted(false);
 
       const capturedGraphId = graphId;
+      const currentDanGraph = useGraphStore.getState().danGraph;
+      const clientGraphRevision = currentDanGraph
+        ? await computeClientGraphRevision(currentDanGraph)
+        : undefined;
 
       try {
         const res = await fetch("/api/chat/message", {
@@ -419,12 +547,19 @@ export default function ChatPanel() {
           body: JSON.stringify({
             workflow_id: graphId,
             message: content,
-            history: messages.map((m) => ({
+            history: (historyOverride ?? messagesRef.current).map((m) => ({
               role: m.role,
               content: m.content,
             })),
             thread_id: threadId,
-            mode: useGraphStore.getState().chatMode,
+            client_graph_revision: clientGraphRevision,
+            mode: modeOverride || useGraphStore.getState().chatMode,
+            mentions: parseMentions(content)
+              .segments.filter((s) => s.type === "mention")
+              .map((s) => ({
+                type: (s as { type: "mention"; mention: MentionRef }).mention.type,
+                identifier: (s as { type: "mention"; mention: MentionRef }).mention.id,
+              })),
           }),
         });
 
@@ -438,27 +573,14 @@ export default function ChatPanel() {
 
         const resBody = await res.json();
 
-        if (resBody.type === "run_started" || resBody.type === "run_error") {
-          const isError = resBody.type === "run_error";
+        if (resBody.type === "run_error") {
           const errMsg =
             (resBody.error as { message?: string } | undefined)?.message ??
             "Unknown error";
           setMessages((prev) => {
             const updated = prev.map((m) =>
               m.id === assistantId
-                ? {
-                    ...m,
-                    content: isError
-                      ? `Run failed: ${errMsg}`
-                      : `Started ${resBody.scope ?? "full"} run.`,
-                    runRef: isError
-                      ? null
-                      : {
-                          runId: resBody.run_id as string,
-                          scope: (resBody.scope as string) ?? "full",
-                          status: "running",
-                        },
-                  }
+                ? { ...m, content: `Run failed: ${errMsg}` }
                 : m,
             );
             const tid = activeThreadIdRef.current;
@@ -477,16 +599,117 @@ export default function ChatPanel() {
           return;
         }
 
+        if (resBody.type === "run_started") {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantId
+                ? {
+                    ...m,
+                    content: `Started ${resBody.scope ?? "full"} run.`,
+                    runRef: {
+                      runId: resBody.run_id as string,
+                      scope: (resBody.scope as string) ?? "full",
+                      status: "running",
+                    },
+                  }
+                : m,
+            ),
+          );
+
+          if (resBody.stream_channel_id) {
+            const proto = location.protocol === "https:" ? "wss:" : "ws:";
+            const runWs = new WebSocket(
+              `${proto}//${location.host}/api/chat/${resBody.stream_channel_id}/events`,
+            );
+            wsRef.current = runWs;
+
+            runWs.onmessage = (ev) => {
+              try {
+                const parsed = JSON.parse(ev.data);
+                if (parsed.type === "chat_run_event" && parsed.run_event) {
+                  const re = parsed.run_event as {
+                    event_type: string;
+                    node_id?: string | null;
+                    summary: string;
+                    detail?: Record<string, unknown>;
+                  };
+                  setMessages((prev) =>
+                    prev.map((m) =>
+                      m.id === assistantId
+                        ? {
+                            ...m,
+                            content: m.content + "\n" + re.summary,
+                            runEvents: [
+                              ...(m.runEvents || []),
+                              {
+                                type: "run_event",
+                                event_type: re.event_type,
+                                node_id: re.node_id,
+                                summary: re.summary,
+                                detail: re.detail,
+                              },
+                            ],
+                            runRef: m.runRef
+                              ? {
+                                  ...m.runRef,
+                                  status:
+                                    re.event_type === "run_completed"
+                                      ? "completed"
+                                      : re.event_type === "run_failed"
+                                        ? "failed"
+                                        : m.runRef.status,
+                                }
+                              : m.runRef,
+                          }
+                        : m,
+                    ),
+                  );
+                  if (
+                    re.event_type === "run_completed" ||
+                    re.event_type === "run_failed"
+                  ) {
+                    setIsStreaming(false);
+                    setMessages((prev) => {
+                      const tid = activeThreadIdRef.current;
+                      if (tid && capturedGraphId) {
+                        api
+                          .updateChatThread(capturedGraphId, tid, {
+                            messages: prev.map(toBackendMessage),
+                          })
+                          .catch((err: unknown) =>
+                            console.warn("Failed to save thread:", err),
+                          );
+                      }
+                      return prev;
+                    });
+                    runWs.close();
+                  }
+                }
+              } catch {
+                /* ignore parse errors */
+              }
+            };
+
+            runWs.onerror = () => setIsStreaming(false);
+            runWs.onclose = () => setIsStreaming(false);
+          } else {
+            setIsStreaming(false);
+          }
+          return;
+        }
+
         const { stream_channel_id } = resBody as {
           message_id: string;
           stream_channel_id: string;
         };
+        setActiveChannelId(stream_channel_id);
 
         const proto = location.protocol === "https:" ? "wss:" : "ws:";
         const ws = new WebSocket(
           `${proto}//${location.host}/api/chat/${stream_channel_id}/events`,
         );
         wsRef.current = ws;
+        let wsClosedIntentionally = false;
 
         ws.onmessage = (e) => {
           try {
@@ -504,6 +727,7 @@ export default function ChatPanel() {
                 ),
               );
             } else if (evt.type === "chat_complete") {
+              if (evt.context_window) setContextWindow(evt.context_window);
               setMessages((prev) => {
                 const updated = prev.map((m) =>
                   m.id === assistantId
@@ -527,8 +751,11 @@ export default function ChatPanel() {
                 return updated;
               });
               setIsStreaming(false);
+              setActiveChannelId(null);
+              wsClosedIntentionally = true;
               ws.close();
             } else if (evt.type === "chat_mutation") {
+              if (evt.context_window) setContextWindow(evt.context_window);
               setMessages((prev) => {
                 const updated = prev.map((m) =>
                   m.id === assistantId
@@ -556,11 +783,91 @@ export default function ChatPanel() {
                 return updated;
               });
               setIsStreaming(false);
+              setActiveChannelId(null);
+              wsClosedIntentionally = true;
               ws.close();
+            } else if (evt.type === "chat_interrupted") {
+              setMessages((prev) => {
+                const updated = prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        content: (evt.content || m.content) + "\n\n*[generation stopped]*",
+                        tokenUsage: evt.token_usage ?? null,
+                      }
+                    : m,
+                );
+                const tid = activeThreadIdRef.current;
+                if (tid && capturedGraphId) {
+                  api
+                    .updateChatThread(capturedGraphId, tid, {
+                      messages: updated.map(toBackendMessage),
+                    })
+                    .catch((err: unknown) =>
+                      console.warn("Failed to save thread:", err),
+                    );
+                }
+                return updated;
+              });
+              setIsStreaming(false);
+              setActiveChannelId(null);
+              wsClosedIntentionally = true;
+              ws.close();
+            } else if (evt.type === "chat_tool_call_start") {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        toolCalls: [
+                          ...(m.toolCalls || []),
+                          {
+                            id: evt.tool_call_id!,
+                            toolName: evt.tool_name!,
+                            argsPreview: evt.args_preview ?? "",
+                            status: "running" as const,
+                          },
+                        ],
+                      }
+                    : m,
+                ),
+              );
+            } else if (evt.type === "chat_tool_call_result") {
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        toolCalls: (m.toolCalls || []).map((tc: ToolCallInfo) =>
+                          tc.id === evt.tool_call_id
+                            ? {
+                                ...tc,
+                                status: (evt.status as "success" | "error") ?? "success",
+                                outputPreview: evt.output_preview,
+                                durationMs: evt.duration_ms,
+                              }
+                            : tc,
+                        ),
+                      }
+                    : m,
+                ),
+              );
             } else if (evt.type === "chat_error") {
+              if (evt.error?.includes("revision_mismatch")) {
+                setStaleRevision(true);
+              }
               setError(evt.error ?? "Unknown error");
               setIsStreaming(false);
+              setActiveChannelId(null);
+              wsClosedIntentionally = true;
               ws.close();
+            }
+
+            if (
+              (evt.type === "chat_complete" || evt.type === "chat_mutation") &&
+              evt.revision_mismatch
+            ) {
+              setStaleRevision(true);
             }
           } catch {
             /* ignore parse errors */
@@ -568,11 +875,18 @@ export default function ChatPanel() {
         };
 
         ws.onerror = () => {
+          wsClosedIntentionally = true;
           setError("WebSocket connection failed");
           setIsStreaming(false);
         };
 
-        ws.onclose = () => setIsStreaming(false);
+        ws.onclose = (event) => {
+          if (!wsClosedIntentionally && event.code !== 1000 && event.code !== 1005) {
+            setError("Connection lost — your response may be incomplete. Click Retry to resend.");
+            useGraphStore.getState().addToast({ type: "error", message: "Chat stream disconnected" });
+          }
+          setIsStreaming(false);
+        };
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : "Failed to send message";
@@ -581,19 +895,19 @@ export default function ChatPanel() {
         setMessages((prev) => prev.filter((m) => m.id !== assistantId));
       }
     },
-    [inputText, isStreaming, graphId, messages],
+    [inputText, isStreaming, graphId],
   );
 
   const retryLast = useCallback(() => {
-    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    const msgs = messagesRef.current;
+    const lastUser = [...msgs].reverse().find((m) => m.role === "user");
     if (!lastUser) return;
-    setMessages((prev) => {
-      const idx = prev.lastIndexOf(lastUser);
-      return prev.slice(0, idx);
-    });
+    const idx = msgs.lastIndexOf(lastUser);
+    const trimmed = msgs.slice(0, idx);
+    setMessages(trimmed);
     setError(null);
-    sendMessage(lastUser.content);
-  }, [messages, sendMessage]);
+    sendMessage(lastUser.content, trimmed);
+  }, [sendMessage]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -607,6 +921,78 @@ export default function ChatPanel() {
       }
     },
     [sendMessage, mentionQuery],
+  );
+
+  const handleStop = useCallback(async () => {
+    const chId = activeChannelIdRef.current;
+    if (!chId) return;
+    try {
+      await api.stopChatStream(chId);
+    } catch (err) {
+      console.warn("Failed to stop stream:", err);
+    }
+  }, []);
+
+  const handleExport = useCallback(
+    async (format: "md" | "json" = "md") => {
+      const tid = activeThreadIdRef.current;
+      if (!graphId || !tid) return;
+      try {
+        const { content } = await api.exportChatThread(graphId, tid, format);
+        const ext = format === "json" ? "json" : "md";
+        const blob = new Blob([content], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `chat-${tid}.${ext}`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.warn("Export failed:", err);
+      }
+    },
+    [graphId],
+  );
+
+  const handleCopyMessage = useCallback((msg: ChatMessage) => {
+    const role = msg.role.charAt(0).toUpperCase() + msg.role.slice(1);
+    const md = `### ${role}\n\n${msg.content}`;
+    navigator.clipboard.writeText(md).catch(() => {});
+    useGraphStore.getState().addToast({ type: "info", message: "Copied to clipboard" });
+  }, []);
+
+  const handleSearch = useCallback(
+    async (query: string) => {
+      setSearchQuery(query);
+      if (!query.trim()) {
+        setSearchResults([]);
+        return;
+      }
+      setIsSearching(true);
+      try {
+        const { results } = await api.searchChatThreads(query, graphId || undefined);
+        setSearchResults(results);
+      } catch (err) {
+        console.warn("Search failed:", err);
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
+      }
+    },
+    [graphId],
+  );
+
+  const handlePinThread = useCallback(
+    async (threadId: string, pinned: boolean) => {
+      if (!graphId) return;
+      try {
+        await api.pinChatThread(graphId, threadId, pinned);
+        await fetchThreads(graphId);
+      } catch (err) {
+        console.warn("Failed to pin thread:", err);
+      }
+    },
+    [graphId, fetchThreads],
   );
 
   // -------------------------------------------------------------------------
@@ -714,6 +1100,22 @@ export default function ChatPanel() {
         }
         pushSnapshot();
         await loadGraph(graphId);
+
+        const currentGraph = useGraphStore.getState().danGraph;
+        const tid = activeThreadIdRef.current;
+        if (tid && graphId && currentGraph) {
+          api
+            .saveChatCheckpoint(
+              graphId,
+              tid,
+              msg.id,
+              currentGraph as Record<string, unknown>,
+            )
+            .catch((err: unknown) =>
+              console.warn("Failed to save checkpoint:", err),
+            );
+        }
+
         const updated = messages.map((m) =>
           m.id === msg.id ? { ...m, mutationStatus: "applied" as const } : m,
         );
@@ -735,8 +1137,10 @@ export default function ChatPanel() {
         }
         setPreviewingMessage(null);
         setApplyError(null);
-        if (useGraphStore.getState().chatMode === "build") {
-          useGraphStore.getState().setChatMode("mutate");
+        // Detect build-from-intent completion: graph went from empty to non-empty
+        const wasEmpty = (currentGraph?.nodes as unknown[] | undefined)?.length === 0;
+        const isNowPopulated = (useGraphStore.getState().danGraph?.nodes?.length ?? 0) > 0;
+        if (wasEmpty && isNowPopulated) {
           setBuildJustCompleted(true);
         }
       } catch (err) {
@@ -839,7 +1243,12 @@ export default function ChatPanel() {
             onNewChat={handleNewChat}
             onSelectThread={handleSelectThread}
             onDeleteThread={handleDeleteThread}
+            onPinThread={handlePinThread}
             onClose={() => setChatOpen(false)}
+            searchQuery={searchQuery}
+            searchResults={searchResults}
+            isSearching={isSearching}
+            onSearch={handleSearch}
           />
         ) : (
           <>
@@ -878,11 +1287,23 @@ export default function ChatPanel() {
                 )}
               </div>
               <div className="flex items-center gap-2 flex-shrink-0">
-                {totalTokens > 0 && (
-                  <span className="text-[10px] text-gray-400 tabular-nums">
-                    {totalTokens.toLocaleString()} tok
+                {(lastPromptTokens > 0 || totalTokens > 0) && (
+                  <span
+                    className="text-[10px] text-gray-400 tabular-nums"
+                    title={`${totalTokens.toLocaleString()} total tokens used`}
+                  >
+                    {contextWindow > 0 && lastPromptTokens > 0
+                      ? `~${formatTokenCount(lastPromptTokens)} / ${formatTokenCount(contextWindow)}`
+                      : `${totalTokens.toLocaleString()} tok`}
                   </span>
                 )}
+                <button
+                  onClick={() => handleExport("md")}
+                  className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors"
+                  title="Export as Markdown"
+                >
+                  <Download size={13} />
+                </button>
                 <button
                   onClick={() => setChatOpen(false)}
                   className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors"
@@ -892,29 +1313,67 @@ export default function ChatPanel() {
               </div>
             </div>
 
-            {/* Build mode banner */}
-            {chatMode === "build" && (
-              <div className="px-3 py-1.5 bg-gradient-to-r from-indigo-50 to-purple-50 border-b border-indigo-100 flex items-center gap-2 flex-shrink-0">
-                <Sparkles size={12} className="text-indigo-500" />
-                <span className="text-[11px] font-medium text-indigo-700">Build Mode</span>
-                <span className="text-[10px] text-indigo-400 ml-auto">Describe your workflow intent</span>
-              </div>
-            )}
+            {/* Mode selector */}
+            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-gray-100 bg-gray-50/50 flex-shrink-0">
+              {(["agent", "ask", "plan", "debug"] as const).map((m) => {
+                const cfg = MODE_CONFIG[m];
+                const Icon = cfg.icon;
+                const active = chatMode === m;
+                return (
+                  <button
+                    key={m}
+                    onClick={() => useGraphStore.getState().setChatMode(m)}
+                    className={`flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md transition-colors ${
+                      active
+                        ? "bg-white text-gray-800 shadow-sm border border-gray-200"
+                        : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                    }`}
+                  >
+                    <Icon size={11} />
+                    {cfg.label}
+                  </button>
+                );
+              })}
+            </div>
 
             {/* Messages area */}
             <div className="flex-1 overflow-y-auto px-3 py-3 min-h-0">
               {messages.length === 0 ? (
-                <EmptyState onSelect={(t) => sendMessage(t)} mode={chatMode} />
+                <EmptyState
+                  onSelect={(t) => sendMessage(t)}
+                  mode={chatMode}
+                  isEmptyGraph={(danGraph?.nodes?.length ?? 0) === 0}
+                />
               ) : (
                 <>
-                  {messages.map((m) => (
-                    <ChatMessageBubble
-                      key={m.id}
-                      message={m}
-                      sessionMarker={sessionMarkers[m.id]}
-                      onRevert={() => handleRevert(m.id)}
-                      onPreviewMutation={handlePreviewMutation}
-                    />
+                  {messages.map((m, i) => (
+                    <div key={m.id}>
+                      <ChatMessageBubble
+                        message={m}
+                        sessionMarker={sessionMarkers[m.id]}
+                        onRevert={() => handleRevert(m.id)}
+                        onPreviewMutation={chatMode === "ask" ? undefined : handlePreviewMutation}
+                        onCopyMarkdown={() => handleCopyMessage(m)}
+                      />
+                      {/* Plan mode: approval buttons on the latest assistant plan proposal */}
+                      {chatMode === "plan" &&
+                        m.role === "assistant" &&
+                        !m.mutationPlan &&
+                        m.content &&
+                        i === messages.length - 1 &&
+                        !isStreaming && (
+                          <PlanApprovalButtons
+                            onApprove={() =>
+                              sendMessage(
+                                "Approved. Please generate the mutation plan now.",
+                                undefined,
+                                "agent",
+                              )
+                            }
+                            onRevise={() => textareaRef.current?.focus()}
+                          />
+                        )}
+                    </div>
                   ))}
 
                   {isStreaming &&
@@ -968,6 +1427,20 @@ export default function ChatPanel() {
                       />
                     )}
 
+                  {staleRevision && (
+                    <div className="flex items-center gap-2 mb-3 px-2 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
+                      <span className="flex-1">
+                        Graph changed since your last message — context may be stale.
+                      </span>
+                      <button
+                        onClick={() => setStaleRevision(false)}
+                        className="text-amber-500 hover:text-amber-700 text-xs font-medium flex-shrink-0"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  )}
+
                   {error && (
                     <div className="flex items-start gap-2 mb-3 px-2 py-2 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
                       <span className="flex-1">{error}</span>
@@ -1014,7 +1487,12 @@ export default function ChatPanel() {
                   onKeyDown={handleKeyDown}
                   onKeyUp={checkMention}
                   onClick={checkMention}
-                  placeholder={chatMode === "build" ? "Describe the workflow you want to build…" : "Ask about your workflow… (@ to mention)"}
+                  placeholder={
+                    chatMode === "ask" ? "Ask about your workflow…"
+                    : chatMode === "plan" ? "Describe what changes to plan…"
+                    : chatMode === "debug" ? "Describe the issue or ask to diagnose…"
+                    : "Ask about your workflow… (@ to mention)"
+                  }
                   rows={1}
                   disabled={isStreaming}
                   className="flex-1 resize-none text-sm text-gray-900 placeholder-gray-400 bg-transparent outline-none min-h-[24px] max-h-[160px] leading-snug disabled:opacity-50"
@@ -1027,13 +1505,32 @@ export default function ChatPanel() {
                     onDismiss={dismissMention}
                   />
                 )}
-                <button
-                  onClick={() => sendMessage()}
-                  disabled={!inputText.trim() || isStreaming}
-                  className="text-indigo-500 hover:text-indigo-700 disabled:text-gray-300 transition-colors p-0.5 flex-shrink-0"
-                >
-                  <Send size={16} />
-                </button>
+                {isStreaming ? (
+                  activeChannelId ? (
+                    <button
+                      onClick={handleStop}
+                      className="text-red-500 hover:text-red-700 transition-colors p-0.5 flex-shrink-0"
+                      title="Stop generation"
+                    >
+                      <Square size={16} />
+                    </button>
+                  ) : (
+                    <span
+                      className="text-gray-300 p-0.5 flex-shrink-0"
+                      title="Waiting for run updates"
+                    >
+                      <Loader2 size={16} className="animate-spin" />
+                    </span>
+                  )
+                ) : (
+                  <button
+                    onClick={() => sendMessage()}
+                    disabled={!inputText.trim()}
+                    className="text-indigo-500 hover:text-indigo-700 disabled:text-gray-300 transition-colors p-0.5 flex-shrink-0"
+                  >
+                    <Send size={16} />
+                  </button>
+                )}
               </div>
               <div className="text-[10px] text-gray-400 mt-1 px-1">
                 Enter to send · Shift+Enter for newline
@@ -1056,15 +1553,39 @@ function ThreadListView({
   onNewChat,
   onSelectThread,
   onDeleteThread,
+  onPinThread,
   onClose,
+  searchQuery,
+  searchResults,
+  isSearching,
+  onSearch,
 }: {
   threads: ChatThreadSummary[];
   loading: boolean;
   onNewChat: () => void;
   onSelectThread: (id: string) => void;
   onDeleteThread: (id: string) => void;
+  onPinThread: (id: string, pinned: boolean) => void;
   onClose: () => void;
+  searchQuery: string;
+  searchResults: Array<{
+    thread_id: string;
+    thread_title: string;
+    workflow_id: string;
+    message_id: string;
+    message_preview: string;
+    timestamp: string;
+  }>;
+  isSearching: boolean;
+  onSearch: (query: string) => void;
 }) {
+  const sortedThreads = [...threads].sort((a, b) => {
+    const aPinned = (a as ChatThreadSummary & { pinned?: boolean }).pinned ? 1 : 0;
+    const bPinned = (b as ChatThreadSummary & { pinned?: boolean }).pinned ? 1 : 0;
+    if (aPinned !== bPinned) return bPinned - aPinned;
+    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+  });
+
   return (
     <div className="flex flex-col flex-1 min-h-0">
       <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 flex-shrink-0">
@@ -1091,8 +1612,55 @@ function ThreadListView({
         </div>
       </div>
 
+      {/* Search bar */}
+      <div className="px-3 py-2 border-b border-gray-100 flex-shrink-0">
+        <div className="flex items-center gap-2 bg-gray-50 rounded-lg px-2.5 py-1.5">
+          <Search size={12} className="text-gray-400 flex-shrink-0" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => onSearch(e.target.value)}
+            placeholder="Search conversations…"
+            className="text-xs text-gray-700 placeholder-gray-400 bg-transparent outline-none flex-1 min-w-0"
+          />
+          {isSearching && <Loader2 size={12} className="text-gray-300 animate-spin flex-shrink-0" />}
+          {searchQuery && !isSearching && (
+            <button
+              onClick={() => onSearch("")}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              <X size={12} />
+            </button>
+          )}
+        </div>
+      </div>
+
       <div className="flex-1 overflow-y-auto">
-        {loading ? (
+        {/* Show search results if there's a query */}
+        {searchQuery.trim() ? (
+          searchResults.length === 0 && !isSearching ? (
+            <div className="text-center py-8 text-xs text-gray-400">
+              No results for "{searchQuery}"
+            </div>
+          ) : (
+            <div className="py-1">
+              {searchResults.map((r, i) => (
+                <div
+                  key={`${r.thread_id}-${r.message_id}-${i}`}
+                  onClick={() => onSelectThread(r.thread_id)}
+                  className="px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors"
+                >
+                  <div className="text-xs font-medium text-gray-700 truncate">
+                    {r.thread_title}
+                  </div>
+                  <div className="text-[10px] text-gray-400 mt-0.5 line-clamp-2">
+                    {r.message_preview}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 size={20} className="text-gray-300 animate-spin" />
           </div>
@@ -1113,12 +1681,22 @@ function ThreadListView({
           </div>
         ) : (
           <div className="py-1">
-            {threads.map((t) => (
+            {sortedThreads.map((t) => (
               <ThreadRow
                 key={t.id}
                 thread={t}
                 onSelect={() => onSelectThread(t.id)}
                 onDelete={() => onDeleteThread(t.id)}
+                onPin={() =>
+                  onPinThread(
+                    t.id,
+                    !(t as ChatThreadSummary & { pinned?: boolean }).pinned,
+                  )
+                }
+                pinned={
+                  (t as ChatThreadSummary & { pinned?: boolean }).pinned ??
+                  false
+                }
               />
             ))}
           </div>
@@ -1132,10 +1710,14 @@ function ThreadRow({
   thread,
   onSelect,
   onDelete,
+  onPin,
+  pinned,
 }: {
   thread: ChatThreadSummary;
   onSelect: () => void;
   onDelete: () => void;
+  onPin: () => void;
+  pinned: boolean;
 }) {
   const title = thread.title || "Untitled chat";
   const displayTitle = title.length > 40 ? title.slice(0, 40) + "…" : title;
@@ -1145,6 +1727,7 @@ function ThreadRow({
       onClick={onSelect}
       className="group flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors"
     >
+      {pinned && <Pin size={10} className="text-indigo-400 flex-shrink-0" />}
       <div className="flex-1 min-w-0">
         <div className="text-sm text-gray-800 truncate">{displayTitle}</div>
         <div className="flex items-center gap-2 mt-0.5">
@@ -1158,51 +1741,102 @@ function ThreadRow({
           </span>
         </div>
       </div>
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-        className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 p-0.5 rounded transition-all"
-        title="Delete"
-      >
-        <Trash2 size={12} />
-      </button>
+      <div className="flex items-center gap-0.5">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onPin();
+          }}
+          className={`${pinned ? "opacity-100 text-indigo-400" : "opacity-0 group-hover:opacity-100 text-gray-300"} hover:text-indigo-500 p-0.5 rounded transition-all`}
+          title={pinned ? "Unpin" : "Pin"}
+        >
+          <Pin size={12} />
+        </button>
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 p-0.5 rounded transition-all"
+          title="Delete"
+        >
+          <Trash2 size={12} />
+        </button>
+      </div>
     </div>
   );
 }
 
-function EmptyState({ onSelect, mode }: { onSelect: (text: string) => void; mode: "build" | "mutate" }) {
-  const isBuild = mode === "build";
-  const prompts = isBuild ? BUILD_PROMPTS : EXAMPLE_PROMPTS;
+function EmptyState({ onSelect, mode, isEmptyGraph }: { onSelect: (text: string) => void; mode: ChatMode; isEmptyGraph?: boolean }) {
+  const cfg = MODE_CONFIG[mode];
+  const Icon = cfg.icon;
+
+  const promptsMap: Record<ChatMode, string[]> = {
+    agent: isEmptyGraph ? BUILD_PROMPTS : EXAMPLE_PROMPTS,
+    ask: ASK_PROMPTS,
+    plan: PLAN_PROMPTS,
+    debug: DEBUG_PROMPTS,
+  };
+  const titleMap: Record<ChatMode, string> = {
+    agent: isEmptyGraph ? "Build a Workflow" : "Workflow Assistant",
+    ask: "Ask About Your Workflow",
+    plan: "Plan Changes",
+    debug: "Debug Your Workflow",
+  };
+  const descMap: Record<ChatMode, string> = {
+    agent: isEmptyGraph
+      ? "Describe what workflow you want to build and AI will create it for you."
+      : "Ask questions about your graph or describe changes you'd like to make.",
+    ask: "Ask questions about your workflow's topology, data flow, and node connections.",
+    plan: "Describe a change and get a step-by-step plan before any modifications are made.",
+    debug: "Diagnose run failures, identify root causes, and get fix suggestions.",
+  };
+
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-4">
       <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center mb-3">
-        {isBuild ? (
-          <Sparkles size={20} className="text-indigo-400" />
-        ) : (
-          <MessageSquare size={20} className="text-indigo-400" />
-        )}
+        <Icon size={20} className="text-indigo-400" />
       </div>
-      <h3 className="text-sm font-semibold text-gray-700 mb-1">
-        {isBuild ? "Build a Workflow" : "Workflow Assistant"}
-      </h3>
-      <p className="text-xs text-gray-400 mb-4 max-w-[260px]">
-        {isBuild
-          ? "Describe what workflow you want to build and AI will create it for you."
-          : "Ask questions about your graph or describe changes you'd like to make."}
-      </p>
+      <h3 className="text-sm font-semibold text-gray-700 mb-1">{titleMap[mode]}</h3>
+      <p className="text-xs text-gray-400 mb-4 max-w-[260px]">{descMap[mode]}</p>
       <div className="flex flex-col gap-1.5 w-full">
-        {prompts.map((prompt) => (
+        {promptsMap[mode].map((prompt) => (
           <button
             key={prompt}
             onClick={() => onSelect(prompt)}
             className="text-left text-xs text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg px-3 py-2 transition-colors"
           >
-            "{prompt}"
+            &ldquo;{prompt}&rdquo;
           </button>
         ))}
       </div>
+    </div>
+  );
+}
+
+function PlanApprovalButtons({
+  onApprove,
+  onRevise,
+}: {
+  onApprove: () => void;
+  onRevise: () => void;
+}) {
+  return (
+    <div className="flex items-center gap-2 mb-3 ml-2">
+      <button
+        onClick={onApprove}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shadow-sm"
+      >
+        <CheckCircle2 size={12} />
+        Approve Plan
+      </button>
+      <button
+        onClick={onRevise}
+        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+      >
+        <PencilLine size={12} />
+        Revise
+      </button>
     </div>
   );
 }

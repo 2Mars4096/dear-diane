@@ -1,5 +1,5 @@
 import { useMemo, useCallback } from "react";
-import { Check, X, Loader2, RotateCcw, ChevronRight } from "lucide-react";
+import { Check, X, Loader2, RotateCcw, ChevronRight, Copy } from "lucide-react";
 import hljs from "highlight.js";
 import type { ChatMessage } from "../types/chat";
 import {
@@ -8,6 +8,8 @@ import {
   type MentionRef,
 } from "../lib/mentionParser";
 import { useGraphStore } from "../store/useGraphStore";
+import ToolCallCard from "./ToolCallCard";
+import RunOutputBlock from "./RunOutputBlock";
 
 // ---------------------------------------------------------------------------
 // Markdown → HTML (simple renderer — no external dependency)
@@ -39,7 +41,7 @@ function renderMentionHtml(name: string, type: string, id: string): string {
 
 function renderMarkdown(raw: string): string {
   let text = raw.replace(
-    /@\[([^\]]+)\]\((node|workflow|subgraph):([^)]+)\)/g,
+    /@\[([^\]]+)\]\((node|workflow|subgraph|file|code|docs|chat):([^)]+)\)/g,
     (_, name, type, id) => `\x01MENTION:${name}:${type}:${id}\x01`,
   );
   text = escapeHtml(text);
@@ -266,7 +268,10 @@ function RunRefBlock({
       {cfg.icon}
       <span>{cfg.text}</span>
       {runRef.status !== "running" && (
-        <button className="ml-auto text-[10px] underline opacity-70 hover:opacity-100">
+        <button
+          onClick={() => useGraphStore.getState().focusLogPanel()}
+          className="ml-auto text-[10px] underline opacity-70 hover:opacity-100"
+        >
           View logs
         </button>
       )}
@@ -283,6 +288,7 @@ interface ChatMessageProps {
   sessionMarker?: { historyCursor: number };
   onRevert?: () => void;
   onPreviewMutation?: (message: ChatMessage) => void;
+  onCopyMarkdown?: () => void;
 }
 
 export default function ChatMessageBubble({
@@ -290,6 +296,7 @@ export default function ChatMessageBubble({
   sessionMarker,
   onRevert,
   onPreviewMutation,
+  onCopyMarkdown,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
   const store = useGraphStore();
@@ -345,9 +352,45 @@ export default function ChatMessageBubble({
           />
         )}
 
-        {message.runRef && <RunRefBlock runRef={message.runRef} />}
+        {/* Tool call cards */}
+        {message.toolCalls?.map((tc) => {
+          const isMutationTool = tc.toolName === "plan_graph_mutations";
+          const ops = isMutationTool && message.mutationPlan
+            ? ((message.mutationPlan as Record<string, unknown>).operations as Array<{
+                op: string;
+                name?: string;
+                node_id?: string;
+                node_type?: string;
+              }>) ?? []
+            : undefined;
+          return (
+            <ToolCallCard
+              key={tc.id}
+              toolCall={tc}
+              mutationStatus={isMutationTool ? message.mutationStatus : undefined}
+              onPreviewChanges={
+                isMutationTool && message.mutationStatus === "proposed"
+                  ? () => onPreviewMutation?.(message)
+                  : undefined
+              }
+              operations={ops}
+            />
+          );
+        })}
 
-        {(message.mutationPlan != null || message.mutationStatus != null) && (
+        {/* Run output block (structured events) */}
+        {message.runEvents && message.runEvents.length > 0 && (
+          <RunOutputBlock events={message.runEvents} runRef={message.runRef} />
+        )}
+
+        {/* Fallback: simple run ref badge when no structured events */}
+        {message.runRef && (!message.runEvents || message.runEvents.length === 0) && (
+          <RunRefBlock runRef={message.runRef} />
+        )}
+
+        {/* Mutation badge — only show if no tool call card rendered it */}
+        {!message.toolCalls?.length &&
+          (message.mutationPlan != null || message.mutationStatus != null) && (
           <MutationBadge
             status={message.mutationStatus ?? "proposed"}
             sessionMarker={sessionMarker}
@@ -366,6 +409,15 @@ export default function ChatMessageBubble({
               <span className="text-[10px] text-gray-400">
                 {tokens.toLocaleString()} tokens
               </span>
+            )}
+            {onCopyMarkdown && message.content && (
+              <button
+                onClick={onCopyMarkdown}
+                className="text-gray-300 hover:text-gray-500 transition-colors"
+                title="Copy as Markdown"
+              >
+                <Copy size={11} />
+              </button>
             )}
           </div>
         </div>
