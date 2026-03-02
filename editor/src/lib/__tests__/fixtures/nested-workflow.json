@@ -1,0 +1,146 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": { "name": "vibe-research-mock", "description": "3-level nested workflow fixture" },
+  "nodes": [
+    {
+      "id": "orchestrator",
+      "node_type": "llm_operator",
+      "name": "Orchestrator",
+      "input_ports": [{ "name": "input", "schema": {} }],
+      "output_ports": [{ "name": "output", "schema": {} }],
+      "position": { "x": 0, "y": 0 },
+      "model": "test-model",
+      "prompt_template": "",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "iteration_loop",
+      "node_type": "while_loop",
+      "name": "Iteration Loop",
+      "input_ports": [{ "name": "input", "schema": {} }],
+      "output_ports": [{ "name": "output", "schema": {} }],
+      "position": { "x": 300, "y": 0 },
+      "condition": "i < 3",
+      "body_graph": "iteration_loop__body",
+      "max_iterations": 3,
+      "ui": {},
+      "metadata": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "e1",
+      "edge_type": "data",
+      "source_node_id": "orchestrator",
+      "source_port": "output",
+      "target_node_id": "iteration_loop",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    }
+  ],
+  "sub_graphs": {
+    "iteration_loop__body": {
+      "version": "dan_graph_v1",
+      "metadata": { "name": "iteration-body" },
+      "nodes": [
+        {
+          "id": "dept_router",
+          "node_type": "router",
+          "name": "Department Router",
+          "input_ports": [{ "name": "input", "schema": {} }],
+          "output_ports": [{ "name": "route", "schema": {} }, { "name": "output", "schema": {} }],
+          "position": { "x": 0, "y": 0 },
+          "model": "test-model",
+          "route_descriptions": { "MOM": "momentum", "REV": "reversal" },
+          "ui": {},
+          "metadata": {}
+        },
+        {
+          "id": "dept_composite",
+          "node_type": "composite",
+          "name": "Department REV",
+          "input_ports": [{ "name": "input", "schema": {} }],
+          "output_ports": [{ "name": "output", "schema": {} }],
+          "position": { "x": 300, "y": 0 },
+          "body_graph": "dept_composite__body",
+          "input_mappings": {},
+          "output_mappings": {},
+          "ui": {},
+          "metadata": {}
+        }
+      ],
+      "edges": [
+        {
+          "id": "e2",
+          "edge_type": "data",
+          "source_node_id": "dept_router",
+          "source_port": "output",
+          "target_node_id": "dept_composite",
+          "target_port": "input",
+          "ui": {},
+          "metadata": {}
+        }
+      ],
+      "sub_graphs": {
+        "dept_composite__body": {
+          "version": "dan_graph_v1",
+          "metadata": { "name": "dept-REV-body" },
+          "nodes": [
+            {
+              "id": "strategy_coder",
+              "node_type": "llm_operator",
+              "name": "Strategy Coder",
+              "input_ports": [{ "name": "input", "schema": {} }],
+              "output_ports": [{ "name": "output", "schema": {} }],
+              "position": { "x": 0, "y": 0 },
+              "model": "test-model",
+              "prompt_template": "Write reversal strategy",
+              "ui": {},
+              "metadata": {}
+            },
+            {
+              "id": "backtest_runner",
+              "node_type": "code_operator",
+              "name": "Backtest Runner",
+              "input_ports": [{ "name": "input", "schema": {} }],
+              "output_ports": [{ "name": "output", "schema": {} }],
+              "position": { "x": 300, "y": 0 },
+              "code": "run_backtest()",
+              "language": "python",
+              "sandbox_config": {},
+              "ui": {},
+              "metadata": {}
+            }
+          ],
+          "edges": [
+            {
+              "id": "e3",
+              "edge_type": "data",
+              "source_node_id": "strategy_coder",
+              "source_port": "output",
+              "target_node_id": "backtest_runner",
+              "target_port": "input",
+              "ui": {},
+              "metadata": {}
+            }
+          ],
+          "sub_graphs": {},
+          "entry_points": ["strategy_coder"],
+          "exit_points": ["backtest_runner"],
+          "shared_context": [],
+          "artifact_refs": []
+        }
+      },
+      "entry_points": ["dept_router"],
+      "exit_points": ["dept_composite"],
+      "shared_context": [],
+      "artifact_refs": []
+    }
+  },
+  "entry_points": ["orchestrator"],
+  "exit_points": ["iteration_loop"],
+  "shared_context": [],
+  "artifact_refs": []
+}
