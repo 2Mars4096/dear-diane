@@ -40,7 +40,7 @@ For custom strategies, generated scripts are persisted before execution at
 | `save_tracking.md` | code | Persist updated tracking list to disk |
 | `merge.md` | code | Merge 3 department outputs |
 | `governor.md` | code | Accumulate results, enforce stopping conditions |
-| `write_csv.md` | tool | Write grid_summary.csv |
+| `write_csv.md` | code | Write grid_summary.csv |
 
 ## Running
 
