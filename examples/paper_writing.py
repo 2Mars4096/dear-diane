@@ -2306,7 +2306,7 @@ def create_engine(
     config = EngineConfig(
         llm_base_url=os.getenv("DAN_LLM_BASE_URL", "https://api.vectorengine.ai/v1"),
         llm_api_key=os.getenv("DAN_LLM_API_KEY", ""),
-        llm_default_model=os.getenv("DAN_LLM_DEFAULT_MODEL", "claude-sonnet-4-6"),
+        llm_default_model=os.getenv("DAN_LLM_MODEL", "claude-sonnet-4-6"),
         checkpoint_enabled=checkpoint_enabled,
     )
 

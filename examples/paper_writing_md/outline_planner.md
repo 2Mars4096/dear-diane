@@ -19,7 +19,7 @@ output_schema:
 ---
 
 > Accepts: ideas (string)
-> Returns: outline (object)
+> Returns: sections (array), title (string)
 
 ## System
 

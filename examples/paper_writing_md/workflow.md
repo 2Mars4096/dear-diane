@@ -20,10 +20,10 @@ tags: [paper-writing, academic, informs]
 
 idea_generator → outline_planner
 outline_planner → lit_searcher
-outline_planner | each(section_writer, parallel: 4)
-section_writer → assembler
+outline_planner.sections | each(section_writer, parallel: 4)
+outline_planner_each_section_writer → assembler
 assembler → reviewer
-reviewer | loop(reviser, until: "verdict == 'accept'", max: 5)
+reviewer | loop(reviser, until: "verdict == 'accept'", max: 5, state: "{\"draft\": \"string\", \"verdict\": \"string\", \"comments\": \"string\"}", defaults: "{\"verdict\": \"reject\"}")
 reviser → human_reviewer
 
 ## Context
