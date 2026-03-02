@@ -33,7 +33,13 @@ from dan.engine.executor import EngineConfig
 from dan.executors.tool import ToolRegistry
 from dan.loader.decompiler import decompile_to_markdown
 from dan.models.graph import Graph
-from dan.server.chat_manager import ChatManager, compute_graph_revision
+from dan.server.chat_manager import (
+    ChatManager,
+    build_debug_context,
+    compute_graph_revision,
+    normalize_chat_mode,
+)
+from dan.server.mention_resolver import MentionRef, MentionResolver, CodeResolver
 from dan.server.chat_store import ChatMessage as StoreChatMessage, ChatStore
 from dan.server.exec import execute_python
 from dan.server.graph_mutator import GraphMutator, MutationPlan
@@ -998,6 +1004,68 @@ async def _run_python(code: str = "", **context: Any) -> dict[str, Any]:
     }
 
 
+async def _rag_index_documents(
+    pdf_dir: str = "",
+    collection: str = "literature",
+    glob_pattern: str = "*.pdf",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """Index PDF documents from a directory into a RAG collection."""
+    import os
+    from pathlib import Path
+
+    if not pdf_dir:
+        return {"error": "pdf_dir is required", "status": "error"}
+    workspace = Path(os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())).resolve()
+    resolved = (workspace / pdf_dir).resolve()
+    if not resolved.is_relative_to(workspace):
+        return {"error": "Path escapes workspace root; use a relative path or copy files into the workspace", "status": "error"}
+    if not resolved.is_dir():
+        return {"error": f"Directory not found: {pdf_dir}", "status": "error"}
+
+    pdf_files = sorted(resolved.glob(glob_pattern))
+    if not pdf_files:
+        return {"error": f"No files matching '{glob_pattern}' in {pdf_dir}", "status": "error"}
+
+    documents: list[dict[str, Any]] = []
+    for pdf_path in pdf_files:
+        try:
+            from pypdf import PdfReader
+            reader = PdfReader(str(pdf_path))
+            text = "\n".join(
+                page.extract_text() or "" for page in reader.pages
+            )
+            documents.append({
+                "content": text,
+                "metadata": {
+                    "source": str(pdf_path.relative_to(resolved)),
+                    "filename": pdf_path.name,
+                },
+            })
+        except ImportError:
+            return {"error": "pypdf not installed; run: pip install pypdf>=4.0", "status": "error"}
+        except Exception as exc:
+            logger.warning("Failed to read %s: %s", pdf_path, exc)
+
+    if not documents:
+        return {"error": "No documents could be read", "status": "error"}
+
+    try:
+        indexer = await _get_indexer()
+        await indexer.create_index(
+            name=collection,
+            documents=[{"text": d["content"], "metadata": d["metadata"]} for d in documents],
+        )
+    except Exception as exc:
+        return {"error": f"Indexing failed: {exc}", "status": "error"}
+
+    return {
+        "collection": collection,
+        "documents_indexed": len(documents),
+        "status": "ok",
+    }
+
+
 def _build_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
     builtin = registry.register_builtin_tools()
@@ -1016,6 +1084,7 @@ def _build_tool_registry() -> ToolRegistry:
     registry.register("update_department_state", _update_department_state)
     registry.register("plot_backtest", _plot_backtest)
     registry.register("save_grid_csv", _save_grid_csv)
+    registry.register("rag_index_documents", _rag_index_documents)
     return registry
 
 
@@ -1049,16 +1118,24 @@ def _build_chat_provider_registry():
     return registry
 
 
+_mention_resolver: MentionResolver | None = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _run_manager, _chat_manager
+    global _run_manager, _chat_manager, _mention_resolver
     _run_manager = RunManager(
         engine_config=_get_engine_config(),
         tool_registry=_build_tool_registry(),
     )
+    _mention_resolver = MentionResolver(
+        workspace_root=os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd()),
+        chat_store=_chat_store,
+    )
     _chat_manager = ChatManager(
         provider_registry=_build_chat_provider_registry(),
         graph_store=_graph_store,
+        mention_resolver=_mention_resolver,
     )
     yield
 
@@ -1094,13 +1171,19 @@ class ResumeRequest(BaseModel):
     graph_id: str
 
 
+class ChatMentionRef(BaseModel):
+    type: str
+    identifier: str
+
+
 class ChatMessageRequest(BaseModel):
     workflow_id: str
     message: str
     thread_id: str | None = None
     history: list[dict[str, str]] = []
     client_graph_revision: str | None = None
-    mode: Literal["mutate", "build"] = "mutate"
+    mode: Literal["ask", "agent", "plan", "debug", "mutate", "build"] = "agent"
+    mentions: list[ChatMentionRef] = []
 
 
 class ApplyMutationRequest(BaseModel):
@@ -1615,6 +1698,23 @@ def _reap_stale_chat_streams() -> None:
         _chat_streams.pop(k, None)
 
 
+class StopRequest(BaseModel):
+    message_id: str | None = None
+
+
+@app.post("/api/chat/{channel_id}/stop")
+async def stop_chat_stream(channel_id: str, req: StopRequest | None = None):
+    """Cancel an active LLM chat stream (run streams are not stoppable here)."""
+    if _chat_manager is None:
+        raise HTTPException(status_code=503, detail="Chat not initialised")
+    if not channel_id.startswith("chat-"):
+        raise HTTPException(status_code=404, detail="Stream not found or already finished")
+    found = _chat_manager.cancel_stream(channel_id)
+    if not found:
+        raise HTTPException(status_code=404, detail="Stream not found or already finished")
+    return {"status": "stopping", "channel_id": channel_id}
+
+
 @app.post("/api/chat/message")
 async def chat_message(req: ChatMessageRequest):
     import time
@@ -1631,11 +1731,27 @@ async def chat_message(req: ChatMessageRequest):
     stream_channel_id = f"chat-{uuid.uuid4().hex[:10]}"
     queue: asyncio.Queue = asyncio.Queue()
     _chat_streams[stream_channel_id] = (queue, time.monotonic())
+    cancel_event = _chat_manager.register_stream(stream_channel_id)
+
+    structured_mentions = [
+        MentionRef(type=m.type, identifier=m.identifier)
+        for m in req.mentions
+    ] if req.mentions else []
 
     async def _produce():
         try:
+            normalized_mode = normalize_chat_mode(req.mode)
             graph_dict = _graph_store.get_graph(req.workflow_id)
-            use_tools = graph_dict is not None
+            # ask and plan modes use text-only path (no tool calling)
+            use_tools = graph_dict is not None and normalized_mode not in ("ask", "plan")
+
+            # Build debug context for debug mode
+            debug_ctx = ""
+            if normalized_mode == "debug" and _run_manager is not None:
+                debug_ctx = build_debug_context(
+                    _run_manager.list_runs(), req.workflow_id,
+                )
+
             send = (
                 _chat_manager.send_message_with_tools
                 if use_tools
@@ -1647,12 +1763,16 @@ async def chat_message(req: ChatMessageRequest):
                 history=req.history,
                 thread_id=req.thread_id,
                 client_graph_revision=req.client_graph_revision,
-                mode=req.mode,
+                mode=normalized_mode,
+                cancel_event=cancel_event,
+                mentions=structured_mentions,
+                debug_context=debug_ctx,
             ):
                 await queue.put(event.model_dump())
         except Exception as exc:
             await queue.put({"type": "chat_error", "error": str(exc)})
         finally:
+            _chat_manager.unregister_stream(stream_channel_id)
             await queue.put(None)
 
     asyncio.create_task(_produce())
@@ -1662,7 +1782,9 @@ async def chat_message(req: ChatMessageRequest):
 async def _handle_run_command(
     req: ChatMessageRequest, run_cmd: dict[str, Any],
 ) -> dict[str, Any]:
-    """Execute a /run chat command and return immediate response."""
+    """Execute a /run chat command and stream run events through the chat WS."""
+    import time as _time
+
     rm = _require_run_manager()
     graph = _graph_store.load_as_model(req.workflow_id)
     if graph is None:
@@ -1685,12 +1807,53 @@ async def _handle_run_command(
     record = await rm.start_run(
         result.graph, graph_id=req.workflow_id, inputs=run_cmd.get("inputs"),
     )
+
+    _reap_stale_chat_streams()
+    stream_channel_id = f"run-{uuid.uuid4().hex[:10]}"
+    queue: asyncio.Queue = asyncio.Queue()
+    _chat_streams[stream_channel_id] = (queue, _time.monotonic())
+
+    run_target = run_cmd.get("target_node_id") or run_cmd.get("target_subgraph_key")
+
+    async def _pipe_run_events() -> None:
+        """Subscribe to RunManager events and forward them as chat_run_event."""
+        run_queue = rm.subscribe(record.run_id)
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(run_queue.get(), timeout=300)
+                except asyncio.TimeoutError:
+                    break
+                event_type = event.get("event_type", "")
+                if event_type == "_catchup":
+                    snapshot = event.get("snapshot", {})
+                    if snapshot.get("status") in ("completed", "failed"):
+                        for buf_evt in event.get("buffered_events", []):
+                            blk = map_run_event_to_chat_block(buf_evt, scope, run_target)
+                            if blk is not None:
+                                await queue.put({"type": "chat_run_event", "run_event": blk})
+                        break
+                    continue
+                chat_block = map_run_event_to_chat_block(event, scope, run_target)
+                if chat_block is not None:
+                    await queue.put({"type": "chat_run_event", "run_event": chat_block})
+                if event_type in ("run_completed", "run_failed"):
+                    break
+        except Exception:
+            logger.debug("Run event pipe error for %s", record.run_id, exc_info=True)
+        finally:
+            rm.unsubscribe(record.run_id, run_queue)
+            await queue.put(None)
+
+    asyncio.create_task(_pipe_run_events())
+
     return {
         "type": "run_started",
         "run_id": record.run_id,
         "scope": scope,
-        "target": run_cmd.get("target_node_id") or run_cmd.get("target_subgraph_key"),
+        "target": run_target,
         "message_id": uuid.uuid4().hex[:12],
+        "stream_channel_id": stream_channel_id,
     }
 
 
@@ -1719,6 +1882,15 @@ async def chat_events_ws(websocket: WebSocket, channel_id: str):
 # ------------------------------------------------------------------
 # Chat thread CRUD
 # ------------------------------------------------------------------
+
+
+@app.get("/api/chats/search")
+async def search_chat_threads(q: str = "", workflow_id: str | None = None):
+    """Search message content across threads."""
+    if not q.strip():
+        return {"results": []}
+    results = _chat_store.search_threads(q.strip(), workflow_id=workflow_id)
+    return {"results": results}
 
 
 @app.get("/api/chats/{workflow_id}")
@@ -1762,6 +1934,72 @@ async def delete_chat_thread(workflow_id: str, thread_id: str):
     if not _chat_store.delete_thread(workflow_id, thread_id):
         raise HTTPException(status_code=404, detail="Thread not found")
     return {"status": "deleted"}
+
+
+@app.get("/api/chats/{workflow_id}/{thread_id}/export")
+async def export_chat_thread(workflow_id: str, thread_id: str, format: str = "md"):
+    """Export a chat thread as Markdown or JSON."""
+    if format == "json":
+        data = _chat_store.export_thread_json(workflow_id, thread_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        return {"content": json.dumps(data, indent=2), "format": "json"}
+    content = _chat_store.export_thread_markdown(workflow_id, thread_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return {"content": content, "format": "md"}
+
+
+@app.post("/api/chats/{workflow_id}/{thread_id}/pin")
+async def pin_chat_thread(workflow_id: str, thread_id: str, body: dict[str, Any] | None = None):
+    """Set or unset pin status on a thread."""
+    pinned = (body or {}).get("pinned", True)
+    if not _chat_store.set_pinned(workflow_id, thread_id, pinned):
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return {"status": "updated", "pinned": pinned}
+
+
+@app.post("/api/chats/{workflow_id}/{thread_id}/checkpoint")
+async def save_chat_checkpoint(workflow_id: str, thread_id: str, body: dict[str, Any]):
+    """Save a graph state checkpoint for a chat thread."""
+    message_id = body.get("message_id", "")
+    graph_snapshot = body.get("graph_snapshot")
+    if not graph_snapshot:
+        raise HTTPException(status_code=422, detail="graph_snapshot required")
+    filename = _chat_store.save_checkpoint(
+        workflow_id, thread_id, message_id, graph_snapshot,
+    )
+    return {"status": "saved", "filename": filename}
+
+
+# ------------------------------------------------------------------
+# Mention context endpoints — file, docs, and code-ref listings
+# ------------------------------------------------------------------
+
+
+@app.get("/api/files/list")
+async def list_workspace_files():
+    if _mention_resolver is None:
+        raise HTTPException(status_code=503, detail="Server not fully initialised")
+    files = _mention_resolver.file_resolver.list_files()
+    return {"files": files}
+
+
+@app.get("/api/docs/list")
+async def list_docs():
+    if _mention_resolver is None:
+        raise HTTPException(status_code=503, detail="Server not fully initialised")
+    docs = _mention_resolver.docs_resolver.list_docs()
+    return {"docs": docs}
+
+
+@app.get("/api/code-refs/{workflow_id}")
+async def list_code_refs(workflow_id: str):
+    graph_dict = _graph_store.get_graph(workflow_id)
+    if graph_dict is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{workflow_id}' not found")
+    refs = CodeResolver.list_code_refs(graph_dict)
+    return {"refs": refs}
 
 
 # ------------------------------------------------------------------
