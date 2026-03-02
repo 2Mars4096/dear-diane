@@ -384,10 +384,10 @@ The paper-writing workflow already in `development-plan.md` Section 1 is the tar
 | **4** | Core hardening | Multi-provider LLM, built-in tools, retry policies, templates, observability | Not started |
 | **5** | Markdown agent format | `dan.loader`: markdown agent/workflow files → `dan_graph_v1` JSON (third authoring surface) | Not started |
 | **6** | Extended capabilities | RAG node (upgrade from tool-based), script execution / sandbox, handoff validators | Not started |
-| **7** | Author & distribute | CLI mode, publish-as-API/MCP, shareable blocks, PyPI package, lightweight skills | Not started |
+| **7** | Author & chat | Conversational workflow authoring, NL→graph mutations, meta-orchestrator, cursor-parity chat | **Done** |
 | **8** | Observe & recover | Run history, audit log, checkpoint portals, variable inspector, node test cases | Not started |
-| **9** | Application layer | Agent teams, messaging integrations, user system, NL flow creation | Not started |
-| **10** | Deep systems | Memory & context scoping, hyperedges, HumanNode generalization, dynamic model selection | Not started |
+| **9** | Deep systems | Memory & cross-run state (9A), behavior modifiers/hyperedges (9B), execution primitives (9C) | Not started |
+| **10** | Author & distribute | CLI, publish as API/MCP, messaging integrations, shareable blocks, PyPI package | Not started |
 
 ---
 

@@ -1,6 +1,6 @@
 # 7: Phase 4 — Core Hardening
 
-**Status:** in-progress
+**Status:** completed
 **Goal:** Make existing nodes robust and the platform practically usable. Fill gaps that prevent real workflows from running reliably — retry/fallback, multi-provider LLM dispatch, batteries-included tools, example templates, and per-node cost visibility.
 
 ## Sub-Plans

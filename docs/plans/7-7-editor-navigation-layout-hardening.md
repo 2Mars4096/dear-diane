@@ -1,7 +1,7 @@
 # 7-7: Editor Navigation & Layout Hardening
 
 **Parent:** [7-core-hardening](7-core-hardening.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Fix nested drill-in/out/save (capped at depth 3), make port ordering deterministic via logic+rules, and clean up edge routing with optimized connection rules. All changes are editor-only (frontend).
 
 ## Background
@@ -55,17 +55,17 @@ The vibe-research multi-department workflow exposed two classes of issues:
 - [x] 9. Depth-3 guard in breadcrumb
   - [x] 9-1. In `BreadcrumbBar.tsx`, when `layerStack.length >= 3`, visually indicate max depth (e.g., dim the last segment, add tooltip "Max drill-in depth").
 
-- [ ] 10. Tests
-  - [ ] 10-1. Unit test `resolveGraphAtStack`: root (empty stack), depth-1, depth-2, depth-3, depth-4 (caps at 3).
-  - [ ] 10-2. Unit test `deepSetSubGraph`: verify immutable update at depth 1, 2, 3.
-  - [ ] 10-3. Unit test `orderPorts`: connected ports sort by peer Y, gate ports pinned, unconnected last, fallback alphabetical.
-  - [ ] 10-4. Integration: load vibe-research graph, drill root → iteration → dept_REV (depth 2). Verify nodes render and breadcrumb shows 3 segments.
-  - [ ] 10-5. Integration: drill to depth 2, save, reload — verify dept body edits persist at correct nested path.
+- [x] 10. Tests
+  - [x] 10-1. Unit test `resolveGraphAtStack`: root (empty stack), depth-1, depth-2, depth-3, depth-4 (caps at 3).
+  - [x] 10-2. Unit test `deepSetSubGraph`: verify immutable update at depth 1, 2, 3.
+  - [x] 10-3. Unit test `orderPorts`: connected ports sort by peer Y, gate ports pinned, unconnected last, fallback alphabetical.
+  - [x] 10-4. Integration: load vibe-research graph, drill root → iteration → dept_REV (depth 2). Verify nodes render and breadcrumb shows 3 segments.
+  - [x] 10-5. Integration: drill to depth 2, save, reload — verify dept body edits persist at correct nested path.
 
-- [ ] 11. Docs sync
-  - [ ] 11-1. Update `docs/architecture.md` — document `resolveGraphAtStack`, depth-3 cap, port ordering rules, edge routing.
-  - [ ] 11-2. Update `docs/changelog.md` after implementation.
-  - [ ] 11-3. Update `docs/bugs.md` — mark nested drill-in and port alignment as resolved.
+- [x] 11. Docs sync
+  - [x] 11-1. Update `docs/architecture.md` — document `resolveGraphAtStack`, depth-3 cap, port ordering rules, edge routing.
+  - [x] 11-2. Update `docs/changelog.md` after implementation.
+  - [x] 11-3. Update `docs/bugs.md` — mark nested drill-in and port alignment as resolved.
 
 ## Decisions
 

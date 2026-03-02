@@ -53,15 +53,15 @@
 ## Phase 4 — Core Hardening
 > Make existing nodes robust and the platform practically usable. Fill gaps that prevent real workflows from running reliably.
 
-- [ ] [7-core-hardening](plans/7-core-hardening.md) — retry/fallback, multi-provider LLM, built-in tools, templates, observability, node state simplification
+- [x] [7-core-hardening](plans/7-core-hardening.md) — retry/fallback, multi-provider LLM, built-in tools, templates, observability, node state simplification
   - [x] [7-1-runtime-reliability](plans/7-1-runtime-reliability.md) — `RetryPolicy` model on `NodeBase`, ToolExecutor retry/backoff, fallback model, halt semantics, concurrency audit
   - [x] [7-2-multi-provider-llm](plans/7-2-multi-provider-llm.md) — provider registry (OpenAI, Anthropic, Google), per-node model dispatch, key management, cost table
   - [x] [7-3-built-in-tools](plans/7-3-built-in-tools.md) — `dan.tools` package (11 tools: file, web, shell, PDF, utility), auto-registration, ACI quality
   - [x] [7-4-templates-observability](plans/7-4-templates-observability.md) — 5 workflow templates, per-node token/cost display, LogPanel enhancements
-  - [ ] [7-5-general-tool-design](plans/7-5-general-tool-design.md) — Generic run_python tool, deprecate plot_backtest/save_grid_csv; agent-generated code
-  - [ ] [7-6-node-state-simplification](plans/7-6-node-state-simplification.md) — Loop-scoped state bag, code node port defaults, struct (spread) edges; eliminate state-threading boilerplate
-  - [ ] [7-7-editor-navigation-layout-hardening](plans/7-7-editor-navigation-layout-hardening.md) — Nested drill-in/out/save fix (depth-3 cap), deterministic port ordering (logic+rules), edge routing optimization
-  - [ ] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Loader/validation/builder/mutator correctness; round-trip, gate defaults (Task 3 done), strict mode, mutator warn
+  - [x] [7-5-general-tool-design](plans/7-5-general-tool-design.md) — Generic run_python tool, deprecate plot_backtest/save_grid_csv; agent-generated code
+  - [x] [7-6-node-state-simplification](plans/7-6-node-state-simplification.md) — Loop-scoped state bag, code node port defaults, struct (spread) edges; eliminate state-threading boilerplate
+  - [x] [7-7-editor-navigation-layout-hardening](plans/7-7-editor-navigation-layout-hardening.md) — Nested drill-in/out/save fix (depth-3 cap), deterministic port ordering (logic+rules), edge routing optimization
+  - [x] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Loader/validation/builder/mutator correctness; round-trip, gate defaults, strict mode, mutator diagnostics
   - [x] [7-9-async-parallel-subagents](plans/7-9-async-parallel-subagents.md) — Run subagents concurrently; orchestration layer fans out to multiple subagents in parallel with proper fan-in semantics (Task 3 checkpoint/resume and 5-3 visualization deferred)
 
 ## Phase 5 — Markdown Agent Format
@@ -119,70 +119,52 @@
 ## Phase 8 — Observe & Recover
 > Execution persistence, debugging tools, and iterative refinement capabilities.
 
-- [ ] 8: Observe & recover → (not yet planned)
-- [ ] Run history / comparison — persist run artifacts (events, outputs, tokens, latency) to disk. History list in editor. Side-by-side comparison for iterative prompt tuning.
-- [ ] Action audit log — persistent, queryable log of every action (tool calls, LLM outputs, decisions). Debugging + compliance + post-run analysis.
-- [ ] Checkpoints as portals — tweak downstream subgraph and re-run from checkpoint without restarting. Extends existing checkpoint/resume for partial re-runs.
-- [ ] Variable inspector in config panel — show available upstream data at each node. Leverage typed edge schemas.
-- [ ] Node test cases / annotations — pin expected input/output pairs per node for isolated testing. Right-click → "Add test case."
+- [ ] [13-observe-recover](plans/13-observe-recover.md) — execution persistence, debugging tools, and iterative refinement capabilities
+  - [ ] [13-1-run-observability-history](plans/13-1-run-observability-history.md) — run artifacts, history/comparison, and action audit log foundation
+  - [ ] [13-2-recovery-debug-workbench](plans/13-2-recovery-debug-workbench.md) — checkpoint portals, variable inspector, and node test cases UX
 
-## Phase 9 — Application Layer
-> Higher-level coordination patterns and external integrations.
+## Phase 9 — Deep Systems
+> Architectural additions for advanced use cases. Grouped into three clusters; each cluster gets a plan file just-in-time when work begins.
 
-- [ ] 9: Application layer → (not yet planned)
-- [ ] Agent teams — group-chat style multi-agent coordination with "@" routing, handoffs, and conversational context.
-- [ ] Messaging/comm integrations — email, Slack, Discord, Telegram, WhatsApp adapters. Trigger workflows from external messages.
-- [ ] User system — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments.
+### 9A — Memory & Cross-Run State
+- [ ] [14-memory-cross-run-state](plans/14-memory-cross-run-state.md) — memory and cross-run state foundation (session persistence, boundary scoping, long-chain memory)
+  - [ ] [14-1-session-conversation-memory](plans/14-1-session-conversation-memory.md) — lightweight persistence for conversation history + key-value state across multiple `Engine.run()` invocations (self-evolving orchestrator Tier 1 enabler)
+  - [ ] [14-2-context-scoping-boundaries](plans/14-2-context-scoping-boundaries.md) — formalize `global`/`local`/`pass_down`/`emit_up` with explicit agent-boundary schemas and sticky/non-sticky upward signals
+  - [ ] [14-3-long-chain-memory-system](plans/14-3-long-chain-memory-system.md) — short-term vs long-term memory pipeline (encoding, consolidation, retrieval) and executable memory policy defaults
+
+### 9B — Behavior Modifiers
+- [ ] Hyperedges — engine runtime — skills/rules as hyperedges attaching to multiple nodes. Types: skill, guardrail, style, override. Hooks: pre_prompt, tool_call, post_output, validation.
+- [ ] Hyperedges — markdown syntax — reference skill/rule `.md` files in workflow with attachment scope. Depends on engine runtime.
+- [ ] Dynamic model selection — `model_policy` field. Budget-aware selection, learned assignment. Strategies beyond static/fallback/router/cascade.
+
+### 9C — Execution Primitives
+- [ ] Agent teams — group-chat style multi-agent coordination with "@" routing, handoffs, and conversational context. New execution primitive or `OrchestratorNode` extension.
+- [ ] Voting / ensemble primitive — same-model voting + cross-model ensemble. `Vote` node or builder sugar `wf.vote()`.
+- [ ] HumanNode generalization — promote to first-class node type. Chat UI as renderer. Adjustable autonomy via topology. Background mode = zero HumanNodes.
+- [ ] Loop as context manager — loops manage what context feeds back, not just control flow. Feedback selectors filter what flows from body back to condition.
 
 ## Phase 10 — Author & Distribute
-> CLI, publish as API/MCP, shareable blocks, PyPI package, lightweight skills.
+> CLI, publish as API/MCP, shareable blocks, PyPI package. Comes after Deep Systems so API surface is stable before packaging.
 
 - [ ] 10-R: Author & distribute (remaining) → (not yet planned)
 - [ ] CLI mode — run workflows in terminal/background. Supervisor-style: start, check progress, inspect logs without blocking. Complements visual editor for headless/CI/server deployments.
 - [ ] Publish workflow as API/MCP — build a workflow, publish as a callable MCP server or HTTP endpoint. Turns workflows into consumable services (Coze-style).
+- [ ] Messaging/comm integrations — email, Slack, Discord, Telegram, WhatsApp adapters. Trigger workflows from external messages; publish workflows as bot backends.
 - [ ] Shareable blocks — publish and import reusable agent-blocks. Registry/marketplace for community sharing.
 - [ ] PyPI package — `pip install dan` with stable public API.
-- [ ] Lightweight skills (prompt injection) — skills as prompt-prefix injections scoped by node tag/type. No full hyperedge hooks; just "prepend this text to LLM nodes tagged X."
-
-## Phase 11 — Deep Systems
-> Architectural additions for advanced use cases. Build when real workflows demand them.
-
-- [ ] 11: Deep systems → (not yet planned)
-- [ ] Context scoping across agent boundaries — formalize four scopes (global, local, pass_down, emit_up) with explicit schemas at every agent boundary. Upward signals (sticky → global, non-sticky → one layer up). Agent boundary contract: accepts, returns, reads_global, writes_global, signals.
-- [ ] Memory system for long chains — short-term vs. long-term memory (encoding, consolidation, retrieval). How nodes recall distant context, how completed sub-graph results compress into retrievable memory. Research: MemGPT, AgentNet, hippocampal indexing.
-- [ ] Memory policy defaults (agreed)
-  - [ ] DAN-native memory first; external context-db adapters later
-  - [ ] Canonical layers: `L0=TOC/index`, `L1=abstract/overview`, `L2=detailed payload + artifact refs`
-  - [ ] Lifespan: memory at all scope levels plus cross-run persistence on checkpoint/resume
-  - [ ] Message semantics: source emits, target receives
-  - [ ] Rule model: deterministic global rules + node-specific rules
-  - [ ] Retrieval: contingent + rule-based, balanced determinism/recall
-  - [ ] Retrieval budget: retrieve `20` → rerank `8` → inject `4`; cap ~`35%` of prompt budget
-  - [ ] Consolidation triggers: at checkpoint + context pressure (soft `85-90%`, hard `95%`)
-  - [ ] Sticky-write approval required; timeout escalates to parent
-  - [ ] Parallel conflict: hybrid aggregator (generic default + per-key reducers)
-  - [ ] Memory hygiene: forbid chain-of-thought persistence; store only project-useful memory
-  - [ ] Global schema: `id`, `scope`, `type`, `summary`, `payload_ref`, `tags`, `confidence`, `provenance`, `created_at`, `ttl`, `approval_status`
-  - [ ] TTL defaults: `profile=365d`, `preferences=180d`, `entities=365d`, `events=90d`, `cases=365d`, `patterns=730d`
-  - [ ] Future tuning: treat all defaults as starting points; tune via telemetry, retrieval quality, cost/latency
-- [ ] Hyperedges — engine runtime — skills/rules as hyperedges attaching to multiple nodes. Types: skill, guardrail, style, override. Attachment by node ID, type, tags, subgraph. Precedence: policy > rule > skill. Hooks: pre_prompt, tool_call, post_output, validation.
-- [ ] Hyperedges — markdown syntax — reference skill/rule `.md` files in workflow with attachment scope. Depends on engine runtime.
-- [ ] HumanNode generalization — promote to first-class node type. Chat UI as renderer. Adjustable autonomy via topology. Background mode = zero HumanNodes.
-- [ ] Dynamic model selection — `model_policy` field. Budget-aware selection, learned assignment. Strategies beyond static/fallback/router/cascade.
-- [ ] Voting / ensemble primitive — same-model voting + cross-model ensemble. `Vote` node or builder sugar `wf.vote()`.
-- [ ] Session / conversation memory — lightweight persistence for conversation history + key-value state across multiple `Engine.run()` invocations.
-- [ ] Loop as context manager — loops manage what context feeds back, not just control flow. Feedback selectors filter what flows from body back to condition.
+- [ ] Lightweight skills (prompt injection) — skills as prompt-prefix injections scoped by node tag/type. Stopgap if hyperedges (9B) aren't done yet; may shrink in scope after 9B lands.
 
 ## Backlog (unphased)
+- [ ] **User system** — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments. (Low priority — revisit when cloud/SaaS deployment becomes a goal.)
 - [ ] **Manager vs worker node distinction** — manager nodes orchestrate and may spawn new nodes; worker nodes only execute and do not hire new nodes. Bottom-layer nodes are workers. Enables token/node budget caps (e.g. limit total tokens or total nodes used).
 - [ ] **Optimize token usage** — reduce token consumption across workflows (prompt compression, context pruning, caching, smaller models for simple tasks, truncation policies).
-- [ ] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics; core mechanisms for convenient workflow building
+- [x] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics; core mechanisms for convenient workflow building
 - [ ] **Async loop design** — Orchestrator runs independently with access to current progress and can emit commands anytime; departments work in tandem (parallel, no cross-deps). Today: orchestrator runs once per iteration at the start, then all depts run; iterations are strictly sequential. Target: orchestrator as long-running/streaming process that pushes work to departments as they become free, or event-driven model where orchestrator and depts can overlap.
 - [ ] NL mutation quality tracking bundle — now tracked under [12-6-chat-quality-harness](plans/12-6-chat-quality-harness.md) (CI variant, baseline capture, acceptance targets, end-of-phase report).
 - [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
 - [ ] Thread timeline view — vertical timeline of graph evolution through conversation (stretch, from 10-5 task 5-3)
 - [ ] Canvas drag-to-mention — drag node from canvas onto chat input to create mention (stretch, from 10-2 task 6-4)
-- [ ] **Self-evolving orchestrator** — orchestrator persists error memories across runs (artifact store + RAG retrieval), reflects on failures to extract causal principles, and injects retrieved lessons into future decisions via prompt augmentation. Three layers: (A) persistent error memory store, (B) reflection node that distills failures into actionable principles, (C) dynamic prompt injection of relevant past mistakes before orchestrator routing decisions. Eventually: reflection generates hyperedge rules that constrain future behavior. Depends on memory system (Phase 11) for full cross-run persistence; prompt-augmentation variant works with existing RAG infra.
+- [ ] **Self-evolving orchestrator** — orchestrator persists error memories across runs (artifact store + RAG retrieval), reflects on failures to extract causal principles, and injects retrieved lessons into future decisions via prompt augmentation. Three layers: (A) persistent error memory store, (B) reflection node that distills failures into actionable principles, (C) dynamic prompt injection of relevant past mistakes before orchestrator routing decisions. Tier 1 (prompt-augmentation) works with existing RAG infra now; Tier 2 benefits from Phase 8 run history; Tier 3 (self-generating rules) needs Phase 9B hyperedges.
 - [ ] Survey EvoAgentX for reusable multi-agent patterns
 - [ ] Coding assistant proof-of-concept — build Cursor-like agent mode as a DAN graph (~15 node types, ReAct while-loop + tool operators). Validate Ask/Agent/Debug/Plan modes as graph templates.
 - [ ] science-cursor rebuild — extract scholar engines as DAN agents. Build PaperOrchestrator as a DAN network. VS Code extension as thin rendering client.

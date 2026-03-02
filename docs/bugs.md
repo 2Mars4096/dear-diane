@@ -6,6 +6,10 @@
 
 ## Resolved Bugs
 
+- **Code-node CSV writer could emit malformed rows on commas/quotes/newlines:** `write_csv.md` in vibe workflows manually built CSV lines with `",".join(...)`, which is not RFC-safe for arbitrary text fields. Fixed by switching v1/v2 `write_csv.md` to Python `csv.writer` and preserving pass-through outputs.
+- **Parallel-phase copy race left stale tool nodes in vibe v2:** `examples/vibe_research_v2_md/plot_one.md` and `write_csv.md` were copied from v1 before Plan 7-5's migration landed, so v2 still referenced deprecated `tool_id` values (`plot_backtest`, `save_grid_csv`). Fixed by converting both v2 files to inline code nodes (matching v1 pattern) and using v2-specific output paths.
+- **Nested drill-in broken beyond depth 1:** All navigation functions (`drillIn`, `drillOut`, `jumpToLayer`, `saveGraph`) used root-level `sub_graphs` lookup. Fixed by `resolveGraphAtStack` traversal helper + depth-3 cap. `PortMappingOverlay` parent lookup also fixed.
+- **Port order non-deterministic:** Ports rendered in raw array order causing edge crossings. Fixed by `orderPorts` scoring: P0 gate pins → P1 connected (peer Y) → P2 unconnected (alpha).
 - **`_rag_index_documents` sent `list[str]` to `Indexer.create_index` (expects `list[dict]` with `"text"` key):** Indexer silently failed to build a collection. Fixed by wrapping document content as `{"text": ..., "metadata": ...}`.
 - **`_rag_index_documents` bypassed workspace sandboxing:** Absolute `pdf_dir` was resolved as-is via `Path(workspace) / pdf_dir`, escaping `DAN_WORKSPACE_ROOT`. Fixed by rejecting absolute paths and verifying the resolved path stays under the workspace root.
 - **`TOOL_PORT_MANIFESTS` mismatched `compile_latex`/`save_paper`/`package_submission` signatures:** Manifests declared generic `input`/`tex_content` ports while tools required `title`, `content`, `tex_path`, `bib_path` as separate arguments. Caused `TypeError` at runtime. Fixed by aligning manifests with actual function signatures and adding structured output ports.

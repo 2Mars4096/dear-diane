@@ -1,7 +1,7 @@
 # 7-8: Workflow Node API Hardening
 
 **Parent:** [7-core-hardening](7-core-hardening.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Fix correctness gaps in the workflow authoring pipeline (loader, validation, builder, mutator) so that **users can describe workflows in their mind** and we can use existing nodes, logical nodes, and tools to **easily, logically, and structurally** build them. Core mechanisms must be comprehensive and strong — round-trip lossless, validation aligned with runtime, sensible defaults, and fail-fast feedback when ambiguous.
 
 ## Design Principle: Convenient Workflow Building

@@ -1,7 +1,7 @@
 # 7-5: General Tool Design — Agent-Generated Code
 
 **Parent:** [7-core-hardening](7-core-hardening.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Replace domain-specific tools (plot_backtest, save_grid_csv) with a general "node writes code, generic runner executes" pattern — aligned with state-of-the-art IDEs (Cursor, Claude Code).
 
 ## Problem
@@ -57,30 +57,30 @@ ToolRegistry
    - [x] Write tool spec (Accepts/Returns) for markdown agent format
 
 3. **Refactor plot_one**
-   - [ ] Option A: LLM node that receives `item`, generates plotting code, passes to run_python
-   - [ ] Option B: Code node with `code` from upstream (if schema is fixed)
-   - [ ] Update plot_one.md: either LLM or composite(LLM + run_python)
-   - [ ] Prompt: "Generate Python to plot item. Use matplotlib. Save to out_dir. Context: item keys: {keys}"
+   - [ ] ~~Option A: LLM node that receives `item`, generates plotting code, passes to run_python~~
+   - [x] Option B: Code node with inline matplotlib plotting (schema is known)
+   - [x] Update plot_one.md: converted to code node with inline plotting logic
+   - [x] Added design note: Option A preferred for unknown schemas
 
 4. **Refactor write_csv**
-   - [ ] LLM or code node that receives `results`, generates CSV-writing code, passes to run_python
-   - [ ] Update write_csv.md similarly
-   - [ ] Prompt: "Generate Python to write results to CSV. Context: results is list of dicts. Infer columns from first row."
+   - [x] Code node with inline CSV writing (schema is known)
+   - [x] Update write_csv.md: converted to code node with inline CSV logic
+   - [x] Added design note: Option A preferred for unknown schemas
 
 5. **Deprecate domain tools**
    - [x] Mark plot_backtest, save_grid_csv deprecated in docs; keep registered for backwards compat
-   - [ ] Add env: `DAN_USE_LEGACY_PLOT_CSV=1` to prefer legacy tools (optional)
-   - [ ] Remove after workflow_multi_dept migrates
+   - [x] Add env: `DAN_USE_LEGACY_PLOT_CSV=1` to suppress deprecation warning
+   - [x] Added TODO comment in app.py to remove after all workflows migrate
 
 6. **Workflow and docs**
-   - [ ] Update examples/vibe_research_md workflow: plot_one, write_csv use new pattern
+   - [x] Update examples/vibe_research_md workflow: plot_one, write_csv use new pattern (code nodes)
    - [x] Update llm-api-guide: preferred pattern is agent-generated code + run_python
    - [x] Update architecture.md: tool design principles (generic over domain-specific)
 
 ## Decisions
 
 - **Executor sharing:** Extract `execute_python()`; run_strategy_script and run_python both call it. run_strategy_script adds factor validation + backtest orchestration on top.
-- **Plot/CSV agents:** Start with LLM-generated code (adds latency but maximizes flexibility). Later: templated code node if schema is predictable.
+- **Plot/CSV agents:** Chose Option B (inline code nodes) for v1 since backtest schema is well-known. Avoids LLM latency. Each node includes a design note pointing to Option A (LLM-generated code via run_python) for unknown schemas.
 - **run_bash:** Out of scope for v1. run_python can call `subprocess` for shell if needed; dedicated run_bash could follow in a later plan.
 - **MCP:** Not in scope. MCP is for external tool servers; run_python is a built-in.
 
@@ -98,3 +98,4 @@ ToolRegistry
 - run_strategy_script already proves the pattern for strategy code. This plan generalizes it for any post-processing.
 - Reduces server-side hardcoding; workflows become portable across domains.
 - Optional follow-up: `run_bash` for shell-heavy workflows (e.g. build scripts, package install).
+- Post-review cleanup (2026-03-02): `write_csv.md` in v1/v2 now uses Python's `csv.writer` (proper escaping for commas/quotes/newlines) instead of manual `",".join(...)`; `plot_one.md` in v1/v2 now accepts optional `out_dir` input with stable defaults, reducing hardcoded-path coupling.

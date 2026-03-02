@@ -7,7 +7,7 @@
 - **Visual editor:** TypeScript, React, React Flow v12 (`@xyflow/react`), Zustand, Tailwind CSS v4, Vite
 - **Schema validation:** JSON Schema (typed edges)
 - **Shared contract:** versioned graph JSON (`dan_graph_v1`) between Python and TypeScript
-- **Testing:** pytest, pytest-asyncio, httpx (ASGI test client)
+- **Testing:** pytest, pytest-asyncio, httpx (ASGI test client); vitest (editor unit tests)
 
 ## Directory Structure
 
@@ -254,6 +254,9 @@ Direct edge data handles simple input/output. Growing payloads, shared state, an
 | **4. Artifact Store** | Large objects (drafts, datasets, figures) stored by reference | Graph-wide | Immutable (new version per revision) |
 
 > **Layer 2 active usage:** `LocalStateManager` is now used for loop-scoped state in while-gate loops (Plan 7-6). When `GateNode.state_schema` is present, the scheduler maintains a state bag via `LocalStateManager` scoped to the gate — body nodes receive state fields as regular inputs and outputs matching `state_schema` keys are merged back into scope automatically.
+
+- **Code node port defaults (7-6):** `CodeExecutor` injects type-appropriate defaults for missing optional input ports based on `json_schema` (array→[], object→{}, number→0, string→"", boolean→False). Eliminates `try/except NameError` boilerplate.
+- **Spread edges (7-6):** `DataEdge` with `spread=True` destructures source dict fields into target node input ports. One edge replaces many scalar edges for struct passthrough.
 
 ### Context Projection
 
@@ -523,11 +526,15 @@ with wf.composite("block") as sub:
 
 ### Node-Type Output Contract Map
 
-Each node type has a known default output port matching the runtime executor (e.g., `llm_operator` -> `text`, `for_each` -> `results`, `if_else` -> `branch`). The compiler uses this map for `>>` wiring and f-string marker resolution.
+Each node type has a known default output port matching the runtime executor (e.g., `llm_operator` -> `text`, `for_each` -> `results`, `if_else` -> `branch`). The compiler uses this map for `>>` wiring and f-string marker resolution. **Mode-aware gate defaults (7-8):** While-mode gates use `continue` (not `true`) for chain wiring; if_else gates use `true`.
 
 ### Decompiler
 
 `decompile(graph: Graph) -> str` produces an executable Python module string. Topological sort with deterministic ordering, chain detection for `>>` sugar, context managers for sub-graph nodes, `NodeRef` wrappers for sub-graph edge wiring. Preserves `ui`, `metadata`, `shared_context`, and all edge types.
+
+### Workflow pipeline hardening (7-8)
+
+- **Strict parse mode:** `compile_workflow(path, strict=True)` treats flow parse failures and ambiguous bare-edges as fatal (default `strict=False` for backward compat). Recommended for LLM-generated workflows.
 
 ## Visual Editor Backend (Phase 2)
 
@@ -621,17 +628,26 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 └──────┴─────────────────────────────┴──────────────┴─────────────┘
 ```
 
-### Multi-Layered Graph Navigation (Phase 3.5-A)
+### Multi-Layered Graph Navigation (Phase 3.5-A + 7-7 Hardening)
 
 - **CompositeExecutor** — backend executor that maps input/output ports and delegates to `run_subgraph`; supports node-aware mapping format (`nodeId::portName`) for targeted per-entry-node input injection (backward compatible with legacy flat mappings); registered in scheduler alongside WhileLoop/ForEach
 - **`_run_subgraph` targeted injection** — optional `targeted_inputs: dict[str, dict[str, Any]]` parameter routes inputs to specific entry-point nodes instead of broadcasting to all entries; solves routing collisions when multiple entry nodes share port names
 - **`is_blackbox`** field on CompositeNode — when true, node is opaque (no drill-in, no sub-graph preview)
 - **Canvas drill-in** — double-click composite/while_loop/for_each nodes to navigate into their sub-graph; read-only (no edits while drilled in)
+- **`resolveGraphAtStack(root, stack)`** — single source of truth for nested graph resolution. Walks the layer stack by traversing `sub_graphs` at each depth level. Returns `null` on invalid path or depth > `MAX_DRILL_DEPTH` (3). All navigation/save code paths (`drillIn`, `drillOut`, `jumpToLayer`, `saveGraph`, `PortMappingOverlay`) use this helper — no ad-hoc `sub_graphs[key]` lookups.
+- **`deepSetSubGraph(root, stack, updatedSub)`** — immutable deep update: produces a new root `DanGraph` with the sub-graph replaced at the depth indicated by the layer stack. Used by `saveGraph` for nested save.
+- **Depth-3 cap** — `MAX_DRILL_DEPTH = 3` (root → level-1 → level-2 → level-3). `resolveGraphAtStack` returns `null` beyond this; callers auto-reset to root and show toast. BreadcrumbBar visually indicates max depth.
 - **Loop feedback arrows** — when drilling into `while_loop` or `for_each`, synthetic dashed edges (tagged `data.synthetic=true`) are injected from exit-point output ports back to entry-point input ports by name matching; generic fallback arrow when names don't match; `saveGraph()` filters out synthetic edges before serialization
 - **`layerStack`** in Zustand store — tracks navigation depth; `drillIn`/`drillOut`/`jumpToLayer` actions recompute React Flow nodes/edges from `danGraph.sub_graphs`
 - **BreadcrumbBar** — "Root > Node1 > Node2" navigation bar; each segment clickable
 - **PortMappingOverlay** — shows input/output port mappings when viewing a composite node's sub-graph
 - **Animated zoom** — CSS fade-in + `fitView()` on layer change
+
+### Port Ordering & Edge Routing (Plan 7-7)
+
+- **`orderPorts(ports, edges, nodes, nodeId, direction, nodeType?, portReorder?)`** — deterministic display-only sort in `portOrdering.ts`. Scoring bands (non-overlapping): P0 gate pins (0–9, `true`/`continue` → 0, `false`/`done` → 1), P1 connected ports (1000–1999, peer Y clamped to [0,999]), P2 unconnected (10000+, alphabetical sub-sort). Alphabetical tie-breaker. Used in `DanNode.tsx`; `ConfigPanel` keeps raw authoring order.
+- **`computePortReorder`** — crossing minimization heuristic, runs once post-layout. Results passed as `portReorder` hint to `orderPorts` for P1-band sub-sorting.
+- **Edge routing optimizations** — dagre port-aware edge weights, per-port smoothstep offsets, data-edge label deduplication, crossing minimization via port reorder.
 
 ### Live Execution Visualization (Phase 3.5-B)
 
@@ -694,6 +710,7 @@ Bidirectional conversion layer (`graphAdapter.ts`):
 - **Auto-retry:** If the LLM's mutation plan fails dry-run validation, the chat manager feeds the errors back to the LLM for one correction attempt before surfacing the failure to the user.
 - **`TOOL_PORT_MANIFESTS`** — tool-specific port declarations for 10 common tools (`file_read`, `list_directory`, `pdf_read`, `compile_latex`, `save_paper`, `package_submission`, `citation_verifier`, `check_latex_deps`, `rag_index_documents`, `web_search`). Used by `_default_ports` to auto-declare input/output ports for `tool_operator` nodes by `tool_id`.
 - **`ApplySkill` mutation op** — targets nodes by ID or `metadata.tags`; injects domain-specific prompt prefixes from `SKILL_LIBRARY` (in `skill_library.py`) into `system_prompt` (or `prompt_template` fallback). Skills: `management_science_writing`, `informs_latex_style`.
+- **Mutator diagnostics (7-8):** When `add_edge` auto-creates a missing target port, a diagnostic is emitted. Optional `strict=True` on the op fails instead of auto-creating.
 - **`clarify_intent()`** — `ChatManager` method that detects underspecified build-mode intents and asks the user for clarification before planning.
 
 ### Build-from-Intent Mode
