@@ -958,6 +958,11 @@ class Engine:
                 virtual_src = f"__input__{node_id}"
                 if state.port_data.has(virtual_src, edge.target_port):
                     continue
+                # If virtual_src doesn't have it, but the gate hasn't run yet, it's a back-edge
+                # on the first pass (or cleared for next iteration). We should not skip.
+                source_status = state.node_statuses.get(edge.source_node_id)
+                if source_status in (None, NodeStatus.PENDING, NodeStatus.RUNNING):
+                    continue
             if not state.port_data.has(edge.source_node_id, edge.source_port):
                 return True
 
