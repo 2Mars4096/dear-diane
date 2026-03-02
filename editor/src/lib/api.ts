@@ -135,6 +135,17 @@ export const submitHumanInput = (
     },
   );
 
+// -- Mention context ---------------------------------------------------------
+
+export const listWorkspaceFiles = () =>
+  request<{ files: string[] }>("/files/list");
+
+export const listDocs = () =>
+  request<{ docs: string[] }>("/docs/list");
+
+export const listCodeRefs = (workflowId: string) =>
+  request<{ refs: string[] }>(`/code-refs/${workflowId}`);
+
 // -- Chat --------------------------------------------------------------------
 
 export interface ChatMessageResponse {
@@ -148,7 +159,7 @@ export const sendChatMessage = (
   history: Array<{ role: string; content: string }> = [],
   threadId?: string | null,
   clientGraphRevision?: string | null,
-  mode: "mutate" | "build" = "mutate",
+  mode: "ask" | "agent" | "plan" | "debug" = "agent",
 ) =>
   request<ChatMessageResponse>("/chat/message", {
     method: "POST",
@@ -169,6 +180,7 @@ export interface ChatThreadSummary {
   message_count: number;
   created_at: string;
   updated_at: string;
+  pinned?: boolean;
 }
 
 export const listChatThreads = (workflowId: string) =>
@@ -197,6 +209,66 @@ export const deleteChatThread = (workflowId: string, threadId: string) =>
   request<{ status: string }>(`/chats/${workflowId}/${threadId}`, {
     method: "DELETE",
   });
+
+export const stopChatStream = (channelId: string, messageId?: string) =>
+  request<{ status: string; channel_id: string }>(
+    `/chat/${channelId}/stop`,
+    {
+      method: "POST",
+      body: JSON.stringify({ message_id: messageId ?? null }),
+    },
+  );
+
+export const exportChatThread = (
+  workflowId: string,
+  threadId: string,
+  format: "md" | "json" = "md",
+) =>
+  request<{ content: string; format: string }>(
+    `/chats/${workflowId}/${threadId}/export?format=${format}`,
+  );
+
+export const searchChatThreads = (
+  query: string,
+  workflowId?: string,
+) =>
+  request<{
+    results: Array<{
+      thread_id: string;
+      thread_title: string;
+      workflow_id: string;
+      message_id: string;
+      message_preview: string;
+      timestamp: string;
+    }>;
+  }>(`/chats/search?q=${encodeURIComponent(query)}${workflowId ? `&workflow_id=${encodeURIComponent(workflowId)}` : ""}`);
+
+export const pinChatThread = (
+  workflowId: string,
+  threadId: string,
+  pinned: boolean,
+) =>
+  request<{ status: string; pinned: boolean }>(
+    `/chats/${workflowId}/${threadId}/pin`,
+    { method: "POST", body: JSON.stringify({ pinned }) },
+  );
+
+export const saveChatCheckpoint = (
+  workflowId: string,
+  threadId: string,
+  messageId: string,
+  graphSnapshot: Record<string, unknown>,
+) =>
+  request<{ status: string; filename: string }>(
+    `/chats/${workflowId}/${threadId}/checkpoint`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        message_id: messageId,
+        graph_snapshot: graphSnapshot,
+      }),
+    },
+  );
 
 export function connectChatStream(
   channelId: string,

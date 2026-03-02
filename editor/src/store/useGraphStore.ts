@@ -261,10 +261,15 @@ interface GraphState {
   refreshTab: () => Promise<void>;
   restoreTabs: () => Promise<void>;
 
-  // -- 10-9: Build-from-intent chat mode
-  chatMode: "build" | "mutate";
-  setChatMode: (mode: "build" | "mutate") => void;
+  // -- 10-9: Build-from-intent chat mode / 12-2: Multi-mode chat
+  chatMode: "ask" | "agent" | "plan" | "debug";
+  setChatMode: (mode: "ask" | "agent" | "plan" | "debug") => void;
   openBuildWithAI: () => Promise<void>;
+  chatFocusTrigger: number;
+
+  // -- 12-1: Log panel focus
+  logFocusCounter: number;
+  focusLogPanel: () => void;
 }
 
 // -- 7-4: Cost estimation (mirrors src/dan/providers/costs.py) ------------------
@@ -417,8 +422,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
   // -- 6-10: Loop groups
   loopGroups: [],
 
-  // -- 10-9: Build-from-intent
-  chatMode: "mutate" as const,
+  // -- 10-9 / 12-2: Chat modes
+  chatMode: "agent" as const,
+  chatFocusTrigger: 0,
+  logFocusCounter: 0,
 
   // -- 6-9: Tab state
   tabs: [],
@@ -1587,14 +1594,15 @@ export const useGraphStore = create<GraphState>((set, get) => {
     set({ loopGroups: updatedGroups, nodes, edges, dirty: true });
   },
 
-  // -- 10-9: Build-from-intent chat mode
+  // -- 10-9 / 12-2: Multi-mode chat
   setChatMode: (mode) => set({ chatMode: mode }),
+  focusLogPanel: () => set((s) => ({ logFocusCounter: s.logFocusCounter + 1 })),
 
   openBuildWithAI: async () => {
     const autoId = `build-${Math.random().toString(36).slice(2, 8)}`;
     await get().createGraph(autoId);
     if (get().graphId === autoId) {
-      set({ chatMode: "build" });
+      set({ chatMode: "agent", chatFocusTrigger: (get().chatFocusTrigger ?? 0) + 1 });
     }
   },
 
@@ -1701,7 +1709,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       selectedNodeIds: new Set<string>(),
       layerStack: [],
       loopGroups: [],
-      chatMode: "mutate" as const,
+      chatMode: "agent" as const,
+      chatFocusTrigger: 0,
     }));
 
     if (!isBlank) {
