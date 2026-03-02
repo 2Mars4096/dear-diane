@@ -1082,8 +1082,24 @@ def _build_tool_registry() -> ToolRegistry:
     registry.register("run_python", _run_python)
     registry.register("get_department_state", _get_department_state)
     registry.register("update_department_state", _update_department_state)
+
+    # Legacy domain-specific tools — replaced by code nodes with inline logic
+    # (plot_one.md and write_csv.md are now self-contained code nodes).
+    # Kept registered for backward compatibility with older workflows that
+    # still reference tool_id: plot_backtest / save_grid_csv.
+    # TODO: Remove these registrations once all workflows have migrated to
+    # code nodes. Track in docs/plans/7-5-general-tool-design.md.
+    _legacy_silent = os.environ.get("DAN_USE_LEGACY_PLOT_CSV", "").strip() == "1"
     registry.register("plot_backtest", _plot_backtest)
     registry.register("save_grid_csv", _save_grid_csv)
+    if not _legacy_silent:
+        logger.warning(
+            "plot_backtest and save_grid_csv tools are deprecated. "
+            "Prefer code nodes with inline logic or run_python with "
+            "agent-generated code. Set DAN_USE_LEGACY_PLOT_CSV=1 to "
+            "suppress this warning.",
+        )
+
     registry.register("rag_index_documents", _rag_index_documents)
     return registry
 
