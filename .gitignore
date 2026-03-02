@@ -48,6 +48,19 @@ htmlcov/
 # Logs
 *.log
 
+# LaTeX build artifacts
+*.aux
+*.nav
+*.out
+*.snm
+*.toc
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+
+# Beamer / LaTeX example outputs
+examples/beamer_writer_md/
+
 # Runtime artifacts
 output/
 checkpoints/
