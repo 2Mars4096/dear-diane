@@ -2,15 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import re
+import time
 import uuid
-from typing import Any, AsyncIterator, Literal
+from typing import Any, AsyncIterator
 
 from pydantic import BaseModel, Field
+
+try:
+    import tiktoken
+    _tiktoken_available = True
+except ImportError:
+    _tiktoken_available = False
 
 from dan.models.graph import Graph
 from dan.providers import CompletionResult, StreamChunk
@@ -23,8 +31,11 @@ from dan.server.graph_mutator import (
     _default_ports,
 )
 from dan.server.graph_store import GraphStore
+from dan.server.mutation_metrics import mutation_metrics
 
 _MUTATION_AUTO_RETRY = os.environ.get("DAN_MUTATION_AUTO_RETRY", "true").lower() == "true"
+_MAX_CONTEXT_RATIO = float(os.environ.get("DAN_CHAT_MAX_CONTEXT_RATIO", "0.8"))
+_RECENT_MESSAGES_COUNT = int(os.environ.get("DAN_CHAT_RECENT_MESSAGES", "10"))
 
 __all__ = [
     "NodeSummary",
@@ -34,6 +45,9 @@ __all__ = [
     "ChatCompleteEvent",
     "ChatErrorEvent",
     "ChatMutationEvent",
+    "ChatInterruptedEvent",
+    "ChatToolCallStartEvent",
+    "ChatToolCallResultEvent",
     "ChatStreamEvent",
     "MUTATION_TOOL_SCHEMA",
     "ChatManager",
@@ -41,9 +55,17 @@ __all__ = [
     "serialize_for_prompt",
     "compute_graph_revision",
     "BUILD_FROM_INTENT_PROMPT",
+    "ASK_PROMPT",
+    "PLAN_PROMPT",
+    "DEBUG_PROMPT",
     "EMPTY_GRAPH_SUMMARY_PLACEHOLDER",
     "WORKFLOW_TEMPLATES",
+    "normalize_chat_mode",
+    "build_debug_context",
     "_coerce_strict_edges",
+    "estimate_tokens",
+    "compact_history",
+    "MODEL_CONTEXT_WINDOWS",
 ]
 
 logger = logging.getLogger(__name__)
@@ -162,7 +184,7 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
             "op": {"type": "string", "const": "expand_pattern"},
             "pattern": {
                 "type": "string",
-                "enum": ["chain", "review_loop", "fan_out", "rag_qa"],
+                "enum": ["chain", "review_loop", "fan_out", "rag_qa", "data_ingest", "data_analysis"],
                 "description": "Named pattern to expand into nodes and edges",
             },
             "params": {
@@ -171,6 +193,30 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
             },
         },
         "required": ["op", "pattern"],
+    }
+
+    apply_skill_schema = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "const": "apply_skill"},
+            "skill": {
+                "type": "string",
+                "enum": ["management_science_writing", "informs_latex_style"],
+                "description": "Name of the skill to apply (domain-specific prompt injection)",
+            },
+            "target_nodes": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of node IDs to apply the skill to",
+                "default": [],
+            },
+            "target_tag": {
+                "type": "string",
+                "description": "Apply to all nodes with this tag in metadata.tags",
+                "default": "",
+            },
+        },
+        "required": ["op", "skill"],
     }
 
     return {
@@ -203,6 +249,7 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
                                 remove_edge_schema,
                                 set_position_schema,
                                 expand_pattern_schema,
+                                apply_skill_schema,
                             ],
                         },
                     },
@@ -272,6 +319,12 @@ Create a while-loop gate (output ports: continue, done):
 - review_loop: Writer → Reviewer → Gate with back-edge (params: writer_name, reviewer_name, condition, max_iterations)
 - fan_out: Source → ForEach → body processor (params: source_name, body_name, parallelism)
 - rag_qa: RAG retrieval → LLM answer (params: rag_name, collection, top_k, answer_prompt)
+- data_ingest: PDF directory → index into RAG → retrieval-ready (params: input_var, collection, rag_name, top_k)
+- data_analysis: Data file → read → preprocess → LLM summary (params: input_var)
+
+## Available skills (use apply_skill op)
+- management_science_writing: INFORMS MS writing conventions (target_tag: "writing")
+- informs_latex_style: INFORMS LaTeX formatting (target_tag: "latex")
 
 ## Current workflow
 {graph_summary}
@@ -313,20 +366,36 @@ tasks, stages, node types, and data flow, then produce a mutation plan.
 - review_loop: Writer → Reviewer → Gate with back-edge (params: writer_name, reviewer_name, condition, max_iterations)
 - fan_out: Source → ForEach → body processor (params: source_name, body_name, parallelism)
 - rag_qa: RAG retrieval → LLM answer (params: rag_name, collection, top_k, answer_prompt)
+- data_ingest: PDF directory → list → index into RAG → retrieval-ready (params: input_var, collection, rag_name, top_k)
+- data_analysis: Data file → read → preprocess → LLM summary for methods/results (params: input_var)
 
 ## Intent → pattern mapping
-- Paper writing / document drafting: use review_loop + chain (e.g. outline → draft → review → revise)
-- RAG QA / knowledge retrieval: use rag_qa pattern
+- Paper writing / document drafting: use data_ingest + review_loop + chain (literature + outline → draft → review → compile)
+- Paper writing with data: use data_ingest + data_analysis + review_loop (literature + data analysis → methods/results → review → compile)
+- RAG QA / knowledge retrieval: use rag_qa or data_ingest pattern
 - Multi-step analysis / summarization: use chain with count and prompts
 - Parallel processing over items: use fan_out
+- "I have PDFs at path X": use data_ingest pattern with input_var matching path variable
+- "I have data at path Y": use data_analysis pattern with input_var matching path variable
 
 ## Available templates
 Pre-built workflow templates (use expand_pattern with template operations):
-- paper_writing: review_loop (Drafter→Reviewer→Gate) + chain of 3 (Outline→Draft→Final Polish)
+- informs_paper_writing: Full INFORMS paper pipeline — data_ingest + data_analysis + outline + section drafting + review loop + LaTeX compile + package
+- rag_research: data_ingest → RAG retrieval → LLM synthesis (for literature review / understanding papers)
+- paper_writing: review_loop + chain (simple paper drafting without data/PDF ingestion)
 - rag_qa: RAG retrieval → LLM answer
 - chain_3: simple 3-node sequential chain
 
-You can apply a template as a starting point, then add/remove/edit nodes to customize.
+## Available skills (use apply_skill op)
+- management_science_writing: INFORMS Management Science submission guidelines and writing conventions. Apply to nodes tagged "writing" or "review".
+- informs_latex_style: INFORMS LaTeX formatting conventions. Apply to nodes tagged "latex".
+
+When the user mentions a specific journal (e.g., "Management Science", "INFORMS"), apply the corresponding skill after building the workflow.
+
+## File path handling
+- When the user says "data at path X" or "PDFs at Y", create an InputNode with a variable for that path.
+- Wire the InputNode to data_ingest (for PDFs) or data_analysis (for data files).
+- All file paths are relative to the workspace root. If the user provides an absolute path outside the workspace, ask them to copy/symlink files into the workspace first.
 
 ## Current state
 {graph_summary}
@@ -337,6 +406,8 @@ You can apply a template as a starting point, then add/remove/edit nodes to cust
 - Prefer expand_pattern for known shapes; use add_node/add_edge for custom flows.
 - Use strict=true in add_edge operations when building from intent (fail fast on typos).
 - Always use exact port names from the reference. Do not guess.
+- When building a paper-writing workflow, include the full pipeline to LaTeX compilation (use compile_latex, save_paper, package_submission tools).
+- Apply domain skills (apply_skill op) when the user mentions a specific journal or academic domain.
 - Be concise. Produce a runnable workflow in one plan.
 """
 
@@ -346,10 +417,252 @@ EMPTY_GRAPH_SUMMARY_PLACEHOLDER = (
 )
 
 # ---------------------------------------------------------------------------
+# Mode-specific prompt templates
+# ---------------------------------------------------------------------------
+
+CHAT_MODE_ALIASES: dict[str, str] = {"build": "agent", "mutate": "agent"}
+
+
+def normalize_chat_mode(mode: str) -> str:
+    """Normalize deprecated mode aliases to canonical mode names."""
+    return CHAT_MODE_ALIASES.get(mode, mode)
+
+
+ASK_PROMPT = """\
+You are a graph-aware assistant for DAN (Deep Agent Network). The user is \
+asking questions about their workflow — answer clearly and concisely.
+
+## Your role
+- Explain the current graph: describe topology, node connections, data flow.
+- Answer "what does X do?", "how does data flow from A to B?", \
+"what inputs does this need?"
+- Summarize the workflow purpose, entry/exit points, and processing stages.
+- Do NOT suggest or make any modifications. You are read-only.
+
+## Available node types
+{node_type_reference}
+
+## Available edge types
+- data: carries structured data between ports
+- control: routing / flow-control (branching, looping)
+- context: shared-context key (read/write/append)
+
+## Current workflow
+{graph_summary}
+
+## Guidelines
+- Be concise and precise. Use node IDs and port names when referencing \
+the graph.
+- If the workflow is empty, say so and suggest the user switch to Agent mode \
+to build one.
+- Do not use any tools. Respond in plain text only.
+"""
+
+PLAN_PROMPT = """\
+You are a planning assistant for DAN (Deep Agent Network). The user wants to \
+modify their workflow, and you will help them plan the approach first.
+
+## Your role (two-step flow)
+**Step 1 — Plan proposal (this step):**
+- Analyze the user's request and the current workflow.
+- Propose a step-by-step approach in natural language.
+- Explain what nodes/edges will be added, removed, or modified and why.
+- Discuss trade-offs or alternatives if relevant.
+- Do NOT call any tools or generate mutation plans yet.
+- End with: "Would you like me to proceed with this plan?"
+
+**Step 2 — Execution (after user approval):**
+- When the user confirms, generate the mutation plan using \
+plan_graph_mutations.
+- Follow the approved plan faithfully.
+
+## Available node types
+{node_type_reference}
+
+## Available edge types
+- data: carries structured data between ports
+- control: routing / flow-control (branching, looping)
+- context: shared-context key (read/write/append)
+
+## Available patterns (use expand_pattern op)
+- chain, review_loop, fan_out, rag_qa, data_ingest, data_analysis
+
+## Current workflow
+{graph_summary}
+
+## Guidelines
+- In Step 1, respond ONLY with a natural-language plan. No tool calls.
+- Be specific: name the nodes, ports, and edge types you intend to use.
+- After the user approves, proceed to generate mutations.
+"""
+
+DEBUG_PROMPT = """\
+You are a debugging assistant for DAN (Deep Agent Network). The user needs \
+help diagnosing and fixing issues with their workflow.
+
+## Your role
+- Analyze run failures: identify root causes from error messages and \
+node outputs.
+- Explain what went wrong in accessible terms.
+- Suggest specific fixes (node config changes, edge rewiring, missing inputs).
+- When suggesting fixes, use the plan_graph_mutations tool.
+
+## Available node types
+{node_type_reference}
+
+## Available edge types
+- data: carries structured data between ports
+- control: routing / flow-control (branching, looping)
+- context: shared-context key (read/write/append)
+
+## Current workflow
+{graph_summary}
+
+## Recent run failures
+{debug_context}
+
+## Guidelines
+- Start by diagnosing the error before proposing fixes.
+- If no recent failures exist, ask the user to describe the issue or run \
+the workflow first.
+- Suggest targeted fixes — prefer minimal changes over rebuilding.
+- Use plan_graph_mutations when you have a concrete fix to propose.
+"""
+
+
+def build_debug_context(runs: list[dict[str, Any]], workflow_id: str) -> str:
+    """Build debug context string from run records for a workflow."""
+    failed = [
+        r for r in runs
+        if r.get("graph_id") == workflow_id and r.get("status") == "failed"
+    ]
+    if not failed:
+        return "No recent run failures found for this workflow."
+
+    latest = failed[-1]
+    parts = [f"Last failed run: {latest.get('run_id', 'unknown')}"]
+
+    errors = latest.get("errors", {})
+    if errors:
+        parts.append("Errors:")
+        for key, val in errors.items():
+            parts.append(f"  - {key}: {val}")
+
+    events = latest.get("events", [])
+    error_events = [
+        e for e in events
+        if isinstance(e, dict) and "error" in str(e.get("type", "")).lower()
+    ]
+    if error_events:
+        parts.append("Error events (most recent):")
+        for ev in error_events[-5:]:
+            parts.append(f"  - {json.dumps(ev, default=str)[:500]}")
+
+    outputs = latest.get("outputs", {})
+    if outputs:
+        parts.append("Run outputs:")
+        for key, val in outputs.items():
+            parts.append(f"  - {key}: {str(val)[:200]}")
+
+    return "\n".join(parts)
+
+# ---------------------------------------------------------------------------
 # Workflow templates — pre-built mutation operation sequences
 # ---------------------------------------------------------------------------
 
 WORKFLOW_TEMPLATES: dict[str, list[dict]] = {
+    "informs_paper_writing": [
+        {"op": "expand_pattern", "pattern": "data_ingest", "params": {
+            "input_var": "pdf_dir", "collection": "literature", "rag_name": "Literature KB", "top_k": 10,
+        }},
+        {"op": "expand_pattern", "pattern": "data_analysis", "params": {
+            "input_var": "data_path",
+        }},
+        {"op": "add_node", "node_type": "input", "name": "Paper Config",
+         "config": {"variables": [
+             {"name": "title", "type": "string", "default": "paper", "description": "Paper title slug used for output filenames"},
+         ]}},
+        {"op": "add_node", "node_type": "llm_operator", "name": "Outline Planner",
+         "config": {"prompt_template": "Based on the literature and data analysis below, create a detailed outline for a Management Science paper.\n\nLiterature context: {input}\nData summary: {context}\n\nInclude: Introduction, Literature Review, Model/Framework, Data & Methods, Results, Discussion, Conclusion.",
+                    "system_prompt": "",
+                    "metadata": {"tags": ["writing"]},
+                    "input_ports": [
+                        {"name": "input", "schema": {}, "required": False},
+                        {"name": "context", "schema": {}, "required": False},
+                    ]}},
+        {"op": "add_node", "node_type": "human_in_the_loop", "name": "Research Interview",
+         "config": {"prompt": "Review the proposed outline and provide feedback on research positioning, methodology choices, and contribution framing. You can modify the outline or approve it."}},
+        {"op": "expand_pattern", "pattern": "review_loop", "params": {
+            "writer_name": "Section Drafter",
+            "reviewer_name": "Academic Reviewer",
+            "condition": "needs_revision == True",
+            "max_iterations": 3,
+            "writer_prompt": "Write the next section of the paper following the outline. Use evidence from the literature and data analysis.\n\nOutline: {input}",
+            "reviewer_prompt": "Review this draft section for a Management Science submission. Check: (1) contribution clarity, (2) methodological rigor, (3) evidence quality, (4) writing quality. Output JSON with 'needs_revision' (bool) and 'feedback' (str).",
+        }},
+        {"op": "add_node", "node_type": "llm_operator", "name": "LaTeX Assembler",
+         "config": {"prompt_template": "Assemble the reviewed sections into a complete LaTeX manuscript using INFORMS formatting.\n\nSections: {input}",
+                    "system_prompt": "", "metadata": {"tags": ["writing", "latex"]}}},
+        {"op": "add_node", "node_type": "tool_operator", "name": "Check LaTeX Deps",
+         "config": {"tool_id": "check_latex_deps"}},
+        {"op": "add_node", "node_type": "tool_operator", "name": "Verify Citations",
+         "config": {"tool_id": "citation_verifier"}},
+        {"op": "add_node", "node_type": "tool_operator", "name": "Compile LaTeX",
+         "config": {"tool_id": "compile_latex"}},
+        {"op": "add_node", "node_type": "tool_operator", "name": "Save Paper",
+         "config": {"tool_id": "save_paper"}},
+        {"op": "add_node", "node_type": "tool_operator", "name": "Package Submission",
+         "config": {"tool_id": "package_submission"}},
+        # --- Inter-pattern: literature + data → planner ---
+        {"op": "add_edge", "source_id": "literature-kb", "source_port": "chunks",
+         "target_id": "outline-planner", "target_port": "input"},
+        {"op": "add_edge", "source_id": "data-summary", "source_port": "text",
+         "target_id": "outline-planner", "target_port": "context"},
+        # --- Planner → human review → writing loop ---
+        {"op": "add_edge", "source_id": "outline-planner", "source_port": "text",
+         "target_id": "research-interview", "target_port": "input"},
+        {"op": "add_edge", "source_id": "research-interview", "source_port": "response",
+         "target_id": "section-drafter", "target_port": "input"},
+        {"op": "add_edge", "source_id": "review-gate", "source_port": "done",
+         "target_id": "latex-assembler", "target_port": "input"},
+        # --- LaTeX validation fan-out (informational, parallel) ---
+        {"op": "add_edge", "source_id": "latex-assembler", "source_port": "text",
+         "target_id": "check-latex-deps", "target_port": "input"},
+        {"op": "add_edge", "source_id": "latex-assembler", "source_port": "text",
+         "target_id": "verify-citations", "target_port": "input"},
+        # --- Compile LaTeX (content + title) ---
+        {"op": "add_edge", "source_id": "latex-assembler", "source_port": "text",
+         "target_id": "compile-latex", "target_port": "content"},
+        {"op": "add_edge", "source_id": "paper-config", "source_port": "title",
+         "target_id": "compile-latex", "target_port": "title"},
+        # --- Save Paper (content + title + compiled PDF) ---
+        {"op": "add_edge", "source_id": "latex-assembler", "source_port": "text",
+         "target_id": "save-paper", "target_port": "content"},
+        {"op": "add_edge", "source_id": "paper-config", "source_port": "title",
+         "target_id": "save-paper", "target_port": "title"},
+        {"op": "add_edge", "source_id": "compile-latex", "source_port": "pdf_path",
+         "target_id": "save-paper", "target_port": "pdf_path"},
+        # --- Package Submission (structured ports from save-paper) ---
+        {"op": "add_edge", "source_id": "save-paper", "source_port": "title",
+         "target_id": "package-submission", "target_port": "title"},
+        {"op": "add_edge", "source_id": "save-paper", "source_port": "tex_path",
+         "target_id": "package-submission", "target_port": "tex_path"},
+        {"op": "add_edge", "source_id": "save-paper", "source_port": "bib_path",
+         "target_id": "package-submission", "target_port": "bib_path"},
+        # --- Skill injection ---
+        {"op": "apply_skill", "skill": "management_science_writing", "target_tag": "writing"},
+        {"op": "apply_skill", "skill": "informs_latex_style", "target_tag": "latex"},
+    ],
+    "rag_research": [
+        {"op": "expand_pattern", "pattern": "data_ingest", "params": {
+            "input_var": "pdf_dir", "collection": "research", "rag_name": "Research KB",
+        }},
+        {"op": "add_node", "node_type": "llm_operator", "name": "Research Synthesizer",
+         "config": {"prompt_template": "Based on the retrieved literature chunks, provide a comprehensive synthesis addressing the research question.\n\nContext: {input}",
+                    "system_prompt": "You are an academic research assistant. Synthesize information from multiple sources, identify key themes, contradictions, and gaps in the literature."}},
+        {"op": "add_edge", "source_id": "research-kb", "source_port": "chunks",
+         "target_id": "research-synthesizer", "target_port": "input"},
+    ],
     "paper_writing": [
         {"op": "expand_pattern", "pattern": "review_loop", "params": {
             "writer_name": "Drafter",
@@ -382,6 +695,162 @@ WORKFLOW_TEMPLATES: dict[str, list[dict]] = {
         }},
     ],
 }
+
+
+# ---------------------------------------------------------------------------
+# Token counting & context window management
+# ---------------------------------------------------------------------------
+
+MODEL_CONTEXT_WINDOWS: dict[str, int] = {
+    "gpt-4o": 128_000,
+    "gpt-4o-mini": 128_000,
+    "gpt-4-turbo": 128_000,
+    "gpt-4": 8_192,
+    "gpt-3.5-turbo": 16_385,
+    "o1": 200_000,
+    "o1-mini": 128_000,
+    "o1-preview": 128_000,
+    "o3": 200_000,
+    "o3-mini": 200_000,
+    "o4-mini": 200_000,
+    "claude-sonnet-4-6": 200_000,
+    "claude-3-5-sonnet": 200_000,
+    "claude-3-opus": 200_000,
+    "claude-3-haiku": 200_000,
+    "gemini-1.5-pro": 1_000_000,
+    "gemini-1.5-flash": 1_000_000,
+    "gemini-2.0-flash": 1_000_000,
+    "deepseek-chat": 64_000,
+    "deepseek-reasoner": 64_000,
+}
+
+_DEFAULT_CONTEXT_WINDOW = 128_000
+
+
+def _get_context_window(model: str) -> int:
+    """Look up the context window for a model, with prefix fallback."""
+    if model in MODEL_CONTEXT_WINDOWS:
+        return MODEL_CONTEXT_WINDOWS[model]
+    for key, window in MODEL_CONTEXT_WINDOWS.items():
+        if model.startswith(key):
+            return window
+    return _DEFAULT_CONTEXT_WINDOW
+
+
+def estimate_tokens(text: str, model: str = "") -> int:
+    """Estimate token count. Uses tiktoken when available, character approximation otherwise."""
+    if _tiktoken_available:
+        try:
+            enc = tiktoken.encoding_for_model(model)
+        except KeyError:
+            enc = tiktoken.get_encoding("cl100k_base")
+        return len(enc.encode(text))
+    return len(text) // 4
+
+
+def _estimate_messages_tokens(messages: list[dict[str, str]], model: str = "") -> int:
+    """Estimate total tokens for a list of messages (includes per-message overhead)."""
+    total = 0
+    for msg in messages:
+        total += 4 + estimate_tokens(msg.get("content", ""), model)
+    return total
+
+
+_TRUNCATE_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _truncate_assistant_message(text: str) -> str:
+    """Extractive truncation: keep first and last sentence."""
+    sentences = _TRUNCATE_RE.split(text.strip())
+    if len(sentences) <= 3:
+        return text
+    return f"{sentences[0]} [...] {sentences[-1]}"
+
+
+def compact_history(
+    messages: list[dict[str, str]],
+    max_tokens: int,
+    model: str = "",
+    recent_count: int | None = None,
+) -> list[dict[str, str]]:
+    """Compact message history to fit within token budget.
+
+    Priority (highest first):
+    1. System prompt — always kept in full.
+    2. Most recent ``recent_count`` messages — always kept in full.
+    3. Older assistant messages — truncated to first + last sentence.
+    4. Oldest messages — dropped entirely if still over budget.
+    """
+    if not messages:
+        return messages
+
+    if recent_count is None:
+        recent_count = _RECENT_MESSAGES_COUNT
+
+    total = _estimate_messages_tokens(messages, model)
+    if total <= max_tokens:
+        return messages
+
+    system = [m for m in messages if m.get("role") == "system"]
+    conv = [m for m in messages if m.get("role") != "system"]
+
+    system_tokens = _estimate_messages_tokens(system, model)
+    budget = max_tokens - system_tokens
+
+    if budget <= 0:
+        return system + conv[-1:] if conv else system
+
+    if len(conv) > recent_count:
+        recent = conv[-recent_count:]
+        older = conv[:-recent_count]
+    else:
+        recent = conv
+        older = []
+
+    recent_tokens = _estimate_messages_tokens(recent, model)
+
+    if recent_tokens > budget:
+        result = list(recent)
+        while len(result) > 1 and _estimate_messages_tokens(result, model) > budget:
+            result.pop(0)
+        logger.info(
+            "Compacted history: kept %d of %d messages (recent-only mode)",
+            len(system) + len(result), len(messages),
+        )
+        return system + result
+
+    older_budget = budget - recent_tokens
+
+    if not older:
+        return system + recent
+
+    # Phase 3: truncate older assistant messages
+    truncated: list[dict[str, str]] = []
+    for m in older:
+        content = m.get("content", "")
+        if m.get("role") == "assistant" and len(content) > 200:
+            truncated.append({**m, "content": _truncate_assistant_message(content)})
+        else:
+            truncated.append(m)
+
+    older_tokens = _estimate_messages_tokens(truncated, model)
+    if older_tokens <= older_budget:
+        logger.info(
+            "Compacted history: truncated %d older assistant messages",
+            sum(1 for o, t in zip(older, truncated) if o is not t),
+        )
+        return system + truncated + recent
+
+    # Phase 4: drop oldest until we fit
+    while truncated and _estimate_messages_tokens(truncated, model) > older_budget:
+        truncated.pop(0)
+
+    total_kept = len(system) + len(truncated) + len(recent)
+    logger.info(
+        "Compacted history: %d → %d messages (dropped %d oldest)",
+        len(messages), total_kept, len(messages) - total_kept,
+    )
+    return system + truncated + recent
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +906,7 @@ class ChatCompleteEvent(BaseModel):
     message_id: str
     content: str
     token_usage: dict[str, int] = Field(default_factory=dict)
+    context_window: int = 0
     graph_revision: str
     revision_mismatch: bool = False
 
@@ -453,11 +923,43 @@ class ChatMutationEvent(BaseModel):
     mutation_plan: dict[str, Any]
     dry_run_result: dict[str, Any]
     token_usage: dict[str, int] = Field(default_factory=dict)
+    context_window: int = 0
     graph_revision: str
     revision_mismatch: bool = False
 
 
-ChatStreamEvent = ChatTokenEvent | ChatCompleteEvent | ChatErrorEvent | ChatMutationEvent
+class ChatInterruptedEvent(BaseModel):
+    type: str = "chat_interrupted"
+    message_id: str
+    content: str
+    token_usage: dict[str, int] = Field(default_factory=dict)
+
+
+class ChatToolCallStartEvent(BaseModel):
+    type: str = "chat_tool_call_start"
+    tool_call_id: str
+    tool_name: str
+    args_preview: str
+
+
+class ChatToolCallResultEvent(BaseModel):
+    type: str = "chat_tool_call_result"
+    tool_call_id: str
+    tool_name: str
+    status: str  # "success" | "error"
+    output_preview: str
+    duration_ms: int
+
+
+ChatStreamEvent = (
+    ChatTokenEvent
+    | ChatCompleteEvent
+    | ChatErrorEvent
+    | ChatMutationEvent
+    | ChatInterruptedEvent
+    | ChatToolCallStartEvent
+    | ChatToolCallResultEvent
+)
 
 
 # ---------------------------------------------------------------------------
@@ -661,15 +1163,62 @@ def _coerce_strict_edges(operations: list[dict[str, Any]]) -> list[dict[str, Any
     return result
 
 
+def _build_args_preview(mutation_data: dict[str, Any]) -> str:
+    """Build a short human-readable summary of mutation arguments."""
+    desc = mutation_data.get("description", "")
+    ops = mutation_data.get("operations", [])
+    n_ops = len(ops)
+    if desc:
+        return f"{desc} ({n_ops} operation{'s' if n_ops != 1 else ''})"
+    if n_ops > 0:
+        op_types = [op.get("op", "?") for op in ops[:3]]
+        suffix = f" +{n_ops - 3} more" if n_ops > 3 else ""
+        return ", ".join(op_types) + suffix
+    return f"{n_ops} operations"
+
+
+def _build_dry_run_preview(dry_result: Any) -> tuple[str, str]:
+    """Build (status, output_preview) from a dry-run result."""
+    if dry_result.success:
+        n_ops = len(dry_result.applied_operations) if hasattr(dry_result, "applied_operations") else 0
+        return "success", f"Dry run passed ({n_ops} operations applied)"
+    errors = [e.message for e in dry_result.errors] if dry_result.errors else ["Unknown error"]
+    return "error", f"Dry run failed: {errors[0]}"
+
+
 class ChatManager:
     def __init__(
         self,
         provider_registry: ProviderRegistry,
         graph_store: GraphStore,
+        mention_resolver: Any | None = None,
     ) -> None:
         self._providers = provider_registry
         self._graph_store = graph_store
-        self._chat_model = os.environ.get("DAN_CHAT_MODEL", "claude-sonnet-4-6")
+        self._mention_resolver = mention_resolver
+        self._chat_model = os.environ.get(
+            "DAN_CHAT_MODEL",
+            os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6"),
+        )
+        self._cancel_events: dict[str, asyncio.Event] = {}
+
+    def register_stream(self, channel_id: str) -> asyncio.Event:
+        """Register a cancellation event for an active stream."""
+        evt = asyncio.Event()
+        self._cancel_events[channel_id] = evt
+        return evt
+
+    def cancel_stream(self, channel_id: str) -> bool:
+        """Signal a running stream to stop. Returns True if stream was found."""
+        evt = self._cancel_events.get(channel_id)
+        if evt is None:
+            return False
+        evt.set()
+        return True
+
+    def unregister_stream(self, channel_id: str) -> None:
+        """Clean up a finished stream's cancellation event."""
+        self._cancel_events.pop(channel_id, None)
 
     # ------------------------------------------------------------------
     # Text-only streaming path (original)
@@ -682,7 +1231,10 @@ class ChatManager:
         history: list[dict[str, str]],
         thread_id: str | None = None,
         client_graph_revision: str | None = None,
-        mode: Literal["mutate", "build"] = "mutate",
+        mode: str = "agent",
+        cancel_event: asyncio.Event | None = None,
+        debug_context: str = "",
+        mentions: list[Any] | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream a text-only LLM response (no function calling)."""
         try:
@@ -706,20 +1258,27 @@ class ChatManager:
                     summary.revision,
                 )
 
-            messages = self._build_messages(summary, message, history, mode=mode)
-
-            provider = self._providers.resolve(self._chat_model)
-            stream: AsyncIterator[StreamChunk] = await provider.stream(
-                messages=messages,
-                model=self._chat_model,
-                temperature=0.7,
+            messages = self._build_messages(
+                summary, message, history, mode=mode, debug_context=debug_context,
+                mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
             )
 
+            provider = self._providers.resolve(self._chat_model)
             message_id = uuid.uuid4().hex[:12]
             final_content = ""
             token_usage: dict[str, int] = {}
+            interrupted = False
 
-            async for chunk in stream:
+            async for chunk in provider.stream(
+                messages=messages,
+                model=self._chat_model,
+                temperature=0.7,
+            ):
+                if cancel_event and cancel_event.is_set():
+                    final_content = chunk.accumulated
+                    token_usage = _normalize_usage(chunk.usage)
+                    interrupted = True
+                    break
                 yield ChatTokenEvent(
                     delta=chunk.delta,
                     accumulated=chunk.accumulated,
@@ -728,13 +1287,21 @@ class ChatManager:
                     final_content = chunk.accumulated
                     token_usage = _normalize_usage(chunk.usage)
 
-            yield ChatCompleteEvent(
-                message_id=message_id,
-                content=final_content,
-                token_usage=token_usage,
-                graph_revision=summary.revision,
-                revision_mismatch=revision_mismatch,
-            )
+            if interrupted:
+                yield ChatInterruptedEvent(
+                    message_id=message_id,
+                    content=final_content,
+                    token_usage=token_usage,
+                )
+            else:
+                yield ChatCompleteEvent(
+                    message_id=message_id,
+                    content=final_content,
+                    token_usage=token_usage,
+                    context_window=_get_context_window(self._chat_model),
+                    graph_revision=summary.revision,
+                    revision_mismatch=revision_mismatch,
+                )
 
         except KeyError as exc:
             logger.error("Provider resolution failed: %s", exc)
@@ -754,7 +1321,10 @@ class ChatManager:
         history: list[dict[str, str]],
         thread_id: str | None = None,
         client_graph_revision: str | None = None,
-        mode: Literal["mutate", "build"] = "mutate",
+        mode: str = "agent",
+        cancel_event: asyncio.Event | None = None,
+        debug_context: str = "",
+        mentions: list[Any] | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Process a user message using LLM function calling for graph mutations.
 
@@ -770,6 +1340,7 @@ class ChatManager:
             graph = Graph.model_validate(graph_dict)
             summary = build_graph_summary(graph, workflow_id)
             revision = summary.revision
+            is_empty_graph = summary.node_count == 0 and summary.edge_count == 0
 
             revision_mismatch = (
                 client_graph_revision is not None
@@ -783,18 +1354,45 @@ class ChatManager:
                     revision,
                 )
 
-            messages = self._build_messages(summary, message, history, mode=mode)
+            messages = self._build_messages(
+                summary, message, history, mode=mode, debug_context=debug_context,
+                mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
+            )
             provider = self._providers.resolve(self._chat_model)
             message_id = uuid.uuid4().hex[:12]
 
             try:
-                result: CompletionResult = await provider.complete(
-                    messages=messages,
-                    model=self._chat_model,
-                    temperature=0.7,
-                    tools=[MUTATION_TOOL_SCHEMA],
-                    tool_choice="auto",
+                complete_task: asyncio.Task[CompletionResult] = asyncio.create_task(
+                    provider.complete(
+                        messages=messages,
+                        model=self._chat_model,
+                        temperature=0.7,
+                        tools=[MUTATION_TOOL_SCHEMA],
+                        tool_choice="auto",
+                    ),
                 )
+                cancel_wait_task: asyncio.Task[bool] | None = None
+                if cancel_event is not None:
+                    cancel_wait_task = asyncio.create_task(cancel_event.wait())
+                    done, pending = await asyncio.wait(
+                        {complete_task, cancel_wait_task},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if cancel_wait_task in done and cancel_event.is_set():
+                        complete_task.cancel()
+                        try:
+                            await complete_task
+                        except asyncio.CancelledError:
+                            pass
+                        yield ChatInterruptedEvent(
+                            message_id=message_id,
+                            content="",
+                            token_usage={},
+                        )
+                        return
+                    for task in pending:
+                        task.cancel()
+                result: CompletionResult = await complete_task
             except Exception as exc:
                 logger.debug(
                     "Tool-calling complete() failed (%s), falling back to stream",
@@ -803,16 +1401,24 @@ class ChatManager:
                 async for event in self._stream_with_json_fallback(
                     provider, messages, message_id,
                     revision, revision_mismatch, graph_dict,
+                    cancel_event=cancel_event,
                 ):
                     yield event
                 return
 
             mutation_data = self._extract_mutation_from_result(result)
             if mutation_data is not None:
-                # Inject base_graph_revision from current graph (incl. empty).
-                # When building from scratch, revision = compute_graph_revision(empty_graph).
+                tool_call_id = f"tc_{uuid.uuid4().hex[:10]}"
+                tool_start_time = time.monotonic()
+
+                yield ChatToolCallStartEvent(
+                    tool_call_id=tool_call_id,
+                    tool_name="plan_graph_mutations",
+                    args_preview=_build_args_preview(mutation_data),
+                )
+
                 ops = mutation_data.get("operations", [])
-                if mode == "build":
+                if is_empty_graph:
                     ops = _coerce_strict_edges(ops)
                 plan = MutationPlan.model_validate({
                     "operations": ops,
@@ -825,6 +1431,7 @@ class ChatManager:
                 )
 
                 if not dry_result.success and not dry_result.stale_plan and _MUTATION_AUTO_RETRY:
+                    mutation_metrics.record_retry()
                     error_summary = "; ".join(e.message for e in dry_result.errors)
                     logger.info(
                         "Dry-run failed for plan %s, attempting auto-retry: %s",
@@ -852,8 +1459,11 @@ class ChatManager:
                         )
                         retry_mutation = self._extract_mutation_from_result(retry_result)
                         if retry_mutation is not None:
+                            retry_ops = retry_mutation.get("operations", [])
+                            if is_empty_graph:
+                                retry_ops = _coerce_strict_edges(retry_ops)
                             retry_plan = MutationPlan.model_validate({
-                                "operations": retry_mutation.get("operations", []),
+                                "operations": retry_ops,
                                 "description": retry_mutation.get("description", ""),
                                 "reasoning": retry_mutation.get("reasoning", ""),
                                 "base_graph_revision": revision,
@@ -871,6 +1481,7 @@ class ChatManager:
                         logger.debug("Auto-retry LLM call failed: %s", retry_exc)
 
                 if dry_result.stale_plan:
+                    mutation_metrics.record_stale_plan()
                     logger.info(
                         "Stale plan for %s, re-planning against current revision",
                         plan.plan_id,
@@ -901,8 +1512,11 @@ class ChatManager:
                                 replan_result,
                             )
                             if replan_mutation is not None:
+                                replan_ops = replan_mutation.get("operations", [])
+                                if is_empty_graph:
+                                    replan_ops = _coerce_strict_edges(replan_ops)
                                 replan_plan = MutationPlan.model_validate({
-                                    "operations": replan_mutation.get("operations", []),
+                                    "operations": replan_ops,
                                     "description": replan_mutation.get("description", ""),
                                     "reasoning": replan_mutation.get("reasoning", ""),
                                     "base_graph_revision": revision,
@@ -921,6 +1535,16 @@ class ChatManager:
                                 "Stale-plan re-planning failed: %s", replan_exc,
                             )
 
+                dr_status, dr_preview = _build_dry_run_preview(dry_result)
+                elapsed = int((time.monotonic() - tool_start_time) * 1000)
+                yield ChatToolCallResultEvent(
+                    tool_call_id=tool_call_id,
+                    tool_name="plan_graph_mutations",
+                    status=dr_status,
+                    output_preview=dr_preview,
+                    duration_ms=elapsed,
+                )
+
                 normalized_usage = _normalize_usage(result.usage)
                 yield ChatMutationEvent(
                     message_id=message_id,
@@ -928,6 +1552,7 @@ class ChatManager:
                     mutation_plan=plan.model_dump(),
                     dry_run_result=dry_result.model_dump(),
                     token_usage=normalized_usage,
+                    context_window=_get_context_window(self._chat_model),
                     graph_revision=revision,
                     revision_mismatch=revision_mismatch,
                 )
@@ -941,6 +1566,7 @@ class ChatManager:
                 message_id=message_id,
                 content=content,
                 token_usage=normalized_usage,
+                context_window=_get_context_window(self._chat_model),
                 graph_revision=revision,
                 revision_mismatch=revision_mismatch,
             )
@@ -964,17 +1590,22 @@ class ChatManager:
         revision: str,
         revision_mismatch: bool,
         graph_dict: dict[str, Any],
+        cancel_event: asyncio.Event | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
-        stream: AsyncIterator[StreamChunk] = await provider.stream(
+        final_content = ""
+        token_usage: dict[str, int] = {}
+        interrupted = False
+
+        async for chunk in provider.stream(
             messages=messages,
             model=self._chat_model,
             temperature=0.7,
-        )
-
-        final_content = ""
-        token_usage: dict[str, int] = {}
-
-        async for chunk in stream:
+        ):
+            if cancel_event and cancel_event.is_set():
+                final_content = chunk.accumulated
+                token_usage = _normalize_usage(chunk.usage)
+                interrupted = True
+                break
             yield ChatTokenEvent(
                 delta=chunk.delta,
                 accumulated=chunk.accumulated,
@@ -982,6 +1613,14 @@ class ChatManager:
             if chunk.done:
                 final_content = chunk.accumulated
                 token_usage = _normalize_usage(chunk.usage)
+
+        if interrupted:
+            yield ChatInterruptedEvent(
+                message_id=message_id,
+                content=final_content,
+                token_usage=token_usage,
+            )
+            return
 
         mutation_data = _try_parse_mutation_json(final_content)
         if mutation_data is not None:
@@ -1009,6 +1648,7 @@ class ChatManager:
                     mutation_plan=plan.model_dump(),
                     dry_run_result=dry_result.model_dump(),
                     token_usage=token_usage,
+                    context_window=_get_context_window(self._chat_model),
                     graph_revision=revision,
                     revision_mismatch=revision_mismatch,
                 )
@@ -1020,6 +1660,7 @@ class ChatManager:
             message_id=message_id,
             content=final_content,
             token_usage=token_usage,
+            context_window=_get_context_window(self._chat_model),
             graph_revision=revision,
             revision_mismatch=revision_mismatch,
         )
@@ -1058,27 +1699,128 @@ class ChatManager:
         summary: GraphSummary,
         user_message: str,
         history: list[dict[str, str]],
-        mode: Literal["mutate", "build"] = "mutate",
+        mode: str = "agent",
+        debug_context: str = "",
+        mentions: list[Any] | None = None,
+        workflow_id: str = "",
+        graph_dict: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         is_empty = summary.node_count == 0 and summary.edge_count == 0
-        use_build_prompt = mode == "build" or is_empty
-        if use_build_prompt:
-            graph_text = (
-                EMPTY_GRAPH_SUMMARY_PLACEHOLDER
-                if is_empty
-                else serialize_for_prompt(summary)
-            )
-            template = BUILD_FROM_INTENT_PROMPT
-        else:
-            graph_text = serialize_for_prompt(summary)
-            template = SYSTEM_PROMPT_TEMPLATE
-
-        system_content = template.format(
-            node_type_reference=NODE_TYPE_REFERENCE,
-            graph_summary=graph_text,
+        graph_text = (
+            EMPTY_GRAPH_SUMMARY_PLACEHOLDER
+            if is_empty
+            else serialize_for_prompt(summary)
         )
 
-        messages: list[dict[str, str]] = [{"role": "system", "content": system_content}]
-        messages.extend(history)
-        messages.append({"role": "user", "content": user_message})
+        if mode == "ask":
+            system_content = ASK_PROMPT.format(
+                node_type_reference=NODE_TYPE_REFERENCE,
+                graph_summary=graph_text,
+            )
+        elif mode == "plan":
+            system_content = PLAN_PROMPT.format(
+                node_type_reference=NODE_TYPE_REFERENCE,
+                graph_summary=graph_text,
+            )
+        elif mode == "debug":
+            system_content = DEBUG_PROMPT.format(
+                node_type_reference=NODE_TYPE_REFERENCE,
+                graph_summary=graph_text,
+                debug_context=debug_context or "No recent run failures found. Ask the user to describe the issue.",
+            )
+        else:
+            template = BUILD_FROM_INTENT_PROMPT if is_empty else SYSTEM_PROMPT_TEMPLATE
+            system_content = template.format(
+                node_type_reference=NODE_TYPE_REFERENCE,
+                graph_summary=graph_text,
+            )
+
+        context_window = _get_context_window(self._chat_model)
+
+        resolved_mentions = []
+        if mentions and self._mention_resolver and workflow_id:
+            try:
+                resolved_mentions = self._mention_resolver.resolve_all(
+                    mentions, workflow_id, graph_dict, model=self._chat_model
+                )
+            except Exception as exc:
+                logger.warning("Mention resolution failed: %s", exc)
+
+        if resolved_mentions:
+            from dan.server.mention_resolver import pack_context
+
+            messages = pack_context(
+                system_content=system_content,
+                mention_blocks=resolved_mentions,
+                history=history,
+                user_message=user_message,
+                context_window=context_window,
+                max_ratio=_MAX_CONTEXT_RATIO,
+                model=self._chat_model,
+            )
+        else:
+            messages = [{"role": "system", "content": system_content}]
+            messages.extend(history)
+            messages.append({"role": "user", "content": user_message})
+            max_tokens = int(context_window * _MAX_CONTEXT_RATIO)
+            messages = compact_history(messages, max_tokens, model=self._chat_model)
+
         return messages
+
+    # ------------------------------------------------------------------
+    # Multi-turn clarification
+    # ------------------------------------------------------------------
+
+    async def clarify_intent(
+        self,
+        workflow_id: str,
+        message: str,
+        history: list[dict[str, str]],
+        cancel_event: asyncio.Event | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        """Stream clarifying questions when build-mode intent is ambiguous."""
+        clarify_prompt = (
+            "The user wants to create a workflow but their intent is not specific enough "
+            "to produce a reliable plan. Ask 1-2 focused clarifying questions to understand:\n"
+            "1. What is the primary goal? (paper writing, data analysis, RAG QA, etc.)\n"
+            "2. What inputs do they have? (PDFs, data files, topic only)\n"
+            "3. What output do they want? (paper, report, analysis summary)\n"
+            "Be concise. Do not produce a mutation plan yet."
+        )
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": clarify_prompt},
+        ]
+        messages.extend(history)
+        messages.append({"role": "user", "content": message})
+
+        try:
+            provider = self._providers.resolve(self._chat_model)
+            stream = provider.stream(
+                messages=messages,
+                model=self._chat_model,
+                temperature=0.7,
+            )
+
+            message_id = uuid.uuid4().hex[:12]
+            final_content = ""
+            token_usage: dict[str, int] = {}
+
+            async for chunk in stream:
+                yield ChatTokenEvent(
+                    delta=chunk.delta,
+                    accumulated=chunk.accumulated,
+                )
+                if chunk.done:
+                    final_content = chunk.accumulated
+                    token_usage = _normalize_usage(chunk.usage)
+
+            yield ChatCompleteEvent(
+                message_id=message_id,
+                content=final_content,
+                token_usage=token_usage,
+                context_window=_get_context_window(self._chat_model),
+                graph_revision="",
+            )
+        except Exception as exc:
+            logger.exception("Clarify error")
+            yield ChatErrorEvent(error=str(exc))

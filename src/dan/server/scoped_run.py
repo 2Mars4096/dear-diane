@@ -302,7 +302,8 @@ def parse_run_command(text: str) -> dict[str, Any] | None:
 
 _CHAT_EVENT_TYPES = frozenset({
     "run_started", "run_completed", "run_failed",
-    "node_completed", "node_failed",
+    "node_started", "node_completed", "node_failed",
+    "node_output", "tool_call_started", "tool_call_result",
 })
 
 
@@ -311,49 +312,63 @@ def map_run_event_to_chat_block(
     scope: str,
     target: str | None,
 ) -> dict[str, Any] | None:
-    """Convert a run event into a chat-displayable message block.
+    """Convert a run event into a chat-displayable block.
 
-    Returns a dict with:
-      - content: str (display text)
-      - run_ref: {"run_id": ..., "scope": ..., "status": ..., "target_node_id": ...}
-      - event_type: str (original event type)
+    Returns ``None`` for events that should not appear in the chat timeline.
+    For mapped events returns::
 
-    Only maps key events: run_started, run_completed, run_failed,
-    node_completed, node_failed.  Returns None for events that shouldn't
-    appear in chat.
+        {
+            "type": "run_event",
+            "event_type": "<original_event_type>",
+            "node_id": "<node_id or None>",
+            "summary": "<one-line display text>",
+            "detail": {<run_id, scope, target, data>},
+        }
     """
     event_type = event_dict.get("event_type") or event_dict.get("type", "")
     if event_type not in _CHAT_EVENT_TYPES:
         return None
 
     run_id = event_dict.get("run_id", "")
-    status = event_dict.get("status", event_type)
     node_id = event_dict.get("node_id")
+    data: dict[str, Any] = event_dict.get("data") or {}
 
     if event_type == "run_started":
         scope_label = f" ({scope})" if scope != "full" else ""
         target_label = f" on {target}" if target else ""
-        content = f"Run started{scope_label}{target_label}"
+        summary = f"Run started{scope_label}{target_label}"
     elif event_type == "run_completed":
-        content = "Run completed successfully"
+        summary = "Run completed successfully"
     elif event_type == "run_failed":
-        error = event_dict.get("error", "unknown error")
-        content = f"Run failed: {error}"
+        error = event_dict.get("error") or data.get("error", "unknown error")
+        summary = f"Run failed: {error}"
+    elif event_type == "node_started":
+        summary = f"Node '{node_id}' started"
     elif event_type == "node_completed":
-        content = f"Node '{node_id}' completed"
+        summary = f"Node '{node_id}' completed"
     elif event_type == "node_failed":
-        error = event_dict.get("error", "unknown error")
-        content = f"Node '{node_id}' failed: {error}"
+        error = event_dict.get("error") or data.get("error", "unknown error")
+        summary = f"Node '{node_id}' failed: {error}"
+    elif event_type == "node_output":
+        summary = f"Node '{node_id}' produced output"
+    elif event_type == "tool_call_started":
+        tool_name = data.get("tool_id") or data.get("tool_name", "unknown")
+        summary = f"Tool '{tool_name}' called on node '{node_id}'"
+    elif event_type == "tool_call_result":
+        tool_name = data.get("tool_id") or data.get("tool_name", "unknown")
+        summary = f"Tool '{tool_name}' completed on node '{node_id}'"
     else:
         return None
 
     return {
-        "content": content,
-        "run_ref": {
+        "type": "run_event",
+        "event_type": event_type,
+        "node_id": node_id,
+        "summary": summary,
+        "detail": {
             "run_id": run_id,
             "scope": scope,
-            "status": status,
-            "target_node_id": target,
+            "target": target,
+            "data": data,
         },
-        "event_type": event_type,
     }

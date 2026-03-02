@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -84,28 +85,6 @@ class ChatStore:
     def _thread_path(self, workflow_id: str, thread_id: str) -> Path:
         return self._chats_dir(workflow_id) / f"{thread_id}.json"
 
-    def list_threads(self, workflow_id: str) -> list[dict[str, Any]]:
-        chats_dir = self.base_dir / "chats" / workflow_id
-        if not chats_dir.exists():
-            return []
-        results: list[dict[str, Any]] = []
-        for p in sorted(chats_dir.glob("*.json")):
-            try:
-                thread = ChatThread.model_validate_json(
-                    p.read_text(encoding="utf-8")
-                )
-                results.append({
-                    "id": thread.id,
-                    "title": thread.title,
-                    "workflow_id": thread.workflow_id,
-                    "message_count": len(thread.messages),
-                    "created_at": thread.created_at.isoformat(),
-                    "updated_at": thread.updated_at.isoformat(),
-                })
-            except (ValueError, OSError):
-                continue
-        return results
-
     def get_thread(
         self, workflow_id: str, thread_id: str
     ) -> ChatThread | None:
@@ -181,3 +160,176 @@ class ChatStore:
                     return text[:50] + "..."
                 return text
         return "New chat"
+
+    # ------------------------------------------------------------------
+    # Checkpoints
+    # ------------------------------------------------------------------
+
+    def _checkpoints_dir(self, workflow_id: str) -> Path:
+        d = self.base_dir / "chats" / workflow_id / "checkpoints"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def save_checkpoint(
+        self,
+        workflow_id: str,
+        thread_id: str,
+        message_id: str,
+        graph_snapshot: dict[str, Any],
+    ) -> str:
+        """Save a graph state checkpoint associated with a chat message.
+
+        Returns the checkpoint filename.
+        """
+        cp_dir = self._checkpoints_dir(workflow_id)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        filename = f"{thread_id}_{message_id}_{ts}.json"
+        payload = {
+            "thread_id": thread_id,
+            "message_id": message_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "graph_snapshot": graph_snapshot,
+        }
+        (cp_dir / filename).write_text(
+            json.dumps(payload, indent=2), encoding="utf-8"
+        )
+        logger.debug("Saved checkpoint %s for thread %s", filename, thread_id)
+        return filename
+
+    # ------------------------------------------------------------------
+    # Export
+    # ------------------------------------------------------------------
+
+    def export_thread_markdown(
+        self, workflow_id: str, thread_id: str
+    ) -> str | None:
+        """Export a thread as readable Markdown."""
+        thread = self.get_thread(workflow_id, thread_id)
+        if thread is None:
+            return None
+        title = thread.title or "Untitled Chat"
+        lines: list[str] = [f"# {title}\n"]
+        for msg in thread.messages:
+            ts = msg.timestamp.strftime("%Y-%m-%d %H:%M UTC")
+            role_label = msg.role.capitalize()
+            lines.append(f"### {role_label}  \n*{ts}*\n")
+            lines.append(msg.content + "\n")
+            if msg.mutation_plan and msg.mutation_status:
+                lines.append(
+                    f"> Mutation: {msg.mutation_status}"
+                    f" — {(msg.mutation_plan or {}).get('description', '')}\n"
+                )
+        return "\n".join(lines)
+
+    def export_thread_json(
+        self, workflow_id: str, thread_id: str
+    ) -> dict[str, Any] | None:
+        """Export full thread data as JSON dict."""
+        thread = self.get_thread(workflow_id, thread_id)
+        if thread is None:
+            return None
+        return thread.model_dump(mode="json")
+
+    # ------------------------------------------------------------------
+    # Search
+    # ------------------------------------------------------------------
+
+    def search_threads(
+        self, query: str, workflow_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Search message content across threads (case-insensitive substring)."""
+        query_lower = query.lower()
+        results: list[dict[str, Any]] = []
+        search_dirs: list[Path] = []
+        chats_root = self.base_dir / "chats"
+        if workflow_id:
+            wf_dir = chats_root / workflow_id
+            if wf_dir.exists():
+                search_dirs.append(wf_dir)
+        elif chats_root.exists():
+            search_dirs.extend(
+                d for d in chats_root.iterdir()
+                if d.is_dir() and d.name != "checkpoints"
+            )
+        for wf_dir in search_dirs:
+            for p in wf_dir.glob("*.json"):
+                try:
+                    thread = ChatThread.model_validate_json(
+                        p.read_text(encoding="utf-8")
+                    )
+                except (ValueError, OSError):
+                    continue
+                for msg in thread.messages:
+                    if query_lower in msg.content.lower():
+                        preview = msg.content[:120].replace("\n", " ")
+                        results.append({
+                            "thread_id": thread.id,
+                            "thread_title": thread.title or "Untitled",
+                            "workflow_id": thread.workflow_id,
+                            "message_id": msg.id,
+                            "message_preview": preview,
+                            "timestamp": msg.timestamp.isoformat(),
+                        })
+        return results
+
+    # ------------------------------------------------------------------
+    # Pin support
+    # ------------------------------------------------------------------
+
+    def _meta_path(self, workflow_id: str, thread_id: str) -> Path:
+        return self._chats_dir(workflow_id) / f"{thread_id}.meta.json"
+
+    def get_thread_meta(
+        self, workflow_id: str, thread_id: str
+    ) -> dict[str, Any]:
+        path = self._meta_path(workflow_id, thread_id)
+        if path.exists():
+            try:
+                return json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                pass
+        return {}
+
+    def set_thread_meta(
+        self, workflow_id: str, thread_id: str, meta: dict[str, Any]
+    ) -> None:
+        path = self._meta_path(workflow_id, thread_id)
+        path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    def set_pinned(
+        self, workflow_id: str, thread_id: str, pinned: bool
+    ) -> bool:
+        thread = self.get_thread(workflow_id, thread_id)
+        if thread is None:
+            return False
+        meta = self.get_thread_meta(workflow_id, thread_id)
+        meta["pinned"] = pinned
+        self.set_thread_meta(workflow_id, thread_id, meta)
+        return True
+
+    def list_threads(self, workflow_id: str) -> list[dict[str, Any]]:
+        """List thread summaries, including pin status from metadata."""
+        chats_dir = self.base_dir / "chats" / workflow_id
+        if not chats_dir.exists():
+            return []
+        results: list[dict[str, Any]] = []
+        for p in sorted(chats_dir.glob("*.json")):
+            if p.name.endswith(".meta.json"):
+                continue
+            try:
+                thread = ChatThread.model_validate_json(
+                    p.read_text(encoding="utf-8")
+                )
+                meta = self.get_thread_meta(workflow_id, thread.id)
+                results.append({
+                    "id": thread.id,
+                    "title": thread.title,
+                    "workflow_id": thread.workflow_id,
+                    "message_count": len(thread.messages),
+                    "created_at": thread.created_at.isoformat(),
+                    "updated_at": thread.updated_at.isoformat(),
+                    "pinned": meta.get("pinned", False),
+                })
+            except (ValueError, OSError):
+                continue
+        return results

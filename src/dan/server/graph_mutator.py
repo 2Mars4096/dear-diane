@@ -16,6 +16,7 @@ from dan.validation.graph import validate_graph
 __all__ = [
     "AddEdge",
     "AddNode",
+    "ApplySkill",
     "EditEdge",
     "EditNode",
     "ExpandPattern",
@@ -29,6 +30,7 @@ __all__ = [
     "RemoveNode",
     "ReplaceSubgraph",
     "SetNodePosition",
+    "TOOL_PORT_MANIFESTS",
 ]
 
 logger = logging.getLogger(__name__)
@@ -102,6 +104,13 @@ class ExpandPattern(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class ApplySkill(BaseModel):
+    op: Literal["apply_skill"] = "apply_skill"
+    skill: str
+    target_nodes: list[str] = Field(default_factory=list)
+    target_tag: str = ""
+
+
 GraphOperation = Annotated[
     Union[
         AddNode,
@@ -113,6 +122,7 @@ GraphOperation = Annotated[
         SetNodePosition,
         ReplaceSubgraph,
         ExpandPattern,
+        ApplySkill,
     ],
     Field(discriminator="op"),
 ]
@@ -158,6 +168,7 @@ _OP_SORT_ORDER: dict[str, int] = {
     "add_node": 0,
     "set_position": 1,
     "edit_node": 2,
+    "apply_skill": 2,
     "add_edge": 3,
     "edit_edge": 4,
     "remove_edge": 5,
@@ -252,6 +263,20 @@ def _default_ports(
         [{"name": "input", "schema": {}, "required": False}],
         [{"name": "output", "schema": {}}],
     )
+    if node_type == "tool_operator" and config:
+        tool_id = config.get("tool_id", "")
+        if tool_id in TOOL_PORT_MANIFESTS:
+            inputs, outputs = TOOL_PORT_MANIFESTS[tool_id]
+            return copy.deepcopy(inputs), copy.deepcopy(outputs)
+
+    if node_type == "input" and config and config.get("variables"):
+        out_ports = []
+        for var in config["variables"]:
+            name = var.get("name", "input") if isinstance(var, dict) else str(var)
+            out_ports.append({"name": name, "schema": {}})
+        if out_ports:
+            return [], copy.deepcopy(out_ports)
+
     lookup_key = node_type
     if node_type == "gate" and config and config.get("gate_mode") == "while":
         lookup_key = "gate__while"
@@ -350,6 +375,65 @@ def _default_node_config(node_type: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Tool-aware port manifests
+# ---------------------------------------------------------------------------
+
+TOOL_PORT_MANIFESTS: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {
+    "file_read": (
+        [{"name": "path", "schema": {}, "required": True}],
+        [{"name": "content", "schema": {}}, {"name": "result", "schema": {}}],
+    ),
+    "list_directory": (
+        [{"name": "path", "schema": {}, "required": False}],
+        [{"name": "entries", "schema": {}}, {"name": "result", "schema": {}}],
+    ),
+    "pdf_read": (
+        [{"name": "path", "schema": {}, "required": True}],
+        [{"name": "text", "schema": {}}, {"name": "result", "schema": {}}],
+    ),
+    "compile_latex": (
+        [{"name": "content", "schema": {}, "required": True},
+         {"name": "title", "schema": {}, "required": True}],
+        [{"name": "result", "schema": {}},
+         {"name": "pdf_path", "schema": {}},
+         {"name": "compile_log", "schema": {}},
+         {"name": "compile_success", "schema": {}}],
+    ),
+    "save_paper": (
+        [{"name": "content", "schema": {}, "required": True},
+         {"name": "title", "schema": {}, "required": True},
+         {"name": "pdf_path", "schema": {}, "required": False}],
+        [{"name": "result", "schema": {}},
+         {"name": "tex_path", "schema": {}},
+         {"name": "bib_path", "schema": {}},
+         {"name": "title", "schema": {}}],
+    ),
+    "package_submission": (
+        [{"name": "title", "schema": {}, "required": True},
+         {"name": "tex_path", "schema": {}, "required": True},
+         {"name": "bib_path", "schema": {}, "required": True}],
+        [{"name": "result", "schema": {}}],
+    ),
+    "citation_verifier": (
+        [{"name": "input", "schema": {}, "required": False}],
+        [{"name": "result", "schema": {}}],
+    ),
+    "check_latex_deps": (
+        [{"name": "input", "schema": {}, "required": False}],
+        [{"name": "result", "schema": {}}],
+    ),
+    "rag_index_documents": (
+        [{"name": "pdf_dir", "schema": {}, "required": True}],
+        [{"name": "collection", "schema": {}}, {"name": "result", "schema": {}}],
+    ),
+    "search_papers": (
+        [{"name": "query", "schema": {}, "required": True}],
+        [{"name": "result", "schema": {}}],
+    ),
+}
+
+
+# ---------------------------------------------------------------------------
 # Slugify / ID generation
 # ---------------------------------------------------------------------------
 
@@ -438,6 +522,25 @@ def _recompute_entry_exit_points(graph: dict[str, Any]) -> None:
 
     graph["entry_points"] = [n["id"] for n in nodes if n["id"] not in has_incoming]
     graph["exit_points"] = [n["id"] for n in nodes if n["id"] not in has_outgoing]
+
+
+def _ensure_subgraph(graph: dict[str, Any], parent_id: str, body_nodes: list[dict], body_edges: list[dict], entry_ids: list[str], exit_ids: list[str]) -> str:
+    """Create a sub-graph entry in graph['sub_graphs'] for a control-flow node.
+    Returns the sub_graph key."""
+    key = f"{parent_id}__body"
+    sub = {
+        "metadata": {"name": f"{parent_id} body", "description": "", "version": "1"},
+        "nodes": body_nodes,
+        "edges": body_edges,
+        "sub_graphs": {},
+        "entry_points": entry_ids,
+        "exit_points": exit_ids,
+    }
+    graph.setdefault("sub_graphs", {})[key] = sub
+    parent_node = _find_node(graph, parent_id)
+    if parent_node is not None:
+        parent_node["body_graph"] = key
+    return key
 
 
 # ---------------------------------------------------------------------------
@@ -593,11 +696,63 @@ def _pattern_rag_qa(params: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _pattern_data_ingest(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """PDF directory → index into RAG collection → retrieval-ready.
+
+    The ``rag_index_documents`` tool handles file discovery internally,
+    so no separate ``list_directory`` node is needed.
+    """
+    input_var = params.get("input_var", "pdf_dir")
+    collection = params.get("collection", "literature")
+    rag_name = params.get("rag_name", "Literature KB")
+    top_k = params.get("top_k", 5)
+    return [
+        {"op": "add_node", "node_type": "input", "name": "PDF Input",
+         "config": {"variables": [
+             {"name": input_var, "type": "string", "default": "", "description": "Path to PDF directory"},
+             {"name": "topic", "type": "string", "default": "", "description": "Research topic or query for retrieval"},
+         ]}},
+        {"op": "add_node", "node_type": "tool_operator", "name": "Index Documents",
+         "config": {"tool_id": "rag_index_documents", "tool_config": {"collection": collection}}},
+        {"op": "add_node", "node_type": "rag_operator", "name": rag_name,
+         "config": {"collection": collection, "top_k": top_k}},
+        {"op": "add_edge", "source_id": "pdf-input", "source_port": input_var,
+         "target_id": "index-documents", "target_port": "pdf_dir"},
+        {"op": "add_edge", "source_id": "pdf-input", "source_port": "topic",
+         "target_id": _slugify(rag_name), "target_port": "query"},
+        {"op": "add_edge", "edge_type": "control", "source_id": "index-documents",
+         "source_port": "result", "target_id": _slugify(rag_name), "target_port": "query"},
+    ]
+
+
+def _pattern_data_analysis(params: dict[str, Any]) -> list[dict[str, Any]]:
+    """Data file → read → preprocess (code) → LLM summary for methods/results."""
+    input_var = params.get("input_var", "data_path")
+    return [
+        {"op": "add_node", "node_type": "input", "name": "Data Input",
+         "config": {"variables": [{"name": input_var, "type": "string", "default": "", "description": "Path to data file(s)"}]}},
+        {"op": "add_node", "node_type": "tool_operator", "name": "Read Data",
+         "config": {"tool_id": "file_read"}},
+        {"op": "add_node", "node_type": "code_operator", "name": "Preprocess Data",
+         "config": {"code": "import json\ntry:\n    data = json.loads(input) if isinstance(input, str) else input\nexcept Exception:\n    data = input\nresult = {'summary': str(data)[:2000], 'raw': input}", "language": "python"}},
+        {"op": "add_node", "node_type": "llm_operator", "name": "Data Summary",
+         "config": {"prompt_template": "Analyze the following dataset and produce a structured summary suitable for the Methods and Results sections of an academic paper.\n\nData:\n{input}\n\nProvide: (1) descriptive statistics, (2) key variables, (3) notable patterns, (4) suggested analyses.", "system_prompt": "You are a quantitative research methods expert."}},
+        {"op": "add_edge", "source_id": "data-input", "source_port": input_var,
+         "target_id": "read-data", "target_port": "path"},
+        {"op": "add_edge", "source_id": "read-data", "source_port": "result",
+         "target_id": "preprocess-data", "target_port": "input"},
+        {"op": "add_edge", "source_id": "preprocess-data", "source_port": "result",
+         "target_id": "data-summary", "target_port": "input"},
+    ]
+
+
 PATTERN_LIBRARY: dict[str, Any] = {
     "chain": _pattern_chain,
     "review_loop": _pattern_review_loop,
     "fan_out": _pattern_fan_out,
     "rag_qa": _pattern_rag_qa,
+    "data_ingest": _pattern_data_ingest,
+    "data_analysis": _pattern_data_analysis,
 }
 
 
@@ -807,6 +962,8 @@ class GraphMutator:
                 return self._op_replace_subgraph(graph, op)
             if isinstance(op, ExpandPattern):
                 return self._op_expand_pattern(graph, op, diagnostics)
+            if isinstance(op, ApplySkill):
+                return self._op_apply_skill(graph, op)
             return f"Unknown operation type: {op.op}"
         except Exception as exc:
             logger.exception("Unexpected error applying %s", op.op)
@@ -982,6 +1139,44 @@ class GraphMutator:
 
         return None
 
+    def _op_apply_skill(self, graph: dict[str, Any], op: ApplySkill) -> str | None:
+        from dan.server.skill_library import SKILL_LIBRARY
+        if op.skill not in SKILL_LIBRARY:
+            available = ", ".join(sorted(SKILL_LIBRARY.keys()))
+            return f"Unknown skill '{op.skill}' (available: {available})"
+        skill = SKILL_LIBRARY[op.skill]
+        skill_text = skill["text"]
+        inject_as = skill.get("inject_as", "system")
+
+        nodes = graph.get("nodes", [])
+        matched = []
+        for node in nodes:
+            if op.target_nodes and node["id"] in op.target_nodes:
+                matched.append(node)
+            elif op.target_tag:
+                node_tags = node.get("metadata", {}).get("tags", [])
+                if op.target_tag in node_tags:
+                    matched.append(node)
+
+        if not matched:
+            if op.target_nodes:
+                return f"No matching nodes found for target_nodes={op.target_nodes}"
+            if op.target_tag:
+                return f"No nodes found with tag '{op.target_tag}'"
+            return "No target specified (provide target_nodes or target_tag)"
+
+        for node in matched:
+            if inject_as == "system" and "system_prompt" in node:
+                existing = node.get("system_prompt", "")
+                if skill_text not in existing:
+                    node["system_prompt"] = f"{skill_text}\n\n{existing}" if existing else skill_text
+            else:
+                existing = node.get("prompt_template", "")
+                if skill_text not in existing:
+                    node["prompt_template"] = f"{skill_text}\n\n{existing}" if existing else skill_text
+
+        return None
+
     def _op_expand_pattern(
         self,
         graph: dict[str, Any],
@@ -1006,6 +1201,7 @@ class GraphMutator:
             "remove_edge": RemoveEdge,
             "edit_edge": EditEdge,
             "set_position": SetNodePosition,
+            "apply_skill": ApplySkill,
         }
 
         for i, raw_op in enumerate(raw_ops):
