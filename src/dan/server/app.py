@@ -13,6 +13,7 @@ import tempfile
 import urllib.parse
 import urllib.request
 import uuid
+from collections import defaultdict
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -67,11 +68,21 @@ def _require_run_manager() -> RunManager:
         raise HTTPException(status_code=503, detail="Server not fully initialised")
     return _run_manager
 
+
+def _resolve_cache_dir(config: EngineConfig) -> Path:
+    if config.cache_dir:
+        return Path(config.cache_dir).expanduser()
+    return Path.home() / ".dan" / "cache"
+
 _graphs_dir = os.environ.get("DAN_GRAPHS_DIR", "./graphs")
 _graph_store = GraphStore(base_dir=_graphs_dir)
 _chat_store = ChatStore(base_dir=_graphs_dir)
 _run_manager: RunManager | None = None
 _chat_manager: ChatManager | None = None
+_meta_tasks: dict[str, asyncio.Task[Any]] = {}
+_meta_subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
+_experience_index_cache: Any | None = None
+_experience_index_bootstrap_done = False
 
 
 def _get_engine_config() -> EngineConfig:
@@ -124,6 +135,11 @@ def _get_engine_config() -> EngineConfig:
         providers=providers,
         embedding_providers=embedding_providers,
         default_embedding_model=default_embedding_model,
+        cache_enabled=os.environ.get("DAN_CACHE_ENABLED", "true").lower() in ("1", "true", "yes"),
+        cache_max_size_mb=int(os.environ.get("DAN_CACHE_MAX_SIZE_MB", "100")),
+        cache_dir=os.environ.get("DAN_CACHE_DIR") or None,
+        semantic_cache_threshold=float(os.environ.get("DAN_SEMANTIC_CACHE_THRESHOLD", "0.95")),
+        semantic_cache_ttl_hours=float(os.environ.get("DAN_SEMANTIC_CACHE_TTL_HOURS", "24")),
     )
 
 
@@ -1211,6 +1227,7 @@ class ChatMessageRequest(BaseModel):
 class ApplyMutationRequest(BaseModel):
     mutation_plan: dict[str, Any]
     idempotency_key: str | None = None
+    source: str | None = None
 
 
 # ------------------------------------------------------------------
@@ -1359,6 +1376,13 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
             if len(_applied_mutation_keys) > _MAX_IDEMPOTENCY_KEYS:
                 _applied_mutation_keys.pop()
 
+        if req.source == "optimization" and _run_manager is not None:
+            _run_manager.emit_optimization_applied(graph_id, {
+                "graph_id": graph_id,
+                "operations": len(plan.operations),
+                "description": plan.description or "",
+            })
+
         return {
             "success": True,
             "new_graph": result.new_graph,
@@ -1375,6 +1399,13 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
             _applied_mutation_keys.add((graph_id, req.idempotency_key))
             if len(_applied_mutation_keys) > _MAX_IDEMPOTENCY_KEYS:
                 _applied_mutation_keys.pop()
+
+        if req.source == "optimization" and _run_manager is not None:
+            _run_manager.emit_optimization_applied(graph_id, {
+                "graph_id": graph_id,
+                "operations": len(plan.operations),
+                "description": plan.description or "",
+            })
 
         return {
             "success": True,
@@ -1736,8 +1767,8 @@ async def get_run_events(
         raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
     if record.status in (RunStatus.PENDING, RunStatus.RUNNING):
         return {"events": list(record.events), "source": "live"}
-    if rm._run_store is not None:
-        events = rm._run_store.load_events(
+    if rm.run_store is not None:
+        events = rm.run_store.load_events(
             record.graph_id, run_id, node_id=node_id, event_type=event_type,
         )
         if events:
@@ -1869,6 +1900,29 @@ async def run_events_ws(websocket: WebSocket, run_id: str):
         logger.debug("WebSocket error for run %s", run_id, exc_info=True)
     finally:
         rm.unsubscribe(run_id, queue)
+
+
+@app.websocket("/api/meta/sessions/{session_id}/events/ws")
+async def meta_session_events_ws(websocket: WebSocket, session_id: str):
+    """Live stream of meta-orchestrator events for a session."""
+    await websocket.accept()
+
+    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=5000)
+    _meta_subscribers[session_id].append(queue)
+    try:
+        while True:
+            event = await queue.get()
+            await websocket.send_json(event)
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        logger.debug("Meta WebSocket error for session %s", session_id, exc_info=True)
+    finally:
+        subs = _meta_subscribers.get(session_id)
+        if subs and queue in subs:
+            subs.remove(queue)
+        if not _meta_subscribers.get(session_id):
+            _meta_subscribers.pop(session_id, None)
 
 
 # ------------------------------------------------------------------
