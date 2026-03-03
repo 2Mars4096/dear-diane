@@ -1,19 +1,19 @@
 # 14-3: Long-Chain Memory System
 
 **Parent:** [14-memory-cross-run-state](14-memory-cross-run-state.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Implement a practical short-term/long-term memory pipeline (encode, consolidate, retrieve) so long workflows can recall distant context reliably without overloading prompts — by activating existing compaction models and reusing RAG infrastructure.
 
 ## Existing Baseline
 
 | Component | Location | What exists | Gap |
 |---|---|---|---|
-| `CompactionRule` | `models/context.py` | Enum: `sliding_window`, `summarize`, `diff` | **Dead code** — declared on `CompositeNode.compaction_rule` but never activated by any executor |
+| `CompactionRule` | `models/context.py:54` | `CompactionStrategy` enum (`sliding_window`, `keep_last`, `summarize`, `diff_based`, `none`); fields: `strategy`, `window_size`, `max_tokens` | **Partially active** — `WhileLoopExecutor._apply_compaction()` (`control_flow.py:307–324`) implements `keep_last`/`sliding_window`/`diff_based`; `summarize` is declared but **unimplemented** (the main gap this plan fills); `CompositeNode.compaction_rule` field exists but `CompositeExecutor` ignores it |
 | `compact_history()` | `server/chat_manager.py` | 4-phase sliding window for chat context: system kept, recent N in full, older truncated (first+last sentence), oldest dropped. Token-budget-aware via `estimate_tokens()` | Chat-only; not available to engine execution |
 | `estimate_tokens()` | `server/chat_manager.py` | Uses `tiktoken` (cl100k_base) with `len//4` fallback | Chat-scoped utility; could be extracted to shared module |
 | `MODEL_CONTEXT_WINDOWS` | `server/chat_manager.py` | Lookup table for 20 models; `DAN_CHAT_MAX_CONTEXT_RATIO` (0.8), `DAN_CHAT_RECENT_MESSAGES` (10) | Chat config only |
 | `EmbeddingProvider` | `rag/__init__.py` | Protocol with `embed(texts, model)` → `EmbeddingResult`; OpenAI and local providers | Reusable for memory embedding |
-| `VectorStore` | `rag/stores/__init__.py` | Protocol: `add`, `query`, `delete`, `list_collections`; `DocumentRecord` with metadata fields | Reusable; metadata filtering supports `run_id`/`session_id` if added |
+| `VectorStore` | `rag/stores/__init__.py:50–65` | Protocol: `add`, `query`, `delete_by_ids`, `list_collections`, `create_collection`, `delete_collection`, `count`; `DocumentRecord` with metadata fields | Reusable; metadata filtering supports `run_id`/`session_id` if added |
 | `MemoryVectorStore` | `rag/stores/memory.py` | In-memory cosine similarity; O(n) scan | No persistence; fine for small memory sets |
 | `FAISSVectorStore` | `rag/stores/faiss_store.py` | FAISS index with `persist_directory`; metadata sidecar | Persistent; reusable for long-term memory |
 | `ChromaVectorStore` | `rag/stores/chroma_store.py` | Chroma PersistentClient with native metadata filtering | Persistent; best metadata query support |
@@ -26,10 +26,24 @@
 
 - [ ] 1. Define memory taxonomy and activate policy defaults
   - [ ] 1-1. Define `MemoryEntry` model with typed `entry_type` enum: `raw_event`, `distilled_fact`, `task_state`, `artifact_summary`, `failure_lesson`, `routing_hint`. Each type has a standardized metadata schema.
-  - [ ] 1-2. Activate `CompactionRule` on `CompositeNode`: implement `sliding_window` (keep last N entries per scope), `summarize` (LLM-based consolidation), `diff` (store delta from previous iteration). Wire into executor checkpoint hooks.
+  - [ ] 1-2. Extend `CompactionRule` activation: `WhileLoopExecutor` already implements `keep_last`/`sliding_window`/`diff_based` — verify compatibility with `MemoryEntry` model and add `summarize` strategy (LLM-based consolidation). Activate `CompositeNode.compaction_rule` in `CompositeExecutor` (currently ignored). Wire into executor checkpoint hooks for both composite and loop executors.
   - [ ] 1-3. Define short-term memory policy defaults: window size (per-agent configurable), decay strategy (recency-weighted), eviction priority (raw_event < distilled_fact < failure_lesson), per-agent token budget cap.
   - [ ] 1-4. Define long-term memory policy defaults: promotion criteria (survive N iterations or cross-run boundary), retention tiers (active/archived/deleted), provenance fields (`source_run_id`, `consolidation_run_id`, `original_entry_ids`).
-  - [ ] 1-5. Formalize the 14 memory policy defaults from `architecture.md` §Context Scoping into a `MemoryPolicyConfig` Pydantic model with env-var overrides (`DAN_MEMORY_*`). Document each default and its rationale.
+  - [ ] 1-5. Formalize the agreed memory policy defaults (previously tracked in `todo.md`, now captured here) into a `MemoryPolicyConfig` Pydantic model with env-var overrides (`DAN_MEMORY_*`). Defaults to encode:
+    - DAN-native memory first; external context-db adapters later
+    - Canonical layers: `L0=TOC/index`, `L1=abstract/overview`, `L2=detailed payload + artifact refs`
+    - Lifespan: memory at all scope levels plus cross-run persistence on checkpoint/resume
+    - Message semantics: source emits, target receives
+    - Rule model: deterministic global rules + node-specific rules
+    - Retrieval: contingent + rule-based, balanced determinism/recall
+    - Retrieval budget: retrieve `20` → rerank `8` → inject `4`; cap ~`35%` of prompt budget
+    - Consolidation triggers: at checkpoint + context pressure (soft `85–90%`, hard `95%`)
+    - Sticky-write approval required; timeout escalates to parent
+    - Parallel conflict: hybrid aggregator (generic default + per-key reducers)
+    - Memory hygiene: forbid chain-of-thought persistence; store only project-useful memory
+    - Global schema: `id`, `scope`, `type`, `summary`, `payload_ref`, `tags`, `confidence`, `provenance`, `created_at`, `ttl`, `approval_status`
+    - TTL defaults: `profile=365d`, `preferences=180d`, `entities=365d`, `events=90d`, `cases=365d`, `patterns=730d`
+    - All defaults are starting points; tune via telemetry, retrieval quality, cost/latency
 
 - [ ] 2. Build short-term memory pipeline
   - [ ] 2-1. Add `ShortTermMemory` buffer abstraction: per-scope (node/agent/graph) typed entry list with configurable capacity. Extends 14-1 `MemoryStore` with in-run buffering semantics.
@@ -81,7 +95,7 @@
 ## Decisions
 
 - **Two-tier memory by design:** short-term for active reasoning (in-run buffer), long-term for compressed durable recall (vector store).
-- **Activate `CompactionRule`, don't replace it:** the existing enum maps directly to implementation strategies. Add `summarize` LLM pipeline and `diff` delta logic.
+- **Extend `CompactionRule` activation, don't replace it:** `WhileLoopExecutor` already implements `keep_last`/`sliding_window`/`diff_based`. This plan adds the unimplemented `summarize` LLM pipeline and activates compaction in `CompositeExecutor`.
 - **Consolidation over accumulation:** promote distilled memory, not full transcript replay. LLM summarization is the default promotion path, with heuristic fallback for cost control.
 - **Retrieval is policy-gated:** memory usage must honor 14-2 boundary scopes and injection points. Opt-in via feature flags.
 - **Reuse RAG infrastructure:** `VectorStore`, `EmbeddingProvider`, `Indexer` are the storage/retrieval backbone. Memory-specific metadata schema distinguishes memory entries from document chunks.
@@ -90,6 +104,6 @@
 ## Notes
 
 - This plan should reuse existing RAG/vector-store infrastructure where practical, but memory semantics remain first-class (not document-RAG-only). `MemoryEntry` metadata schema is what distinguishes memory from documents.
-- `compact_history()` in `chat_manager.py` is the proof-of-concept for compaction; the engine-side pipeline generalizes its approach with typed entries and configurable policies.
+- `compact_history()` in `chat_manager.py` is the proof-of-concept for compaction; the engine-side pipeline generalizes its approach with typed entries and configurable policies. `WhileLoopExecutor._apply_compaction()` is the proof-of-concept for engine-side compaction; this plan extends it with LLM summarization and activates it for composites.
 - Reflection/self-evolving features (backlog) can build on this once policy defaults and metrics are stable: failure lessons → reflection node → prompt injection.
 - LLM-based summarization in consolidation has cost implications. Default is heuristic extraction; LLM summarization is opt-in via `DAN_MEMORY_CONSOLIDATION_LLM_ENABLED`.

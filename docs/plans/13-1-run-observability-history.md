@@ -1,7 +1,7 @@
 # 13-1: Run Observability & History Foundation
 
 **Parent:** [13-observe-recover](13-observe-recover.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Make run data durable and queryable so every run can be inspected, audited, and compared after completion — and across server restarts.
 
 ## Existing Baseline
@@ -17,21 +17,21 @@
 
 ## Tasks
 
-- [ ] 1. Enrich `RunRecord` and persist run summaries to disk
-  - [ ] 1-1. Extend `RunRecord` to capture `metadata` from `RunResult` (token usage, per-node usage, cost estimates, `elapsed_seconds`). Wire `_aggregate_usage()` output and `estimate_cost()` into the record at run completion.
-  - [ ] 1-2. Add `RunStore` (filesystem-backed, one JSON per run under `runs/{workflow_id}/{run_id}.json`). Write on `run_completed`/`run_failed`. Include full snapshot + aggregated metrics.
-  - [ ] 1-3. On server startup, hydrate `RunManager` index from `RunStore` (metadata only — not full event streams) so `list_runs()` returns historical runs.
-  - [ ] 1-4. Define retention policy: keep all by default; add optional `DAN_RUN_RETENTION_DAYS` env var for age-based cleanup on startup.
+- [x] 1. Enrich `RunRecord` and persist run summaries to disk
+  - [x] 1-1. Extend `RunRecord` to capture `metadata` from `RunResult` (token usage, per-node usage, cost estimates, `elapsed_seconds`). Wire `_aggregate_usage()` output and `estimate_cost()` into the record at run completion.
+  - [x] 1-2. Add `RunStore` (filesystem-backed, one JSON per run under `runs/{workflow_id}/{run_id}.json`). Write on `run_completed`/`run_failed`. Include full snapshot + aggregated metrics.
+  - [x] 1-3. On server startup, hydrate `RunManager` index from `RunStore` (metadata only — not full event streams) so `list_runs()` returns historical runs.
+  - [x] 1-4. Define retention policy: keep all by default; add optional `DAN_RUN_RETENTION_DAYS` env var for age-based cleanup on startup.
 
-- [ ] 2. Persist event streams as append-only audit log
-  - [ ] 2-1. Add `EventLog` writer: append `EngineEvent.to_dict()` as newline-delimited JSON to `runs/{workflow_id}/{run_id}/events.jsonl` during execution.
+- [x] 2. Persist event streams as append-only audit log
+  - [x] 2-1. Add `EventLog` writer: append `EngineEvent.to_dict()` as newline-delimited JSON to `runs/{workflow_id}/{run_id}.events.jsonl` during execution.
   - [ ] 2-2. Capture chat/mutation audit records alongside run events: graph mutations applied, chat mode, mention context used — keyed by `thread_id` and `run_id` where applicable.
   - [ ] 2-3. Ensure failure paths (node errors, tool exceptions, gate evaluation failures) persist full context (traceback, input snapshot, partial outputs) for postmortem debugging.
-  - [ ] 2-4. Add `EventLog` reader: load and filter events by `run_id`, `node_id`, `event_type`, time range. Used by query APIs and comparison.
+  - [x] 2-4. Add `EventLog` reader: load and filter events by `run_id`, `node_id`, `event_type`, time range. Used by query APIs and comparison.
 
 - [ ] 3. Extend run history API and add comparison endpoint
-  - [ ] 3-1. Extend `GET /api/runs` with query params: `workflow_id`, `status`, `after`/`before` (date), `limit`/`offset`. Return enriched snapshots (with token/cost/elapsed).
-  - [ ] 3-2. Add `GET /api/runs/{run_id}/events` (REST, not WS) to load persisted event stream for completed runs. Keep existing WS endpoint for live runs.
+  - [x] 3-1. Extend `GET /api/runs` with query params: `workflow_id`, `status`, `after`/`before` (date), `limit`/`offset`. Return enriched snapshots (with token/cost/elapsed).
+  - [x] 3-2. Add `GET /api/runs/{run_id}/events` (REST, not WS) to load persisted event stream for completed runs. Keep existing WS endpoint for live runs.
   - [ ] 3-3. Add `GET /api/runs/compare?run_a={id}&run_b={id}` — aligns two runs by node execution order, computes per-node diffs (output delta, timing delta, token delta, status changes).
   - [ ] 3-4. Add `listRuns(workflowId, filters)` and `compareRuns(runA, runB)` to `editor/src/lib/api.ts`.
 

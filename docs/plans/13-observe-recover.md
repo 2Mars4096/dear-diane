@@ -1,6 +1,6 @@
 # 13: Phase 8 — Observe & Recover
 
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Make workflow iteration measurable and recoverable by adding durable run artifacts, queryable audit trails, and targeted replay/testing capabilities.
 
 ## Motivation

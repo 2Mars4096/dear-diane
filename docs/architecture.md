@@ -65,12 +65,15 @@ deep-agent-network/
     engine/                      # Phase 1 — async execution engine
       __init__.py                # Public API: Engine, EngineConfig, RunResult, etc.
       state.py                   # NodeStatus, PortDataStore, ExecutionState
-      context_runtime.py         # SharedContextStore, ArtifactStore, LocalStateManager (Layers 2-4)
+      context_runtime.py         # SharedContextStore, ArtifactStore, LocalStateManager, ScopedContextView (Layers 2-4 + boundary isolation)
       executor.py                # EngineConfig, NodeExecutor protocol, ExecutionContext, ExecutorRegistry
       conditions.py              # Safe expression evaluator for IfElse/WhileLoop conditions
       normalizer.py              # OutputNormalizer — JSON extraction, schema validation, re-prompt
       checkpoint.py              # CheckpointStore protocol, FileSystemCheckpointStore
       events.py                  # EngineEvent, EventType — typed runtime events
+      memory.py                  # Phase 9A — MemoryEntry, MemoryScope, WriteMode, MemoryWriteRequest models
+      memory_store.py            # Phase 9A — MemoryStore protocol, FileSystemMemoryStore (atomic JSON, index sidecar)
+      memory_pipeline.py         # Phase 9A — ShortTermMemory buffer, CompactionStrategy activation, ConsolidationPipeline
       scheduler.py               # Topological sort (DAG fast-path + cycle-aware for gate loops), parallel dispatch, Engine.run()/resume(), event emission
     rag/                         # Phase 6 — RAG / knowledge retrieval subsystem
       __init__.py                # EmbeddingProvider protocol, EmbeddingResult, OpenAI/Local providers, EmbeddingRegistry
@@ -80,6 +83,8 @@ deep-agent-network/
         memory.py                # MemoryVectorStore — pure-Python stdlib-only (cosine sim via math), O(n) scan
         faiss_store.py           # FAISSVectorStore — faiss.IndexFlatIP, L2-normalized inner product, persistence, metadata sidecar
         chroma_store.py          # ChromaVectorStore — chromadb.PersistentClient, native metadata filtering
+    utils/                       # Phase 9A — shared utilities
+      tokens.py                  # estimate_tokens() — tiktoken-backed or character approximation
     executors/                   # Phase 1 — built-in node executors
       __init__.py                # Auto-registers built-in executors
       llm.py                     # LLMExecutor — OpenAI-compatible (vectorengine.ai default)

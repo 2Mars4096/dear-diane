@@ -1,7 +1,7 @@
 # 14-2: Context Scoping Across Agent Boundaries
 
 **Parent:** [14-memory-cross-run-state](14-memory-cross-run-state.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Turn the conceptual four-scope model (`global`, `local`, `pass_down`, `emit_up`) into enforced runtime contracts with explicit schemas and predictable signal propagation — by activating and extending existing dead-code models.
 
 ## Existing Baseline
@@ -9,8 +9,8 @@
 | Component | Location | What exists | Gap |
 |---|---|---|---|
 | `ContextProjection` | `models/context.py` | Model with `include`, `exclude`, `rename`, `transform` fields | **Dead code** — never called by any executor or scheduler path |
-| `CompactionRule` | `models/context.py` | Enum of `sliding_window`, `summarize`, `diff` strategies | **Dead code** — declared, never activated |
-| `MergeStrategy` | `models/context.py` | Enum: `APPEND`, `LAST_WRITE_WINS`, `REDUCER` | Used only by `ParallelSubagentsExecutor` for fan-in; not applied to context merging |
+| `CompactionRule` | `models/context.py:54` | `CompactionStrategy` enum (`sliding_window`, `keep_last`, `summarize`, `diff_based`, `none`); fields: `strategy`, `window_size`, `max_tokens` | **Partially active** — `WhileLoopExecutor._apply_compaction()` (`control_flow.py:307–324`) implements `keep_last`/`sliding_window`/`diff_based`; `summarize` unimplemented; `CompositeNode.compaction_rule` field exists but `CompositeExecutor` ignores it |
+| `MergeStrategy` | `models/context.py:41` | Enum: `APPEND`, `LAST_WRITE_WINS`, `REDUCER` | Used by `ParallelSubagentsExecutor` **and** `ForEachExecutor` (`control_flow.py:539`) for fan-in output merging; not applied to shared-context merging |
 | `SharedContextDeclaration` | `models/context.py` | `key`, `schema`, `description` — declares shared context keys | Used for key validation in `SharedContextStore`; no scope/direction |
 | `CompositeNode` | `models/control_flow.py` | `external_input_schema`, `external_output_schema`, `projections`, `read_set`, `write_set` | `projections` unused; `external_*_schema` used for mapping, not runtime validation |
 | `read_set` / `write_set` | `models/nodes.py` | On `NodeBase`; validated by `_check_context_edge_permissions` in `validation/graph.py` | Design-time validation only — no runtime access control |
@@ -78,8 +78,18 @@
 - **Compatibility first**: legacy workflows run in permissive mode (`boundary_enforcement: "warn"`) with logged warnings. Strict mode is opt-in.
 - **`_run_subgraph` is the enforcement point**: boundary contracts are applied where control crosses the sub-graph boundary, not at individual node level.
 
+## Implementation Phasing
+
+This plan touches models, engine runtime, all five composite/loop/parallel executors, validation, builder, and markdown loader/decompiler. Recommended phasing to manage risk:
+
+1. **Phase A (models + core runtime):** Tasks 1 + 2-1 + 2-5. Establish `BoundaryContract` model, scoped `SharedContextStore` view in `_run_subgraph`, and verify local state isolation. This is the highest-risk change — all existing tests must pass in permissive mode before proceeding.
+2. **Phase B (executor rollout):** Tasks 2-2 through 2-4 + 3-1 through 3-4. Apply boundary contracts across executors one at a time: `CompositeExecutor` first (simplest), then `GateExecutor` (while mode), `ForEachExecutor`, `ParallelSubagentsExecutor`, `OrchestratorExecutor` (most complex — ad-hoc key convention migration).
+3. **Phase C (authoring surfaces + validation):** Tasks 4-1 through 4-4. Builder/loader/decompiler/validation parity.
+4. **Phase D (tests + docs):** Task 5.
+
 ## Notes
 
 - This plan provides the safety envelope needed by 14-3 memory retrieval/injection (scope-aware memory access).
 - Hyperedge/rule propagation (9B) must honor these boundary semantics once implemented.
 - `OrchestratorExecutor`'s ad-hoc `__orchestrator__` key convention should be migrated to formal signal emissions as part of task 3-2.
+- `CompactionRule` is already partially active in `WhileLoopExecutor` — boundary enforcement must not break existing compaction behavior. Add regression tests for while-loop compaction as part of Phase A backward-compat validation.

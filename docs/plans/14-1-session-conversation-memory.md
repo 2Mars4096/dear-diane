@@ -1,7 +1,7 @@
 # 14-1: Session / Conversation Memory
 
 **Parent:** [14-memory-cross-run-state](14-memory-cross-run-state.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Provide the smallest useful cross-run memory layer: durable session-linked conversation history and key-value state that survives multiple `Engine.run()` invocations.
 
 ## Existing Baseline
@@ -22,7 +22,7 @@
 ## Tasks
 
 - [ ] 1. Define persistent memory contracts and identity model
-  - [ ] 1-1. Define `session_id` contract: creation (auto on first run within a thread/workflow), reuse (same thread = same session), expiration (configurable TTL or explicit close). Bind to `workflow_id` + optional `thread_id`.
+  - [ ] 1-1. Define `session_id` contract: creation (auto on first run within a thread/workflow), reuse (same thread = same session), expiration (configurable TTL or explicit close). Bind to `workflow_id` + optional `thread_id`. For runs triggered outside of chat (e.g., Run button, CLI, API), use a workflow-scoped default session unless the caller provides an explicit `session_id`.
   - [ ] 1-2. Define memory namespace schema (`global`, `workflow`, `session`, optional `agent` scope) and key naming rules. Clarify relationship to existing `SharedContextStore` key namespace.
   - [ ] 1-3. Define memory entry model: `key`, `value`, `scope`, `created_at`, `updated_at`, `source_run_id`, `writer_node_id`, `write_mode`.
   - [ ] 1-4. Define mutation semantics (`set`, `append`, `merge`, `delete`) and conflict behavior (last-write-wins default, optional CAS for critical keys).
@@ -34,7 +34,7 @@
   - [ ] 2-4. Add lightweight indexing: `_index.json` per session with key metadata for fast `list_keys`/`list_sessions` without reading all entries.
 
 - [ ] 3. Integrate memory into engine runtime
-  - [ ] 3-1. Add `session_id` parameter to `Engine.run()` and `EngineConfig`. On run start, pre-load selected memory keys from `MemoryStore` into `SharedContextStore` (read-only snapshot) so nodes can access prior state through existing context APIs.
+  - [ ] 3-1. Add `session_id` parameter to `Engine.run()` and `EngineConfig`. On run start, pre-load selected memory keys from `MemoryStore` into `SharedContextStore` (read-only snapshot) so nodes can access prior state through existing context APIs. Pre-load is eager (all session keys loaded at run start) for simplicity; lazy/selective loading is a future optimization.
   - [ ] 3-2. Add `MemoryWriteRequest` model and explicit write path: executors call `context.write_memory(key, value, mode)` → validated → queued for persistence. No implicit writes — all memory mutations go through this API.
   - [ ] 3-3. Persist memory deltas incrementally: write queued entries to `MemoryStore` at each checkpoint boundary (leveraging existing `_save_checkpoint` hook in `scheduler.py`). Finalize on `RUN_COMPLETED`/`RUN_FAILED`.
   - [ ] 3-4. Ensure `Engine.resume()` loads both checkpoint state and session memory. Deduplicate writes already persisted before the checkpoint.

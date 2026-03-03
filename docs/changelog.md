@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-03-03
+- [docs] **Phase 9C plans scaffolded.** Added top-level plan `16-execution-primitives` with four sub-plans; converted `docs/todo.md` Phase 9C bullets into linked checklist items. All plans grounded against actual codebase state (models, executors, scheduler, editor components):
+  - **16-execution-primitives:** Top-level plan with baseline table (15 components), dependency/sequencing analysis (all 4 sub-plans independent, parallelizable), success criteria, decisions.
+  - **16-1 (Agent Teams):** `AgentTeamNode` model, `TeamMessage`/`HandoffRequest` protocol, `AgentTeamExecutor` with 4 turn strategies (round_robin, sequential, moderator, free_form), `@`-routing syntax, handoff processing (transfer/consult), conversation compaction, builder `wf.team()`/`wf.group_chat()`, markdown `## Team` section, editor integration. Grounded against existing `OrchestratorNode`/`OrchestratorExecutor` patterns. 28 baseline components audited.
+  - **16-2 (Voting / Ensemble):** `VoteNode` model with 5 vote strategies (majority, weighted, best_of_n, judge, unanimous), multi-model fan-out via `ProviderRegistry`, structured output field-level voting, partial failure tolerance, builder `wf.vote()`/`wf.ensemble()`, markdown `type: vote` agent, editor vote results view. Grounded against `ParallelSubagentsNode`/`ForEachNode`/`ReduceNode` fan-out patterns.
+  - **16-3 (HumanNode Generalization):** Rename to `HumanNode` (with alias), typed I/O schemas, 6 render modes (text/approval/form/selection/file_upload/rich), `HumanRenderer` protocol, `LegacyCallbackRenderer`/`CLIHumanRenderer`/`AutoRenderer`/`ProgrammaticRenderer`, chat-as-renderer pattern, multi-mode `HumanInputDialog`, builder `wf.human()`/`wf.approval()`/`wf.form()`, migration path. Grounded against `HumanInTheLoopNode`/`HumanInTheLoopExecutor`/`HumanInputDialog.tsx`.
+  - **16-4 (Loop Context Manager):** `FeedbackSelector` / `ContextProjection` activation, `feedback_projection` and `artifact_ports` on `GateNode`/`WhileLoopNode`, scheduler `_inject_feedback()` filtering, `WhileLoopExecutor` per-iteration filtering, artifact accumulation, builder `feedback`/`artifacts` params on `wf.while_loop()`, markdown loop flow syntax. Grounded against `ContextProjection` (dead code since Phase 0), `CompactionRule`, `state_schema` mechanics.
+
+- [feat] **Plan 13-1 Tasks 1–2, 3-1, 3-2 — Run observability & history foundation:**
+  - **Task 1 — Enrich RunRecord + RunStore persistence:** Extended `RunRecord` with `total_prompt_tokens`, `total_completion_tokens`, `total_tokens`, `total_cost`, `elapsed_seconds`, `node_usage`, `model`. Added `from_summary()` for startup hydration. New `_enrich_and_persist()` in `RunManager` wires `RunResult.metadata` + `estimate_cost()` into the record at completion. New `RunStore` (`server/run_store.py`): filesystem persistence with atomic writes, one JSON per run (`runs/{workflow_id}/{run_id}.json`), `DAN_RUNS_DIR` env var.
+  - **Task 1-3 — Startup hydration:** `RunManager.__init__` loads historical summaries from `RunStore` so `list_runs()` survives server restarts.
+  - **Task 1-4 — Retention:** `DAN_RUN_RETENTION_DAYS` env var; age-based cleanup on startup.
+  - **Task 2-1 — EventLog writer:** `_event_callback` appends every event to `{run_id}.events.jsonl` via `RunStore.append_event()`.
+  - **Task 2-4 — EventLog reader:** `RunStore.load_events()` with `node_id`/`event_type` filters.
+  - **Task 3-1 — Enriched `GET /api/runs`:** Added `workflow_id`, `status`, `after`/`before`, `limit`/`offset` query params.
+  - **Task 3-2 — REST events endpoint:** `GET /api/runs/{run_id}/events` loads persisted events for completed runs; falls back to memory for live runs.
+  - **Tests:** 15 new tests (`test_run_store.py`). Full suite: 1300 passed, 0 failures.
+
+## 2026-03-03
+- [fix] **Phase 9A review-patch pass — 7 findings fixed (1 critical, 3 high, 3 medium).** All 1300 tests pass (0 regressions).
+  - **Critical — path traversal:** Added `_safe_path_segment()` in `memory_store.py` and `_validate_path_segment()` regex guard in REST endpoints to prevent `../` escapes in `workflow_id`/`session_id`.
+  - **High — empty-allowlist bypass:** `ScopedContextView` now uses `is not None` checks so `reads_global=[]` / `writes_global=[]` correctly means "deny all" instead of falling through to full passthrough.
+  - **High — subgraph memory propagation:** `_run_subgraph` now threads `session_id`, `memory_writes`, and `short_term_memory` through to child `_make_context` calls.
+  - **High — DELETE mode + scope routing:** `FileSystemMemoryStore.write()` delegates to `delete()` for `WriteMode.DELETE`; `_flush_memory_writes` routes `GLOBAL` → `_global/_global`, `WORKFLOW` → `<wf>/_default`, `SESSION` → `<wf>/<sess>`.
+  - **Medium — signal semantics:** Non-sticky signals now store in `LocalStateManager.__signals__` (parent-only); only sticky signals emit global engine events.
+  - **Medium — API memory dir:** `_get_memory_store()` now reads from `RunManager.engine_config.memory_dir` instead of an independent env var.
+  - **Medium — preloaded keys:** `_preload_memory` writes the raw key to declared context (for context-edge reads) and `memory:<key>` as a secondary namespace.
+
+- [docs] **Phase 9B planning review-and-patch pass:** Added and linked `15-*` plan scaffold for Phase 9B (`15-behavior-modifiers`, `15-1-hyperedge-engine-runtime`, `15-2-hyperedge-markdown-syntax`, `15-3-dynamic-model-selection`) in `docs/todo.md`, then patched for consistency and implementability.
+  - Aligned model-policy strategy naming across plans (`capability` in scope; learned assignment explicitly deferred pending 13-1/14-* signals).
+  - Clarified hyperedge attachment semantics with explicit global scope (`attach_globally`) and child-scope re-matching during propagation.
+  - Tightened scheduler/executor hook split (`pre_prompt` and `tool_call` executor-level; shared post-output/validation scheduler-level).
+  - Corrected `15-3` file ownership for `model_policy` fields (`LLMOperator` in `models/nodes.py`; `OrchestratorNode`/`RouterNode` in `models/control_flow.py`) and documented budget-precedence behavior.
+
+## 2026-03-02
+- [feat] **Phase 9A — Memory & Cross-Run State complete.** Implemented all three sub-plans (14-1, 14-2, 14-3) with 65 new tests (1285 total, 0 regressions).
+  - **14-1 (Session Memory):** `MemoryEntry`/`MemoryWriteRequest` models in `engine/memory.py`. `MemoryStore` protocol + `FileSystemMemoryStore` in `engine/memory_store.py` (atomic writes, index sidecar, CRUD, APPEND/MERGE modes). `Engine.run()`/`resume()` accept `session_id`/`workflow_id`; pre-loads memory into SharedContextStore. `ExecutionContext.write_memory()` queues writes flushed at checkpoint boundaries. `RunManager.start_run()`/`resume_run()` pass `session_id` through. REST endpoints: `GET/DELETE /api/memory/{workflow_id}/{session_id}`, `GET /api/memory/{workflow_id}/{session_id}/{key}`, `GET /api/memory/{workflow_id}`. `EngineConfig.memory_dir`/`memory_enabled` flags. 22 tests.
+  - **14-2 (Context Scoping):** `BoundaryContract`/`SignalSpec` models in `models/context.py`. `boundary_contract` field on all composite node types (Composite, WhileLoop, ForEach, ParallelSubagents, Orchestrator). `ScopedContextView` in `context_runtime.py` — scoped read/write isolation with `reads_global`/`writes_global` whitelists and `propagate_to_parent()`. `_run_subgraph` creates scoped views when `boundary_enforcement=True` and `boundary_contract` is present. `ExecutionContext.emit_signal()` for sticky/non-sticky upward signals. `EngineConfig.boundary_enforcement` flag. 16 tests.
+  - **14-3 (Long-Chain Memory):** `MemoryPolicyConfig`/`MemoryItem`/`ShortTermMemory` in `engine/memory_pipeline.py`. Activated all `CompactionStrategy` variants (sliding_window, keep_last, diff_based, summarize→fallback). `apply_compaction()` standalone function. `ConsolidationPipeline` for short-term → long-term transfer. `ExecutionContext.remember()`/`recall()` API. Extracted `estimate_tokens()` to `utils/tokens.py`. `EngineConfig.memory_pipeline_enabled` flag. 27 tests.
+
+## 2026-03-02
+- [fix] **Test suite stabilization:** Fixed 7 failing tests related to while-loop execution and intent building. Updated `test_compiler.py` to include `orchestrator` in output ports. Fixed `test_build_from_intent.py` to handle prompt fallback properly and updated `ChatMessageRequest` default mode from `mutate` to `agent`. Corrected graph structure in `TestWhileLoopRealExecutors` and `TestSimpleWhileGateLoop` to properly emulate `while-do` loop evaluation where the body is skipped on pass 0, aligning with the engine's intentional cycle scheduling design. All 1220+ tests now passing.
+
+## 2026-03-02
+- [docs] **Phase 9A plans second review — factual corrections and structural improvements.** Verified 14 baseline claims against actual codebase; found 2 factual errors and 1 phantom reference:
+  - **CompactionRule is NOT dead code** — `WhileLoopExecutor._apply_compaction()` (`control_flow.py:307–324`) already implements `keep_last`/`sliding_window`/`diff_based`. Corrected all four `14-*` plans: baseline tables, success criteria, decisions, and task descriptions now say "partially active" and "extend activation" instead of "dead code" / "activate".
+  - **MergeStrategy used by both ParallelSubagentsExecutor AND ForEachExecutor** — corrected `14-2` baseline table (was "only ParallelSubagentsExecutor").
+  - **"14 memory policy defaults from architecture.md" don't exist there** — they were originally in `todo.md` (removed during restructuring). Inlined the full defaults list into `14-3` task 1-5 as the authoritative location.
+  - **VectorStore protocol** — corrected method name from `delete` to `delete_by_ids` in `14-3` baseline.
+  - **14-1:** Clarified `session_id` contract for non-chat runs (workflow-scoped default session); noted eager pre-load strategy.
+  - **14-2:** Added Implementation Phasing section (Phase A models+runtime → Phase B executor rollout → Phase C authoring surfaces → Phase D tests); added backward-compat note for existing while-loop compaction.
+  - **14-3:** Added `estimate_tokens()` extraction as cross-cutting prerequisite in top-level plan notes.
+
 ## 2026-03-02
 - [docs] **Phase 9A plans scaffolded and review-patched.** Added top-level plan `14-memory-cross-run-state` with three sub-plans (`14-1-session-conversation-memory`, `14-2-context-scoping-boundaries`, `14-3-long-chain-memory-system`); converted `docs/todo.md` Phase 9A bullets into linked checklist items. Post-creation review grounded all four plans against actual codebase state:
   - **Top-level plan:** Added Existing Infrastructure baseline table (12 components with gaps). Added Phase 8 (13-1) as explicit dependency. Added `ContextProjection`/`CompactionRule` dead-code activation to success criteria and decisions.

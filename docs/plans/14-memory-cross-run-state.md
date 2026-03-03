@@ -1,6 +1,6 @@
 # 14: Phase 9A — Memory & Cross-Run State
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Add durable memory primitives that persist across runs, enforce explicit context boundaries across nested agents, and support long-horizon recall without ballooning prompt context.
 
 ## Motivation
@@ -19,8 +19,8 @@ This phase turns those into buildable contracts before behavior modifiers (9B) a
 | `SharedContextStore` | `engine/context_runtime.py` | In-memory KV store; `snapshot()`/`restore()` for checkpoints; key validation against `graph.shared_context` | Run-scoped only; no cross-run persistence; no scope isolation for nested sub-graphs |
 | `LocalStateManager` | `engine/context_runtime.py` | Node-scoped working memory; checkpointed per run | No cross-run persistence; scope is flat (no global/local distinction) |
 | `ArtifactStore` | `engine/context_runtime.py` | In-memory; comment: "persistent backend can be swapped later" | No persistence layer |
-| `ContextProjection` | `models/context.py` | Model defined with `include`/`exclude`/`rename`/`transform` fields; `CompositeNode.projections` field | **Never used** by any executor — entirely dead code |
-| `CompactionRule` | `models/context.py` | Defines `sliding_window`, `summarize`, `diff` strategies | **Never used** — no executor activates compaction |
+| `ContextProjection` | `models/context.py:143–154` | Model with `include`/`exclude`/`rename`/`transform` fields; `CompositeNode.projections` field | **Dead code** — no executor or scheduler ever calls it |
+| `CompactionRule` | `models/context.py:54` | `CompactionStrategy` enum (`sliding_window`, `keep_last`, `summarize`, `diff_based`, `none`); fields: `strategy`, `window_size`, `max_tokens` | **Partially active** — `WhileLoopExecutor._apply_compaction()` (`control_flow.py:307–324`) implements `keep_last`/`sliding_window`/`diff_based`; `summarize` is declared but unimplemented |
 | `read_set` / `write_set` | `models/nodes.py` | Declared on `NodeBase`; validated for `ContextEdge` targets in `validation/graph.py` | Validation only — no runtime access control |
 | `ChatStore` | `server/chat_store.py` | Durable thread persistence; chat checkpoints | Not tied to engine state; no `session_id` |
 | `RunManager` / `RunRecord` | `server/run_manager.py` | In-memory run tracking; no disk persistence | Runs lost on restart; no `session_id` |
@@ -48,7 +48,7 @@ This phase turns those into buildable contracts before behavior modifiers (9B) a
 - Agent boundaries enforce explicit input/output/signal schemas and prevent accidental context leakage.
 - Long workflows can recall distant context through retrieval and summaries, not only raw message replay.
 - Memory policy defaults are executable, tested, and documented (not prose-only).
-- Existing dead-code models (`ContextProjection`, `CompactionRule`) are either activated or explicitly superseded.
+- Existing underused models (`ContextProjection` — dead code, `CompactionRule` — partially active in `WhileLoopExecutor` only) are fully activated or explicitly superseded.
 
 ## Decisions
 
@@ -56,10 +56,11 @@ This phase turns those into buildable contracts before behavior modifiers (9B) a
 - **Schema-first boundaries**: boundary contracts are typed and validated before execution.
 - **Explicit memory writes**: promote append-only/auditable memory mutations over implicit side effects.
 - **Compaction by default**: long-term memory favors summarized/indexed artifacts over full raw transcripts.
-- **Activate before replacing**: existing models (`ContextProjection`, `CompactionRule`, `read_set`/`write_set`) should be activated and extended, not duplicated.
+- **Activate before replacing**: existing models (`ContextProjection` — dead code; `CompactionRule` — partially active in WhileLoopExecutor; `read_set`/`write_set` — validation-only) should be fully activated and extended, not duplicated.
 
 ## Notes
 
 - This phase is the core enabler for self-evolving orchestrator Tier 1 behavior (backlog item: persistent error memory → reflection → prompt injection). Tier 1 works with session memory (14-1) + existing RAG; Tier 2 benefits from 13-1 run history; Tier 3 needs 9B hyperedges.
-- Existing architecture notes in `docs/architecture.md` are the conceptual baseline; 14-* plans convert them into implementation tasks.
+- Existing architecture notes in `docs/architecture.md` §Context Scoping (lines 282–327) document scopes, signals, and boundary contracts as conceptual prose; 14-* plans convert them into implementation tasks. Note: architecture.md does **not** contain the detailed memory policy defaults (retrieval budgets, TTL, consolidation triggers) — those are defined as executable config in 14-3 task 1-5.
 - Phase 8 (13-*) run persistence and Phase 9A session memory are complementary: 13-* persists execution artifacts for observability; 14-* persists reusable state for continuity.
+- **Cross-cutting prerequisite:** `estimate_tokens()` (currently in `server/chat_manager.py:740–747`) should be extracted to a shared `dan.utils.tokens` module early in 14-3 (task 5-2), but 14-1 and 14-2 can also benefit from it for budget-aware storage/projection. Consider extracting it as a Phase 8 or early 14-1 opportunistic task.

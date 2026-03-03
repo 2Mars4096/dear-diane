@@ -127,21 +127,23 @@
 > Architectural additions for advanced use cases. Grouped into three clusters; each cluster gets a plan file just-in-time when work begins.
 
 ### 9A — Memory & Cross-Run State
-- [ ] [14-memory-cross-run-state](plans/14-memory-cross-run-state.md) — memory and cross-run state foundation (session persistence, boundary scoping, long-chain memory)
-  - [ ] [14-1-session-conversation-memory](plans/14-1-session-conversation-memory.md) — lightweight persistence for conversation history + key-value state across multiple `Engine.run()` invocations (self-evolving orchestrator Tier 1 enabler)
-  - [ ] [14-2-context-scoping-boundaries](plans/14-2-context-scoping-boundaries.md) — formalize `global`/`local`/`pass_down`/`emit_up` with explicit agent-boundary schemas and sticky/non-sticky upward signals
-  - [ ] [14-3-long-chain-memory-system](plans/14-3-long-chain-memory-system.md) — short-term vs long-term memory pipeline (encoding, consolidation, retrieval) and executable memory policy defaults
+- [x] [14-memory-cross-run-state](plans/14-memory-cross-run-state.md) — memory and cross-run state foundation (session persistence, boundary scoping, long-chain memory)
+  - [x] [14-1-session-conversation-memory](plans/14-1-session-conversation-memory.md) — lightweight persistence for conversation history + key-value state across multiple `Engine.run()` invocations (self-evolving orchestrator Tier 1 enabler)
+  - [x] [14-2-context-scoping-boundaries](plans/14-2-context-scoping-boundaries.md) — formalize `global`/`local`/`pass_down`/`emit_up` with explicit agent-boundary schemas and sticky/non-sticky upward signals
+  - [x] [14-3-long-chain-memory-system](plans/14-3-long-chain-memory-system.md) — short-term vs long-term memory pipeline (encoding, consolidation, retrieval) and executable memory policy defaults
 
 ### 9B — Behavior Modifiers
-- [ ] Hyperedges — engine runtime — skills/rules as hyperedges attaching to multiple nodes. Types: skill, guardrail, style, override. Hooks: pre_prompt, tool_call, post_output, validation.
-- [ ] Hyperedges — markdown syntax — reference skill/rule `.md` files in workflow with attachment scope. Depends on engine runtime.
-- [ ] Dynamic model selection — `model_policy` field. Budget-aware selection, learned assignment. Strategies beyond static/fallback/router/cascade.
+- [ ] [15-behavior-modifiers](plans/15-behavior-modifiers.md) — hyperedges (skills, guardrails, style rules, overrides) as first-class graph-level constructs + dynamic model selection
+  - [ ] [15-1-hyperedge-engine-runtime](plans/15-1-hyperedge-engine-runtime.md) — hyperedge models, graph schema, execution hooks (pre_prompt, tool_call, post_output, validation), attachment resolution, precedence, migration from SKILL_LIBRARY
+  - [ ] [15-2-hyperedge-markdown-syntax](plans/15-2-hyperedge-markdown-syntax.md) — skill/rule `.md` file format, workflow reference syntax, loader/compiler/decompiler, builder API, editor integration
+  - [ ] [15-3-dynamic-model-selection](plans/15-3-dynamic-model-selection.md) — `model_policy` field, strategies (static/budget/cascade/capability/router), cost tracking, budget enforcement
 
 ### 9C — Execution Primitives
-- [ ] Agent teams — group-chat style multi-agent coordination with "@" routing, handoffs, and conversational context. New execution primitive or `OrchestratorNode` extension.
-- [ ] Voting / ensemble primitive — same-model voting + cross-model ensemble. `Vote` node or builder sugar `wf.vote()`.
-- [ ] HumanNode generalization — promote to first-class node type. Chat UI as renderer. Adjustable autonomy via topology. Background mode = zero HumanNodes.
-- [ ] Loop as context manager — loops manage what context feeds back, not just control flow. Feedback selectors filter what flows from body back to condition.
+- [ ] [16-execution-primitives](plans/16-execution-primitives.md) — agent teams, voting/ensemble, HumanNode generalization, loop context managers
+  - [ ] [16-1-agent-teams](plans/16-1-agent-teams.md) — group-chat style multi-agent coordination with `@` routing, handoffs, turn strategies, shared conversational context
+  - [ ] [16-2-voting-ensemble](plans/16-2-voting-ensemble.md) — `VoteNode` with majority/weighted/judge/unanimous strategies, same-model voting + cross-model ensemble, `wf.vote()` builder sugar
+  - [ ] [16-3-human-node-generalization](plans/16-3-human-node-generalization.md) — typed I/O schemas, render modes (approval/form/selection/text), rendering surface protocol, chat-as-renderer, adjustable autonomy via topology
+  - [ ] [16-4-loop-context-manager](plans/16-4-loop-context-manager.md) — feedback selectors (`ContextProjection` activation), `artifact_ports`, selective feedback filtering, loop context management
 
 ## Phase 10 — Author & Distribute
 > CLI, publish as API/MCP, shareable blocks, PyPI package. Comes after Deep Systems so API surface is stable before packaging.
