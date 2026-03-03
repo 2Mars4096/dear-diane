@@ -1724,6 +1724,67 @@ async def start_scoped_run(req: ScopedRunRequest):
 
 
 # ------------------------------------------------------------------
+# Memory REST endpoints (Plan 14-1)
+# ------------------------------------------------------------------
+
+
+_PATH_SEGMENT_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _validate_path_segment(value: str, name: str) -> str:
+    if not _PATH_SEGMENT_RE.match(value):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid {name}: must be alphanumeric / dash / underscore",
+        )
+    return value
+
+
+def _get_memory_store():
+    from dan.engine.memory_store import FileSystemMemoryStore
+    rm = _require_run_manager()
+    memory_dir = rm.engine_config.memory_dir if rm.engine_config else "./memory"
+    return FileSystemMemoryStore(memory_dir)
+
+
+@app.get("/api/memory/{workflow_id}/{session_id}")
+async def list_memory_keys(workflow_id: str, session_id: str):
+    _validate_path_segment(workflow_id, "workflow_id")
+    _validate_path_segment(session_id, "session_id")
+    store = _get_memory_store()
+    keys = await store.list_keys(workflow_id, session_id)
+    return {"workflow_id": workflow_id, "session_id": session_id, "keys": keys}
+
+
+@app.get("/api/memory/{workflow_id}/{session_id}/{key:path}")
+async def read_memory_entry(workflow_id: str, session_id: str, key: str):
+    _validate_path_segment(workflow_id, "workflow_id")
+    _validate_path_segment(session_id, "session_id")
+    store = _get_memory_store()
+    entry = await store.read(workflow_id, session_id, key)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Memory key '{key}' not found")
+    return entry.model_dump()
+
+
+@app.delete("/api/memory/{workflow_id}/{session_id}")
+async def clear_session_memory(workflow_id: str, session_id: str):
+    _validate_path_segment(workflow_id, "workflow_id")
+    _validate_path_segment(session_id, "session_id")
+    store = _get_memory_store()
+    await store.clear_session(workflow_id, session_id)
+    return {"status": "cleared", "workflow_id": workflow_id, "session_id": session_id}
+
+
+@app.get("/api/memory/{workflow_id}")
+async def list_sessions(workflow_id: str):
+    _validate_path_segment(workflow_id, "workflow_id")
+    store = _get_memory_store()
+    sessions = await store.list_sessions(workflow_id)
+    return {"workflow_id": workflow_id, "sessions": sessions}
+
+
+# ------------------------------------------------------------------
 # WebSocket — live run events
 # ------------------------------------------------------------------
 
