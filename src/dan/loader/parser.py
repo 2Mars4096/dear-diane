@@ -15,6 +15,7 @@ import yaml
 from dan.loader.models import (
     AgentSpec,
     ContextSpec,
+    HyperedgeSpec,
     PortSpec,
     SourceLocation,
     WorkflowSpec,
@@ -358,3 +359,55 @@ def parse_workflow_file(path: Path) -> WorkflowSpec:
         )
 
     return spec
+
+
+# ---------------------------------------------------------------------------
+# Public API — hyperedge files
+# ---------------------------------------------------------------------------
+
+_VALID_HYPEREDGE_TYPES = frozenset({"skill", "guardrail", "style", "override"})
+
+
+def load_hyperedge(path: str | Path) -> HyperedgeSpec:
+    """Parse a hyperedge ``.md`` file into an HyperedgeSpec.
+
+    Expected format: YAML frontmatter with type/name/hook/etc. fields,
+    followed by a markdown body that becomes the ``content`` field.
+    """
+    file_path = Path(path)
+    text = file_path.read_text(encoding="utf-8")
+    fm, body, _body_start = _split_frontmatter(text)
+
+    he_type = fm.get("type", "skill")
+    if he_type not in _VALID_HYPEREDGE_TYPES:
+        raise ParseError(
+            f"Invalid hyperedge type '{he_type}' in {file_path}; "
+            f"expected one of {sorted(_VALID_HYPEREDGE_TYPES)}"
+        )
+
+    config: dict[str, Any] = {}
+    if he_type == "guardrail":
+        severity = fm.get("severity", "warning")
+        block_on_fail = fm.get("block_on_fail", False)
+        config = {"severity": severity, "block_on_fail": block_on_fail}
+
+    def _to_list(val: Any) -> list[str]:
+        if val is None:
+            return []
+        if isinstance(val, str):
+            return [val]
+        return list(val)
+
+    return HyperedgeSpec(
+        name=fm.get("name", file_path.stem),
+        hyperedge_type=he_type,
+        hook=fm.get("hook", "pre_prompt"),
+        content=body.strip(),
+        config=config,
+        attach_to_type=_to_list(fm.get("attach_to_type")),
+        attach_to_tags=_to_list(fm.get("attach_to_tags")),
+        attach_to_subgraph=_to_list(fm.get("attach_to_subgraph")),
+        attach_globally=fm.get("attach_globally", False),
+        propagate=fm.get("propagate", True),
+        source_file=str(file_path),
+    )

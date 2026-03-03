@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 from typing import Any
@@ -14,13 +15,14 @@ from dan.loader.models import (
     ContextSpec,
     EachStatement,
     FlowStatement,
+    HyperedgeSpec,
     IfStatement,
     LoopStatement,
     ParallelStatement,
     PortSpec,
     SourceLocation,
 )
-from dan.loader.parser import ParseError, parse_agent_file, parse_workflow_file
+from dan.loader.parser import ParseError, load_hyperedge, parse_agent_file, parse_workflow_file
 from dan.loader.types import (
     SchemaLoadError,
     infer_port_schema,
@@ -41,6 +43,7 @@ from dan.models.control_flow import (
 )
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph, GraphMetadata
+from dan.models.hyperedges import Hyperedge
 from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, RetryPolicy, ToolOperator
 from dan.models.ports import InputPort, OutputPort
 
@@ -63,7 +66,22 @@ _VALIDATION_WARNING_PATTERNS = (
     "schema safety bypassed",
     "untyped data edge",
     "deprecated",
+    "warning:",
 )
+
+_HYPEREDGE_LINE_RE = re.compile(
+    r"^-\s+"
+    r"(?:"
+    r"inline:\s*\"([^\"]+)\""   # group(1): inline content
+    r"|"
+    r"(.+?\.md)"               # group(2): file reference (allows spaces)
+    r")"
+    r"(?:\s*->\s*(.+))?"       # group(3): scope overrides
+    r"\s*$",
+)
+
+_SCOPE_RE = re.compile(r"@(\w+)\(([^)]*)\)")
+_SCOPE_GLOBAL_RE = re.compile(r"@global")
 
 
 def compile(path: str | Path) -> Graph:
@@ -183,6 +201,26 @@ def compile_workflow(workflow_path: str | Path, *, strict: bool = False) -> Comp
         nodes_by_id[input_node.id] = input_node
 
     shared_context = _compile_context(workflow_spec.context_declarations, diagnostics)
+
+    hyperedge_specs = list(workflow_spec.hyperedges)
+    from dan.loader.parser import _split_frontmatter as _split_fm  # noqa: F811
+
+    sections = _extract_workflow_sections(workflow_file)
+    for section_name, default_type in (("skills", "skill"), ("rules", None)):
+        section_text = sections.get(section_name)
+        if section_text is None:
+            continue
+        _parse_hyperedge_section(
+            section_text,
+            default_type=default_type,
+            workflow_dir=workflow_dir,
+            diagnostics=diagnostics,
+            out=hyperedge_specs,
+            source_file=workflow_file,
+        )
+
+    compiled_hyperedges = _compile_hyperedges(hyperedge_specs, diagnostics)
+
     nodes = list(nodes_by_id.values())
     entry_points = _find_entry_points(nodes, flow_edges)
     if input_node is not None:
@@ -201,6 +239,7 @@ def compile_workflow(workflow_path: str | Path, *, strict: bool = False) -> Comp
         entry_points=entry_points,
         exit_points=exit_points,
         shared_context=shared_context,
+        hyperedges=compiled_hyperedges,
     )
 
     try:
@@ -1095,6 +1134,171 @@ def _compile_composite_subgraph(
         entry_points=entry_points,
         exit_points=exit_points,
     )
+
+
+def _extract_workflow_sections(workflow_file: Path) -> dict[str, str]:
+    """Re-read the workflow file and extract raw section text for ## Skills / ## Rules."""
+    import re as _re
+
+    text = workflow_file.read_text(encoding="utf-8")
+    if text.startswith("---"):
+        lines = text.split("\n")
+        end = None
+        for i in range(1, len(lines)):
+            if lines[i].strip() == "---":
+                end = i
+                break
+        if end is not None:
+            text = "\n".join(lines[end + 1:])
+
+    section_re = _re.compile(r"^##\s+(.+)$", _re.MULTILINE)
+    headings = list(section_re.finditer(text))
+    sections: dict[str, str] = {}
+    for i, m in enumerate(headings):
+        name = m.group(1).strip().lower()
+        start = m.end()
+        end_pos = headings[i + 1].start() if i + 1 < len(headings) else len(text)
+        sections[name] = text[start:end_pos].strip()
+    return sections
+
+
+def _parse_scope_overrides(scope_str: str) -> dict[str, Any]:
+    """Parse ``@nodes(a, b) @type(llm) @global`` into selector dict."""
+    result: dict[str, Any] = {}
+    if _SCOPE_GLOBAL_RE.search(scope_str):
+        result["attach_globally"] = True
+
+    for m in _SCOPE_RE.finditer(scope_str):
+        kind = m.group(1).lower()
+        args = [a.strip() for a in m.group(2).split(",") if a.strip()]
+        if kind == "nodes":
+            result["attach_to"] = args
+        elif kind == "type":
+            result["attach_to_type"] = args
+        elif kind == "tags":
+            result["attach_to_tags"] = args
+        elif kind == "subgraph":
+            result["attach_to_subgraph"] = args
+    return result
+
+
+def _parse_hyperedge_section(
+    section_text: str,
+    *,
+    default_type: str | None,
+    workflow_dir: Path,
+    diagnostics: list[Diagnostic],
+    out: list[HyperedgeSpec],
+    source_file: Path,
+) -> None:
+    """Parse lines from a ## Skills or ## Rules section into HyperedgeSpec objects."""
+    for line in section_text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        m = _HYPEREDGE_LINE_RE.match(line)
+        if not m:
+            continue
+
+        inline_content = m.group(1)
+        file_ref = m.group(2)
+        scope_str = m.group(3)
+
+        scope_overrides = _parse_scope_overrides(scope_str) if scope_str else {}
+
+        if inline_content:
+            spec = HyperedgeSpec(
+                name=f"inline_{hashlib.sha256(inline_content.encode()).hexdigest()[:8]}",
+                hyperedge_type=default_type or "skill",
+                hook="pre_prompt",
+                content=inline_content,
+                attach_globally=scope_overrides.get("attach_globally", True),
+                attach_to=scope_overrides.get("attach_to", []),
+                attach_to_type=scope_overrides.get("attach_to_type", []),
+                attach_to_tags=scope_overrides.get("attach_to_tags", []),
+                attach_to_subgraph=scope_overrides.get("attach_to_subgraph", []),
+            )
+            out.append(spec)
+            continue
+
+        if file_ref:
+            he_path = (workflow_dir / file_ref).resolve()
+            if not he_path.exists():
+                _emit_error(
+                    diagnostics,
+                    f"Hyperedge file not found: {he_path}",
+                    source_file=source_file,
+                )
+                continue
+            try:
+                spec = load_hyperedge(he_path)
+                if default_type and spec.hyperedge_type == "skill" and default_type != "skill":
+                    pass  # respect the file's own type
+                for key, val in scope_overrides.items():
+                    setattr(spec, key, val)
+                if not scope_overrides and not spec.attach_globally and not any([
+                    spec.attach_to, spec.attach_to_type,
+                    spec.attach_to_tags, spec.attach_to_subgraph,
+                ]):
+                    spec.attach_globally = True
+                out.append(spec)
+            except (ParseError, FileNotFoundError, OSError) as exc:
+                _emit_error(
+                    diagnostics,
+                    f"Failed to load hyperedge '{file_ref}': {exc}",
+                    source_file=source_file,
+                )
+
+
+def _hyperedge_id(spec: HyperedgeSpec) -> str:
+    """Generate a deterministic ID for a hyperedge from its defining attributes."""
+    import hashlib
+    if spec.source_file:
+        seed = spec.source_file
+    else:
+        seed = spec.content
+    selectors = (
+        ",".join(sorted(spec.attach_to))
+        + "|" + ",".join(sorted(spec.attach_to_type))
+        + "|" + ",".join(sorted(spec.attach_to_tags))
+        + "|" + ",".join(sorted(spec.attach_to_subgraph))
+        + "|" + str(spec.attach_globally)
+    )
+    raw = f"{seed}:{selectors}"
+    digest = hashlib.sha256(raw.encode()).hexdigest()[:12]
+    return f"he_{spec.name}_{digest}"
+
+
+def _compile_hyperedges(
+    specs: list[HyperedgeSpec],
+    diagnostics: list[Diagnostic],
+) -> list[Hyperedge]:
+    """Convert HyperedgeSpec IR objects into Hyperedge model instances."""
+    result: list[Hyperedge] = []
+    for spec in specs:
+        try:
+            he = Hyperedge(
+                id=_hyperedge_id(spec),
+                name=spec.name,
+                hyperedge_type=spec.hyperedge_type,
+                hook=spec.hook,
+                content=spec.content,
+                config=dict(spec.config),
+                attach_to=list(spec.attach_to),
+                attach_to_type=list(spec.attach_to_type),
+                attach_to_tags=list(spec.attach_to_tags),
+                attach_to_subgraph=list(spec.attach_to_subgraph),
+                attach_globally=spec.attach_globally,
+                propagate=spec.propagate,
+                priority=spec.priority,
+            )
+            result.append(he)
+        except Exception as exc:
+            _emit_error(
+                diagnostics,
+                f"Failed to compile hyperedge '{spec.name}': {exc}",
+            )
+    return result
 
 
 def _build_input_ports(spec: AgentSpec, diagnostics: list[Diagnostic]) -> list[InputPort]:

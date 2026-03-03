@@ -153,6 +153,31 @@ FlowStatement = ChainStatement | EachStatement | LoopStatement | IfStatement | P
 
 
 # ---------------------------------------------------------------------------
+# Hyperedge specification (parsed from .md file or inline definition)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HyperedgeSpec:
+    """Intermediate representation of a hyperedge, prior to compilation."""
+
+    name: str = ""
+    hyperedge_type: str = "skill"  # skill, guardrail, style, override
+    hook: str = "pre_prompt"
+    content: str = ""
+    config: dict[str, Any] = field(default_factory=dict)
+    # Attachment selectors
+    attach_to: list[str] = field(default_factory=list)
+    attach_to_type: list[str] = field(default_factory=list)
+    attach_to_tags: list[str] = field(default_factory=list)
+    attach_to_subgraph: list[str] = field(default_factory=list)
+    attach_globally: bool = False
+    propagate: bool = True
+    priority: int | None = None
+    source_file: str | None = None  # path to the .md file (None for inline)
+
+
+# ---------------------------------------------------------------------------
 # Context declaration (parsed from ## Context section)
 # ---------------------------------------------------------------------------
 
@@ -184,6 +209,7 @@ class WorkflowSpec:
     agents: dict[str, str] = field(default_factory=dict)  # name -> file path
     flow_statements: list[FlowStatement] = field(default_factory=list)
     context_declarations: list[ContextSpec] = field(default_factory=list)
+    hyperedges: list[HyperedgeSpec] = field(default_factory=list)
 
     parse_warnings: list[tuple[str, SourceLocation | None]] = field(default_factory=list)
 

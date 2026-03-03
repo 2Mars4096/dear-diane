@@ -22,6 +22,7 @@ from dan.models.control_flow import (
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph
+from dan.models.hyperedges import Hyperedge
 from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, ToolOperator
 
 _SUPPORTED_NODE_TYPES = frozenset({
@@ -403,6 +404,23 @@ class _DecompileContext:
                 parts.append(f"- {ctx.key}{desc}")
             parts.append("")
 
+        skill_hes = [h for h in self.graph.hyperedges if h.hyperedge_type == "skill"]
+        rule_hes = [h for h in self.graph.hyperedges if h.hyperedge_type != "skill"]
+
+        if skill_hes:
+            parts.append("## Skills")
+            parts.append("")
+            for he in skill_hes:
+                parts.append(_render_hyperedge_line(he))
+            parts.append("")
+
+        if rule_hes:
+            parts.append("## Rules")
+            parts.append("")
+            for he in rule_hes:
+                parts.append(_render_hyperedge_line(he))
+            parts.append("")
+
         path.write_text("\n".join(parts), encoding="utf-8")
         self.files.append(path)
 
@@ -765,3 +783,37 @@ def _slugify(text: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", text.lower().strip())
     slug = slug.strip("-")
     return slug or "node"
+
+
+def _build_scope_suffix(he: Hyperedge) -> str:
+    """Build ``-> @scope(...)`` suffix from hyperedge selectors."""
+    parts: list[str] = []
+    if he.attach_to:
+        parts.append(f"@nodes({', '.join(he.attach_to)})")
+    if he.attach_to_type:
+        parts.append(f"@type({', '.join(he.attach_to_type)})")
+    if he.attach_to_tags:
+        parts.append(f"@tags({', '.join(he.attach_to_tags)})")
+    if he.attach_to_subgraph:
+        parts.append(f"@subgraph({', '.join(he.attach_to_subgraph)})")
+    if he.attach_globally and not parts:
+        parts.append("@global")
+    if not parts:
+        return ""
+    return " -> " + " ".join(parts)
+
+
+def _slugify(name: str) -> str:
+    """Convert a human-readable name to a filesystem-safe slug."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "node"
+
+
+def _render_hyperedge_line(he: Hyperedge) -> str:
+    """Render a single hyperedge as a markdown list item for ## Skills or ## Rules."""
+    scope = _build_scope_suffix(he)
+    if he.id.startswith("he_inline_") or (not he.content.count("\n") and len(he.content) < 200 and he.name.startswith("inline_")):
+        escaped = he.content.replace('"', '\\"')
+        return f'- inline: "{escaped}"{scope}'
+    slug = _slugify(he.name)
+    return f"- {slug}.md{scope}"
