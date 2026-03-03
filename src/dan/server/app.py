@@ -1637,9 +1637,48 @@ async def get_run(run_id: str):
 
 
 @app.get("/api/runs")
-async def list_runs():
+async def list_runs(
+    workflow_id: str | None = None,
+    status: str | None = None,
+    after: float | None = None,
+    before: float | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
     rm = _require_run_manager()
-    return {"runs": rm.list_runs()}
+    runs = rm.list_runs()
+    if workflow_id:
+        runs = [r for r in runs if r.get("graph_id") == workflow_id]
+    if status:
+        runs = [r for r in runs if r.get("status") == status]
+    if after:
+        runs = [r for r in runs if (r.get("started_at") or 0) >= after]
+    if before:
+        runs = [r for r in runs if (r.get("started_at") or 0) <= before]
+    runs.sort(key=lambda r: r.get("started_at", 0), reverse=True)
+    return {"runs": runs[offset : offset + limit], "total": len(runs)}
+
+
+@app.get("/api/runs/{run_id}/events")
+async def get_run_events(
+    run_id: str,
+    node_id: str | None = None,
+    event_type: str | None = None,
+):
+    """Load persisted event stream for a completed run (REST, not WS)."""
+    rm = _require_run_manager()
+    record = rm.get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    if record.status in (RunStatus.PENDING, RunStatus.RUNNING):
+        return {"events": list(record.events), "source": "live"}
+    if rm._run_store is not None:
+        events = rm._run_store.load_events(
+            record.graph_id, run_id, node_id=node_id, event_type=event_type,
+        )
+        if events:
+            return {"events": events, "source": "persisted"}
+    return {"events": list(record.events), "source": "memory"}
 
 
 @app.post("/api/runs/{run_id}/human-input")
