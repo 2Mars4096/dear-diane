@@ -1,0 +1,31 @@
+{
+  "key": "experience:g2",
+  "value": {
+    "workflow_id": "g2",
+    "name": "test",
+    "description": "Workflow with 0 nodes: [].",
+    "tags": [],
+    "node_types_used": [],
+    "tools_used": [],
+    "skills_applied": [],
+    "run_count": 1,
+    "success_count": 1,
+    "last_run_at": 1772530456.434589,
+    "avg_elapsed_seconds": 0.03,
+    "avg_total_cost": null,
+    "success_patterns": [],
+    "failure_patterns": [],
+    "principles": [],
+    "processed_run_ids": [
+      "run-list-2"
+    ],
+    "created_at": 1772530456.434647,
+    "updated_at": 1772530456.434695
+  },
+  "scope": "global",
+  "created_at": 1772530456.4347131,
+  "updated_at": 1772530456.4347131,
+  "source_run_id": null,
+  "writer_node_id": null,
+  "write_mode": "set"
+}

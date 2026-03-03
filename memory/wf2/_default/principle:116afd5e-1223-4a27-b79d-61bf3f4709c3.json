@@ -1,0 +1,29 @@
+{
+  "key": "principle:116afd5e-1223-4a27-b79d-61bf3f4709c3",
+  "value": {
+    "id": "116afd5e-1223-4a27-b79d-61bf3f4709c3",
+    "condition": "slow model",
+    "action": "use faster model",
+    "reason": "",
+    "source_run_ids": [],
+    "source_node_ids": [
+      "n1"
+    ],
+    "confidence": 0.8,
+    "created_at": 1772530444.805388,
+    "updated_at": 1772530444.805414,
+    "tags": [],
+    "workflow_id": "wf2",
+    "repair_level": "parameter_fix",
+    "suggested_parameter_changes": {
+      "model": "gpt-4o-mini"
+    },
+    "structural_description": ""
+  },
+  "scope": "workflow",
+  "created_at": 1772530444.805421,
+  "updated_at": 1772530444.805421,
+  "source_run_id": null,
+  "writer_node_id": null,
+  "write_mode": "set"
+}

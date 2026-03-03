@@ -1,0 +1,31 @@
+{
+  "key": "experience:exp-test",
+  "value": {
+    "workflow_id": "exp-test",
+    "name": "Exp Test",
+    "description": "Workflow with 1 nodes: [Writer]. Uses llm_operator. Entry: [Writer]. Exit: [Writer].",
+    "tags": [],
+    "node_types_used": [
+      "llm_operator"
+    ],
+    "tools_used": [],
+    "skills_applied": [],
+    "run_count": 0,
+    "success_count": 0,
+    "last_run_at": null,
+    "avg_elapsed_seconds": null,
+    "avg_total_cost": null,
+    "success_patterns": [],
+    "failure_patterns": [],
+    "principles": [],
+    "processed_run_ids": [],
+    "created_at": 1772531134.100509,
+    "updated_at": 1772534451.553942
+  },
+  "scope": "global",
+  "created_at": 1772531134.100568,
+  "updated_at": 1772534451.5539908,
+  "source_run_id": null,
+  "writer_node_id": null,
+  "write_mode": "set"
+}

@@ -1,0 +1,39 @@
+{
+  "key": "experience:chat-run-chan",
+  "value": {
+    "workflow_id": "chat-run-chan",
+    "name": "empty-run",
+    "description": "Workflow with 0 nodes: [].",
+    "tags": [],
+    "node_types_used": [],
+    "tools_used": [],
+    "skills_applied": [],
+    "run_count": 9,
+    "success_count": 9,
+    "last_run_at": 1772534300.462336,
+    "avg_elapsed_seconds": 0.031111111111111114,
+    "avg_total_cost": null,
+    "success_patterns": [],
+    "failure_patterns": [],
+    "principles": [],
+    "processed_run_ids": [
+      "run-1772530447358",
+      "run-1772531156894",
+      "run-1772531412444",
+      "run-1772533207008",
+      "run-1772533357355",
+      "run-1772533406510",
+      "run-1772533623556",
+      "run-1772533968412",
+      "run-1772534300434"
+    ],
+    "created_at": 1772530447.401064,
+    "updated_at": 1772534300.4774132
+  },
+  "scope": "global",
+  "created_at": 1772530447.4012868,
+  "updated_at": 1772534300.477473,
+  "source_run_id": null,
+  "writer_node_id": null,
+  "write_mode": "set"
+}

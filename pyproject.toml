@@ -55,3 +55,6 @@ packages = ["src/dan"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: tests that require a live LLM API key (deselect with -m 'not integration')",
+]

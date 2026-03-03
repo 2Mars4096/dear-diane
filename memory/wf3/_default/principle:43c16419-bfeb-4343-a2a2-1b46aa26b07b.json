@@ -1,0 +1,25 @@
+{
+  "key": "principle:43c16419-bfeb-4343-a2a2-1b46aa26b07b",
+  "value": {
+    "id": "43c16419-bfeb-4343-a2a2-1b46aa26b07b",
+    "condition": "x",
+    "action": "y",
+    "reason": "",
+    "source_run_ids": [],
+    "source_node_ids": [],
+    "confidence": 0.5,
+    "created_at": 1772533403.9713888,
+    "updated_at": 1772533403.971411,
+    "tags": [],
+    "workflow_id": "wf3",
+    "repair_level": "prompt_fix",
+    "suggested_parameter_changes": {},
+    "structural_description": ""
+  },
+  "scope": "workflow",
+  "created_at": 1772533403.971416,
+  "updated_at": 1772533403.971416,
+  "source_run_id": null,
+  "writer_node_id": null,
+  "write_mode": "set"
+}
