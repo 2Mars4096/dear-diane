@@ -25,6 +25,27 @@ class RetryPolicy(BaseModel):
     on_failure: Literal["error", "skip", "halt"] = "error"
 
 
+class HistoryPolicy(BaseModel):
+    """Policy for conversation-history assembly in LLMOperator prompts."""
+
+    inline_recent: int | None = Field(
+        default=None,
+        description="Number of recent messages to keep inline (advisory)",
+    )
+    summarize_older: bool = Field(
+        default=True,
+        description="Summarize older messages instead of dropping them",
+    )
+    summary_model: str | None = Field(
+        default=None,
+        description="Model for history summarization (defaults to low-cost/default)",
+    )
+    keep_system: bool = Field(
+        default=True,
+        description="Always keep system messages inline",
+    )
+
+
 # ---------------------------------------------------------------------------
 # UI metadata
 # ---------------------------------------------------------------------------
@@ -73,6 +94,15 @@ class NodeBase(BaseModel):
         default_factory=list,
         description="Context keys this node writes (for WRITE/APPEND-mode context edges from this node)",
     )
+    # -- 18-2: Caching layer ----------------------------------------------------
+    memoize: bool = Field(
+        default=False,
+        description="Cache result by content-hash of effective inputs",
+    )
+    cache_ttl: int | None = Field(
+        default=None,
+        description="Cache TTL in seconds (None = no expiry)",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -81,7 +111,7 @@ class NodeBase(BaseModel):
 
 
 class LLMOperator(NodeBase):
-    """Single LLM call with structured output."""
+    """Single LLM call with structured output and optional tool-calling loop."""
 
     node_type: Literal["llm_operator"] = "llm_operator"
     model: str
@@ -96,6 +126,47 @@ class LLMOperator(NodeBase):
     model_policy: Any | None = Field(
         default=None,
         description="Policy-driven model selection (ModelPolicy from dan.providers.model_policy)",
+    )
+    tools: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="Tool schemas (OpenAI function-calling format) the LLM may invoke",
+    )
+    max_tool_rounds: int = Field(
+        default=10,
+        description="Safety bound on tool-calling loop iterations",
+    )
+    # -- 18-1: Smart context assembly ------------------------------------------
+    target_input_tokens: int | None = Field(
+        default=None,
+        description="Advisory token budget — guides context assembly, never enforced as hard cap",
+    )
+    summarize_inputs: bool | dict[str, Any] | None = Field(
+        default=None,
+        description="When true or SummarizationConfig dict, long free-text inputs are summarized before injection",
+    )
+    jit_tool_loading: bool = Field(
+        default=False,
+        description="When true, inject only tool catalog (name+description); full schemas loaded on demand",
+    )
+    agent_context_tools: bool = Field(
+        default=False,
+        description="When true, inject context tools (search_context, read_context, read_state, list_available_context)",
+    )
+    prune_fields: list[str] = Field(
+        default_factory=list,
+        description="Glob patterns for JSON fields to strip from structured inputs (e.g. '*.created_at')",
+    )
+    input_format: str = Field(
+        default="json",
+        description="Serialization format for structured inputs: 'json', 'yaml', or 'compact'",
+    )
+    semantic_cache: bool = Field(
+        default=False,
+        description="Enable semantic response cache for deterministic prompts (temperature=0)",
+    )
+    history_policy: HistoryPolicy | None = Field(
+        default=None,
+        description="Policy for conversation-style message history assembly",
     )
 
 
@@ -137,3 +208,17 @@ class RAGOperator(NodeBase):
     query_template: str = "{query}"
     include_metadata: bool = True
     rerank: bool = False
+
+
+class ReflectionNode(NodeBase):
+    """Post-run analysis node that distills errors into causal principles."""
+
+    node_type: Literal["reflection"] = "reflection"
+    reflection_prompt: str = ""
+    reflection_model: str | None = None
+    source: Literal["last_run", "last_n_runs", "error_index"] = "last_run"
+    source_config: dict[str, Any] = Field(default_factory=dict)
+    output_format: Literal["principles", "rules", "summary"] = "principles"
+    max_principles: int = 10
+    min_confidence: float = 0.3
+    dedup_strategy: Literal["embedding_similarity", "exact_key", "none"] = "embedding_similarity"

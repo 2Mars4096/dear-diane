@@ -41,12 +41,13 @@ _LOOP_NODE_TYPES = frozenset({"while_loop", "for_each"})
 _GATE_LOOP_TYPES = frozenset({"gate"})
 _COMPOSITE_NODE_TYPES = frozenset({
     "composite", "while_loop", "for_each", "parallel_subagents", "orchestrator",
+    "agent_team",
 })
 _KNOWN_NODE_TYPES = frozenset({
     "llm_operator", "tool_operator", "code_operator", "rag_operator", "input",
     "if_else", "gate", "while_loop", "for_each", "parallel_subagents",
-    "orchestrator", "reduce", "router", "human_in_the_loop", "validator",
-    "composite",
+    "orchestrator", "reduce", "router", "human_in_the_loop", "human",
+    "validator", "composite", "agent_team", "vote",
 })
 
 

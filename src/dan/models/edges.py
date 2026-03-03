@@ -61,3 +61,8 @@ class ContextEdge(EdgeBase):
     edge_type: Literal["context"] = "context"
     context_key: str = Field(description="Shared-context key this edge references")
     mode: ContextMode
+    # -- 18-1: Smart context assembly ------------------------------------------
+    pass_by_reference: bool = Field(
+        default=False,
+        description="When true, pass artifact reference instead of inline content; lazy-loaded on demand",
+    )

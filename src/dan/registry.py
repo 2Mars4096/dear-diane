@@ -16,6 +16,7 @@ from dan.models.nodes import (
     LLMOperator,
     NodeBase,
     RAGOperator,
+    ReflectionNode,
     ToolOperator,
 )
 from dan.models.control_flow import (
@@ -90,6 +91,7 @@ _BUILTINS: list[tuple[str, Type[NodeBase]]] = [
     ("human_in_the_loop", HumanInTheLoopNode),
     ("validator", ValidatorNode),
     ("composite", CompositeNode),
+    ("reflection", ReflectionNode),
 ]
 
 for _type_name, _cls in _BUILTINS:

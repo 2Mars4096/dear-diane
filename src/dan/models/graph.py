@@ -26,7 +26,7 @@ from dan.models.control_flow import (
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.hyperedges import Hyperedge
-from dan.models.nodes import CodeOperator, LLMOperator, RAGOperator, ToolOperator
+from dan.models.nodes import CodeOperator, LLMOperator, RAGOperator, ReflectionNode, ToolOperator
 
 # ---------------------------------------------------------------------------
 # Discriminated unions — Pydantic resolves the concrete type from JSON
@@ -54,6 +54,7 @@ Node = Annotated[
         CompositeNode,
         AgentTeamNode,
         VoteNode,
+        ReflectionNode,
     ],
     Field(discriminator="node_type"),
 ]

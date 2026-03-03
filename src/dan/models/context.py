@@ -61,6 +61,22 @@ class CompactionRule(BaseModel):
     max_tokens: int | None = Field(
         default=None, description="Token budget for summarize strategy"
     )
+    summarize_every_n: int | None = Field(
+        default=None,
+        description="Summarize every N iterations/messages when strategy=summarize",
+    )
+    summary_model: str | None = Field(
+        default=None,
+        description="Model for summarize strategy (defaults to runtime default)",
+    )
+    target_tokens: int | None = Field(
+        default=None,
+        description="Advisory target token count after compaction",
+    )
+    require_persistent_recall: bool = Field(
+        default=True,
+        description="Require memory/state persistence before lossy strategies",
+    )
 
 
 class FailurePolicy(BaseModel):
