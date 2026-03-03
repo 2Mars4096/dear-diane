@@ -25,6 +25,7 @@ from dan.models.control_flow import (
     WhileLoopNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
+from dan.models.hyperedges import VALID_HOOKS_BY_TYPE
 from dan.validation.schema import check_schema_compatible
 
 try:
@@ -38,6 +39,15 @@ if TYPE_CHECKING:
 
 _LOOP_NODE_TYPES = frozenset({"while_loop", "for_each"})
 _GATE_LOOP_TYPES = frozenset({"gate"})
+_COMPOSITE_NODE_TYPES = frozenset({
+    "composite", "while_loop", "for_each", "parallel_subagents", "orchestrator",
+})
+_KNOWN_NODE_TYPES = frozenset({
+    "llm_operator", "tool_operator", "code_operator", "rag_operator", "input",
+    "if_else", "gate", "while_loop", "for_each", "parallel_subagents",
+    "orchestrator", "reduce", "router", "human_in_the_loop", "validator",
+    "composite",
+})
 
 
 def validate_graph(graph: "Graph") -> list[str]:
@@ -54,6 +64,7 @@ def validate_graph(graph: "Graph") -> list[str]:
     errors.extend(_check_data_cycles(graph))
     errors.extend(_validate_gate_cycles(graph))
     errors.extend(_check_deprecated_edge_conditions(graph))
+    errors.extend(_check_hyperedges(graph))
     return errors
 
 
@@ -439,4 +450,56 @@ def _check_deprecated_edge_conditions(graph: "Graph") -> list[str]:
                 f"deprecated ControlEdge.condition; prefer GateNode branch "
                 f"ports for conditional routing"
             )
+    return warnings
+
+
+def _check_hyperedges(graph: "Graph") -> list[str]:
+    """Validate hyperedge selectors and hook/type compatibility."""
+    warnings: list[str] = []
+    node_ids = {n.id for n in graph.nodes}
+    node_type_map = {n.id: n.node_type for n in graph.nodes}
+
+    seen_ids: set[str] = set()
+    for he in graph.hyperedges:
+        if he.id in seen_ids:
+            warnings.append(
+                f"Warning: duplicate hyperedge id '{he.id}'"
+            )
+        seen_ids.add(he.id)
+
+        for nid in he.attach_to:
+            if nid not in node_ids:
+                warnings.append(
+                    f"Warning: hyperedge '{he.id}' attach_to references "
+                    f"non-existent node '{nid}'"
+                )
+
+        for ntype in he.attach_to_type:
+            if ntype not in _KNOWN_NODE_TYPES:
+                warnings.append(
+                    f"Warning: hyperedge '{he.id}' attach_to_type references "
+                    f"unknown node type '{ntype}'"
+                )
+
+        for nid in he.attach_to_subgraph:
+            if nid not in node_ids:
+                warnings.append(
+                    f"Warning: hyperedge '{he.id}' attach_to_subgraph references "
+                    f"non-existent node '{nid}'"
+                )
+            elif node_type_map[nid] not in _COMPOSITE_NODE_TYPES:
+                warnings.append(
+                    f"Warning: hyperedge '{he.id}' attach_to_subgraph references "
+                    f"node '{nid}' of type '{node_type_map[nid]}' which is not a "
+                    f"composite-type node"
+                )
+
+        valid_hooks = VALID_HOOKS_BY_TYPE.get(he.hyperedge_type, set())
+        if he.hook not in valid_hooks:
+            warnings.append(
+                f"Warning: hyperedge '{he.id}' uses hook '{he.hook}' which is "
+                f"not valid for type '{he.hyperedge_type}' "
+                f"(valid: {sorted(valid_hooks)})"
+            )
+
     return warnings
