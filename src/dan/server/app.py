@@ -2825,6 +2825,307 @@ async def list_code_refs(workflow_id: str):
 
 
 # ------------------------------------------------------------------
+# Experience memory endpoints (Plan 19-1)
+# ------------------------------------------------------------------
+
+
+@app.get("/api/experiences")
+async def list_experiences():
+    """List all workflow experience summaries."""
+    try:
+        store = _get_experience_store()
+        experiences = await store.list_experiences()
+        return {"experiences": [e.model_dump() for e in experiences]}
+    except Exception as exc:
+        logger.exception("Failed to list experiences")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/experiences/{workflow_id}")
+async def get_experience(workflow_id: str):
+    """Get detailed experience for a specific workflow."""
+    _validate_path_segment(workflow_id, "workflow_id")
+    store = _get_experience_store()
+    exp = await store.load_experience(workflow_id)
+    if exp is None:
+        raise HTTPException(status_code=404, detail=f"No experience for '{workflow_id}'")
+    return exp.model_dump()
+
+
+@app.post("/api/experiences/search")
+async def search_experiences(body: dict[str, Any]):
+    """Semantic search over workflow experiences."""
+    global _experience_index_bootstrap_done
+    query = str(body.get("query", "")).strip()
+    top_k = int(body.get("top_k", 5))
+    if not query:
+        raise HTTPException(status_code=422, detail="query is required")
+    index = _get_experience_index()
+    store = _get_experience_store(with_index=True)
+
+    # Best-effort sync: make sure existing experiences are indexed.
+    if not _experience_index_bootstrap_done:
+        for exp in await store.list_experiences():
+            await store.save_experience(exp)
+        _experience_index_bootstrap_done = True
+
+    hits = await index.search_similar(query, top_k=max(1, min(top_k, 20)))
+    results: list[dict[str, Any]] = []
+    for workflow_id, score in hits:
+        exp = await store.load_experience(workflow_id)
+        results.append({
+            "workflow_id": workflow_id,
+            "score": score,
+            "experience": exp.model_dump() if exp is not None else None,
+        })
+    return {"query": query, "results": results}
+
+
+@app.post("/api/experiences/{workflow_id}/refresh")
+async def refresh_experience(workflow_id: str):
+    """Force experience consolidation for a workflow."""
+    _validate_path_segment(workflow_id, "workflow_id")
+    from dan.engine.experience import (
+        consolidate_experience,
+        extract_experience_from_graph,
+    )
+    from dan.engine.error_memory import PrincipleStore
+
+    rm = _require_run_manager()
+    try:
+        store = _get_experience_store(with_index=True)
+    except HTTPException:
+        store = _get_experience_store(with_index=False)
+    graph_data = _graph_store.get_graph(workflow_id)
+    if graph_data is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{workflow_id}' not found")
+
+    graph = Graph.model_validate(graph_data)
+    exp = await store.load_experience(workflow_id)
+    if exp is None:
+        exp = extract_experience_from_graph(graph)
+        exp = exp.model_copy(update={"workflow_id": workflow_id})
+
+    snapshots: list[dict[str, Any]] = []
+    if rm.run_store is not None:
+        snapshots = rm.run_store.list_summaries(workflow_id=workflow_id, limit=10000)
+
+    principles: list[dict[str, Any]] = []
+    try:
+        ps = PrincipleStore(_get_memory_store())
+        principles = [p.model_dump() for p in await ps.load_principles(workflow_id)]
+    except Exception:
+        logger.debug("Failed to load principles for experience refresh", exc_info=True)
+
+    exp = consolidate_experience(exp, snapshots, principles)
+    await store.save_experience(exp)
+    return {"status": "refreshed", "experience": exp.model_dump()}
+
+
+@app.delete("/api/experiences/{workflow_id}")
+async def delete_experience(workflow_id: str):
+    """Remove a workflow experience entry."""
+    _validate_path_segment(workflow_id, "workflow_id")
+    store = _get_experience_store()
+    deleted = await store.delete_experience(workflow_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Experience not found")
+    return {"status": "deleted"}
+
+
+# ------------------------------------------------------------------
+# Meta-orchestrator endpoints (Plans 19-2, 19-4)
+# ------------------------------------------------------------------
+
+
+@app.get("/api/meta/discover")
+async def meta_discover(goal: str = "", top_k: int = 5):
+    """List available tools, skills, and patterns for the planner."""
+    rm = _require_run_manager()
+    from dan.meta.discovery import DiscoveryService
+
+    try:
+        exp_index = _get_experience_index()
+    except HTTPException:
+        exp_index = None
+    svc = DiscoveryService(
+        tool_registry=rm.tool_registry,
+        experience_index=exp_index,
+        experience_store=_get_experience_store(with_index=exp_index is not None),
+        graph_store=_graph_store,
+    )
+    workflow_matches = await svc.discover_workflows(
+        goal if goal.strip() else "generic workflow",
+        top_k=max(1, min(top_k, 20)),
+    )
+    return {
+        "tools": [t.model_dump() for t in svc.discover_tools()],
+        "skills": [s.model_dump() for s in svc.discover_skills()],
+        "patterns": [p.model_dump() for p in svc.discover_patterns()],
+        "workflows": [w.model_dump() for w in workflow_matches],
+    }
+
+
+@app.post("/api/meta/plan")
+async def meta_plan(body: dict[str, Any]):
+    """Create a workflow plan for a given goal."""
+    goal = str(body.get("goal", "")).strip()
+    error_context = body.get("error_context")
+    if not goal:
+        raise HTTPException(status_code=422, detail="goal is required")
+    _, planner, _ = _build_meta_controller()
+    output = await planner.plan(goal, error_context)
+    return {
+        "goal": goal,
+        "plan": output.plan.model_dump(),
+        "review": output.review.model_dump(),
+    }
+
+
+@app.post("/api/meta/validate-plan")
+async def meta_validate_plan(body: dict[str, Any]):
+    """Validate a candidate planner output without executing it."""
+    _, planner, _ = _build_meta_controller()
+    plan_data = body.get("plan", body)
+    if not isinstance(plan_data, dict):
+        raise HTTPException(status_code=422, detail="plan must be an object")
+
+    action = str(plan_data.get("action", "")).upper()
+    from dan.meta.planner import AdaptPlan, GeneratePlan, ReusePlan
+
+    if action == "REUSE":
+        plan = ReusePlan.model_validate(plan_data)
+    elif action == "ADAPT":
+        plan = AdaptPlan.model_validate(plan_data)
+    elif action == "GENERATE":
+        plan = GeneratePlan.model_validate(plan_data)
+    else:
+        raise HTTPException(status_code=422, detail="Unknown plan action")
+
+    review = planner._validate_plan(plan)
+    return {"valid": review.valid, "review": review.model_dump()}
+
+
+@app.post("/api/meta/run")
+async def meta_run(body: dict[str, Any]):
+    """Start a background meta-orchestration run."""
+    from dan.meta.controller import MetaControllerConfig
+
+    goal = str(body.get("goal", "")).strip()
+    if not goal:
+        raise HTTPException(status_code=422, detail="goal is required")
+
+    config = MetaControllerConfig.model_validate(body.get("config", {}))
+    controller, _, _ = _build_meta_controller()
+    session = await controller.create_session(goal, config)
+
+    async def _runner() -> None:
+        try:
+            await controller.run_session(session, config)
+        finally:
+            _meta_tasks.pop(session.session_id, None)
+
+    task = asyncio.create_task(_runner(), name=f"meta-session-{session.session_id}")
+    _meta_tasks[session.session_id] = task
+    return {
+        "session_id": session.session_id,
+        "status": "started",
+        "session": session.model_dump(),
+    }
+
+
+@app.get("/api/meta/sessions")
+async def list_meta_sessions():
+    """List all meta-orchestration sessions."""
+    _, _, store = _build_meta_controller()
+    sessions = await store.list_sessions()
+    return {"sessions": [s.model_dump() for s in sessions]}
+
+
+@app.get("/api/meta/sessions/{session_id}")
+async def get_meta_session(session_id: str):
+    """Get a specific meta session by ID."""
+    _validate_path_segment(session_id, "session_id")
+    _, _, store = _build_meta_controller()
+    session = await store.load(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {
+        **session.model_dump(),
+        "is_running": session_id in _meta_tasks and not _meta_tasks[session_id].done(),
+    }
+
+
+@app.get("/api/meta/sessions/{session_id}/events")
+async def get_meta_session_events(session_id: str, limit: int = 200):
+    """Fetch persisted meta-controller events for a session."""
+    _validate_path_segment(session_id, "session_id")
+    _, _, store = _build_meta_controller()
+    session = await store.load(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    lim = max(1, min(limit, 5000))
+    return {"session_id": session_id, "events": session.events[-lim:]}
+
+
+@app.post("/api/meta/sessions/{session_id}/pause")
+async def pause_meta_session(session_id: str):
+    """Request pause at the next controller checkpoint."""
+    _validate_path_segment(session_id, "session_id")
+    _, _, store = _build_meta_controller()
+    session = await store.load(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    session.pause_requested = True
+    await store.save(session)
+    return {
+        "session_id": session_id,
+        "status": "pause_requested",
+        "is_running": session_id in _meta_tasks and not _meta_tasks[session_id].done(),
+    }
+
+
+@app.post("/api/meta/sessions/{session_id}/resume")
+async def resume_meta_session(session_id: str, body: dict[str, Any] | None = None):
+    """Resume a paused meta session in the background."""
+    _validate_path_segment(session_id, "session_id")
+    if session_id in _meta_tasks and not _meta_tasks[session_id].done():
+        return {"session_id": session_id, "status": "already_running"}
+
+    from dan.meta.controller import HumanOverride
+
+    controller, _, _ = _build_meta_controller()
+    override = None
+    if body and body.get("override") is not None:
+        override = HumanOverride.model_validate(body["override"])
+
+    async def _runner() -> None:
+        try:
+            await controller.resume(session_id, override=override)
+        finally:
+            _meta_tasks.pop(session_id, None)
+
+    task = asyncio.create_task(_runner(), name=f"meta-resume-{session_id}")
+    _meta_tasks[session_id] = task
+    return {"session_id": session_id, "status": "resuming"}
+
+
+@app.delete("/api/meta/sessions/{session_id}")
+async def delete_meta_session(session_id: str):
+    """Delete/abort a meta session."""
+    _validate_path_segment(session_id, "session_id")
+    task = _meta_tasks.pop(session_id, None)
+    if task is not None and not task.done():
+        task.cancel()
+
+    _, _, store = _build_meta_controller()
+    deleted = await store.delete(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return {"status": "deleted", "task_cancelled": task is not None}
+
+
+# ------------------------------------------------------------------
 # Static file serving for the built editor (production)
 # ------------------------------------------------------------------
 
