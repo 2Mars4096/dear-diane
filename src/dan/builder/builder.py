@@ -73,6 +73,7 @@ class WorkflowBuilder:
         self._artifact_refs: list[ArtifactRef] = []
 
         self._node_map: dict[str, _PendingNode] = {}
+        self._hyperedges: list[dict[str, Any]] = []
 
         # Virtual entry-point refs for sub-graph builders
         self._entry_input_ref: PortRef | None = None
@@ -440,6 +441,71 @@ class WorkflowBuilder:
         )
         self._add_node(pn)
         return NodeRef(node_id, "human_in_the_loop", self)
+
+    # ── Hyperedge creation methods ───────────────────────────────
+
+    def skill(
+        self,
+        name: str,
+        content: str,
+        *,
+        attach_to: list[str] | None = None,
+        attach_to_type: list[str] | None = None,
+        attach_to_tags: list[str] | None = None,
+        attach_to_subgraph: list[str] | None = None,
+        attach_globally: bool = False,
+        propagate: bool = True,
+    ) -> WorkflowBuilder:
+        """Add a skill hyperedge. Returns self for chaining."""
+        self._hyperedges.append({
+            "name": name,
+            "hyperedge_type": "skill",
+            "hook": "pre_prompt",
+            "content": content,
+            "config": {},
+            "attach_to": attach_to or [],
+            "attach_to_type": attach_to_type or [],
+            "attach_to_tags": attach_to_tags or [],
+            "attach_to_subgraph": attach_to_subgraph or [],
+            "attach_globally": attach_globally,
+            "propagate": propagate,
+        })
+        return self
+
+    def rule(
+        self,
+        name: str,
+        rule_type: str,
+        hook: str,
+        content: str,
+        *,
+        severity: str = "warning",
+        block_on_fail: bool = False,
+        attach_to: list[str] | None = None,
+        attach_to_type: list[str] | None = None,
+        attach_to_tags: list[str] | None = None,
+        attach_to_subgraph: list[str] | None = None,
+        attach_globally: bool = False,
+        propagate: bool = True,
+    ) -> WorkflowBuilder:
+        """Add a rule (guardrail/style/override) hyperedge. Returns self for chaining."""
+        config: dict[str, Any] = {}
+        if rule_type == "guardrail":
+            config = {"severity": severity, "block_on_fail": block_on_fail}
+        self._hyperedges.append({
+            "name": name,
+            "hyperedge_type": rule_type,
+            "hook": hook,
+            "content": content,
+            "config": config,
+            "attach_to": attach_to or [],
+            "attach_to_type": attach_to_type or [],
+            "attach_to_tags": attach_to_tags or [],
+            "attach_to_subgraph": attach_to_subgraph or [],
+            "attach_globally": attach_globally,
+            "propagate": propagate,
+        })
+        return self
 
     # ── Import pre-built graph as composite ───────────────────────
 
@@ -1027,6 +1093,7 @@ class WorkflowBuilder:
             shared_context=list(self._shared_context),
             port_ref_connections=list(self._port_ref_connections),
             artifact_refs=list(self._artifact_refs),
+            hyperedge_specs=list(self._hyperedges),
         )
 
     def to_graph(self) -> Graph:
@@ -1073,6 +1140,7 @@ class WorkflowBuilder:
             shared_context=list(self._shared_context),
             port_ref_connections=list(self._port_ref_connections),
             artifact_refs=list(self._artifact_refs),
+            hyperedge_specs=list(self._hyperedges),
             validate=True,
         )
 

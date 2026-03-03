@@ -29,6 +29,7 @@ from dan.models.control_flow import (
 from dan.models.nodes import RAGOperator
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph
+from dan.models.hyperedges import Hyperedge
 
 
 def decompile(graph: Graph) -> str:
@@ -100,6 +101,12 @@ class _Decompiler:
                 args.append(f"description={art.description!r}")
             lines.append(f"wf.artifact_ref({', '.join(args)})")
         if self.graph.shared_context or self.graph.artifact_refs:
+            lines.append("")
+
+        # Hyperedges
+        for he in self.graph.hyperedges:
+            lines.append(self._emit_hyperedge(he))
+        if self.graph.hyperedges:
             lines.append("")
 
         # Topological order
@@ -692,6 +699,39 @@ class _Decompiler:
             f'{tgt_var}["{edge.target_port}"], '
             f"context_key={edge.context_key!r}, mode={edge.mode.value!r})"
         )
+
+    def _emit_hyperedge(self, he: Hyperedge) -> str:
+        """Generate a wf.skill() or wf.rule() call for a hyperedge."""
+        selector_kwargs: list[str] = []
+        if he.attach_to:
+            selector_kwargs.append(f"attach_to={he.attach_to!r}")
+        if he.attach_to_type:
+            selector_kwargs.append(f"attach_to_type={he.attach_to_type!r}")
+        if he.attach_to_tags:
+            selector_kwargs.append(f"attach_to_tags={he.attach_to_tags!r}")
+        if he.attach_to_subgraph:
+            selector_kwargs.append(f"attach_to_subgraph={he.attach_to_subgraph!r}")
+        if he.attach_globally:
+            selector_kwargs.append("attach_globally=True")
+        if not he.propagate:
+            selector_kwargs.append("propagate=False")
+
+        if he.hyperedge_type == "skill":
+            args = [repr(he.name), repr(he.content)]
+            if selector_kwargs:
+                args.extend(selector_kwargs)
+            return f"wf.skill({', '.join(args)})"
+        else:
+            args = [repr(he.name), repr(he.hyperedge_type), repr(he.hook), repr(he.content)]
+            severity = he.config.get("severity", "warning")
+            block_on_fail = he.config.get("block_on_fail", False)
+            if severity != "warning":
+                args.append(f"severity={severity!r}")
+            if block_on_fail:
+                args.append(f"block_on_fail={block_on_fail!r}")
+            if selector_kwargs:
+                args.extend(selector_kwargs)
+            return f"wf.rule({', '.join(args)})"
 
     def _topological_sort(self) -> list[str]:
         return self._topological_sort_graph(self.graph)

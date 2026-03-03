@@ -33,6 +33,7 @@ from dan.models.control_flow import (
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph, GraphMetadata
+from dan.models.hyperedges import Hyperedge
 from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, RAGOperator, ToolOperator
 from dan.models.ports import InputPort, OutputPort
 from dan.validation.graph import validate_graph
@@ -151,6 +152,7 @@ def compile_graph(
     shared_context: list[SharedContextDeclaration],
     port_ref_connections: list[tuple[PortRef, str, str]],
     artifact_refs: list[ArtifactRef] | None = None,
+    hyperedge_specs: list[dict[str, Any]] | None = None,
     *,
     validate: bool = True,
 ) -> Graph:
@@ -240,6 +242,9 @@ def compile_graph(
     entry_points = _find_entry_points(working_nodes, materialized_edges)
     exit_points = _find_exit_points(working_nodes, materialized_edges)
 
+    # ── Step 7b: Compile hyperedges ──────────────────────────────────
+    compiled_hyperedges = _compile_builder_hyperedges(hyperedge_specs or [])
+
     # ── Step 8: Assemble Graph ─────────────────────────────────────
     graph = Graph(
         version="dan_graph_v1",
@@ -255,6 +260,7 @@ def compile_graph(
         exit_points=exit_points,
         shared_context=shared_context,
         artifact_refs=artifact_refs or [],
+        hyperedges=compiled_hyperedges,
     )
 
     # ── Step 9: Validate ───────────────────────────────────────────
@@ -389,6 +395,43 @@ def _find_exit_points(
     """Nodes with no outgoing data edges are exit points."""
     has_outgoing = {e.source_node_id for e in edges if e.edge_type == "data"}
     return [n.id for n in nodes if n.id not in has_outgoing]
+
+
+def _compile_builder_hyperedges(specs: list[dict[str, Any]]) -> list[Hyperedge]:
+    """Convert builder hyperedge dicts into Hyperedge model instances."""
+    import hashlib
+
+    result: list[Hyperedge] = []
+    for spec in specs:
+        content = spec.get("content", "")
+        name = spec.get("name", "")
+        selectors = (
+            ",".join(sorted(spec.get("attach_to", [])))
+            + "|" + ",".join(sorted(spec.get("attach_to_type", [])))
+            + "|" + ",".join(sorted(spec.get("attach_to_tags", [])))
+            + "|" + ",".join(sorted(spec.get("attach_to_subgraph", [])))
+            + "|" + str(spec.get("attach_globally", False))
+        )
+        raw = f"{name}:{content}:{selectors}"
+        digest = hashlib.sha256(raw.encode()).hexdigest()[:12]
+        he_id = f"he_{name}_{digest}"
+
+        he = Hyperedge(
+            id=he_id,
+            name=name,
+            hyperedge_type=spec.get("hyperedge_type", "skill"),
+            hook=spec.get("hook", "pre_prompt"),
+            content=content,
+            config=spec.get("config", {}),
+            attach_to=spec.get("attach_to", []),
+            attach_to_type=spec.get("attach_to_type", []),
+            attach_to_tags=spec.get("attach_to_tags", []),
+            attach_to_subgraph=spec.get("attach_to_subgraph", []),
+            attach_globally=spec.get("attach_globally", False),
+            propagate=spec.get("propagate", True),
+        )
+        result.append(he)
+    return result
 
 
 def _build_edge(edge: _PendingEdge, index: int) -> DataEdge | ControlEdge | ContextEdge:
