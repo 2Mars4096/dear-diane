@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -17,6 +18,8 @@ from dan.engine.executor import EngineConfig, ExecutorRegistry
 from dan.engine.scheduler import Engine, RunResult
 from dan.executors.tool import ToolExecutor, ToolRegistry
 from dan.models.graph import Graph
+from dan.providers.costs import estimate_cost
+from dan.server.run_store import RunStore
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +43,13 @@ class RunRecord:
     events: list[dict[str, Any]] = field(default_factory=list)
     started_at: float = field(default_factory=time.time)
     finished_at: float | None = None
+    total_prompt_tokens: int = 0
+    total_completion_tokens: int = 0
+    total_tokens: int = 0
+    total_cost: float | None = None
+    elapsed_seconds: float | None = None
+    node_usage: dict[str, dict[str, Any]] = field(default_factory=dict)
+    model: str | None = None
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -52,7 +62,41 @@ class RunRecord:
             "success": self.result.success if self.result else None,
             "errors": self.result.errors if self.result else {},
             "outputs": self.result.outputs if self.result else {},
+            "total_prompt_tokens": self.total_prompt_tokens,
+            "total_completion_tokens": self.total_completion_tokens,
+            "total_tokens": self.total_tokens,
+            "total_cost": self.total_cost,
+            "elapsed_seconds": self.elapsed_seconds,
+            "node_usage": dict(self.node_usage),
         }
+
+    @staticmethod
+    def from_summary(summary: dict[str, Any]) -> "RunRecord":
+        """Reconstruct a record from a persisted summary (for startup hydration)."""
+        rec = RunRecord(
+            run_id=summary["run_id"],
+            graph_id=summary.get("graph_id", ""),
+            status=RunStatus(summary.get("status", "completed")),
+            started_at=summary.get("started_at", 0),
+            finished_at=summary.get("finished_at"),
+            total_prompt_tokens=summary.get("total_prompt_tokens", 0),
+            total_completion_tokens=summary.get("total_completion_tokens", 0),
+            total_tokens=summary.get("total_tokens", 0),
+            total_cost=summary.get("total_cost"),
+            elapsed_seconds=summary.get("elapsed_seconds"),
+            node_usage=summary.get("node_usage", {}),
+        )
+        rec.node_statuses = summary.get("node_statuses", {})
+        errors = summary.get("errors", {})
+        outputs = summary.get("outputs", {})
+        success = summary.get("success", True)
+        rec.result = RunResult(
+            run_id=rec.run_id,
+            success=success if success is not None else True,
+            errors=errors,
+            outputs=outputs,
+        )
+        return rec
 
 
 class RunManager:
@@ -62,15 +106,32 @@ class RunManager:
         self,
         engine_config: EngineConfig | None = None,
         tool_registry: ToolRegistry | None = None,
+        run_store: RunStore | None = None,
     ) -> None:
         self._config = engine_config or EngineConfig()
         self._tool_registry = tool_registry or ToolRegistry()
+        self._run_store = run_store
         self._runs: dict[str, RunRecord] = {}
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._max_event_buffer = 10000
         self._pending_human_inputs: dict[str, asyncio.Event] = {}
         self._human_input_responses: dict[str, dict[str, Any]] = {}
+        self._hydrate_from_store()
+
+    def _hydrate_from_store(self) -> None:
+        """Load historical run summaries from RunStore into the in-memory index."""
+        if self._run_store is None:
+            return
+        retention_days = int(os.environ.get("DAN_RUN_RETENTION_DAYS", "0"))
+        if retention_days > 0:
+            removed = self._run_store.cleanup(retention_days)
+            if removed:
+                logger.info("Retention cleanup: removed %d runs older than %d days", removed, retention_days)
+        for summary in self._run_store.list_summaries(limit=10000):
+            rid = summary.get("run_id")
+            if rid and rid not in self._runs:
+                self._runs[rid] = RunRecord.from_summary(summary)
 
     def get_run(self, run_id: str) -> RunRecord | None:
         return self._runs.get(run_id)
@@ -146,6 +207,7 @@ class RunManager:
         graph_id: str,
         inputs: dict[str, Any] | None = None,
         run_id: str | None = None,
+        session_id: str | None = None,
     ) -> RunRecord:
         record = RunRecord(
             run_id=run_id or f"run-{int(time.time() * 1000)}",
@@ -154,7 +216,7 @@ class RunManager:
         )
         self._runs[record.run_id] = record
         task = asyncio.create_task(
-            self._run_task(record, graph, inputs),
+            self._run_task(record, graph, inputs, session_id=session_id),
             name=f"dan-run-{record.run_id}",
         )
         self._tasks[record.run_id] = task
@@ -165,6 +227,7 @@ class RunManager:
         graph: Graph,
         graph_id: str,
         run_id: str,
+        session_id: str | None = None,
     ) -> RunRecord:
         record = RunRecord(
             run_id=run_id,
@@ -173,7 +236,7 @@ class RunManager:
         )
         self._runs[run_id] = record
         task = asyncio.create_task(
-            self._resume_task(record, graph),
+            self._resume_task(record, graph, session_id=session_id),
             name=f"dan-resume-{run_id}",
         )
         self._tasks[run_id] = task
@@ -209,6 +272,9 @@ class RunManager:
             ):
                 record.node_statuses[event.node_id] = event.event_type.value
 
+            if self._run_store is not None:
+                self._run_store.append_event(record.graph_id, run_id, event_dict)
+
         for queue in self._subscribers.get(run_id, []):
             try:
                 queue.put_nowait(event_dict)
@@ -220,11 +286,39 @@ class RunManager:
         reg.register("tool_operator", ToolExecutor(self._tool_registry))
         return reg
 
+    def _enrich_and_persist(self, record: RunRecord) -> None:
+        """Extract usage metrics from RunResult and persist to RunStore."""
+        record.finished_at = time.time()
+        record.elapsed_seconds = round(record.finished_at - record.started_at, 2)
+        if record.result and record.result.metadata:
+            meta = record.result.metadata
+            for node_id, node_meta in meta.items():
+                if not isinstance(node_meta, dict):
+                    continue
+                usage = node_meta.get("usage")
+                if usage:
+                    record.node_usage[node_id] = usage
+                    record.total_prompt_tokens += usage.get("prompt_tokens", 0)
+                    record.total_completion_tokens += usage.get("completion_tokens", 0)
+                    record.total_tokens += usage.get("total_tokens", 0)
+                    node_model = node_meta.get("model") or self._config.default_model
+                    if node_model:
+                        cost = estimate_cost(
+                            node_model,
+                            usage.get("prompt_tokens", 0),
+                            usage.get("completion_tokens", 0),
+                        )
+                        if cost is not None:
+                            record.total_cost = (record.total_cost or 0.0) + cost
+        if self._run_store is not None:
+            self._run_store.save_summary(record.graph_id, record.run_id, record.snapshot())
+
     async def _run_task(
         self,
         record: RunRecord,
         graph: Graph,
         inputs: dict[str, Any] | None,
+        session_id: str | None = None,
     ) -> None:
         record.status = RunStatus.RUNNING
         engine = Engine(
@@ -234,7 +328,10 @@ class RunManager:
             human_input_callback=self._make_human_input_callback(record.run_id),
         )
         try:
-            result = await engine.run(graph, inputs=inputs, run_id=record.run_id)
+            result = await engine.run(
+                graph, inputs=inputs, run_id=record.run_id,
+                session_id=session_id, workflow_id=record.graph_id,
+            )
             record.result = result
             record.status = RunStatus.COMPLETED if result.success else RunStatus.FAILED
             if result.node_statuses:
@@ -247,9 +344,14 @@ class RunManager:
                 errors={"exception": str(exc)},
             )
         finally:
-            record.finished_at = time.time()
+            self._enrich_and_persist(record)
 
-    async def _resume_task(self, record: RunRecord, graph: Graph) -> None:
+    async def _resume_task(
+        self,
+        record: RunRecord,
+        graph: Graph,
+        session_id: str | None = None,
+    ) -> None:
         record.status = RunStatus.RUNNING
         engine = Engine(
             config=self._config,
@@ -258,7 +360,10 @@ class RunManager:
             human_input_callback=self._make_human_input_callback(record.run_id),
         )
         try:
-            result = await engine.resume(graph, run_id=record.run_id)
+            result = await engine.resume(
+                graph, run_id=record.run_id,
+                session_id=session_id, workflow_id=record.graph_id,
+            )
             record.result = result
             record.status = RunStatus.COMPLETED if result.success else RunStatus.FAILED
             if result.node_statuses:
@@ -271,4 +376,4 @@ class RunManager:
                 errors={"exception": str(exc)},
             )
         finally:
-            record.finished_at = time.time()
+            self._enrich_and_persist(record)
