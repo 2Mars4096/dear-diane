@@ -33,6 +33,7 @@ _VALIDATION_WARNING_PATTERNS = (
     "schema safety bypassed",
     "untyped data edge",
     "deprecated",
+    "warning:",
 )
 
 
@@ -388,18 +389,21 @@ class Engine:
         from dan.executors.rag import RAGExecutor
         from dan.executors.validator import ValidatorExecutor
         from dan.executors.control_flow import (
+            AgentTeamExecutor,
             CompositeExecutor,
             ForEachExecutor,
             GateExecutor,
+            HumanNodeExecutor,
             OrchestratorExecutor,
             ParallelSubagentsExecutor,
-            HumanInTheLoopExecutor,
             IfElseExecutor,
             ReduceExecutor,
             RouterExecutor,
+            VoteExecutor,
             WhileLoopExecutor,
         )
 
+        human_executor = HumanNodeExecutor()
         defaults: list[tuple[str, Any]] = [
             ("llm_operator", LLMExecutor()),
             ("tool_operator", ToolExecutor()),
@@ -414,9 +418,12 @@ class Engine:
             ("orchestrator", OrchestratorExecutor()),
             ("reduce", ReduceExecutor()),
             ("router", RouterExecutor()),
-            ("human_in_the_loop", HumanInTheLoopExecutor()),
+            ("human", human_executor),
+            ("human_in_the_loop", human_executor),
             ("validator", ValidatorExecutor()),
             ("composite", CompositeExecutor()),
+            ("vote", VoteExecutor()),
+            ("agent_team", AgentTeamExecutor()),
         ]
 
         for node_type, executor in defaults:
@@ -516,6 +523,7 @@ class Engine:
         return await self._execute(
             graph, state, shared_context, artifacts, local_state,
             session_id=session_id, workflow_id=workflow_id,
+            cost_tracker_state=checkpoint.get("cost_tracker"),
         )
 
     # ------------------------------------------------------------------
@@ -557,6 +565,7 @@ class Engine:
         local_state: LocalStateManager,
         session_id: str | None = None,
         workflow_id: str | None = None,
+        cost_tracker_state: dict | None = None,
     ) -> RunResult:
         """Core scheduling loop: dispatch ready nodes, checkpoint, repeat."""
         run_start = _time.time()
@@ -573,10 +582,37 @@ class Engine:
             data={"node_count": len(graph.nodes)},
         ))
 
+        # -- 15-1: Hyperedge resolver for this graph ----------------------------
+        hyperedge_resolver = None
+        if graph.hyperedges:
+            from dan.engine.hyperedge_runtime import HyperedgeResolver
+            hyperedge_resolver = HyperedgeResolver(graph)
+
+        # -- 15-3: Model selector & cost tracker --------------------------------
+        from dan.providers.capabilities import ModelCapabilityRegistry
+        from dan.providers.cost_tracker import CostTracker
+        from dan.providers.model_selector import ModelSelector
+
+        cost_tracker = CostTracker(
+            run_budget=self.config.run_budget,
+            on_budget_exceeded=self.config.on_budget_exceeded,
+        )
+        if cost_tracker_state is not None:
+            cost_tracker.restore(cost_tracker_state)
+
+        model_selector = ModelSelector(
+            provider_registry=self.provider_registry,
+            cost_tracker=cost_tracker,
+            capability_registry=ModelCapabilityRegistry(),
+        )
+
         context = self._make_context(
             state, shared_context, artifacts, local_state, graph,
             session_id=session_id, memory_writes=memory_writes,
             short_term_memory=short_term_mem,
+            hyperedge_resolver=hyperedge_resolver,
+            model_selector=model_selector,
+            cost_tracker=cost_tracker,
         )
 
         global_sem: asyncio.Semaphore | None = None
@@ -693,7 +729,7 @@ class Engine:
             if self._check_halt(state):
                 if not skip_checkpoint and self.checkpoint_store is not None:
                     await self._save_checkpoint(
-                        state, shared_context, artifacts, local_state,
+                        state, shared_context, artifacts, local_state, cost_tracker,
                     )
                 break
 
@@ -767,6 +803,22 @@ class Engine:
                 if continue_data is None:
                     continue_data = state.port_data.get_node_outputs(gate_id).get("loop")
 
+                # -- 16-4: artifact extraction & feedback filtering --------
+                if isinstance(continue_data, dict):
+                    _artifact_ports = getattr(gate_node, "artifact_ports", None)
+                    if _artifact_ports:
+                        _art_scope = context.local_state.get_scope(f"{gate_id}__artifacts")
+                        _art_list = _art_scope.setdefault("items", [])
+                        _iter_arts = {k: v for k, v in continue_data.items() if k in _artifact_ports}
+                        if _iter_arts:
+                            _art_list.append(_iter_arts)
+                        continue_data = {k: v for k, v in continue_data.items() if k not in _artifact_ports}
+
+                    _fb_sel = getattr(gate_node, "feedback_selector", None)
+                    if _fb_sel is not None:
+                        from dan.executors.control_flow import _apply_feedback_selector
+                        continue_data = _apply_feedback_selector(continue_data, _fb_sel)
+
                 for cn in cycle_nodes:
                     state.port_data.clear_node(cn)
                     state.mark(cn, NodeStatus.PENDING)
@@ -816,6 +868,14 @@ class Engine:
                         final_scope = context.local_state.get_scope(gate_id)
                         for port_name, value in final_scope.items():
                             state.port_data.set(gate_id, port_name, value)
+                    # -- 16-4: merge accumulated artifacts into gate output
+                    _art_scope_id = f"{gate_id}__artifacts"
+                    if context.local_state.has_scope(_art_scope_id):
+                        _art_scope = context.local_state.get_scope(_art_scope_id)
+                        _art_items = _art_scope.get("items", [])
+                        if _art_items:
+                            state.port_data.set(gate_id, "artifacts", _art_items)
+                        context.local_state.delete_scope(_art_scope_id)
                     break
         finally:
             if has_state_schema:
@@ -930,6 +990,50 @@ class Engine:
                 status=NodeStatus.FAILED,
                 error=f"Executor exception: {exc}",
             )
+
+        # -- 15-1: Hyperedge post-output & validation hooks --------------------
+        if (
+            result.status == NodeStatus.COMPLETED
+            and getattr(context, "hyperedge_resolver", None)
+            and getattr(context.config, "hyperedge_enforcement", "off") != "off"
+        ):
+            try:
+                result, violations = context.hyperedge_resolver.apply_post_output(
+                    node, result, context.config.hyperedge_enforcement,
+                )
+                for v in violations:
+                    if not v.passed:
+                        await self._emit(EngineEvent(
+                            event_type=EventType.HYPEREDGE_VIOLATION,
+                            run_id=state.run_id,
+                            node_id=node_id,
+                            node_type=node_type_str,
+                            data={"hyperedge_id": v.hyperedge_id, "message": v.message},
+                        ))
+                val_results = context.hyperedge_resolver.apply_validation(
+                    node, result.outputs, context.config.hyperedge_enforcement,
+                )
+                for v in val_results:
+                    if not v.passed:
+                        await self._emit(EngineEvent(
+                            event_type=EventType.HYPEREDGE_VIOLATION,
+                            run_id=state.run_id,
+                            node_id=node_id,
+                            node_type=node_type_str,
+                            data={"hyperedge_id": v.hyperedge_id, "message": v.message},
+                        ))
+            except Exception as he_exc:
+                from dan.models.hyperedges import HyperedgeViolation
+                if isinstance(he_exc, HyperedgeViolation):
+                    result = NodeResult(
+                        outputs={},
+                        status=NodeStatus.FAILED,
+                        error=str(he_exc),
+                    )
+                else:
+                    logger.warning(
+                        "Hyperedge hook error on node '%s': %s", node_id, he_exc,
+                    )
 
         state.mark(node_id, result.status)
         if result.error:
@@ -1060,6 +1164,9 @@ class Engine:
         session_id: str | None = None,
         memory_writes: list[MemoryWriteRequest] | None = None,
         short_term_memory: Any | None = None,
+        hyperedge_resolver: Any | None = None,
+        model_selector: Any | None = None,
+        cost_tracker: Any | None = None,
     ) -> ExecutionContext:
         async def run_subgraph(
             sub_graph_key: str,
@@ -1081,6 +1188,10 @@ class Engine:
                 session_id=session_id,
                 memory_writes=memory_writes,
                 short_term_memory=short_term_memory,
+                parent_hyperedge_resolver=hyperedge_resolver,
+                parent_node_id=parent_node_id,
+                model_selector=model_selector,
+                cost_tracker=cost_tracker,
             )
 
         return ExecutionContext(
@@ -1099,6 +1210,9 @@ class Engine:
             session_id=session_id,
             memory_writes=memory_writes,
             short_term_memory=short_term_memory,
+            hyperedge_resolver=hyperedge_resolver,
+            model_selector=model_selector,
+            cost_tracker=cost_tracker,
         )
 
     async def _run_subgraph(
@@ -1116,6 +1230,10 @@ class Engine:
         session_id: str | None = None,
         memory_writes: list[MemoryWriteRequest] | None = None,
         short_term_memory: Any | None = None,
+        parent_hyperedge_resolver: Any | None = None,
+        parent_node_id: str | None = None,
+        model_selector: Any | None = None,
+        cost_tracker: Any | None = None,
     ) -> dict[str, Any]:
         """Execute a named sub-graph and return its outputs."""
         sub_graph = parent_graph.sub_graphs.get(sub_graph_key)
@@ -1132,12 +1250,29 @@ class Engine:
         else:
             child_context_store = shared_context
 
+        # -- 15-1: Propagate hyperedges into child graph -----------------------
+        child_resolver = None
+        if parent_hyperedge_resolver is not None or sub_graph.hyperedges:
+            from dan.engine.hyperedge_runtime import HyperedgeResolver
+            parent_hes = (
+                parent_hyperedge_resolver.active_hyperedges
+                if parent_hyperedge_resolver is not None
+                else None
+            )
+            child_resolver = HyperedgeResolver(
+                sub_graph, parent_hyperedges=parent_hes,
+                parent_scope_node_id=parent_node_id,
+            )
+
         sub_state = ExecutionState(sub_graph, run_id=parent_state.run_id)
         sub_context = self._make_context(
             sub_state, child_context_store, artifacts, local_state, sub_graph, layer_path,
             session_id=session_id,
             memory_writes=memory_writes,
             short_term_memory=short_term_memory,
+            hyperedge_resolver=child_resolver,
+            model_selector=model_selector,
+            cost_tracker=cost_tracker,
         )
 
         if inputs:
@@ -1281,6 +1416,7 @@ class Engine:
         shared_context: SharedContextStore,
         artifacts: ArtifactStore,
         local_state: LocalStateManager,
+        cost_tracker: Any | None = None,
     ) -> None:
         if self.checkpoint_store is None:
             return
@@ -1290,6 +1426,8 @@ class Engine:
             "artifacts": artifacts.snapshot(),
             "local_state": local_state.snapshot(),
         }
+        if cost_tracker is not None:
+            checkpoint["cost_tracker"] = cost_tracker.snapshot()
         await self.checkpoint_store.save(state.run_id, checkpoint)
 
     @staticmethod
