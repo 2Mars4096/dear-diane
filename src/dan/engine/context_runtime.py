@@ -127,6 +127,93 @@ class ArtifactStore:
             ]
 
 
+class ScopedContextView(SharedContextStore):
+    """A scoped view of a parent SharedContextStore.
+
+    Enforces boundary isolation per Plan 14-2:
+    - ``reads_global`` controls which parent keys are readable.
+    - ``writes_global`` controls which parent keys are writable.
+    - The child has its own local namespace for undeclared keys.
+    - On exit, whitelisted writes are propagated back to the parent.
+
+    When ``reads_global`` / ``writes_global`` are both ``None`` (no contract),
+    the view is a full copy (backward-compatible pass-through).
+    An explicit empty list ``[]`` means "deny all".
+    """
+
+    def __init__(
+        self,
+        parent: SharedContextStore,
+        declarations: list[SharedContextDeclaration] | None = None,
+        *,
+        reads_global: list[str] | None = None,
+        writes_global: list[str] | None = None,
+    ) -> None:
+        super().__init__(declarations)
+        self._parent = parent
+        self._reads_global = set(reads_global) if reads_global is not None else None
+        self._writes_global = set(writes_global) if writes_global is not None else None
+        self._local_store: dict[str, Any] = {}
+        self._dirty_keys: set[str] = set()
+
+        if self._reads_global is not None:
+            for key in self._reads_global:
+                if key in parent._store:
+                    self._store[key] = copy.deepcopy(parent._store[key])
+        else:
+            self._store = copy.deepcopy(parent._store)
+
+    def read(self, key: str) -> Any:
+        if self._reads_global is not None and key not in self._reads_global:
+            if key in self._local_store:
+                return self._local_store[key]
+            if key in self._declarations:
+                return self._store.get(key)
+            raise KeyError(
+                f"Key '{key}' not in reads_global boundary contract"
+            )
+        return self._store.get(key) if key in self._store else self._local_store.get(key)
+
+    def write(self, key: str, value: Any) -> None:
+        if self._writes_global is not None and key in self._writes_global:
+            self._store[key] = value
+            self._dirty_keys.add(key)
+        elif key in self._declarations:
+            self._store[key] = value
+        else:
+            self._local_store[key] = value
+
+    def append(self, key: str, value: Any) -> None:
+        if self._writes_global is not None and key in self._writes_global:
+            existing = self._store.get(key)
+            if existing is None:
+                self._store[key] = [value]
+            elif isinstance(existing, list):
+                existing.append(value)
+            else:
+                self._store[key] = [existing, value]
+            self._dirty_keys.add(key)
+        elif key in self._declarations:
+            super().append(key, value)
+        else:
+            existing = self._local_store.get(key)
+            if existing is None:
+                self._local_store[key] = [value]
+            elif isinstance(existing, list):
+                existing.append(value)
+            else:
+                self._local_store[key] = [existing, value]
+
+    def has(self, key: str) -> bool:
+        return key in self._store or key in self._local_store
+
+    def propagate_to_parent(self) -> None:
+        """Write dirty keys back to the parent store."""
+        for key in self._dirty_keys:
+            if key in self._store:
+                self._parent._store[key] = copy.deepcopy(self._store[key])
+
+
 class LocalStateManager:
     """Runtime Layer 2 — scoped local state for composite/loop nodes.
 
