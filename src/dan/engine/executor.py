@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import uuid as _uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol, runtime_checkable
 
 from dan.engine.context_runtime import ArtifactStore, LocalStateManager, SharedContextStore
 from dan.engine.state import ExecutionState, NodeStatus
@@ -13,6 +14,102 @@ if TYPE_CHECKING:
     from dan.providers import ProviderConfig
     from dan.providers.registry import ProviderRegistry
     from dan.rag import EmbeddingRegistry
+
+
+# ---------------------------------------------------------------------------
+# Human rendering surface protocol (Plan 16-3)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HumanRenderRequest:
+    """Everything a rendering surface needs to present a human interaction."""
+
+    request_id: str = field(default_factory=lambda: str(_uuid.uuid4()))
+    node_id: str = ""
+    node_name: str = ""
+    render_mode: str = "text"
+    prompt: str = ""
+    instructions: str = ""
+    input_data: dict[str, Any] = field(default_factory=dict)
+    input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    options: list[str] | None = None
+    timeout_seconds: float | None = None
+    default_action: str | None = None
+    render_target: str = "dialog"
+
+
+@dataclass
+class HumanRenderResponse:
+    """The human's validated response (or a default/timeout fallback)."""
+
+    request_id: str = ""
+    data: dict[str, Any] = field(default_factory=dict)
+    source: Literal["human", "default", "timeout"] = "human"
+
+
+@runtime_checkable
+class HumanRenderer(Protocol):
+    """Contract for any rendering surface (web UI, CLI, Jupyter, API)."""
+
+    async def render(self, request: HumanRenderRequest) -> HumanRenderResponse: ...
+
+
+class LegacyCallbackRenderer:
+    """Wraps an old-style ``Callable[[dict], Awaitable[dict]]`` as a ``HumanRenderer``."""
+
+    def __init__(self, callback: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]) -> None:
+        self._callback = callback
+
+    async def render(self, request: HumanRenderRequest) -> HumanRenderResponse:
+        meta = {
+            "node_id": request.node_id,
+            "prompt": request.prompt,
+            "request_id": request.request_id,
+        }
+        raw = await self._callback(meta)
+        data = raw if isinstance(raw, dict) else {"response": raw}
+        return HumanRenderResponse(request_id=request.request_id, data=data, source="human")
+
+
+class AutoRenderer:
+    """Returns ``default_action`` when set; fails otherwise. For headless/background runs."""
+
+    async def render(self, request: HumanRenderRequest) -> HumanRenderResponse:
+        if request.default_action is not None:
+            return HumanRenderResponse(
+                request_id=request.request_id,
+                data={"response": request.default_action},
+                source="default",
+            )
+        raise RuntimeError(
+            f"AutoRenderer: no default_action for node '{request.node_id}'"
+        )
+
+
+class ProgrammaticRenderer:
+    """Returns pre-scripted responses keyed by ``node_id``. For automated testing."""
+
+    def __init__(self, responses: dict[str, dict[str, Any]]) -> None:
+        self._responses = responses
+
+    async def render(self, request: HumanRenderRequest) -> HumanRenderResponse:
+        if request.node_id in self._responses:
+            return HumanRenderResponse(
+                request_id=request.request_id,
+                data=self._responses[request.node_id],
+                source="human",
+            )
+        if request.default_action is not None:
+            return HumanRenderResponse(
+                request_id=request.request_id,
+                data={"response": request.default_action},
+                source="default",
+            )
+        raise KeyError(
+            f"ProgrammaticRenderer: no scripted response for node '{request.node_id}'"
+        )
 
 
 @dataclass
@@ -38,6 +135,11 @@ class EngineConfig:
     boundary_enforcement: bool = False
     # -- 14-3: Long-chain memory ---------------------------------------------
     memory_pipeline_enabled: bool = False
+    # -- 15-1: Hyperedge runtime & cost tracking ------------------------------
+    hyperedge_enforcement: str = "warn"  # "off" | "warn" | "strict"
+    run_budget: float | None = None
+    default_model_policy: Any | None = None
+    on_budget_exceeded: str = "warn"  # "switch" | "warn" | "halt"
 
 
 @dataclass
@@ -80,6 +182,12 @@ class ExecutionContext:
         memory_writes: list | None = None,
         # -- 14-3: Long-chain memory pipeline -----------------------------------
         short_term_memory: Any | None = None,
+        # -- 15-1: Hyperedge runtime & cost tracking ----------------------------
+        hyperedge_resolver: Any | None = None,
+        model_selector: Any | None = None,
+        cost_tracker: Any | None = None,
+        # -- 16-3: Human rendering surface --------------------------------------
+        human_renderer: HumanRenderer | None = None,
     ) -> None:
         self.state = state
         self.config = config
@@ -97,6 +205,16 @@ class ExecutionContext:
         self.session_id = session_id
         self._memory_writes: list = memory_writes if memory_writes is not None else []
         self.short_term_memory = short_term_memory
+        self.hyperedge_resolver = hyperedge_resolver
+        self.model_selector = model_selector
+        self.cost_tracker = cost_tracker
+        # -- 16-3: Auto-wrap legacy callback into renderer protocol
+        if human_renderer is not None:
+            self.human_renderer: HumanRenderer | None = human_renderer
+        elif human_input_callback is not None:
+            self.human_renderer = LegacyCallbackRenderer(human_input_callback)
+        else:
+            self.human_renderer = None
 
     # -- 5-3: Rich logging -----------------------------------------------------
     async def emit_event(
