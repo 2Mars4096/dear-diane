@@ -33,6 +33,7 @@ class EventType(str, Enum):
     ITERATION_STARTED = "iteration_started"
     ITERATION_COMPLETED = "iteration_completed"
     HUMAN_INPUT_NEEDED = "human_input_needed"
+    HUMAN_INPUT_RECEIVED = "human_input_received"
     # -- 6-10: Gate node event types -------------------------------------------
     GATE_EVALUATED = "gate_evaluated"
     # -- 7-1: Runtime reliability -----------------------------------------------
@@ -51,6 +52,23 @@ class EventType(str, Enum):
     PARALLEL_BRANCH_STARTED = "parallel_branch_started"
     PARALLEL_BRANCH_COMPLETED = "parallel_branch_completed"
     PARALLEL_FAN_IN_COMPLETED = "parallel_fan_in_completed"
+    # -- 15-1: Hyperedge runtime & cost tracking --------------------------------
+    HYPEREDGE_APPLIED = "hyperedge_applied"
+    HYPEREDGE_VIOLATION = "hyperedge_violation"
+    HYPEREDGE_BLOCKED = "hyperedge_blocked"
+    MODEL_SELECTED = "model_selected"
+    COST_RECORDED = "cost_recorded"
+    BUDGET_WARNING = "budget_warning"
+    BUDGET_EXCEEDED = "budget_exceeded"
+    # -- 16-1: Agent team events -----------------------------------------------
+    TEAM_TURN_STARTED = "team_turn_started"
+    TEAM_TURN_COMPLETED = "team_turn_completed"
+    TEAM_HANDOFF = "team_handoff"
+    TEAM_COMPLETED = "team_completed"
+    # -- 16-2: Voting / ensemble events ----------------------------------------
+    VOTE_STARTED = "vote_started"
+    VOTE_CAST = "vote_cast"
+    VOTE_COMPLETED = "vote_completed"
 
 
 @dataclass(frozen=True)
