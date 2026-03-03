@@ -1178,7 +1178,24 @@ Use `strict=true` in `add_edge` operations when building from intent to fail fas
 
 ---
 
-## 13. Import Map
+## 13. Execution & Observability (Per-Node Logs)
+
+The DAN engine emits a rich stream of events during execution. Every event is strictly associated with its source node (`node_id`) unless it is a workflow-level lifecycle event.
+
+### Event Types
+There are 14 typed events: `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`.
+
+### Per-Node Tracking
+- **Automatic Tagging:** The `Engine` automatically tags every event emitted via `ExecutionContext.emit_event()` with the currently executing `node_id`.
+- **Persistence:** The `RunStore` captures the entire event stream into `{run_id}.events.jsonl`, inherently preserving the per-node execution history (tool calls, LLM thinking, standard output).
+- **Frontend Subscriptions:**
+  - `GET /api/runs/{run_id}/events` provides filtering by `node_id` and `event_type`.
+  - The `LogPanel` groups all raw events by `node_id`, ensuring that parallel node outputs are not interleaved but cleanly segregated.
+  - The Chat interface derives node progress purely from `node_started`/`node_completed`/`node_failed`/`node_output` events, providing deep-links to the complete per-node history.
+
+---
+
+## 14. Import Map
 
 ```python
 # Builder

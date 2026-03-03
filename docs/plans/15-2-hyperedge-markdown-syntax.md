@@ -1,7 +1,7 @@
 # 15-2: Hyperedge Markdown Syntax
 
 **Parent:** [15-behavior-modifiers](15-behavior-modifiers.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Define a markdown file format for skills and rules, add reference syntax to workflow markdown files for attaching hyperedges with scope, extend the loader/compiler/decompiler for round-trip fidelity, and update the builder API and visual editor to support hyperedge authoring.
 
 ## Existing Baseline

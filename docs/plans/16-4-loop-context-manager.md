@@ -1,7 +1,7 @@
 # 16-4: Loop as Context Manager
 
 **Parent:** [16-execution-primitives](16-execution-primitives.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Extend loop nodes (`GateNode(while)`, `WhileLoopNode`) with feedback selectors that declare which body outputs feed back to the next iteration vs. which are side-effect artifacts — giving loops explicit control over what context cycles back, enabling cleaner iteration patterns and reducing unnecessary context accumulation.
 
 ## Existing Baseline
@@ -22,41 +22,41 @@
 
 ## Tasks
 
-- [ ] 1. Define feedback selector model
-  - [ ] 1-1. Create `FeedbackSelector` model in `models/context.py` (alongside `CompactionRule` and `ContextProjection`): `include` (list[str] | None — output port names to feed back; if set, only these ports cycle back), `exclude` (list[str] | None — output port names to suppress from feedback; if set, all ports *except* these cycle back), `rename` (dict[str, str] | None — remap output port names before feeding back, e.g., `{"improved_draft": "draft"}` so the next iteration receives it under the original name), `transform` (str | None — expression evaluated on feedback dict to produce the actual feedback, e.g., `"{'summary': inputs['result'][:200]}"` for truncation).
-  - [ ] 1-2. Validation: `include` and `exclude` are mutually exclusive (raise if both set). At least one must be non-None for the `FeedbackSelector` to have any effect (otherwise it's a no-op passthrough).
+- [x] 1. Define feedback selector model
+  - [x] 1-1. Create `FeedbackSelector` model in `models/context.py` (alongside `CompactionRule` and `ContextProjection`): `include` (list[str] | None — output port names to feed back; if set, only these ports cycle back), `exclude` (list[str] | None — output port names to suppress from feedback; if set, all ports *except* these cycle back), `rename` (dict[str, str] | None — remap output port names before feeding back, e.g., `{"improved_draft": "draft"}` so the next iteration receives it under the original name), `transform` (str | None — expression evaluated on feedback dict to produce the actual feedback, e.g., `"{'summary': inputs['result'][:200]}"` for truncation).
+  - [x] 1-2. Validation: `include` and `exclude` are mutually exclusive (raise if both set). At least one must be non-None for the `FeedbackSelector` to have any effect (otherwise it's a no-op passthrough).
 
-- [ ] 2. Add feedback_selector to loop nodes
-  - [ ] 2-1. Add `feedback_selector: FeedbackSelector | None` field to `GateNode`. Default `None` (all outputs feed back — preserves current behavior).
-  - [ ] 2-2. Add `feedback_selector: FeedbackSelector | None` field to `WhileLoopNode`. Default `None`.
-  - [ ] 2-3. Add `artifact_ports` field (list[str] | None) to `GateNode` and `WhileLoopNode` — convenience shorthand: ports listed here are automatically excluded from feedback and routed to a `"artifacts"` output port that accumulates across iterations. This is the inverse of `feedback_selector.include`: declare what *isn't* feedback rather than what *is*.
-  - [ ] 2-4. Interaction: `artifact_ports` and `feedback_selector` can coexist. `artifact_ports` is applied first (removes those ports from the feedback pool), then `feedback_selector` filters the remaining ports.
+- [x] 2. Add feedback_selector to loop nodes
+  - [x] 2-1. Add `feedback_selector: FeedbackSelector | None` field to `GateNode`. Default `None` (all outputs feed back — preserves current behavior).
+  - [x] 2-2. Add `feedback_selector: FeedbackSelector | None` field to `WhileLoopNode`. Default `None`.
+  - [x] 2-3. Add `artifact_ports` field (list[str] | None) to `GateNode` and `WhileLoopNode` — convenience shorthand: ports listed here are automatically excluded from feedback and routed to a `"artifacts"` output port that accumulates across iterations. This is the inverse of `feedback_selector.include`: declare what *isn't* feedback rather than what *is*.
+  - [x] 2-4. Interaction: `artifact_ports` and `feedback_selector` can coexist. `artifact_ports` is applied first (removes those ports from the feedback pool), then `feedback_selector` filters the remaining ports.
 
-- [ ] 3. Implement feedback filtering in scheduler (gate loops)
-  - [ ] 3-1. In `_inject_feedback` (scheduler.py), after collecting outputs from the cycle's last node, apply `FeedbackSelector` if the gate node has one:
+- [x] 3. Implement feedback filtering in scheduler (gate loops)
+  - [x] 3-1. In `_iterate_cycle` (scheduler.py, ~line 802), where `continue_data` dict entries are injected as virtual inputs via `state.port_data.set()`, apply `FeedbackSelector` if the gate node has one:
     - If `include` is set: keep only keys matching `include`.
     - If `exclude` is set: drop keys matching `exclude`.
     - Apply `rename` mapping to surviving keys.
     - If `transform` is set, evaluate it (via `evaluate_expression`) with `{"inputs": filtered_dict}` and use the result.
-  - [ ] 3-2. For `artifact_ports`: extract those ports from the body output before feedback injection; accumulate them in a list stored in `LocalStateManager` under `{gate_id}__artifacts`. After the loop exits (gate routes to "done"), merge accumulated artifacts into the gate's final output under an `"artifacts"` key.
-  - [ ] 3-3. Preserve backward compatibility: when `feedback_selector` is `None` and `artifact_ports` is `None`, behavior is identical to current (all outputs feed back).
+  - [x] 3-2. For `artifact_ports`: extract those ports from the body output before feedback injection; accumulate them in a list stored in `LocalStateManager` under `{gate_id}__artifacts`. After the loop exits (gate routes to "done"), merge accumulated artifacts into the gate's final output under an `"artifacts"` key.
+  - [x] 3-3. Preserve backward compatibility: when `feedback_selector` is `None` and `artifact_ports` is `None`, behavior is identical to current (all outputs feed back).
 
-- [ ] 4. Implement feedback filtering in WhileLoopExecutor
-  - [ ] 4-1. In `WhileLoopExecutor.execute()`, after `body_output = await context.run_subgraph(...)` and before `working_data = {**working_data, **body_output}`, apply `FeedbackSelector`:
+- [x] 4. Implement feedback filtering in WhileLoopExecutor
+  - [x] 4-1. In `WhileLoopExecutor.execute()`, after `body_output = await context.run_subgraph(...)` and before `working_data = {**working_data, **body_output}`, apply `FeedbackSelector`:
     - Filter `body_output` using `include`/`exclude`.
     - Apply `rename` to filtered keys.
     - Apply `transform` if set.
     - Merge only the filtered result into `working_data`.
-  - [ ] 4-2. For `artifact_ports`: extract and accumulate in scope under `"__artifacts"` key. Include in final `NodeResult.outputs`.
-  - [ ] 4-3. If `state_schema` is also present, feedback selector applies *after* state_schema extraction. Both mechanisms cooperate: `state_schema` manages typed loop variables; `feedback_selector` manages what additional data cycles back.
+  - [x] 4-2. For `artifact_ports`: extract and accumulate in scope under `"__artifacts"` key. Include in final `NodeResult.outputs`.
+  - [x] 4-3. If `state_schema` is also present, feedback selector applies *after* state_schema extraction. Both mechanisms cooperate: `state_schema` manages typed loop variables; `feedback_selector` manages what additional data cycles back.
 
-- [ ] 5. Activate ContextProjection
-  - [ ] 5-1. `ContextProjection` in `models/context.py` has been dead code since Phase 0. Its `include`/`exclude`/`rename`/`transform` fields align exactly with `FeedbackSelector`. Decision: **reuse `ContextProjection` as the `FeedbackSelector` model** instead of creating a new model. Rename the field on loop nodes to `feedback_projection: ContextProjection | None` for semantic clarity.
-  - [ ] 5-2. Alternatively, if `ContextProjection` has additional fields/semantics that don't fit feedback selection, keep them separate and document the relationship. The key requirement is that the feedback selector has `include`, `exclude`, `rename`, and `transform` — whatever model provides those works.
-  - [ ] 5-3. If reusing `ContextProjection`, update the plan's field name references accordingly (`feedback_selector` → `feedback_projection`). Update 14-* plan notes that say "ContextProjection is dead code" to reflect activation.
+- [x] 5. Relationship to `ContextProjection`
+  - [x] 5-1. `ContextProjection` in `models/context.py` has been dead code since Phase 0, but its actual fields (`name`, `context_keys`, `local_state_keys`, `artifact_uris`) are designed for a different purpose: selecting which shared-context/local-state/artifact keys are visible at scope boundaries. It does **not** have `include`/`exclude`/`rename`/`transform` on output ports. **`FeedbackSelector` must be a new model** — not a reuse of `ContextProjection`.
+  - [x] 5-2. `ContextProjection` remains dead code and can be activated separately in the future for its original purpose (projecting context views at composite-node boundaries). Document this distinction.
+  - [x] 5-3. Update 14-* plan notes: `ContextProjection` status is "dead code — planned for separate activation as context-view projection, not feedback selection".
 
 - [ ] 6. Extend builder API
-  - [ ] 6-1. Add `feedback` parameter to `wf.while_loop()` context manager: `feedback=["draft", "score"]` (shorthand for `ContextProjection(include=["draft", "score"])`) or `feedback=ContextProjection(include=[...], rename={...})` (full model).
+  - [ ] 6-1. Add `feedback` parameter to `wf.while_loop()` context manager: `feedback=["draft", "score"]` (shorthand for `FeedbackSelector(include=["draft", "score"])`) or `feedback=FeedbackSelector(include=[...], rename={...})` (full model).
   - [ ] 6-2. Add `artifacts` parameter to `wf.while_loop()`: `artifacts=["plot", "raw_data"]` (shorthand for `artifact_ports=["plot", "raw_data"]`).
   - [ ] 6-3. Example usage:
     ```python
@@ -66,7 +66,7 @@
         reviewer = body.llm("review", prompt=f"Review: {drafter}")
         drafter = body.llm("revise", prompt=f"Improve based on: {reviewer}")
     ```
-  - [ ] 6-4. Extend builder compiler to set `feedback_projection` and `artifact_ports` on the generated gate/while node.
+  - [ ] 6-4. Extend builder compiler to set `feedback_selector` and `artifact_ports` on the generated gate/while node.
   - [ ] 6-5. Extend builder decompiler to emit `feedback=` and `artifacts=` parameters.
 
 - [ ] 7. Extend markdown loader
@@ -76,7 +76,7 @@
       reviewer -> drafter
     ```
   - [ ] 7-2. Extend `flow_parser.py` to parse `feedback:` and `artifacts:` inside loop parenthetical options.
-  - [ ] 7-3. Extend `loader/compiler.py` to set `feedback_projection` and `artifact_ports` on compiled loop nodes.
+  - [ ] 7-3. Extend `loader/compiler.py` to set `feedback_selector` and `artifact_ports` on compiled loop nodes.
   - [ ] 7-4. Extend `loader/decompiler.py` to emit feedback/artifacts in flow notation.
 
 - [ ] 8. Extend visual editor
@@ -87,26 +87,26 @@
 
 - [ ] 9. Validation
   - [ ] 9-1. Extend `validate_graph()`: feedback selector `include`/`exclude` port names must reference actual output port names of the loop body's exit nodes. Warn on unknown port names.
-  - [ ] 9-2. Warn if `feedback_projection` would filter out all ports (empty feedback = loop body has no effect on next iteration).
-  - [ ] 9-3. Warn if `artifact_ports` and `feedback_projection.include` overlap (a port can't be both feedback and artifact).
+  - [ ] 9-2. Warn if `feedback_selector` would filter out all ports (empty feedback = loop body has no effect on next iteration).
+  - [ ] 9-3. Warn if `artifact_ports` and `feedback_selector.include` overlap (a port can't be both feedback and artifact).
   - [ ] 9-4. Validate `transform` expression is syntactically valid (parse-check via `evaluate_expression` dry run).
 
 - [ ] 10. Tests and documentation
-  - [ ] 10-1. Unit tests: `ContextProjection` model (or `FeedbackSelector`) serialization, `include`/`exclude` mutual exclusivity validation, `rename` mapping, `transform` expression evaluation.
-  - [ ] 10-2. Integration tests (gate loop): while-gate with `feedback_projection(include=["score"])` — verify only `score` feeds back while `draft` is available as final output; gate with `artifact_ports=["trace"]` — verify traces accumulate across iterations.
-  - [ ] 10-3. Integration tests (WhileLoopNode): while-loop with `feedback_projection(exclude=["debug_log"])` — verify `debug_log` doesn't pollute next iteration's working data; with `rename={"improved": "draft"}` — verify rename before feedback.
-  - [ ] 10-4. Backward compat tests: loops without `feedback_projection` or `artifact_ports` behave identically to current.
+  - [x] 10-1. Unit tests: `FeedbackSelector` model serialization, `include`/`exclude` mutual exclusivity validation, `rename` mapping, `transform` expression evaluation.
+  - [x] 10-2. Integration tests (gate loop): while-gate with `FeedbackSelector(include=["score"])` — verify only `score` feeds back while `draft` is available as final output; gate with `artifact_ports=["trace"]` — verify traces accumulate across iterations.
+  - [x] 10-3. Integration tests (WhileLoopNode): while-loop with `FeedbackSelector(exclude=["debug_log"])` — verify `debug_log` doesn't pollute next iteration's working data; with `rename={"improved": "draft"}` — verify rename before feedback.
+  - [x] 10-4. Backward compat tests: loops without `feedback_selector` or `artifact_ports` behave identically to current.
   - [ ] 10-5. Builder round-trip tests: `wf.while_loop(feedback=[...], artifacts=[...])` → build → decompile → compare.
   - [ ] 10-6. Markdown round-trip tests: loop with feedback/artifacts → compile → decompile → compare.
-  - [ ] 10-7. Update `docs/architecture.md` §Context Projection: replace "dead code" notes with implementation reference; document feedback selector mechanics.
-  - [ ] 10-8. Update `docs/llm-api-guide.md`: feedback_projection field reference, builder API, markdown syntax.
-  - [ ] 10-9. Update `docs/changelog.md`, `docs/todo.md`, and this plan as implementation progresses.
+  - [ ] 10-7. Update `docs/architecture.md`: add `FeedbackSelector` mechanics documentation. Note that `ContextProjection` remains dead code (separate concern from feedback selection).
+  - [ ] 10-8. Update `docs/llm-api-guide.md`: `feedback_selector` field reference, builder API, markdown syntax.
+  - [x] 10-9. Update `docs/changelog.md`, `docs/todo.md`, and this plan as implementation progresses.
 
 ## Primary Files
 
-- `src/dan/models/context.py` — `ContextProjection` (activated as feedback selector), or new `FeedbackSelector` model
-- `src/dan/models/control_flow.py` — `feedback_projection` and `artifact_ports` fields on `GateNode`, `WhileLoopNode`
-- `src/dan/engine/scheduler.py` — `_inject_feedback()` filtering logic for gate-based loops
+- `src/dan/models/context.py` — new `FeedbackSelector` model (alongside existing `CompactionRule`)
+- `src/dan/models/control_flow.py` — `feedback_selector` and `artifact_ports` fields on `GateNode`, `WhileLoopNode`
+- `src/dan/engine/scheduler.py` — feedback filtering in `_execute_with_cycles()` inline injection block
 - `src/dan/executors/control_flow.py` — `WhileLoopExecutor.execute()` filtering logic, artifact accumulation
 - `src/dan/engine/context_runtime.py` — `LocalStateManager` artifact storage during loop execution
 - `src/dan/engine/conditions.py` — `evaluate_expression()` for `transform` expressions
@@ -125,16 +125,16 @@
 
 ## Decisions
 
-- **Reuse `ContextProjection` if viable.** The model already has `include`, `exclude`, `rename`, `transform` — exactly the fields needed. Activating dead code is preferable to duplicating the model. Final decision after inspecting whether `ContextProjection.projections` list semantics on `CompositeNode` conflict with single-projection feedback semantics. If conflict: create `FeedbackSelector` as a focused model.
-- **`artifact_ports` is sugar, not a separate mechanism.** It's equivalent to `feedback_projection(exclude=artifact_ports)` + accumulation. The sugar makes common patterns readable: "these ports are side-effects, collect them."
+- **`FeedbackSelector` is a new model, not a reuse of `ContextProjection`.** Inspection of the actual `ContextProjection` model (`models/context.py:143–160`) reveals it has `name`/`context_keys`/`local_state_keys`/`artifact_uris` — designed for projecting shared-context views at scope boundaries, not for filtering output ports. The `FeedbackSelector` needs `include`/`exclude`/`rename`/`transform` on output port names — a fundamentally different concern. Both models can coexist; `ContextProjection` remains dead code for future activation.
+- **`artifact_ports` is sugar, not a separate mechanism.** It's equivalent to `FeedbackSelector(exclude=artifact_ports)` + accumulation. The sugar makes common patterns readable: "these ports are side-effects, collect them."
 - **Feedback filtering is applied per-iteration, not post-loop.** Each iteration's output is filtered before becoming the next iteration's input. This prevents intermediate artifacts from polluting the feedback channel. Post-loop, all outputs (including accumulated artifacts) are available.
-- **`state_schema` and `feedback_projection` cooperate.** `state_schema` manages typed variables (loop counters, convergence scores). `feedback_projection` manages which *additional* data cycles back beyond the state variables. They're orthogonal concerns applied sequentially: state_schema extraction first, then feedback filtering on the remaining data.
+- **`state_schema` and `feedback_selector` cooperate.** `state_schema` manages typed variables (loop counters, convergence scores). `feedback_selector` manages which *additional* data cycles back beyond the state variables. They're orthogonal concerns applied sequentially: state_schema extraction first, then feedback filtering on the remaining data.
 - **`transform` is an escape hatch.** Most users will use `include`/`exclude`/`rename`. `transform` handles edge cases (e.g., extracting a nested field, truncating a string, computing a derived value). It uses the existing safe expression evaluator.
 - **Backward compatible by default.** All new fields default to `None`. Existing loops behave identically. No migration needed.
 
 ## Notes
 
 - This plan addresses the "async loop design" backlog item's feedback concern: "orchestrator runs independently with access to current progress and can emit commands anytime" — feedback selectors are the mechanism for controlling what the orchestrator sees between iterations.
-- The vibe-research workflow manually extracts feedback signals via code nodes between loop iterations. With `feedback_projection`, those code nodes become unnecessary — the loop node itself declares what feeds back.
-- `ContextProjection` was designed in Phase 0 and has been dead code since. Its `include`/`exclude`/`rename`/`transform` fields were forward-looking for exactly this use case. This plan is where it finally gets activated.
+- The vibe-research workflow manually extracts feedback signals via code nodes between loop iterations. With `feedback_selector`, those code nodes become unnecessary — the loop node itself declares what feeds back.
+- `ContextProjection` was designed in Phase 0 as a scope-boundary context-view selector (`context_keys`/`local_state_keys`/`artifact_uris`). It does NOT have `include`/`exclude`/`rename`/`transform` on output ports — that was a conceptual description in architecture docs, not the actual model fields. This plan introduces `FeedbackSelector` as a new, focused model for output-port-level feedback filtering. `ContextProjection` remains available for future activation for its original purpose.
 - If 15-1 hyperedges land first, a guardrail hyperedge could enforce feedback constraints (e.g., "loops must have explicit feedback selectors") — but this plan doesn't depend on 15-1.

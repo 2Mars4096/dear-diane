@@ -1,6 +1,6 @@
 # 15: Phase 9B — Behavior Modifiers
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Implement hyperedges (skills, guardrails, style rules, overrides) as first-class graph-level constructs that attach to arbitrary subsets of nodes and modify execution behavior at runtime — plus a dynamic model selection layer that replaces static per-node model assignment with policy-driven, budget-aware routing.
 
 ## Motivation

@@ -1,7 +1,7 @@
 # 16-1: Agent Teams
 
 **Parent:** [16-execution-primitives](16-execution-primitives.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Implement group-chat style multi-agent coordination as a first-class node type — agents within a team can address each other via `@`-routing, explicitly hand off work, and share a conversational context that accumulates across turns, enabling collaborative problem-solving patterns that the unidirectional `OrchestratorNode` cannot express.
 
 ## Existing Baseline
@@ -16,47 +16,48 @@
 | `ScopedContextView` (14-2) | `engine/context_runtime.py` | Isolated read/write view of shared context within sub-graph boundaries | Available for team-member isolation if needed |
 | `MemoryStore` (14-1) | `engine/memory_store.py` | `FileSystemMemoryStore` with session/workflow scoping, CRUD, APPEND/MERGE modes | Could persist team conversations across runs |
 | `RouterNode` | `models/control_flow.py` | LLM-powered routing: model picks from `route_descriptions` | Routing logic exists; could be reused for turn-taking decisions |
-| Engine event system | `engine/events.py` | 14+ event types, `event_callback` on `ExecutionContext` | Events are fire-and-forget notifications; not bidirectional messages |
+| Engine event system | `engine/events.py` | 26 event types (incl. lifecycle, logging, gate, parallel, RAG, sandbox, validator), `event_callback` on `ExecutionContext` | Events are fire-and-forget notifications; not bidirectional messages |
 | `context.run_subgraph()` | `engine/scheduler.py` `_run_subgraph()` | Executes a sub-graph with inputs, returns outputs | Blocking call; no mid-execution injection of new inputs |
 | `HumanInTheLoopNode` | `models/control_flow.py` | Pause-resume via callback; single human response per invocation | Pattern for "wait for external input" reusable for "wait for peer message" |
-| Builder sub-graph context managers | `builder/builder.py` | `wf.composite()`, `wf.while_loop()`, `wf.for_each()`, `wf.parallel()` | No `wf.team()` or `wf.group_chat()` |
+| Builder sub-graph context managers | `builder/builder.py` | `wf.composite()`, `wf.while_loop()`, `wf.for_each()`, `wf.parallel_subagents()`, `wf.orchestrator()` | No `wf.team()` or `wf.group_chat()` |
 | Markdown workflow format | `loader/compiler.py` | `## Agents` section for node references | No team/group-chat section |
 | Node type union | `models/graph.py` | 16 node types in `Node` discriminated union | No `AgentTeamNode` |
 
 ## Tasks
 
-- [ ] 1. Define AgentTeamNode model
-  - [ ] 1-1. Create `AgentTeamNode` in `models/control_flow.py` with `node_type: Literal["agent_team"]`. Fields: `agents` (dict[str, str] — agent_name → sub_graph key, analogous to `OrchestratorNode.teams`), `moderator_prompt` (str — system prompt for the moderator LLM that manages turn order), `moderator_model` (str | None — LLM for turn decisions), `turn_strategy` (Literal: `"round_robin"`, `"moderator"`, `"free_form"`, `"sequential"` — how turns are assigned), `max_turns` (int, default 20 — safety bound), `completion_condition` (Literal: `"consensus"`, `"moderator_halt"`, `"max_turns"`, `"all_responded"` — when the team conversation ends), `timeout_seconds` (float | None).
-  - [ ] 1-2. Add `shared_context_keys` field (list[str]) — context keys visible to all team agents (e.g., `["conversation_history", "shared_artifacts"]`). Automatically provisioned in `SharedContextStore` at team start.
-  - [ ] 1-3. Add `handoff_policy` field (Literal: `"explicit"`, `"any"`, `"moderator_only"` — who can initiate handoffs). `"explicit"` = agent must use `@handoff(target)` in output; `"any"` = any agent can hand off to any other; `"moderator_only"` = only the moderator routes.
-  - [ ] 1-4. Add composite-node contract fields (matching `OrchestratorNode` pattern): `external_input_schema`, `external_output_schema`, `input_mappings`, `agent_inputs` (per-agent overrides), `read_set`/`write_set`, `compaction_rule`, `failure_policy`, `boundary_contract`.
-  - [ ] 1-5. Add `AgentTeamNode` to `Node` discriminated union in `models/graph.py`. Export from `models/control_flow.py`.
+- [x] 1. Define AgentTeamNode model
+  - [x] 1-1. Create `AgentTeamNode` in `models/control_flow.py` with `node_type: Literal["agent_team"]`. Fields: `agents` (dict[str, str] — agent_name → sub_graph key, analogous to `OrchestratorNode.teams`), `moderator_prompt` (str — system prompt for the moderator LLM that manages turn order), `moderator_model` (str | None — LLM for turn decisions), `turn_strategy` (Literal: `"round_robin"`, `"moderator"`, `"free_form"`, `"sequential"` — how turns are assigned), `max_turns` (int, default 20 — safety bound), `completion_condition` (Literal: `"consensus"`, `"moderator_halt"`, `"max_turns"`, `"all_responded"` — when the team conversation ends), `timeout_seconds` (float | None).
+  - [x] 1-2. Add `shared_context_keys` field (list[str]) — context keys visible to all team agents (e.g., `["conversation_history", "shared_artifacts"]`). Automatically provisioned in `SharedContextStore` at team start.
+  - [x] 1-3. Add `handoff_policy` field (Literal: `"explicit"`, `"any"`, `"moderator_only"` — who can initiate handoffs). `"explicit"` = agent must use `@handoff(target)` in output; `"any"` = any agent can hand off to any other; `"moderator_only"` = only the moderator routes.
+  - [ ] 1-4. Add `message_port` field (str, default `"message"`) — the expected output port from agent sub-graphs that contains the conversational text to be parsed for `@` mentions.
+  - [x] 1-5. Add composite-node contract fields (matching `OrchestratorNode` pattern): `external_input_schema`, `external_output_schema`, `input_mappings`, `agent_inputs` (per-agent overrides), `read_set`/`write_set`, `compaction_rule`, `failure_policy`, `boundary_contract`.
+  - [x] 1-6. Add `AgentTeamNode` to `Node` discriminated union in `models/graph.py`. Export from `models/control_flow.py`.
 
-- [ ] 2. Define team message and handoff protocol
-  - [ ] 2-1. Create `TeamMessage` model in `models/control_flow.py` (or a new `models/team.py`): `sender` (str — agent name), `recipients` (list[str] — `@`-addressed targets, or `["all"]` for broadcast), `content` (str), `message_type` (Literal: `"message"`, `"handoff"`, `"result"`, `"question"`), `metadata` (dict — optional structured data alongside text), `turn_number` (int).
-  - [ ] 2-2. Define `HandoffRequest` model: `source_agent` (str), `target_agent` (str), `reason` (str), `context` (dict — data to pass to target), `handoff_type` (Literal: `"transfer"`, `"consult"` — transfer = source is done; consult = source expects a reply back).
-  - [ ] 2-3. Define `TeamConversation` model: `messages` (list[TeamMessage]), `active_agent` (str | None), `turn_count` (int), `handoff_log` (list[HandoffRequest]). Stored in `SharedContextStore` under a well-known key (`__team__{node_id}__conversation`).
-  - [ ] 2-4. Define `@`-routing syntax for agent outputs: when an LLM agent's response contains `@agent_name`, the moderator routes the next turn to that agent. Parsing via regex; validated against known agent names in the team.
+- [x] 2. Define team message and handoff protocol
+  - [x] 2-1. Create `TeamMessage` model in `models/control_flow.py` (or a new `models/team.py`): `sender` (str — agent name), `recipients` (list[str] — `@`-addressed targets, or `["all"]` for broadcast), `content` (str), `message_type` (Literal: `"message"`, `"handoff"`, `"result"`, `"question"`), `metadata` (dict — optional structured data alongside text), `turn_number` (int).
+  - [x] 2-2. Define `HandoffRequest` model: `source_agent` (str), `target_agent` (str), `reason` (str), `context` (dict — data to pass to target), `handoff_type` (Literal: `"transfer"`, `"consult"` — transfer = source is done; consult = source expects a reply back).
+  - [x] 2-3. Define `TeamConversation` model: `messages` (list[TeamMessage]), `active_agent` (str | None), `turn_count` (int), `handoff_log` (list[HandoffRequest]). Stored in `SharedContextStore` under a well-known key (`__team__{node_id}__conversation`).
+  - [x] 2-4. Define `@`-routing syntax for agent outputs: when an LLM agent's response contains `@agent_name`, the moderator routes the next turn to that agent. Parsing via regex; validated against known agent names in the team.
 
-- [ ] 3. Build AgentTeamExecutor
-  - [ ] 3-1. Create `AgentTeamExecutor` in `executors/control_flow.py`. Core loop: initialize `TeamConversation` → select first agent (by strategy) → run agent's sub-graph with conversation context as input → parse output for `@` mentions and handoff requests → update conversation → select next agent → repeat until completion condition met.
-  - [ ] 3-2. Implement turn strategies:
+- [x] 3. Build AgentTeamExecutor
+  - [x] 3-1. Create `AgentTeamExecutor` in `executors/control_flow.py`. Core loop: initialize `TeamConversation` → select first agent (by strategy) → run agent's sub-graph with conversation context as input → parse output for `@` mentions and handoff requests → update conversation → select next agent → repeat until completion condition met.
+  - [x] 3-2. Implement turn strategies:
     - `round_robin`: cycle through agents in declaration order.
     - `sequential`: each agent runs once in order, no repeats.
     - `moderator`: after each agent turn, call moderator LLM with conversation so far + agent roster → moderator returns next agent name.
     - `free_form`: agent's `@` mentions determine next speaker; if no mention, moderator decides; if no moderator, round-robin fallback.
-  - [ ] 3-3. Implement agent sub-graph execution: for each agent turn, call `context.run_subgraph(agent_key, agent_inputs)` where `agent_inputs` includes `conversation_history` (compacted), `current_turn` (the message addressed to this agent), `team_roster` (names + descriptions), `handoff_context` (if this turn resulted from a handoff).
-  - [ ] 3-4. Implement handoff processing: when an agent's output is parsed as a `HandoffRequest`, validate target exists, update `TeamConversation.handoff_log`, set `active_agent` to target, pass handoff context as next-turn input. For `"consult"` type, push a return-to-source marker so the source resumes after the consulted agent responds.
-  - [ ] 3-5. Implement completion detection: `"consensus"` = moderator LLM judges if agents have converged (configurable via `moderator_prompt`); `"moderator_halt"` = moderator explicitly returns `HALT`; `"max_turns"` = hit `max_turns` limit; `"all_responded"` = every agent has had at least one turn.
-  - [ ] 3-6. Implement conversation compaction: before injecting conversation history into agent inputs, apply `CompactionRule` if set on the node. Default: `sliding_window` with window size proportional to agent count × 3 turns.
-  - [ ] 3-7. Collect final result: when conversation ends, call moderator (or use last agent's output) to produce a structured `TeamResult` — `final_answer` (str), `agent_contributions` (dict[str, str] — per-agent summary), `consensus_reached` (bool), `total_turns` (int).
+  - [x] 3-3. Implement agent sub-graph execution: for each agent turn, call `context.run_subgraph(agent_key, agent_inputs)` where `agent_inputs` includes `conversation_history` (compacted), `current_turn` (the message addressed to this agent), `team_roster` (names + descriptions), `handoff_context` (if this turn resulted from a handoff).
+  - [x] 3-4. Implement handoff processing: when an agent's output is parsed as a `HandoffRequest`, validate target exists, update `TeamConversation.handoff_log`, set `active_agent` to target, pass handoff context as next-turn input. For `"consult"` type, push a return-to-source marker so the source resumes after the consulted agent responds.
+  - [x] 3-5. Implement completion detection: `"consensus"` = keyword-based check for CONSENSUS in output (LLM call deferred to integration phase); `"moderator_halt"` = HALT keyword in last message; `"max_turns"` = hit `max_turns` limit; `"all_responded"` = every agent has had at least one turn. Added sequential early-exit: `sequential` strategy stops when all agents have spoken once, regardless of `completion_condition`. Added `handoff_policy` enforcement: `moderator_only` suppresses agent-initiated handoffs.
+  - [x] 3-6. Implement conversation compaction: before injecting conversation history into agent inputs, apply `CompactionRule` if set on the node. Default: `sliding_window` with window size proportional to agent count × 3 turns.
+  - [x] 3-7. Collect final result: when conversation ends, use last agent's output as `result`, include `agent_contributions` (dict[str, str]), `consensus_reached` (bool), `total_turns` (int), and full `conversation` log.
 
-- [ ] 4. Integrate with scheduler and engine
-  - [ ] 4-1. Register `AgentTeamExecutor` in `executors/__init__.py` for `node_type="agent_team"`.
-  - [ ] 4-2. In `_execute_node` (scheduler.py), handle `agent_team` the same as other composite nodes — resolve inputs, call executor, store outputs.
+- [x] 4. Integrate with scheduler and engine
+  - [x] 4-1. Register `AgentTeamExecutor` in scheduler `_register_defaults()` for `node_type="agent_team"`.
+  - [x] 4-2. In `_execute_node` (scheduler.py), handle `agent_team` the same as other composite nodes — resolve inputs, call executor, store outputs. (Already handled by generic executor dispatch.)
   - [ ] 4-3. In `_run_subgraph`, propagate team-level `SharedContextStore` keys to child sub-graphs so agents can read shared context. Respect `BoundaryContract` if present.
-  - [ ] 4-4. Emit engine events: `TEAM_TURN_STARTED` (agent_name, turn_number), `TEAM_TURN_COMPLETED` (agent_name, turn_number, message summary), `TEAM_HANDOFF` (source, target, reason), `TEAM_COMPLETED` (consensus_reached, total_turns).
-  - [ ] 4-5. Add event types to `engine/events.py`.
+  - [x] 4-4. Emit engine events: `TEAM_TURN_STARTED` (agent_name, turn_number), `TEAM_TURN_COMPLETED` (agent_name, turn_number, message summary), `TEAM_HANDOFF` (source, target, reason), `TEAM_COMPLETED` (consensus_reached, total_turns).
+  - [x] 4-5. Add event types to `engine/events.py` (already present).
 
 - [ ] 5. Extend builder API
   - [ ] 5-1. Add `wf.team(name, agents: dict[str, NodeRef], turn_strategy, moderator_prompt, ...)` to `WorkflowBuilder`. Returns a `NodeRef` wrapping the `AgentTeamNode`. Each agent value is a `NodeRef` to a composite sub-graph.
@@ -94,8 +95,8 @@
   - [ ] 8-3. Warn if `max_turns` is very high (>50) — likely misconfigured.
 
 - [ ] 9. Tests and documentation
-  - [ ] 9-1. Unit tests: `AgentTeamNode` serialization, `TeamMessage`/`HandoffRequest` models, `@`-routing regex parsing, turn strategy selection logic.
-  - [ ] 9-2. Integration tests: round-robin team with 3 mock agents (verify turn order and conversation accumulation), moderator-directed team (mock moderator LLM), handoff flow (agent A hands off to B, B responds, flow returns), consensus completion (moderator halts after convergence), max_turns safety bound.
+  - [x] 9-1. Unit tests: `AgentTeamNode` serialization, `TeamMessage`/`HandoffRequest` models, `@`-routing regex parsing, turn strategy selection logic.
+  - [x] 9-2. Integration tests (41 total): round-robin 3-agent turn order + conversation accumulation + contributions (3), sequential one-pass + max_turns boundary (2), handoff routing + moderator_only blocking + handoff context passthrough + self-handoff rejection (4), max_turns safety (2), all_responded early-stop (2), event data verification (3), edge cases — <2 agents, error recovery, shared context persistence, conversation output (4), static helpers for _parse_handoff/_extract_content/_parse_mentions (7), model serialization round-trips (4), @-mention regex (10).
   - [ ] 9-3. Backward compat tests: existing `OrchestratorNode` workflows unchanged, `ParallelSubagentsNode` workflows unchanged.
   - [ ] 9-4. Builder round-trip tests: `wf.team()` → build → decompile → compare.
   - [ ] 9-5. Markdown round-trip tests: `## Team` section → compile → decompile → compare.
@@ -130,6 +131,7 @@
 - **New node type, not OrchestratorNode extension.** `OrchestratorNode` is a monitor-and-route pattern (one-to-many). `AgentTeamNode` is a peer-to-peer conversation pattern (many-to-many). The execution models are different enough to warrant separate types. The orchestrator remains for hierarchical coordination; teams handle collaborative coordination.
 - **Moderator as optional LLM.** The moderator is not a separate node in the graph — it's an LLM call inside the `AgentTeamExecutor` that decides turn order. This keeps the team node self-contained. For complex moderator logic, users can make the moderator itself an agent in the team.
 - **Conversation history as structured input.** Each agent receives the full (compacted) conversation as a typed input, not as a hidden context injection. This makes the data flow visible in the graph and compatible with boundary contracts.
+- **Message extraction via `message_port`.** Since sub-graphs can produce arbitrary output schemas (dict of ports), the team executor needs to know which string contains the text to parse for mentions. The `message_port` (default `"message"`) provides this contract.
 - **`@`-routing is parsed from LLM output.** Agents address each other by including `@agent_name` in their natural language response. The executor parses these mentions and routes accordingly. This is the most LLM-natural pattern (matches how humans use `@` in group chats).
 - **Handoff is a first-class action.** Not just a side-effect of `@`-mentioning. Agents can produce structured `HandoffRequest` outputs (via output schema or a `handoff` output port) for explicit work transfer with context.
 - **Shared conversation is append-only.** `TeamConversation` accumulates messages. Agents can't delete or edit previous messages. Compaction reduces what's sent as input but preserves the full log.

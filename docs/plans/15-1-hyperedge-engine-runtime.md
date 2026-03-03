@@ -1,7 +1,7 @@
 # 15-1: Hyperedge Engine Runtime
 
 **Parent:** [15-behavior-modifiers](15-behavior-modifiers.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Implement hyperedge models, add them to the graph schema, build the four execution hooks (pre_prompt, tool_call, post_output, validation), and provide runtime resolution with attachment scoping and precedence — turning the architecture spec into working machinery.
 
 ## Existing Baseline

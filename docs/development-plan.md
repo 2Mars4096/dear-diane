@@ -387,7 +387,8 @@ The paper-writing workflow already in `development-plan.md` Section 1 is the tar
 | **7** | Author & chat | Conversational workflow authoring, NL→graph mutations, meta-orchestrator, cursor-parity chat | **Done** |
 | **8** | Observe & recover | Run history, audit log, checkpoint portals, variable inspector, node test cases | Not started |
 | **9** | Deep systems | Memory & cross-run state (9A), behavior modifiers/hyperedges (9B), execution primitives (9C) | Not started |
-| **10** | Author & distribute | CLI, publish as API/MCP, messaging integrations, shareable blocks, PyPI package | Not started |
+| **10** | Token optimization | Prompt compression, provider caching, truncation policies, token analytics & waste detection | Not started |
+| **11** | Author & distribute | CLI, publish as API/MCP, messaging integrations, shareable blocks, PyPI package | Not started |
 
 ---
 

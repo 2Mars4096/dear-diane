@@ -1,7 +1,7 @@
 # 15-3: Dynamic Model Selection
 
 **Parent:** [15-behavior-modifiers](15-behavior-modifiers.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Replace static per-node model assignment with a policy-driven model selection layer that supports budget-aware routing, cascade fallback chains, capability-based matching, and per-run cost tracking — enabling cost-controlled autonomous workflows.
 
 ## Existing Baseline

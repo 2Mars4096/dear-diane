@@ -25,7 +25,7 @@ deep-agent-network/
     __init__.py                  # Top-level package exports
     models/                      # Phase 0 — formal type system
       ports.py                   # InputPort, OutputPort
-      context.py                 # NodeLocalState, SharedContextDeclaration, ArtifactRef, ContextProjection, policies
+      context.py                 # NodeLocalState, SharedContextDeclaration, ArtifactRef, ContextProjection, FeedbackSelector, CompactionRule, policies
       nodes.py                   # NodeBase, LLMOperator, ToolOperator, CodeOperator
       control_flow.py            # GateNode (unified if_else/while), IfElse, WhileLoop, ForEach, ParallelSubagentsNode, OrchestratorNode, Reduce, Router, HumanInTheLoop, ValidatorNode, CompositeNode
       edges.py                   # DataEdge, ControlEdge, ContextEdge
@@ -119,7 +119,8 @@ deep-agent-network/
       skill_library.py           # SKILL_LIBRARY: domain-specific prompt-injection skills (management_science_writing, informs_latex_style) targeted by node tags
       chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history)
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
-      run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing
+      run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing + RunStore integration + metric enrichment
+      run_store.py               # Filesystem-backed persistence for run summaries (JSON) and event logs (JSONL). Layout: runs/{workflow_id}/{run_id}.json + .events.jsonl
       scoped_run.py              # Scoped execution: full/node/subgraph run builder
       layout.py                  # Topological layout for graph JSON (DAN_LAYOUT_ON_LOAD)
       mutation_metrics.py        # Mutation quality metrics for chat/LLM feedback
@@ -163,7 +164,8 @@ deep-agent-network/
       components/ChatPanel.tsx        # Resizable chat sidebar: message send/stream, @ mention integration, mutation event handling + GraphDiffPreview
       components/ChatMessage.tsx      # Message bubble: markdown render, mention chips with click-to-navigate, tool call cards, run output blocks
       components/ToolCallCard.tsx     # Expandable tool call card: status icon, args/output sections, operations list, duration badge
-      components/RunOutputBlock.tsx   # Structured run output: per-node status, collapsible output, timing, "View logs" link
+      components/RunOutputBlock.tsx   # Structured run output: per-node status, collapsible output, timing, "View logs" / "View in History" links
+      components/RunHistoryPanel.tsx  # Run history bottom panel tab: filterable run list, event replay view, side-by-side comparison, deep-link support
       components/GraphDiffPreview.tsx  # Mutation diff preview modal: accept/reject/partial-accept
       components/ToastContainer.tsx   # Fixed bottom-right toast notifications
       components/Spinner.tsx          # Reusable loading spinner
@@ -275,6 +277,7 @@ Every composite/loop node declares:
 - `local_working_set` — latest working data, not full history
 - `read_set` / `write_set` — declared dependencies on shared context store (composite/loop nodes; atomic operators inherit from NodeBase for context-edge targets)
 - `compaction_rule` — how local history is summarized between iterations
+- `feedback_selector` — `FeedbackSelector(include/exclude/rename/transform)` on `GateNode`/`WhileLoopNode` controls which body outputs cycle back vs. become side-effect artifacts; `artifact_ports` is sugar for extracting and accumulating named ports across iterations
 
 ### Context Policies
 
@@ -547,11 +550,15 @@ Each node type has a known default output port matching the runtime executor (e.
 
 Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyter — `dan-serve` or `python -m dan.server` starts the server, open `localhost:8000` in browser.
 
-### Engine Event System
+### Engine Event System & Per-Node Logs
 
 - 14 typed events: `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`
 - Opt-in `event_callback` parameter on `Engine` constructor — no events emitted if not set (backward compatible)
-- `ExecutionContext.emit_event()` — executors emit rich events (LLM thinking, tool calls, code output) during execution
+- `ExecutionContext.emit_event()` — executors emit rich events (LLM thinking, tool calls, code output) during execution. The engine automatically tags every emitted event with the active `node_id`.
+- **Per-Node Log Aggregation:**
+  - **Storage:** `RunStore` persists all raw events sequentially to `{run_id}.events.jsonl`, inherently preserving the `node_id` association for every token, tool call, and state change.
+  - **Editor Log Panel:** `LogPanel.tsx` groups the event stream by `node_id` (falling back to `"__run__"`). This creates a collapsible, node-centric timeline where all interleaved execution outputs (e.g. parallel branches) are cleanly segregated by their source node.
+  - **Chat Run Output:** `RunOutputBlock.tsx` derives a condensed per-node status list from the stream, selectively parsing `node_started`/`completed`/`failed`/`output` events to show high-level node progress and final output snippets directly in the chat, while providing deep-links to the full per-node log history.
 - Sub-graph events use parent `run_id` (unified stream) — `_run_subgraph` inherits parent state's run_id
 - Events are fire-and-forget; callback failures never break execution
 

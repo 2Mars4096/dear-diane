@@ -120,11 +120,11 @@
 > Execution persistence, debugging tools, and iterative refinement capabilities.
 
 - [ ] [13-observe-recover](plans/13-observe-recover.md) — execution persistence, debugging tools, and iterative refinement capabilities
-  - [ ] [13-1-run-observability-history](plans/13-1-run-observability-history.md) — run artifacts, history/comparison, and action audit log foundation
+  - [x] [13-1-run-observability-history](plans/13-1-run-observability-history.md) — run artifacts, history/comparison, and action audit log foundation
   - [ ] [13-2-recovery-debug-workbench](plans/13-2-recovery-debug-workbench.md) — checkpoint portals, variable inspector, and node test cases UX
 
 ## Phase 9 — Deep Systems
-> Architectural additions for advanced use cases. Grouped into three clusters; each cluster gets a plan file just-in-time when work begins.
+> Architectural additions for advanced use cases. Grouped into four clusters; each cluster gets a plan file just-in-time when work begins.
 
 ### 9A — Memory & Cross-Run State
 - [x] [14-memory-cross-run-state](plans/14-memory-cross-run-state.md) — memory and cross-run state foundation (session persistence, boundary scoping, long-chain memory)
@@ -133,40 +133,57 @@
   - [x] [14-3-long-chain-memory-system](plans/14-3-long-chain-memory-system.md) — short-term vs long-term memory pipeline (encoding, consolidation, retrieval) and executable memory policy defaults
 
 ### 9B — Behavior Modifiers
-- [ ] [15-behavior-modifiers](plans/15-behavior-modifiers.md) — hyperedges (skills, guardrails, style rules, overrides) as first-class graph-level constructs + dynamic model selection
-  - [ ] [15-1-hyperedge-engine-runtime](plans/15-1-hyperedge-engine-runtime.md) — hyperedge models, graph schema, execution hooks (pre_prompt, tool_call, post_output, validation), attachment resolution, precedence, migration from SKILL_LIBRARY
-  - [ ] [15-2-hyperedge-markdown-syntax](plans/15-2-hyperedge-markdown-syntax.md) — skill/rule `.md` file format, workflow reference syntax, loader/compiler/decompiler, builder API, editor integration
-  - [ ] [15-3-dynamic-model-selection](plans/15-3-dynamic-model-selection.md) — `model_policy` field, strategies (static/budget/cascade/capability/router), cost tracking, budget enforcement
+- [x] [15-behavior-modifiers](plans/15-behavior-modifiers.md) — hyperedges (skills, guardrails, style rules, overrides) as first-class graph-level constructs + dynamic model selection
+  - [x] [15-1-hyperedge-engine-runtime](plans/15-1-hyperedge-engine-runtime.md) — hyperedge models, graph schema, execution hooks (pre_prompt, tool_call, post_output, validation), attachment resolution, precedence, migration from SKILL_LIBRARY
+  - [x] [15-2-hyperedge-markdown-syntax](plans/15-2-hyperedge-markdown-syntax.md) — skill/rule `.md` file format, workflow reference syntax, loader/compiler/decompiler, builder API, editor integration
+  - [x] [15-3-dynamic-model-selection](plans/15-3-dynamic-model-selection.md) — `model_policy` field, strategies (static/budget/cascade/capability/router), cost tracking, budget enforcement
 
 ### 9C — Execution Primitives
-- [ ] [16-execution-primitives](plans/16-execution-primitives.md) — agent teams, voting/ensemble, HumanNode generalization, loop context managers
-  - [ ] [16-1-agent-teams](plans/16-1-agent-teams.md) — group-chat style multi-agent coordination with `@` routing, handoffs, turn strategies, shared conversational context
-  - [ ] [16-2-voting-ensemble](plans/16-2-voting-ensemble.md) — `VoteNode` with majority/weighted/judge/unanimous strategies, same-model voting + cross-model ensemble, `wf.vote()` builder sugar
-  - [ ] [16-3-human-node-generalization](plans/16-3-human-node-generalization.md) — typed I/O schemas, render modes (approval/form/selection/text), rendering surface protocol, chat-as-renderer, adjustable autonomy via topology
-  - [ ] [16-4-loop-context-manager](plans/16-4-loop-context-manager.md) — feedback selectors (`ContextProjection` activation), `artifact_ports`, selective feedback filtering, loop context management
+- [x] [16-execution-primitives](plans/16-execution-primitives.md) — agent teams, voting/ensemble, HumanNode generalization, loop context managers, async loop design
+  - [x] [16-1-agent-teams](plans/16-1-agent-teams.md) — group-chat style multi-agent coordination with `@` routing, handoffs, turn strategies, shared conversational context
+  - [x] [16-2-voting-ensemble](plans/16-2-voting-ensemble.md) — `VoteNode` with majority/weighted/judge/unanimous strategies, same-model voting + cross-model ensemble, `wf.vote()` builder sugar
+  - [x] [16-3-human-node-generalization](plans/16-3-human-node-generalization.md) — typed I/O schemas, render modes (approval/form/selection/text), rendering surface protocol, chat-as-renderer, adjustable autonomy via topology
+  - [x] [16-4-loop-context-manager](plans/16-4-loop-context-manager.md) — feedback selectors (new `FeedbackSelector` model), `artifact_ports`, selective feedback filtering, loop context management
+  - [x] [16-5-async-loop-design](plans/16-5-async-loop-design.md) — orchestrator runs independently as an event-driven LLM process, dispatching commands to teams dynamically
 
-## Phase 10 — Author & Distribute
-> CLI, publish as API/MCP, shareable blocks, PyPI package. Comes after Deep Systems so API surface is stable before packaging.
+### 9D — Self-Evolving Orchestrator
+> Orchestrator persists error memories across runs, reflects on failures to extract causal principles, and injects retrieved lessons into future decisions via prompt augmentation. Three tiers of increasing capability; Tier 1 is immediately feasible.
 
-- [ ] 10-R: Author & distribute (remaining) → (not yet planned)
+- [ ] [17-self-evolving-orchestrator](plans/17-self-evolving-orchestrator.md) — error memory, reflection, and self-generating rules for orchestrator self-improvement
+  - [ ] [17-1-error-memory-rag](plans/17-1-error-memory-rag.md) — Tier 1: error capture pipeline, RAG indexing of run errors, retrieval at LLM decision points, prompt injection via dynamic hyperedge. **Prerequisites: 9A (done), 13-1 (partially landed). Can start immediately.**
+  - [ ] [17-2-reflection-node](plans/17-2-reflection-node.md) — Tier 2: `ReflectionNode` post-processes failed runs, distills errors into structured causal principles, persists to `PrincipleStore`. Benefits from Phase 8 run history (13-2).
+  - [ ] [17-3-self-generating-rules](plans/17-3-self-generating-rules.md) — Tier 3: principle → hyperedge conversion, `RuleLifecycleManager` with effectiveness tracking, runtime injection, safety bounds. Requires stable hyperedge runtime (already partially landed).
+
+## Phase 10 — Token Optimization
+> Minimize token consumption and maximize cost-efficiency. Model selection (15-3) picks the right model; this phase reduces tokens sent regardless of model — prompt compression, caching, truncation, and analytics.
+
+- [ ] [18-token-optimization](plans/18-token-optimization.md) — prompt compression, caching, context window management, token analytics
+  - [ ] [18-1-prompt-compression](plans/18-1-prompt-compression.md) — context pruning, reference passing, input summarization, prompt analysis
+  - [ ] [18-2-caching-layer](plans/18-2-caching-layer.md) — provider prompt caching, node memoization, semantic cache
+  - [ ] [18-3-context-window-management](plans/18-3-context-window-management.md) — truncation policies, conversation windowing, loop compaction, token budgets
+  - [ ] [18-4-token-analytics](plans/18-4-token-analytics.md) — per-node breakdown, waste detection, optimization recommendations, editor dashboard
+
+## Phase 11 — Author & Distribute
+> CLI, publish as API/MCP, shareable blocks, PyPI package. Comes after Token Optimization so API surface and cost controls are stable before packaging.
+
+- [ ] Author & distribute → (not yet planned)
 - [ ] CLI mode — run workflows in terminal/background. Supervisor-style: start, check progress, inspect logs without blocking. Complements visual editor for headless/CI/server deployments.
 - [ ] Publish workflow as API/MCP — build a workflow, publish as a callable MCP server or HTTP endpoint. Turns workflows into consumable services (Coze-style).
 - [ ] Messaging/comm integrations — email, Slack, Discord, Telegram, WhatsApp adapters. Trigger workflows from external messages; publish workflows as bot backends.
 - [ ] Shareable blocks — publish and import reusable agent-blocks. Registry/marketplace for community sharing.
 - [ ] PyPI package — `pip install dan` with stable public API.
-- [ ] Lightweight skills (prompt injection) — skills as prompt-prefix injections scoped by node tag/type. Stopgap if hyperedges (9B) aren't done yet; may shrink in scope after 9B lands.
 
 ## Backlog (unphased)
 - [ ] **User system** — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments. (Low priority — revisit when cloud/SaaS deployment becomes a goal.)
 - [ ] **Manager vs worker node distinction** — manager nodes orchestrate and may spawn new nodes; worker nodes only execute and do not hire new nodes. Bottom-layer nodes are workers. Enables token/node budget caps (e.g. limit total tokens or total nodes used).
-- [ ] **Optimize token usage** — reduce token consumption across workflows (prompt compression, context pruning, caching, smaller models for simple tasks, truncation policies).
+- [x] ~~Optimize token usage~~ → promoted to [Phase 10](#phase-10--token-optimization) (Plan 18)
 - [x] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics; core mechanisms for convenient workflow building
-- [ ] **Async loop design** — Orchestrator runs independently with access to current progress and can emit commands anytime; departments work in tandem (parallel, no cross-deps). Today: orchestrator runs once per iteration at the start, then all depts run; iterations are strictly sequential. Target: orchestrator as long-running/streaming process that pushes work to departments as they become free, or event-driven model where orchestrator and depts can overlap.
+- [x] ~~Async loop design~~ → promoted to [Phase 9C](#9c--execution-primitives) (Plan 16-5)
 - [ ] NL mutation quality tracking bundle — now tracked under [12-6-chat-quality-harness](plans/12-6-chat-quality-harness.md) (CI variant, baseline capture, acceptance targets, end-of-phase report).
 - [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
 - [ ] Thread timeline view — vertical timeline of graph evolution through conversation (stretch, from 10-5 task 5-3)
 - [ ] Canvas drag-to-mention — drag node from canvas onto chat input to create mention (stretch, from 10-2 task 6-4)
-- [ ] **Self-evolving orchestrator** — orchestrator persists error memories across runs (artifact store + RAG retrieval), reflects on failures to extract causal principles, and injects retrieved lessons into future decisions via prompt augmentation. Three layers: (A) persistent error memory store, (B) reflection node that distills failures into actionable principles, (C) dynamic prompt injection of relevant past mistakes before orchestrator routing decisions. Tier 1 (prompt-augmentation) works with existing RAG infra now; Tier 2 benefits from Phase 8 run history; Tier 3 (self-generating rules) needs Phase 9B hyperedges.
+- [x] ~~Self-evolving orchestrator~~ → promoted to [Phase 9D](#9d--self-evolving-orchestrator)
 - [ ] Survey EvoAgentX for reusable multi-agent patterns
 - [ ] Coding assistant proof-of-concept — build Cursor-like agent mode as a DAN graph (~15 node types, ReAct while-loop + tool operators). Validate Ask/Agent/Debug/Plan modes as graph templates.
 - [ ] science-cursor rebuild — extract scholar engines as DAN agents. Build PaperOrchestrator as a DAN network. VS Code extension as thin rendering client.
