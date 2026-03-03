@@ -5,6 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
+from dan.providers.capabilities import ModelCapabilityRegistry  # noqa: F401
+from dan.providers.cost_tracker import BudgetExceededError, CostTracker  # noqa: F401
+from dan.providers.model_selector import CascadeHandler, ModelSelector  # noqa: F401
+
 
 @dataclass
 class CompletionResult:

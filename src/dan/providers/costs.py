@@ -16,7 +16,9 @@ COST_PER_1K_TOKENS: dict[str, dict[str, float]] = {
     # Anthropic
     "claude-opus-4": {"prompt": 0.015, "completion": 0.075},
     "claude-sonnet-4": {"prompt": 0.003, "completion": 0.015},
+    "claude-sonnet-4-6": {"prompt": 0.003, "completion": 0.015},
     "claude-haiku-3.5": {"prompt": 0.0008, "completion": 0.004},
+    "claude-3-5-haiku-20241022": {"prompt": 0.0008, "completion": 0.004},
     # Google
     "gemini-2.0-flash": {"prompt": 0.0001, "completion": 0.0004},
     "gemini-2.0-pro": {"prompt": 0.00125, "completion": 0.005},
