@@ -80,6 +80,29 @@ class ToolExecutor:
         fn = self.registry.get(node.tool_id)
         merged_args = {**node.tool_config, **inputs}
 
+        # -- 15-1: Hyperedge tool-call interception ----------------------------
+        if (
+            getattr(context, "hyperedge_resolver", None)
+            and getattr(context.config, "hyperedge_enforcement", "off") != "off"
+        ):
+            tool_id_resolved, merged_args, allow = (
+                context.hyperedge_resolver.apply_tool_call(node, node.tool_id, merged_args)
+            )
+            if not allow:
+                await context.emit_event(
+                    event_type="hyperedge_blocked",
+                    node_id=node.id,
+                    node_type="tool_operator",
+                    data={"tool_id": node.tool_id, "reason": "blocked by hyperedge"},
+                )
+                return NodeResult(
+                    outputs={},
+                    status=NodeStatus.SKIPPED,
+                    metadata={"blocked_by_hyperedge": True},
+                )
+            if tool_id_resolved != node.tool_id:
+                fn = self.registry.get(tool_id_resolved)
+
         await context.emit_event(
             event_type="tool_call_started",
             node_id=node.id,

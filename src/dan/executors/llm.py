@@ -79,6 +79,23 @@ class LLMExecutor:
         policy = node.retry_policy or _LLM_DEFAULT_RETRY
         model = node.model or context.config.llm_default_model
 
+        if context.model_selector is not None:
+            effective_policy = context.model_selector.resolve_effective_policy(
+                node, context.config,
+            )
+            if effective_policy is not None:
+                selected = await context.model_selector.select(
+                    effective_policy, node, context,
+                )
+                if selected:
+                    model = selected
+                    await context.emit_event(
+                        event_type="model_selected",
+                        node_id=node.id,
+                        node_type="llm_operator",
+                        data={"model": model, "policy_strategy": effective_policy.strategy},
+                    )
+
         rendered_prompt = _render_template(node.prompt_template, inputs)
 
         await context.emit_event(
@@ -93,6 +110,13 @@ class LLMExecutor:
             messages.append({"role": "system", "content": node.system_prompt})
         messages.append({"role": "user", "content": rendered_prompt})
 
+        # -- 15-1: Hyperedge pre-prompt injection ------------------------------
+        if (
+            getattr(context, "hyperedge_resolver", None)
+            and getattr(context.config, "hyperedge_enforcement", "off") != "off"
+        ):
+            messages = context.hyperedge_resolver.apply_pre_prompt(node, messages)
+
         max_norm_retries = context.config.output_norm_max_retries
         has_schema = node.output_json_schema is not None
 
@@ -105,6 +129,8 @@ class LLMExecutor:
             if usage:
                 for k in cumulative_usage:
                     cumulative_usage[k] += usage.get(k, 0)
+                if context.cost_tracker is not None:
+                    context.cost_tracker.record(node.id, model, usage)
 
             if api_error:
                 last_error = api_error

@@ -1,10 +1,11 @@
-"""Control-flow executors — IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop, Composite, Orchestrator."""
+"""Control-flow executors — IfElse, WhileLoop, ForEach, Reduce, Router, HumanInTheLoop, Composite, Orchestrator, Vote, AgentTeam."""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid as _uuid
 import warnings
@@ -14,22 +15,50 @@ from dan.engine.conditions import ConditionError, evaluate_condition, evaluate_e
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
 from dan.engine.events import EventType
+from dan.providers import CompletionResult
 from dan.models.control_flow import (
+    AgentTeamNode,
     CompositeNode,
     ForEachNode,
     GateNode,
+    HandoffRequest,
     HumanInTheLoopNode,
+    HumanNode,
     IfElseNode,
     OrchestratorNode,
     ParallelSubagentsNode,
     ReduceNode,
     RouterNode,
+    TeamConversation,
+    TeamMessage,
+    VoteConfig,
+    VoteNode,
     WhileLoopNode,
 )
-from dan.models.context import CompactionStrategy, MergeStrategy
+from dan.models.context import CompactionStrategy, FeedbackSelector, MergeStrategy
 from dan.models.nodes import NodeBase
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_feedback_selector(data: dict[str, Any], selector: FeedbackSelector) -> dict[str, Any]:
+    """Filter/rename/transform a feedback dict according to *selector*."""
+    filtered = dict(data)
+
+    if selector.include is not None:
+        filtered = {k: v for k, v in filtered.items() if k in selector.include}
+    elif selector.exclude is not None:
+        filtered = {k: v for k, v in filtered.items() if k not in selector.exclude}
+
+    if selector.rename:
+        filtered = {selector.rename.get(k, k): v for k, v in filtered.items()}
+
+    if selector.transform is not None:
+        filtered = evaluate_expression(selector.transform, {"inputs": filtered})
+        if not isinstance(filtered, dict):
+            filtered = {"result": filtered}
+
+    return filtered
 
 
 # ---------------------------------------------------------------------------
@@ -257,14 +286,28 @@ class WhileLoopExecutor:
                 node.body_graph, working_data, parent_node_id=node.id
             )
 
+            # -- 16-4: artifact extraction --------------------------------
+            feedback_data = dict(body_output)
+            if node.artifact_ports:
+                artifact_scope = context.local_state.get_scope(f"{node.id}__artifacts")
+                artifact_list = artifact_scope.setdefault("items", [])
+                iter_artifacts = {k: v for k, v in feedback_data.items() if k in node.artifact_ports}
+                if iter_artifacts:
+                    artifact_list.append(iter_artifacts)
+                feedback_data = {k: v for k, v in feedback_data.items() if k not in node.artifact_ports}
+
+            # -- 16-4: feedback selector ----------------------------------
+            if node.feedback_selector is not None:
+                feedback_data = _apply_feedback_selector(feedback_data, node.feedback_selector)
+
             scope["history"].append(body_output)
             if _has_schema:
                 _schema_updates = {k: v for k, v in body_output.items() if k in node.state_schema}
                 scope.update(_schema_updates)
                 working_data = dict(scope)
-                working_data.update(body_output)
+                working_data.update(feedback_data)
             else:
-                working_data = {**working_data, **body_output}
+                working_data = {**working_data, **feedback_data}
 
             await context.emit_event(
                 event_type="iteration_completed",
@@ -293,10 +336,18 @@ class WhileLoopExecutor:
 
             prev_output = body_output
 
+        # -- 16-4: merge accumulated artifacts into final output ----------
+        final_outputs = dict(working_data)
+        artifact_scope_id = f"{node.id}__artifacts"
+        if node.artifact_ports and context.local_state.has_scope(artifact_scope_id):
+            artifact_scope = context.local_state.get_scope(artifact_scope_id)
+            final_outputs["artifacts"] = artifact_scope.get("items", [])
+            context.local_state.delete_scope(artifact_scope_id)
+
         context.local_state.delete_scope(node.id)
 
         return NodeResult(
-            outputs=working_data,
+            outputs=final_outputs,
             status=NodeStatus.COMPLETED,
             metadata={
                 "iterations": scope.get("iteration", 0) + 1,
@@ -611,6 +662,16 @@ class RouterExecutor:
         assert isinstance(node, RouterNode)
 
         model = node.model or context.config.llm_default_model
+        if context.model_selector is not None:
+            effective_policy = context.model_selector.resolve_effective_policy(
+                node, context.config,
+            )
+            if effective_policy is not None:
+                selected = await context.model_selector.select(
+                    effective_policy, node, context,
+                )
+                if selected:
+                    model = selected
 
         route_desc = "\n".join(
             f"- {name}: {desc}"
@@ -677,12 +738,48 @@ class RouterExecutor:
 
 
 # ---------------------------------------------------------------------------
-# HumanInTheLoop
+# HumanNode (generalized — Plan 16-3)
 # ---------------------------------------------------------------------------
 
+_MAX_VALIDATION_RETRIES = 2
 
-class HumanInTheLoopExecutor:
-    """Pauses execution and awaits human input via a callback."""
+
+def _validate_against_schema(data: dict[str, Any], schema: dict[str, Any]) -> list[str]:
+    """Validate *data* against a JSON Schema.  Returns a list of error messages."""
+    try:
+        import jsonschema
+        validator = jsonschema.Draft7Validator(schema)
+        return [e.message for e in validator.iter_errors(data)]
+    except ImportError:
+        pass
+
+    # Lightweight fallback when jsonschema is not installed
+    errors: list[str] = []
+    required = schema.get("required", [])
+    props = schema.get("properties", {})
+    for key in required:
+        if key not in data:
+            errors.append(f"Missing required key: '{key}'")
+    for key, prop_schema in props.items():
+        if key not in data:
+            continue
+        expected_type = prop_schema.get("type")
+        if expected_type == "boolean" and not isinstance(data[key], bool):
+            errors.append(f"Key '{key}' must be boolean")
+        elif expected_type == "string" and not isinstance(data[key], str):
+            errors.append(f"Key '{key}' must be string")
+        elif expected_type == "number" and not isinstance(data[key], (int, float)):
+            errors.append(f"Key '{key}' must be number")
+    return errors
+
+
+class HumanNodeExecutor:
+    """Pauses execution and awaits human input via the rendering surface protocol.
+
+    Falls back to the legacy ``human_input_callback`` when no renderer is
+    configured.  Validates responses against ``output_schema`` with up to
+    two retries before failing or falling back to ``default_action``.
+    """
 
     async def execute(
         self,
@@ -690,36 +787,158 @@ class HumanInTheLoopExecutor:
         inputs: dict[str, Any],
         context: ExecutionContext,
     ) -> NodeResult:
-        assert isinstance(node, HumanInTheLoopNode)
+        assert isinstance(node, HumanNode)
 
-        if context.human_input_callback is None:
-            if node.default_action is not None:
-                return NodeResult(
-                    outputs={"response": node.default_action, **inputs},
-                    status=NodeStatus.COMPLETED,
-                    metadata={"source": "default_action"},
-                )
-            return NodeResult(
-                outputs={},
-                status=NodeStatus.FAILED,
-                error="HumanInTheLoop requires a human_input_callback but none was provided",
-            )
+        from dan.engine.executor import HumanRenderRequest, HumanRenderResponse
 
+        # Resolve dynamic prompt from inputs (backward compat)
         dynamic_prompt = inputs.get("user_prompt") or inputs.get("prompt")
         if isinstance(dynamic_prompt, str) and dynamic_prompt.strip():
             prompt = dynamic_prompt
         else:
             prompt = node.prompt or f"Human input needed for node '{node.name}':"
 
-        request_id = str(_uuid.uuid4())
+        render_mode = getattr(node, "render_mode", "text")
+        instructions = getattr(node, "instructions", "")
+        options = getattr(node, "options", None)
+        input_schema = getattr(node, "input_schema", None)
+        output_schema = getattr(node, "output_schema", None)
+        render_target = getattr(node, "render_target", "dialog")
+
+        request = HumanRenderRequest(
+            node_id=node.id,
+            node_name=node.name,
+            render_mode=render_mode,
+            prompt=prompt,
+            instructions=instructions,
+            input_data=dict(inputs),
+            input_schema=input_schema,
+            output_schema=output_schema,
+            options=options,
+            timeout_seconds=node.timeout_seconds,
+            default_action=node.default_action,
+            render_target=render_target,
+        )
+
         await context.emit_event(
             event_type="human_input_needed",
             node_id=node.id,
-            node_type="human_in_the_loop",
-            data={"prompt": prompt, "request_id": request_id},
+            node_type="human",
+            data={
+                "prompt": prompt,
+                "request_id": request.request_id,
+                "render_mode": render_mode,
+                "instructions": instructions,
+                "options": options,
+                "input_schema": input_schema,
+                "output_schema": output_schema,
+                "render_target": render_target,
+            },
         )
 
-        request_meta = {"node_id": node.id, "prompt": prompt, "request_id": request_id}
+        # ---- Renderer path (preferred) ----
+        if context.human_renderer is not None:
+            return await self._render_with_retries(node, request, inputs, context, output_schema)
+
+        # ---- Legacy callback path ----
+        if context.human_input_callback is not None:
+            return await self._legacy_callback(node, request, inputs, context)
+
+        # ---- No interaction surface ----
+        if node.default_action is not None:
+            return NodeResult(
+                outputs={"response": node.default_action, **inputs},
+                status=NodeStatus.COMPLETED,
+                metadata={"source": "default_action"},
+            )
+        return NodeResult(
+            outputs={},
+            status=NodeStatus.FAILED,
+            error="HumanNode requires a human_renderer or human_input_callback but none was provided",
+        )
+
+    async def _render_with_retries(
+        self,
+        node: HumanNode,
+        request,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+        output_schema: dict[str, Any] | None,
+    ) -> NodeResult:
+        from dan.engine.executor import HumanRenderRequest
+
+        for attempt in range(_MAX_VALIDATION_RETRIES + 1):
+            try:
+                if node.timeout_seconds is not None:
+                    response = await asyncio.wait_for(
+                        context.human_renderer.render(request),
+                        timeout=node.timeout_seconds,
+                    )
+                else:
+                    response = await context.human_renderer.render(request)
+            except asyncio.TimeoutError:
+                return self._timeout_result(node, inputs)
+            except Exception as exc:
+                return NodeResult(
+                    outputs={},
+                    status=NodeStatus.FAILED,
+                    error=f"Human renderer failed: {exc}",
+                )
+
+            if output_schema and response.source == "human":
+                errors = _validate_against_schema(response.data, output_schema)
+                if errors:
+                    if attempt < _MAX_VALIDATION_RETRIES:
+                        request = HumanRenderRequest(
+                            request_id=request.request_id,
+                            node_id=request.node_id,
+                            node_name=request.node_name,
+                            render_mode=request.render_mode,
+                            prompt=request.prompt,
+                            instructions=(
+                                f"Validation failed: {'; '.join(errors)}. Please try again.\n\n"
+                                + request.instructions
+                            ),
+                            input_data=request.input_data,
+                            input_schema=request.input_schema,
+                            output_schema=request.output_schema,
+                            options=request.options,
+                            timeout_seconds=request.timeout_seconds,
+                            default_action=request.default_action,
+                            render_target=request.render_target,
+                        )
+                        continue
+                    if node.default_action is not None:
+                        await self._emit_received(context, node, request.request_id, {"response": node.default_action}, "default")
+                        return NodeResult(
+                            outputs={"response": node.default_action, **inputs},
+                            status=NodeStatus.COMPLETED,
+                            metadata={"source": "default_action", "validation_errors": errors},
+                        )
+                    return NodeResult(
+                        outputs={},
+                        status=NodeStatus.FAILED,
+                        error=f"Output schema validation failed after {_MAX_VALIDATION_RETRIES} retries: {'; '.join(errors)}",
+                    )
+
+            await self._emit_received(context, node, response.request_id, response.data, response.source)
+            return NodeResult(
+                outputs={**inputs, **response.data},
+                status=NodeStatus.COMPLETED,
+                metadata={"source": response.source, "render_mode": getattr(node, "render_mode", "text")},
+            )
+
+        # Should not reach here, but safety fallback
+        return NodeResult(outputs={}, status=NodeStatus.FAILED, error="Unexpected retry exhaustion")
+
+    async def _legacy_callback(
+        self,
+        node: HumanNode,
+        request,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        request_meta = {"node_id": node.id, "prompt": request.prompt, "request_id": request.request_id}
         try:
             if node.timeout_seconds is not None:
                 response = await asyncio.wait_for(
@@ -729,17 +948,7 @@ class HumanInTheLoopExecutor:
             else:
                 response = await context.human_input_callback(request_meta)
         except asyncio.TimeoutError:
-            if node.default_action is not None:
-                return NodeResult(
-                    outputs={"response": node.default_action, **inputs},
-                    status=NodeStatus.COMPLETED,
-                    metadata={"source": "timeout_default"},
-                )
-            return NodeResult(
-                outputs={},
-                status=NodeStatus.FAILED,
-                error=f"HumanInTheLoop timed out after {node.timeout_seconds}s",
-            )
+            return self._timeout_result(node, inputs)
         except Exception as exc:
             return NodeResult(
                 outputs={},
@@ -752,11 +961,44 @@ class HumanInTheLoopExecutor:
         else:
             outputs = {**inputs, "response": response}
 
+        await self._emit_received(context, node, request.request_id, outputs, "human")
         return NodeResult(
             outputs=outputs,
             status=NodeStatus.COMPLETED,
             metadata={"source": "human"},
         )
+
+    @staticmethod
+    def _timeout_result(node: HumanNode, inputs: dict[str, Any]) -> NodeResult:
+        if node.default_action is not None:
+            return NodeResult(
+                outputs={"response": node.default_action, **inputs},
+                status=NodeStatus.COMPLETED,
+                metadata={"source": "timeout_default"},
+            )
+        return NodeResult(
+            outputs={},
+            status=NodeStatus.FAILED,
+            error=f"HumanNode timed out after {node.timeout_seconds}s",
+        )
+
+    @staticmethod
+    async def _emit_received(
+        context: ExecutionContext,
+        node: HumanNode,
+        request_id: str,
+        data: dict[str, Any],
+        source: str,
+    ) -> None:
+        await context.emit_event(
+            event_type="human_input_received",
+            node_id=node.id,
+            node_type="human",
+            data={"request_id": request_id, "source": source},
+        )
+
+
+HumanInTheLoopExecutor = HumanNodeExecutor
 
 
 # ---------------------------------------------------------------------------
@@ -834,15 +1076,77 @@ class CompositeExecutor:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+_orch_log = logging.getLogger(__name__ + ".orchestrator")
+
 
 class OrchestratorExecutor:
-    """Runs subgraph teams concurrently with an async event-processing loop.
+    """LLM-driven orchestrator that dynamically dispatches work to teams.
 
-    Unlike ParallelSubagentsExecutor (fire-and-forget gather), the orchestrator
-    spawns teams as background asyncio tasks, then runs its own event loop
-    concurrently — receiving events from teams and optionally writing back
-    to shared context for bidirectional communication.
+    The orchestrator LLM is called reactively: on startup it receives the
+    initial inputs and available teams, dispatches work via tool calls
+    (``dispatch_to_team``), waits for team-completion events, then gets
+    called again with the results.  It halts via ``halt_orchestrator``.
+
+    When neither ``orchestrator_prompt`` nor ``orchestrator_model`` is set,
+    the executor falls back to static fan-out (spawn all teams, wait for
+    completion) — preserving backward compatibility.
     """
+
+    TOOL_SCHEMAS: list[dict[str, Any]] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "dispatch_to_team",
+                "description": (
+                    "Start a team's sub-graph with the given inputs.  "
+                    "A team that is already running cannot be dispatched "
+                    "again until it completes."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "team_name": {
+                            "type": "string",
+                            "description": "Name of the team to dispatch work to.",
+                        },
+                        "inputs": {
+                            "type": "object",
+                            "description": "Input data to pass to the team sub-graph.",
+                        },
+                    },
+                    "required": ["team_name", "inputs"],
+                },
+            },
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "halt_orchestrator",
+                "description": (
+                    "Stop the orchestrator and return a final aggregated "
+                    "result.  Call this when the overall task is complete."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {
+                            "type": "string",
+                            "description": "Why the orchestrator is stopping.",
+                        },
+                        "final_result": {
+                            "type": "object",
+                            "description": "The final aggregated output.",
+                        },
+                    },
+                    "required": ["reason", "final_result"],
+                },
+            },
+        },
+    ]
+
+    # ---------------------------------------------------------------
+    # Public entry point
+    # ---------------------------------------------------------------
 
     async def execute(
         self,
@@ -859,25 +1163,357 @@ class OrchestratorExecutor:
                 error="orchestrator node has no teams",
             )
 
-        event_queue: asyncio.Queue = asyncio.Queue()
+        if not node.orchestrator_prompt and node.orchestrator_model is None:
+            return await self._execute_static_fanout(node, inputs, context)
+        return await self._execute_llm_driven(node, inputs, context)
 
+    # ---------------------------------------------------------------
+    # LLM-driven orchestration (Plan 16-5)
+    # ---------------------------------------------------------------
+
+    async def _execute_llm_driven(
+        self,
+        node: OrchestratorNode,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        event_queue: asyncio.Queue = asyncio.Queue()
         original_callback = context._event_callback
 
-        async def routing_callback(event: Any) -> None:
+        async def _routing_cb(event: Any) -> None:
             if original_callback:
                 await original_callback(event)
             await event_queue.put(event)
 
-        context._event_callback = routing_callback
+        context._event_callback = _routing_cb
 
-        def _team_inputs(team_name: str) -> dict[str, Any]:
-            inner: dict[str, Any] = {}
-            for outer_port, inner_port in node.input_mappings.items():
-                if outer_port in inputs:
-                    inner[inner_port] = inputs[outer_port]
-            overrides = node.team_inputs.get(team_name, {})
-            inner.update(overrides)
-            return inner
+        team_names_list = list(node.teams.keys())
+        orchestrator_messages: list[dict[str, Any]] = []
+        if node.orchestrator_prompt:
+            orchestrator_messages.append(
+                {"role": "system", "content": node.orchestrator_prompt}
+            )
+        orchestrator_messages.append({
+            "role": "user",
+            "content": (
+                f"Available teams: {', '.join(team_names_list)}\n\n"
+                f"Initial inputs:\n{json.dumps(inputs, indent=2, default=str)}\n\n"
+                "Dispatch work to teams using the dispatch_to_team tool. "
+                "When all work is complete, call halt_orchestrator with "
+                "the final result."
+            ),
+        })
+
+        team_tasks: dict[str, asyncio.Task] = {}
+        team_results: dict[str, Any] = {}
+        team_status: dict[str, str] = {}
+        orchestrator_log: list[dict] = []
+
+        model = self._resolve_model(node, context)
+
+        iteration = 0
+        llm_calls = 0
+        halted = False
+        halt_reason = ""
+        halt_result: dict[str, Any] = {}
+        timeout = node.timeout_seconds
+        start_time = asyncio.get_event_loop().time()
+
+        try:
+            while (
+                not halted
+                and iteration < node.max_iterations
+                and llm_calls < node.max_llm_calls
+            ):
+                iteration += 1
+
+                if timeout and (asyncio.get_event_loop().time() - start_time) > timeout:
+                    orchestrator_log.append({"iteration": iteration, "action": "timeout"})
+                    break
+
+                try:
+                    llm_result = await self._call_orchestrator_llm(
+                        context, model, orchestrator_messages,
+                    )
+                except Exception as exc:
+                    _orch_log.warning("Orchestrator LLM call failed: %s", exc)
+                    orchestrator_log.append({
+                        "iteration": iteration, "action": "llm_error", "error": str(exc),
+                    })
+                    break
+
+                llm_calls += 1
+                _orch_log.debug("LLM call #%d, iteration %d", llm_calls, iteration)
+
+                orchestrator_messages.append(
+                    {"role": "assistant", "content": llm_result.text or ""}
+                )
+                orchestrator_log.append({
+                    "iteration": iteration,
+                    "llm_call": llm_calls,
+                    "text": llm_result.text or "",
+                    "tool_calls": llm_result.tool_calls,
+                })
+
+                if not llm_result.tool_calls:
+                    orchestrator_messages.append({
+                        "role": "user",
+                        "content": (
+                            "You must use tool calls to interact. "
+                            "Use dispatch_to_team to send work or "
+                            "halt_orchestrator to finish."
+                        ),
+                    })
+                    continue
+
+                dispatched_this_round = 0
+                error_feedback = False
+
+                for tc in llm_result.tool_calls:
+                    fn_name = tc.get("function", {}).get(
+                        "name", tc.get("name", ""),
+                    )
+                    raw_args = tc.get("function", {}).get(
+                        "arguments", tc.get("arguments", "{}"),
+                    )
+                    try:
+                        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                    except (json.JSONDecodeError, TypeError):
+                        args = {}
+
+                    if fn_name == "halt_orchestrator":
+                        halted = True
+                        halt_reason = args.get("reason", "")
+                        halt_result = args.get("final_result", {})
+                        if not isinstance(halt_result, dict):
+                            halt_result = {"value": halt_result}
+                        orchestrator_log.append({
+                            "iteration": iteration,
+                            "action": "halt",
+                            "reason": halt_reason,
+                        })
+                        break
+
+                    if fn_name == "dispatch_to_team":
+                        t_name = args.get("team_name", "")
+                        t_inputs = args.get("inputs", {})
+
+                        if t_name not in node.teams:
+                            orchestrator_messages.append({
+                                "role": "user",
+                                "content": (
+                                    f"Error: unknown team '{t_name}'. "
+                                    f"Available: {', '.join(team_names_list)}"
+                                ),
+                            })
+                            error_feedback = True
+                            continue
+
+                        if t_name in team_tasks and not team_tasks[t_name].done():
+                            orchestrator_messages.append({
+                                "role": "user",
+                                "content": (
+                                    f"Error: team '{t_name}' is already running. "
+                                    "Wait for it to complete before "
+                                    "re-dispatching."
+                                ),
+                            })
+                            error_feedback = True
+                            continue
+
+                        merged = self._build_team_inputs(node, inputs, t_name)
+                        merged.update(t_inputs)
+
+                        team_status[t_name] = "running"
+                        sub_key = node.teams[t_name]
+                        task = asyncio.create_task(
+                            context.run_subgraph(
+                                sub_key, merged, parent_node_id=node.id,
+                            )
+                        )
+                        team_tasks[t_name] = task
+
+                        def _on_done(t: asyncio.Task, tn: str = t_name) -> None:
+                            if t.cancelled():
+                                team_status[tn] = "failed"
+                                team_results[tn] = {"error": "cancelled"}
+                            elif t.exception():
+                                team_status[tn] = "failed"
+                                team_results[tn] = {"error": str(t.exception())}
+                            else:
+                                team_status[tn] = "completed"
+                                team_results[tn] = t.result()
+                        task.add_done_callback(_on_done)
+
+                        await context.emit_event(
+                            event_type="parallel_branch_started",
+                            node_id=node.id,
+                            node_type="orchestrator",
+                            data={"branch_key": sub_key, "team_name": t_name},
+                        )
+                        orchestrator_log.append({
+                            "iteration": iteration,
+                            "action": "dispatch",
+                            "team": t_name,
+                            "inputs": t_inputs,
+                        })
+                        dispatched_this_round += 1
+
+                if halted:
+                    break
+
+                if error_feedback and dispatched_this_round == 0:
+                    continue
+
+                running = [
+                    (tn, team_tasks[tn])
+                    for tn in team_tasks
+                    if not team_tasks[tn].done()
+                ]
+
+                if not running:
+                    if team_results:
+                        summary = self._format_all_results(
+                            team_results, team_status,
+                        )
+                        orchestrator_messages.append(
+                            {"role": "user", "content": summary},
+                        )
+                        continue
+                    break
+
+                remaining_timeout = None
+                if timeout:
+                    remaining_timeout = max(
+                        0,
+                        timeout - (asyncio.get_event_loop().time() - start_time),
+                    )
+                    if remaining_timeout == 0:
+                        orchestrator_log.append({
+                            "iteration": iteration,
+                            "action": "timeout_while_waiting",
+                        })
+                        break
+
+                done_set, _ = await asyncio.wait(
+                    [t for _, t in running],
+                    timeout=remaining_timeout,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if not done_set and timeout:
+                    orchestrator_log.append({
+                        "iteration": iteration,
+                        "action": "timeout_while_waiting",
+                    })
+                    break
+
+                newly_completed: list[str] = []
+                for tn, t in running:
+                    if t.done():
+                        newly_completed.append(tn)
+                        await context.emit_event(
+                            event_type="parallel_branch_completed",
+                            node_id=node.id,
+                            node_type="orchestrator",
+                            data={
+                                "team_name": tn,
+                                "status": team_status.get(tn, "unknown"),
+                            },
+                        )
+
+                if newly_completed:
+                    event_summary = self._format_completion_events(
+                        newly_completed, team_results, team_status,
+                    )
+                    orchestrator_messages.append(
+                        {"role": "user", "content": event_summary},
+                    )
+
+                self._drain_events(event_queue, orchestrator_log, iteration)
+
+        finally:
+            context._event_callback = original_callback
+
+        for t in team_tasks.values():
+            if not t.done():
+                t.cancel()
+        await self._collect_remaining(team_tasks, team_results, team_status)
+
+        await context.emit_event(
+            event_type="parallel_fan_in_completed",
+            node_id=node.id,
+            node_type="orchestrator",
+            data={
+                "team_count": len(node.teams),
+                "completed": sum(
+                    1 for s in team_status.values() if s == "completed"
+                ),
+                "failed": sum(
+                    1 for s in team_status.values() if s == "failed"
+                ),
+            },
+        )
+
+        exceeded = (
+            llm_calls >= node.max_llm_calls
+            or iteration >= node.max_iterations
+        )
+        final_outputs: dict[str, Any] = {
+            "results": halt_result if halted else team_results,
+            "orchestrator_log": orchestrator_log,
+            "team_status": dict(team_status),
+        }
+        if halted:
+            final_outputs["halt_reason"] = halt_reason
+            final_outputs["team_results"] = team_results
+
+        all_failed = bool(team_status) and all(
+            s == "failed" for s in team_status.values()
+        )
+        status = NodeStatus.COMPLETED
+        error_msg: str | None = None
+        if all_failed:
+            status = NodeStatus.FAILED
+            error_msg = "All teams failed"
+        elif exceeded and not halted:
+            error_msg = (
+                f"Safety bound reached: {llm_calls} LLM calls, "
+                f"{iteration} iterations"
+            )
+
+        return NodeResult(
+            outputs=final_outputs,
+            status=status,
+            error=error_msg,
+            metadata={
+                "team_count": len(node.teams),
+                "iterations": iteration,
+                "llm_calls": llm_calls,
+                "halted": halted,
+                "team_status": dict(team_status),
+            },
+        )
+
+    # ---------------------------------------------------------------
+    # Static fan-out fallback (backward compat, no LLM)
+    # ---------------------------------------------------------------
+
+    async def _execute_static_fanout(
+        self,
+        node: OrchestratorNode,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        event_queue: asyncio.Queue = asyncio.Queue()
+        original_callback = context._event_callback
+
+        async def _routing_cb(event: Any) -> None:
+            if original_callback:
+                await original_callback(event)
+            await event_queue.put(event)
+
+        context._event_callback = _routing_cb
 
         team_tasks: dict[str, asyncio.Task] = {}
         team_results: dict[str, Any] = {}
@@ -886,10 +1522,13 @@ class OrchestratorExecutor:
         for team_name, sub_key in node.teams.items():
             team_status[team_name] = "running"
             task = asyncio.create_task(
-                context.run_subgraph(sub_key, _team_inputs(team_name), parent_node_id=node.id)
+                context.run_subgraph(
+                    sub_key,
+                    self._build_team_inputs(node, inputs, team_name),
+                    parent_node_id=node.id,
+                )
             )
             team_tasks[team_name] = task
-
             await context.emit_event(
                 event_type="parallel_branch_started",
                 node_id=node.id,
@@ -912,7 +1551,6 @@ class OrchestratorExecutor:
 
         orchestrator_log: list[dict] = []
         iteration = 0
-
         timeout = node.timeout_seconds
         start_time = asyncio.get_event_loop().time()
 
@@ -939,59 +1577,30 @@ class OrchestratorExecutor:
                 events_batch: list[Any] = []
                 try:
                     while True:
-                        event = event_queue.get_nowait()
-                        events_batch.append(event)
+                        events_batch.append(event_queue.get_nowait())
                 except asyncio.QueueEmpty:
                     pass
 
                 if events_batch:
                     for event in events_batch:
                         evt_type = event.event_type
-                        evt_type_str = evt_type.value if hasattr(evt_type, "value") else str(evt_type)
+                        evt_str = (
+                            evt_type.value
+                            if hasattr(evt_type, "value")
+                            else str(evt_type)
+                        )
                         orchestrator_log.append({
                             "iteration": iteration,
-                            "event_type": evt_type_str,
+                            "event_type": evt_str,
                             "node_id": event.node_id,
                             "data": event.data,
                         })
-
-                        if evt_type == EventType.NODE_COMPLETED:
-                            layer = event.data.get("layer_path", [])
-                            team_for = None
-                            for tn, sk in node.teams.items():
-                                if layer and sk == layer[0]:
-                                    team_for = tn
-                                    break
-                            if team_for:
-                                try:
-                                    context.shared_context.write(
-                                        f"__orchestrator__{node.id}__received__{team_for}",
-                                        event.data,
-                                    )
-                                except KeyError:
-                                    pass
                 else:
                     await asyncio.sleep(0.05)
         finally:
             context._event_callback = original_callback
 
-        pending = [t for t in team_tasks.values() if not t.done()]
-        if pending:
-            done, still_pending = await asyncio.wait(pending, timeout=2.0)
-            for t in still_pending:
-                t.cancel()
-
-        for team_name in node.teams:
-            if team_name not in team_results:
-                task = team_tasks[team_name]
-                if task.done() and not task.cancelled():
-                    exc = task.exception()
-                    if exc:
-                        team_results[team_name] = {"error": str(exc)}
-                    else:
-                        team_results[team_name] = task.result()
-                else:
-                    team_results[team_name] = {"error": "cancelled or not completed"}
+        await self._collect_remaining(team_tasks, team_results, team_status)
 
         await context.emit_event(
             event_type="parallel_fan_in_completed",
@@ -999,14 +1608,16 @@ class OrchestratorExecutor:
             node_type="orchestrator",
             data={
                 "team_count": len(node.teams),
-                "completed": sum(1 for s in team_status.values() if s == "completed"),
-                "failed": sum(1 for s in team_status.values() if s == "failed"),
+                "completed": sum(
+                    1 for s in team_status.values() if s == "completed"
+                ),
+                "failed": sum(
+                    1 for s in team_status.values() if s == "failed"
+                ),
             },
         )
 
-        has_failures = any(s == "failed" for s in team_status.values())
         all_failed = all(s == "failed" for s in team_status.values())
-
         return NodeResult(
             outputs={
                 "results": team_results,
@@ -1021,3 +1632,849 @@ class OrchestratorExecutor:
                 "team_status": dict(team_status),
             },
         )
+
+    # ---------------------------------------------------------------
+    # Helpers
+    # ---------------------------------------------------------------
+
+    @staticmethod
+    def _resolve_model(
+        node: OrchestratorNode, context: ExecutionContext,
+    ) -> str:
+        model = node.orchestrator_model or context.config.llm_default_model
+        if context.model_selector is not None:
+            effective_policy = context.model_selector.resolve_effective_policy(
+                node, context.config,
+            )
+            if effective_policy is not None:
+                try:
+                    selected = context.model_selector.select_sync(
+                        effective_policy, node, context,
+                    )
+                except AttributeError:
+                    selected = None
+                if selected:
+                    model = selected
+        return model
+
+    @staticmethod
+    def _build_team_inputs(
+        node: OrchestratorNode,
+        outer_inputs: dict[str, Any],
+        team_name: str,
+    ) -> dict[str, Any]:
+        inner: dict[str, Any] = {}
+        for outer_port, inner_port in node.input_mappings.items():
+            if outer_port in outer_inputs:
+                inner[inner_port] = outer_inputs[outer_port]
+        overrides = node.team_inputs.get(team_name, {})
+        inner.update(overrides)
+        return inner
+
+    @staticmethod
+    async def _call_orchestrator_llm(
+        context: ExecutionContext,
+        model: str,
+        messages: list[dict[str, Any]],
+    ) -> CompletionResult:
+        if context.provider_registry is not None:
+            provider = context.provider_registry.resolve(model)
+            return await provider.complete(
+                messages=messages,
+                model=model,
+                temperature=0.0,
+                tools=OrchestratorExecutor.TOOL_SCHEMAS,
+            )
+
+        from openai import AsyncOpenAI
+
+        client = AsyncOpenAI(
+            api_key=context.config.llm_api_key,
+            base_url=context.config.llm_base_url,
+        )
+        resp = await client.chat.completions.create(
+            model=model,
+            messages=messages,
+            temperature=0.0,
+            tools=OrchestratorExecutor.TOOL_SCHEMAS,
+        )
+        msg = resp.choices[0].message
+        tool_calls_raw = None
+        if msg.tool_calls:
+            tool_calls_raw = [
+                {
+                    "id": tc.id,
+                    "type": "function",
+                    "function": {
+                        "name": tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in msg.tool_calls
+            ]
+        return CompletionResult(
+            text=msg.content or "",
+            model=model,
+            tool_calls=tool_calls_raw,
+        )
+
+    @staticmethod
+    def _format_completion_events(
+        completed_teams: list[str],
+        team_results: dict[str, Any],
+        team_status: dict[str, str],
+    ) -> str:
+        parts: list[str] = []
+        for tn in completed_teams:
+            st = team_status.get(tn, "unknown")
+            result = team_results.get(tn, {})
+            result_str = json.dumps(result, indent=2, default=str)
+            parts.append(f"Team '{tn}' {st}.\nResult:\n{result_str}")
+        return "--- Team Events ---\n" + "\n\n".join(parts)
+
+    @staticmethod
+    def _format_all_results(
+        team_results: dict[str, Any],
+        team_status: dict[str, str],
+    ) -> str:
+        parts: list[str] = []
+        for tn, result in team_results.items():
+            st = team_status.get(tn, "unknown")
+            result_str = json.dumps(result, indent=2, default=str)
+            parts.append(f"Team '{tn}' ({st}):\n{result_str}")
+        return (
+            "All dispatched teams have completed. Results:\n\n"
+            + "\n\n".join(parts)
+            + "\n\nCall halt_orchestrator to finish, or dispatch more work."
+        )
+
+    @staticmethod
+    def _drain_events(
+        event_queue: asyncio.Queue,
+        orchestrator_log: list[dict],
+        iteration: int,
+    ) -> None:
+        while True:
+            try:
+                event = event_queue.get_nowait()
+                evt_type = event.event_type
+                evt_str = (
+                    evt_type.value
+                    if hasattr(evt_type, "value")
+                    else str(evt_type)
+                )
+                orchestrator_log.append({
+                    "iteration": iteration,
+                    "event_type": evt_str,
+                    "node_id": event.node_id,
+                    "data": event.data,
+                })
+            except asyncio.QueueEmpty:
+                break
+
+    @staticmethod
+    async def _collect_remaining(
+        team_tasks: dict[str, asyncio.Task],
+        team_results: dict[str, Any],
+        team_status: dict[str, str],
+    ) -> None:
+        pending = [t for t in team_tasks.values() if not t.done()]
+        if pending:
+            _, still_pending = await asyncio.wait(pending, timeout=2.0)
+            for t in still_pending:
+                t.cancel()
+
+        for team_name, task in team_tasks.items():
+            if team_name not in team_results:
+                if task.done() and not task.cancelled():
+                    exc = task.exception()
+                    if exc:
+                        team_results[team_name] = {"error": str(exc)}
+                    else:
+                        team_results[team_name] = task.result()
+                else:
+                    team_results[team_name] = {"error": "cancelled or not completed"}
+
+
+# ---------------------------------------------------------------------------
+# Vote / Ensemble
+# ---------------------------------------------------------------------------
+
+
+class VoteExecutor:
+    """Runs the same prompt through multiple LLM instances and picks the best.
+
+    Supports same-model voting (single candidate, N votes) and cross-model
+    ensemble (multiple candidates). Strategy selects the winner.
+    """
+
+    async def execute(
+        self,
+        node: NodeBase,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        assert isinstance(node, VoteNode)
+
+        prompt = self._render_prompt(node.prompt_template, inputs)
+        config = node.vote_config or VoteConfig()
+
+        await context.emit_event(
+            event_type="vote_started",
+            node_id=node.id,
+            node_type="vote",
+            data={
+                "num_votes": node.num_votes,
+                "candidates": node.candidates,
+                "strategy": node.vote_strategy,
+            },
+        )
+
+        candidates = self._collect_candidates(node)
+        semaphore = asyncio.Semaphore(node.parallelism)
+
+        async def _call(index: int, model: str) -> dict[str, Any] | None:
+            async with semaphore:
+                try:
+                    result = await self._call_llm(context, model, prompt, node)
+                    await context.emit_event(
+                        event_type="vote_cast",
+                        node_id=node.id,
+                        node_type="vote",
+                        data={"index": index, "model": model},
+                    )
+                    cost = self._compute_cost(model, result.usage)
+                    return {
+                        "index": index,
+                        "model": model,
+                        "text": result.text,
+                        "usage": result.usage,
+                        "cost": cost,
+                    }
+                except Exception as exc:
+                    logger.warning("Vote %d (%s) failed: %s", index, model, exc)
+                    return None
+
+        tasks = [_call(i, m) for i, m in candidates]
+        raw = await asyncio.gather(*tasks)
+
+        votes: list[dict[str, Any]] = [v for v in raw if v is not None]
+
+        import math
+        min_required = math.ceil(node.num_votes / 2)
+        if len(votes) < min_required:
+            return NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error=f"Only {len(votes)}/{node.num_votes} votes succeeded (need {min_required})",
+            )
+
+        winner, consensus = await self._apply_strategy(
+            node.vote_strategy, votes, config, context, node,
+        )
+
+        total_cost = sum(v.get("cost", 0.0) or 0.0 for v in votes)
+
+        all_votes = [
+            {"model": v["model"], "text": v["text"], "score": v.get("score")}
+            for v in votes
+        ]
+
+        await context.emit_event(
+            event_type="vote_completed",
+            node_id=node.id,
+            node_type="vote",
+            data={
+                "winner": winner["model"],
+                "consensus": consensus,
+                "cost": total_cost,
+            },
+        )
+
+        return NodeResult(
+            outputs={
+                "winner": winner["text"],
+                "winner_model": winner["model"],
+                "winner_index": winner["index"],
+                "all_votes": all_votes,
+                "consensus_reached": consensus,
+                "vote_count": len(votes),
+                "total_cost": total_cost,
+                "strategy_used": node.vote_strategy,
+            },
+            status=NodeStatus.COMPLETED,
+            metadata={
+                "num_votes": node.num_votes,
+                "succeeded": len(votes),
+                "strategy": node.vote_strategy,
+                "consensus": consensus,
+                "total_cost": total_cost,
+            },
+        )
+
+    # -- helpers ---------------------------------------------------------------
+
+    @staticmethod
+    def _render_prompt(template: str, inputs: dict[str, Any]) -> str:
+        """Replace ``{key}`` placeholders with input values."""
+        result = template
+        for key, value in inputs.items():
+            placeholder = "{" + key + "}"
+            if placeholder in result:
+                result = result.replace(placeholder, str(value))
+        return result
+
+    @staticmethod
+    def _collect_candidates(node: VoteNode) -> list[tuple[int, str]]:
+        """Build (index, model) pairs via round-robin over candidates."""
+        models = node.candidates
+        return [(i, models[i % len(models)]) for i in range(node.num_votes)]
+
+    @staticmethod
+    async def _call_llm(
+        context: ExecutionContext,
+        model: str,
+        prompt: str,
+        node: VoteNode,
+    ):
+        messages: list[dict[str, str]] = []
+        if node.system_prompt:
+            messages.append({"role": "system", "content": node.system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        if context.provider_registry is not None:
+            provider = context.provider_registry.resolve(model)
+            return await provider.complete(
+                messages=messages, model=model, temperature=node.temperature,
+            )
+
+        from openai import AsyncOpenAI
+        client = AsyncOpenAI(
+            api_key=context.config.llm_api_key,
+            base_url=context.config.llm_base_url,
+        )
+        resp = await client.chat.completions.create(
+            model=model, messages=messages, temperature=node.temperature,
+        )
+        from dan.providers import CompletionResult
+        text = resp.choices[0].message.content or ""
+        usage = {
+            "prompt_tokens": resp.usage.prompt_tokens if resp.usage else 0,
+            "completion_tokens": resp.usage.completion_tokens if resp.usage else 0,
+        }
+        return CompletionResult(text=text, usage=usage, model=model)
+
+    @staticmethod
+    def _compute_cost(model: str, usage: dict[str, int] | None) -> float:
+        if not usage:
+            return 0.0
+        from dan.providers.costs import estimate_cost
+        cost = estimate_cost(
+            model,
+            usage.get("prompt_tokens", 0),
+            usage.get("completion_tokens", 0),
+        )
+        return cost if cost is not None else 0.0
+
+    async def _apply_strategy(
+        self,
+        strategy: str,
+        votes: list[dict[str, Any]],
+        config: VoteConfig,
+        context: ExecutionContext,
+        node: VoteNode,
+    ) -> tuple[dict[str, Any], bool]:
+        """Apply the voting strategy. Returns (winner_vote_dict, consensus_reached)."""
+        if strategy == "majority":
+            return self._strategy_majority(votes)
+        elif strategy == "weighted":
+            return self._strategy_weighted(votes, config)
+        elif strategy in ("best_of_n", "judge"):
+            return await self._strategy_judge(votes, config, context, node)
+        elif strategy == "unanimous":
+            return self._strategy_unanimous(votes, config)
+        else:
+            return self._strategy_majority(votes)
+
+    @staticmethod
+    def _normalize(text: str) -> str:
+        """Normalize whitespace for comparison."""
+        return " ".join(text.split())
+
+    def _strategy_majority(
+        self, votes: list[dict[str, Any]]
+    ) -> tuple[dict[str, Any], bool]:
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for v in votes:
+            key = self._normalize(v["text"])
+            buckets.setdefault(key, []).append(v)
+
+        best_key = max(buckets, key=lambda k: len(buckets[k]))
+        best_group = buckets[best_key]
+        consensus = len(best_group) == len(votes)
+        winner = best_group[0]
+        return winner, consensus
+
+    def _strategy_weighted(
+        self, votes: list[dict[str, Any]], config: VoteConfig
+    ) -> tuple[dict[str, Any], bool]:
+        expr = config.quality_metric or "len(output)"
+        best: dict[str, Any] | None = None
+        best_score = float("-inf")
+
+        for v in votes:
+            variables = {"output": v["text"], "model": v["model"], "cost": v.get("cost", 0)}
+            try:
+                score = float(evaluate_expression(expr, variables))
+            except Exception:
+                score = 0.0
+            v["score"] = score
+            if score > best_score:
+                best_score = score
+                best = v
+
+        assert best is not None
+        return best, False
+
+    async def _strategy_judge(
+        self,
+        votes: list[dict[str, Any]],
+        config: VoteConfig,
+        context: ExecutionContext,
+        node: VoteNode,
+    ) -> tuple[dict[str, Any], bool]:
+        judge_model = config.judge_model or (node.candidates[0] if node.candidates else context.config.llm_default_model)
+
+        answers_text = "\n\n".join(
+            f"--- Answer {v['index']} (model: {v['model']}) ---\n{v['text']}"
+            for v in votes
+        )
+        judge_prompt = config.judge_prompt or (
+            "Given these answers to the same question, which is best? "
+            "Return ONLY the answer number (0-indexed integer)."
+        )
+        full_prompt = f"{judge_prompt}\n\n{answers_text}"
+
+        messages = [{"role": "user", "content": full_prompt}]
+
+        try:
+            if context.provider_registry is not None:
+                provider = context.provider_registry.resolve(judge_model)
+                result = await provider.complete(
+                    messages=messages, model=judge_model, temperature=0.0,
+                )
+                judge_text = result.text.strip()
+            else:
+                judge_text = "0"
+
+            chosen_idx = int("".join(c for c in judge_text if c.isdigit()) or "0")
+            for v in votes:
+                if v["index"] == chosen_idx:
+                    return v, False
+            return votes[0], False
+        except Exception:
+            return votes[0], False
+
+    def _strategy_unanimous(
+        self, votes: list[dict[str, Any]], config: VoteConfig
+    ) -> tuple[dict[str, Any], bool]:
+        threshold = config.unanimity_threshold
+        normalized = [self._normalize(v["text"]) for v in votes]
+
+        from collections import Counter
+        counts = Counter(normalized)
+        most_common_text, most_common_count = counts.most_common(1)[0]
+        agreement_ratio = most_common_count / len(votes)
+
+        consensus = agreement_ratio >= threshold
+
+        for v in votes:
+            if self._normalize(v["text"]) == most_common_text:
+                return v, consensus
+
+        return votes[0], consensus
+
+
+# ---------------------------------------------------------------------------
+# AgentTeam — group-chat style multi-agent coordination (Plan 16-1)
+# ---------------------------------------------------------------------------
+
+_MENTION_RE = re.compile(r"@(\w+)")
+
+
+class AgentTeamExecutor:
+    """Runs a group-chat style conversation among multiple agents.
+
+    Each agent is a sub-graph.  The executor manages turn order (via one of
+    four strategies), parses ``@agent_name`` mentions for routing, handles
+    explicit handoffs, and checks completion conditions each turn.
+    """
+
+    async def execute(
+        self,
+        node: NodeBase,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        assert isinstance(node, AgentTeamNode)
+
+        if len(node.agents) < 2:
+            return NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error="agent_team requires at least 2 agents",
+            )
+
+        agent_names = list(node.agents.keys())
+        conversation = TeamConversation()
+        conv_key = f"__team__{node.id}__conversation"
+        self._ctx_write(context, conv_key, conversation.model_dump())
+
+        agent_contributions: dict[str, list[str]] = {n: [] for n in agent_names}
+        consult_return_stack: list[str] = []
+        current_agent = agent_names[0]
+        agent_index = 0
+        completed_via_condition = False
+
+        for turn in range(node.max_turns):
+            conversation.turn_count = turn + 1
+            conversation.active_agent = current_agent
+
+            await context.emit_event(
+                event_type="team_turn_started",
+                node_id=node.id,
+                node_type="agent_team",
+                data={"agent_name": current_agent, "turn_number": turn},
+            )
+
+            agent_in = self._build_agent_inputs(
+                node, current_agent, conversation, agent_names, inputs,
+            )
+            sub_graph_key = node.agents[current_agent]
+
+            try:
+                agent_output = await context.run_subgraph(
+                    sub_graph_key, agent_in, parent_node_id=node.id,
+                )
+            except Exception as exc:
+                msg = TeamMessage(
+                    sender=current_agent,
+                    content=f"[Error: {exc}]",
+                    turn_number=turn,
+                )
+                conversation.messages.append(msg)
+                current_agent, agent_index = self._advance_round_robin(
+                    agent_names, agent_index,
+                )
+                continue
+
+            content = self._extract_content(agent_output)
+            mentions = [
+                m for m in self._parse_mentions(content, agent_names)
+                if m != current_agent
+            ]
+            handoff = self._parse_handoff(agent_output, current_agent, agent_names)
+            if handoff and node.handoff_policy == "moderator_only":
+                handoff = None
+
+            msg = TeamMessage(
+                sender=current_agent,
+                recipients=mentions if mentions else ["all"],
+                content=content,
+                message_type="handoff" if handoff else "message",
+                turn_number=turn,
+            )
+            conversation.messages.append(msg)
+            agent_contributions[current_agent].append(content)
+
+            await context.emit_event(
+                event_type="team_turn_completed",
+                node_id=node.id,
+                node_type="agent_team",
+                data={
+                    "agent_name": current_agent,
+                    "turn_number": turn,
+                    "message_summary": content[:200],
+                },
+            )
+
+            if handoff:
+                conversation.handoff_log.append(handoff)
+                await context.emit_event(
+                    event_type="team_handoff",
+                    node_id=node.id,
+                    node_type="agent_team",
+                    data={
+                        "source": handoff.source_agent,
+                        "target": handoff.target_agent,
+                        "reason": handoff.reason,
+                    },
+                )
+                if handoff.handoff_type == "consult":
+                    consult_return_stack.append(current_agent)
+                current_agent = handoff.target_agent
+                agent_index = agent_names.index(current_agent)
+            else:
+                current_agent, agent_index = await self._select_next_agent(
+                    node, agent_names, agent_index, current_agent,
+                    conversation, context, mentions, consult_return_stack,
+                )
+
+            self._ctx_write(context, conv_key, conversation.model_dump())
+
+            if self._check_completion(node, conversation, agent_names):
+                completed_via_condition = True
+                break
+
+        consensus_reached = (
+            node.completion_condition == "consensus" and completed_via_condition
+        )
+
+        await context.emit_event(
+            event_type="team_completed",
+            node_id=node.id,
+            node_type="agent_team",
+            data={
+                "consensus_reached": consensus_reached,
+                "total_turns": conversation.turn_count,
+            },
+        )
+
+        final = self._build_final_result(
+            conversation, agent_contributions, consensus_reached,
+        )
+        return NodeResult(
+            outputs=final,
+            status=NodeStatus.COMPLETED,
+            metadata={
+                "total_turns": conversation.turn_count,
+                "consensus_reached": consensus_reached,
+                "agent_count": len(agent_names),
+            },
+        )
+
+    # -- helpers ---------------------------------------------------------------
+
+    @staticmethod
+    def _ctx_write(context: ExecutionContext, key: str, value: Any) -> None:
+        """Write to shared context, bypassing declaration check."""
+        try:
+            context.shared_context.write(key, value)
+        except KeyError:
+            context.shared_context._store[key] = value
+
+    def _build_agent_inputs(
+        self,
+        node: AgentTeamNode,
+        agent_name: str,
+        conversation: TeamConversation,
+        agent_names: list[str],
+        outer_inputs: dict[str, Any],
+    ) -> dict[str, Any]:
+        inner: dict[str, Any] = {}
+        for outer_port, inner_port in node.input_mappings.items():
+            if outer_port in outer_inputs:
+                inner[inner_port] = outer_inputs[outer_port]
+
+        overrides = node.agent_inputs.get(agent_name, {})
+        inner.update(overrides)
+
+        history = [m.model_dump() for m in conversation.messages]
+        history = self._compact_history(node, history)
+        inner["conversation_history"] = history
+        inner["current_turn"] = conversation.turn_count
+        inner["team_roster"] = agent_names
+
+        if conversation.handoff_log:
+            last_ho = conversation.handoff_log[-1]
+            if last_ho.target_agent == agent_name:
+                inner["handoff_context"] = last_ho.model_dump()
+
+        return inner
+
+    @staticmethod
+    def _compact_history(
+        node: AgentTeamNode, history: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Apply CompactionRule to a copy of the conversation history."""
+        rule = node.compaction_rule
+        if rule is None or rule.strategy == CompactionStrategy.NONE:
+            return history
+        if not history:
+            return history
+        if rule.strategy == CompactionStrategy.KEEP_LAST:
+            return history[-1:]
+        if rule.strategy == CompactionStrategy.SLIDING_WINDOW:
+            window = rule.window_size or (len(node.agents) * 3)
+            return history[-window:]
+        if rule.strategy == CompactionStrategy.DIFF_BASED:
+            if len(history) > 2:
+                return [history[0], history[-1]]
+        return history
+
+    @staticmethod
+    def _extract_content(agent_output: dict[str, Any]) -> str:
+        for key in ("result", "response", "content", "output", "text"):
+            if key in agent_output and isinstance(agent_output[key], str):
+                return agent_output[key]
+        return json.dumps(agent_output, default=str)
+
+    @staticmethod
+    def _parse_mentions(text: str, agent_names: list[str]) -> list[str]:
+        """Extract @agent_name mentions from text, filtered to known agents."""
+        return [m for m in _MENTION_RE.findall(text) if m in agent_names]
+
+    @staticmethod
+    def _parse_handoff(
+        output: dict[str, Any],
+        current_agent: str,
+        agent_names: list[str],
+    ) -> HandoffRequest | None:
+        handoff_data = output.get("handoff")
+        if not handoff_data or not isinstance(handoff_data, dict):
+            return None
+        target = handoff_data.get("target_agent", "")
+        if target not in agent_names or target == current_agent:
+            return None
+        return HandoffRequest(
+            source_agent=current_agent,
+            target_agent=target,
+            reason=handoff_data.get("reason", ""),
+            context=handoff_data.get("context", {}),
+            handoff_type=handoff_data.get("handoff_type", "transfer"),
+        )
+
+    @staticmethod
+    def _advance_round_robin(
+        agent_names: list[str], current_index: int,
+    ) -> tuple[str, int]:
+        idx = (current_index + 1) % len(agent_names)
+        return agent_names[idx], idx
+
+    async def _select_next_agent(
+        self,
+        node: AgentTeamNode,
+        agent_names: list[str],
+        current_index: int,
+        current_agent: str,
+        conversation: TeamConversation,
+        context: ExecutionContext,
+        mentions: list[str],
+        consult_return_stack: list[str],
+    ) -> tuple[str, int]:
+        if consult_return_stack:
+            next_name = consult_return_stack.pop()
+            return next_name, agent_names.index(next_name)
+
+        if node.turn_strategy == "round_robin":
+            return self._advance_round_robin(agent_names, current_index)
+
+        if node.turn_strategy == "sequential":
+            idx = current_index + 1
+            if idx >= len(agent_names):
+                return current_agent, current_index
+            return agent_names[idx], idx
+
+        if node.turn_strategy == "moderator":
+            next_name = await self._call_moderator(
+                node, agent_names, conversation, context,
+            )
+            if next_name and next_name in agent_names:
+                return next_name, agent_names.index(next_name)
+            return self._advance_round_robin(agent_names, current_index)
+
+        if node.turn_strategy == "free_form":
+            if mentions:
+                return mentions[0], agent_names.index(mentions[0])
+            if node.moderator_model:
+                next_name = await self._call_moderator(
+                    node, agent_names, conversation, context,
+                )
+                if next_name and next_name in agent_names:
+                    return next_name, agent_names.index(next_name)
+            return self._advance_round_robin(agent_names, current_index)
+
+        return self._advance_round_robin(agent_names, current_index)
+
+    @staticmethod
+    async def _call_moderator(
+        node: AgentTeamNode,
+        agent_names: list[str],
+        conversation: TeamConversation,
+        context: ExecutionContext,
+    ) -> str | None:
+        model = node.moderator_model or context.config.llm_default_model
+        recent = conversation.messages[-10:]
+        conv_text = "\n".join(
+            f"{m.sender}: {m.content[:200]}" for m in recent
+        )
+        prompt = (
+            f"{node.moderator_prompt}\n\n"
+            f"Team members: {', '.join(agent_names)}\n\n"
+            f"Recent conversation:\n{conv_text}\n\n"
+            f"Who should speak next? Respond with ONLY one agent name from: {agent_names}"
+        )
+        try:
+            result = await RouterExecutor._call_router_llm(context, model, prompt)
+            result = result.strip()
+            if result in agent_names:
+                return result
+            for name in agent_names:
+                if name.lower() in result.lower():
+                    return name
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _check_completion(
+        node: AgentTeamNode,
+        conversation: TeamConversation,
+        agent_names: list[str],
+    ) -> bool:
+        if node.turn_strategy == "sequential":
+            respondents = {m.sender for m in conversation.messages}
+            if respondents >= set(agent_names):
+                return True
+
+        if node.completion_condition == "max_turns":
+            return conversation.turn_count >= node.max_turns
+
+        if node.completion_condition == "all_responded":
+            respondents = {m.sender for m in conversation.messages}
+            return respondents >= set(agent_names)
+
+        if node.completion_condition == "moderator_halt":
+            if conversation.messages:
+                return "HALT" in conversation.messages[-1].content.upper()
+            return False
+
+        if node.completion_condition == "consensus":
+            if conversation.messages:
+                return "CONSENSUS" in conversation.messages[-1].content.upper()
+            return False
+
+        return False
+
+    @staticmethod
+    def _build_final_result(
+        conversation: TeamConversation,
+        agent_contributions: dict[str, list[str]],
+        consensus_reached: bool,
+    ) -> dict[str, Any]:
+        final_answer = ""
+        if conversation.messages:
+            final_answer = conversation.messages[-1].content
+
+        summaries = {
+            name: "; ".join(msgs) if msgs else "(no contributions)"
+            for name, msgs in agent_contributions.items()
+        }
+
+        return {
+            "result": final_answer,
+            "agent_contributions": summaries,
+            "consensus_reached": consensus_reached,
+            "total_turns": conversation.turn_count,
+            "conversation": [m.model_dump() for m in conversation.messages],
+        }
