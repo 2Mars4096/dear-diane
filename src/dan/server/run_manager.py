@@ -118,6 +118,23 @@ class RunManager:
         self._pending_human_inputs: dict[str, asyncio.Event] = {}
         self._human_input_responses: dict[str, dict[str, Any]] = {}
         self._hydrate_from_store()
+        self._error_memory_index = None
+        self._principle_store = None
+        self._rule_lifecycle_manager = None
+        self._experience_index = None
+        self._experience_store = None
+
+    @property
+    def engine_config(self) -> EngineConfig:
+        return self._config
+
+    @property
+    def tool_registry(self) -> ToolRegistry:
+        return self._tool_registry
+
+    @property
+    def run_store(self) -> RunStore | None:
+        return self._run_store
 
     def _hydrate_from_store(self) -> None:
         """Load historical run summaries from RunStore into the in-memory index."""
@@ -132,6 +149,148 @@ class RunManager:
             rid = summary.get("run_id")
             if rid and rid not in self._runs:
                 self._runs[rid] = RunRecord.from_summary(summary)
+
+    def _get_error_memory_index(self):
+        """Lazily initialize ErrorMemoryIndex from engine config."""
+        if self._error_memory_index is not None:
+            return self._error_memory_index
+        if not getattr(self._config, "error_memory_enabled", False):
+            return None
+        try:
+            from dan.rag import build_embedding_registry
+            from dan.rag.stores import VectorStoreConfig, VectorStoreFactory
+
+            registry = build_embedding_registry(self._config)
+            model = self._config.default_embedding_model
+            provider = registry.resolve(model)
+
+            backend = getattr(self._config, "error_memory_backend", "memory")
+            store = VectorStoreFactory.create(
+                VectorStoreConfig(backend=backend)
+            )
+            from dan.engine.error_memory import ErrorMemoryIndex
+            self._error_memory_index = ErrorMemoryIndex(
+                embedding_provider=provider,
+                embedding_model=model,
+                store=store,
+            )
+            return self._error_memory_index
+        except Exception:
+            logger.debug("Failed to initialize ErrorMemoryIndex", exc_info=True)
+            return None
+
+    def _get_principle_store(self):
+        """Lazily initialize PrincipleStore from engine config."""
+        if self._principle_store is not None:
+            return self._principle_store
+        try:
+            from dan.engine.memory_store import FileSystemMemoryStore
+            from dan.engine.error_memory import PrincipleStore
+
+            memory_dir = getattr(self._config, "memory_dir", "./memory")
+            memory_store = FileSystemMemoryStore(memory_dir)
+            self._principle_store = PrincipleStore(memory_store)
+            return self._principle_store
+        except Exception:
+            logger.debug("Failed to initialize PrincipleStore", exc_info=True)
+            return None
+
+    def _get_rule_lifecycle_manager(self):
+        """Lazily initialize RuleLifecycleManager from engine config."""
+        if self._rule_lifecycle_manager is not None:
+            return self._rule_lifecycle_manager
+        if not getattr(self._config, "self_evolving_rules_enabled", False):
+            return None
+        try:
+            from dan.engine.rule_generator import RuleGenerator, RuleLifecycleManager
+
+            generator = RuleGenerator(
+                base_priority=getattr(self._config, "generated_rule_base_priority", 100),
+            )
+            self._rule_lifecycle_manager = RuleLifecycleManager(
+                base_dir=getattr(self._config, "rules_dir", "./rules"),
+                generator=generator,
+                default_ttl_days=getattr(self._config, "generated_rule_ttl_days", 30),
+                max_rules_per_workflow=getattr(self._config, "max_generated_rules_per_workflow", 20),
+            )
+            return self._rule_lifecycle_manager
+        except Exception:
+            logger.debug("Failed to initialize RuleLifecycleManager", exc_info=True)
+            return None
+
+    def _get_experience_index(self):
+        """Lazily initialize ExperienceIndex from engine config."""
+        if self._experience_index is not None:
+            return self._experience_index
+        try:
+            from dan.rag import build_embedding_registry
+            from dan.rag.stores import VectorStoreConfig, VectorStoreFactory
+            from dan.engine.experience import ExperienceIndex
+
+            registry = build_embedding_registry(self._config)
+            model = self._config.default_embedding_model
+            provider = registry.resolve(model)
+
+            backend = os.environ.get(
+                "DAN_EXPERIENCE_STORE_BACKEND",
+                os.environ.get("DAN_RAG_STORE_BACKEND", "memory"),
+            )
+            persist_dir = os.environ.get("DAN_EXPERIENCE_PERSIST_DIR", "./rag_data")
+            store = VectorStoreFactory.create(
+                VectorStoreConfig(
+                    backend=backend,
+                    persist_directory=persist_dir,
+                ),
+            )
+            self._experience_index = ExperienceIndex(
+                embedding_provider=provider,
+                vector_store=store,
+                embedding_model=model,
+            )
+            return self._experience_index
+        except Exception:
+            logger.debug("Failed to initialize ExperienceIndex", exc_info=True)
+            return None
+
+    def _get_experience_store(self):
+        """Lazily initialize ExperienceStore (with optional auto-indexing)."""
+        if self._experience_store is not None:
+            return self._experience_store
+        try:
+            from dan.engine.memory_store import FileSystemMemoryStore
+            from dan.engine.experience import ExperienceStore
+
+            memory_dir = getattr(self._config, "memory_dir", "./memory")
+            memory_store = FileSystemMemoryStore(memory_dir)
+            self._experience_store = ExperienceStore(
+                memory_store=memory_store,
+                experience_index=self._get_experience_index(),
+            )
+            return self._experience_store
+        except Exception:
+            logger.debug("Failed to initialize ExperienceStore", exc_info=True)
+            return None
+
+    def _build_error_context_provider(self):
+        """Build an ErrorContextProvider using the shared ErrorMemoryIndex."""
+        if not getattr(self._config, "error_memory_enabled", False):
+            return None
+        index = self._get_error_memory_index()
+        if index is None:
+            return None
+        try:
+            from dan.engine.error_memory import ErrorContextProvider
+
+            ps = self._get_principle_store()
+            return ErrorContextProvider(
+                error_memory_index=index,
+                max_tokens=getattr(self._config, "error_memory_max_tokens", 2000),
+                top_k=getattr(self._config, "error_memory_top_k", 5),
+                principle_store=ps,
+            )
+        except Exception:
+            logger.debug("Failed to build ErrorContextProvider", exc_info=True)
+            return None
 
     def get_run(self, run_id: str) -> RunRecord | None:
         return self._runs.get(run_id)
@@ -286,7 +445,70 @@ class RunManager:
         reg.register("tool_operator", ToolExecutor(self._tool_registry))
         return reg
 
-    def _enrich_and_persist(self, record: RunRecord) -> None:
+    def _emit_learning_event(
+        self,
+        record: RunRecord,
+        event_type: str,
+        data: dict[str, Any],
+        node_id: str | None = None,
+    ) -> None:
+        """Emit a self-evolving learning event to the record's event log.
+
+        Post-run events cannot use Engine._emit() (the engine has returned),
+        so this appends directly to the record's event list and broadcasts.
+        """
+        from dan.engine.events import EngineEvent, EventType
+
+        event = EngineEvent(
+            event_type=EventType(event_type),
+            run_id=record.run_id,
+            node_id=node_id,
+            data={"workflow_id": record.graph_id, **data},
+        )
+        event_dict = event.to_dict()
+        record.events.append(event_dict)
+
+        if self._run_store is not None:
+            self._run_store.append_event(record.graph_id, record.run_id, event_dict)
+
+        for queue in self._subscribers.get(record.run_id, []):
+            try:
+                queue.put_nowait(event_dict)
+            except asyncio.QueueFull:
+                pass
+
+    def emit_rule_lifecycle_event(
+        self, workflow_id: str, event_type: str, data: dict[str, Any],
+    ) -> None:
+        """Emit a rule lifecycle event not tied to a specific run.
+        Used by API endpoints for manual rule management actions.
+        Persists to the most recent run for this workflow if available."""
+        from dan.engine.events import EngineEvent, EventType
+
+        logger.info("Rule lifecycle: %s %s", event_type, data)
+
+        recent_run = None
+        for record in reversed(list(self._runs.values())):
+            if record.graph_id == workflow_id:
+                recent_run = record
+                break
+
+        if recent_run is not None:
+            self._emit_learning_event(recent_run, event_type, data)
+
+    def emit_optimization_applied(
+        self, workflow_id: str, data: dict[str, Any],
+    ) -> None:
+        """Emit OPTIMIZATION_APPLIED for the most recent run of a workflow."""
+        recent_run = None
+        for record in reversed(list(self._runs.values())):
+            if record.graph_id == workflow_id:
+                recent_run = record
+                break
+        if recent_run is not None:
+            self._emit_learning_event(recent_run, "optimization_applied", data)
+
+    async def _enrich_and_persist(self, record: RunRecord, graph: Graph | None = None) -> None:
         """Extract usage metrics from RunResult and persist to RunStore."""
         record.finished_at = time.time()
         record.elapsed_seconds = round(record.finished_at - record.started_at, 2)
@@ -313,6 +535,410 @@ class RunManager:
         if self._run_store is not None:
             self._run_store.save_summary(record.graph_id, record.run_id, record.snapshot())
 
+        # -- 17-1: Index errors into error memory RAG --------------------------
+        if (
+            getattr(self._config, "error_memory_enabled", False)
+            and record.result
+            and record.result.errors
+        ):
+            self._index_run_errors(record)
+
+        # -- 17-2: Schedule reflection if trigger is active --------------------
+        if record.run_id and not record.run_id.startswith("reflection-"):
+            trigger = getattr(self._config, "reflection_trigger", "disabled")
+            if trigger == "on_failure" and record.status == RunStatus.FAILED:
+                self._schedule_reflection_background(record)
+            elif trigger == "on_every_run" and record.status in (
+                RunStatus.COMPLETED, RunStatus.FAILED
+            ):
+                self._schedule_reflection_background(record)
+
+        # -- 17-2: Persist reflection principles if this was a reflection run --
+        if record.run_id and record.run_id.startswith("reflection-"):
+            self._persist_reflection_principles(record)
+
+        # -- 17-3: Track rule effectiveness ------------------------------------
+        if getattr(self._config, "self_evolving_rules_enabled", False):
+            self._track_rule_effectiveness(record)
+
+        # -- 19-1: Incremental experience consolidation -----------------------
+        await self._maybe_consolidate_experience(record, graph)
+
+    def _index_run_errors(self, record: RunRecord) -> None:
+        """Extract and index errors from a completed run (17-1)."""
+        index = self._get_error_memory_index()
+        if index is None:
+            return
+        try:
+            from dan.engine.error_memory import extract_error_records
+
+            snapshot = record.snapshot()
+            events = list(record.events)
+            errors = extract_error_records(snapshot, events)
+            if errors:
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.ensure_future(
+                            index.index_errors(record.graph_id, errors)
+                        )
+                    else:
+                        loop.run_until_complete(
+                            index.index_errors(record.graph_id, errors)
+                        )
+                except RuntimeError:
+                    asyncio.run(index.index_errors(record.graph_id, errors))
+                logger.debug(
+                    "Indexed %d error records for run %s",
+                    len(errors), record.run_id,
+                )
+                self._emit_learning_event(record, "error_memory_indexed", {
+                    "error_count": len(errors),
+                    "tier": "error_memory",
+                })
+        except Exception:
+            logger.debug("Error indexing failed for run %s", record.run_id, exc_info=True)
+
+    def _persist_reflection_principles(self, record: RunRecord) -> None:
+        """Extract principles from a completed reflection run and persist (17-2)."""
+        ps = self._get_principle_store()
+        if ps is None:
+            return
+        try:
+            if not (record.result and record.result.metadata):
+                return
+            from dan.engine.error_memory import CausalPrinciple
+
+            all_principles: list[CausalPrinciple] = []
+            for _node_id, node_meta in record.result.metadata.items():
+                if not isinstance(node_meta, dict):
+                    continue
+                raw_principles = node_meta.get("principles")
+                if not isinstance(raw_principles, list):
+                    continue
+                for p in raw_principles:
+                    if not isinstance(p, dict) or not p.get("condition"):
+                        continue
+                    try:
+                        all_principles.append(CausalPrinciple.model_validate(p))
+                    except Exception:
+                        all_principles.append(CausalPrinciple(
+                            condition=str(p.get("condition", "")),
+                            action=str(p.get("action", "")),
+                            reason=str(p.get("reason", "")),
+                            confidence=float(p.get("confidence", 0.5)),
+                            tags=p.get("tags") if isinstance(p.get("tags"), list) else [],
+                            workflow_id=record.graph_id,
+                        ))
+            if not all_principles:
+                return
+
+            origin_record: RunRecord | None = None
+            if record.run_id and record.run_id.startswith("reflection-"):
+                origin_run_id = record.run_id[len("reflection-"):]
+                origin_record = self._runs.get(origin_run_id)
+
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(
+                        ps.store_principles(record.graph_id, all_principles)
+                    )
+                else:
+                    loop.run_until_complete(
+                        ps.store_principles(record.graph_id, all_principles)
+                    )
+            except RuntimeError:
+                asyncio.run(ps.store_principles(record.graph_id, all_principles))
+            logger.debug(
+                "Persisted %d reflection principles for run %s",
+                len(all_principles), record.run_id,
+            )
+            reflection_event = {
+                "reflection_run_id": record.run_id,
+                "principle_count": len(all_principles),
+                "tier": "reflection",
+            }
+            self._emit_learning_event(record, "reflection_completed", reflection_event)
+            if origin_record is not None:
+                self._emit_learning_event(origin_record, "reflection_completed", reflection_event)
+
+            # -- 17-3: Generate rules/mutations from newly persisted principles ----
+            rlm = self._get_rule_lifecycle_manager()
+            if rlm is not None:
+                for principle in all_principles:
+                    try:
+                        repair_level = getattr(principle, "repair_level", "prompt_fix")
+                        if repair_level == "parameter_fix":
+                            mutation = rlm.create_mutation(principle, record.graph_id)
+                            if mutation is not None:
+                                rule_event = {
+                                    "rule_id": mutation.mutation_id,
+                                    "hyperedge_type": "parameter_mutation",
+                                    "principle_id": mutation.source_principle_id,
+                                    "tier": "rules",
+                                }
+                                self._emit_learning_event(record, "rule_generated", rule_event)
+                                if origin_record is not None:
+                                    self._emit_learning_event(origin_record, "rule_generated", rule_event)
+                        else:
+                            rule = rlm.create_rule(principle, record.graph_id)
+                            if rule is not None:
+                                rule_event = {
+                                    "rule_id": rule.rule_id,
+                                    "hyperedge_type": rule.hyperedge.hyperedge_type,
+                                    "principle_id": rule.source_principle_id,
+                                    "tier": "rules",
+                                }
+                                self._emit_learning_event(record, "rule_generated", rule_event)
+                                if origin_record is not None:
+                                    self._emit_learning_event(origin_record, "rule_generated", rule_event)
+                    except Exception:
+                        logger.debug(
+                            "Rule generation failed for principle %s",
+                            getattr(principle, "id", "?"),
+                            exc_info=True,
+                        )
+        except Exception:
+            logger.debug(
+                "Principle persistence failed for %s", record.run_id,
+                exc_info=True,
+            )
+
+    def _schedule_reflection_background(self, record: RunRecord) -> None:
+        """Schedule a background reflection run (17-2)."""
+        try:
+            import asyncio
+
+            reflection_run_id = f"reflection-{record.run_id}"
+            if reflection_run_id in self._runs:
+                return
+
+            self._emit_learning_event(record, "reflection_started", {
+                "source_run_id": record.run_id,
+                "reflection_run_id": reflection_run_id,
+                "tier": "reflection",
+            })
+
+            from dan.models.nodes import ReflectionNode
+            from dan.models.graph import Graph
+
+            errors_data = []
+            if record.result and record.result.errors:
+                for nid, msg in record.result.errors.items():
+                    errors_data.append({
+                        "node_id": nid,
+                        "error": msg,
+                        "node_type": record.node_statuses.get(nid, ""),
+                    })
+
+            reflection_node = ReflectionNode(
+                id="reflection-auto",
+                name="Auto Reflection",
+                source="last_run",
+            )
+
+            graph = Graph(
+                nodes=[reflection_node],
+                entry_points=["reflection-auto"],
+                exit_points=["reflection-auto"],
+            )
+
+            inputs = {
+                "run_id": record.run_id,
+                "run_errors": errors_data,
+                "run_events": record.events[-100:],
+                "node_statuses": dict(record.node_statuses),
+            }
+
+            async def _do_reflection():
+                try:
+                    await self.start_run(
+                        graph,
+                        graph_id=record.graph_id,
+                        inputs=inputs,
+                        run_id=reflection_run_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "Reflection run failed for %s", record.run_id,
+                        exc_info=True,
+                    )
+
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(_do_reflection())
+                else:
+                    pass
+            except RuntimeError:
+                pass
+        except Exception:
+            logger.debug(
+                "Failed to schedule reflection for %s", record.run_id,
+                exc_info=True,
+            )
+
+    def _track_rule_effectiveness(self, record: RunRecord) -> None:
+        """Update effectiveness counters for generated rules (17-3)."""
+        manager = self._get_rule_lifecycle_manager()
+        if manager is None:
+            return
+        try:
+            active_rules = manager.list_rules(record.graph_id, status="active")
+            if not active_rules:
+                return
+
+            current_errors = set()
+            if record.result and record.result.errors:
+                for nid in record.result.errors:
+                    current_errors.add(nid)
+
+            for rule in active_rules:
+                manager.record_application(record.graph_id, rule.rule_id)
+
+                he = rule.hyperedge
+                target_nodes = set(he.attach_to) if he.attach_to else set()
+                if not target_nodes:
+                    continue
+
+                error_in_targets = bool(target_nodes & current_errors)
+                manager.record_outcome(
+                    record.graph_id, rule.rule_id,
+                    error_recurred=error_in_targets,
+                )
+
+                updated = manager._load_one(record.graph_id, rule.rule_id)
+                r = updated if updated is not None else rule
+                self._emit_learning_event(record, "rule_effectiveness_update", {
+                    "rule_id": rule.rule_id,
+                    "apply_count": r.apply_count,
+                    "effectiveness_score": r.effectiveness_score,
+                    "error_recurred": error_in_targets,
+                    "tier": "rules",
+                })
+
+            pruned = manager.prune_ineffective(record.graph_id)
+            for rule_id in pruned:
+                self._emit_learning_event(record, "rule_pruned", {
+                    "rule_id": rule_id,
+                    "reason": "ineffective",
+                    "tier": "rules",
+                })
+
+            all_rules = manager.list_rules(record.graph_id)
+            for rule in all_rules:
+                if rule.status == "expired":
+                    if rule.expires_at and abs(time.time() - rule.expires_at) < 60:
+                        self._emit_learning_event(record, "rule_expired", {
+                            "rule_id": rule.rule_id,
+                            "reason": "ttl_expired",
+                            "tier": "rules",
+                        })
+        except Exception:
+            logger.debug(
+                "Rule effectiveness tracking failed for %s",
+                record.run_id, exc_info=True,
+            )
+
+    async def _load_principle_dicts(self, workflow_id: str) -> list[dict[str, Any]]:
+        """Load persisted principles for a workflow as plain dicts."""
+        ps = self._get_principle_store()
+        if ps is None:
+            return []
+        try:
+            principles = await ps.load_principles(workflow_id)
+            return [p.model_dump() for p in principles]
+        except Exception:
+            logger.debug("Failed to load principles for %s", workflow_id, exc_info=True)
+            return []
+
+    async def _maybe_consolidate_experience(
+        self,
+        record: RunRecord,
+        graph: Graph | None = None,
+    ) -> None:
+        """Incrementally consolidate workflow experience based on configured triggers."""
+        if record.run_id.startswith("reflection-"):
+            return
+        store = self._get_experience_store()
+        if store is None:
+            return
+
+        interval = max(1, int(getattr(self._config, "experience_consolidation_interval", 5)))
+        try:
+            from dan.engine.experience import (
+                consolidate_experience,
+                extract_experience_from_graph,
+            )
+
+            workflow_id = record.graph_id
+            exp = await store.load_experience(workflow_id)
+            if exp is None:
+                if graph is None:
+                    return
+                exp = extract_experience_from_graph(graph).model_copy(
+                    update={"workflow_id": workflow_id},
+                )
+
+            current_success = bool(record.result and record.result.success)
+            existing_failure_count = max(exp.run_count - exp.success_count, 0)
+            needs_full_refresh = False
+            if current_success and exp.success_count == 0:
+                needs_full_refresh = True
+            if (not current_success) and existing_failure_count == 0:
+                needs_full_refresh = True
+            if (exp.run_count + 1) % interval == 0:
+                needs_full_refresh = True
+
+            if record.run_id in exp.processed_run_ids:
+                return
+
+            snapshots: list[dict[str, Any]] = []
+            if needs_full_refresh and self._run_store is not None:
+                summaries = self._run_store.list_summaries(
+                    workflow_id=workflow_id,
+                    limit=10000,
+                )
+                snapshots = [s for s in summaries if isinstance(s, dict)]
+            if not snapshots:
+                snapshots = [record.snapshot()]
+
+            principle_dicts = (
+                await self._load_principle_dicts(workflow_id)
+                if needs_full_refresh
+                else []
+            )
+            updated = consolidate_experience(exp, snapshots, principle_dicts)
+            await store.save_experience(updated)
+            self._emit_learning_event(record, "experience_consolidated", {
+                "workflow_id": workflow_id,
+                "run_count": updated.run_count,
+                "success_count": updated.success_count,
+                "tier": "experience",
+            })
+            self._emit_learning_event(record, "experience_indexed", {
+                "workflow_id": workflow_id,
+                "tier": "experience",
+            })
+        except Exception:
+            logger.debug(
+                "Experience consolidation failed for run %s",
+                record.run_id,
+                exc_info=True,
+            )
+
+    def _emit_rule_generated(self, record: RunRecord, rule_id: str, hyperedge_type: str, principle_id: str) -> None:
+        """Emit RULE_GENERATED event after a new rule is created."""
+        self._emit_learning_event(record, "rule_generated", {
+            "rule_id": rule_id,
+            "hyperedge_type": hyperedge_type,
+            "principle_id": principle_id,
+            "tier": "rules",
+        })
+
     async def _run_task(
         self,
         record: RunRecord,
@@ -327,6 +953,10 @@ class RunManager:
             event_callback=self._event_callback,
             human_input_callback=self._make_human_input_callback(record.run_id),
         )
+        # 17-1: Wire error context provider so LLMExecutor can augment prompts
+        ecp = self._build_error_context_provider()
+        if ecp is not None:
+            engine.error_context_provider = ecp
         try:
             result = await engine.run(
                 graph, inputs=inputs, run_id=record.run_id,
@@ -344,7 +974,7 @@ class RunManager:
                 errors={"exception": str(exc)},
             )
         finally:
-            self._enrich_and_persist(record)
+            await self._enrich_and_persist(record, graph=graph)
 
     async def _resume_task(
         self,
@@ -376,4 +1006,4 @@ class RunManager:
                 errors={"exception": str(exc)},
             )
         finally:
-            self._enrich_and_persist(record)
+            await self._enrich_and_persist(record, graph=graph)
