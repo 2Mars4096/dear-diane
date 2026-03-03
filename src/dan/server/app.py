@@ -44,7 +44,8 @@ from dan.server.chat_store import ChatMessage as StoreChatMessage, ChatStore
 from dan.server.exec import execute_python
 from dan.server.graph_mutator import GraphMutator, MutationPlan
 from dan.server.graph_store import GraphStore
-from dan.server.run_manager import RunManager
+from dan.server.run_manager import RunManager, RunStatus
+from dan.server.run_store import RunStore
 from dan.server.scoped_run import (
     ScopedRunRequest,
     ScopedRunResponse,
@@ -1140,9 +1141,12 @@ _mention_resolver: MentionResolver | None = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _run_manager, _chat_manager, _mention_resolver
+    _runs_dir = os.environ.get("DAN_RUNS_DIR", os.path.join(_graphs_dir, "runs"))
+    _run_store = RunStore(base_dir=_runs_dir)
     _run_manager = RunManager(
         engine_config=_get_engine_config(),
         tool_registry=_build_tool_registry(),
+        run_store=_run_store,
     )
     _mention_resolver = MentionResolver(
         workspace_root=os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd()),
@@ -1181,10 +1185,12 @@ class RunRequest(BaseModel):
     graph_id: str
     inputs: dict[str, Any] | None = None
     run_id: str | None = None
+    session_id: str | None = None
 
 
 class ResumeRequest(BaseModel):
     graph_id: str
+    session_id: str | None = None
 
 
 class ChatMentionRef(BaseModel):
@@ -1603,6 +1609,7 @@ async def start_run(req: RunRequest):
         raise HTTPException(status_code=404, detail=f"Graph '{req.graph_id}' not found")
     record = await rm.start_run(
         graph, graph_id=req.graph_id, inputs=req.inputs, run_id=req.run_id,
+        session_id=req.session_id,
     )
     return {"run_id": record.run_id, "status": record.status.value}
 
@@ -1613,7 +1620,10 @@ async def resume_run(run_id: str, req: ResumeRequest):
     graph = _graph_store.load_as_model(req.graph_id)
     if graph is None:
         raise HTTPException(status_code=404, detail=f"Graph '{req.graph_id}' not found")
-    record = await rm.resume_run(graph, graph_id=req.graph_id, run_id=run_id)
+    record = await rm.resume_run(
+        graph, graph_id=req.graph_id, run_id=run_id,
+        session_id=req.session_id,
+    )
     return {"run_id": record.run_id, "status": record.status.value}
 
 
