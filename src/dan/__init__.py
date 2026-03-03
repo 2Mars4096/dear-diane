@@ -27,6 +27,7 @@ from dan.models.control_flow import (
     CompositeNode,
 )
 from dan.models.edges import EdgeBase, DataEdge, ControlEdge, ContextEdge
+from dan.models.hyperedges import Hyperedge, HyperedgeViolation, ValidationResult
 from dan.models.graph import Graph, GraphMetadata, Node, Edge
 from dan.registry import NodeTypeRegistry
 
@@ -62,6 +63,9 @@ __all__ = [
     "DataEdge",
     "ControlEdge",
     "ContextEdge",
+    "Hyperedge",
+    "HyperedgeViolation",
+    "ValidationResult",
     "Graph",
     "GraphMetadata",
     "Node",
