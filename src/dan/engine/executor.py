@@ -31,6 +31,13 @@ class EngineConfig:
     embedding_providers: dict[str, ProviderConfig] = field(default_factory=dict)
     embedding_model_provider_map: dict[str, str] = field(default_factory=dict)
     default_embedding_model: str = "text-embedding-3-small"
+    # -- 14-1: Session memory ------------------------------------------------
+    memory_dir: str = "./memory"
+    memory_enabled: bool = True
+    # -- 14-2: Context scoping -----------------------------------------------
+    boundary_enforcement: bool = False
+    # -- 14-3: Long-chain memory ---------------------------------------------
+    memory_pipeline_enabled: bool = False
 
 
 @dataclass
@@ -68,6 +75,11 @@ class ExecutionContext:
         provider_registry: ProviderRegistry | None = None,
         # -- 9-1: Embedding provider registry -----------------------------------
         embedding_registry: EmbeddingRegistry | None = None,
+        # -- 14-1: Session memory -----------------------------------------------
+        session_id: str | None = None,
+        memory_writes: list | None = None,
+        # -- 14-3: Long-chain memory pipeline -----------------------------------
+        short_term_memory: Any | None = None,
     ) -> None:
         self.state = state
         self.config = config
@@ -82,6 +94,9 @@ class ExecutionContext:
         self.provider_registry = provider_registry
         self.embedding_registry = embedding_registry
         self.active_loop_scope_id: str | None = None
+        self.session_id = session_id
+        self._memory_writes: list = memory_writes if memory_writes is not None else []
+        self.short_term_memory = short_term_memory
 
     # -- 5-3: Rich logging -----------------------------------------------------
     async def emit_event(
@@ -109,6 +124,122 @@ class ExecutionContext:
             await self._event_callback(event)
         except Exception:
             pass
+
+    # -- 14-3: Long-chain memory pipeline ------------------------------------
+    def remember(
+        self,
+        content: str,
+        *,
+        source_node_id: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Append an item to the short-term memory buffer.
+
+        No-op when the memory pipeline is disabled.
+        """
+        if self.short_term_memory is None:
+            return
+        from dan.engine.memory_pipeline import MemoryItem
+
+        self.short_term_memory.append(
+            MemoryItem(
+                content=content,
+                source_node_id=source_node_id,
+                source_run_id=self._run_id,
+                metadata=metadata or {},
+            )
+        )
+
+    def recall(self, n: int | None = None) -> str:
+        """Retrieve recent short-term memory as concatenated text.
+
+        Returns empty string when the memory pipeline is disabled.
+        """
+        if self.short_term_memory is None:
+            return ""
+        return self.short_term_memory.to_text(n)
+
+    # -- 14-2: Context scoping — boundary signals ----------------------------
+    def emit_signal(
+        self,
+        name: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        sticky: bool = False,
+    ) -> None:
+        """Emit an upward signal from a child agent.
+
+        Sticky signals are written to ``signal:<name>`` in shared context
+        (propagates to global) and emitted as engine events.
+        Non-sticky signals are stored in the local context under
+        ``__signals__`` for consumption by the immediate parent only.
+        """
+        signal_key = f"signal:{name}"
+        signal_data = payload or {}
+        if sticky:
+            try:
+                self.shared_context.write(signal_key, signal_data)
+            except KeyError:
+                self.shared_context._store[signal_key] = signal_data
+
+            if self._event_callback is not None:
+                import asyncio
+                from dan.engine.events import EngineEvent, EventType
+
+                event = EngineEvent(
+                    event_type=EventType.NODE_OUTPUT,
+                    run_id=self._run_id,
+                    node_id="__signal__",
+                    data={
+                        "signal_name": name,
+                        "payload": signal_data,
+                        "sticky": True,
+                    },
+                )
+                try:
+                    asyncio.get_event_loop().create_task(self._event_callback(event))
+                except RuntimeError:
+                    pass
+        else:
+            scope = self.local_state.get_scope("__signals__")
+            scope.setdefault("pending", []).append({
+                "signal_name": name,
+                "payload": signal_data,
+            })
+
+    # -- 14-1: Session memory -------------------------------------------------
+    def write_memory(
+        self,
+        key: str,
+        value: Any,
+        *,
+        scope: str = "session",
+        mode: str = "set",
+        writer_node_id: str | None = None,
+    ) -> None:
+        """Queue a memory write for persistence at the next checkpoint.
+
+        Writes are validated and flushed by the engine at checkpoint
+        boundaries, not applied inline.  This keeps execution
+        deterministic and avoids partial-write issues on failure.
+        """
+        from dan.engine.memory import MemoryScope, MemoryWriteRequest, WriteMode
+
+        self._memory_writes.append(
+            MemoryWriteRequest(
+                key=key,
+                value=value,
+                scope=MemoryScope(scope),
+                mode=WriteMode(mode),
+                writer_node_id=writer_node_id,
+            )
+        )
+
+    def drain_memory_writes(self) -> list:
+        """Return and clear all queued memory writes."""
+        writes = list(self._memory_writes)
+        self._memory_writes.clear()
+        return writes
 
     async def run_subgraph(
         self,
