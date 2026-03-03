@@ -22,8 +22,20 @@ class GoogleProvider:
         self._genai = genai
 
     @staticmethod
+    def apply_cache_hints(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """No-op — Gemini cached_content requires a separate API call.
+
+        TODO: Integrate ``caching.CachedContent.create()`` for long system
+        instructions shared across calls.  Deferred until usage patterns are
+        clearer (requires TTL management and explicit cleanup).
+        """
+        return messages
+
+    @staticmethod
     def _to_gemini_messages(
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """Convert OpenAI-style messages to Gemini format.
 
@@ -45,7 +57,7 @@ class GoogleProvider:
 
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float = 0.7,
         max_tokens: int | None = None,
@@ -74,7 +86,7 @@ class GoogleProvider:
 
     async def stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float = 0.7,
         max_tokens: int | None = None,

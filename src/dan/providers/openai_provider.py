@@ -25,9 +25,25 @@ class OpenAIProvider:
         instance._client = client
         return instance
 
+    @staticmethod
+    def apply_cache_hints(
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Ensure system messages lead for stable prefix caching.
+
+        OpenAI auto-caches identical request prefixes.  Placing all system
+        messages first and keeping tool definitions in deterministic order
+        maximises prefix overlap across calls.
+        """
+        system: list[dict[str, Any]] = []
+        non_system: list[dict[str, Any]] = []
+        for m in messages:
+            (system if m.get("role") == "system" else non_system).append(m)
+        return system + non_system
+
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float = 0.7,
         max_tokens: int | None = None,
@@ -59,13 +75,15 @@ class OpenAIProvider:
                 }
                 for tc in message.tool_calls
             ]
+        cached_input = (usage or {}).get("cached_input_tokens", 0)
         return CompletionResult(
             text=text, usage=usage, model=model, tool_calls=tool_calls,
+            cached_input_tokens=cached_input,
         )
 
     async def stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float = 0.7,
         max_tokens: int | None = None,
@@ -103,8 +121,13 @@ class OpenAIProvider:
         usage = getattr(obj, "usage", None)
         if usage is None:
             return None
+        cached = 0
+        details = getattr(usage, "prompt_tokens_details", None)
+        if details:
+            cached = getattr(details, "cached_tokens", 0) or 0
         return {
             "prompt_tokens": getattr(usage, "prompt_tokens", 0) or 0,
             "completion_tokens": getattr(usage, "completion_tokens", 0) or 0,
             "total_tokens": getattr(usage, "total_tokens", 0) or 0,
+            "cached_input_tokens": cached,
         }

@@ -18,6 +18,21 @@ class CompletionResult:
     usage: dict[str, int] | None = None
     model: str = ""
     tool_calls: list[dict[str, Any]] | None = None
+    cached_input_tokens: int = 0
+    cache_write_tokens: int = 0
+
+
+def apply_cache_hints(
+    provider: Any, messages: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Apply provider-specific cache hints to messages.
+
+    Falls back to returning messages unchanged if the provider doesn't
+    support caching.
+    """
+    if hasattr(provider, "apply_cache_hints"):
+        return provider.apply_cache_hints(messages)
+    return messages
 
 
 @dataclass
@@ -46,7 +61,7 @@ class LLMProvider(Protocol):
 
     async def complete(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float = 0.7,
         max_tokens: int | None = None,
@@ -55,7 +70,7 @@ class LLMProvider(Protocol):
 
     async def stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[dict[str, Any]],
         model: str,
         temperature: float = 0.7,
         max_tokens: int | None = None,
