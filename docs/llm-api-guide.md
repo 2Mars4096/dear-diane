@@ -83,6 +83,21 @@ node = wf.llm(
     description="Generates research ideas", # description (optional)
     input_ports=[{"name": "topic"}],        # explicit input ports (optional, auto-inferred from prompt)
     output_ports=[{"name": "text"}],        # explicit output ports (optional, default: [text])
+    # Phase 10 token-optimization controls (all optional):
+    target_input_tokens=6000,               # advisory input budget (never hard-enforced)
+    summarize_inputs=True,                  # summarize long free-text inputs before injection
+    prune_fields=["*.internal_id"],         # prune irrelevant structured fields
+    input_format="compact",                 # json | yaml | compact
+    jit_tool_loading=True,                  # inject tool catalog; load full schemas on demand
+    agent_context_tools=True,               # inject search_context/read_context/read_state/list_available_context
+    semantic_cache=True,                    # semantic response cache (deterministic prompts)
+    history_policy={                         # conversation-history assembly policy
+        "inline_recent": 8,
+        "summarize_older": True,
+        "keep_system": True,
+    },
+    memoize=True,                           # node-level deterministic memoization
+    cache_ttl=3600,                         # per-node cache TTL in seconds
 )
 ```
 
@@ -628,7 +643,7 @@ async def on_event(event: EngineEvent) -> None:
 engine = Engine(config=config, event_callback=on_event)
 ```
 
-**Event types:** `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`.
+**Event types:** `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`, `token_budget_advisory`, `context_deferred`, `input_summarized`, `jit_schema_loaded`, `payload_pruned`, `context_tool_called`, `cache_hit`, `cache_miss`, `cache_invalidated`, `semantic_cache_hit`, `state_externalized`, `loop_compaction_applied`, `budget_advisory`, `token_breakdown_recorded`, `waste_detected`, `optimization_report_ready`, `optimization_applied`.
 
 ---
 
@@ -801,6 +816,11 @@ dan-serve
 | GET | `/api/graphs/{id}/export/python` | Export graph as Python builder code |
 | GET | `/api/metrics/mutations` | Get mutation quality metrics |
 | POST | `/api/metrics/mutations/reset` | Reset mutation metrics |
+| POST | `/api/cache/clear` | Clear memoization/semantic cache files |
+| GET | `/api/cache/stats` | Cache health + latest run cache summary |
+| GET | `/api/runs/{id}/token-breakdown` | Per-node token composition breakdown |
+| GET | `/api/runs/{id}/optimization-report` | Waste detection findings + optimization recommendations |
+| GET | `/api/runs/{id}/optimization-mutations` | One-click-apply mutation previews for waste findings |
 | POST | `/api/runs` | Start execution (body: `{"graph_id": "...", "inputs": {...}}`) |
 | POST | `/api/runs/{id}/resume` | Resume checkpointed run |
 | GET | `/api/runs/{id}` | Get run status snapshot |
@@ -837,7 +857,7 @@ dan-serve
 |---|---|---|
 | `data` | `wf.edge()`, `wf.spread_edge()`, f-string, `>>` | Schema-validated data flow (optional `spread=True` for dict destructuring) |
 | `control` | `wf.control_edge()` | Conditional routing |
-| `context` | `wf.context_edge()` | Shared state read/write |
+| `context` | `wf.context_edge()` | Shared state read/write (supports `pass_by_reference=True` for lazy artifact refs) |
 
 ### Context Enums
 
@@ -857,6 +877,14 @@ dan-serve
 | `checkpoint_dir` | `str` | `"./checkpoints"` | Checkpoint directory |
 | `checkpoint_enabled` | `bool` | `True` | Enable checkpointing |
 | `output_norm_max_retries` | `int` | `3` | Schema validation retries |
+| `token_budget` | `int \| None` | `None` | Advisory run-level token budget (guidance only) |
+| `cache_enabled` | `bool` | `True` | Enable memoization + semantic cache lookups |
+| `cache_max_size_mb` | `int` | `100` | Max in-memory cache size before LRU eviction |
+| `cache_dir` | `str \| None` | `None` | Optional persistent cache directory |
+| `semantic_cache_threshold` | `float` | `0.95` | Similarity threshold for semantic cache hits |
+| `semantic_cache_ttl_hours` | `float` | `24.0` | Semantic cache entry TTL |
+| `prompt_caching_enabled` | `bool` | `True` | Enable provider-level prompt cache hints |
+| `optimization_rule_approval_mode` | `str` | `"always_approve"` | `"always_approve"` (human gate) or `"auto_accept"` (activate by default) for evolving optimization rules |
 | `embedding_providers` | `dict[str, ProviderConfig]` | `{}` | Named embedding providers for `RAGOperator` (e.g., `default`, `openai`, `local`) |
 | `embedding_model_provider_map` | `dict[str, str]` | `{}` | Exact embedding model → provider override map |
 | `default_embedding_model` | `str` | `"text-embedding-3-small"` | Default embedding model when a `RAGOperator` omits `embedding_model` |

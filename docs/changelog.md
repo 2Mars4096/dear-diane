@@ -1,6 +1,239 @@
 # Changelog
 
 ## 2026-03-03
+- [feat] **Wire analytics event emission end-to-end for 4 declared EventTypes.**
+  - `TOKEN_BREAKDOWN_RECORDED`: emitted per-LLM-node after completion in scheduler `_execute_node`, carrying the node's `TokenBreakdown.to_dict()`.
+  - `WASTE_DETECTED`: emitted per-finding at run completion in scheduler `_emit_post_run_analytics`, carrying each `WasteFinding.to_dict()`.
+  - `OPTIMIZATION_REPORT_READY`: emitted once at run completion with the full `TokenOptimizationReport.to_dict()`.
+  - `OPTIMIZATION_APPLIED`: emitted from `apply_mutation` API endpoint when `source="optimization"`, tracked via `RunManager.emit_optimization_applied()`.
+  - Added `source: str | None` field to `ApplyMutationRequest` (backward-compatible); optimization-mutations endpoint now includes `source: "optimization"` in `apply_request` envelopes.
+  - 4 new integration tests in `test_token_analytics.py` verifying emission (breakdown, report, waste, no-analytics-on-code-nodes). All 2100 tests pass.
+
+- [fix] **Phase 10 Wave 3 patch-up after code review: runtime contracts aligned, actionable mutations fixed.**
+  - Fixed `TokenWasteAnalyzer` event matching to real runtime events (`iteration_started`, `tool_call_started`, `node_started`) with backward-compatible aliases.
+  - Added `input_hash` to `node_started` event payloads in scheduler so memoization-opportunity detection works on real runs.
+  - Added `context_tokens` emission for loop iteration events (`WhileLoopExecutor` + gate-cycle iteration) to enable loop-growth detection.
+  - Fixed optimization mutation payload schema from ad-hoc keys to `GraphMutator`-compatible operations (`op`, `updates`, `edge_id`).
+  - Strengthened reference-opportunity handling: restrict to context edges, carry `edge_id` in findings, and emit valid `edit_edge` mutations.
+  - Wired optimization endpoints with real graph context (`node_configs`, `graph_edges`) so analyzer categories are active in production.
+  - Added ready-to-apply mutation envelopes in `/api/runs/{id}/optimization-mutations` response (`mutation_plan`, `apply_request`).
+  - Updated breakdown accounting to accumulate per-node breakdowns across repeated node executions.
+  - Fixed context-selection ordering in `LLMExecutor` to preserve preprocessing (reference/history transforms) before token-budget selection.
+
+- [feat] **Phase 10 Wave 3: 18-4 token analytics, waste detection, evolving playbooks. Full test suite: 2094 passed.**
+  - Added `TokenBreakdown` and `TokenSaving` dataclasses to `cost_tracker.py`. `CostTracker` now tracks per-node token composition and optimization savings with `record_breakdown()`, `record_saving()`, `all_breakdowns()`, `all_savings()`, `savings_summary()`.
+  - Added `TokenWasteAnalyzer` with 8 waste categories: `unused_context`, `duplicate`, `loop_growth`, `oversized_system`, `unused_memory_rag`, `jit_opportunity`, `memoization_opportunity`, `reference_opportunity`. Produces `TokenOptimizationReport` sorted by saveable tokens.
+  - Added `OptimizationPlaybook` bridging waste findings to Plan 17 rules: record → mark_applied → evaluate_effectiveness → promote_effective (generates `CausalPrinciple` dicts for `RuleLifecycleManager`). Supports `generate_mutation()` for one-click-apply graph changes.
+  - `LLMExecutor._record_token_breakdown()` decomposes messages by role and inputs by source type (context, memory, RAG).
+  - Token savings recorded at optimization sites: `context_deferred`, `payload_pruned`, `input_summarized`.
+  - Scheduler snapshots `__cost_tracker__` data (breakdowns + savings) into `RunResult.metadata`.
+  - New API endpoints: `GET /api/runs/{run_id}/token-breakdown`, `GET /api/runs/{run_id}/optimization-report`, `GET /api/runs/{run_id}/optimization-mutations`.
+  - `EngineConfig` gains `optimization_rule_approval_mode` (`always_approve` | `auto_accept`).
+  - New event types: `TOKEN_BREAKDOWN_RECORDED`, `WASTE_DETECTED`, `OPTIMIZATION_REPORT_READY`, `OPTIMIZATION_APPLIED`.
+  - New test files: `tests/test_engine/test_token_analytics.py` (34 tests), `tests/test_engine/test_token_integration.py` (9 cross-plan integration tests).
+  - All 2094 tests pass, 15 skipped.
+
+- [feat] **Phase 11 wrap-up: remaining code gaps closed, tests brought to 116 across meta modules.**
+  - Added `RedesignResult` model to `meta/repair.py` — captures redesign outcomes (new_graph, old_workflow_id, reason, changes_summary).
+  - Enhanced `MetaController._update_experience()` — now creates experience from graph on first save, consolidates run history and failure patterns; works on both success and failure paths.
+  - Added `MetaController._enrich_goal_with_prior_experience()` — cross-session learning queries ExperienceIndex at session start, injecting context about similar past workflows (including failed ones).
+  - Failed meta-sessions now persist experience with repair history and failure patterns, ensuring the planner avoids repeating mistakes.
+  - Added `TestCompileGenerateSpec` (11 tests) — validates generate-spec compiler: basic compilation, Graph model validity, all 4 node types, edge name resolution, passthrough, unsupported type rejection, source_id fallback, defaults for tool/code/gate nodes.
+  - Added controller integration tests: `test_full_loop_fail_then_succeed` (goal → plan → fail → diagnose → repair → succeed in 2 iterations), `test_experience_feedback_roundtrip` (successful session saves experience), `test_failed_session_saves_experience`.
+  - Added `test_record_outcome_marks_success` and `TestRedesignResult` to repair tests.
+  - Added 16 API integration tests (`test_meta_api.py`): experience CRUD lifecycle (list/get/refresh/delete), search validation, meta session management (list/get/events/pause/delete), input validation (run/plan goal required), discover endpoint, validate-plan rejection.
+  - Updated all four plan files (19-1 through 19-4) — marked completed tasks `[x]`, annotated deferred items.
+
+- [feat] **Phase 10 Wave 2 implemented: memoization + semantic cache + smart context assembly + advisory budgets.**
+  - Added `src/dan/engine/cache.py` with `NodeResultCache` (deterministic hash key, in-memory LRU, optional disk persistence, TTL) and `SemanticCache` (query normalization + embedding/vector lookup + TTL).
+  - Wired scheduler cache flow end-to-end: pre-dispatch lookup, cache events (`CACHE_HIT`/`CACHE_MISS`/`CACHE_INVALIDATED`/`SEMANTIC_CACHE_HIT`), post-success writeback, and per-run cache summaries.
+  - Extended config/model surface for caching and context assembly:
+    - `EngineConfig`: `cache_enabled`, `cache_max_size_mb`, `cache_dir`, `semantic_cache_threshold`, `semantic_cache_ttl_hours`
+    - `NodeBase`: `memoize`, `cache_ttl`
+    - `LLMOperator`: `semantic_cache`, `history_policy`
+    - `CompactionRule`: `summarize_every_n`, `summary_model`, `target_tokens`, `require_persistent_recall`
+  - `LLMExecutor` now performs smart input assembly in runtime: deferred-context selection, payload pruning/format compaction, optional summarization (with memory persistence), lazy reference resolution, JIT tool-schema loading (`ToolSchemaResolver`), and built-in context tools (`search_context`, `read_context`, `read_state`, `list_available_context`).
+  - Added context-architecture helpers in `token_optimization.py`: `HistoryManager`, `LoopCompactor`, `TokenBudgetAdvisor`.
+  - Scheduler now initializes and applies advisory token budgets (`BUDGET_ADVISORY`) and externalizes node execution summaries to `StateStore` (`STATE_EXTERNALIZED`).
+  - While-loop compaction now enforces persistent-recall safety for lossy strategies and emits `LOOP_COMPACTION_APPLIED`.
+  - Added cache management endpoints: `POST /api/cache/clear`, `GET /api/cache/stats`.
+
+- [test] Added Wave 2 test coverage.
+  - New test files: `tests/test_engine/test_cache.py`, `tests/test_engine/test_jit_context_tools.py`, `tests/test_engine/test_context_architecture.py`.
+  - Full regression run passes: `2018 passed, 15 skipped`.
+
+- [docs] Updated Phase 10 tracking docs for Wave 2 completion.
+  - Updated `docs/plans/18-1-prompt-compression.md`, `18-2-caching-layer.md`, `18-3-context-window-management.md`, `18-token-optimization.md`, and `docs/todo.md` wording/progress.
+
+- [feat] **Phase 11 hardening: functional meta runtime + incremental experience consolidation.**
+  - Experience memory is now incrementally consolidated with run-level dedupe (`processed_run_ids`) and auto-indexing in `ExperienceStore.save_experience()`.
+  - `RunManager` now performs post-run experience consolidation in `_enrich_and_persist()` using configured triggers (interval + first-success/first-failure), and exposes `engine_config/tool_registry/run_store` accessors for API wiring.
+  - Planner/repair/controller runtime gaps were closed: Generate specs now compile to executable graphs, structural-repair prompt schema uses `edit_node.updates`, repair actions persist with `action_id`, and repair outcomes are recorded for escalation history.
+  - `MetaController` now resumes the same session, supports checkpoint pause requests, applies parameter/structural mutations to real workflow graphs, and persists session events for diagnostics.
+  - `/api/experiences/*` and `/api/meta/*` endpoints are now wired end-to-end (`search`, `refresh`, `plan`, `validate-plan`, `run`, `pause`, `resume`, `events`), replacing prior stubs/undefined config references.
+  - Added/updated tests for incremental dedupe, resume semantics, and repair-action persistence; meta test suite passes (`83 passed`).
+
+- [fix] **Phase 9D patch: parameter-fix mutation wiring, origin-run event routing, RULE_DISABLED emission, stale effectiveness score, rlm guard.**
+  - `run_manager._persist_reflection_principles()` now checks `repair_level` and calls `rlm.create_mutation()` for `parameter_fix` principles (previously only called `create_rule()`, making parameter mutations a no-op).
+  - Reflection-related events (`reflection_completed`, `rule_generated`) are now emitted to both the reflection run record AND the originating run record, so the full learning loop is traceable from the original run's event log.
+  - Added `RunManager.emit_rule_lifecycle_event()` public method for API-driven lifecycle events. `POST /api/rules/.../disable` now emits `RULE_DISABLED` with `reason: "manual_api"`.
+  - `_track_rule_effectiveness()` now reloads the rule from disk after `record_application`/`record_outcome` so the `rule_effectiveness_update` event payload contains fresh `apply_count` and `effectiveness_score`.
+  - `scheduler._execute()` initializes `rlm = None` before the try block and guards mutation lookup with `if rlm is not None:` to prevent `NameError` if rule loading fails.
+  - Added 9 focused tests covering mutation wiring, origin-run routing, stale score fix, RULE_DISABLED event, and rlm guard. Full suite: 1991 passed, 15 skipped.
+
+- [fix] **18-1 Task 0 hardening pass: runtime tool registry wiring + provider fallback robustness.**
+  - Wired `ExecutionContext.tool_registry` end-to-end (`executor.py` + `scheduler.py`) by injecting the active `ToolExecutor.registry` when building execution context. This fixes a runtime gap where LLM tool-calling worked in tests but could not resolve tools in normal engine runs.
+  - Hardened `LLMExecutor` provider path: stream call now tolerates awaitable/coroutine-style provider `stream()` implementations without coroutine warnings; fallback-model call now preserves tool schemas so tool-calling behavior survives retries/fallbacks.
+  - Added deterministic tool schema ordering in `LLMExecutor` for cache-stable request shaping and made tool result JSON serialization robust for non-primitive dict/list values.
+  - Added regression tests: `TestExecutionContextToolRegistry` in `test_llm_tool_calling.py` and new `test_scheduler_tool_registry.py` validating scheduler context injection.
+  - Full suite green after patch: `1982 passed, 15 skipped`.
+
+- [feat] **Phase 11 Meta-Orchestrator — core implementation (Plans 19-1 through 19-4).**
+  - **19-1 Workflow Experience Memory** (`engine/experience.py`): `WorkflowExperience` model, `extract_experience_from_graph()`, `consolidate_experience()` with running averages and pattern extraction, `ExperienceStore` (MemoryStore-backed CRUD), `ExperienceIndex` (embedding + vector search over composite text). REST endpoints: `GET/DELETE /api/experiences/{id}`, `POST /api/experiences/search`, `POST /api/experiences/{id}/refresh`.
+  - **19-2 Workflow Planner** (`meta/discovery.py`, `meta/planner.py`): `DiscoveryService` enumerates tools/skills/patterns/past workflows with reuse-fit scoring. `PlanningPromptBuilder` constructs system/user prompts. `WorkflowPlanner` orchestrates discovery→prompt→LLM→parse→validate loop with retry. Declarative `PlanIR` output: `ReusePlan`/`AdaptPlan`/`GeneratePlan`. `execute_plan()` dispatches to `GraphStore` load or `GraphMutator.apply()`.
+  - **19-3 Structural Repair Engine** (`meta/repair.py`): `RepairLevel` enum (PROMPT→PARAMETER→STRUCTURAL→REDESIGN) with `should_escalate()`. `RepairClassifier` uses keyword matching + escalation history. `ParameterRepairGenerator` produces whitelisted `EditNode` mutations. `StructuralRepairPlanner` drives LLM to produce validated `MutationPlan` with dry-run. `RedesignTrigger` heuristics. `RepairEscalator` orchestrates graduated dispatch. `RepairActionStore`/`RepairActionRecord` for lifecycle tracking.
+  - **19-4 Autonomous Execution Controller** (`meta/controller.py`): `MetaSession` state machine (planning→executing→diagnosing→repairing→paused→completed→failed). `MetaSessionStore` (MemoryStore-backed). `MetaController.run()` loop: plan→execute→observe→diagnose→repair. Human override protocol (`HumanOverride`, `OverrideType`), checkpoint-based pause/resume. Experience feedback on success/failure.
+  - **Integration wiring**: 12 new `EventType` values (experience + meta session lifecycle). 16 new `EngineConfig` fields across all 4 subplans. REST endpoints for discovery (`GET /api/meta/discover`), planning (`POST /api/meta/plan`), and session management (`GET/DELETE /api/meta/sessions/{id}`).
+  - **79 new tests** across 4 test files (`test_experience.py`, `test_discovery_planner.py`, `test_repair.py`, `test_controller.py`). All passing.
+
+- [feat] **18-2 Task 1: Provider-level prompt caching.**
+  - Added `cached_input_tokens` and `cache_write_tokens` fields to `CompletionResult`. Added standalone `apply_cache_hints()` helper (duck-typed, no Protocol change).
+  - Anthropic: `apply_cache_hints()` inserts `cache_control: {"type": "ephemeral"}` on long system messages (>1024 est. tokens). `_split_system()` returns content blocks when hints are present. `_extract_usage()` captures `cache_read_input_tokens`/`cache_creation_input_tokens`.
+  - OpenAI: `apply_cache_hints()` ensures system messages lead for stable prefix caching. `_extract_usage()` reads `prompt_tokens_details.cached_tokens`.
+  - Google: stub `apply_cache_hints()` (no-op; `CachedContent.create()` deferred).
+  - `CostTracker.record()` extended with `cached_input_tokens`/`cache_write_tokens` kwargs. Added `cache_summary()` method. `snapshot()`/`restore()` include cache state.
+  - `LLMExecutor._call_via_provider()` applies cache hints when `EngineConfig.prompt_caching_enabled` (default True). Both `cost_tracker.record()` call sites pass cache metrics.
+  - 24 new tests in `tests/test_providers/test_prompt_caching.py`. Full suite green (1901 passed).
+
+- [feat] **18-1 Task 0: Generic tool-calling loop support in LLMOperator.**
+  - Added `tools: list[dict[str, Any]]` and `max_tool_rounds: int` fields to `LLMOperator` in `nodes.py` with backward-compatible defaults (empty list, 10).
+  - Extended `LLMExecutor.execute()` with full tool-calling loop: model emits tool_calls → executor resolves tools from `context.tool_registry` → tool results appended → model called again → repeat until plain text or max rounds.
+  - Added `_run_tool_loop()` and `_execute_tool_call()` helper methods to `LLMExecutor`.
+  - Updated `_call_llm()` return signature to include `tool_calls` (4-tuple). Updated `_call_via_provider()` to pass `tools` kwarg and use `complete()` (not streaming) when tools are active.
+  - Widened `messages` type annotation from `list[dict[str, str]]` to `list[dict[str, Any]]` in `LLMProvider` protocol and all three provider implementations (OpenAI, Anthropic, Google) for tool result message compatibility.
+  - Emits existing `TOOL_CALL_STARTED` and `TOOL_CALL_RESULT` events for each tool call. Cumulative usage and `CostTracker` recording cover all rounds.
+  - 17 new tests in `tests/test_engine/test_llm_tool_calling.py`: backward compat (no tools), single/multi-round tool calling, parallel tool calls, max_tool_rounds safety, tool-not-found handling, event emission, cumulative usage, cost tracker, message structure, model field serialization, tool exception handling.
+  - Full suite green (1876 passed, 1 pre-existing deselected).
+
+- [feat] **18-1 Tasks 1, 2, 6, 8: Smart Context Assembly — model layer + utility classes.**
+  - Added 6 new fields to `LLMOperator` in `nodes.py`: `target_input_tokens`, `summarize_inputs`, `jit_tool_loading`, `agent_context_tools`, `prune_fields`, `input_format` — all with backward-compatible defaults.
+  - Added `pass_by_reference` field to `ContextEdge` in `edges.py` (default `False`).
+  - Added 6 new event types to `EventType` enum: `TOKEN_BUDGET_ADVISORY`, `CONTEXT_DEFERRED`, `INPUT_SUMMARIZED`, `JIT_SCHEMA_LOADED`, `PAYLOAD_PRUNED`, `CONTEXT_TOOL_CALLED`.
+  - Added `token_budget: int | None` to `EngineConfig` in `executor.py`.
+  - Created `src/dan/engine/token_optimization.py` (new module): `SummarizationConfig` (Pydantic), `PromptAnalyzer` + `PromptAnalysis` (static template analysis), `ContextSelector` (relevance scoring + inline/deferred partitioning), `PayloadPruner` (glob-pattern field stripping + JSON/YAML/compact serialization).
+  - 56 new tests in `tests/test_engine/test_token_optimization.py` covering all utility classes, model field round-trips, event types, backward compatibility. Full suite green (1873 passed).
+
+- [feat] **18-3 Task 1: StateStore abstraction (externalized structured state).**
+  - Created `src/dan/engine/state_store.py` with `StateStore` protocol, `FileSystemStateStore` (atomic writes, path traversal protection, prefix query), `NullStateStore` (no-op).
+  - Typed Pydantic schemas: `LoopIterationState`, `TeamTurnState`, `NodeExecutionSummary` — all with `ConfigDict(extra="allow")` for forward compatibility.
+  - Added `STATE_EXTERNALIZED`, `LOOP_COMPACTION_APPLIED`, `BUDGET_ADVISORY` to `EventType` enum in `events.py`.
+  - Added `state_store_enabled` and `state_store_dir` fields to `EngineConfig` in `executor.py`.
+  - Registered all exports in `engine/__init__.py` and `__all__`.
+  - 46 tests covering: CRUD, scope isolation, Pydantic round-trips (all 3 schemas), prefix query, path traversal, NullStateStore, concurrent writes, atomic write safety, protocol conformance, EngineConfig compat, event types, exports.
+
+- [feat] **Phase 9D remaining subplans implemented (17-2 extension, 17-3 extension, 17-4).**
+  - **17-2 task 6 — Graduated repair classification**: Extended `CausalPrinciple` with `repair_level` (5-level Literal: retry/prompt_fix/parameter_fix/structural_fix/redesign), `suggested_parameter_changes` (dict for parameter_fix), `structural_description` (text for structural_fix/redesign). Updated reflection prompt with classification guidelines and few-shot examples for each level. Updated `_normalize_principle()` and `_make_principle()` to handle new fields.
+  - **17-3 task 6 — Parameter mutations (runtime graph mutation)**: Defined `ParameterMutation` model with whitelisted fields (`model`, `temperature`, `max_tokens`, `timeout_seconds`, `tool_config`) and topology-field rejection. Added `RuleLifecycleManager.create_mutation()` and `get_active_mutations()`. Applied mutations in `Engine._execute()` via temporary graph copy (`_apply_parameter_mutations()`). `RuleGenerator.generate_rule()` now returns `None` for `parameter_fix` principles.
+  - **17-4 — Observability event wiring**: Added `RunManager._emit_learning_event()` helper for post-run event emissions. Wired all 11 `EventType` values: `ERROR_MEMORY_INDEXED` (in `_index_run_errors`), `ERROR_MEMORY_RETRIEVED` (in `LLMExecutor.execute`), `REFLECTION_STARTED`/`COMPLETED` (in RunManager), `RULE_GENERATED` (after principle persistence creates rules), `RULE_ACTIVATED` (in scheduler `_execute`), `RULE_EXPIRED`/`RULE_PRUNED`/`RULE_EFFECTIVENESS_UPDATE` (in `_track_rule_effectiveness`).
+  - **Tests**: 37 new tests covering all new functionality (1758 total, 0 failures). Tests cover: CausalPrinciple extended fields, RuleGenerator parameter_fix skip, ParameterMutation model/validation, mutation CRUD/lifecycle, reflection repair_level parsing, scheduler parameter mutation application, _emit_learning_event helper, LLMExecutor ERROR_MEMORY_RETRIEVED event.
+
+- [docs] **Todo-sync patch (Phase 9D ↔ Phase 11 handoff clarity).**
+  - `17-5-workflow-experience-summaries.md`: status changed to **completed (bridge spec only)** with explicit execution guard; confirms implementation is deferred to `19-1`.
+  - `17-self-evolving-orchestrator.md`: sub-plan table wording updated so `17-5` is clearly archival/handoff-only and not an executable implementation track.
+
+- [docs] **Plan style consistency cleanup (17-x + todo).**
+  - Updated Tier 3 phrasing in `17` and `17-3` to consistently reflect the canonical `parameter_fix` path: runtime graph mutation only.
+  - Updated `todo.md` Tier 3 wording to match (hyperedge guidance + runtime parameter mutations).
+  - Kept 9D/Phase-11 boundaries consistent across 17 parent and subplans while preserving existing scope decisions.
+
+- [docs] **Plan cleanup pass (17-x consistency).**
+  - `17-1`: normalized task order (`5` before deferred `6`) and aligned decision wording to defer cross-workflow/global reuse to Phase 11.
+  - `17-4`/`17`/`todo.md`: corrected stale wording from "10 self-evolving EventType values" to **11**.
+  - `17-3`: kept canonical `parameter_fix` path as runtime graph mutation and fixed subsection numbering consistency.
+
+- [docs] **Plan 19 review patch — reuse-first policy and contract hardening.**
+  - Resolved 17↔19 duplication: marked `17-5` as deferred bridge spec and promoted implementation ownership to `19-1` (also reflected in `todo.md` and `17-self-evolving-orchestrator.md`).
+  - Hardened planner contract in `19-2`: declarative `PlanIR` is now primary; code generation is optional behind `planner_allow_code_generation=False` default and must run out-of-process if enabled.
+  - Corrected adaptation contract in `19-2`: uses `GraphMutator.apply(graph_dict, plan)` shape explicitly.
+  - Enforced canonical repair path in `19-3`: `parameter_fix` is runtime graph mutation only; removed parameter-fix hyperedge path.
+  - Split tracking responsibilities in `19-3`: structural repairs now tracked via dedicated `RepairActionStore` (not `RuleLifecycleManager`, which remains hyperedge-specific).
+  - Clarified `19-4` pause semantics: v1 pause is inter-step checkpoint-based only; hard mid-run interrupt remains deferred.
+  - Aligned roadmap numbering in `development-plan.md`: Phase 11 = Meta-Orchestrator, Phase 12 = Author & Distribute.
+
+- [docs] **Plan boundary patch for 9D vs Phase 11 + parameter-fix path.**
+  - **17-3 clarified:** `parameter_fix` now has one canonical implementation path: **runtime graph mutation only** (no hyperedge-based parameter patching). Updated task breakdown and numbering consistency.
+  - **17-1 and 17-2 rescope:** cross-workflow/global error/principle sharing work moved out of 9D and explicitly deferred to Phase 11 (`19-1-workflow-experience-memory`).
+  - **17-5 rescope:** kept as workflow-local experience summaries in 9D; replaced global search/indexing tasks with a Phase-11 handoff export payload contract.
+  - Updated parent plan (`17-self-evolving-orchestrator.md`) and `todo.md` descriptions to match the new scope boundaries.
+
+- [docs] **Phase 11 Meta-Orchestrator — full plan suite (19, 19-1 through 19-4).** New phase for autonomous workflow planning, execution, and self-repair. Four subplans:
+  - **19-1 Workflow Experience Memory:** `WorkflowExperience` model, `ExperienceStore`/`ExperienceIndex` (global RAG over past workflow summaries), cross-workflow principle sharing, experience consolidation pipeline.
+  - **19-2 Workflow Planner:** `DiscoveryService` (tools, skills, patterns, past workflows), `WorkflowPlanner` LLM agent with three action modes (REUSE/ADAPT/GENERATE), builder DSL code generation sandbox, plan validation and safety checks.
+  - **19-3 Structural Repair Engine:** `RepairClassifier` (prompt/parameter/structural/redesign levels), `ParameterRepairGenerator` (level 2), `StructuralRepairPlanner` (level 3 via GraphMutator), `RedesignTrigger` (level 4 via planner), `RepairEscalator` with bounded auto-escalation.
+  - **19-4 Autonomous Execution Controller:** `MetaSession` state machine, `MetaController` outer loop (plan→execute→observe→diagnose→repair), pause-based human override protocol, experience feedback for both successes and failures, 10 new `EventType` values.
+  - Renumbered old Phase 11 (Author & Distribute) to Phase 12.
+
+- [docs] **Phase 9D extended: cross-workflow learning, graduated repair, workflow experience summaries.**
+  - **17-1 extended (task 6):** Cross-workflow error memory — `error_memory_scope` config, dual-write to global collection, cross-workflow retrieval in ErrorContextProvider, global search endpoint.
+  - **17-2 extended (tasks 5–6):** Cross-workflow principle sharing — `scope` field on CausalPrinciple, global PrincipleStore writes, `principle_scope` config. Graduated repair classification — `repair_level` field (retry/prompt_fix/parameter_fix/structural_fix/redesign), `suggested_parameter_changes`, `structural_description`. Reflection prompt updated with repair-level few-shot examples.
+  - **17-3 extended (task 6):** Parameter mutations (level 2 repair) — RuleGenerator handles `parameter_fix` principles, model override rules, `get_active_mutations()`, safe-field guards.
+  - **17-5 (new):** Workflow Experience Summaries — `WorkflowExperience` model, `ExperienceAggregator`, `ExperienceIndex` (global RAG), auto-describe/auto-tag workflows, REST endpoints for experience CRUD + semantic search. Bridge to future meta-orchestrator.
+
+- [docs] **Plan 18 philosophy rework — no brute-force, agent-directed, externalized state.** Major reframe of all five token-optimization plans after competitive landscape review (Cursor, MemGPT/Letta, Beads, OpenAI Agents SDK, CrewAI, LangChain ACE, GPTCache, LLMLingua, production patterns). Key changes:
+  - **18 (high-level):** Added "Design Philosophy" section establishing three principles: (1) agent-controlled context (MemGPT pattern), (2) externalized structured state (Beads pattern), (3) mechanical format efficiency. Renamed sub-plans: 18-1 → "Smart Context Assembly", 18-3 → "Agent-Directed Context Architecture". Updated success criteria to ban brute-force truncation.
+  - **18-1:** Renamed from "Prompt Compression" to "Smart Context Assembly." Reframed `max_input_tokens` as advisory `target_input_tokens` (never blocks). Replaced `ContextPruner` with `ContextSelector` (defers low-relevance inputs to tool-accessible storage, never deletes). Added 3 new tasks: (7) JIT tool/schema loading — 20-40% context savings on tool-heavy workflows; (8) Schema/format pruning — mechanically strip unused fields, optional compact serialization; (9) Agent context tools (MemGPT pattern) — `search_context`, `read_context`, `read_state`, `list_available_context`.
+  - **18-2:** Added query normalization before semantic cache embedding (GPTCache pattern — 61-68% hit rates).
+  - **18-3:** Renamed from "Context Window Management" to "Agent-Directed Context Architecture." Replaced entire task 1 (brute-force truncation policies) with externalized structured state (`StateStore`, typed schemas: `LoopIterationState`, `TeamTurnState`, `NodeExecutionSummary`). Replaced task 2 (conversation windowing) with agent-directed history management (older messages to memory, manifest + context tools for retrieval). Reframed budget allocation as advisory `TokenBudgetAdvisor` (never blocks). Loop compaction preserved (smart, not brute force).
+  - **18-4:** Added task 5 — evolving context playbooks (Microsoft ACE integration with Plan 17): validated optimizations → `CausalPrinciple` → `RuleGenerator` → persistent optimization rules with effectiveness tracking. Updated recommendations to remove all truncation suggestions; added JIT loading, agent context tools, field pruning, state externalization suggestions.
+
+- [docs] **Plan 18 review patch pass (consistency hardening).** Applied a focused follow-up patch across token-optimization plans to align assumptions with current runtime contracts:
+  - **18-4:** Corrected event-contract wording: `RETRIEVAL_COMPLETED` is already available for RAG attribution; memory attribution now explicitly calls for adding/finalizing a canonical memory-retrieval event (e.g., `MEMORY_RECALL`) during 14-3 implementation.
+  - **18-2:** Corrected primary file mapping for session-memory cache coordination from `engine/memory_pipeline.py` to `engine/memory_store.py` (+ `engine/context_runtime.py`) to reflect actual persistence responsibilities.
+  - **18-3:** Refined unified budget guidance so memory/RAG reservation is token-based (percentage + telemetry), while `retrieve -> rerank -> inject` remains retrieval-shape guidance rather than direct token reservation constants.
+  - **18-1:** Added dual-write guardrails for `pass_by_reference` so artifact persistence remains default, but memory mirroring is policy-gated (`auto`/threshold/explicit policy) to avoid write amplification.
+
+- [docs] **Plan 17-4: Observability & Event Wiring subplan.** Added `docs/plans/17-4-observability-event-wiring.md` — pure instrumentation pass to wire the 11 self-evolving `EventType` enums (currently dead) into their natural emission sites across `run_manager.py`, `executors/llm.py`, and `scheduler.py`. Covers error memory indexed/retrieved, reflection started/completed, rule generated/activated/expired/disabled/auto-disabled/pruned/effectiveness. Includes `_emit_learning_event()` helper design for post-run hooks and consistent data shape convention.
+
+- [fix] **Phase 9D code review patches — 5 critical bugs + 1 suggestion.**
+  - C1: Wired `ErrorContextProvider` + `_workflow_id` into `ExecutionContext` so `LLMExecutor` prompt augmentation actually fires at runtime (`scheduler.py`, `run_manager.py`)
+  - C2: Fixed `extract_error_records` snapshot shape mismatch — errors are at top level in `RunRecord.snapshot()`, not nested under `result` (`error_memory.py`)
+  - C3: Reflection principles now persisted after reflection runs — `ReflectionExecutor` includes principles in metadata, `RunManager._persist_reflection_principles()` extracts and stores via `PrincipleStore` (`reflection.py`, `run_manager.py`)
+  - C4: Fixed effectiveness tracking — `record_application()` now called for all active rules; outcome tracking limited to rules with explicit `attach_to` node targets to prevent score inflation (`run_manager.py`)
+  - C5: Path traversal fix — `_safe_segment()` validation in `RuleLifecycleManager` filesystem paths + `_validate_path_segment()` on all `/api/rules/` endpoints (`rule_generator.py`, `app.py`)
+  - S1: Removed duplicate `node_started`/`node_completed` event emissions from `ReflectionExecutor` (scheduler already emits these) (`reflection.py`)
+
+- [docs] **Plan 18 memory & RAG integration pass.** Audited all five token-optimization plans (`18`, `18-1`, `18-2`, `18-3`, `18-4`) to wire them into the existing memory (14-1/14-2/14-3) and RAG (9-1) infrastructure. Key additions:
+  - **18 (high-level):** Added "Integration with Memory & RAG Systems" section with 7 cross-cutting integration points (embedding-based relevance, encode-to-memory pattern, compaction-to-memory pipeline, unified prompt budget, memory-aware cache coordination, memory/RAG token decomposition, summarization sharing). Updated baseline table with memory pipeline, session memory, RAG, and `estimate_tokens()` components. Upgraded dependency/sequencing item 5 from "independent" to "tightly integrated." Added memory/RAG success criteria.
+  - **18-1 (prompt compression):** Task 1-4 now reuses existing `dan.utils.tokens.estimate_tokens()` (no new utility). Task 2-2 strengthened RAG embedding link for semantic relevance scoring. Task 4 expanded with encode-to-memory pattern (store large outputs in long-term memory, retrieve via `MemoryQuery` instead of inline passing). Task 5 now feeds summaries into `ShortTermMemory` and shares LLM summarization with 14-3's `ConsolidationPipeline`.
+  - **18-2 (caching):** Task 2-3 adds session memory coordination — cross-run memoized results stored as 14-1 session memory entries. Task 2-5 adds memory-aware cache invalidation (`memory_dependency_keys`). Task 3-2 explicitly references `EmbeddingProvider`, `VectorStore`, and `VectorStoreFactory` from 9-1.
+  - **18-3 (context window):** Task 1 adds truncation-to-memory persistence (`persist_dropped`). Task 2 adds windowed-out messages to memory + shared summarization with 14-3. Task 3 adds compaction-to-memory pipeline and delegates to `ShortTermMemory` buffer for unified compaction implementation. Task 4 adds unified budget accounting across all token sources (direct edges + memory + RAG) with configurable memory/RAG token reservation.
+  - **18-4 (analytics):** `TokenBreakdown` now includes `memory_tokens` and `rag_tokens` fields. Waste detection adds unused memory/RAG context and redundant retrieval categories. Recommendations include encode-to-memory, disable unused retrieval, and memoize RAG nodes.
+
+- [feat] **Phase 9D Self-Evolving Orchestrator — full implementation (17-1, 17-2, 17-3).** Implemented all three tiers of the self-evolving orchestrator:
+  - **Tier 1 (Error Memory & Prompt Augmentation):** `ErrorRecord`, `ErrorCategory`, `extract_error_records()`, `ErrorMemoryIndex` (RAG indexing of run errors), `ErrorContextProvider` (prompt injection) in new `engine/error_memory.py`. Wired error capture → indexing → retrieval pipeline into `RunManager._enrich_and_persist()`. Prompt injection in `LLMExecutor.execute()` adds error-memory context as a system message before LLM call, scoped by node tags/types, composing before hyperedge pre_prompt. REST endpoints: `GET/DELETE /api/errors/{workflow_id}`, `GET /api/errors/{workflow_id}/search`.
+  - **Tier 2 (Reflection Node):** `ReflectionNode(NodeBase)` model, `CausalPrinciple` and `PrincipleStore` in `engine/error_memory.py`, `ReflectionExecutor` in new `executors/reflection.py`. Gathers error data, builds structured LLM prompt with few-shot examples, parses JSON array, filters by confidence, deduplicates (exact_key). Reflection scheduling in `RunManager` with `on_failure`/`on_every_run`/`manual`/`disabled` triggers; `run_id` prefix `reflection-` prevents infinite loops.
+  - **Tier 3 (Self-Generating Rules):** `RuleGenerator` (principle → hyperedge: negation→guardrail, preference→skill, interception→override), `GeneratedRule` with `effectiveness_score`, `RuleLifecycleManager` (filesystem-backed, TTL expiry, max cap eviction, pruning, rollback) in new `engine/rule_generator.py`. Runtime injection in scheduler `_execute()` deep-copies hyperedges + appends generated rules. Effectiveness tracking in `RunManager`. REST endpoints: `GET/DELETE /api/rules/{workflow_id}`, `POST .../disable|enable|approve`, `POST .../rollback`, `GET .../stats`.
+  - **Shared:** 11 new `EventType` values, `EngineConfig` fields for all 3 tiers. All features opt-in/disabled by default.
+- [test] **83 tests for self-evolving orchestrator.** `tests/test_engine/test_self_evolving.py`: Tier 1 (30), Tier 2 (11), Tier 3 (24). All pass in 0.25s; full suite 1703 tests pass.
+- [fix] **Phase 9C code review patches + second-pass test review.**
+  - C1: `AgentTeamExecutor` now returns `FAILED` when every turn errors (tracked `error_turns`/`total_turns_executed`)
+  - C2: `OrchestratorExecutor` — explicit `halt_orchestrator` now overrides `all_failed` status
+  - C3: `OrchestratorExecutor` — safety-bound exit without dispatching any work now returns `FAILED`
+  - C3b: Fixed backward-compat condition (`and` → `or`) so prompt-only or model-only correctly falls back to static fan-out
+  - S1: `VoteExecutor` now enforces `timeout_seconds` via `asyncio.wait_for`
+  - S2: Updated `_KNOWN_NODE_TYPES` (+human, vote, agent_team) and `_COMPOSITE_NODE_TYPES` (+agent_team) in `validation/graph.py`
+- [test] **Second-pass test hardening.**
+  - Added `status == FAILED` assertions to safety-bound tests; strengthened timeout test assertions
+  - Replaced all `status.value == "completed"` string comparisons with `NodeStatus.COMPLETED` enum in human node tests
+  - Documented private `_store` access in shared-context test with `has()` guard
+  - Added consensus completion condition tests for `AgentTeamNode` (triggers + no-trigger paths)
+  - Added `FeedbackSelector.include` with nonexistent/mixed keys and exclude-nonexistent edge cases
+  - Added `file_upload` and `rich` render mode tests for `HumanNode` (mode propagation + metadata)
+  - Added `output_json_schema` roundtrip and default-none tests for `VoteNode`
+  - Added vote timeout enforcement tests (slow provider + no-timeout baseline)
+  - Total: 184 Phase 9C tests, 1721 suite-wide, 0 failures
+- [feat] **ReflectionNode model & ReflectionExecutor (17-2, tasks 1-1, 1-3, 2-1 through 2-5).** Added `ReflectionNode(NodeBase)` in `models/nodes.py` with `reflection_prompt`, `reflection_model`, `source` (last_run/last_n_runs/error_index), `source_config`, `output_format`, `max_principles`, `min_confidence`, `dedup_strategy`. Registered in `NodeTypeRegistry`, added to discriminated `Node` union in `graph.py`. Created `executors/reflection.py` with `ReflectionExecutor`: gathers error data from upstream inputs, builds structured LLM prompt with few-shot examples, calls provider via registry, parses JSON array output with fallback extraction (```json fences, first [...] block), filters by min_confidence, deduplicates against existing principles (exact_key strategy; embedding_similarity falls back to exact_key as TODO). Returns `principles`, `principle_count`, `source`, `text` summary. Registered in scheduler `_register_defaults()`. All 1620 existing tests pass.
+- [docs] **Plan 18 review-and-patch alignment pass.** Audited and corrected newly created token-optimization plans (`18`, `18-1`, `18-2`, `18-3`, `18-4`) against current runtime APIs and file layout. Patched provider file references (`*_provider.py`), validation/mutation route names, control-flow class names (`GateNode`/`WhileLoopNode`/`GateExecutor`), context model references (`CompactionRule` in `models/context.py`), and baseline assumptions (existing token/cost badges and run totals already implemented). Also tightened plan semantics: generic memoization key design, non-hardcoded cache discount handling, and consistency between loop compaction strategy names and current `CompactionStrategy` enum.
 - [feat] Implement Phase 9C execution primitives (all 5 sub-plans):
   - 16-1: AgentTeamNode with group-chat multi-agent coordination, 4 turn strategies, @-routing, handoff protocol
   - 16-2: VoteNode with 5 voting strategies, cross-model ensemble, cost tracking

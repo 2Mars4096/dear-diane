@@ -26,7 +26,7 @@ deep-agent-network/
     models/                      # Phase 0 — formal type system
       ports.py                   # InputPort, OutputPort
       context.py                 # NodeLocalState, SharedContextDeclaration, ArtifactRef, ContextProjection, FeedbackSelector, CompactionRule, policies
-      nodes.py                   # NodeBase, LLMOperator, ToolOperator, CodeOperator
+      nodes.py                   # NodeBase, LLMOperator, ToolOperator, CodeOperator, ReflectionNode
       control_flow.py            # GateNode (unified if_else/while), IfElse, WhileLoop, ForEach, ParallelSubagentsNode, OrchestratorNode, Reduce, Router, HumanInTheLoop, ValidatorNode, CompositeNode
       edges.py                   # DataEdge, ControlEdge, ContextEdge
       graph.py                   # Graph container, Node/Edge discriminated unions, dan_graph_v1 contract
@@ -74,6 +74,12 @@ deep-agent-network/
       memory.py                  # Phase 9A — MemoryEntry, MemoryScope, WriteMode, MemoryWriteRequest models
       memory_store.py            # Phase 9A — MemoryStore protocol, FileSystemMemoryStore (atomic JSON, index sidecar)
       memory_pipeline.py         # Phase 9A — ShortTermMemory buffer, CompactionStrategy activation, ConsolidationPipeline
+      error_memory.py            # Phase 9D — ErrorRecord, ErrorCategory, extract_error_records(), ErrorMemoryIndex (RAG), CausalPrinciple, PrincipleStore, ErrorContextProvider
+      rule_generator.py          # Phase 9D — RuleGenerator (principle→hyperedge), GeneratedRule, ParameterMutation, RuleLifecycleManager (filesystem-backed lifecycle, TTL, pruning, mutations)
+      experience.py              # Phase 11 (19-1) — WorkflowExperience, ExperienceStore, ExperienceIndex, extract_experience_from_graph(), consolidate_experience()
+      state_store.py             # Phase 10 (18-3) — StateStore protocol, FileSystemStateStore (atomic JSON), NullStateStore; typed schemas (LoopIterationState, TeamTurnState, NodeExecutionSummary)
+      token_optimization.py      # Phase 10 (18-1/18-3/18-4) — SummarizationConfig, PromptAnalyzer, ContextSelector, PayloadPruner, ToolSchemaResolver, ContextToolProvider, HistoryManager, LoopCompactor, TokenBudgetAdvisor, TokenWasteAnalyzer, WasteFinding, TokenOptimizationReport, OptimizationPlaybook, PlaybookEntry
+      cache.py                   # Phase 10 (18-2) — NodeResultCache (LRU+TTL+disk) and SemanticCache (EmbeddingRegistry + VectorStore)
       scheduler.py               # Topological sort (DAG fast-path + cycle-aware for gate loops), parallel dispatch, Engine.run()/resume(), event emission
     rag/                         # Phase 6 — RAG / knowledge retrieval subsystem
       __init__.py                # EmbeddingProvider protocol, EmbeddingResult, OpenAI/Local providers, EmbeddingRegistry
@@ -85,6 +91,12 @@ deep-agent-network/
         chroma_store.py          # ChromaVectorStore — chromadb.PersistentClient, native metadata filtering
     utils/                       # Phase 9A — shared utilities
       tokens.py                  # estimate_tokens() — tiktoken-backed or character approximation
+    meta/                        # Phase 11 — meta-orchestrator
+      __init__.py
+      discovery.py               # DiscoveryService — enumerates tools, skills, patterns, past workflows (ToolInfo, SkillInfo, PatternInfo, WorkflowMatch, DiscoveryResult)
+      planner.py                 # WorkflowPlanner — LLM-driven reuse-first planning (PlanningPromptBuilder, ReusePlan, AdaptPlan, GeneratePlan, PlanResult, PlanReview, PlannerOutput)
+      repair.py                  # Structural Repair Engine — RepairLevel, RepairClassifier, ParameterRepairGenerator, StructuralRepairPlanner, RedesignTrigger, RepairEscalator, RepairActionStore/Record
+      controller.py              # Autonomous Execution Controller — MetaSession, MetaSessionStore, MetaController, MetaControllerConfig, HumanOverride
     executors/                   # Phase 1 — built-in node executors
       __init__.py                # Auto-registers built-in executors
       llm.py                     # LLMExecutor — OpenAI-compatible (vectorengine.ai default)
@@ -93,6 +105,7 @@ deep-agent-network/
       rag.py                     # RAGExecutor — embed query → vector search → chunk retrieval, event emission, store caching
       control_flow.py            # GateExecutor (unified branching/looping), IfElse, WhileLoop, ForEach, ParallelSubagents, Orchestrator, Reduce, Router, HumanInTheLoop
       validator.py               # ValidatorExecutor — rule-based data validation with valid/invalid routing
+      reflection.py              # ReflectionExecutor — LLM-based causal analysis of run failures, principle extraction
     builder/                     # Phase 1.5 — fluent workflow builder DSL
       __init__.py                # Public API: workflow(), WorkflowBuilder, NodeRef, PortRef, decompile(), namespace_graph, derive_ports
       refs.py                    # NodeRef, PortRef — compile-time proxies with __format__, __rshift__, __getitem__
@@ -112,14 +125,14 @@ deep-agent-network/
     server/                      # Phase 2 — FastAPI backend for visual editor
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
-      app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry
+      app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry, experience APIs, and meta-orchestrator APIs (plan/validate/run/pause/resume/events)
       exec.py                    # execute_python() — shared Python executor for run_python and run_strategy_script
       graph_store.py             # Filesystem-based graph JSON persistence
       graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run; TOOL_PORT_MANIFESTS for tool-specific port declarations; ApplySkill mutation op
       skill_library.py           # SKILL_LIBRARY: domain-specific prompt-injection skills (management_science_writing, informs_latex_style) targeted by node tags
       chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history)
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
-      run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing + RunStore integration + metric enrichment
+      run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing + RunStore integration + metric enrichment + learning event emissions (dual origin/reflection routing) + incremental experience consolidation/indexing + emit_rule_lifecycle_event() for API-driven rule management
       run_store.py               # Filesystem-backed persistence for run summaries (JSON) and event logs (JSONL). Layout: runs/{workflow_id}/{run_id}.json + .events.jsonl
       scoped_run.py              # Scoped execution: full/node/subgraph run builder
       layout.py                  # Topological layout for graph JSON (DAN_LAYOUT_ON_LOAD)

@@ -1,7 +1,7 @@
 # 17: Phase 9D — Self-Evolving Orchestrator
 
-**Status:** not-started
-**Goal:** Enable orchestrators to learn from past failures by persisting error memories, reflecting on them to extract causal principles, and injecting retrieved lessons into future decisions — ultimately rewiring their own behavior graph via self-generated hyperedge rules.
+**Status:** in-progress
+**Goal:** Enable orchestrators to learn from past failures by persisting error memories, reflecting on them to extract causal principles, and injecting retrieved lessons into future decisions — ultimately adapting behavior via self-generated hyperedge rules and runtime parameter mutations.
 
 ## Motivation
 
@@ -19,7 +19,7 @@ Three tiers of capability, each building on the last:
 
 - **Tier 1 (Prompt Augmentation):** Capture errors → embed → store in vector index → retrieve relevant failures at decision points → inject as prompt context. *Works with existing infrastructure NOW.*
 - **Tier 2 (Reflection Node):** Dedicated post-run analysis that distills raw errors into structured causal principles ("when X, avoid Y because Z"). *Benefits from deeper run history (13-2).*
-- **Tier 3 (Self-Generating Rules):** Reflection outputs become hyperedge rules automatically attached to relevant nodes. The orchestrator literally rewires its own behavior graph. *Requires stable hyperedge runtime (already partially landed).*
+- **Tier 3 (Self-Generating Rules):** Reflection outputs become executable adaptations: hyperedge rules for prompt/tool guidance plus runtime parameter mutations for node-level tuning. The orchestrator adapts its behavior graph without mutating persisted graph JSON. *Requires stable hyperedge runtime (already partially landed).*
 
 ## Existing Infrastructure (baseline)
 
@@ -48,7 +48,9 @@ Three tiers of capability, each building on the last:
 |---|----------|-------|---------------|
 | [17-1](17-1-error-memory-rag.md) | Error Memory & Prompt Augmentation (Tier 1) | Error capture pipeline, RAG indexing of run errors, retrieval at decision points, prompt injection | `engine/error_memory.py` (new), `server/run_manager.py`, `rag/indexer.py`, `executors/llm.py` |
 | [17-2](17-2-reflection-node.md) | Reflection Node (Tier 2) | Post-run reflection executor, causal principle extraction, structured memory persistence, reflection scheduling | `models/nodes.py`, `executors/reflection.py` (new), `engine/error_memory.py`, `server/run_manager.py` |
-| [17-3](17-3-self-generating-rules.md) | Self-Generating Rules (Tier 3) | Principle → hyperedge conversion, auto-attachment, rule lifecycle, effectiveness tracking, safety bounds | `engine/rule_generator.py` (new), `engine/scheduler.py`, `engine/events.py`, `server/app.py` |
+| [17-3](17-3-self-generating-rules.md) | Self-Generating Rules (Tier 3) | Principle → hyperedge conversion (prompt/tool guidance), runtime parameter mutations, rule lifecycle, effectiveness tracking, safety bounds | `engine/rule_generator.py` (new), `engine/scheduler.py`, `engine/events.py`, `server/app.py` |
+| [17-4](17-4-observability-event-wiring.md) | Observability & Event Wiring | Wire all 11 self-evolving `EventType` values into emission sites for debugging, UI visibility, and audit trails | `server/run_manager.py`, `executors/llm.py`, `engine/scheduler.py` |
+| [17-5](17-5-workflow-experience-summaries.md) | Workflow Experience Summaries | Bridge spec only (archived/deferred): workflow-local summary + export payload contract. Marked completed as handoff; Phase 11 (`19-1`) owns all implementation/indexing/reuse work. | `engine/experience.py` (new), `server/run_manager.py`, `server/app.py` |
 
 ## Dependencies / Sequencing
 
@@ -76,15 +78,15 @@ Three tiers of capability, each building on the last:
 - Reflection node produces structured causal principles from raw error data (Tier 2).
 - Reflection output can be promoted to hyperedge rules that modify future node behavior (Tier 3).
 - All tiers are opt-in via configuration flags; existing workflows are unaffected.
-- Error memory respects workflow and session scoping (workflow-scoped by default; global opt-in).
+- Error memory and principle retrieval remain workflow-scoped in 9D; global reuse is deferred to Phase 11.
 
 ## Decisions
 
 - **Tier 1 is prompt augmentation, not architectural change.** Retrieved errors are injected as additional prompt context via the hyperedge `pre_prompt` hook. No new node types, no new execution patterns — just a retrieval→injection pipeline wired into existing hooks.
 - **Error indexing happens at run completion, not during execution.** Post-run indexing is simpler, avoids mid-execution RAG writes, and ensures the full error context (including downstream cascading failures) is captured.
-- **One RAG collection per workflow.** Errors are workflow-scoped by default. Cross-workflow learning is a future extension.
+- **One RAG collection per workflow in 9D.** Cross-workflow/global reuse is explicitly deferred to Phase 11 (`19-1`).
 - **Tier 2 is a new node type (`ReflectionNode`), not a post-run script.** Making reflection a graph-level construct means it can be composed, scheduled, and observed like any other node.
-- **Tier 3 uses runtime injection, not persistent graph mutation.** Self-generated rules live in a lifecycle manager and are injected as additional hyperedges at engine startup — the persisted graph JSON stays clean.
+- **Tier 3 uses runtime adaptation, not persistent graph mutation.** Hyperedge rules are injected at runtime; parameter fixes are applied via temporary runtime graph mutation. The persisted graph JSON stays clean.
 - **Safety bounds are non-negotiable.** Self-modifying behavior requires: max rules per workflow, rule TTL/expiry, human approval gate (optional), auto-disable on regression, and audit trail of all generated rules.
 
 ## Notes

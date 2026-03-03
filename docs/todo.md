@@ -152,19 +152,30 @@
 - [ ] [17-self-evolving-orchestrator](plans/17-self-evolving-orchestrator.md) — error memory, reflection, and self-generating rules for orchestrator self-improvement
   - [ ] [17-1-error-memory-rag](plans/17-1-error-memory-rag.md) — Tier 1: error capture pipeline, RAG indexing of run errors, retrieval at LLM decision points, prompt injection via dynamic hyperedge. **Prerequisites: 9A (done), 13-1 (partially landed). Can start immediately.**
   - [ ] [17-2-reflection-node](plans/17-2-reflection-node.md) — Tier 2: `ReflectionNode` post-processes failed runs, distills errors into structured causal principles, persists to `PrincipleStore`. Benefits from Phase 8 run history (13-2).
-  - [ ] [17-3-self-generating-rules](plans/17-3-self-generating-rules.md) — Tier 3: principle → hyperedge conversion, `RuleLifecycleManager` with effectiveness tracking, runtime injection, safety bounds. Requires stable hyperedge runtime (already partially landed).
+  - [x] [17-3-self-generating-rules](plans/17-3-self-generating-rules.md) — Tier 3: principle → hyperedge guidance + runtime parameter mutations, `RuleLifecycleManager` lifecycle/effectiveness tracking, safety bounds.
+  - [x] [17-4-observability-event-wiring](plans/17-4-observability-event-wiring.md) — Wire all 11 self-evolving `EventType` values into emission sites. Pure instrumentation — debugging and audit trail.
+  - [x] ~~[17-5-workflow-experience-summaries](plans/17-5-workflow-experience-summaries.md)~~ → deferred and promoted to [19-1-workflow-experience-memory](plans/19-1-workflow-experience-memory.md) under Phase 11 (meta-orchestrator).
 
 ## Phase 10 — Token Optimization
-> Minimize token consumption and maximize cost-efficiency. Model selection (15-3) picks the right model; this phase reduces tokens sent regardless of model — prompt compression, caching, truncation, and analytics.
+> Minimize token consumption and maximize cost-efficiency. Model selection (15-3) picks the right model; this phase reduces tokens sent regardless of model — smart context assembly, caching, agent-directed context architecture, and analytics.
 
-- [ ] [18-token-optimization](plans/18-token-optimization.md) — prompt compression, caching, context window management, token analytics
-  - [ ] [18-1-prompt-compression](plans/18-1-prompt-compression.md) — context pruning, reference passing, input summarization, prompt analysis
-  - [ ] [18-2-caching-layer](plans/18-2-caching-layer.md) — provider prompt caching, node memoization, semantic cache
-  - [ ] [18-3-context-window-management](plans/18-3-context-window-management.md) — truncation policies, conversation windowing, loop compaction, token budgets
-  - [ ] [18-4-token-analytics](plans/18-4-token-analytics.md) — per-node breakdown, waste detection, optimization recommendations, editor dashboard
+- [x] [18-token-optimization](plans/18-token-optimization.md) — smart context assembly, caching, agent-directed context architecture, token analytics *(backend complete; editor visualization deferred)*
+  - [x] [18-1-prompt-compression](plans/18-1-prompt-compression.md) — advisory token budgets, context deferral, JIT schema loading, context tools, summarization, reference passing
+  - [x] [18-2-caching-layer](plans/18-2-caching-layer.md) — provider prompt caching, node memoization, semantic cache, cache APIs
+  - [x] [18-3-context-window-management](plans/18-3-context-window-management.md) — externalized state, history policy, safe loop compaction, advisory token budgets
+  - [x] [18-4-token-analytics](plans/18-4-token-analytics.md) — per-node breakdown, waste detection, optimization recommendations, evolving playbooks *(frontend deferred)*
 
-## Phase 11 — Author & Distribute
-> CLI, publish as API/MCP, shareable blocks, PyPI package. Comes after Token Optimization so API surface and cost controls are stable before packaging.
+## Phase 11 — Meta-Orchestrator
+> Autonomous planning, execution, and self-repair. Given a high-level goal ("write a paper on X in Y format"), the meta-orchestrator discovers relevant past workflows, plans/adapts/generates a workflow graph, executes it, diagnoses failures at every severity level, and applies graduated repairs — from prompt tweaks to full redesign — while allowing human intervention at any step.
+
+- [ ] [19-meta-orchestrator](plans/19-meta-orchestrator.md) — autonomous workflow planning, execution, graduated repair, and cross-workflow learning
+  - [ ] [19-1-workflow-experience-memory](plans/19-1-workflow-experience-memory.md) — experience schema/store/index shipped with incremental consolidation, dedupe, auto-indexing; cross-workflow principle sharing deferred (task 4)
+  - [ ] [19-2-workflow-planner](plans/19-2-workflow-planner.md) — reuse-first planner shipped with deterministic Generate compiler, PlanReview, EngineConfig fields; few-shot examples (2-3), builder-code path (3-3), and LLM integration tests (7-5/7-6) deferred
+  - [x] [19-3-structural-repair](plans/19-3-structural-repair.md) — graduated repair engine complete: RepairClassifier, ParameterRepairGenerator, StructuralRepairPlanner, RedesignTrigger, RepairEscalator, RepairActionStore, RedesignResult; all unit tests pass; full-engine integration tests (7-5/7-6) deferred
+  - [ ] [19-4-autonomous-execution-controller](plans/19-4-autonomous-execution-controller.md) — meta-session loop complete: create/run/pause/resume/events, experience feedback (success+failure), cross-session learning; RunManager event-stream wiring (5-2) deferred
+
+## Phase 12 — Author & Distribute
+> CLI, publish as API/MCP, shareable blocks, PyPI package. Comes after Meta-Orchestrator so API surface, cost controls, and autonomous execution are stable before packaging.
 
 - [ ] Author & distribute → (not yet planned)
 - [ ] CLI mode — run workflows in terminal/background. Supervisor-style: start, check progress, inspect logs without blocking. Complements visual editor for headless/CI/server deployments.

@@ -1,7 +1,7 @@
 # 17-2: Reflection Node (Tier 2)
 
 **Parent:** [17-self-evolving-orchestrator](17-self-evolving-orchestrator.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Add a `ReflectionNode` that post-processes failed or degraded runs, uses LLM reasoning to distill raw errors into structured causal principles ("when X happens, avoid Y because Z"), and persists them as reusable memory entries for future retrieval and Tier 3 rule generation.
 
 ## Existing Baseline
@@ -22,50 +22,67 @@
 
 ## Tasks
 
-- [ ] 1. `ReflectionNode` model
-  - [ ] 1-1. Define `ReflectionNode(NodeBase)` in `models/nodes.py`: `node_type: Literal["reflection"] = "reflection"`, `reflection_prompt: str = ""` (system prompt guiding the LLM's analysis), `reflection_model: str | None = None` (defaults to engine default), `source: Literal["last_run", "last_n_runs", "error_index"] = "last_run"` (what to reflect on), `source_config: dict = {}` (e.g., `{"n": 5}` for last_n_runs, `{"query": "timeout errors"}` for error_index), `output_format: Literal["principles", "rules", "summary"] = "principles"`, `max_principles: int = 10`, `min_confidence: float = 0.3` (filter low-confidence output), `dedup_strategy: Literal["embedding_similarity", "exact_key", "none"] = "embedding_similarity"`.
-  - [ ] 1-2. Define `CausalPrinciple` model in `engine/error_memory.py`: `id: str` (uuid), `condition: str` (when this applies — e.g., "CRSP data loader receives dates before 1990"), `action: str` (what to do/avoid — e.g., "pre-filter input dates to avoid merge_asof tolerance errors"), `reason: str` (why — e.g., "merge_asof with DateOffset tolerance fails on pre-1990 data due to calendar boundaries"), `source_run_ids: list[str]`, `source_node_ids: list[str]`, `confidence: float` (0–1, LLM self-assessed), `created_at: float`, `updated_at: float`, `tags: list[str]` (for hyperedge attachment targeting in Tier 3), `workflow_id: str`.
-  - [ ] 1-3. Register `ReflectionNode` in `NodeTypeRegistry` **and** add it to the discriminated `Node` union in `models/graph.py` so `Graph.model_validate()` can deserialize it. Add to `NODE_TYPE_NAMES` / `NODE_DESCRIPTIONS` in `editor/src/types/graph.ts`.
+- [x] 1. `ReflectionNode` model
+  - [x] 1-1. Define `ReflectionNode(NodeBase)` in `models/nodes.py`: `node_type: Literal["reflection"] = "reflection"`, `reflection_prompt: str = ""` (system prompt guiding the LLM's analysis), `reflection_model: str | None = None` (defaults to engine default), `source: Literal["last_run", "last_n_runs", "error_index"] = "last_run"` (what to reflect on), `source_config: dict = {}` (e.g., `{"n": 5}` for last_n_runs, `{"query": "timeout errors"}` for error_index), `output_format: Literal["principles", "rules", "summary"] = "principles"`, `max_principles: int = 10`, `min_confidence: float = 0.3` (filter low-confidence output), `dedup_strategy: Literal["embedding_similarity", "exact_key", "none"] = "embedding_similarity"`.
+  - [x] 1-2. Define `CausalPrinciple` model in `engine/error_memory.py`: `id: str` (uuid), `condition: str` (when this applies — e.g., "CRSP data loader receives dates before 1990"), `action: str` (what to do/avoid — e.g., "pre-filter input dates to avoid merge_asof tolerance errors"), `reason: str` (why — e.g., "merge_asof with DateOffset tolerance fails on pre-1990 data due to calendar boundaries"), `source_run_ids: list[str]`, `source_node_ids: list[str]`, `confidence: float` (0–1, LLM self-assessed), `created_at: float`, `updated_at: float`, `tags: list[str]` (for hyperedge attachment targeting in Tier 3), `workflow_id: str`.
+  - [x] 1-3. Register `ReflectionNode` in `NodeTypeRegistry` **and** add it to the discriminated `Node` union in `models/graph.py` so `Graph.model_validate()` can deserialize it. Add to `NODE_TYPE_NAMES` / `NODE_DESCRIPTIONS` in `editor/src/types/graph.ts`.
 
-- [ ] 2. `ReflectionExecutor`
-  - [ ] 2-1. Implement `ReflectionExecutor` in new `executors/reflection.py` with `execute(node, inputs, context) -> NodeResult`. Flow: (a) gather source data based on `node.source`; (b) build reflection prompt with structured error context; (c) call LLM via provider registry; (d) parse output into `list[CausalPrinciple]` using output normalization; (e) filter by `min_confidence`; (f) deduplicate against existing principles; (g) persist to `PrincipleStore`; (h) return principles as node output.
-  - [ ] 2-2. Implement source data gathering methods:
+- [x] 2. `ReflectionExecutor`
+  - [x] 2-1. Implement `ReflectionExecutor` in new `executors/reflection.py` with `execute(node, inputs, context) -> NodeResult`. Flow: (a) gather source data based on `node.source`; (b) build reflection prompt with structured error context; (c) call LLM via provider registry; (d) parse output into `list[CausalPrinciple]` using output normalization; (e) filter by `min_confidence`; (f) deduplicate against existing principles; (g) persist to `PrincipleStore`; (h) return principles as node output.
+  - [x] 2-2. Implement source data gathering methods:
     - `_gather_last_run(context)` — load `RunStore` summary + events for the most recent run of this workflow. Extract `ErrorRecord` list and successful node outputs for contrast.
     - `_gather_last_n_runs(context, n)` — load summaries for last N runs; identify recurring error patterns (same `node_id` + similar error message across runs).
     - `_gather_from_error_index(context, query)` — query `ErrorMemoryIndex` with a semantic search; return top-K similar errors across all past runs.
     Each method returns a structured text summary suitable for LLM consumption, truncated to a configurable max tokens.
-  - [ ] 2-3. Build the default reflection prompt template. Requirements: instruct the LLM to analyze the error patterns; identify root causes (not symptoms); produce structured principles with condition/action/reason/confidence/tags; include 3 few-shot examples of good vs. bad principles. Output schema enforced via JSON Schema + `OutputNormalizer` (same mechanism used by `LLMOperator.output_json_schema`) — JSON array of `{condition, action, reason, confidence, tags}`.
-  - [ ] 2-4. Implement deduplication logic:
+  - [x] 2-3. Build the default reflection prompt template. Requirements: instruct the LLM to analyze the error patterns; identify root causes (not symptoms); produce structured principles with condition/action/reason/confidence/tags; include 3 few-shot examples of good vs. bad principles. Output schema enforced via JSON Schema + `OutputNormalizer` (same mechanism used by `LLMOperator.output_json_schema`) — JSON array of `{condition, action, reason, confidence, tags}`.
+  - [x] 2-4. Implement deduplication logic:
     - `embedding_similarity`: embed both new and existing principles; merge if cosine similarity > 0.9. On merge: union `source_run_ids`, keep higher `confidence`, update `updated_at`.
     - `exact_key`: merge if `(condition, action)` pair is identical (case-normalized).
     - `none`: no dedup (useful for debugging).
-  - [ ] 2-5. Register `ReflectionExecutor` in `executors/__init__.py` auto-registration.
+  - [x] 2-5. Register `ReflectionExecutor` in scheduler `_register_defaults()` (reflection node type).
 
-- [ ] 3. Principle storage and retrieval
-  - [ ] 3-1. Define `PrincipleStore` helper in `engine/error_memory.py`: wraps `MemoryStore` with principle-specific API. Storage layout: key = `principle:{principle_id}`, scope = `WORKFLOW`, value = serialized `CausalPrinciple` dict.
-  - [ ] 3-2. Implement `PrincipleStore` methods: `store_principles(workflow_id, principles: list[CausalPrinciple])`, `load_principles(workflow_id, tags: list[str] | None = None, min_confidence: float = 0.0) -> list[CausalPrinciple]`, `delete_principle(workflow_id, principle_id)`, `expire_principles(workflow_id, max_age_days: int)`.
-  - [ ] 3-3. Wire principle retrieval into Tier 1's `ErrorContextProvider`: alongside raw error retrieval, load relevant principles from `PrincipleStore` and append a "Learned Principles" section to the prompt context. Principles are formatted as: `"- When {condition}: {action} (confidence: {confidence:.0%})"`. Limited to top-N by confidence, within the `error_memory_max_tokens` budget.
-  - [ ] 3-4. Add principle compaction: when principle count per workflow exceeds a threshold (configurable, default 50), invoke `ConsolidationPipeline` to merge similar principles and drop those below `min_confidence`.
+- [x] 3. Principle storage and retrieval
+  - [x] 3-1. Define `PrincipleStore` helper in `engine/error_memory.py`: wraps `MemoryStore` with principle-specific API. Storage layout: key = `principle:{principle_id}`, scope = `WORKFLOW`, value = serialized `CausalPrinciple` dict.
+  - [x] 3-2. Implement `PrincipleStore` methods: `store_principles(workflow_id, principles: list[CausalPrinciple])`, `load_principles(workflow_id, tags: list[str] | None = None, min_confidence: float = 0.0) -> list[CausalPrinciple]`, `delete_principle(workflow_id, principle_id)`, `expire_principles(workflow_id, max_age_days: int)`.
+  - [x] 3-3. Wire principle retrieval into Tier 1's `ErrorContextProvider`: alongside raw error retrieval, load relevant principles from `PrincipleStore` and append a "Learned Principles" section to the prompt context. Principles are formatted as: `"- When {condition}: {action} (confidence: {confidence:.0%})"`. Limited to top-N by confidence, within the `error_memory_max_tokens` budget.
+  - [ ] 3-4. Add principle compaction (deferred — requires `ConsolidationPipeline` adapter): when principle count per workflow exceeds a threshold (configurable, default 50), invoke `ConsolidationPipeline` to merge similar principles and drop those below `min_confidence`.
 
-- [ ] 4. Reflection scheduling
-  - [ ] 4-1. Add `EngineConfig` field: `reflection_trigger: Literal["on_failure", "on_every_run", "manual", "disabled"] = "disabled"`. When not `disabled`, `RunManager` schedules a reflection after the main run completes.
-  - [ ] 4-2. Implement trigger logic in `RunManager._enrich_and_persist()`: after error capture and indexing, check trigger condition:
+- [x] 4. Reflection scheduling
+  - [x] 4-1. Add `EngineConfig` field: `reflection_trigger: Literal["on_failure", "on_every_run", "manual", "disabled"] = "disabled"`. When not `disabled`, `RunManager` schedules a reflection after the main run completes.
+  - [x] 4-2. Implement trigger logic in `RunManager._enrich_and_persist()`: after error capture and indexing, check trigger condition:
     - `on_failure`: trigger if `record.status == "failed"` or `record.result.errors` is non-empty.
     - `on_every_run`: always trigger.
     - `manual`: never auto-trigger; only via API or explicit `ReflectionNode` in graph.
-  - [ ] 4-3. Implement `RunManager._schedule_reflection(record)`: creates a mini-workflow (single `ReflectionNode` with `source="last_run"`) and schedules it as a background run managed by `RunManager` (via `asyncio.create_task(...)` path) so it is visible in run history/events. Use a canonical run ID prefix (`run_id=f"reflection-{record.run_id}"`) to clearly mark it as a system-generated reflection run.
-  - [ ] 4-4. Guard against infinite recursion: reflection runs (identified by the `"reflection-"` prefix on their `run_id`) never trigger further reflections regardless of trigger setting.
+  - [x] 4-3. Implement `RunManager._schedule_reflection(record)`: creates a mini-workflow (single `ReflectionNode` with `source="last_run"`) and schedules it as a background run managed by `RunManager` (via `asyncio.create_task(...)` path) so it is visible in run history/events. Use a canonical run ID prefix (`run_id=f"reflection-{record.run_id}"`) to clearly mark it as a system-generated reflection run.
+  - [x] 4-4. Guard against infinite recursion: reflection runs (identified by the `"reflection-"` prefix on their `run_id`) never trigger further reflections regardless of trigger setting.
 
-- [ ] 5. Authoring surfaces
-  - [ ] 5-1. Builder API: `wf.reflection(name, source="last_run", reflection_model=None, max_principles=10, ...)` → creates `ReflectionNode` with configured source and output format.
-  - [ ] 5-2. Markdown format: `type: reflection` agent file with optional `## Source` section for source config and `## Reflection Prompt` section for custom system prompt.
-  - [ ] 5-3. Editor integration: `ReflectionNode` in palette under a new "Learning" or "Advanced" category. Config panel shows source selector, model override, max_principles slider. Output preview shows generated principles in a table.
+- [ ] 5. (Deferred to Phase 11) Cross-workflow principle sharing
+  - [ ] 5-1. Keep Tier 2 in Phase 9D workflow-scoped (`PrincipleStore` keyed by workflow).
+  - [ ] 5-2. Move global principle sharing design (`scope=GLOBAL`, cross-workflow retrieval, global endpoints) to [19-1-workflow-experience-memory](19-1-workflow-experience-memory.md).
+  - [ ] 5-3. Add explicit migration guidance in Phase 11 for promotion from workflow-scoped to globally-shareable principles.
 
-- [ ] 6. Testing
-  - [ ] 6-1. Unit tests: `CausalPrinciple` model validation, `ReflectionExecutor` prompt construction, source gathering methods (mock `RunStore`/`ErrorMemoryIndex`), deduplication logic.
-  - [ ] 6-2. Unit tests: `PrincipleStore` CRUD, `expire_principles`, compaction trigger.
-  - [ ] 6-3. Integration test: failed run → reflection triggered → principles stored in `PrincipleStore` → `ErrorContextProvider` retrieves both errors and principles for next run's prompt.
-  - [ ] 6-4. Quality test: verify LLM-generated principles are parseable JSON, have non-empty condition/action/reason fields, and confidence is in [0, 1]. Use a mock LLM with known output for deterministic testing.
+- [x] 6. Graduated repair classification (extends Tier 2 reflection output)
+  - [x] 6-1. Add `repair_level: Literal["retry", "prompt_fix", "parameter_fix", "structural_fix", "redesign"] = "prompt_fix"` field to `CausalPrinciple`. The reflection LLM classifies each principle by the severity of repair needed:
+    - `retry` — transient error, retry policy sufficient (no principle needed).
+    - `prompt_fix` — LLM needs different instructions (existing Tier 3 handles this).
+    - `parameter_fix` — node needs different model, temperature, tool config, or timeout (level 2 repair, extends Tier 3).
+    - `structural_fix` — workflow topology needs changes: add/remove/rewire nodes (signal to future meta-orchestrator).
+    - `redesign` — fundamental approach is wrong, workflow should be rebuilt (signal to future meta-orchestrator).
+  - [x] 6-2. Extend the default reflection prompt template: add few-shot examples for each `repair_level`. Instruct the LLM to classify based on whether the fix can be achieved by changing prompts alone, changing parameters, or changing the graph structure.
+  - [x] 6-3. Add `suggested_parameter_changes: dict[str, Any] = {}` field to `CausalPrinciple` for `parameter_fix` level. Example: `{"model": "gpt-4", "temperature": 0.2}` or `{"tool": "web_search", "timeout": 60}`. The reflection LLM fills this when it identifies a parameter mismatch as the root cause. These suggestions are consumed by 17-3's runtime graph mutation path (not hyperedge conversion).
+  - [x] 6-4. Add `structural_description: str = ""` field to `CausalPrinciple` for `structural_fix` and `redesign` levels. Free-text description of what structural changes are needed (e.g., "add a data validation node before the API call"). This is consumed by the future meta-orchestrator planner.
+  - [x] 6-5. Tests: verify reflection output includes `repair_level`, verify classification heuristics in few-shot examples produce correct levels, verify `suggested_parameter_changes` is populated for parameter_fix principles.
+
+- [ ] 7. Authoring surfaces
+  - [ ] 7-1. Builder API: `wf.reflection(name, source="last_run", reflection_model=None, max_principles=10, ...)` → creates `ReflectionNode` with configured source and output format.
+  - [ ] 7-2. Markdown format: `type: reflection` agent file with optional `## Source` section for source config and `## Reflection Prompt` section for custom system prompt.
+  - [ ] 7-3. Editor integration: `ReflectionNode` in palette under a new "Learning" or "Advanced" category. Config panel shows source selector, model override, max_principles slider. Output preview shows generated principles in a table.
+
+- [x] 8. Testing
+  - [x] 8-1. Unit tests: `CausalPrinciple` model validation, `ReflectionExecutor` prompt construction, source gathering methods (mock `RunStore`/`ErrorMemoryIndex`), deduplication logic.
+  - [x] 8-2. Unit tests: `PrincipleStore` CRUD, `expire_principles`, compaction trigger.
+  - [ ] 8-3. Integration test: failed run → reflection triggered → principles stored in `PrincipleStore` → `ErrorContextProvider` retrieves both errors and principles for next run's prompt.
+  - [x] 8-4. Quality test: verify LLM-generated principles are parseable JSON, have non-empty condition/action/reason fields, and confidence is in [0, 1]. Use a mock LLM with known output for deterministic testing.
 
 ## Primary Files
 
