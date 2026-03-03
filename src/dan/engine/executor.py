@@ -140,6 +140,57 @@ class EngineConfig:
     run_budget: float | None = None
     default_model_policy: Any | None = None
     on_budget_exceeded: str = "warn"  # "switch" | "warn" | "halt"
+    # -- 17-1: Error memory (Tier 1) ------------------------------------------
+    error_memory_enabled: bool = False
+    error_memory_backend: str = "memory"
+    error_memory_max_tokens: int = 500
+    error_memory_top_k: int = 5
+    error_memory_target_tags: list[str] = field(default_factory=lambda: ["error_aware"])
+    error_memory_target_types: list[str] = field(default_factory=lambda: ["llm_operator"])
+    # -- 17-2: Reflection (Tier 2) --------------------------------------------
+    reflection_trigger: str = "disabled"  # "on_failure" | "on_every_run" | "manual" | "disabled"
+    # -- 18-2: Prompt caching -------------------------------------------------
+    prompt_caching_enabled: bool = True
+    cache_enabled: bool = True
+    cache_max_size_mb: int = 100
+    cache_dir: str | None = None
+    semantic_cache_threshold: float = 0.95
+    semantic_cache_ttl_hours: float = 24.0
+    # -- 17-3: Self-evolving rules (Tier 3) -----------------------------------
+    self_evolving_rules_enabled: bool = False
+    self_evolving_approval_required: bool = False
+    generated_rule_base_priority: int = 100
+    generated_rule_ttl_days: int = 30
+    max_generated_rules_per_workflow: int = 20
+    rules_dir: str = "./rules"
+    # -- 18-3: Structured state externalization --------------------------------
+    state_store_enabled: bool = False
+    state_store_dir: str | None = None
+    # -- 18-1: Smart context assembly -----------------------------------------
+    token_budget: int | None = None  # Advisory run-level token budget
+    # -- 18-4: Token analytics ------------------------------------------------
+    optimization_rule_approval_mode: str = "always_approve"  # "always_approve" | "auto_accept"
+    # -- 19-1: Experience memory -----------------------------------------------
+    experience_consolidation_interval: int = 5
+    experience_llm_distillation_enabled: bool = False
+    cross_workflow_learning: bool = False
+    cross_workflow_learning_enabled: bool = False
+    # -- 19-2: Workflow planner ------------------------------------------------
+    planner_model: str | None = None
+    planner_max_retries: int = 3
+    planner_temperature: float = 0.3
+    planner_discovery_top_k: int = 5
+    planner_allow_code_generation: bool = False
+    # -- 19-3: Structural repair -----------------------------------------------
+    structural_repair_enabled: bool = False
+    repair_model: str | None = None
+    max_repair_attempts_per_level: int = 2
+    auto_escalation_enabled: bool = True
+    max_redesigns_per_goal: int = 2
+    # -- 19-4: Meta-orchestrator -----------------------------------------------
+    meta_max_iterations: int = 5
+    meta_timeout_seconds: float | None = None
+    meta_pause_on_redesign: bool = True
 
 
 @dataclass
@@ -175,8 +226,10 @@ class ExecutionContext:
         layer_path: tuple[str, ...] = (),
         # -- 7-2: Multi-provider LLM registry -----------------------------------
         provider_registry: ProviderRegistry | None = None,
+        tool_registry: Any | None = None,
         # -- 9-1: Embedding provider registry -----------------------------------
         embedding_registry: EmbeddingRegistry | None = None,
+        state_store: Any | None = None,
         # -- 14-1: Session memory -----------------------------------------------
         session_id: str | None = None,
         memory_writes: list | None = None,
@@ -200,7 +253,9 @@ class ExecutionContext:
         self._run_id = run_id
         self.layer_path = layer_path
         self.provider_registry = provider_registry
+        self.tool_registry = tool_registry
         self.embedding_registry = embedding_registry
+        self.state_store = state_store
         self.active_loop_scope_id: str | None = None
         self.session_id = session_id
         self._memory_writes: list = memory_writes if memory_writes is not None else []
