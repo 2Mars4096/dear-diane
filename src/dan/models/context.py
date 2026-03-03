@@ -158,3 +158,59 @@ class ContextProjection(BaseModel):
         default_factory=list, description="Artifact URIs to expose"
     )
     description: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Boundary contracts and signals (Plan 14-2)
+# ---------------------------------------------------------------------------
+
+
+class SignalSpec(BaseModel):
+    """Typed upward signal emitted by a child agent.
+
+    Sticky signals propagate to global context; non-sticky signals
+    propagate exactly one level up to the immediate parent.
+    """
+
+    name: str
+    payload_schema: dict[str, Any] = Field(
+        default_factory=dict, description="JSON Schema for the signal payload",
+    )
+    sticky: bool = Field(
+        default=False,
+        description="If true, written to global context; otherwise one level up only",
+    )
+    severity: str = Field(
+        default="info", description="info | warning | error",
+    )
+
+
+class BoundaryContract(BaseModel):
+    """Executable contract at a composite agent boundary.
+
+    Unifies and supersedes ``external_input_schema`` / ``external_output_schema``
+    while remaining backward-compatible (both are optional).
+
+    ``accepts`` defines what the child receives (pass_down projection).
+    ``returns`` defines what the parent receives back (emit_up schema).
+    ``signals`` defines typed upward emissions beyond structured output.
+    ``reads_global`` / ``writes_global`` constrain shared-context access.
+    """
+
+    accepts: dict[str, Any] | None = Field(
+        default=None,
+        description="JSON Schema for pass_down inputs (subsumes external_input_schema)",
+    )
+    returns: dict[str, Any] | None = Field(
+        default=None,
+        description="JSON Schema for emit_up outputs (subsumes external_output_schema)",
+    )
+    signals: list[SignalSpec] = Field(default_factory=list)
+    reads_global: list[str] = Field(
+        default_factory=list,
+        description="Shared-context keys this agent may read",
+    )
+    writes_global: list[str] = Field(
+        default_factory=list,
+        description="Shared-context keys this agent may write",
+    )

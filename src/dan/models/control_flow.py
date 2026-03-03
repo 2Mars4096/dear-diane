@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from dan.models.context import (
+    BoundaryContract,
     CompactionRule,
     ContextDeclaration,
     ContextProjection,
@@ -224,6 +225,9 @@ class WhileLoopNode(NodeBase):
     compaction_rule: CompactionRule | None = None
     failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
     projections: list[ContextProjection] = Field(default_factory=list)
+    boundary_contract: BoundaryContract | None = Field(
+        default=None, description="Formal boundary contract (Plan 14-2)",
+    )
 
 
 class ForEachNode(NodeBase):
@@ -252,6 +256,9 @@ class ForEachNode(NodeBase):
     compaction_rule: CompactionRule | None = None
     failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
     projections: list[ContextProjection] = Field(default_factory=list)
+    boundary_contract: BoundaryContract | None = Field(
+        default=None, description="Formal boundary contract (Plan 14-2)",
+    )
 
 
 class ParallelSubagentsNode(NodeBase):
@@ -292,6 +299,9 @@ class ParallelSubagentsNode(NodeBase):
     compaction_rule: CompactionRule | None = None
     failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
     projections: list[ContextProjection] = Field(default_factory=list)
+    boundary_contract: BoundaryContract | None = Field(
+        default=None, description="Formal boundary contract (Plan 14-2)",
+    )
 
 
 class OrchestratorNode(NodeBase):
@@ -343,6 +353,9 @@ class OrchestratorNode(NodeBase):
     compaction_rule: CompactionRule | None = None
     failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
     projections: list[ContextProjection] = Field(default_factory=list)
+    boundary_contract: BoundaryContract | None = Field(
+        default=None, description="Formal boundary contract (Plan 14-2)",
+    )
 
 
 class CompositeNode(NodeBase):
@@ -376,8 +389,11 @@ class CompositeNode(NodeBase):
         description="JSON Schema for internal control state",
     )
     local_state: NodeLocalState = Field(default_factory=NodeLocalState)
-    # Override NodeBase; same semantics for composite/loop context contract
     read_set: list[ContextDeclaration] = Field(default_factory=list)
     write_set: list[ContextDeclaration] = Field(default_factory=list)
     compaction_rule: CompactionRule | None = None
     projections: list[ContextProjection] = Field(default_factory=list)
+    boundary_contract: BoundaryContract | None = Field(
+        default=None,
+        description="Formal boundary contract for context scoping (Plan 14-2)",
+    )
