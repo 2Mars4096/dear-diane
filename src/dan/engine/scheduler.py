@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
+import os
+import string
 import time as _time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
+from dan.engine.cache import NodeResultCache, SemanticCache
 from dan.engine.checkpoint import CheckpointStore, FileSystemCheckpointStore
 from dan.engine.context_runtime import ArtifactStore, LocalStateManager, ScopedContextView, SharedContextStore
 from dan.engine.events import EngineEvent, EventType
@@ -16,8 +21,11 @@ from dan.engine.executor import EngineConfig, ExecutionContext, ExecutorRegistry
 from dan.engine.memory import MemoryEntry, MemoryScope, MemoryWriteRequest
 from dan.engine.memory_store import FileSystemMemoryStore, MemoryStore, NullMemoryStore
 from dan.engine.state import ExecutionState, NodeStatus
+from dan.engine.state_store import FileSystemStateStore, NullStateStore
+from dan.engine.token_optimization import TokenBudgetAdvisor
 from dan.models.edges import ControlEdge, ContextEdge, DataEdge
 from dan.models.graph import Graph
+from dan.utils.tokens import estimate_tokens
 
 try:
     from dan.models.control_flow import GateNode  # noqa: F401 — added by another agent
@@ -41,6 +49,23 @@ def _is_validation_warning(msg: str) -> bool:
     """True if *msg* is a non-fatal validation warning, not a blocking error."""
     lower = msg.lower()
     return any(p in lower for p in _VALIDATION_WARNING_PATTERNS)
+
+
+def _render_template_for_cache(template: str, variables: dict[str, Any]) -> str:
+    """Render prompt templates with safe fallback semantics for cache keys."""
+    try:
+        return template.format_map(variables)
+    except (KeyError, IndexError, ValueError):
+        return string.Template(template).safe_substitute(variables)
+
+
+def _stable_input_hash(payload: dict[str, Any]) -> str:
+    """Stable hash for node input payloads used in runtime analytics."""
+    try:
+        text = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    except Exception:
+        text = str(payload)
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -264,6 +289,14 @@ class Engine:
         else:
             self.memory_store = NullMemoryStore()
 
+        if self.config.state_store_enabled:
+            state_dir = self.config.state_store_dir or os.path.join(
+                self.config.checkpoint_dir, "state",
+            )
+            self.state_store = FileSystemStateStore(state_dir)
+        else:
+            self.state_store = NullStateStore()
+
         self.provider_registry = self._build_provider_registry()
         self.embedding_registry = self._build_embedding_registry()
         self._register_defaults()
@@ -424,11 +457,60 @@ class Engine:
             ("composite", CompositeExecutor()),
             ("vote", VoteExecutor()),
             ("agent_team", AgentTeamExecutor()),
+            ("reflection", self._make_reflection_executor()),
         ]
 
         for node_type, executor in defaults:
             if not self.executor_registry.has(node_type):
                 self.executor_registry.register(node_type, executor)
+
+    @staticmethod
+    def _make_reflection_executor():
+        from dan.executors.reflection import ReflectionExecutor
+
+        return ReflectionExecutor()
+
+    @staticmethod
+    def _apply_parameter_mutations(graph: Graph, mutations) -> Graph:
+        """Apply ParameterMutation patches to a temporary graph copy.
+        
+        Creates a deep copy of affected nodes with their parameters patched.
+        The original graph object is not modified.
+        """
+        import copy
+
+        mutation_map: dict[str, dict] = {}
+        for m in mutations:
+            if m.target_node_id not in mutation_map:
+                mutation_map[m.target_node_id] = {}
+            mutation_map[m.target_node_id].update(m.changes)
+
+        if not mutation_map:
+            return graph
+
+        patched_nodes = []
+        changed = False
+        for node in graph.nodes:
+            if node.id in mutation_map:
+                node_copy = copy.deepcopy(node)
+                for field_name, value in mutation_map[node.id].items():
+                    if hasattr(node_copy, field_name):
+                        try:
+                            setattr(node_copy, field_name, value)
+                            changed = True
+                        except (AttributeError, ValueError):
+                            logger.debug(
+                                "Cannot set %s=%r on node %s",
+                                field_name, value, node.id,
+                            )
+                patched_nodes.append(node_copy)
+            else:
+                patched_nodes.append(node)
+
+        if not changed:
+            return graph
+
+        return graph.model_copy(update={"nodes": patched_nodes})
 
     async def _emit(self, event: EngineEvent) -> None:
         if self.event_callback is not None:
@@ -436,6 +518,62 @@ class Engine:
                 await self.event_callback(event)
             except Exception:
                 logger.debug("Event callback failed for %s", event.event_type)
+
+    async def _emit_post_run_analytics(
+        self,
+        run_id: str,
+        graph: Graph,
+        node_breakdowns: dict[str, dict[str, int]],
+    ) -> None:
+        """Run waste analysis on accumulated breakdowns and emit analytics events."""
+        if not node_breakdowns:
+            return
+        try:
+            from dan.engine.token_optimization import TokenWasteAnalyzer
+
+            node_configs: dict[str, dict[str, Any]] = {}
+            graph_edges: list[dict[str, Any]] = []
+            for n in graph.nodes:
+                nid = n.id
+                cfg: dict[str, Any] = {"node_type": getattr(n, "node_type", "")}
+                for attr in ("tools", "jit_tool_loading", "prompt_template",
+                             "system_prompt", "input_ports", "agent_context_tools",
+                             "memoize"):
+                    val = getattr(n, attr, None)
+                    if val is not None:
+                        cfg[attr] = val if not hasattr(val, "model_dump") else val.model_dump()
+                node_configs[nid] = cfg
+            for e in graph.edges:
+                graph_edges.append({
+                    "id": e.id,
+                    "source": e.source_node_id,
+                    "target": e.target_node_id,
+                    "edge_type": getattr(e, "edge_type", "data"),
+                    "pass_by_reference": bool(getattr(e, "pass_by_reference", False)),
+                })
+
+            analyzer = TokenWasteAnalyzer()
+            report = analyzer.analyze(
+                node_breakdowns=node_breakdowns,
+                node_configs=node_configs,
+                graph_edges=graph_edges,
+            )
+
+            for finding in report.findings:
+                await self._emit(EngineEvent(
+                    event_type=EventType.WASTE_DETECTED,
+                    run_id=run_id,
+                    node_id=finding.node_id,
+                    data=finding.to_dict(),
+                ))
+
+            await self._emit(EngineEvent(
+                event_type=EventType.OPTIMIZATION_REPORT_READY,
+                run_id=run_id,
+                data=report.to_dict(),
+            ))
+        except Exception:
+            logger.debug("Post-run analytics failed", exc_info=True)
 
     # ------------------------------------------------------------------
     # Public API
@@ -582,11 +720,58 @@ class Engine:
             data={"node_count": len(graph.nodes)},
         ))
 
-        # -- 15-1: Hyperedge resolver for this graph ----------------------------
+        # -- 15-1 + 17-3: Hyperedge resolver with self-evolving rules ----------
         hyperedge_resolver = None
-        if graph.hyperedges:
+        effective_hyperedges = list(graph.hyperedges)
+        if getattr(self.config, "self_evolving_rules_enabled", False) and workflow_id:
+            rlm = None
+            try:
+                from dan.engine.rule_generator import RuleLifecycleManager
+                rlm = RuleLifecycleManager(
+                    base_dir=getattr(self.config, "rules_dir", "./rules"),
+                )
+                generated = rlm.get_active_hyperedges(workflow_id)
+                if generated:
+                    effective_hyperedges = list(graph.hyperedges) + generated
+                    logger.debug(
+                        "Injected %d generated rules for workflow %s",
+                        len(generated), workflow_id,
+                    )
+                    await self._emit(EngineEvent(
+                        event_type=EventType.RULE_ACTIVATED,
+                        run_id=state.run_id,
+                        data={
+                            "rule_count": len(generated),
+                            "workflow_id": workflow_id,
+                            "tier": "rules",
+                        },
+                    ))
+            except Exception:
+                logger.debug(
+                    "Failed to load generated rules for workflow %s",
+                    workflow_id, exc_info=True,
+                )
+            # -- 17-3 task 6-4: Apply parameter mutations --------------------------
+            if rlm is not None:
+                try:
+                    mutations = rlm.get_active_mutations(workflow_id)
+                    if mutations:
+                        import copy
+                        graph = self._apply_parameter_mutations(graph, mutations)
+                        logger.debug(
+                            "Applied %d parameter mutations for workflow %s",
+                            len(mutations), workflow_id,
+                        )
+                except Exception:
+                    logger.debug(
+                        "Failed to apply parameter mutations for workflow %s",
+                        workflow_id, exc_info=True,
+                    )
+        if effective_hyperedges:
             from dan.engine.hyperedge_runtime import HyperedgeResolver
-            hyperedge_resolver = HyperedgeResolver(graph)
+            from dan.models.graph import Graph as _Graph
+            augmented = graph.model_copy(update={"hyperedges": effective_hyperedges})
+            hyperedge_resolver = HyperedgeResolver(augmented)
 
         # -- 15-3: Model selector & cost tracker --------------------------------
         from dan.providers.capabilities import ModelCapabilityRegistry
@@ -605,6 +790,23 @@ class Engine:
             cost_tracker=cost_tracker,
             capability_registry=ModelCapabilityRegistry(),
         )
+        node_result_cache = NodeResultCache(
+            max_size_mb=getattr(self.config, "cache_max_size_mb", 100),
+            cache_dir=getattr(self.config, "cache_dir", None),
+            enabled=getattr(self.config, "cache_enabled", True),
+        )
+        semantic_cache = SemanticCache(
+            embedding_registry=self.embedding_registry,
+            embedding_model=getattr(self.config, "default_embedding_model", ""),
+            threshold=getattr(self.config, "semantic_cache_threshold", 0.95),
+            ttl_hours=getattr(self.config, "semantic_cache_ttl_hours", 24.0),
+            enabled=getattr(self.config, "cache_enabled", True),
+            cache_dir=getattr(self.config, "cache_dir", None),
+        )
+        budget_advisor = TokenBudgetAdvisor(
+            total_budget=getattr(self.config, "token_budget", None),
+            strategy="adaptive",
+        )
 
         context = self._make_context(
             state, shared_context, artifacts, local_state, graph,
@@ -614,6 +816,16 @@ class Engine:
             model_selector=model_selector,
             cost_tracker=cost_tracker,
         )
+        context._node_result_cache = node_result_cache
+        context._semantic_cache = semantic_cache
+        context._token_budget_advisor = budget_advisor
+
+        # 17-1: Attach error context provider so LLMExecutor can inject
+        # past-failure context into prompts.
+        context._workflow_id = workflow_id or ""
+        ecp = getattr(self, "error_context_provider", None)
+        if ecp is not None:
+            context._error_context_provider = ecp
 
         global_sem: asyncio.Semaphore | None = None
         if self.config.max_concurrency is not None and self.config.max_concurrency > 0:
@@ -660,6 +872,20 @@ class Engine:
             context, workflow_id, session_id, state.run_id,
         )
         result = self._build_result(graph, state)
+        result.metadata["__run_cache__"] = {
+            "memoization": node_result_cache.stats(),
+            "semantic": semantic_cache.stats(),
+            "provider": cost_tracker.cache_summary(),
+        }
+        node_breakdowns = cost_tracker.all_breakdowns()
+        result.metadata["__cost_tracker__"] = {
+            "node_breakdowns": node_breakdowns,
+            "savings": cost_tracker.all_savings(),
+            "savings_summary": cost_tracker.savings_summary(),
+        }
+
+        await self._emit_post_run_analytics(state.run_id, graph, node_breakdowns)
+
         elapsed = round(_time.time() - run_start, 2)
         total_usage = self._aggregate_usage(state)
         evt_type = EventType.RUN_COMPLETED if result.success else EventType.RUN_FAILED
@@ -670,6 +896,7 @@ class Engine:
                 "success": result.success,
                 "errors": result.errors,
                 "elapsed_seconds": elapsed,
+                "cache_stats": result.metadata["__run_cache__"],
                 **total_usage,
             },
         ))
@@ -791,17 +1018,24 @@ class Engine:
                 if has_state_schema:
                     context.local_state.update_scope(gate_id, {"iteration": iteration})
 
+                continue_data = state.port_data.get_node_outputs(gate_id).get("continue")
+                if continue_data is None:
+                    continue_data = state.port_data.get_node_outputs(gate_id).get("loop")
+
+                _iter_tokens = estimate_tokens(
+                    json.dumps(continue_data, default=str),
+                ) if continue_data is not None else 0
                 await self._emit(EngineEvent(
                     event_type=EventType.ITERATION_STARTED,
                     run_id=state.run_id,
                     node_id=gate_id,
                     node_type="gate",
-                    data={"iteration": iteration, "max_iterations": max_iterations},
+                    data={
+                        "iteration": iteration,
+                        "max_iterations": max_iterations,
+                        "context_tokens": _iter_tokens,
+                    },
                 ))
-
-                continue_data = state.port_data.get_node_outputs(gate_id).get("continue")
-                if continue_data is None:
-                    continue_data = state.port_data.get_node_outputs(gate_id).get("loop")
 
                 # -- 16-4: artifact extraction & feedback filtering --------
                 if isinstance(continue_data, dict):
@@ -909,12 +1143,6 @@ class Engine:
             ))
             return
 
-        state.mark(node_id, NodeStatus.RUNNING)
-        await self._emit(EngineEvent(
-            event_type=EventType.NODE_STARTED, run_id=state.run_id,
-            node_id=node_id, node_type=node_type_str,
-        ))
-
         inputs = state.port_data.resolve_inputs(node_id, graph)
 
         for edge in graph.edges_to(node_id):
@@ -969,6 +1197,18 @@ class Engine:
                     if _k not in inputs:
                         inputs[_k] = _scope.get(_k, _defaults.get(_k))
 
+        state.mark(node_id, NodeStatus.RUNNING)
+        await self._emit(EngineEvent(
+            event_type=EventType.NODE_STARTED,
+            run_id=state.run_id,
+            node_id=node_id,
+            node_type=node_type_str,
+            data={
+                "input_hash": _stable_input_hash(inputs),
+                "input_port_count": len(inputs),
+            },
+        ))
+
         if node_type_str is None or not self.executor_registry.has(node_type_str):
             state.mark(node_id, NodeStatus.FAILED)
             state.node_errors[node_id] = f"No executor for node_type '{node_type_str}'"
@@ -980,16 +1220,184 @@ class Engine:
             return
 
         executor = self.executor_registry.get(node_type_str)
+        cache_key: str | None = None
+        semantic_prompt: str | None = None
+        advisory_tokens: int | None = None
+        used_node_cache = False
+        used_semantic_cache = False
+        result: NodeResult
 
-        try:
-            result: NodeResult = await executor.execute(node, inputs, context)
-        except Exception as exc:
-            logger.exception("Executor raised for node '%s'", node_id)
-            result = NodeResult(
-                outputs={},
-                status=NodeStatus.FAILED,
-                error=f"Executor exception: {exc}",
+        node_cache = getattr(context, "_node_result_cache", None)
+        semantic_cache = getattr(context, "_semantic_cache", None)
+        budget_advisor = getattr(context, "_token_budget_advisor", None)
+
+        if node_type_str == "llm_operator" and budget_advisor is not None:
+            remaining = sum(
+                1 for s in state.node_statuses.values()
+                if s in (NodeStatus.PENDING, NodeStatus.RUNNING)
             )
+            advisory_tokens = budget_advisor.compute_advisory(
+                node_id=node_id,
+                node_type=node_type_str,
+                historical_usage=state.node_metadata.get(node_id, {}).get("usage", {}).get("prompt_tokens", 0)
+                if isinstance(state.node_metadata.get(node_id, {}), dict)
+                else None,
+                priority=int(getattr(node, "metadata", {}).get("priority", 5) or 5)
+                if isinstance(getattr(node, "metadata", {}), dict)
+                else 5,
+                remaining_nodes=max(1, remaining),
+            )
+            if advisory_tokens is not None and getattr(node, "target_input_tokens", None) is None:
+                try:
+                    setattr(node, "target_input_tokens", advisory_tokens)
+                except Exception:
+                    pass
+            if advisory_tokens is not None:
+                await self._emit(EngineEvent(
+                    event_type=EventType.BUDGET_ADVISORY,
+                    run_id=state.run_id,
+                    node_id=node_id,
+                    node_type=node_type_str,
+                    data={
+                        "advisory_tokens": advisory_tokens,
+                        "phase": "pre_execution",
+                    },
+                ))
+
+        if (
+            node_cache is not None
+            and getattr(context.config, "cache_enabled", True)
+            and bool(getattr(node, "memoize", False))
+        ):
+            policy_signature = (
+                f"{getattr(context.config, 'hyperedge_enforcement', 'off')}:"
+                f"{getattr(context.config, 'boundary_enforcement', False)}"
+            )
+            cache_key = node_cache.compute_cache_key(
+                node, inputs, policy_signature=policy_signature,
+            )
+            cached_result, reason = node_cache.lookup(cache_key)
+            if cached_result is not None:
+                result = cached_result
+                used_node_cache = True
+                usage = (
+                    result.metadata.get("usage", {})
+                    if isinstance(result.metadata, dict)
+                    else {}
+                )
+                saved_tokens = int(usage.get("total_tokens", 0) or 0)
+                saved_cost = float(
+                    result.metadata.get("cost", 0.0)
+                    if isinstance(result.metadata, dict)
+                    else 0.0
+                )
+                if (
+                    context.cost_tracker is not None
+                    and hasattr(context.cost_tracker, "record_cache_result")
+                ):
+                    context.cost_tracker.record_cache_result(
+                        hit=True, semantic=False,
+                        tokens_saved=saved_tokens, cost_saved=saved_cost,
+                    )
+                await self._emit(EngineEvent(
+                    event_type=EventType.CACHE_HIT,
+                    run_id=state.run_id,
+                    node_id=node_id,
+                    node_type=node_type_str,
+                    data={
+                        "cache_key_hash": cache_key,
+                        "tokens_saved": saved_tokens,
+                        "cost_saved": saved_cost,
+                        "source": "memoization",
+                    },
+                ))
+            else:
+                if reason == "expired":
+                    await self._emit(EngineEvent(
+                        event_type=EventType.CACHE_INVALIDATED,
+                        run_id=state.run_id,
+                        node_id=node_id,
+                        node_type=node_type_str,
+                        data={"cache_key_hash": cache_key, "reason": "ttl_expired"},
+                    ))
+                if (
+                    context.cost_tracker is not None
+                    and hasattr(context.cost_tracker, "record_cache_result")
+                ):
+                    context.cost_tracker.record_cache_result(hit=False, semantic=False)
+                await self._emit(EngineEvent(
+                    event_type=EventType.CACHE_MISS,
+                    run_id=state.run_id,
+                    node_id=node_id,
+                    node_type=node_type_str,
+                    data={"cache_key_hash": cache_key, "reason": reason},
+                ))
+
+        if (
+            not used_node_cache
+            and semantic_cache is not None
+            and getattr(context.config, "cache_enabled", True)
+            and node_type_str == "llm_operator"
+            and bool(getattr(node, "semantic_cache", False))
+            and float(getattr(node, "temperature", 0.7)) == 0.0
+        ):
+            semantic_prompt = _render_template_for_cache(
+                getattr(node, "prompt_template", ""), inputs,
+            )
+            semantic_hit = await semantic_cache.get(
+                semantic_prompt,
+                threshold=getattr(context.config, "semantic_cache_threshold", 0.95),
+            )
+            if semantic_hit is not None:
+                result = semantic_hit
+                used_semantic_cache = True
+                usage = (
+                    result.metadata.get("usage", {})
+                    if isinstance(result.metadata, dict)
+                    else {}
+                )
+                saved_tokens = int(usage.get("total_tokens", 0) or 0)
+                saved_cost = float(
+                    result.metadata.get("cost", 0.0)
+                    if isinstance(result.metadata, dict)
+                    else 0.0
+                )
+                if (
+                    context.cost_tracker is not None
+                    and hasattr(context.cost_tracker, "record_cache_result")
+                ):
+                    context.cost_tracker.record_cache_result(
+                        hit=True, semantic=True,
+                        tokens_saved=saved_tokens, cost_saved=saved_cost,
+                    )
+                await self._emit(EngineEvent(
+                    event_type=EventType.SEMANTIC_CACHE_HIT,
+                    run_id=state.run_id,
+                    node_id=node_id,
+                    node_type=node_type_str,
+                    data={
+                        "threshold": getattr(context.config, "semantic_cache_threshold", 0.95),
+                        "tokens_saved": saved_tokens,
+                        "cost_saved": saved_cost,
+                    },
+                ))
+            else:
+                if (
+                    context.cost_tracker is not None
+                    and hasattr(context.cost_tracker, "record_cache_result")
+                ):
+                    context.cost_tracker.record_cache_result(hit=False, semantic=True)
+
+        if not used_node_cache and not used_semantic_cache:
+            try:
+                result = await executor.execute(node, inputs, context)
+            except Exception as exc:
+                logger.exception("Executor raised for node '%s'", node_id)
+                result = NodeResult(
+                    outputs={},
+                    status=NodeStatus.FAILED,
+                    error=f"Executor exception: {exc}",
+                )
 
         # -- 15-1: Hyperedge post-output & validation hooks --------------------
         if (
@@ -1035,6 +1443,91 @@ class Engine:
                         "Hyperedge hook error on node '%s': %s", node_id, he_exc,
                     )
 
+        if (
+            node_cache is not None
+            and cache_key is not None
+            and not used_node_cache
+            and result.status == NodeStatus.COMPLETED
+            and bool(getattr(node, "memoize", False))
+            and getattr(context.config, "cache_enabled", True)
+        ):
+            node_cache.put(
+                cache_key,
+                result,
+                ttl=getattr(node, "cache_ttl", None),
+            )
+
+        if (
+            semantic_cache is not None
+            and semantic_prompt is not None
+            and not used_semantic_cache
+            and result.status == NodeStatus.COMPLETED
+            and node_type_str == "llm_operator"
+            and bool(getattr(node, "semantic_cache", False))
+            and float(getattr(node, "temperature", 0.7)) == 0.0
+            and getattr(context.config, "cache_enabled", True)
+        ):
+            await semantic_cache.put(
+                semantic_prompt,
+                result,
+                model=getattr(node, "model", ""),
+                ttl_hours=getattr(context.config, "semantic_cache_ttl_hours", 24.0),
+            )
+
+        if node_type_str == "llm_operator" and budget_advisor is not None:
+            usage = (
+                result.metadata.get("usage", {})
+                if isinstance(result.metadata, dict)
+                else {}
+            )
+            actual_prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+            budget_advisor.record_actual(node_id, actual_prompt_tokens)
+            if advisory_tokens is not None:
+                await self._emit(EngineEvent(
+                    event_type=EventType.BUDGET_ADVISORY,
+                    run_id=state.run_id,
+                    node_id=node_id,
+                    node_type=node_type_str,
+                    data={
+                        "advisory_tokens": advisory_tokens,
+                        "actual_tokens": actual_prompt_tokens,
+                        "phase": "post_execution",
+                    },
+                ))
+
+        if getattr(context, "state_store", None) is not None:
+            usage = (
+                result.metadata.get("usage", {})
+                if isinstance(result.metadata, dict)
+                else {}
+            )
+            state_payload = {
+                "node_id": node_id,
+                "node_type": node_type_str,
+                "status": result.status.value,
+                "input_tokens": int(usage.get("prompt_tokens", 0) or 0),
+                "output_tokens": int(usage.get("completion_tokens", 0) or 0),
+                "output_preview": str(result.outputs)[:200],
+                "error": result.error,
+            }
+            try:
+                await context.state_store.write(
+                    state.run_id, f"node:{node_id}", state_payload,
+                )
+                await self._emit(EngineEvent(
+                    event_type=EventType.STATE_EXTERNALIZED,
+                    run_id=state.run_id,
+                    node_id=node_id,
+                    node_type=node_type_str,
+                    data={
+                        "scope": state.run_id,
+                        "keys_written": [f"node:{node_id}"],
+                        "tokens_saved": 0,
+                    },
+                ))
+            except Exception:
+                logger.debug("Failed to externalize node state for %s", node_id, exc_info=True)
+
         state.mark(node_id, result.status)
         if result.error:
             state.node_errors[node_id] = result.error
@@ -1071,6 +1564,17 @@ class Engine:
                     node_id=node_id, node_type=node_type_str,
                     data={"outputs": result.outputs},
                 ))
+
+            if node_type_str == "llm_operator" and context.cost_tracker is not None:
+                bd = context.cost_tracker.get_breakdown(node_id)
+                if bd is not None:
+                    await self._emit(EngineEvent(
+                        event_type=EventType.TOKEN_BREAKDOWN_RECORDED,
+                        run_id=state.run_id,
+                        node_id=node_id,
+                        node_type=node_type_str,
+                        data=bd.to_dict(),
+                    ))
 
     def _should_skip(
         self, node_id: str, graph: Graph, state: ExecutionState
@@ -1142,11 +1646,32 @@ class Engine:
             value = outputs.get(edge.source_port)
             if value is None:
                 continue
+            value_to_write = value
+            if edge.pass_by_reference:
+                uri = (
+                    f"artifact://{getattr(context.state, 'run_id', 'run')}/"
+                    f"{node_id}/{edge.source_port}/{int(_time.time() * 1000)}"
+                )
+                try:
+                    ref = context.artifacts.store(
+                        uri=uri,
+                        data=value,
+                        description=f"ContextEdge ref {edge.id} ({node_id}.{edge.source_port})",
+                    )
+                    value_to_write = {
+                        "__ref__": True,
+                        "uri": ref.uri,
+                        "summary": str(value)[:200],
+                        "tokens": estimate_tokens(str(value)),
+                        "source_edge_id": edge.id,
+                    }
+                except Exception:
+                    value_to_write = value
             try:
                 if edge.mode.value == "write":
-                    context.shared_context.write(edge.context_key, value)
+                    context.shared_context.write(edge.context_key, value_to_write)
                 elif edge.mode.value == "append":
-                    context.shared_context.append(edge.context_key, value)
+                    context.shared_context.append(edge.context_key, value_to_write)
             except KeyError:
                 logger.warning(
                     "Context write failed for key '%s' from node '%s'",
@@ -1168,6 +1693,11 @@ class Engine:
         model_selector: Any | None = None,
         cost_tracker: Any | None = None,
     ) -> ExecutionContext:
+        tool_registry = None
+        if self.executor_registry.has("tool_operator"):
+            tool_exec = self.executor_registry.get("tool_operator")
+            tool_registry = getattr(tool_exec, "registry", None)
+
         async def run_subgraph(
             sub_graph_key: str,
             inputs: dict[str, Any],
@@ -1206,7 +1736,9 @@ class Engine:
             run_id=state.run_id,
             layer_path=layer_path,
             provider_registry=self.provider_registry,
+            tool_registry=tool_registry,
             embedding_registry=self.embedding_registry,
+            state_store=self.state_store,
             session_id=session_id,
             memory_writes=memory_writes,
             short_term_memory=short_term_memory,
