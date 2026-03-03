@@ -268,12 +268,22 @@ function RunRefBlock({
       {cfg.icon}
       <span>{cfg.text}</span>
       {runRef.status !== "running" && (
-        <button
-          onClick={() => useGraphStore.getState().focusLogPanel()}
-          className="ml-auto text-[10px] underline opacity-70 hover:opacity-100"
-        >
-          View logs
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => useGraphStore.getState().focusLogPanel()}
+            className="text-[10px] underline opacity-70 hover:opacity-100"
+          >
+            View logs
+          </button>
+          {runRef.runId && (
+            <button
+              onClick={() => useGraphStore.getState().focusHistoryPanel(runRef.runId)}
+              className="text-[10px] underline opacity-70 hover:opacity-100"
+            >
+              View history
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

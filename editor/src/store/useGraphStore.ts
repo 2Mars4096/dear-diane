@@ -270,6 +270,11 @@ interface GraphState {
   // -- 12-1: Log panel focus
   logFocusCounter: number;
   focusLogPanel: () => void;
+
+  // -- 13-1: History panel focus
+  historyFocusCounter: number;
+  historyFocusRunId: string | null;
+  focusHistoryPanel: (runId?: string) => void;
 }
 
 // -- 7-4: Cost estimation (mirrors src/dan/providers/costs.py) ------------------
@@ -426,6 +431,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
   chatMode: "agent" as const,
   chatFocusTrigger: 0,
   logFocusCounter: 0,
+  historyFocusCounter: 0,
+  historyFocusRunId: null,
 
   // -- 6-9: Tab state
   tabs: [],
@@ -1597,6 +1604,10 @@ export const useGraphStore = create<GraphState>((set, get) => {
   // -- 10-9 / 12-2: Multi-mode chat
   setChatMode: (mode) => set({ chatMode: mode }),
   focusLogPanel: () => set((s) => ({ logFocusCounter: s.logFocusCounter + 1 })),
+  focusHistoryPanel: (runId) => set((s) => ({
+    historyFocusCounter: s.historyFocusCounter + 1,
+    historyFocusRunId: runId ?? null,
+  })),
 
   openBuildWithAI: async () => {
     const autoId = `build-${Math.random().toString(36).slice(2, 8)}`;

@@ -135,6 +135,91 @@ export const submitHumanInput = (
     },
   );
 
+// -- Run history & comparison ------------------------------------------------
+
+export interface RunListFilters {
+  workflow_id?: string;
+  status?: string;
+  after?: number;
+  before?: number;
+  limit?: number;
+  offset?: number;
+}
+
+export interface RunSummary extends RunInfo {
+  total_prompt_tokens?: number;
+  total_completion_tokens?: number;
+  total_tokens?: number;
+  total_cost?: number | null;
+  elapsed_seconds?: number | null;
+  node_usage?: Record<string, Record<string, number>>;
+}
+
+export interface RunListResponse {
+  runs: RunSummary[];
+  total: number;
+}
+
+export const listRuns = (filters: RunListFilters = {}) => {
+  const params = new URLSearchParams();
+  if (filters.workflow_id) params.set("workflow_id", filters.workflow_id);
+  if (filters.status) params.set("status", filters.status);
+  if (filters.after != null) params.set("after", String(filters.after));
+  if (filters.before != null) params.set("before", String(filters.before));
+  if (filters.limit != null) params.set("limit", String(filters.limit));
+  if (filters.offset != null) params.set("offset", String(filters.offset));
+  const qs = params.toString();
+  return request<RunListResponse>(`/runs${qs ? `?${qs}` : ""}`);
+};
+
+export interface RunEventsResponse {
+  events: Array<Record<string, unknown>>;
+  source: "live" | "persisted" | "memory";
+}
+
+export const getRunEvents = (
+  runId: string,
+  filters?: { node_id?: string; event_type?: string },
+) => {
+  const params = new URLSearchParams();
+  if (filters?.node_id) params.set("node_id", filters.node_id);
+  if (filters?.event_type) params.set("event_type", filters.event_type);
+  const qs = params.toString();
+  return request<RunEventsResponse>(`/runs/${runId}/events${qs ? `?${qs}` : ""}`);
+};
+
+export interface NodeDiff {
+  node_id: string;
+  status_a: string | null;
+  status_b: string | null;
+  status_changed: boolean;
+  tokens_a: number;
+  tokens_b: number;
+  token_delta: number;
+  prompt_tokens_a: number;
+  prompt_tokens_b: number;
+  completion_tokens_a: number;
+  completion_tokens_b: number;
+}
+
+export interface CompareRunsResponse {
+  run_a: RunSummary;
+  run_b: RunSummary;
+  summary: {
+    elapsed_delta: number;
+    token_delta: number;
+    cost_delta: number;
+    status_a: string;
+    status_b: string;
+  };
+  node_diffs: NodeDiff[];
+}
+
+export const compareRuns = (runA: string, runB: string) =>
+  request<CompareRunsResponse>(
+    `/runs/compare?run_a=${encodeURIComponent(runA)}&run_b=${encodeURIComponent(runB)}`,
+  );
+
 // -- Mention context ---------------------------------------------------------
 
 export const listWorkspaceFiles = () =>

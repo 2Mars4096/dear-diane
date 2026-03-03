@@ -200,9 +200,9 @@ export default function RunOutputBlock({ events, runRef }: RunOutputBlockProps) 
         </div>
       )}
 
-      {/* View logs link */}
+      {/* View logs / history links */}
       {finalStatus !== "running" && (
-        <div className="border-t border-gray-100 px-3 py-1.5">
+        <div className="border-t border-gray-100 px-3 py-1.5 flex items-center gap-3">
           <button
             onClick={() => {
               useGraphStore.getState().focusLogPanel();
@@ -212,6 +212,16 @@ export default function RunOutputBlock({ events, runRef }: RunOutputBlockProps) 
           >
             View full logs
           </button>
+          {runRef?.runId && (
+            <button
+              onClick={() => {
+                useGraphStore.getState().focusHistoryPanel(runRef.runId);
+              }}
+              className="text-[10px] text-violet-600 hover:text-violet-800 underline opacity-70 hover:opacity-100 transition"
+            >
+              View in History
+            </button>
+          )}
         </div>
       )}
     </div>

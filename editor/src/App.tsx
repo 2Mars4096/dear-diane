@@ -7,6 +7,7 @@ import GraphCanvas from "./components/GraphCanvas";
 import ConfigPanel from "./components/ConfigPanel";
 import LogPanel from "./components/LogPanel";
 import OutputPreview from "./components/OutputPreview";
+import RunHistoryPanel from "./components/RunHistoryPanel";
 import BreadcrumbBar from "./components/BreadcrumbBar";
 import PortMappingOverlay from "./components/PortMappingOverlay";
 import ToastContainer from "./components/ToastContainer";
@@ -16,7 +17,7 @@ import CommandPalette from "./components/CommandPalette";
 import HumanInputDialog from "./components/HumanInputDialog";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
-type BottomTab = "logs" | "output";
+type BottomTab = "logs" | "output" | "history";
 
 const MIN_PANEL_HEIGHT = 80;
 const MAX_PANEL_HEIGHT = 600;
@@ -26,6 +27,7 @@ export default function App() {
   const loadGraphList = useGraphStore((s) => s.loadGraphList);
   const restoreTabs = useGraphStore((s) => s.restoreTabs);
   const logFocusCounter = useGraphStore((s) => s.logFocusCounter);
+  const historyFocusCounter = useGraphStore((s) => s.historyFocusCounter);
   const [bottomTab, setBottomTab] = useState<BottomTab>("logs");
   const [panelHeight, setPanelHeight] = useState(DEFAULT_PANEL_HEIGHT);
   const dragging = useRef(false);
@@ -59,6 +61,10 @@ export default function App() {
   useEffect(() => {
     if (logFocusCounter > 0) setBottomTab("logs");
   }, [logFocusCounter]);
+
+  useEffect(() => {
+    if (historyFocusCounter > 0) setBottomTab("history");
+  }, [historyFocusCounter]);
 
   return (
     <ReactFlowProvider>
@@ -110,9 +116,21 @@ export default function App() {
                 >
                   Output
                 </button>
+                <button
+                  onClick={() => setBottomTab("history")}
+                  className={`px-3 py-1.5 text-[11px] font-medium border-b-2 ${
+                    bottomTab === "history"
+                      ? "border-indigo-500 text-indigo-600"
+                      : "border-transparent text-gray-400 hover:text-gray-600"
+                  }`}
+                >
+                  History
+                </button>
               </div>
               <div className="flex-1 overflow-hidden">
-                {bottomTab === "logs" ? <LogPanel /> : <OutputPreview />}
+                {bottomTab === "logs" && <LogPanel />}
+                {bottomTab === "output" && <OutputPreview />}
+                {bottomTab === "history" && <RunHistoryPanel />}
               </div>
             </div>
           </div>
