@@ -15,9 +15,11 @@ from dan.validation.graph import validate_graph
 
 __all__ = [
     "AddEdge",
+    "AddHyperedge",
     "AddNode",
     "ApplySkill",
     "EditEdge",
+    "EditHyperedge",
     "EditNode",
     "ExpandPattern",
     "GraphMutator",
@@ -27,6 +29,7 @@ __all__ = [
     "OperationError",
     "PATTERN_LIBRARY",
     "RemoveEdge",
+    "RemoveHyperedge",
     "RemoveNode",
     "ReplaceSubgraph",
     "SetNodePosition",
@@ -111,6 +114,22 @@ class ApplySkill(BaseModel):
     target_tag: str = ""
 
 
+class AddHyperedge(BaseModel):
+    op: Literal["add_hyperedge"] = "add_hyperedge"
+    hyperedge: dict[str, Any]
+
+
+class RemoveHyperedge(BaseModel):
+    op: Literal["remove_hyperedge"] = "remove_hyperedge"
+    hyperedge_id: str
+
+
+class EditHyperedge(BaseModel):
+    op: Literal["edit_hyperedge"] = "edit_hyperedge"
+    hyperedge_id: str
+    updates: dict[str, Any]
+
+
 GraphOperation = Annotated[
     Union[
         AddNode,
@@ -123,6 +142,9 @@ GraphOperation = Annotated[
         ReplaceSubgraph,
         ExpandPattern,
         ApplySkill,
+        AddHyperedge,
+        RemoveHyperedge,
+        EditHyperedge,
     ],
     Field(discriminator="op"),
 ]
@@ -169,6 +191,9 @@ _OP_SORT_ORDER: dict[str, int] = {
     "set_position": 1,
     "edit_node": 2,
     "apply_skill": 2,
+    "add_hyperedge": 2,
+    "edit_hyperedge": 2,
+    "remove_hyperedge": 2,
     "add_edge": 3,
     "edit_edge": 4,
     "remove_edge": 5,
@@ -964,6 +989,12 @@ class GraphMutator:
                 return self._op_expand_pattern(graph, op, diagnostics)
             if isinstance(op, ApplySkill):
                 return self._op_apply_skill(graph, op)
+            if isinstance(op, AddHyperedge):
+                return self._op_add_hyperedge(graph, op)
+            if isinstance(op, RemoveHyperedge):
+                return self._op_remove_hyperedge(graph, op)
+            if isinstance(op, EditHyperedge):
+                return self._op_edit_hyperedge(graph, op)
             return f"Unknown operation type: {op.op}"
         except Exception as exc:
             logger.exception("Unexpected error applying %s", op.op)
@@ -1148,6 +1179,26 @@ class GraphMutator:
         skill_text = skill["text"]
         inject_as = skill.get("inject_as", "system")
 
+        if "hyperedges" in graph or not graph.get("nodes"):
+            he_dict: dict[str, Any] = {
+                "id": f"skill_{op.skill}_{uuid.uuid4().hex[:8]}",
+                "name": skill.get("name", op.skill),
+                "hyperedge_type": "skill",
+                "hook": "pre_prompt",
+                "content": skill_text,
+                "enabled": True,
+                "propagate": True,
+            }
+            if op.target_nodes:
+                he_dict["attach_to"] = list(op.target_nodes)
+            elif op.target_tag:
+                he_dict["attach_to_tags"] = [op.target_tag]
+            else:
+                he_dict["attach_to_tags"] = skill.get("tags", [])
+
+            graph.setdefault("hyperedges", []).append(he_dict)
+            return None
+
         nodes = graph.get("nodes", [])
         matched = []
         for node in nodes:
@@ -1176,6 +1227,29 @@ class GraphMutator:
                     node["prompt_template"] = f"{skill_text}\n\n{existing}" if existing else skill_text
 
         return None
+
+    def _op_add_hyperedge(self, graph: dict[str, Any], op: AddHyperedge) -> str | None:
+        hyperedges = graph.setdefault("hyperedges", [])
+        he_id = op.hyperedge.get("id")
+        if he_id and any(h.get("id") == he_id for h in hyperedges):
+            return f"Hyperedge '{he_id}' already exists"
+        hyperedges.append(copy.deepcopy(op.hyperedge))
+        return None
+
+    def _op_remove_hyperedge(self, graph: dict[str, Any], op: RemoveHyperedge) -> str | None:
+        hyperedges = graph.get("hyperedges", [])
+        before = len(hyperedges)
+        graph["hyperedges"] = [h for h in hyperedges if h.get("id") != op.hyperedge_id]
+        if len(graph["hyperedges"]) == before:
+            return f"Hyperedge '{op.hyperedge_id}' not found"
+        return None
+
+    def _op_edit_hyperedge(self, graph: dict[str, Any], op: EditHyperedge) -> str | None:
+        for h in graph.get("hyperedges", []):
+            if h.get("id") == op.hyperedge_id:
+                h.update(op.updates)
+                return None
+        return f"Hyperedge '{op.hyperedge_id}' not found"
 
     def _op_expand_pattern(
         self,

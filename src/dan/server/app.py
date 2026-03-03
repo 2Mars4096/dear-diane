@@ -1627,6 +1627,70 @@ async def resume_run(run_id: str, req: ResumeRequest):
     return {"run_id": record.run_id, "status": record.status.value}
 
 
+@app.get("/api/runs/compare")
+async def compare_runs(run_a: str, run_b: str):
+    """Align two runs by node execution order and compute per-node diffs."""
+    rm = _require_run_manager()
+    rec_a = rm.get_run(run_a)
+    rec_b = rm.get_run(run_b)
+    if rec_a is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_a}' not found")
+    if rec_b is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_b}' not found")
+
+    snap_a = rec_a.snapshot()
+    snap_b = rec_b.snapshot()
+
+    all_nodes = sorted(
+        set(list(snap_a.get("node_statuses", {})) + list(snap_b.get("node_statuses", {})))
+    )
+    usage_a = snap_a.get("node_usage", {})
+    usage_b = snap_b.get("node_usage", {})
+
+    node_diffs: list[dict[str, Any]] = []
+    for nid in all_nodes:
+        status_a = snap_a.get("node_statuses", {}).get(nid)
+        status_b = snap_b.get("node_statuses", {}).get(nid)
+        ua = usage_a.get(nid, {})
+        ub = usage_b.get(nid, {})
+        tok_a = ua.get("total_tokens", 0)
+        tok_b = ub.get("total_tokens", 0)
+        node_diffs.append(
+            {
+                "node_id": nid,
+                "status_a": status_a,
+                "status_b": status_b,
+                "status_changed": status_a != status_b,
+                "tokens_a": tok_a,
+                "tokens_b": tok_b,
+                "token_delta": tok_b - tok_a,
+                "prompt_tokens_a": ua.get("prompt_tokens", 0),
+                "prompt_tokens_b": ub.get("prompt_tokens", 0),
+                "completion_tokens_a": ua.get("completion_tokens", 0),
+                "completion_tokens_b": ub.get("completion_tokens", 0),
+            }
+        )
+
+    elapsed_a = snap_a.get("elapsed_seconds") or 0
+    elapsed_b = snap_b.get("elapsed_seconds") or 0
+    cost_a = snap_a.get("total_cost") or 0
+    cost_b = snap_b.get("total_cost") or 0
+
+    return {
+        "run_a": snap_a,
+        "run_b": snap_b,
+        "summary": {
+            "elapsed_delta": round(elapsed_b - elapsed_a, 2),
+            "token_delta": (snap_b.get("total_tokens", 0) or 0)
+            - (snap_a.get("total_tokens", 0) or 0),
+            "cost_delta": round(cost_b - cost_a, 6),
+            "status_a": snap_a.get("status"),
+            "status_b": snap_b.get("status"),
+        },
+        "node_diffs": node_diffs,
+    }
+
+
 @app.get("/api/runs/{run_id}")
 async def get_run(run_id: str):
     rm = _require_run_manager()
