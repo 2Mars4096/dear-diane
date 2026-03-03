@@ -69,6 +69,55 @@ class EventType(str, Enum):
     VOTE_STARTED = "vote_started"
     VOTE_CAST = "vote_cast"
     VOTE_COMPLETED = "vote_completed"
+    # -- 17-1: Error memory events ---------------------------------------------
+    ERROR_MEMORY_INDEXED = "error_memory_indexed"
+    ERROR_MEMORY_RETRIEVED = "error_memory_retrieved"
+    # -- 17-2: Reflection events -----------------------------------------------
+    REFLECTION_STARTED = "reflection_started"
+    REFLECTION_COMPLETED = "reflection_completed"
+    # -- 17-3: Self-evolving rule events ---------------------------------------
+    RULE_GENERATED = "rule_generated"
+    RULE_ACTIVATED = "rule_activated"
+    RULE_EXPIRED = "rule_expired"
+    RULE_DISABLED = "rule_disabled"
+    RULE_AUTO_DISABLED = "rule_auto_disabled"
+    RULE_PRUNED = "rule_pruned"
+    RULE_EFFECTIVENESS_UPDATE = "rule_effectiveness_update"
+    # -- 18-3: Agent-directed context events -----------------------------------
+    STATE_EXTERNALIZED = "state_externalized"
+    LOOP_COMPACTION_APPLIED = "loop_compaction_applied"
+    BUDGET_ADVISORY = "budget_advisory"
+    # -- 18-1: Smart context assembly events -----------------------------------
+    TOKEN_BUDGET_ADVISORY = "token_budget_advisory"
+    CONTEXT_DEFERRED = "context_deferred"
+    INPUT_SUMMARIZED = "input_summarized"
+    JIT_SCHEMA_LOADED = "jit_schema_loaded"
+    PAYLOAD_PRUNED = "payload_pruned"
+    CONTEXT_TOOL_CALLED = "context_tool_called"
+    # -- 18-2: Caching layer events -------------------------------------------
+    CACHE_HIT = "cache_hit"
+    CACHE_MISS = "cache_miss"
+    CACHE_INVALIDATED = "cache_invalidated"
+    SEMANTIC_CACHE_HIT = "semantic_cache_hit"
+    # -- 18-4: Token analytics events ------------------------------------------
+    TOKEN_BREAKDOWN_RECORDED = "token_breakdown_recorded"
+    WASTE_DETECTED = "waste_detected"
+    OPTIMIZATION_REPORT_READY = "optimization_report_ready"
+    OPTIMIZATION_APPLIED = "optimization_applied"
+    # -- 19-1: Experience memory events ----------------------------------------
+    EXPERIENCE_CONSOLIDATED = "experience_consolidated"
+    EXPERIENCE_INDEXED = "experience_indexed"
+    # -- 19-4: Meta-orchestrator events ----------------------------------------
+    META_SESSION_STARTED = "meta_session_started"
+    META_PLAN_CREATED = "meta_plan_created"
+    META_EXECUTION_STARTED = "meta_execution_started"
+    META_DIAGNOSIS_STARTED = "meta_diagnosis_started"
+    META_REPAIR_APPLIED = "meta_repair_applied"
+    META_REDESIGN_TRIGGERED = "meta_redesign_triggered"
+    META_PAUSED = "meta_paused"
+    META_RESUMED = "meta_resumed"
+    META_SESSION_COMPLETED = "meta_session_completed"
+    META_SESSION_FAILED = "meta_session_failed"
 
 
 @dataclass(frozen=True)
