@@ -10,9 +10,11 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
 from dan.engine.checkpoint import CheckpointStore, FileSystemCheckpointStore
-from dan.engine.context_runtime import ArtifactStore, LocalStateManager, SharedContextStore
+from dan.engine.context_runtime import ArtifactStore, LocalStateManager, ScopedContextView, SharedContextStore
 from dan.engine.events import EngineEvent, EventType
 from dan.engine.executor import EngineConfig, ExecutionContext, ExecutorRegistry, NodeResult
+from dan.engine.memory import MemoryEntry, MemoryScope, MemoryWriteRequest
+from dan.engine.memory_store import FileSystemMemoryStore, MemoryStore, NullMemoryStore
 from dan.engine.state import ExecutionState, NodeStatus
 from dan.models.edges import ControlEdge, ContextEdge, DataEdge
 from dan.models.graph import Graph
@@ -240,6 +242,7 @@ class Engine:
         checkpoint_store: CheckpointStore | None = None,
         human_input_callback: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
         event_callback: EventCallback | None = None,
+        memory_store: MemoryStore | None = None,
     ) -> None:
         self.config = config or EngineConfig()
         self.executor_registry = executor_registry or ExecutorRegistry()
@@ -252,6 +255,13 @@ class Engine:
             self.checkpoint_store = FileSystemCheckpointStore(self.config.checkpoint_dir)
         else:
             self.checkpoint_store = None
+
+        if memory_store is not None:
+            self.memory_store: MemoryStore = memory_store
+        elif self.config.memory_enabled:
+            self.memory_store = FileSystemMemoryStore(self.config.memory_dir)
+        else:
+            self.memory_store = NullMemoryStore()
 
         self.provider_registry = self._build_provider_registry()
         self.embedding_registry = self._build_embedding_registry()
@@ -429,11 +439,15 @@ class Engine:
         graph: Graph,
         inputs: dict[str, Any] | None = None,
         run_id: str | None = None,
+        session_id: str | None = None,
+        workflow_id: str | None = None,
     ) -> RunResult:
         """Execute *graph* from entry points to exit points.
 
         *inputs* are injected as output-port values on entry-point nodes
         so that downstream nodes receive them via normal edge resolution.
+        *session_id* enables cross-run memory; if provided, prior memory
+        entries are pre-loaded into shared context.
         """
         from dan.validation.graph import validate_graph
 
@@ -451,15 +465,25 @@ class Engine:
         artifacts = ArtifactStore()
         local_state = LocalStateManager()
 
+        if session_id and workflow_id:
+            await self._preload_memory(
+                shared_context, workflow_id, session_id,
+            )
+
         if inputs:
             self._inject_inputs(state, graph, inputs)
 
-        return await self._execute(graph, state, shared_context, artifacts, local_state)
+        return await self._execute(
+            graph, state, shared_context, artifacts, local_state,
+            session_id=session_id, workflow_id=workflow_id,
+        )
 
     async def resume(
         self,
         graph: Graph,
         run_id: str,
+        session_id: str | None = None,
+        workflow_id: str | None = None,
     ) -> RunResult:
         """Resume a previously checkpointed run."""
         if self.checkpoint_store is None:
@@ -489,7 +513,10 @@ class Engine:
         local_state = LocalStateManager()
         local_state.restore(checkpoint.get("local_state", {}))
 
-        return await self._execute(graph, state, shared_context, artifacts, local_state)
+        return await self._execute(
+            graph, state, shared_context, artifacts, local_state,
+            session_id=session_id, workflow_id=workflow_id,
+        )
 
     # ------------------------------------------------------------------
     # Internal scheduling
@@ -528,9 +555,18 @@ class Engine:
         shared_context: SharedContextStore,
         artifacts: ArtifactStore,
         local_state: LocalStateManager,
+        session_id: str | None = None,
+        workflow_id: str | None = None,
     ) -> RunResult:
         """Core scheduling loop: dispatch ready nodes, checkpoint, repeat."""
         run_start = _time.time()
+        memory_writes: list[MemoryWriteRequest] = []
+
+        short_term_mem = None
+        if self.config.memory_pipeline_enabled:
+            from dan.engine.memory_pipeline import ShortTermMemory
+            short_term_mem = ShortTermMemory()
+
         await self._emit(EngineEvent(
             event_type=EventType.RUN_STARTED,
             run_id=state.run_id,
@@ -538,7 +574,9 @@ class Engine:
         ))
 
         context = self._make_context(
-            state, shared_context, artifacts, local_state, graph
+            state, shared_context, artifacts, local_state, graph,
+            session_id=session_id, memory_writes=memory_writes,
+            short_term_memory=short_term_mem,
         )
 
         global_sem: asyncio.Semaphore | None = None
@@ -562,6 +600,9 @@ class Engine:
                 ]
                 await asyncio.gather(*tasks)
 
+                await self._flush_memory_writes(
+                    context, workflow_id, session_id, state.run_id,
+                )
                 if self.checkpoint_store is not None:
                     await self._save_checkpoint(
                         state, shared_context, artifacts, local_state
@@ -579,6 +620,9 @@ class Engine:
                 shared_context, artifacts, local_state, global_sem,
             )
 
+        await self._flush_memory_writes(
+            context, workflow_id, session_id, state.run_id,
+        )
         result = self._build_result(graph, state)
         elapsed = round(_time.time() - run_start, 2)
         total_usage = self._aggregate_usage(state)
@@ -958,11 +1002,6 @@ class Engine:
                 virtual_src = f"__input__{node_id}"
                 if state.port_data.has(virtual_src, edge.target_port):
                     continue
-                # If virtual_src doesn't have it, but the gate hasn't run yet, it's a back-edge
-                # on the first pass (or cleared for next iteration). We should not skip.
-                source_status = state.node_statuses.get(edge.source_node_id)
-                if source_status in (None, NodeStatus.PENDING, NodeStatus.RUNNING):
-                    continue
             if not state.port_data.has(edge.source_node_id, edge.source_port):
                 return True
 
@@ -1018,6 +1057,9 @@ class Engine:
         local_state: LocalStateManager,
         graph: Graph,
         layer_path: tuple[str, ...] = (),
+        session_id: str | None = None,
+        memory_writes: list[MemoryWriteRequest] | None = None,
+        short_term_memory: Any | None = None,
     ) -> ExecutionContext:
         async def run_subgraph(
             sub_graph_key: str,
@@ -1026,10 +1068,19 @@ class Engine:
             targeted_inputs: dict[str, dict[str, Any]] | None = None,
         ) -> dict[str, Any]:
             child_layer = layer_path + ((parent_node_id,) if parent_node_id else ())
+            bc = None
+            if parent_node_id is not None:
+                parent_node = graph.node_by_id(parent_node_id)
+                if parent_node is not None:
+                    bc = getattr(parent_node, "boundary_contract", None)
             return await self._run_subgraph(
                 sub_graph_key, inputs, graph, state,
                 shared_context, artifacts, local_state,
                 child_layer, targeted_inputs,
+                boundary_contract=bc,
+                session_id=session_id,
+                memory_writes=memory_writes,
+                short_term_memory=short_term_memory,
             )
 
         return ExecutionContext(
@@ -1045,6 +1096,9 @@ class Engine:
             layer_path=layer_path,
             provider_registry=self.provider_registry,
             embedding_registry=self.embedding_registry,
+            session_id=session_id,
+            memory_writes=memory_writes,
+            short_term_memory=short_term_memory,
         )
 
     async def _run_subgraph(
@@ -1058,15 +1112,32 @@ class Engine:
         local_state: LocalStateManager,
         layer_path: tuple[str, ...] = (),
         targeted_inputs: dict[str, dict[str, Any]] | None = None,
+        boundary_contract: Any | None = None,
+        session_id: str | None = None,
+        memory_writes: list[MemoryWriteRequest] | None = None,
+        short_term_memory: Any | None = None,
     ) -> dict[str, Any]:
         """Execute a named sub-graph and return its outputs."""
         sub_graph = parent_graph.sub_graphs.get(sub_graph_key)
         if sub_graph is None:
             raise RuntimeError(f"Sub-graph '{sub_graph_key}' not found")
 
+        if self.config.boundary_enforcement and boundary_contract is not None:
+            child_context_store: SharedContextStore = ScopedContextView(
+                shared_context,
+                sub_graph.shared_context,
+                reads_global=boundary_contract.reads_global,
+                writes_global=boundary_contract.writes_global,
+            )
+        else:
+            child_context_store = shared_context
+
         sub_state = ExecutionState(sub_graph, run_id=parent_state.run_id)
         sub_context = self._make_context(
-            sub_state, shared_context, artifacts, local_state, sub_graph, layer_path
+            sub_state, child_context_store, artifacts, local_state, sub_graph, layer_path,
+            session_id=session_id,
+            memory_writes=memory_writes,
+            short_term_memory=short_term_memory,
         )
 
         if inputs:
@@ -1121,11 +1192,88 @@ class Engine:
                 skip_checkpoint=True,
             )
 
+        if isinstance(child_context_store, ScopedContextView):
+            child_context_store.propagate_to_parent()
+
         outputs: dict[str, Any] = {}
         for exit_id in sub_graph.exit_points:
             outputs.update(sub_state.port_data.get_node_outputs(exit_id))
 
         return outputs
+
+    async def _preload_memory(
+        self,
+        shared_context: SharedContextStore,
+        workflow_id: str,
+        session_id: str,
+    ) -> None:
+        """Load prior session memory entries into SharedContextStore.
+
+        If the raw key is declared in the graph's shared context it is written
+        there directly so context edges can read it normally.  Additionally,
+        every entry is injected under ``memory:<key>`` for explicit access.
+        """
+        try:
+            entries = await self.memory_store.read_all(workflow_id, session_id)
+            for key, entry in entries.items():
+                if key in shared_context.declared_keys:
+                    shared_context.write(key, entry.value)
+                prefixed = f"memory:{key}"
+                if prefixed in shared_context.declared_keys:
+                    shared_context.write(prefixed, entry.value)
+                else:
+                    shared_context._store[prefixed] = entry.value
+        except Exception:
+            logger.debug(
+                "Memory pre-load failed for %s/%s", workflow_id, session_id,
+                exc_info=True,
+            )
+
+    async def _flush_memory_writes(
+        self,
+        context: ExecutionContext,
+        workflow_id: str | None,
+        session_id: str | None,
+        run_id: str,
+    ) -> None:
+        """Persist any queued memory writes from executors.
+
+        Scope routing:
+          - GLOBAL  → workflow_id="_global", session_id="_global"
+          - WORKFLOW → workflow_id=<wf>,     session_id="_default"
+          - SESSION  → workflow_id=<wf>,     session_id=<sess>  (requires both)
+        """
+        writes = context.drain_memory_writes()
+        if not writes:
+            return
+        for req in writes:
+            if req.scope == MemoryScope.GLOBAL:
+                target_wf, target_sess = "_global", "_global"
+            elif req.scope == MemoryScope.WORKFLOW:
+                if not workflow_id:
+                    logger.warning("Dropping WORKFLOW-scope write (no workflow_id): %s", req.key)
+                    continue
+                target_wf, target_sess = workflow_id, "_default"
+            else:
+                if not workflow_id or not session_id:
+                    logger.warning("Dropping SESSION-scope write (no session): %s", req.key)
+                    continue
+                target_wf, target_sess = workflow_id, session_id
+
+            entry = MemoryEntry(
+                key=req.key,
+                value=req.value,
+                scope=req.scope,
+                source_run_id=run_id,
+                writer_node_id=req.writer_node_id,
+                write_mode=req.mode,
+            )
+            try:
+                await self.memory_store.write(target_wf, target_sess, entry)
+            except Exception:
+                logger.warning(
+                    "Memory write failed for key '%s'", req.key, exc_info=True,
+                )
 
     async def _save_checkpoint(
         self,
