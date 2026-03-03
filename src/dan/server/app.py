@@ -1464,6 +1464,241 @@ async def reset_mutation_metrics():
     return mutation_metrics.reset()
 
 
+@app.post("/api/cache/clear")
+async def clear_cache():
+    config = _get_engine_config()
+    base = _resolve_cache_dir(config)
+    deleted_files = 0
+
+    if base.exists():
+        for pattern in ("*.json", "*.tmp", "**/*.json", "**/*.tmp"):
+            for p in base.glob(pattern):
+                if not p.is_file():
+                    continue
+                try:
+                    p.unlink()
+                    deleted_files += 1
+                except OSError:
+                    pass
+
+    return {
+        "status": "cleared",
+        "cache_dir": str(base),
+        "deleted_files": deleted_files,
+    }
+
+
+@app.get("/api/cache/stats")
+async def cache_stats():
+    config = _get_engine_config()
+    base = _resolve_cache_dir(config)
+    file_count = 0
+    total_bytes = 0
+    if base.exists():
+        for p in base.rglob("*.json"):
+            if p.is_file():
+                file_count += 1
+                try:
+                    total_bytes += p.stat().st_size
+                except OSError:
+                    pass
+
+    latest_run_cache: dict[str, Any] | None = None
+    if _run_manager is not None:
+        runs = _run_manager.list_runs()
+        if runs:
+            latest = max(runs, key=lambda r: float(r.get("started_at", 0.0) or 0.0))
+            record = _run_manager.get_run(str(latest.get("run_id", "")))
+            if record is not None and record.result is not None:
+                meta = record.result.metadata
+                if isinstance(meta, dict):
+                    latest_run_cache = meta.get("__run_cache__")
+
+    return {
+        "cache_dir": str(base),
+        "cache_enabled": config.cache_enabled,
+        "cache_max_size_mb": config.cache_max_size_mb,
+        "semantic_cache_threshold": config.semantic_cache_threshold,
+        "semantic_cache_ttl_hours": config.semantic_cache_ttl_hours,
+        "disk_file_count": file_count,
+        "disk_size_bytes": total_bytes,
+        "latest_run_cache": latest_run_cache,
+    }
+
+
+@app.get("/api/runs/{run_id}/token-breakdown")
+async def token_breakdown(run_id: str):
+    """Return per-node token composition breakdown for a completed run."""
+    if _run_manager is None:
+        raise HTTPException(status_code=503, detail="Run manager not initialized")
+    record = _run_manager.get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    node_breakdowns: dict[str, Any] = {}
+    run_totals = {
+        "total_input_tokens": 0,
+        "total_output_tokens": 0,
+        "total_cost": record.total_cost or 0.0,
+    }
+
+    if record.result and isinstance(record.result.metadata, dict):
+        cost_snapshot = record.result.metadata.get("__cost_tracker__")
+        if isinstance(cost_snapshot, dict):
+            node_breakdowns = cost_snapshot.get("node_breakdowns", {})
+            for bd in node_breakdowns.values():
+                run_totals["total_input_tokens"] += bd.get("total_input_tokens", 0)
+                run_totals["total_output_tokens"] += bd.get("total_output_tokens", 0)
+
+    if not node_breakdowns:
+        for nid, usage in record.node_usage.items():
+            node_breakdowns[nid] = {
+                "total_input_tokens": usage.get("prompt_tokens", 0),
+                "total_output_tokens": usage.get("completion_tokens", 0),
+            }
+            run_totals["total_input_tokens"] += usage.get("prompt_tokens", 0)
+            run_totals["total_output_tokens"] += usage.get("completion_tokens", 0)
+
+    return {
+        "run_id": run_id,
+        "nodes": node_breakdowns,
+        "run_totals": run_totals,
+    }
+
+
+def _build_token_analysis_context(graph_id: str) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """Extract node config and edge metadata for token waste analysis."""
+    graph_data = _graph_store.get_graph(graph_id)
+    if graph_data is None:
+        return {}, []
+    try:
+        graph = Graph.model_validate(graph_data)
+    except Exception:
+        return {}, []
+
+    node_configs: dict[str, dict[str, Any]] = {}
+    for node in graph.nodes:
+        tools: list[str] = []
+        for tool in getattr(node, "tools", []) or []:
+            if isinstance(tool, dict):
+                fn = tool.get("function", {})
+                name = fn.get("name")
+                if isinstance(name, str) and name:
+                    tools.append(name)
+        node_configs[node.id] = {
+            "prompt_template": getattr(node, "prompt_template", ""),
+            "system_prompt": getattr(node, "system_prompt", ""),
+            "input_ports": [p.name for p in getattr(node, "input_ports", [])],
+            "tools": tools,
+            "jit_tool_loading": bool(getattr(node, "jit_tool_loading", False)),
+        }
+
+    graph_edges: list[dict[str, Any]] = []
+    for edge in graph.edges:
+        graph_edges.append({
+            "id": edge.id,
+            "edge_type": getattr(edge, "edge_type", ""),
+            "source": edge.source_node_id,
+            "target": edge.target_node_id,
+            "source_port": edge.source_port,
+            "target_port": edge.target_port,
+            "pass_by_reference": bool(getattr(edge, "pass_by_reference", False)),
+        })
+    return node_configs, graph_edges
+
+
+@app.get("/api/runs/{run_id}/optimization-report")
+async def optimization_report(run_id: str):
+    """Run waste analysis on a completed run and return findings."""
+    if _run_manager is None:
+        raise HTTPException(status_code=503, detail="Run manager not initialized")
+    record = _run_manager.get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    from dan.engine.token_optimization import TokenWasteAnalyzer
+
+    node_breakdowns: dict[str, dict[str, int]] = {}
+    node_configs, graph_edges = _build_token_analysis_context(record.graph_id)
+
+    if record.result and isinstance(record.result.metadata, dict):
+        cost_snap = record.result.metadata.get("__cost_tracker__")
+        if isinstance(cost_snap, dict):
+            node_breakdowns = cost_snap.get("node_breakdowns", {})
+
+    events_data = [e for e in record.events if isinstance(e, dict)]
+
+    analyzer = TokenWasteAnalyzer()
+    report = analyzer.analyze(
+        node_breakdowns=node_breakdowns,
+        node_configs=node_configs,
+        events=events_data,
+        graph_edges=graph_edges,
+    )
+    return {
+        "run_id": run_id,
+        "report": report.to_dict(),
+    }
+
+
+@app.get("/api/runs/{run_id}/optimization-mutations")
+async def optimization_mutations(run_id: str):
+    """Generate one-click-apply mutation operations from waste findings."""
+    if _run_manager is None:
+        raise HTTPException(status_code=503, detail="Run manager not initialized")
+    record = _run_manager.get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+
+    from dan.engine.token_optimization import OptimizationPlaybook, TokenWasteAnalyzer
+
+    node_breakdowns: dict[str, dict[str, int]] = {}
+    node_configs, graph_edges = _build_token_analysis_context(record.graph_id)
+    if record.result and isinstance(record.result.metadata, dict):
+        cost_snap = record.result.metadata.get("__cost_tracker__")
+        if isinstance(cost_snap, dict):
+            node_breakdowns = cost_snap.get("node_breakdowns", {})
+
+    events_data = [e for e in record.events if isinstance(e, dict)]
+
+    analyzer = TokenWasteAnalyzer()
+    report = analyzer.analyze(
+        node_breakdowns=node_breakdowns,
+        node_configs=node_configs,
+        events=events_data,
+        graph_edges=graph_edges,
+    )
+
+    approval_mode = getattr(_run_manager.engine_config, "optimization_rule_approval_mode", "always_approve")
+    playbook = OptimizationPlaybook(approval_mode=approval_mode)
+    mutations = []
+    for finding in report.findings:
+        mut = playbook.generate_mutation(finding)
+        if mut is not None:
+            mutation_plan = {
+                "apply_mode": "all_or_nothing",
+                "description": finding.suggestion,
+                "operations": [mut],
+            }
+            try:
+                MutationPlan.model_validate(mutation_plan)
+            except Exception:
+                continue
+            mutations.append({
+                "graph_id": record.graph_id,
+                "mutation": mut,
+                "mutation_plan": mutation_plan,
+                "apply_request": {"mutation_plan": mutation_plan, "source": "optimization"},
+                "finding": finding.to_dict(),
+            })
+
+    return {
+        "run_id": run_id,
+        "mutations": mutations,
+        "count": len(mutations),
+    }
+
+
 @app.post("/api/graphs/{graph_id}/nodes/{node_id}/add-boundary-validators")
 async def add_boundary_validators(graph_id: str, node_id: str):
     data = _graph_store.get_graph(graph_id)
@@ -1842,6 +2077,206 @@ def _get_memory_store():
     return FileSystemMemoryStore(memory_dir)
 
 
+def _get_experience_index():
+    global _experience_index_cache
+    if _experience_index_cache is not None:
+        return _experience_index_cache
+    try:
+        from dan.engine.experience import ExperienceIndex
+        from dan.rag import build_embedding_registry
+        from dan.rag.stores import VectorStoreConfig, VectorStoreFactory
+
+        rm = _require_run_manager()
+        config = rm.engine_config
+        registry = build_embedding_registry(config)
+        model = config.default_embedding_model
+        provider = registry.resolve(model)
+        backend = os.environ.get(
+            "DAN_EXPERIENCE_STORE_BACKEND",
+            os.environ.get("DAN_RAG_STORE_BACKEND", "memory"),
+        )
+        persist_dir = os.environ.get("DAN_EXPERIENCE_PERSIST_DIR", "./rag_data")
+        vector_store = VectorStoreFactory.create(
+            VectorStoreConfig(
+                backend=backend,
+                persist_directory=persist_dir,
+            ),
+        )
+        _experience_index_cache = ExperienceIndex(
+            embedding_provider=provider,
+            vector_store=vector_store,
+            embedding_model=model,
+        )
+        return _experience_index_cache
+    except Exception as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Experience index unavailable: {exc}",
+        ) from exc
+
+
+def _get_experience_store(*, with_index: bool = False):
+    from dan.engine.experience import ExperienceStore
+
+    index = _get_experience_index() if with_index else None
+    return ExperienceStore(_get_memory_store(), experience_index=index)
+
+
+def _build_meta_llm_call(default_model: str | None = None):
+    provider_registry = _chat_manager._providers if _chat_manager is not None else _build_chat_provider_registry()
+    fallback_model = default_model or os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
+
+    async def _llm_call(
+        system_prompt: str,
+        user_prompt: str,
+        model: str | None,
+        temperature: float,
+    ) -> str:
+        model_name = model or fallback_model
+        provider = provider_registry.resolve(model_name)
+        result = await provider.complete(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            model=model_name,
+            temperature=temperature,
+        )
+        return result.text
+
+    return _llm_call
+
+
+def _build_meta_controller():
+    rm = _require_run_manager()
+    from dan.meta.controller import MetaController, MetaSessionStore
+    from dan.meta.discovery import DiscoveryService
+    from dan.meta.planner import WorkflowPlanner
+    from dan.meta.repair import (
+        RepairActionStore,
+        RepairEscalator,
+        StructuralRepairPlanner,
+    )
+
+    memory_store = _get_memory_store()
+    try:
+        exp_index = _get_experience_index()
+    except HTTPException:
+        exp_index = None
+    exp_store = _get_experience_store(with_index=exp_index is not None)
+
+    discovery = DiscoveryService(
+        experience_index=exp_index,
+        experience_store=exp_store,
+        graph_store=_graph_store,
+        tool_registry=rm.tool_registry,
+    )
+    llm_call = _build_meta_llm_call(default_model=rm.engine_config.llm_default_model)
+
+    planner = WorkflowPlanner(
+        discovery=discovery,
+        graph_store=_graph_store,
+        llm_call=llm_call,
+        model=rm.engine_config.planner_model or rm.engine_config.llm_default_model,
+        max_retries=rm.engine_config.planner_max_retries,
+        temperature=rm.engine_config.planner_temperature,
+        discovery_top_k=rm.engine_config.planner_discovery_top_k,
+    )
+
+    structural_planner = StructuralRepairPlanner(
+        llm_call=llm_call,
+        model=rm.engine_config.repair_model or rm.engine_config.planner_model or rm.engine_config.llm_default_model,
+    )
+    repair_store = RepairActionStore(memory_store)
+    escalator = RepairEscalator(
+        structural_planner=structural_planner,
+        action_store=repair_store,
+        max_attempts_per_level=rm.engine_config.max_repair_attempts_per_level,
+        max_redesigns=rm.engine_config.max_redesigns_per_goal,
+    )
+
+    session_store = MetaSessionStore(memory_store)
+
+    async def _run_workflow(plan: Any, session_id: str) -> dict[str, Any]:
+        exec_result = await planner.execute_plan(plan)
+        workflow_id = str(exec_result.get("workflow_id", "")).strip()
+        graph_data = exec_result.get("graph")
+        if not workflow_id:
+            workflow_id = f"meta-{uuid.uuid4().hex[:10]}"
+        if not isinstance(graph_data, dict):
+            return {
+                "success": False,
+                "workflow_id": workflow_id,
+                "error_context": "Planner execution did not return a graph",
+            }
+
+        _graph_store.save_graph(workflow_id, graph_data)
+
+        graph_model = Graph.model_validate(graph_data)
+        rec = await rm.start_run(
+            graph_model,
+            graph_id=workflow_id,
+            session_id=session_id,
+        )
+        while True:
+            current = rm.get_run(rec.run_id)
+            if current is None:
+                return {
+                    "success": False,
+                    "workflow_id": workflow_id,
+                    "error_context": f"Run {rec.run_id} disappeared",
+                }
+            if current.status in (RunStatus.COMPLETED, RunStatus.FAILED):
+                break
+            await asyncio.sleep(0.1)
+
+        current = rm.get_run(rec.run_id)
+        if current is None:
+            return {
+                "success": False,
+                "workflow_id": workflow_id,
+                "error_context": f"Run {rec.run_id} missing after completion",
+            }
+        snapshot = current.snapshot()
+        principle_dicts: list[dict[str, Any]] = []
+        ps = rm._get_principle_store()
+        if ps is not None:
+            try:
+                principles = await ps.load_principles(workflow_id)
+                principle_dicts = [p.model_dump() for p in principles]
+            except Exception:
+                logger.debug("Failed loading principles for %s", workflow_id, exc_info=True)
+        return {
+            "success": bool(snapshot.get("success", False)),
+            "run_id": rec.run_id,
+            "workflow_id": workflow_id,
+            "errors": snapshot.get("errors", {}),
+            "error_context": str(snapshot.get("errors", "")),
+            "principles": principle_dicts,
+            "outputs": snapshot.get("outputs", {}),
+        }
+
+    async def _emit_meta_event(event: dict[str, Any]) -> None:
+        sid = event.get("session_id", "")
+        for queue in _meta_subscribers.get(sid, []):
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                logger.warning("Meta subscriber queue full for session %s", sid)
+
+    controller = MetaController(
+        planner=planner,
+        repair_escalator=escalator,
+        experience_store=exp_store,
+        session_store=session_store,
+        run_workflow=_run_workflow,
+        emit_event=_emit_meta_event,
+        graph_loader=_graph_store.get_graph,
+        graph_saver=_graph_store.save_graph,
+    )
+    return controller, planner, session_store
+
+
 @app.get("/api/memory/{workflow_id}/{session_id}")
 async def list_memory_keys(workflow_id: str, session_id: str):
     _validate_path_segment(workflow_id, "workflow_id")
@@ -1877,6 +2312,149 @@ async def list_sessions(workflow_id: str):
     store = _get_memory_store()
     sessions = await store.list_sessions(workflow_id)
     return {"workflow_id": workflow_id, "sessions": sessions}
+
+
+# ------------------------------------------------------------------
+# Error Memory REST endpoints (Plan 17-1)
+# ------------------------------------------------------------------
+
+
+@app.get("/api/errors/{workflow_id}")
+async def list_error_memory(workflow_id: str, limit: int = 50):
+    """List indexed errors for a workflow."""
+    rm = _require_run_manager()
+    index = rm._get_error_memory_index()
+    if index is None:
+        return {"errors": [], "message": "Error memory not enabled"}
+    try:
+        stats = await index.stats(workflow_id)
+        return {"workflow_id": workflow_id, **stats}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.delete("/api/errors/{workflow_id}")
+async def clear_error_memory(workflow_id: str):
+    """Clear error memory for a workflow."""
+    rm = _require_run_manager()
+    index = rm._get_error_memory_index()
+    if index is None:
+        raise HTTPException(status_code=400, detail="Error memory not enabled")
+    await index.clear(workflow_id)
+    return {"status": "cleared", "workflow_id": workflow_id}
+
+
+@app.get("/api/errors/{workflow_id}/search")
+async def search_error_memory(workflow_id: str, q: str = "", top_k: int = 5):
+    """Semantic search over indexed errors."""
+    rm = _require_run_manager()
+    index = rm._get_error_memory_index()
+    if index is None:
+        raise HTTPException(status_code=400, detail="Error memory not enabled")
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
+    results = await index.query_similar(workflow_id, q.strip(), top_k=top_k)
+    return {"workflow_id": workflow_id, "query": q, "results": results}
+
+
+# ------------------------------------------------------------------
+# Generated Rules REST endpoints (Plan 17-3)
+# ------------------------------------------------------------------
+
+
+@app.get("/api/rules/{workflow_id}")
+async def list_generated_rules(workflow_id: str, status: str | None = None):
+    """List generated rules with effectiveness metrics."""
+    _validate_path_segment(workflow_id, "workflow_id")
+    rm = _require_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        return {"rules": [], "message": "Self-evolving rules not enabled"}
+    rules = manager.list_rules(workflow_id, status=status)
+    return {
+        "workflow_id": workflow_id,
+        "rules": [r.model_dump() for r in rules],
+    }
+
+
+@app.post("/api/rules/{workflow_id}/{rule_id}/disable")
+async def disable_generated_rule(workflow_id: str, rule_id: str):
+    _validate_path_segment(workflow_id, "workflow_id")
+    _validate_path_segment(rule_id, "rule_id")
+    rm = _require_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        raise HTTPException(status_code=400, detail="Self-evolving rules not enabled")
+    if not manager.disable_rule(workflow_id, rule_id):
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found")
+    rm.emit_rule_lifecycle_event(workflow_id, "rule_disabled", {
+        "rule_id": rule_id,
+        "reason": "manual_api",
+    })
+    return {"status": "disabled", "rule_id": rule_id}
+
+
+@app.post("/api/rules/{workflow_id}/{rule_id}/enable")
+async def enable_generated_rule(workflow_id: str, rule_id: str):
+    _validate_path_segment(workflow_id, "workflow_id")
+    _validate_path_segment(rule_id, "rule_id")
+    rm = _require_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        raise HTTPException(status_code=400, detail="Self-evolving rules not enabled")
+    if not manager.enable_rule(workflow_id, rule_id):
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found")
+    return {"status": "enabled", "rule_id": rule_id}
+
+
+@app.post("/api/rules/{workflow_id}/{rule_id}/approve")
+async def approve_generated_rule(workflow_id: str, rule_id: str):
+    _validate_path_segment(workflow_id, "workflow_id")
+    _validate_path_segment(rule_id, "rule_id")
+    rm = _require_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        raise HTTPException(status_code=400, detail="Self-evolving rules not enabled")
+    if not manager.enable_rule(workflow_id, rule_id):
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found")
+    return {"status": "approved", "rule_id": rule_id}
+
+
+@app.delete("/api/rules/{workflow_id}/{rule_id}")
+async def delete_generated_rule(workflow_id: str, rule_id: str):
+    _validate_path_segment(workflow_id, "workflow_id")
+    _validate_path_segment(rule_id, "rule_id")
+    rm = _require_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        raise HTTPException(status_code=400, detail="Self-evolving rules not enabled")
+    if not manager.delete_rule(workflow_id, rule_id):
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found")
+    return {"status": "deleted", "rule_id": rule_id}
+
+
+@app.post("/api/rules/{workflow_id}/rollback")
+async def rollback_generated_rules(workflow_id: str, body: dict[str, Any]):
+    _validate_path_segment(workflow_id, "workflow_id")
+    rm = _require_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        raise HTTPException(status_code=400, detail="Self-evolving rules not enabled")
+    before = body.get("before")
+    if not before:
+        raise HTTPException(status_code=400, detail="'before' timestamp is required")
+    disabled = manager.rollback(workflow_id, float(before))
+    return {"disabled_count": len(disabled), "disabled_rule_ids": disabled}
+
+
+@app.get("/api/rules/{workflow_id}/stats")
+async def generated_rules_stats(workflow_id: str):
+    _validate_path_segment(workflow_id, "workflow_id")
+    rm = _require_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        return {"message": "Self-evolving rules not enabled"}
+    return manager.stats(workflow_id)
 
 
 # ------------------------------------------------------------------
