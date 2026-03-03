@@ -18,6 +18,7 @@ from dan.models.context import (
     ContextDeclaration,
     ContextProjection,
     FailurePolicy,
+    FeedbackSelector,
     MergeStrategy,
     NodeLocalState,
 )
@@ -100,6 +101,15 @@ class GateNode(NodeBase):
     )
     state_schema: dict[str, Any] | None = None
     state_defaults: dict[str, Any] | None = None
+    # -- 16-4: Feedback selector for while-mode loops --------------------------
+    feedback_selector: FeedbackSelector | None = Field(
+        default=None,
+        description="Filters which body outputs feed back to the next iteration (while mode only)",
+    )
+    artifact_ports: list[str] | None = Field(
+        default=None,
+        description="Ports excluded from feedback and accumulated as side-effect artifacts",
+    )
 
     def model_post_init(self, __context: Any) -> None:
         if not self.output_ports:
@@ -139,15 +149,55 @@ class RouterNode(NodeBase):
         default_factory=dict,
         description="route_name → natural-language description",
     )
+    model_policy: Any | None = Field(
+        default=None,
+        description="Policy-driven model selection (ModelPolicy from dan.providers.model_policy)",
+    )
 
 
-class HumanInTheLoopNode(NodeBase):
-    """Pauses execution and waits for human input before resuming."""
+class HumanNode(NodeBase):
+    """First-class human interaction node with typed I/O and render modes.
 
-    node_type: Literal["human_in_the_loop"] = "human_in_the_loop"
+    Pauses execution and waits for human input via a rendering surface
+    (dialog, chat panel, CLI, programmatic).  Supports multiple interaction
+    modes: free-text, approval, form, selection, file upload, and rich
+    multi-turn chat.
+    """
+
+    node_type: Literal["human"] = "human"
     prompt: str = ""
     timeout_seconds: float | None = None
     default_action: str | None = None
+    input_schema: dict[str, Any] | None = Field(
+        default=None,
+        description="JSON Schema for what the human receives (presentation hint)",
+    )
+    output_schema: dict[str, Any] | None = Field(
+        default=None,
+        description="JSON Schema for what the human must provide (validated on submit)",
+    )
+    render_mode: Literal["text", "approval", "form", "selection", "file_upload", "rich"] = Field(
+        default="text",
+        description="Hint to the rendering surface for how to present the interaction",
+    )
+    options: list[str] | None = Field(
+        default=None,
+        description="Choices for 'selection' render mode",
+    )
+    instructions: str = Field(
+        default="",
+        description="Guidance text shown above the input area (supports markdown)",
+    )
+    render_target: Literal["dialog", "chat", "both"] = Field(
+        default="dialog",
+        description="Where the interaction appears: popup dialog, chat panel, or both",
+    )
+
+
+class HumanInTheLoopNode(HumanNode):
+    """Backward-compatible alias — deserializes ``"human_in_the_loop"`` JSON."""
+
+    node_type: Literal["human_in_the_loop"] = "human_in_the_loop"  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -225,6 +275,15 @@ class WhileLoopNode(NodeBase):
     compaction_rule: CompactionRule | None = None
     failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
     projections: list[ContextProjection] = Field(default_factory=list)
+    # -- 16-4: Feedback selector for while loops --------------------------------
+    feedback_selector: FeedbackSelector | None = Field(
+        default=None,
+        description="Filters which body outputs feed back to the next iteration",
+    )
+    artifact_ports: list[str] | None = Field(
+        default=None,
+        description="Ports excluded from feedback and accumulated as side-effect artifacts",
+    )
     boundary_contract: BoundaryContract | None = Field(
         default=None, description="Formal boundary contract (Plan 14-2)",
     )
@@ -326,12 +385,18 @@ class OrchestratorNode(NodeBase):
         default=None,
         description="LLM model for orchestrator decisions (uses engine default if None)",
     )
+    model_policy: Any | None = Field(
+        default=None,
+        description="Policy-driven model selection (ModelPolicy from dan.providers.model_policy)",
+    )
 
     completion_condition: Literal["all_done", "any_done", "orchestrator_halt"] = Field(
         default="all_done",
         description="When to stop: all teams done, any team done, or orchestrator decides",
     )
     max_iterations: int = Field(default=100, ge=1, description="Safety bound on orchestrator loop iterations")
+    # -- 16-5: Async loop design -----------------------------------------------
+    max_llm_calls: int = Field(default=50, ge=1, description="Safety bound on orchestrator LLM invocations")
     timeout_seconds: float | None = Field(default=None, description="Overall timeout")
 
     input_mappings: dict[str, str] = Field(
@@ -397,3 +462,167 @@ class CompositeNode(NodeBase):
         default=None,
         description="Formal boundary contract for context scoping (Plan 14-2)",
     )
+
+
+# ---------------------------------------------------------------------------
+# 16-1: Agent team — group-chat style multi-agent coordination
+# ---------------------------------------------------------------------------
+
+
+class TeamMessage(BaseModel):
+    """A single message in a team conversation."""
+
+    sender: str
+    recipients: list[str] = Field(default_factory=lambda: ["all"])
+    content: str
+    message_type: Literal["message", "handoff", "result", "question"] = "message"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    turn_number: int = 0
+
+
+class HandoffRequest(BaseModel):
+    """Structured work-transfer between team agents."""
+
+    source_agent: str
+    target_agent: str
+    reason: str = ""
+    context: dict[str, Any] = Field(default_factory=dict)
+    handoff_type: Literal["transfer", "consult"] = "transfer"
+
+
+class TeamConversation(BaseModel):
+    """Accumulated conversation state for an agent team execution."""
+
+    messages: list[TeamMessage] = Field(default_factory=list)
+    active_agent: str | None = None
+    turn_count: int = 0
+    handoff_log: list[HandoffRequest] = Field(default_factory=list)
+
+
+class AgentTeamNode(NodeBase):
+    """Group-chat style multi-agent coordination.
+
+    Agents within a team can address each other via ``@``-routing, hand off
+    work, and share a conversational context that accumulates across turns.
+    """
+
+    node_type: Literal["agent_team"] = "agent_team"
+
+    agents: dict[str, str] = Field(
+        default_factory=dict,
+        description="Maps agent name → sub_graph key; each agent runs as a sub-graph",
+    )
+    moderator_prompt: str = Field(
+        default="",
+        description="System prompt for the moderator LLM that manages turn order",
+    )
+    moderator_model: str | None = Field(
+        default=None,
+        description="LLM model for moderator turn decisions (uses engine default if None)",
+    )
+    model_policy: Any | None = Field(
+        default=None,
+        description="Policy-driven model selection",
+    )
+    turn_strategy: Literal["round_robin", "moderator", "free_form", "sequential"] = Field(
+        default="round_robin",
+        description="How turns are assigned among agents",
+    )
+    max_turns: int = Field(default=20, ge=1, description="Safety bound on conversation turns")
+    completion_condition: Literal["consensus", "moderator_halt", "max_turns", "all_responded"] = Field(
+        default="max_turns",
+        description="When the team conversation ends",
+    )
+    timeout_seconds: float | None = None
+    shared_context_keys: list[str] = Field(
+        default_factory=list,
+        description="Context keys visible to all team agents",
+    )
+    handoff_policy: Literal["explicit", "any", "moderator_only"] = Field(
+        default="explicit",
+        description="Who can initiate handoffs between agents",
+    )
+
+    input_mappings: dict[str, str] = Field(
+        default_factory=dict,
+        description="outer_port → inner_entry_port (shared input to all agents)",
+    )
+    agent_inputs: dict[str, dict[str, Any]] = Field(
+        default_factory=dict,
+        description="agent_name → {port: value} per-agent overrides",
+    )
+
+    # Composite-node contract
+    external_input_schema: dict[str, Any] | None = None
+    external_output_schema: dict[str, Any] | None = None
+    control_state_schema: dict[str, Any] = Field(default_factory=dict)
+    local_state: NodeLocalState = Field(default_factory=NodeLocalState)
+    read_set: list[ContextDeclaration] = Field(default_factory=list)
+    write_set: list[ContextDeclaration] = Field(default_factory=list)
+    compaction_rule: CompactionRule | None = None
+    failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
+    projections: list[ContextProjection] = Field(default_factory=list)
+    boundary_contract: BoundaryContract | None = None
+
+
+# ---------------------------------------------------------------------------
+# 16-2: Voting / ensemble — quality primitive via redundancy
+# ---------------------------------------------------------------------------
+
+
+class VoteConfig(BaseModel):
+    """Strategy-specific configuration for VoteNode."""
+
+    judge_model: str | None = Field(
+        default=None, description="Model used for 'judge'/'best_of_n' strategies",
+    )
+    judge_prompt: str | None = Field(
+        default=None, description="Custom prompt for the judge model",
+    )
+    quality_metric: str | None = Field(
+        default=None,
+        description="Expression evaluated on each vote output for 'weighted' strategy",
+    )
+    unanimity_threshold: float = Field(
+        default=1.0,
+        description="Fraction of agreement required for 'unanimous' strategy",
+    )
+    consensus_mode: Literal["whole", "field"] = Field(
+        default="whole",
+        description="Compare entire output ('whole') or per-field ('field') for structured outputs",
+    )
+
+
+class VoteNode(NodeBase):
+    """Runs the same task through multiple model instances and selects the best.
+
+    ``candidates`` lists models to vote across. If a single entry, that model
+    runs ``num_votes`` times (same-model voting). For cross-model ensemble,
+    set ``candidates`` to multiple models with ``num_votes=len(candidates)``.
+    """
+
+    node_type: Literal["vote"] = "vote"
+
+    candidates: list[str] = Field(
+        description="Model names to vote across; single entry = same-model voting",
+    )
+    num_votes: int = Field(default=3, ge=1, description="How many times to run the task")
+    prompt_template: str = Field(
+        default="", description="Prompt with {input_port} placeholders",
+    )
+    system_prompt: str = ""
+    temperature: float = Field(
+        default=0.7,
+        description="Temperature for all candidates; higher = more diverse votes",
+    )
+    output_json_schema: dict[str, Any] | None = Field(
+        default=None,
+        description="If set, all votes must conform; enables structured comparison",
+    )
+    vote_strategy: Literal["majority", "weighted", "best_of_n", "judge", "unanimous"] = Field(
+        default="majority",
+        description="How to select the winner from collected votes",
+    )
+    vote_config: VoteConfig | None = None
+    parallelism: int = Field(default=3, ge=1, description="Max concurrent LLM calls")
+    timeout_seconds: float | None = None

@@ -60,6 +60,10 @@ class NodeBase(BaseModel):
         description="Arbitrary UI hints (color, icon, collapsed state, …)",
     )
     metadata: dict[str, Any] = Field(default_factory=dict)
+    tags: list[str] = Field(
+        default_factory=list,
+        description="User-defined labels for hyperedge attachment and categorization",
+    )
     retry_policy: RetryPolicy | None = None
     read_set: list[ContextDeclaration] = Field(
         default_factory=list,
@@ -88,6 +92,10 @@ class LLMOperator(NodeBase):
     output_json_schema: dict[str, Any] | None = Field(
         default=None,
         description="JSON Schema the LLM response must conform to",
+    )
+    model_policy: Any | None = Field(
+        default=None,
+        description="Policy-driven model selection (ModelPolicy from dan.providers.model_policy)",
     )
 
 

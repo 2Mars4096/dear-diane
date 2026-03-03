@@ -8,10 +8,12 @@ from pydantic import BaseModel, Field
 
 from dan.models.context import ArtifactRef, SharedContextDeclaration
 from dan.models.control_flow import (
+    AgentTeamNode,
     CompositeNode,
     ForEachNode,
     GateNode,
     HumanInTheLoopNode,
+    HumanNode,
     IfElseNode,
     InputNode,
     OrchestratorNode,
@@ -19,9 +21,11 @@ from dan.models.control_flow import (
     ReduceNode,
     RouterNode,
     ValidatorNode,
+    VoteNode,
     WhileLoopNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
+from dan.models.hyperedges import Hyperedge
 from dan.models.nodes import CodeOperator, LLMOperator, RAGOperator, ToolOperator
 
 # ---------------------------------------------------------------------------
@@ -44,9 +48,12 @@ Node = Annotated[
         OrchestratorNode,
         ReduceNode,
         RouterNode,
+        HumanNode,
         HumanInTheLoopNode,
         ValidatorNode,
         CompositeNode,
+        AgentTeamNode,
+        VoteNode,
     ],
     Field(discriminator="node_type"),
 ]
@@ -91,6 +98,11 @@ class Graph(BaseModel):
 
     shared_context: list[SharedContextDeclaration] = Field(default_factory=list)
     artifact_refs: list[ArtifactRef] = Field(default_factory=list)
+
+    hyperedges: list[Hyperedge] = Field(
+        default_factory=list,
+        description="Graph-level behavior modifiers (skills, guardrails, style rules, overrides)",
+    )
 
     # ------------------------------------------------------------------
     # Convenience helpers (not part of the serialised contract)

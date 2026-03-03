@@ -161,6 +161,41 @@ class ContextProjection(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Feedback selector (Plan 16-4)
+# ---------------------------------------------------------------------------
+
+
+class FeedbackSelector(BaseModel):
+    """Declares which loop body outputs feed back to the next iteration.
+
+    Applied per-iteration before feedback injection to filter, rename,
+    or transform the data that cycles back to the loop body's entry.
+    ``include`` and ``exclude`` are mutually exclusive.
+    """
+
+    include: list[str] | None = Field(
+        default=None,
+        description="Output port names to feed back; only these ports cycle back",
+    )
+    exclude: list[str] | None = Field(
+        default=None,
+        description="Output port names to suppress; all except these cycle back",
+    )
+    rename: dict[str, str] | None = Field(
+        default=None,
+        description="Remap port names before feeding back (e.g. {'improved_draft': 'draft'})",
+    )
+    transform: str | None = Field(
+        default=None,
+        description="Expression evaluated on filtered dict to produce actual feedback",
+    )
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.include is not None and self.exclude is not None:
+            raise ValueError("include and exclude are mutually exclusive on FeedbackSelector")
+
+
+# ---------------------------------------------------------------------------
 # Boundary contracts and signals (Plan 14-2)
 # ---------------------------------------------------------------------------
 
