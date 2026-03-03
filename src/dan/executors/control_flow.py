@@ -37,6 +37,7 @@ from dan.models.control_flow import (
 )
 from dan.models.context import CompactionStrategy, FeedbackSelector, MergeStrategy
 from dan.models.nodes import NodeBase
+from dan.utils.tokens import estimate_tokens
 
 logger = logging.getLogger(__name__)
 
@@ -258,18 +259,22 @@ class WhileLoopExecutor:
         for iteration in range(max_iter):
             scope["iteration"] = iteration
 
-            await context.emit_event(
-                event_type="iteration_started",
-                node_id=node.id,
-                node_type="while_loop",
-                data={"iteration": iteration, "max_iterations": max_iter, "condition": node.condition},
-            )
-
             if _has_schema:
                 condition_vars = dict(scope)
                 condition_vars["iteration"] = iteration
             else:
                 condition_vars = {**working_data, "iteration": iteration}
+            await context.emit_event(
+                event_type="iteration_started",
+                node_id=node.id,
+                node_type="while_loop",
+                data={
+                    "iteration": iteration,
+                    "max_iterations": max_iter,
+                    "condition": node.condition,
+                    "context_tokens": estimate_tokens(json.dumps(condition_vars, default=str)),
+                },
+            )
             try:
                 should_continue = evaluate_condition(node.condition, condition_vars)
             except ConditionError as exc:
@@ -316,7 +321,14 @@ class WhileLoopExecutor:
                 data={"iteration": iteration, "max_iterations": max_iter},
             )
 
-            self._apply_compaction(node, scope)
+            try:
+                await self._apply_compaction(node, scope, context, iteration)
+            except ValueError as exc:
+                return NodeResult(
+                    outputs=working_data,
+                    status=NodeStatus.FAILED,
+                    error=str(exc),
+                )
 
             if self._check_stagnation(node, prev_output, body_output, scope):
                 logger.info(
@@ -356,7 +368,12 @@ class WhileLoopExecutor:
         )
 
     @staticmethod
-    def _apply_compaction(node: WhileLoopNode, scope: dict[str, Any]) -> None:
+    async def _apply_compaction(
+        node: WhileLoopNode,
+        scope: dict[str, Any],
+        context: ExecutionContext,
+        iteration: int,
+    ) -> None:
         rule = node.compaction_rule
         if rule is None or rule.strategy == CompactionStrategy.NONE:
             return
@@ -365,14 +382,85 @@ class WhileLoopExecutor:
         if not history:
             return
 
+        if (
+            rule.strategy in (CompactionStrategy.KEEP_LAST, CompactionStrategy.SLIDING_WINDOW)
+            and getattr(rule, "require_persistent_recall", True)
+            and context.short_term_memory is None
+            and getattr(context, "state_store", None) is None
+        ):
+            raise ValueError(
+                (
+                    f"Unsafe compaction for loop '{node.id}': strategy '{rule.strategy.value}' "
+                    "requires persistent recall (memory or state store). "
+                    "Use summarize/diff_based or enable persistent recall."
+                )
+            )
+
+        before_tokens = sum(estimate_tokens(json.dumps(h, default=str)) for h in history)
+        old_history = list(history)
+
         if rule.strategy == CompactionStrategy.KEEP_LAST:
             scope["history"] = history[-1:]
         elif rule.strategy == CompactionStrategy.SLIDING_WINDOW:
             window = rule.window_size or 3
             scope["history"] = history[-window:]
+        elif rule.strategy == CompactionStrategy.SUMMARIZE:
+            every = getattr(rule, "summarize_every_n", None) or 1
+            if iteration % every == 0 and len(history) > 1:
+                scope["history"] = [
+                    {
+                        "summary": f"{len(history)} iterations summarized",
+                        "latest": history[-1],
+                    }
+                ]
         elif rule.strategy == CompactionStrategy.DIFF_BASED:
             if len(history) > 2:
                 scope["history"] = [history[0], history[-1]]
+
+        removed = max(0, len(old_history) - len(scope.get("history", [])))
+        if removed > 0 and context.short_term_memory is not None:
+            from dan.engine.memory_pipeline import MemoryItem
+
+            for evicted in old_history[:removed]:
+                context.short_term_memory.append(
+                    MemoryItem(
+                        content=json.dumps(evicted, default=str),
+                        source_node_id=node.id,
+                        source_run_id=getattr(context, "_run_id", ""),
+                        metadata={"entry_type": "loop_compaction"},
+                    )
+                )
+
+        if getattr(context, "state_store", None) is not None:
+            try:
+                await context.state_store.write(
+                    getattr(context.state, "run_id", "run"),
+                    f"loop:{node.id}:iter:{iteration}",
+                    {
+                        "iteration": iteration,
+                        "strategy": rule.strategy.value,
+                        "history_len": len(scope.get("history", [])),
+                    },
+                )
+            except Exception:
+                logger.debug("State externalization failed for loop compaction", exc_info=True)
+
+        after_tokens = sum(
+            estimate_tokens(json.dumps(h, default=str))
+            for h in scope.get("history", [])
+        )
+        await context.emit_event(
+            event_type="loop_compaction_applied",
+            node_id=node.id,
+            node_type="while_loop",
+            data={
+                "iteration": iteration,
+                "strategy": rule.strategy.value,
+                "tokens_before": before_tokens,
+                "tokens_after": after_tokens,
+                "items_persisted_to_memory": removed,
+            },
+        )
 
     @staticmethod
     def _check_stagnation(
@@ -1163,7 +1251,7 @@ class OrchestratorExecutor:
                 error="orchestrator node has no teams",
             )
 
-        if not node.orchestrator_prompt and node.orchestrator_model is None:
+        if not node.orchestrator_prompt or node.orchestrator_model is None:
             return await self._execute_static_fanout(node, inputs, context)
         return await self._execute_llm_driven(node, inputs, context)
 
@@ -1471,12 +1559,23 @@ class OrchestratorExecutor:
         all_failed = bool(team_status) and all(
             s == "failed" for s in team_status.values()
         )
+        no_work_dispatched = not team_status
+
         status = NodeStatus.COMPLETED
         error_msg: str | None = None
-        if all_failed:
+
+        if halted:
+            status = NodeStatus.COMPLETED
+        elif all_failed:
             status = NodeStatus.FAILED
             error_msg = "All teams failed"
-        elif exceeded and not halted:
+        elif exceeded and no_work_dispatched:
+            status = NodeStatus.FAILED
+            error_msg = (
+                f"Safety bound reached without dispatching any work: "
+                f"{llm_calls} LLM calls, {iteration} iterations"
+            )
+        elif exceeded:
             error_msg = (
                 f"Safety bound reached: {llm_calls} LLM calls, "
                 f"{iteration} iterations"
@@ -1856,7 +1955,20 @@ class VoteExecutor:
                     return None
 
         tasks = [_call(i, m) for i, m in candidates]
-        raw = await asyncio.gather(*tasks)
+        timeout = getattr(node, "timeout_seconds", None)
+        try:
+            if timeout is not None:
+                raw = await asyncio.wait_for(
+                    asyncio.gather(*tasks), timeout=timeout,
+                )
+            else:
+                raw = await asyncio.gather(*tasks)
+        except asyncio.TimeoutError:
+            return NodeResult(
+                outputs={},
+                status=NodeStatus.FAILED,
+                error=f"Voting timed out after {timeout}s",
+            )
 
         votes: list[dict[str, Any]] = [v for v in raw if v is not None]
 
@@ -2135,6 +2247,8 @@ class AgentTeamExecutor:
         current_agent = agent_names[0]
         agent_index = 0
         completed_via_condition = False
+        error_turns = 0
+        total_turns_executed = 0
 
         for turn in range(node.max_turns):
             conversation.turn_count = turn + 1
@@ -2152,11 +2266,13 @@ class AgentTeamExecutor:
             )
             sub_graph_key = node.agents[current_agent]
 
+            total_turns_executed += 1
             try:
                 agent_output = await context.run_subgraph(
                     sub_graph_key, agent_in, parent_node_id=node.id,
                 )
             except Exception as exc:
+                error_turns += 1
                 msg = TeamMessage(
                     sender=current_agent,
                     content=f"[Error: {exc}]",
@@ -2240,16 +2356,19 @@ class AgentTeamExecutor:
             },
         )
 
+        all_errored = total_turns_executed > 0 and error_turns == total_turns_executed
         final = self._build_final_result(
             conversation, agent_contributions, consensus_reached,
         )
         return NodeResult(
             outputs=final,
-            status=NodeStatus.COMPLETED,
+            status=NodeStatus.FAILED if all_errored else NodeStatus.COMPLETED,
+            error="All agent turns failed" if all_errored else None,
             metadata={
                 "total_turns": conversation.turn_count,
                 "consensus_reached": consensus_reached,
                 "agent_count": len(agent_names),
+                "error_turns": error_turns,
             },
         )
 
