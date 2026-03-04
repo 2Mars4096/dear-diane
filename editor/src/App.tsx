@@ -8,6 +8,7 @@ import ConfigPanel from "./components/ConfigPanel";
 import LogPanel from "./components/LogPanel";
 import OutputPreview from "./components/OutputPreview";
 import RunHistoryPanel from "./components/RunHistoryPanel";
+import TokenAnalyticsPanel from "./components/TokenAnalyticsPanel";
 import BreadcrumbBar from "./components/BreadcrumbBar";
 import PortMappingOverlay from "./components/PortMappingOverlay";
 import ToastContainer from "./components/ToastContainer";
@@ -17,7 +18,7 @@ import CommandPalette from "./components/CommandPalette";
 import HumanInputDialog from "./components/HumanInputDialog";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 
-type BottomTab = "logs" | "output" | "history";
+type BottomTab = "logs" | "output" | "history" | "optimizations";
 
 const MIN_PANEL_HEIGHT = 80;
 const MAX_PANEL_HEIGHT = 600;
@@ -28,6 +29,7 @@ export default function App() {
   const restoreTabs = useGraphStore((s) => s.restoreTabs);
   const logFocusCounter = useGraphStore((s) => s.logFocusCounter);
   const historyFocusCounter = useGraphStore((s) => s.historyFocusCounter);
+  const wasteFindings = useGraphStore((s) => s.wasteFindings);
   const [bottomTab, setBottomTab] = useState<BottomTab>("logs");
   const [panelHeight, setPanelHeight] = useState(DEFAULT_PANEL_HEIGHT);
   const dragging = useRef(false);
@@ -126,11 +128,27 @@ export default function App() {
                 >
                   History
                 </button>
+                <button
+                  onClick={() => setBottomTab("optimizations")}
+                  className={`px-3 py-1.5 text-[11px] font-medium border-b-2 flex items-center gap-1 ${
+                    bottomTab === "optimizations"
+                      ? "border-indigo-500 text-indigo-600"
+                      : "border-transparent text-gray-400 hover:text-gray-600"
+                  }`}
+                >
+                  Optimizations
+                  {wasteFindings.length > 0 && (
+                    <span className="bg-amber-100 text-amber-700 text-[9px] font-bold px-1 py-0.5 rounded-full leading-none">
+                      {wasteFindings.length}
+                    </span>
+                  )}
+                </button>
               </div>
               <div className="flex-1 overflow-hidden">
                 {bottomTab === "logs" && <LogPanel />}
                 {bottomTab === "output" && <OutputPreview />}
                 {bottomTab === "history" && <RunHistoryPanel />}
+                {bottomTab === "optimizations" && <TokenAnalyticsPanel />}
               </div>
             </div>
           </div>
