@@ -28,7 +28,7 @@
   - [ ] 4-4. Collapse verbose run output by default; expand on click *(deferred — needs richer rendering)*
 - [x] 5. Build-mode strict edge safety in retry/replan paths
   - [x] 5-1. Ensure `_coerce_strict_edges` runs on retry and replan mutation plans, not just the first attempt
-  - [ ] 5-2. Add test: build-mode mutation → validation failure → auto-retry → verify strict edges on second attempt
+  - [ ] 5-2. Add test: build-mode mutation → validation failure → auto-retry → verify strict edges on second attempt *(deferred — edge-case coverage, not blocking reliability)*
 - [x] 6. Environment variable reconciliation
   - [x] 6-1. Audit all env var references: `DAN_LLM_MODEL`, `DAN_LLM_DEFAULT_MODEL`, `DAN_CHAT_MODEL`
   - [x] 6-2. Consolidate to two vars: `DAN_LLM_MODEL` (execution default) and `DAN_CHAT_MODEL` (chat override, falls back to `DAN_LLM_MODEL`)
@@ -39,10 +39,10 @@
   - [x] 7-3. Test stale revision rejection (wrong `client_graph_revision` → `revision_mismatch` flag)
   - [x] 7-4. Test `/run` command dispatch (full scope, node scope w/ missing input error, nonexistent graph, stream channel)
   - [ ] 7-5. Test mutation flow: NL request → `chat_mutation` event → apply → verify graph state *(deferred — needs richer mock)*
-- [ ] 8. Reconcile plan documentation with actual scope
-  - [ ] 8-1. Audit plans 10-5, 10-6, 10-2: mark genuinely incomplete tasks as deferred (not completed)
-  - [ ] 8-2. Move deferred items to backlog in `todo.md` or into this phase's tasks
-  - [ ] 8-3. Update plan statuses to reflect reality
+- [ ] 8. Reconcile plan documentation with actual scope *(deferred — housekeeping task, not blocking feature work)*
+  - [ ] 8-1. Audit plans 10-5, 10-6, 10-2: mark genuinely incomplete tasks as deferred (not completed) *(deferred — same as parent)*
+  - [ ] 8-2. Move deferred items to backlog in `todo.md` or into this phase's tasks *(deferred — same as parent)*
+  - [ ] 8-3. Update plan statuses to reflect reality *(deferred — same as parent)*
 
 ## Decisions
 

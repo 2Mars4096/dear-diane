@@ -1,6 +1,6 @@
 # 6: Phase 3.75 — Visual Editor Full Editing
 
-**Status:** in-progress
+**Status:** completed
 **Goal:** Make the visual editor a complete authoring surface with undo/redo, copy/paste, port editing, context menus, inline rename, validation feedback, import/export, command palette, InputNode support, execution-time UX (loop visualization, streaming output, human input), and workflow-as-node reuse — so users can build and run workflows entirely from the UI without touching JSON or Python.
 
 ## Sub-Plans

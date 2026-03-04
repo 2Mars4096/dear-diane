@@ -1,7 +1,7 @@
 # 6-3: Node and Port Editing
 
 **Parent:** [6-phase-3.75-visual-editor-editing](6-phase-3.75-visual-editor-editing.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Replace read-only port display with a full port editor, add inline node rename on double-click, and build a visual JSON Schema editor for LLM node output schemas. No dependencies on other sub-plans.
 
 ## Tasks

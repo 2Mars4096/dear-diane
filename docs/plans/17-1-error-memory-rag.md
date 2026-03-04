@@ -1,7 +1,7 @@
 # 17-1: Error Memory & Prompt Augmentation (Tier 1)
 
 **Parent:** [17-self-evolving-orchestrator](17-self-evolving-orchestrator.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Capture run errors at completion, index them into a dedicated RAG collection, and retrieve relevant past failures to inject as prompt context before LLM decision points — enabling the system to learn from past mistakes via retrieval-augmented generation.
 
 ## Existing Baseline
@@ -52,14 +52,14 @@
   - [x] 5-1. Unit tests: `ErrorRecord` model validation, `extract_error_records()` classification heuristics (cover all `ErrorCategory` values), input snapshot truncation.
   - [x] 5-2. Unit tests: `ErrorMemoryIndex` CRUD — `index_errors`, `query_similar`, `clear`, `stats`, deduplication behavior.
   - [x] 5-3. Unit tests: `ErrorContextProvider` prompt formatting, token limit enforcement, empty-results handling.
-  - [ ] 5-4. Integration test: run a workflow that fails → verify errors are extracted and indexed → run `query_similar` with related context → verify relevant errors returned with scores.
-  - [ ] 5-5. Integration test: LLM-executor prompt injection — run with `error_memory_enabled=True` → verify targeted LLM nodes receive error-memory context as an additional system message before provider call.
-  - [ ] 5-6. Regression test: workflow fails due to a specific pattern → error indexed → on next run, LLM receives error context in prompt. (Full behavioral validation that the LLM *changes* its output requires mock LLM; defer to Tier 2 quality tests.)
+  - [ ] 5-4. Integration test: run a workflow that fails → verify errors are extracted and indexed → run `query_similar` with related context → verify relevant errors returned with scores. *(deferred — requires full engine execution with embedding provider; CI gating needed)*
+  - [ ] 5-5. Integration test: LLM-executor prompt injection — run with `error_memory_enabled=True` → verify targeted LLM nodes receive error-memory context as an additional system message before provider call. *(deferred — requires real LLM provider in integration harness)*
+  - [ ] 5-6. Regression test: workflow fails due to a specific pattern → error indexed → on next run, LLM receives error context in prompt. (Full behavioral validation that the LLM *changes* its output requires mock LLM; defer to Tier 2 quality tests.) *(deferred — requires mock LLM + multi-run orchestration)*
 
 - [ ] 6. (Deferred to Phase 11) Cross-workflow error memory
-  - [ ] 6-1. Keep Tier 1 in Phase 9D strictly workflow-scoped (`dan_errors_{workflow_id}` only).
-  - [ ] 6-2. Move global collections / cross-workflow retrieval design to [19-1-workflow-experience-memory](19-1-workflow-experience-memory.md) under Phase 11.
-  - [ ] 6-3. When Phase 11 starts, add migration notes for collection naming and retrieval-scope compatibility.
+  - [ ] 6-1. Keep Tier 1 in Phase 9D strictly workflow-scoped (`dan_errors_{workflow_id}` only). *(deferred — Phase 11 scope; see 19-1)*
+  - [ ] 6-2. Move global collections / cross-workflow retrieval design to [19-1-workflow-experience-memory](19-1-workflow-experience-memory.md) under Phase 11. *(deferred — Phase 11 scope; see 19-1)*
+  - [ ] 6-3. When Phase 11 starts, add migration notes for collection naming and retrieval-scope compatibility. *(deferred — Phase 11 scope; migration notes to be written when cross-workflow landing)*
 
 ## Primary Files
 

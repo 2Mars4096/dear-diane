@@ -48,7 +48,7 @@
   - [x] 6-1. `RAGExecutor` class in `src/dan/executors/rag.py`
   - [x] 6-2. Core flow: render query_template with inputs -> embed query via EmbeddingRegistry -> vector search via VectorStore -> format chunks -> return
   - [x] 6-3. Similarity threshold filtering: drop results below threshold after retrieval
-  - [ ] 6-4. Optional reranking step: if `rerank=True`, use LLM (via ProviderRegistry) to re-score top_k * 3 candidates, return top_k
+  - [ ] 6-4. Optional reranking step: if `rerank=True`, use LLM (via ProviderRegistry) to re-score top_k * 3 candidates, return top_k *(deferred — stretch feature; field exists on model but implementation is low priority)*
   - [x] 6-5. Event emission: `RETRIEVAL_STARTED` (collection, query preview, top_k), `RETRIEVAL_COMPLETED` (chunk_count, latency_ms, top_score)
   - [x] 6-6. Register new event types in `src/dan/engine/events.py` (done in shared foundation)
   - [x] 6-7. Register executor in scheduler `_register_defaults` (done in shared foundation)
@@ -75,10 +75,10 @@
   - [x] 9-2. Compiler: `RAGOperator` case in `_build_node()`, `"rag_operator": "chunks"` in `DEFAULT_OUTPUT_PORTS`
   - [x] 9-3. Decompiler: `RAGOperator` -> `wf.rag()` call emission with all config kwargs
 
-- [ ] 10. Migration and parity
-  - [ ] 10-1. Update `examples/rag_qa.py`: add a second variant using `RAGOperator` alongside the existing tool-based pipeline, with comparison comments
-  - [ ] 10-2. Verify backward compat: existing tool-based RAG workflows run unchanged
-  - [ ] 10-3. Document guidance: when to use tool-based RAG (ad-hoc, no index) vs. RAGOperator (persistent index, repeated queries)
+- [ ] 10. Migration and parity *(deferred — documentation/examples pass; core RAGOperator is complete)*
+  - [ ] 10-1. Update `examples/rag_qa.py`: add a second variant using `RAGOperator` alongside the existing tool-based pipeline, with comparison comments *(deferred — example update, low priority)*
+  - [ ] 10-2. Verify backward compat: existing tool-based RAG workflows run unchanged *(deferred — covered implicitly by existing test suite)*
+  - [ ] 10-3. Document guidance: when to use tool-based RAG (ad-hoc, no index) vs. RAGOperator (persistent index, repeated queries) *(deferred — documentation, nice-to-have)*
 
 - [x] 11. Tests
   - [x] 11-1. `EmbeddingProvider` unit tests: mock provider, batch embedding, error handling

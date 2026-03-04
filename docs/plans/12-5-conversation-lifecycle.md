@@ -22,16 +22,16 @@
   - [x] 1-4. Partial response preserved as-is with `*[generation stopped]*` suffix
   - [x] 1-5. WebSocket: emit `chat_interrupted` event with partial content; added `ChatInterruptedEvent` model
 - [ ] 2. Message queuing (deferred — complex, see Notes)
-  - [ ] 2-1. Frontend: allow typing and sending while LLM is generating (queue in local state)
-  - [ ] 2-2. Queued messages shown in chat with "pending" indicator
-  - [ ] 2-3. After current response completes, next queued message auto-sends
-  - [ ] 2-4. Queue reordering: user can delete queued messages before they send
-  - [ ] 2-5. Backend: sequential processing (no parallel LLM calls per thread)
+  - [ ] 2-1. Frontend: allow typing and sending while LLM is generating (queue in local state) *(deferred — complex interaction with mutation context)*
+  - [ ] 2-2. Queued messages shown in chat with "pending" indicator *(deferred — depends on 2-1)*
+  - [ ] 2-3. After current response completes, next queued message auto-sends *(deferred — depends on 2-1)*
+  - [ ] 2-4. Queue reordering: user can delete queued messages before they send *(deferred — depends on 2-1)*
+  - [ ] 2-5. Backend: sequential processing (no parallel LLM calls per thread) *(deferred — depends on 2-1)*
 - [x] 3. Conversation checkpoints (basic)
   - [x] 3-1. Auto-checkpoint: save graph state snapshot after each mutation apply (`save_checkpoint` in `chat_store.py`, `POST /api/chats/{wf}/{tid}/checkpoint` endpoint, called from `handleApplyMutation`)
-  - [ ] 3-2. Manual checkpoint: "Save checkpoint" button in chat header → named snapshot
-  - [ ] 3-3. Checkpoint list: show in thread sidebar with timestamp, name, and graph thumbnail
-  - [ ] 3-4. Restore checkpoint: reverts graph and truncates chat history to that point
+  - [ ] 3-2. Manual checkpoint: "Save checkpoint" button in chat header → named snapshot *(deferred — auto-checkpoint is the MVP)*
+  - [ ] 3-3. Checkpoint list: show in thread sidebar with timestamp, name, and graph thumbnail *(deferred — restore UI not yet needed)*
+  - [ ] 3-4. Restore checkpoint: reverts graph and truncates chat history to that point *(deferred — restore UI not yet needed)*
   - [x] 3-5. Persist checkpoints to disk alongside thread data (`checkpoints/` subdirectory)
 - [x] 4. Export conversation
   - [x] 4-1. Export as Markdown: user messages, assistant messages, mutation summaries, timestamps
@@ -49,9 +49,9 @@
   - [x] 6-3. Pin thread: pinned threads stay at top of list (metadata stored in `.meta.json` sidecar)
   - [ ] 6-4. Archive thread: move to "Archived" section, excluded from search by default (deferred)
 - [ ] 7. Thread branching (stretch — deferred)
-  - [ ] 7-1. "Branch from here": creates new thread with history up to selected message
-  - [ ] 7-2. Branch indicator: show which thread was branched from
-  - [ ] 7-3. Visual: branching icon in thread list, parent-child relationship
+  - [ ] 7-1. "Branch from here": creates new thread with history up to selected message *(deferred — stretch goal, not blocking core UX)*
+  - [ ] 7-2. Branch indicator: show which thread was branched from *(deferred — stretch goal)*
+  - [ ] 7-3. Visual: branching icon in thread list, parent-child relationship *(deferred — stretch goal)*
 
 ## Decisions
 

@@ -63,7 +63,7 @@
   - [x] 7-6. Builder/decompiler round-trip: `wf.validator()` -> compile -> decompile -> re-compile matches
   - [x] 7-7. Event emission: VALIDATION_RESULT with correct passed/violation_count/summary
   - [x] 7-8. Edge case: empty rules list (trivially passes), data is not a dict (wraps in {"value": data}), validator with no incoming edges (validation error at graph level)
-  - [ ] 7-9. Update `test_builtins_registered` count for new executor type
+  - [ ] 7-9. Update `test_builtins_registered` count for new executor type *(deferred — test bookkeeping, low priority)*
 
 - [x] 8. Docs sync
   - [x] 8-1. `architecture.md`: add ValidatorNode to node types list, document rule types, add `executors/validator.py` and `validation/boundaries.py` to directory tree

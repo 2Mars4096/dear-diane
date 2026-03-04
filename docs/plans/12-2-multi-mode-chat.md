@@ -48,10 +48,10 @@
   - [x] 6-3. System prompt focuses on error diagnosis: identify root cause, suggest node edits, offer to fix
   - [ ] 6-4. Debug mutations get a `[debug-fix]` tag in the diff preview for clarity → deferred to follow-up
   - [ ] 6-5. "Fix this" shortcut: one-click from run error → open chat in Debug mode with error pre-filled → deferred to follow-up
-- [ ] 7. Auto-mode detection (stretch)
-  - [ ] 7-1. Heuristic: questions ("what", "why", "how", "explain") → Ask; error context → Debug; "build", "create", "add" → Agent
-  - [ ] 7-2. Show detected mode as suggestion, user can override
-  - [ ] 7-3. Flag as experimental in UI
+- [ ] 7. Auto-mode detection *(deferred — stretch goal, not blocking core UX)*
+  - [ ] 7-1. Heuristic: questions ("what", "why", "how", "explain") → Ask; error context → Debug; "build", "create", "add" → Agent *(deferred — stretch goal)*
+  - [ ] 7-2. Show detected mode as suggestion, user can override *(deferred — stretch goal)*
+  - [ ] 7-3. Flag as experimental in UI *(deferred — stretch goal)*
 
 ## Decisions
 

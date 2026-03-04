@@ -1,7 +1,7 @@
 # 6-5: Input Node, Graph I/O, Search, Sub-Graph from Selection
 
 **Parent:** [6-phase-3.75-visual-editor-editing](6-phase-3.75-visual-editor-editing.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Add a dedicated InputNode type for canvas-based workflow inputs, JSON import/export for graph sharing, a Cmd+K command palette for node search, and sub-graph creation from multi-selected nodes. Depends on 6-1 for multi-select.
 
 ## Tasks

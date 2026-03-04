@@ -64,10 +64,10 @@
   - [x] 9-2. Add `google-generativeai>=0.8` to `pyproject.toml` (optional dependency group)
   - [x] 9-3. Providers gracefully handle missing SDK — `ImportError` → clear error message at constructor time
 - [ ] 10. Docs sync — deferred per instructions (do NOT update changelog, todo, or architecture docs)
-  - [ ] 10-1. Update `architecture.md`
-  - [ ] 10-2. Update `llm-api-guide.md`
-  - [ ] 10-3. Update `README.md`
-  - [ ] 10-4. Update `todo.md` / `changelog.md`
+  - [ ] 10-1. Update `architecture.md` *(deferred — docs sync low priority)*
+  - [ ] 10-2. Update `llm-api-guide.md` *(deferred — docs sync low priority)*
+  - [ ] 10-3. Update `README.md` *(deferred — docs sync low priority)*
+  - [ ] 10-4. Update `todo.md` / `changelog.md` *(deferred — docs sync low priority)*
 
 ## Decisions
 

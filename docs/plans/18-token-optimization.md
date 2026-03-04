@@ -110,7 +110,7 @@ Memory and RAG are the most powerful token optimization mechanisms available: th
 
 - Wave 2 implementation landed in runtime code: cache subsystem (`NodeResultCache`, `SemanticCache`), smart context assembly wiring in `LLMExecutor`, and advisory token budget plumbing in scheduler/control-flow.
 - No hard-cap truncation was introduced; all reductions are deferral/summarization/reference-based with retrieval paths preserved.
-- Wave 3 completed 18-4: token breakdown accounting (`TokenBreakdown`, `TokenSaving`), waste analyzer (8 categories), optimization report API, evolving playbook bridge to Plan 17 rules, `OptimizationPlaybook` with effectiveness tracking and principle promotion. Frontend visualization deferred to separate PR.
+- Wave 3 completed 18-4: token breakdown accounting (`TokenBreakdown`, `TokenSaving`), waste analyzer (8 categories), optimization report API, evolving playbook bridge to Plan 17 rules, `OptimizationPlaybook` with effectiveness tracking and principle promotion. Frontend visualization: token heatmap, tooltips, waste badges, enhanced run summary, Optimizations tab with one-click apply. Remaining deferred: token flow edges, before/after estimation, rule dashboard.
 
 ## Notes
 

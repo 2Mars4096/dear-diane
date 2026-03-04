@@ -49,10 +49,10 @@
   - [x] 7-9. Integration: halt — parallel nodes in the same level finish, but next level is not dispatched
   - [x] 7-10. Audit test: confirm ForEach parallelism semaphore behavior with concurrent mock
   - [x] 7-11. Unit: `RETRY_ATTEMPTED` event type exists and is emittable
-- [ ] 8. Docs sync
-  - [ ] 8-1. Update `architecture.md` — document RetryPolicy model, executor retry behavior
-  - [ ] 8-2. Update `llm-api-guide.md` — add retry_policy to node parameter tables
-  - [ ] 8-3. Update `todo.md` / `changelog.md`
+- [ ] 8. Docs sync *(deferred — docs sync low priority, not blocking)*
+  - [ ] 8-1. Update `architecture.md` — document RetryPolicy model, executor retry behavior *(deferred — docs sync low priority)*
+  - [ ] 8-2. Update `llm-api-guide.md` — add retry_policy to node parameter tables *(deferred — docs sync low priority)*
+  - [ ] 8-3. Update `todo.md` / `changelog.md` *(deferred — docs sync low priority)*
 
 ## Decisions
 

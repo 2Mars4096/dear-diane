@@ -5,52 +5,52 @@
 
 ## Tasks
 - [x] 1. Module structure
-  - [ ] 1-1. Create `src/dan/builder/` package with `__init__.py`, `refs.py`, `builder.py`, `compiler.py`, `decompiler.py`
+  - [x] 1-1. Create `src/dan/builder/` package with `__init__.py`, `refs.py`, `builder.py`, `compiler.py`, `decompiler.py`
 - [x] 2. Node-type output contract map
-  - [ ] 2-1. Define `DEFAULT_OUTPUT_PORTS` dict mapping each `node_type` to its actual runtime output port names (e.g. `llm_operator` -> `text` without schema, `result` with schema; `for_each` -> `results`; `if_else` -> `branch`; etc.)
-  - [ ] 2-2. Compiler uses this map instead of a universal `result` default
+  - [x] 2-1. Define `DEFAULT_OUTPUT_PORTS` dict mapping each `node_type` to its actual runtime output port names (e.g. `llm_operator` -> `text` without schema, `result` with schema; `for_each` -> `results`; `if_else` -> `branch`; etc.)
+  - [x] 2-2. Compiler uses this map instead of a universal `result` default
 - [x] 3. Core reference types (`refs.py`)
-  - [ ] 3-1. `NodeRef` — `__format__` (marker emission), `__rshift__` (>> chaining), `__getitem__` (port subscript), `__repr__`
-  - [ ] 3-2. `PortRef` — immutable `(node_id, port_name)` pair, `__format__` marker emission
-  - [ ] 3-3. Sanitized template variable mapping — decouple placeholder tokens from raw node IDs to guarantee valid `str.format_map` keys (e.g. hyphens/dots in node IDs -> underscored aliases)
+  - [x] 3-1. `NodeRef` — `__format__` (marker emission), `__rshift__` (>> chaining), `__getitem__` (port subscript), `__repr__`
+  - [x] 3-2. `PortRef` — immutable `(node_id, port_name)` pair, `__format__` marker emission
+  - [x] 3-3. Sanitized template variable mapping — decouple placeholder tokens from raw node IDs to guarantee valid `str.format_map` keys (e.g. hyphens/dots in node IDs -> underscored aliases)
 - [x] 4. WorkflowBuilder (`builder.py`)
-  - [ ] 4-1. `workflow()` factory function
-  - [ ] 4-2. Node creation methods: `.llm()`, `.tool()`, `.code()`, `.if_else()`, `.reduce()`, `.router()`, `.human_in_the_loop()`
-  - [ ] 4-3. `.edge()` explicit wiring, `>>` operator registration
-  - [ ] 4-4. Internal state tracking: pending nodes, pending edges, pending sub-graphs, marker registry
+  - [x] 4-1. `workflow()` factory function
+  - [x] 4-2. Node creation methods: `.llm()`, `.tool()`, `.code()`, `.if_else()`, `.reduce()`, `.router()`, `.human_in_the_loop()`
+  - [x] 4-3. `.edge()` explicit wiring, `>>` operator registration
+  - [x] 4-4. Internal state tracking: pending nodes, pending edges, pending sub-graphs, marker registry
 - [x] 5. Sub-graph context managers
-  - [ ] 5-1. `.while_loop()` — yields sub-`WorkflowBuilder` with `.input` PortRef
-  - [ ] 5-2. `.for_each()` — yields sub-`WorkflowBuilder` with `.item` PortRef
-  - [ ] 5-3. `.composite()` — yields sub-`WorkflowBuilder` with configurable I/O mappings
-  - [ ] 5-4. On `__exit__`, compile sub-builder into `Graph` and register in `parent.sub_graphs`
+  - [x] 5-1. `.while_loop()` — yields sub-`WorkflowBuilder` with `.input` PortRef
+  - [x] 5-2. `.for_each()` — yields sub-`WorkflowBuilder` with `.item` PortRef
+  - [x] 5-3. `.composite()` — yields sub-`WorkflowBuilder` with configurable I/O mappings
+  - [x] 5-4. On `__exit__`, compile sub-builder into `Graph` and register in `parent.sub_graphs`
 - [x] 6. Compiler (`compiler.py`)
-  - [ ] 6-1. Resolve f-string markers (`<<dan:node_id:port_name>>`) in prompt templates
-  - [ ] 6-2. Auto-generate `InputPort`/`OutputPort` definitions using output contract map
-  - [ ] 6-3. Auto-generate `DataEdge` objects from markers, `>>` registrations, and PortRef connections
-  - [ ] 6-4. Assemble `Graph` with `sub_graphs`, `entry_points`, `exit_points`, `shared_context`
-  - [ ] 6-5. Call `validate_graph()` — raise `BuildError` with all validation errors
+  - [x] 6-1. Resolve f-string markers (`<<dan:node_id:port_name>>`) in prompt templates
+  - [x] 6-2. Auto-generate `InputPort`/`OutputPort` definitions using output contract map
+  - [x] 6-3. Auto-generate `DataEdge` objects from markers, `>>` registrations, and PortRef connections
+  - [x] 6-4. Assemble `Graph` with `sub_graphs`, `entry_points`, `exit_points`, `shared_context`
+  - [x] 6-5. Call `validate_graph()` — raise `BuildError` with all validation errors
 - [x] 7. Decompiler (`decompiler.py`)
-  - [ ] 7-1. `decompile(graph: Graph) -> str` — topological sort, variable name generation, sub-graph detection
-  - [ ] 7-2. Chain detection → emit `>>` operator; non-trivial wiring → emit `wf.edge()`
-  - [ ] 7-3. Lossless preservation criteria: `ui`, `metadata`, `shared_context`, `artifact_refs`, `ControlEdge`, `ContextEdge`, deterministic output ordering
-  - [ ] 7-4. Output is a complete, importable Python module string
+  - [x] 7-1. `decompile(graph: Graph) -> str` — topological sort, variable name generation, sub-graph detection
+  - [x] 7-2. Chain detection → emit `>>` operator; non-trivial wiring → emit `wf.edge()`
+  - [x] 7-3. Lossless preservation criteria: `ui`, `metadata`, `shared_context`, `artifact_refs`, `ControlEdge`, `ContextEdge`, deterministic output ordering
+  - [x] 7-4. Output is a complete, importable Python module string
 - [x] 8. Serialization helpers
-  - [ ] 8-1. `.to_json()`, `.to_dict()`, `.to_graph()` on `WorkflowBuilder`
-  - [ ] 8-2. `from_json()` / `from_dict()` class methods (decompile + rebuild)
+  - [x] 8-1. `.to_json()`, `.to_dict()`, `.to_graph()` on `WorkflowBuilder`
+  - [x] 8-2. `from_json()` / `from_dict()` class methods (decompile + rebuild)
 - [x] 9. Unit tests
-  - [ ] 9-1. `NodeRef`/`PortRef` behavior: `__format__`, `>>`, `__getitem__`, sanitized aliases
-  - [ ] 9-2. Compiler: marker resolution, port generation, edge generation, each node type
-  - [ ] 9-3. Sub-graph context managers: while_loop, for_each, composite
-  - [ ] 9-4. Decompiler: round-trip (decompile → exec → build → compare Graph)
+  - [x] 9-1. `NodeRef`/`PortRef` behavior: `__format__`, `>>`, `__getitem__`, sanitized aliases
+  - [x] 9-2. Compiler: marker resolution, port generation, edge generation, each node type
+  - [x] 9-3. Sub-graph context managers: while_loop, for_each, composite
+  - [x] 9-4. Decompiler: round-trip (decompile → exec → build → compare Graph)
 - [x] 10. Integration tests
-  - [ ] 10-1. Paper-writing workflow via builder (~30 lines), verify compiled Graph matches manual construction
-  - [ ] 10-2. Run compiled graph through Engine (mock LLM)
-  - [ ] 10-3. Decompile-recompile round-trip assertion (structural equality)
-  - [ ] 10-4. Editor round-trip golden test: builder → Graph JSON → editor adapter → Graph JSON → decompile → rebuild
+  - [x] 10-1. Paper-writing workflow via builder (~30 lines), verify compiled Graph matches manual construction
+  - [x] 10-2. Run compiled graph through Engine (mock LLM)
+  - [x] 10-3. Decompile-recompile round-trip assertion (structural equality)
+  - [x] 10-4. Editor round-trip golden test: builder → Graph JSON → editor adapter → Graph JSON → decompile → rebuild
 - [x] 11. Update docs
-  - [ ] 11-1. `docs/architecture.md` — builder module layout
-  - [ ] 11-2. `docs/todo.md` — mark Phase 1.5 in-progress / complete
-  - [ ] 11-3. `docs/changelog.md` — append entry
+  - [x] 11-1. `docs/architecture.md` — builder module layout
+  - [x] 11-2. `docs/todo.md` — mark Phase 1.5 in-progress / complete
+  - [x] 11-3. `docs/changelog.md` — append entry
 
 ## API Design
 

@@ -1,7 +1,7 @@
 # 17-2: Reflection Node (Tier 2)
 
 **Parent:** [17-self-evolving-orchestrator](17-self-evolving-orchestrator.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Add a `ReflectionNode` that post-processes failed or degraded runs, uses LLM reasoning to distill raw errors into structured causal principles ("when X happens, avoid Y because Z"), and persists them as reusable memory entries for future retrieval and Tier 3 rule generation.
 
 ## Existing Baseline
@@ -45,7 +45,7 @@
   - [x] 3-1. Define `PrincipleStore` helper in `engine/error_memory.py`: wraps `MemoryStore` with principle-specific API. Storage layout: key = `principle:{principle_id}`, scope = `WORKFLOW`, value = serialized `CausalPrinciple` dict.
   - [x] 3-2. Implement `PrincipleStore` methods: `store_principles(workflow_id, principles: list[CausalPrinciple])`, `load_principles(workflow_id, tags: list[str] | None = None, min_confidence: float = 0.0) -> list[CausalPrinciple]`, `delete_principle(workflow_id, principle_id)`, `expire_principles(workflow_id, max_age_days: int)`.
   - [x] 3-3. Wire principle retrieval into Tier 1's `ErrorContextProvider`: alongside raw error retrieval, load relevant principles from `PrincipleStore` and append a "Learned Principles" section to the prompt context. Principles are formatted as: `"- When {condition}: {action} (confidence: {confidence:.0%})"`. Limited to top-N by confidence, within the `error_memory_max_tokens` budget.
-  - [ ] 3-4. Add principle compaction (deferred — requires `ConsolidationPipeline` adapter): when principle count per workflow exceeds a threshold (configurable, default 50), invoke `ConsolidationPipeline` to merge similar principles and drop those below `min_confidence`.
+  - [ ] 3-4. Add principle compaction (deferred — requires `ConsolidationPipeline` adapter): when principle count per workflow exceeds a threshold (configurable, default 50), invoke `ConsolidationPipeline` to merge similar principles and drop those below `min_confidence`. *(deferred — requires ConsolidationPipeline adapter; Phase 10 stretch)*
 
 - [x] 4. Reflection scheduling
   - [x] 4-1. Add `EngineConfig` field: `reflection_trigger: Literal["on_failure", "on_every_run", "manual", "disabled"] = "disabled"`. When not `disabled`, `RunManager` schedules a reflection after the main run completes.
@@ -57,9 +57,9 @@
   - [x] 4-4. Guard against infinite recursion: reflection runs (identified by the `"reflection-"` prefix on their `run_id`) never trigger further reflections regardless of trigger setting.
 
 - [ ] 5. (Deferred to Phase 11) Cross-workflow principle sharing
-  - [ ] 5-1. Keep Tier 2 in Phase 9D workflow-scoped (`PrincipleStore` keyed by workflow).
-  - [ ] 5-2. Move global principle sharing design (`scope=GLOBAL`, cross-workflow retrieval, global endpoints) to [19-1-workflow-experience-memory](19-1-workflow-experience-memory.md).
-  - [ ] 5-3. Add explicit migration guidance in Phase 11 for promotion from workflow-scoped to globally-shareable principles.
+  - [ ] 5-1. Keep Tier 2 in Phase 9D workflow-scoped (`PrincipleStore` keyed by workflow). *(deferred — Phase 11 scope; see 19-1)*
+  - [ ] 5-2. Move global principle sharing design (`scope=GLOBAL`, cross-workflow retrieval, global endpoints) to [19-1-workflow-experience-memory](19-1-workflow-experience-memory.md). *(deferred — Phase 11 scope; see 19-1)*
+  - [ ] 5-3. Add explicit migration guidance in Phase 11 for promotion from workflow-scoped to globally-shareable principles. *(deferred — Phase 11 scope; migration guidance to be written when cross-workflow landing)*
 
 - [x] 6. Graduated repair classification (extends Tier 2 reflection output)
   - [x] 6-1. Add `repair_level: Literal["retry", "prompt_fix", "parameter_fix", "structural_fix", "redesign"] = "prompt_fix"` field to `CausalPrinciple`. The reflection LLM classifies each principle by the severity of repair needed:
@@ -73,15 +73,15 @@
   - [x] 6-4. Add `structural_description: str = ""` field to `CausalPrinciple` for `structural_fix` and `redesign` levels. Free-text description of what structural changes are needed (e.g., "add a data validation node before the API call"). This is consumed by the future meta-orchestrator planner.
   - [x] 6-5. Tests: verify reflection output includes `repair_level`, verify classification heuristics in few-shot examples produce correct levels, verify `suggested_parameter_changes` is populated for parameter_fix principles.
 
-- [ ] 7. Authoring surfaces
-  - [ ] 7-1. Builder API: `wf.reflection(name, source="last_run", reflection_model=None, max_principles=10, ...)` → creates `ReflectionNode` with configured source and output format.
-  - [ ] 7-2. Markdown format: `type: reflection` agent file with optional `## Source` section for source config and `## Reflection Prompt` section for custom system prompt.
-  - [ ] 7-3. Editor integration: `ReflectionNode` in palette under a new "Learning" or "Advanced" category. Config panel shows source selector, model override, max_principles slider. Output preview shows generated principles in a table.
+- [ ] 7. Authoring surfaces *(deferred — authoring surfaces not yet prioritized; Phase 10 stretch)*
+  - [ ] 7-1. Builder API: `wf.reflection(name, source="last_run", reflection_model=None, max_principles=10, ...)` → creates `ReflectionNode` with configured source and output format. *(deferred — authoring surfaces not yet prioritized; Phase 10 stretch)*
+  - [ ] 7-2. Markdown format: `type: reflection` agent file with optional `## Source` section for source config and `## Reflection Prompt` section for custom system prompt. *(deferred — authoring surfaces not yet prioritized; Phase 10 stretch)*
+  - [ ] 7-3. Editor integration: `ReflectionNode` in palette under a new "Learning" or "Advanced" category. Config panel shows source selector, model override, max_principles slider. Output preview shows generated principles in a table. *(deferred — frontend visualization; Phase 10 stretch)*
 
 - [x] 8. Testing
   - [x] 8-1. Unit tests: `CausalPrinciple` model validation, `ReflectionExecutor` prompt construction, source gathering methods (mock `RunStore`/`ErrorMemoryIndex`), deduplication logic.
   - [x] 8-2. Unit tests: `PrincipleStore` CRUD, `expire_principles`, compaction trigger.
-  - [ ] 8-3. Integration test: failed run → reflection triggered → principles stored in `PrincipleStore` → `ErrorContextProvider` retrieves both errors and principles for next run's prompt.
+  - [ ] 8-3. Integration test: failed run → reflection triggered → principles stored in `PrincipleStore` → `ErrorContextProvider` retrieves both errors and principles for next run's prompt. *(deferred — requires full engine execution with real LLM and multi-run orchestration)*
   - [x] 8-4. Quality test: verify LLM-generated principles are parseable JSON, have non-empty condition/action/reason fields, and confidence is in [0, 1]. Use a mock LLM with known output for deterministic testing.
 
 ## Primary Files

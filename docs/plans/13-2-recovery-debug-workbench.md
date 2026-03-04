@@ -1,7 +1,7 @@
 # 13-2: Recovery & Debug Workbench
 
 **Parent:** [13-observe-recover](13-observe-recover.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Turn persisted execution data into practical debugging workflows: partial reruns from checkpoints, upstream variable visibility, and node-level test case loops.
 
 ## Existing Baseline
@@ -18,38 +18,38 @@
 
 ### Checkpoint Portals (depends on 13-1)
 
-- [ ] 1. Design checkpoint portal model and rerun contracts
-  - [ ] 1-1. Extend engine `CheckpointData` with `graph_revision` binding and `completed_node_ids` set so the portal knows which nodes can be skipped vs. must rerun.
-  - [ ] 1-2. Define allowed rerun scopes: **downstream-of-node** (rerun everything after a selected node), **single-node** (rerun one node with its last inputs), **subgraph** (rerun a composite body). Document safety constraints (e.g., side-effecting tool nodes require user confirmation).
-  - [ ] 1-3. Define invalidation rules: portal is stale when `graph_revision` differs from current graph (nodes/edges changed since checkpoint). Specify UX states: stale (amber warning + "re-run full"), missing artifacts (error toast), compatible (green "Resume from here").
+- [x] 1. Design checkpoint portal model and rerun contracts
+  - [x] 1-1. Extend engine `CheckpointData` with `graph_revision` binding and `completed_node_ids` set so the portal knows which nodes can be skipped vs. must rerun.
+  - [x] 1-2. Define allowed rerun scopes: **downstream-of-node** (rerun everything after a selected node), **single-node** (rerun one node with its last inputs), **subgraph** (rerun a composite body). Document safety constraints (e.g., side-effecting tool nodes require user confirmation).
+  - [x] 1-3. Define invalidation rules: portal is stale when `graph_revision` differs from current graph (nodes/edges changed since checkpoint). Specify UX states: stale (amber warning + "re-run full"), missing artifacts (error toast), compatible (green "Resume from here").
 
-- [ ] 2. Implement checkpoint-based partial rerun execution
-  - [ ] 2-1. Extend `POST /api/runs/{run_id}/resume` (or add sibling `POST /api/runs/{run_id}/rerun`) to accept `scope` parameter (`downstream_of: node_id`, `single_node: node_id`, `subgraph: sub_graph_key`). Validate scope against checkpoint data.
-  - [ ] 2-2. In the scheduler, rehydrate `PortDataStore` and `SharedContextStore` from checkpoint, mark completed nodes as `SKIPPED` (not re-executed), and schedule only the scoped subset. Reuse existing `resume()` path where possible.
-  - [ ] 2-3. Tag rerun events with `provenance: {source_checkpoint_id, rerun_scope}` so results are traceable. Persist the rerun as a new `run_id` linked to the source checkpoint in `RunStore` (from 13-1).
+- [x] 2. Implement checkpoint-based partial rerun execution
+  - [x] 2-1. Extend `POST /api/runs/{run_id}/resume` (or add sibling `POST /api/runs/{run_id}/rerun`) to accept `scope` parameter (`downstream_of: node_id`, `single_node: node_id`, `subgraph: sub_graph_key`). Validate scope against checkpoint data.
+  - [x] 2-2. In the scheduler, rehydrate `PortDataStore` and `SharedContextStore` from checkpoint, mark completed nodes as `SKIPPED` (not re-executed), and schedule only the scoped subset. Reuse existing `resume()` path where possible.
+  - [x] 2-3. Tag rerun events with `provenance: {source_checkpoint_id, rerun_scope}` so results are traceable. Persist the rerun as a new `run_id` linked to the source checkpoint in `RunStore` (from 13-1).
 
 ### Variable Inspector (no 13-1 dependency — can start early)
 
-- [ ] 3. Add variable inspector in node config/debug surfaces
-  - [ ] 3-1. Add `computeUpstreamVariables(nodeId, graph)` utility: walk incoming edges (data + context), collect source node/port names, infer types from `output_schema`/port definitions. Return `{variable_name, source_node, source_port, type_hint, required}[]`.
-  - [ ] 3-2. Add "Inputs" tab or collapsible section in `ConfigPanel` (or `OutputPreview`) showing upstream variable table with source provenance, type hints, and a "likely missing" diagnostic when an expected input has no incoming edge.
-  - [ ] 3-3. When a recent run exists (from 13-1 `RunStore` or live `nodeOutputs`), show actual values inline as read-only JSON preview next to each variable. Source: `nodeOutputs[sourceNodeId]` for live runs, or loaded from persisted event stream for historical runs.
+- [x] 3. Add variable inspector in node config/debug surfaces
+  - [x] 3-1. Add `computeUpstreamVariables(nodeId, graph)` utility: walk incoming edges (data + context), collect source node/port names, infer types from `output_schema`/port definitions. Return `{variable_name, source_node, source_port, type_hint, required}[]`.
+  - [x] 3-2. Add "Inputs" tab or collapsible section in `ConfigPanel` (or `OutputPreview`) showing upstream variable table with source provenance, type hints, and a "likely missing" diagnostic when an expected input has no incoming edge.
+  - [x] 3-3. When a recent run exists (from 13-1 `RunStore` or live `nodeOutputs`), show actual values inline as read-only JSON preview next to each variable. Source: `nodeOutputs[sourceNodeId]` for live runs, or loaded from persisted event stream for historical runs.
 
 ### Node Test Cases (no 13-1 dependency — can start early)
 
-- [ ] 4. Add node test cases and annotations
-  - [ ] 4-1. Define `NodeTestCase` schema: `{id, name, node_id, inputs: Record<port, value>, expected_outputs: Record<port, value> | null, assertions: string[] | null, tags: string[], notes: string}`. Persist as `test_cases/{workflow_id}/{node_id}.json` (array of test cases per node).
-  - [ ] 4-2. Add right-click context menu action "Add test case" on canvas nodes. Opens modal to define input fixtures and optional expected outputs. Edit/delete existing test cases from same modal. Persistence via new `POST/GET/DELETE /api/test-cases/{workflow_id}/{node_id}` endpoints.
-  - [ ] 4-3. Add "Run test" action per test case: executes the single node in isolation (engine schedules only that node with injected inputs). Result view shows pass/fail, output diff against expected (when expected is defined), and execution metadata (tokens, duration). Reuse `RunManager.start_run()` with a synthetic single-node graph.
+- [x] 4. Add node test cases and annotations
+  - [x] 4-1. Define `NodeTestCase` schema: `{id, name, node_id, inputs: Record<port, value>, expected_outputs: Record<port, value> | null, assertions: string[] | null, tags: string[], notes: string}`. Persist as `test_cases/{workflow_id}/{node_id}.json` (array of test cases per node).
+  - [x] 4-2. Add right-click context menu action "Add test case" on canvas nodes. Opens modal to define input fixtures and optional expected outputs. Edit/delete existing test cases from same modal. Persistence via new `POST/GET/DELETE /api/test-cases/{workflow_id}/{node_id}` endpoints.
+  - [x] 4-3. Add "Run test" action per test case: executes the single node in isolation (engine schedules only that node with injected inputs). Result view shows pass/fail, output diff against expected (when expected is defined), and execution metadata (tokens, duration). Reuse `RunManager.start_run()` with a synthetic single-node graph.
 
 ### Integration with Existing UX
 
-- [ ] 5. Wire workbench features into existing surfaces
-  - [ ] 5-1. Add "Resume from here" / "Rerun from here" context menu action on canvas nodes (visible when a checkpoint exists for the current workflow). Entry point into checkpoint portal flow.
-  - [ ] 5-2. Add entry points from 13-1 run history panel: click a historical run → see checkpoint markers → click marker → "Rerun from here".
-  - [ ] 5-3. Add entry points from LogPanel: right-click a node group → "Inspect inputs" (opens variable inspector for that node), "Add test case from this run" (pre-fills inputs from actual run data).
-  - [ ] 5-4. Add guardrails/toasts: stale checkpoint warning, side-effecting node confirmation, scope validation errors.
-  - [ ] 5-5. Ensure multi-tab consistency: test cases and checkpoint portals are workflow-scoped, not tab-scoped. Tab switching should not lose inspector state.
+- [x] 5. Wire workbench features into existing surfaces
+  - [x] 5-1. Add "Rerun from Here" and "Rerun This Node" context menu actions on canvas nodes (visible when a run exists). Entry point into checkpoint portal flow via `rerunFromNode` store action.
+  - [ ] 5-2. Add entry points from 13-1 run history panel: click a historical run → see checkpoint markers → click marker → "Rerun from here". *(deferred — requires run history panel UI work)*
+  - [x] 5-3. Add entry points from LogPanel: node group header actions — "Inspect inputs" (selects node for variable inspector), "Add test case from this run" (fires `dan:open-test-case-modal` with prefill), "Rerun from here" (calls `rerunFromNode`).
+  - [x] 5-4. Add guardrails/toasts: stale checkpoint warning (409 from backend), scope validation errors (error toast on failure). Side-effecting node confirmation deferred.
+  - [ ] 5-5. Ensure multi-tab consistency: test cases and checkpoint portals are workflow-scoped, not tab-scoped. Tab switching should not lose inspector state. *(deferred — requires tab state coordination)*
 
 ### Validation and Docs
 

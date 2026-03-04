@@ -79,8 +79,8 @@
   - [x] 6-1. Unit: `WorkflowExperience` model validation, `extract_experience_from_graph()` with various graph topologies.
   - [x] 6-2. Unit: `ExperienceStore` CRUD operations.
   - [x] 6-3. Unit: `consolidate_experience()` with mock run records and principles.
-  - [ ] 6-4. Integration: run a workflow multiple times → verify experience is auto-consolidated after N runs. (Deferred: requires full engine execution.)
-  - [ ] 6-5. Integration: `ExperienceIndex.search_similar()` returns relevant workflows for related queries. (Deferred: requires embedding provider.)
+  - [ ] 6-4. Integration: run a workflow multiple times → verify experience is auto-consolidated after N runs. *(deferred — requires full engine execution)*
+  - [ ] 6-5. Integration: `ExperienceIndex.search_similar()` returns relevant workflows for related queries. *(deferred — requires embedding provider)*
   - [x] 6-6. Unit+integration: cross-workflow principle sharing — global scope queries return principles from multiple workflows, de-duplication by id keeping highest confidence, global ErrorMemoryIndex searches across all collections. (3 tests in `test_integration_llm.py`.)
 
 ## Decisions

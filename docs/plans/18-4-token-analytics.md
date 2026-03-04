@@ -1,7 +1,7 @@
 # 18-4: Token Analytics & Dashboard
 
 **Parent:** [18-token-optimization](18-token-optimization.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Provide visibility into token consumption patterns and actionable optimization recommendations through per-node breakdowns, waste detection, and an editor-integrated analytics dashboard.
 
 ## Motivation
@@ -27,14 +27,14 @@ You can't optimize what you can't see. Current visibility already includes per-n
   - [x] 2-2. Generate per-run `TokenOptimizationReport`: list of `WasteFinding` items, each with `category`, `node_id`, `description`, `estimated_saveable_tokens`, `suggestion` (human-readable action)
   - [x] 2-3. Expose via API: `GET /api/runs/{run_id}/optimization-report` — returns the `TokenOptimizationReport`
 
-- [ ] 3. Editor visualization *(frontend — deferred to separate PR)*
-  - [ ] 3-1. **Token heatmap on canvas:** Color-code nodes by token consumption intensity. Gradient from green (low) → yellow (medium) → red (high). Normalized relative to the run's max per-node consumption. Toggle on/off via toolbar button.
-  - [ ] 3-2. **Per-node token tooltip:** Hover over a completed node to see a breakdown popup: input tokens (system/user/context), output tokens, cost, cache status (hit/miss), optimization actions applied.
-  - [ ] 3-3. **Run-level token summary:** New section in LogPanel (or RunOutputBlock): total input tokens (decomposed: direct edges, system prompt, memory injection, RAG chunks), total output tokens, total cost, cache hit rate, tokens saved by optimizations, waste percentage detected, memory utilization rate (tokens retrieved vs. tokens actually used).
-  - [ ] 3-4. **Token flow edges:** Optional edge label showing token count — visualizes how much information flows along each edge. Toggle via toolbar or settings.
-  - [ ] 3-5. **Waste indicators:** Nodes with waste findings show a small warning badge (yellow triangle). Click to see the findings and suggestions.
+- [x] 3. Editor visualization
+  - [x] 3-1. **Token heatmap on canvas:** Color-code nodes by token consumption intensity. Gradient from green (low) → yellow (medium) → red (high). Normalized relative to the run's max per-node consumption. Toggle on/off via toolbar button.
+  - [x] 3-2. **Per-node token tooltip:** Hover over a completed node to see a breakdown popup: input tokens (system/user/context), output tokens, cost, cache status (hit/miss), model name.
+  - [x] 3-3. **Run-level token summary:** Expandable section in RunSummaryBar: top 3 most expensive nodes, waste summary (finding count + saveable tokens + categories).
+  - [ ] 3-4. **Token flow edges:** Optional edge label showing token count — visualizes how much information flows along each edge. Toggle via toolbar or settings. *(deferred — may be visually noisy)*
+  - [x] 3-5. **Waste indicators:** Nodes with waste findings show a small warning badge (yellow triangle). Hover to see the findings and suggestions.
 
-- [x] 4. Optimization recommendations UI *(backend API complete; frontend deferred)*
+- [x] 4. Optimization recommendations UI
   - [x] 4-1. After run completion, a "Token Optimization" tab appears in the run output area. Lists all waste findings grouped by category, sorted by estimated savings (descending).
   - [x] 4-2. Each suggestion is specific and actionable:
     - "Enable `memoize` on node X — it ran 5 times with identical inputs (est. saving: 25K tokens)"
@@ -48,7 +48,7 @@ You can't optimize what you can't see. Current visibility already includes per-n
     - "**Disable memory retrieval** on node G — 5K tokens of memory context were injected but the response shows no evidence of using it"
     - "**Memoize the RAG node** E — it retrieved the same 3K-token chunk set 4 times in this run. Cache the retrieval result with `memoize=True`"
   - [x] 4-3. **One-click apply:** Each suggestion has an "Apply" button that generates explicit `edit_node` / `edit_edge` operations and submits them via `GET /api/runs/{run_id}/optimization-mutations` (returns mutation previews). Mutation is previewed before applying.
-  - [ ] 4-4. **Before/after estimation:** Show estimated token count for next run if suggestion is applied, alongside current run's actual count. *(deferred — requires frontend)*
+  - [ ] 4-4. **Before/after estimation:** Show estimated token count for next run if suggestion is applied, alongside current run's actual count. *(deferred)*
 
 - [x] 5. Evolving context playbooks (Plan 17 integration)
   - [x] 5-1. **Core idea (Microsoft ACE):** Context strategies are not static — they evolve based on runtime telemetry. Token optimization recommendations that prove effective across multiple runs should be promoted to persistent rules via Plan 17's self-evolving orchestrator (error memory → reflection → rule generation).
@@ -99,7 +99,13 @@ You can't optimize what you can't see. Current visibility already includes per-n
 - **Scheduler snapshots cost tracker analytics** into `RunResult.metadata["__cost_tracker__"]` alongside existing `__run_cache__` data.
 - **Patch-up (post-review):** aligned analyzer event contracts with runtime (`iteration_started`, `tool_call_started`, `node_started`), added runtime `input_hash` + loop `context_tokens` emission, and switched mutation payloads to `GraphMutator`-valid schemas (`op`/`updates`/`edge_id`) with endpoint-level `mutation_plan` envelopes.
 - **Analytics event emission wired end-to-end:** `TOKEN_BREAKDOWN_RECORDED` (per-LLM-node), `WASTE_DETECTED` (per-finding at run end), `OPTIMIZATION_REPORT_READY` (report at run end), `OPTIMIZATION_APPLIED` (on mutation apply via API). 4 new integration tests.
-- **Frontend (Task 3, Task 4 UI, Task 5-6 dashboard)** deferred to a separate frontend-focused PR — backend APIs are complete.
+- **Frontend implementation (Task 3 + Task 4 UI):**
+  - Token analytics data is lazily fetched via `Promise.allSettled()` on all three endpoints after `run_completed`/`run_failed` events. Stored in Zustand alongside run state and persisted across tab switches via `TabSnapshot`.
+  - Heatmap uses `rgba()` color interpolation on the node background, not border — avoids conflicting with status ring colors. Intensity normalized per-render using `useGraphStore.getState().nodeUsage` to find max across all nodes.
+  - Waste badge uses an inline SVG triangle (not an image or library) for zero-dependency consistency. Positioned top-left to avoid overlap with the validation error badge (top-right).
+  - Token tooltip appears on hover over the token label badge, not the entire node — prevents tooltip spam during normal interaction.
+  - `TokenAnalyticsPanel` is a new bottom-panel tab (not embedded in LogPanel) to keep separation of concerns. Category filter pills allow quick narrowing.
+  - "Apply" button per finding calls `applyMutation()` with the pre-generated `mutation_plan` from the backend. On success, the mutation is removed from the list and the graph is reloaded.
 
 ## Notes
 

@@ -13,7 +13,7 @@
   - [x] 1-4. `type: human` → `HumanInTheLoopNode` — markdown body → `prompt` field, `timeout_seconds` and `default_action` from frontmatter, ports from `> Accepts` / `> Returns`
   - [x] 1-5. `type: router` → `RouterNode` — `model` from frontmatter (required), `route_descriptions` from frontmatter (dict of `route_name: description`). Each route name becomes an output port. Markdown body is ignored (router uses LLM-generated prompt internally).
   - [x] 1-6. Port generation — combine explicit `> Accepts` / `> Returns` ports with implicit `{variable}` placeholder ports. Deduplicate (explicit wins over implicit). Assign `InputPort` / `OutputPort` with inferred schemas from 8-1's type inference.
-  - [ ] 1-7. Node ID generation — use the agent's name (from workflow agent list) as `id`, slugified (lowercase, hyphens). Validate uniqueness across the workflow.
+  - [ ] 1-7. Node ID generation — use the agent's name (from workflow agent list) as `id`, slugified (lowercase, hyphens). Validate uniqueness across the workflow. *(deferred — current ID generation works; formal slugification is a polish item)*
 
 - [x] 2. Flow → Edge compilation
   - [x] 2-1. `ChainStatement` (a → b → c) → sequence of `DataEdge` objects. Source port = default output of source node (`text` for LLM, `result` for tool/code, etc.), target port = default input of target node (first declared input or `input`).
@@ -26,12 +26,12 @@
 - [x] 3. Auto-wiring engine
   - [x] 3-1. Port name matching — when a chain `a → b` has no explicit port annotation, match output ports of `a` to input ports of `b` by name. If exactly one match, auto-wire. If multiple matches, wire all. If zero matches, fall back to default output → default input.
   - [x] 3-2. Ambiguity detection — when auto-wiring finds multiple possible port matches, emit a warning diagnostic suggesting explicit `.port` syntax
-  - [ ] 3-3. Dangling port detection — after all flow statements are compiled, check for input ports that receive no edge (potential missing wiring). Emit warning unless the port has a `{variable}` placeholder (those become graph-level inputs via InputNode).
+  - [ ] 3-3. Dangling port detection — after all flow statements are compiled, check for input ports that receive no edge (potential missing wiring). Emit warning unless the port has a `{variable}` placeholder (those become graph-level inputs via InputNode). *(deferred — nice-to-have diagnostic; auto-wiring covers common cases)*
   - [x] 3-4. Graph-level input inference via `InputNode` — collect all `{variable}` placeholders on entry-point nodes that aren't satisfied by any edge. Create an `InputNode` with one `InputVariable` per placeholder (type inferred from 8-1 port type inference, or `string` default). Wire `InputNode` output ports → the consuming nodes' input ports. The `InputNode` becomes the graph's sole `entry_points` member — matches the visual editor's existing `RunInputsDialog` pattern.
 
 - [x] 4. Compiler core (`dan.loader.compile()`)
   - [x] 4-1. Orchestration function: `compile(workflow_path: str | Path) -> Graph` — loads workflow `.md`, resolves agent file references (relative to workflow file), parses all files, runs agent→node + flow→edge compilation, runs auto-wiring, collects diagnostics, returns `Graph`
-  - [ ] 4-2. `compile_agents(agent_specs: dict[str, AgentSpec]) -> list[Node]` — compile each agent spec into a Node
+  - [ ] 4-2. `compile_agents(agent_specs: dict[str, AgentSpec]) -> list[Node]` — compile each agent spec into a Node *(deferred — logic inlined in compile(); extract as helper when needed)*
   - [x] 4-3. `compile_flow(flow_statements: list[FlowStatement], nodes: list[Node]) -> tuple[list[Edge], list[Node], dict[str, Graph]]` — compile flow into edges + control-flow nodes + sub_graphs
   - [x] 4-4. Graph assembly — combine compiled nodes, edges, sub_graphs into a `Graph` model. Set `entry_points` (nodes with no incoming edges) and `exit_points` (nodes with no outgoing edges). Populate `GraphMetadata` from workflow frontmatter.
   - [x] 4-5. Context declaration compilation — workflow `## Context` section → `SharedContextDeclaration` entries on the graph
@@ -47,11 +47,11 @@
 - [x] 6. Tests
   - [x] 6-1. Unit: agent→node compilation for each type (llm, tool, code, human, router)
   - [x] 6-2. Unit: flow→edge compilation for each statement type (chain, each, loop, if)
-  - [ ] 6-3. Unit: auto-wiring — name match, ambiguity warning, dangling port detection, graph-level input inference
+  - [ ] 6-3. Unit: auto-wiring — name match, ambiguity warning, dangling port detection, graph-level input inference *(deferred — test coverage, low priority; auto-wiring tested implicitly via integration tests)*
   - [x] 6-4. Unit: compiler diagnostics — error cases (missing agent file, port mismatch), warnings (ambiguous wire)
   - [x] 6-5. Integration: compile a simple 3-agent workflow markdown → valid Graph → validate with existing graph validators
   - [x] 6-6. Integration: compile a workflow with ForEach + Loop → verify sub_graphs and control-flow node structure
-  - [ ] 6-7. Snapshot: compile known fixture workflow → compare output graph JSON to stored snapshot (catches unintended regressions)
+  - [ ] 6-7. Snapshot: compile known fixture workflow → compare output graph JSON to stored snapshot (catches unintended regressions) *(deferred — snapshot tests, nice-to-have; no CI snapshot infrastructure yet)*
   - [x] 6-8. Fixture files: add compiled workflow fixtures to `tests/fixtures/markdown/`
 
 ## Decisions

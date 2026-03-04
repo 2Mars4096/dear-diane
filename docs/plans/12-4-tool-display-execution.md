@@ -43,16 +43,16 @@
   - [x] 4-4. Wire "View logs" button in `RunOutputBlock` to jump to LogPanel
   - [x] 4-5. Live progress: running nodes show spinner icon with node ID
 - [ ] 5. Per-operation approval gates (opt-in) — **deferred** (requires bidirectional WebSocket handshake)
-  - [ ] 5-1. Add `approval_required: bool` field to chat mode config (default: `false` for Agent, `true` for Plan)
-  - [ ] 5-2. When enabled: each tool call pauses and shows "Approve" / "Skip" / "Edit" buttons
-  - [ ] 5-3. Backend: tool execution waits for WebSocket approval message before proceeding
-  - [ ] 5-4. Timeout: auto-reject after configurable period (default: 5 min) with notification
-  - [ ] 5-5. Bulk approve: "Approve All Remaining" button for the current plan
+  - [ ] 5-1. Add `approval_required: bool` field to chat mode config (default: `false` for Agent, `true` for Plan) *(deferred — requires bidirectional WebSocket handshake)*
+  - [ ] 5-2. When enabled: each tool call pauses and shows "Approve" / "Skip" / "Edit" buttons *(deferred — requires bidirectional WebSocket handshake)*
+  - [ ] 5-3. Backend: tool execution waits for WebSocket approval message before proceeding *(deferred — requires bidirectional WebSocket handshake)*
+  - [ ] 5-4. Timeout: auto-reject after configurable period (default: 5 min) with notification *(deferred — requires bidirectional WebSocket handshake)*
+  - [ ] 5-5. Bulk approve: "Approve All Remaining" button for the current plan *(deferred — requires bidirectional WebSocket handshake)*
 - [ ] 6. Sandbox execution display — **deferred** (depends on Phase 6 sandbox runner)
-  - [ ] 6-1. Code tool execution: show sandbox indicator (lock icon) and execution environment info
-  - [ ] 6-2. Terminal-like output rendering: monospace, ANSI color support, scrollable
-  - [ ] 6-3. File output artifacts: show generated files with download/preview links
-  - [ ] 6-4. Resource usage: show execution time, memory (if available from sandbox)
+  - [ ] 6-1. Code tool execution: show sandbox indicator (lock icon) and execution environment info *(deferred — depends on Phase 6 sandbox runner)*
+  - [ ] 6-2. Terminal-like output rendering: monospace, ANSI color support, scrollable *(deferred — depends on Phase 6 sandbox runner)*
+  - [ ] 6-3. File output artifacts: show generated files with download/preview links *(deferred — depends on Phase 6 sandbox runner)*
+  - [ ] 6-4. Resource usage: show execution time, memory (if available from sandbox) *(deferred — depends on Phase 6 sandbox runner)*
 
 ## Decisions
 

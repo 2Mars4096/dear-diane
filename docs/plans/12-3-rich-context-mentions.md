@@ -50,10 +50,10 @@
   - [x] 5-2. Backend: `ChatHistoryResolver` loads thread, creates extractive summary (user messages + first sentence of assistant responses), truncates to budget
   - [x] 5-3. Inject as "Context from mentions" section appended to system prompt
 - [ ] 6. @Web mentions — **deferred** (complex, requires async network calls)
-  - [ ] 6-1. Frontend: `@web:query` freeform text after trigger
-  - [ ] 6-2. Backend: invoke web search tool
-  - [ ] 6-3. Inject top-N search result snippets as context
-  - [ ] 6-4. Show source URLs in chat message for attribution
+  - [ ] 6-1. Frontend: `@web:query` freeform text after trigger *(deferred — requires async network + loading UX)*
+  - [ ] 6-2. Backend: invoke web search tool *(deferred — requires external search API dependency)*
+  - [ ] 6-3. Inject top-N search result snippets as context *(deferred — depends on 6-2)*
+  - [ ] 6-4. Show source URLs in chat message for attribution *(deferred — depends on 6-2)*
 - [x] 7. Context budget management
   - [x] 7-1. `pack_context()` function with budget allocation: system prompt always kept, mentions get up to 35% of remaining, then history
   - [x] 7-2. Priority ordering: system prompt > graph summary > mentions > recent history > older history
@@ -62,9 +62,9 @@
 - [ ] 8. Autocomplete UX enhancements — **deferred** (polish)
   - [x] 8-1. Categorized dropdown: sections for Nodes, Files, Code, Docs, Chats (with category icons)
   - [x] 8-2. Category icons and keyboard navigation (arrow keys + Enter)
-  - [ ] 8-3. Fuzzy search within categories
-  - [ ] 8-4. Recently used mentions at top of list
-  - [ ] 8-5. Preview tooltip: show first few lines of resolved content on hover
+  - [ ] 8-3. Fuzzy search within categories *(deferred — polish, not blocking core mention functionality)*
+  - [ ] 8-4. Recently used mentions at top of list *(deferred — polish, not blocking core mention functionality)*
+  - [ ] 8-5. Preview tooltip: show first few lines of resolved content on hover *(deferred — polish, not blocking core mention functionality)*
 
 ## Decisions
 

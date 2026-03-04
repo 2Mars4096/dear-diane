@@ -30,17 +30,17 @@ Input tokens are the primary cost driver in agentic workflows. A node that recei
   - [x] 2-3. **Selection, not deletion:** Low-scoring inputs are not dropped — they are deferred to tool-accessible storage (artifact store or memory). The agent receives a manifest listing deferred items with summaries, and can retrieve any of them on demand via context tools (task 9). Nothing is permanently removed from the agent's reach.
   - [x] 2-4. Emit `CONTEXT_DEFERRED` event: node_id, inputs_inline, inputs_deferred (list of port names + summary), tokens_inline, tokens_deferred
 
-- [ ] 3. System prompt deduplication
+- [ ] 3. System prompt deduplication *(deferred — partially complete; prefix extraction (3-2) remains)*
   - [x] 3-1. Detect repeated system prompt prefixes across sequential LLM calls in the same execution scope (e.g., loop iterations, team turns)
-  - [ ] 3-2. Extract shared prefix into a reusable block that can be marked for provider-level caching (coordinates with 18-2 task 1)
+  - [ ] 3-2. Extract shared prefix into a reusable block that can be marked for provider-level caching (coordinates with 18-2 task 1) *(deferred — depends on 18-2 provider caching coordination; low priority after cache hints landed)*
   - [x] 3-3. Track metrics: unique vs. duplicated system prompt tokens per run
 
-- [ ] 4. Reference-based context passing (memory-integrated)
+- [ ] 4. Reference-based context passing (memory-integrated) *(deferred — partially complete; core ref-passing landed, two-tier resolution and encode-to-memory remain)*
   - [x] 4-1. Add `pass_by_reference: bool` option to `ContextEdge` — when true, pass an artifact reference instead of inline content
   - [x] 4-2. Receiving node resolves reference on demand (lazy loading) — only fetches full content if the prompt template references the variable
-  - [ ] 4-3. For large upstream outputs (>N tokens, configurable threshold), emit a validation suggestion: "Consider reference-based passing for edge X→Y"
-  - [ ] 4-4. **Two-tier reference resolution:** (a) artifact store (Layer 4) for run-scoped versioned artifacts, (b) long-term memory via `VectorStore` (14-3) for cross-run semantic retrieval. When `pass_by_reference=True`, artifact persistence is always on (exact recall). Memory mirroring is policy-gated to avoid write amplification: persist to memory only when output exceeds a token threshold, node/edge policy explicitly requests it, or `auto` policy deems it reusable across downstream hops.
-  - [ ] 4-5. **Encode-to-memory pattern:** For nodes producing very large outputs (>N tokens), optionally encode the output into 14-3's `ShortTermMemory` buffer as a `MemoryItem` with `source_node_id` and `entry_type=artifact_summary`. Downstream nodes can then use `MemoryQuery(intent=task_recall)` to retrieve a summary instead of receiving the full output. This transforms "push all" into "push summary + pull on demand" — the highest-leverage token optimization for multi-hop workflows
+  - [ ] 4-3. For large upstream outputs (>N tokens, configurable threshold), emit a validation suggestion: "Consider reference-based passing for edge X→Y" *(deferred — validation integration; Phase 10 stretch)*
+  - [ ] 4-4. **Two-tier reference resolution:** (a) artifact store (Layer 4) for run-scoped versioned artifacts, (b) long-term memory via `VectorStore` (14-3) for cross-run semantic retrieval. When `pass_by_reference=True`, artifact persistence is always on (exact recall). Memory mirroring is policy-gated to avoid write amplification: persist to memory only when output exceeds a token threshold, node/edge policy explicitly requests it, or `auto` policy deems it reusable across downstream hops. *(deferred — requires artifact store Layer 4 and memory mirroring policy; Phase 10 stretch)*
+  - [ ] 4-5. **Encode-to-memory pattern:** For nodes producing very large outputs (>N tokens), optionally encode the output into 14-3's `ShortTermMemory` buffer as a `MemoryItem` with `source_node_id` and `entry_type=artifact_summary`. Downstream nodes can then use `MemoryQuery(intent=task_recall)` to retrieve a summary instead of receiving the full output. This transforms "push all" into "push summary + pull on demand" — the highest-leverage token optimization for multi-hop workflows *(deferred — requires memory pipeline integration and cross-node coordination; Phase 10 stretch)*
 
 - [x] 5. Input summarization gate (with memory pipeline integration)
   - [x] 5-1. Optional `summarize_inputs: bool | SummarizationConfig` field on `LLMOperator` — when true, long free-text inputs are summarized before prompt injection
@@ -49,24 +49,24 @@ Input tokens are the primary cost driver in agentic workflows. A node that recei
   - [x] 5-4. When `persist_to_memory=True`, the generated summary is stored as a `MemoryItem(entry_type=distilled_fact)` in 14-3's `ShortTermMemory`. This enables downstream nodes to recall the summary via `MemoryQuery` even if the original edge data was deferred or reference-passed.
   - [x] 5-5. Emit `INPUT_SUMMARIZED` event: node_id, input_port, tokens_before, tokens_after, model_used, persisted_to_memory
 
-- [ ] 6. Prompt template analysis
+- [ ] 6. Prompt template analysis *(deferred — partially complete; PromptAnalyzer utility landed, validation/editor integration remain)*
   - [x] 6-1. Build `PromptAnalyzer` utility — tokenizes prompt templates and identifies: (a) unused variables (declared in inputs but not referenced in template), (b) verbose boilerplate (repeated instruction patterns), (c) estimated token count per template
-  - [ ] 6-2. Integration with validation API: extend `POST /api/graphs/{graph_id}/validate` diagnostics to return token optimization suggestions alongside existing warnings
-  - [ ] 6-3. Editor integration: show estimated input token count per node in ConfigPanel (pre-execution estimate based on template + typical input sizes)
+  - [ ] 6-2. Integration with validation API: extend `POST /api/graphs/{graph_id}/validate` diagnostics to return token optimization suggestions alongside existing warnings *(deferred — validation API integration; Phase 10 stretch)*
+  - [ ] 6-3. Editor integration: show estimated input token count per node in ConfigPanel (pre-execution estimate based on template + typical input sizes) *(deferred — frontend visualization; Phase 10 stretch)*
 
 - [x] 7. JIT tool & schema loading
-  - [ ] 7-1. **Problem:** Tool definitions (function schemas, parameter descriptions) and hyperedge metadata can consume 20–40% of context window when loaded statically. In MCP-heavy workflows, this grows further.
+  - [ ] 7-1. **Problem:** Tool definitions (function schemas, parameter descriptions) and hyperedge metadata can consume 20–40% of context window when loaded statically. In MCP-heavy workflows, this grows further. *(deferred — problem statement only; solution implemented in 7-2..7-4)*
   - [x] 7-2. **Discovery-based loading:** Instead of injecting all tool schemas into every LLM call, inject only a lightweight tool catalog (name + one-line description, ~10 tokens per tool). The agent requests full schemas for specific tools when it decides to use them.
   - [x] 7-3. Implement `ToolSchemaResolver` in `src/dan/engine/token_optimization.py`: maintains a registry of full tool schemas, serves them on demand via a built-in `get_tool_schema(tool_name)` tool call. The LLM executor injects this resolver as an implicit tool when JIT loading is enabled.
   - [x] 7-4. Add `jit_tool_loading: bool` field to `LLMOperator` (default False). When enabled, prompt assembly uses the catalog-only strategy. For nodes with ≤3 tools, JIT adds overhead — default to inline loading for small tool sets.
-  - [ ] 7-5. **Hyperedge JIT:** Apply the same pattern to hyperedge definitions — inject a summary of active hyperedges, not full rule bodies. Full rules loaded on demand.
+  - [ ] 7-5. **Hyperedge JIT:** Apply the same pattern to hyperedge definitions — inject a summary of active hyperedges, not full rule bodies. Full rules loaded on demand. *(deferred — hyperedge JIT loading lower priority than tool JIT; Phase 10 stretch)*
   - [x] 7-6. Emit `JIT_SCHEMA_LOADED` event: node_id, tool_name, tokens_saved (vs. static loading)
 
-- [ ] 8. Schema & format pruning
-  - [ ] 8-1. **Problem:** Structural characters (braces, quotes, keys) account for ~40% of JSON token spend. Metadata fields (`created_at`, `internal_id`, `updated_by`) are often irrelevant to the LLM's task.
+- [ ] 8. Schema & format pruning *(deferred — partially complete; PayloadPruner and format compaction landed, auto field relevance remains)*
+  - [ ] 8-1. **Problem:** Structural characters (braces, quotes, keys) account for ~40% of JSON token spend. Metadata fields (`created_at`, `internal_id`, `updated_by`) are often irrelevant to the LLM's task. *(deferred — problem statement only; solution implemented in 8-2..8-3)*
   - [x] 8-2. Create `PayloadPruner` in `src/dan/engine/token_optimization.py`: mechanically strips specified fields from structured data before prompt injection. Configurable per-node via `prune_fields: list[str]` on `LLMOperator` (glob patterns supported, e.g. `"*.internal_id"`, `"*.created_at"`).
   - [x] 8-3. **Format compaction:** Optional compact serialization for structured inputs — e.g., YAML instead of JSON (fewer structural tokens), or a minimal key-value format. Configurable via `input_format: Literal["json", "yaml", "compact"]` on `LLMOperator`. Default: `json` (no change). `compact` uses indentation-based format inspired by TOON (Token-Oriented Object Notation).
-  - [ ] 8-4. **Automatic field relevance:** `PromptAnalyzer` (task 6) can detect which JSON fields are actually referenced in the prompt template. Fields never referenced across multiple runs are candidates for pruning — surfaced as suggestions in 18-4 analytics.
+  - [ ] 8-4. **Automatic field relevance:** `PromptAnalyzer` (task 6) can detect which JSON fields are actually referenced in the prompt template. Fields never referenced across multiple runs are candidates for pruning — surfaced as suggestions in 18-4 analytics. *(deferred — requires multi-run field usage tracking; depends on 18-4 analytics integration)*
   - [x] 8-5. Emit `PAYLOAD_PRUNED` event: node_id, fields_removed, tokens_saved
 
 - [x] 9. Agent context tools (MemGPT pattern)
@@ -81,7 +81,7 @@ Input tokens are the primary cost driver in agentic workflows. A node that recei
   - [x] 9-5. **Graceful degradation:** If context tools are not enabled, all inputs are assembled inline (current behavior). No existing workflow breaks.
   - [x] 9-6. Emit `CONTEXT_TOOL_CALLED` event: node_id, tool_name, ref_or_query, tokens_loaded
 
-- [ ] 10. Tests
+- [x] 10. Tests
   - [x] 10-1. Unit tests: `ContextSelector` scoring and selection decisions, `PromptAnalyzer` detection of unused variables and verbose patterns, `SummarizationConfig` validation, `PayloadPruner` field stripping and format compaction
   - [x] 10-2. Integration tests: end-to-end context selection in a multi-node workflow (verify deferred inputs are accessible via context tools), reference-based passing with lazy resolution, summarization gate cost tracking, JIT tool loading with schema resolution
   - [x] 10-3. Backward compat: nodes without `target_input_tokens`, context tools, or JIT loading behave identically to current behavior

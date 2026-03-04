@@ -25,7 +25,7 @@
   - [x] 3-1. Memory limit: on Linux/macOS, set `resource.setrlimit(resource.RLIMIT_AS, (memory_bytes, memory_bytes))` via `preexec_fn` on subprocess. Best-effort: log warning if `resource` module unavailable (Windows).
   - [x] 3-2. Filesystem sandboxing: subprocess working directory is the temp dir.
   - [x] 3-3. Environment filtering: subprocess inherits `PATH`, `HOME`, `LANG`, `TERM` by default. Additional vars forwarded via `SandboxConfig.pass_env` (supports exact names and glob prefixes like `"DAN_*"` via `fnmatch`). `DAN_*` env vars are NOT inherited unless explicitly listed in `pass_env`.
-  - [ ] 3-4. Output size cap already in 2-6. Additionally: kill subprocess if output pipe exceeds 10x max_output_bytes (prevents memory exhaustion in parent process).
+  - [ ] 3-4. Output size cap already in 2-6. Additionally: kill subprocess if output pipe exceeds 10x max_output_bytes (prevents memory exhaustion in parent process). *(deferred — defensive hardening, low priority; truncation in 2-6 handles normal cases)*
   - [x] 3-5. Network isolation: explicitly out of scope for v1.
 
 - [x] 4. Language adapters
@@ -61,9 +61,9 @@
   - [x] 8-3. DanNode: show sandbox mode indicator icon on code nodes when mode=subprocess
   - [x] 8-4. LogPanel: render SANDBOX_STARTED/COMPLETED events with appropriate icons and data preview
 
-- [ ] 9. Builder DSL and decompiler
-  - [ ] 9-1. `wf.code(node_id, ..., sandbox=SandboxConfig(...))` in builder. Compiler maps SandboxConfig to `sandbox_config` dict field.
-  - [ ] 9-2. Decompiler: if `sandbox_config` is non-empty, emit `sandbox=SandboxConfig(...)` kwarg with non-default fields only
+- [ ] 9. Builder DSL and decompiler *(deferred — sandbox config works via raw dict; typed DSL support is a polish item)*
+  - [ ] 9-1. `wf.code(node_id, ..., sandbox=SandboxConfig(...))` in builder. Compiler maps SandboxConfig to `sandbox_config` dict field. *(deferred — builder DSL enhancement, low priority)*
+  - [ ] 9-2. Decompiler: if `sandbox_config` is non-empty, emit `sandbox=SandboxConfig(...)` kwarg with non-default fields only *(deferred — decompiler enhancement, low priority)*
 
 - [x] 10. Tests
   - [x] 10-1. `SandboxRunner` unit: successful Python execution, timeout kill, large output truncation, input injection via _inputs.json, structured output via _result.json
@@ -75,7 +75,7 @@
   - [x] 10-7. `shell_command` tool: backward compat (no sandbox env), sandbox mode (with env vars)
   - [x] 10-8. Event emission: SANDBOX_STARTED/COMPLETED events with correct data fields
   - [x] 10-9. Backward compat: existing code nodes with empty sandbox_config behave identically
-  - [ ] 10-10. Update `test_builtins_registered` count if applicable
+  - [ ] 10-10. Update `test_builtins_registered` count if applicable *(deferred — test bookkeeping, low priority)*
 
 - [x] 11. Docs sync
   - [x] 11-1. `architecture.md`: add `src/dan/sandbox/` package to directory tree, document SandboxRunner, SandboxConfig, adapters

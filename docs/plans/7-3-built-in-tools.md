@@ -39,22 +39,22 @@
 - [x] 8. Auto-registration
   - [x] 8-1. `ToolRegistry.register_builtin_tools()` method — calls `dan.tools.get_all_tools()` and registers each
   - [x] 8-2. Server `app.py` `_build_tool_registry()` calls `register_builtin_tools()` before registering custom/domain tools (custom tools can override built-in IDs)
-  - [ ] 8-3. Builder DSL: `wf.tool("name", tool_id="file_read")` works out of the box when engine has built-in tools
+  - [ ] 8-3. Builder DSL: `wf.tool("name", tool_id="file_read")` works out of the box when engine has built-in tools *(deferred — depends on builder DSL changes, not blocking)*
 - [x] 9. Tests
   - [x] 9-1. Unit test per tool: happy path, edge cases (empty input, missing file, timeout, invalid URL)
   - [x] 9-2. Unit: `get_all_tools()` discovers all tools
   - [x] 9-3. Unit: `TOOL_METADATA` schema validation for every tool
-  - [ ] 9-4. Integration: `ToolExecutor` with built-in tool registry runs a `file_read` tool node
+  - [ ] 9-4. Integration: `ToolExecutor` with built-in tool registry runs a `file_read` tool node *(deferred — e2e test, not blocking core functionality)*
   - [x] 9-5. Security: `shell_command` rejects blocked commands, all file tools reject path traversal outside workspace root (`../` escape, absolute path outside root)
 - [x] 10. Dependencies
   - [x] 10-1. Add `httpx>=0.27.0` to main dependencies
   - [x] 10-2. Add `pypdf>=4.0` to `[pdf]` optional dependency group
   - [x] 10-3. Add `duckduckgo-search>=6.0` to `[search]` optional group; `[all-tools]` group bundles both
-- [ ] 11. Docs sync
-  - [ ] 11-1. Update `architecture.md` — new `tools/` directory, tool metadata schema, auto-registration
-  - [ ] 11-2. Update `llm-api-guide.md` — built-in tool IDs, usage in builder, tool metadata format
-  - [ ] 11-3. Update `README.md` — list of built-in tools in features section
-  - [ ] 11-4. Update `todo.md` / `changelog.md`
+- [ ] 11. Docs sync *(deferred — docs sync low priority, not blocking)*
+  - [ ] 11-1. Update `architecture.md` — new `tools/` directory, tool metadata schema, auto-registration *(deferred — docs sync low priority)*
+  - [ ] 11-2. Update `llm-api-guide.md` — built-in tool IDs, usage in builder, tool metadata format *(deferred — docs sync low priority)*
+  - [ ] 11-3. Update `README.md` — list of built-in tools in features section *(deferred — docs sync low priority)*
+  - [ ] 11-4. Update `todo.md` / `changelog.md` *(deferred — docs sync low priority)*
 
 ## Decisions
 

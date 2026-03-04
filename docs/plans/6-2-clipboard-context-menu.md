@@ -1,7 +1,7 @@
 # 6-2: Clipboard, Context Menu, Edge Reconnection
 
 **Parent:** [6-phase-3.75-visual-editor-editing](6-phase-3.75-visual-editor-editing.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Add copy/paste/duplicate for nodes, right-click context menus for common actions on canvas/node/edge, and drag-to-rewire edge reconnection. Depends on 6-1 for multi-select state.
 
 ## Tasks

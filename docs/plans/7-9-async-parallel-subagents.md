@@ -42,14 +42,14 @@ The gap: workflows that need *heterogeneous* parallel subagents (e.g. "run Resea
   - [x] 2-3. Respect `EngineConfig.max_concurrency` via existing `_guarded_execute_node` / global semaphore (7-1) — executor runs inside scheduler's node dispatch
   - [x] 2-4. Add `EventType` values: `PARALLEL_BRANCH_STARTED`, `PARALLEL_BRANCH_COMPLETED`, `PARALLEL_FAN_IN_COMPLETED` in `engine/events.py`; include `branch_key` (sub_graph key) in event `data` so downstream consumers (e.g. 10-9 runtime orchestrator) can route events per team
   - [x] 2-5. Register executor in scheduler's executor map: `("parallel_subagents", ParallelSubagentsExecutor())`
-- [ ] 3. **Checkpoint/resume**
-  - [ ] 3-1. In-flight parallel branches: checkpoint must capture which branches completed and which are pending; on resume, skip completed, re-dispatch pending
-  - [ ] 3-2. Reuse `ExecutionState.node_statuses` and `PortDataStore` — parallel node's sub-state may need extension (TBD: store per-branch status in metadata or new structure)
+- [ ] 3. **Checkpoint/resume** *(deferred — stretch goal, MVP ships without resume support)*
+  - [ ] 3-1. In-flight parallel branches: checkpoint must capture which branches completed and which are pending; on resume, skip completed, re-dispatch pending *(deferred — stretch goal)*
+  - [ ] 3-2. Reuse `ExecutionState.node_statuses` and `PortDataStore` — parallel node's sub-state may need extension (TBD: store per-branch status in metadata or new structure) *(deferred — stretch goal)*
 - [x] 4. **Builder / loader**
   - [x] 4-1. Builder DSL: `wf.parallel_subagents(node_id, ...)` with `parallel.branch(key)` context manager in `builder.py`; compiler maps to `ParallelSubagentsNode`. Sub_graphs created via nested context; `parallel.define_branch(key, graph)` for pre-built graphs.
   - [x] 4-2. Loader: markdown flow syntax `source | parallel(team_a, team_b, merge: append, parallel: 2)` in `flow_parser.py`; each branch references an agent (sub_graph).
   - [x] 4-3. Decompiler: emit `wf.parallel_subagents(...)` in builder decompiler; emit `source | parallel(...)` in loader decompiler.
-- [ ] 5. **Editor**
+- [ ] 5. **Editor** *(deferred — remaining sub-task 5-3 deferred, core palette/config done)*
   - [x] 5-1. Palette: add Parallel Subagents node type; `nodeTypes.ts` / palette config
   - [x] 5-2. Config panel: branch list (sub_graph keys), input mappings, merge strategy, parallelism, failure_policy
   - [ ] 5-3. ~~Visualization: show parallel branches and fan-in in execution~~ — **deferred** (depends on real running workflow; revisit when runtime orchestrator is live)
