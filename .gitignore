@@ -65,6 +65,9 @@ examples/beamer_writer_md/
 output/
 checkpoints/
 
+# Editor build output (pre-built before packaging)
+editor/dist/
+
 # JavaScript / TypeScript artifacts (future editor)
 node_modules/
 npm-debug.log*

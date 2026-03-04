@@ -8,12 +8,13 @@
 
 Agentic workflows are token-hungry. A multi-department workflow with loops, fan-outs, and orchestrator LLM calls can consume millions of tokens per run. Budget-aware model selection (15-3) picks cheaper models when appropriate, but the largest savings come from *sending fewer tokens in the first place*.
 
-Four levers of optimization, each a sub-plan:
+Five levers of optimization, each a sub-plan:
 
 1. **Smart context assembly** — load only what's needed, when it's needed (18-1)
 2. **Caching** — avoid redundant LLM calls entirely (18-2)
 3. **Agent-directed context architecture** — agents control what's in their context; structured state lives externally (18-3)
 4. **Analytics** — visibility into where tokens are spent and where waste occurs (18-4)
+5. **Task-level model tiering** — route each call to the cheapest model that can handle it (18-5)
 
 ## Design Philosophy
 
@@ -27,11 +28,12 @@ Summarization (LLM-based compression) is acceptable because the agent or system 
 
 ## Relationship to 15-3 (Dynamic Model Selection)
 
-15-3 handles *which model* to route each call to — budget-aware switching, cascade fallback, capability matching. This phase handles *what goes into each call* — regardless of which model receives it. They are complementary:
+15-3 handles *which model* to route each call to — budget-aware switching, cascade fallback, capability matching. 18-1 through 18-4 handle *what goes into each call* — reducing tokens regardless of model. 18-5 bridges the two: it uses task-level signals to pick the cheapest sufficient model automatically, without per-node annotation.
 
-- **15-3** picks a cheaper model when budget runs low → reduces cost per token
-- **Phase 10** reduces token count per call → reduces cost per call regardless of model
-- **Together:** the full cost optimization stack
+- **15-3** provides the policy/selector/tracker infrastructure
+- **18-1 through 18-4** reduce token count per call → reduces cost per call regardless of model
+- **18-5** reduces cost per token by routing simpler calls to cheaper models → reduces cost per call even at the same token count
+- **Together:** the full cost optimization stack (fewer tokens × cheaper tokens)
 
 ## Existing Baseline
 
@@ -78,6 +80,7 @@ Memory and RAG are the most powerful token optimization mechanisms available: th
 | [18-2](18-2-caching-layer.md) | Caching Layer | Provider prompt caching, node result memoization, semantic response cache | Eliminate redundant calls entirely |
 | [18-3](18-3-context-window-management.md) | Agent-Directed Context Architecture | Agent-controlled memory paging, externalized structured state, loop compaction, advisory token budgets | Agents load what they need; data lives on disk |
 | [18-4](18-4-token-analytics.md) | Token Analytics & Dashboard | Per-node token breakdown, waste detection, optimization recommendations, evolving context playbooks | Visibility, actionable insights, self-improving context |
+| [18-5](18-5-task-level-model-tiering.md) | Task-Level Model Tiering | 3-dimension scoring (difficulty/impact/recoverability), 4 model tiers (micro/routine/reasoning/critical), TierPolicy, adaptive escalation | Route each call to cheapest sufficient model |
 
 ## Dependencies / Sequencing
 
@@ -91,6 +94,7 @@ Memory and RAG are the most powerful token optimization mechanisms available: th
 5. **15-3 (cost tracking) is prerequisite.** Token analytics (18-4) extends `CostTracker`. Budget allocation (18-3) coordinates with `run_budget`.
 6. **14-3 (long-chain memory) is tightly integrated.** Memory/RAG are the highest-leverage token optimization tools — they replace inline content passing with compressed, retrievable storage. This phase wires the existing memory pipeline (`ShortTermMemory`, `ConsolidationPipeline`) and RAG infrastructure (`EmbeddingProvider`, `VectorStore`) into prompt assembly, context selection/deferment, and advisory budgeting systems. See "Integration with Memory & RAG Systems" above.
 7. **16-1 (agent teams) coordinates with 18-3.** Agent-team compaction already uses `CompactionRule`; the work here is to make runtime compaction/token accounting semantics consistent across teams, loops, and plain LLM nodes.
+8. **18-5 depends on 15-3 (model policy infrastructure) and graph topology.** `TierPolicy` plugs into the existing `ModelSelector`; scoring requires graph access at scheduling time. De-escalation recommendations feed into 18-4 analytics. Can run in parallel with 18-1 through 18-3.
 
 ## Success Criteria
 
@@ -105,6 +109,8 @@ Memory and RAG are the most powerful token optimization mechanisms available: th
 - No brute-force truncation anywhere in the pipeline — all context reduction is agent-directed or mechanically lossless
 - If `sliding_window` / `keep_last` compaction is used, it is only valid with guaranteed persistent recall (memory/state persistence + retrievability)
 - Evolving optimization rules support configurable approval modes: `always_approve` (human gate required) or `auto_accept` (apply by default)
+- Task-level model tiering: multi-node workflows use ≥ 2 distinct model tiers automatically, with 20–40% cost reduction vs. uniform strong-model baseline at <5% quality degradation
+- Tier assignments observable in run events and token analytics; adaptive escalation recovers from cheap-model failures
 
 ## Decisions
 
@@ -114,7 +120,7 @@ Memory and RAG are the most powerful token optimization mechanisms available: th
 
 ## Notes
 
-- The backlog item "Optimize token usage" is promoted to this phase; the backlog item "Manager vs worker node distinction" (token/node budget caps) is related — token budget allocation (18-3 task 4) partially addresses the token cap aspect.
+- The backlog item "Optimize token usage" is promoted to this phase; the backlog item "Manager vs worker node distinction" (token/node budget caps) is related — token budget allocation (18-3 task 4) partially addresses the token cap aspect, and task-level tiering (18-5) directly addresses the model-assignment aspect (worker nodes land in L0/L1, manager nodes in L2/L3).
 - The backlog item "Lightweight skills (prompt injection)" was superseded when 9B (hyperedges) landed.
 - Provider caching (18-2 task 1) is near-zero implementation cost for significant savings — should be prioritized.
 - Loop compaction (18-3 task 3) is the single highest-impact optimization for iterative workflows.

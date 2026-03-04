@@ -385,11 +385,11 @@ The paper-writing workflow already in `development-plan.md` Section 1 is the tar
 | **5** | Markdown agent format | `dan.loader`: markdown agent/workflow files → `dan_graph_v1` JSON (third authoring surface) | Not started |
 | **6** | Extended capabilities | RAG node (upgrade from tool-based), script execution / sandbox, handoff validators | Not started |
 | **7** | Author & chat | Conversational workflow authoring, NL→graph mutations, cursor-parity chat | **Done** |
-| **8** | Observe & recover | Run history, audit log, checkpoint portals, variable inspector, node test cases | Not started |
+| **8** | Observe & recover | Run history, audit log, checkpoint portals, variable inspector, node test cases | **Completed** |
 | **9** | Deep systems | Memory & cross-run state (9A), behavior modifiers/hyperedges (9B), execution primitives (9C) | Not started |
 | **10** | Token optimization | Prompt compression, provider caching, truncation policies, token analytics & waste detection | Not started |
 | **11** | Meta-Orchestrator | Goal→workflow planning, similarity retrieval+adaptation, graduated repair (L1–L4), autonomous execution with human override | Not started |
-| **12** | Author & distribute | CLI, publish as API/MCP, messaging integrations, shareable blocks, PyPI package | Not started |
+| **12** | Author & distribute | CLI, publish as API/MCP, messaging integrations, shareable blocks, PyPI package | **Completed** |
 
 ---
 

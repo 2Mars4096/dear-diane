@@ -44,6 +44,8 @@ deep-agent-network/
       google_provider.py         # GoogleProvider — wraps google.generativeai (optional dep)
       registry.py                # ProviderRegistry — model→provider routing (override→prefix→default)
       costs.py                   # Static COST_PER_1K_TOKENS table + estimate_cost()
+      tier_defaults.py             # DEFAULT_TIER_MAPS, DEFAULT_TIER_PARAMS, resolve_tier_map/resolve_tier_params
+      tier_scorer.py               # DifficultyScorer, ImpactScorer, RecoverabilityScorer, TierScorer, TierResult
     tools/                       # Phase 4 — built-in tool library (dan.tools)
       __init__.py                # get_all_tools() auto-discovery
       _workspace.py              # Workspace root sandboxing utility
@@ -91,6 +93,13 @@ deep-agent-network/
         chroma_store.py          # ChromaVectorStore — chromadb.PersistentClient, native metadata filtering
     utils/                       # Phase 9A — shared utilities
       tokens.py                  # estimate_tokens() — tiktoken-backed or character approximation
+      workflow_interface.py      # Phase 12 (21-5) — WorkflowInterface model, derive_workflow_interface() for input/output schema extraction
+    adapters/                    # Phase 12 (21-4) — messaging adapter framework
+      __init__.py                # Public exports: adapters, configs, renderer, session store
+      base.py                    # MessagingAdapter protocol, AdapterConfig, MessagingHumanRenderer, AdapterSessionStore, SessionState, trigger/parse helpers
+      email_adapter.py           # EmailAdapter — IMAP receive (asyncio.to_thread), aiosmtplib send, thread tracking
+      telegram_adapter.py        # TelegramAdapter — python-telegram-bot, inline keyboards, /start /status /cancel, message splitting
+      whatsapp_adapter.py        # WhatsAppAdapter — WhatsApp Cloud API (httpx), FastAPI webhook, interactive messages, signature verification
     meta/                        # Phase 11 — meta-orchestrator
       __init__.py
       discovery.py               # DiscoveryService — enumerates tools, skills, patterns, past workflows (ToolInfo, SkillInfo, PatternInfo, WorkflowMatch, DiscoveryResult)
@@ -122,6 +131,28 @@ deep-agent-network/
       compiler.py                # Markdown→Graph compiler (agent→node, flow→edge, auto-wiring, InputNode, diagnostics)
       decompiler.py              # Graph→Markdown decompiler (node→agent.md, edge→flow, round-trip)
       diagnostics.py             # Diagnostic, CompileResult, DecompileResult, format_diagnostics()
+    blocks/                      # Phase 12 (21-5) — shareable block packaging
+      __init__.py                # Public API: DanBlock, BlockRegistry, export/import functions, BlockResolver
+      models.py                  # DanBlock manifest, BlockDependency, InstalledBlock
+      export.py                  # export_workflow_block(), export_composite_block(), export_agent_collection_block(), pack_block()
+      importer.py                # import_block() — install from directory, tarball, or URL
+      registry.py                # BlockRegistry — scan/list/get/remove, _index.json cache
+      executor.py                # BlockResolver, load_block_as_graph(), resolve_node_block()
+    publish/                     # Phase 12 (21-3) — publish workflows as MCP/HTTP services
+      __init__.py                # Public API: session, schema, http, portal exports
+      session.py                 # PublishSession, PublishSessionStore, PublishedHumanRenderer (asyncio.Event-based wait), submit_human_input()
+      schema.py                  # slugify(), workflow_to_mcp_tools(), workflow_to_openapi_paths/spec()
+      mcp_server.py              # build_mcp_server(), run_mcp_stdio/http(), load_workflows_from_path() — FastMCP integration (optional mcp dep)
+      http_server.py             # PublishRegistry, create_publish_router(), create_publish_app() — FastAPI REST endpoints
+      portal.py                  # generate_mcp_config(), generate_api_docs(), generate_openapi_spec() — consumer-facing output
+    cli/                         # Phase 12 — terminal CLI for headless execution
+      __init__.py                # load_env(), resolve_config(), ensure_dan_dir(), _try_import_rich()
+      run.py                     # dan-run entry point: argparse CLI, source detection, CLIHumanRenderer, TUI display, background mode
+      status.py                  # dan-status entry point: list active/recent background runs from ~/.dan/runs/
+      logs.py                    # dan-logs entry point: tail JSONL event logs with --follow streaming
+      publish.py                 # dan-publish entry point: argparse CLI, MCP/HTTP/both modes, --generate-config/--docs/--openapi output modes (21-3)
+      adapter.py                 # dan-adapter placeholder (21-4)
+      blocks.py                  # dan-blocks CLI — list/install/export/remove/pack/info subcommands (21-5)
     server/                      # Phase 2 — FastAPI backend for visual editor
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
@@ -253,6 +284,8 @@ All 16 node types inherit from `NodeBase` with fields: `id`, `name`, `descriptio
 ### Model Heterogeneity
 
 Each operator node independently specifies its model. Cheap/fast for classification, strong for reasoning, code-specialized for generation. First-class design principle, not afterthought.
+
+**Task-level model tiering (18-5):** When no per-node model is set, the `TierPolicy` strategy automatically scores each call on three dimensions — difficulty (reasoning depth), impact (downstream blast radius), recoverability (validator/retry safety net) — and maps the combined score to one of four model tiers: `micro` (cheapest), `routine`, `reasoning`, `critical` (strongest). Tier → model mapping is provider-aware and configurable. Adaptive escalation bumps the tier on normalizer/validator failure; telemetry-driven de-escalation suggests cheaper tiers after repeated success.
 
 ### Output Normalization (built-in)
 
@@ -541,6 +574,23 @@ result = await engine.resume(graph, run_id="abc123")
 - **`RunManager.rerun_from_checkpoint()`** — validates scope, checks staleness, rehydrates `PortDataStore` with checkpoint outputs for skipped nodes, marks skipped nodes as `SKIPPED`, creates new `run_id` with provenance. Result metadata tagged with `__rerun_provenance__`.
 - **API endpoints**: `GET /api/runs/{id}/checkpoints` (list with staleness), `GET /api/runs/{id}/checkpoints/{cpid}` (detail), `POST /api/runs/{id}/rerun` (partial rerun with `RerunScope` body).
 
+### Variable Inspector (Phase 8, Plan 13-2)
+
+- **`compute_upstream_variables(node_id, graph)`** in `server/variable_inspector.py` — walks incoming edges to collect source node/port names, infer types from output port `json_schema`, and detect unconnected required input ports.
+- **API endpoint**: `GET /api/graphs/{graph_id}/nodes/{node_id}/inputs` — returns upstream variable descriptors with optional runtime value enrichment from a specific `run_id`.
+- Each variable entry includes: `variable_name`, `source_node`, `source_port`, `type_hint`, `required`, `edge_type`, `connected`.
+
+### Node Test Cases (Phase 8, Plan 13-2)
+
+- **`NodeTestCase`** schema (Pydantic, in `server/test_cases.py`): `id`, `name`, `node_id`, `inputs`, `expected_outputs`, `assertions`, `tags`, `notes`, `created_at`, `updated_at`.
+- **`TestCaseRunResult`**: `passed`, `actual_outputs`, `expected_outputs`, `diff`, `execution_metadata`, `error`.
+- **`TestCaseStore`** — filesystem-backed CRUD at `{base_dir}/test_cases/{workflow_id}/{node_id}.json` (JSON array of test case dicts). Upsert semantics on save.
+- **API endpoints**:
+  - `GET /api/test-cases/{workflow_id}/{node_id}` — list test cases
+  - `POST /api/test-cases/{workflow_id}/{node_id}` — create/update test case
+  - `DELETE /api/test-cases/{workflow_id}/{node_id}/{case_id}` — delete test case
+  - `POST /api/test-cases/{workflow_id}/{node_id}/{case_id}/run` — execute test case in isolation (builds synthetic single-node graph, runs via RunManager)
+
 ## Workflow Builder API (Phase 1.5)
 
 ### Builder DSL
@@ -653,6 +703,20 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 | PUT | `/api/chats/{workflow_id}/{thread_id}` | Update chat thread |
 | DELETE | `/api/chats/{workflow_id}/{thread_id}` | Delete chat thread |
 | POST | `/api/runs/scoped` | Start scoped run (full/node/subgraph) |
+| POST | `/api/graphs/{id}/publish` | Publish workflow to API registry |
+| POST | `/api/graphs/{id}/unpublish` | Remove from publish registry |
+| GET | `/api/graphs/{id}/publish-status` | Check if workflow is published |
+| GET | `/api/blocks` | List installed blocks |
+| GET | `/api/blocks/{name}` | Block info + README |
+| POST | `/api/blocks/import` | Import block from path/URL |
+| POST | `/api/blocks/export/{graph_id}` | Export workflow as block |
+| POST | `/api/blocks/export/{graph_id}/{node_id}` | Export composite node as block |
+| DELETE | `/api/blocks/{name}/{version}` | Uninstall a block |
+| POST | `/api/adapters/start` | Start messaging adapter |
+| POST | `/api/adapters/stop` | Stop adapter |
+| GET | `/api/adapters/status` | List running adapters |
+| GET | `/api/published/{wf_id}/events` | SSE stream for published workflow |
+| WS | `/api/published/{wf_id}/ws` | Bidirectional WebSocket for published workflow |
 
 ### Graph Persistence
 

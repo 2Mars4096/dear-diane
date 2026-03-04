@@ -1,7 +1,7 @@
 # 13-2: Recovery & Debug Workbench
 
 **Parent:** [13-observe-recover](13-observe-recover.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Turn persisted execution data into practical debugging workflows: partial reruns from checkpoints, upstream variable visibility, and node-level test case loops.
 
 ## Existing Baseline
@@ -46,7 +46,7 @@
 
 - [x] 5. Wire workbench features into existing surfaces
   - [x] 5-1. Add "Rerun from Here" and "Rerun This Node" context menu actions on canvas nodes (visible when a run exists). Entry point into checkpoint portal flow via `rerunFromNode` store action.
-  - [ ] 5-2. Add entry points from 13-1 run history panel: click a historical run → see checkpoint markers → click marker → "Rerun from here". *(deferred — requires run history panel UI work)*
+  - [x] 5-2. Add entry points from 13-1 run history panel: click a historical run → see checkpoint markers → click marker → "Rerun from here". *(implemented in Plan 20-3: CheckpointSection component, expandable per-run "▸ CP" toggle, staleness badges, inline scope picker)*
   - [x] 5-3. Add entry points from LogPanel: node group header actions — "Inspect inputs" (selects node for variable inspector), "Add test case from this run" (fires `dan:open-test-case-modal` with prefill), "Rerun from here" (calls `rerunFromNode`).
   - [x] 5-4. Add guardrails/toasts: stale checkpoint warning (409 from backend), scope validation errors (error toast on failure). Side-effecting node confirmation deferred.
   - [ ] 5-5. Ensure multi-tab consistency: test cases and checkpoint portals are workflow-scoped, not tab-scoped. Tab switching should not lose inspector state. *(deferred — requires tab state coordination)*
@@ -54,9 +54,9 @@
 ### Validation and Docs
 
 - [ ] 6. Testing and documentation
-  - [ ] 6-1. Backend tests: checkpoint rerun with downstream/single-node/subgraph scopes, stale graph rejection, provenance tagging, single-node test execution, test case CRUD.
+  - [x] 6-1. Backend tests: checkpoint rerun with downstream/single-node/subgraph scopes, stale graph rejection, provenance tagging, single-node test execution, test case CRUD. (`tests/test_server/test_recovery_workbench.py` — 13 tests)
   - [ ] 6-2. Frontend tests: inspector rendering with various edge topologies, test case modal create/edit/delete, rerun UX states (stale/compatible/missing), empty states.
-  - [ ] 6-3. Update `docs/architecture.md` (checkpoint portal model, variable inspector, test case schema), `docs/bugs.md` (if issues found), `docs/changelog.md`.
+  - [x] 6-3. Update `docs/architecture.md` (checkpoint portal model, variable inspector, test case schema), `docs/changelog.md`.
 
 ## Decisions
 

@@ -2,6 +2,141 @@
 
 ## 2026-03-04
 
+- [fix] **Phase 12 hardening — WebSocket rate limiting + adapter session isolation**
+  - **WebSocket rate limiting**: `start` messages in the published WS handler now enforce `_check_rate_limit()`, matching the REST endpoints; returns `{"type": "error", "detail": "Rate limit exceeded"}` on 429
+  - **Adapter renderer concurrency**: `_run_adapter_message_handler` now creates a **per-session** `MessagingHumanRenderer` from the adapter's transport, eliminating the race on shared `active_session_id` across concurrent conversations
+
+- [fix] **Phase 12 code-review fix pass — all Critical + Important + Minor issues resolved**
+  - **Publish router double-prefix (C1)**: Routes in `http_server.py` now use relative paths; router mounted once at `/api/published`
+  - **Rate limiter bypass (C6)**: Per-workflow rate limiters cached in `PublishRegistry._per_workflow_limiters` instead of created per-request
+  - **WebSocket auth bypass (C7)**: Auth check before `websocket.accept()` with 4001/4004 close codes
+  - **Blocks API contract (C2)**: Frontend handles raw array; backend unchanged
+  - **Adapter status contract (C3)**: Frontend uses `running`/`session_count` field names matching backend
+  - **Block import/export interop (C4)**: Frontend sends JSON `{path}` for import, query params for export
+  - **Adapter execution wiring (C5)**: `start_adapter` loads workflow, wires `MessagingHumanRenderer`, message callback runs engine; graceful fallback when workflow not found
+  - **Block subgraph on drop (I1)**: `body_graph: "block:{name}@{version}"` sentinel; engine resolves via `BlockRegistry`; input/output ports derived from block schema
+  - **Publish toolbar endpoints (I2)**: Corrected to `/graphs/{id}/publish-status`; added `GET /api/graphs/{id}/mcp-config` endpoint
+  - **Adapter session scope (I3)**: Workflow loading optional (warning not error)
+  - **Adapter protocol (I-new)**: Added `set_message_callback()` to `MessagingAdapter` protocol and all 3 implementations; replaced `hasattr` hack in server
+  - **Telegram instance maps (M)**: `_session_map`/`_chat_map` moved to `__init__`
+  - **Block export temp cleanup (M)**: `BackgroundTask` cleans temp dirs
+  - **Palette CLI hint (M)**: `dan blocks install` → `dan-blocks install`
+  - **Block list enrichment**: Backend now includes `input_schema`/`output_schema` in block listings
+  - **Type safety**: `EngineConfig.block_registry` typed as `BlockRegistry | None`; `_on_new_message` typed as `Callable` on all adapters
+  - Full test suite: **2563 passed, 0 failed**
+
+## 2026-03-04
+
+- [feat] **Task-level model tiering — core models & tier scorer (18-5, tasks 1 + 2-1..2-4)** — Added `TierWeights`, `TaskTier` enum, `TierPolicy` to `providers/model_policy.py`; extended `ModelPolicy` union. Created `providers/tier_defaults.py` with `DEFAULT_TIER_MAPS` (anthropic/openai/google), `DEFAULT_TIER_PARAMS`, `resolve_tier_map()`, `resolve_tier_params()`. Created `providers/tier_scorer.py` with `DifficultyScorer` (node-type base + schema/tool/prompt adjustments), `ImpactScorer` (precomputed graph topology walk), `RecoverabilityScorer` (retry/schema/loop/validator/cascade signals), and `TierScorer` (weighted combination → `TierResult` with tier + breakdown).
+
+## 2026-03-04
+
+- [docs] **Task-level model tiering plan (18-5)** — new sub-plan under Phase 10 (Token Optimization). Introduces `TierPolicy` strategy with 3-dimension scoring (difficulty, impact, recoverability) mapping to 4 model tiers (micro/routine/reasoning/critical). Includes adaptive escalation on failure and de-escalation over repeated success. Patches parent plan 18-token-optimization.md with fifth optimization lever, updated dependency graph, and success criteria.
+
+## 2026-03-04
+
+- [fix] **Adapter/workflow wiring, block drop, MCP config, and cleanup** — five targeted fixes:
+  - **Adapter start → workflow execution (CRITICAL)**: `POST /api/adapters/start` now wires `MessagingHumanRenderer` and `AdapterSessionStore`; loads workflow from `workflow_path` (graph_id, JSON, .md, .py); sets `_on_new_message` callback to run engine on incoming messages; stores renderer+graph in `_adapter_renderers`; `_load_workflow_for_adapter()` helper for source detection
+  - **GraphCanvas block drop**: Block drops now set `body_graph: "block:{name}@{version}"` as sentinel; engine scheduler resolves via `BlockRegistry` when `sub_graph_key.startswith("block:")`; added `block_registry` to `EngineConfig`; `input_mappings`/`output_mappings` on composite node
+  - **Telegram adapter**: Moved `_session_map` and `_chat_map` from class-level to instance attributes in `__init__`
+  - **Block export temp cleanup**: `export_block_endpoint` and `export_composite_block_endpoint` use `BackgroundTask` to run `shutil.rmtree` on temp dir after `FileResponse` is sent
+  - **MCP config endpoint**: Added `GET /api/graphs/{id}/mcp-config`; frontend `getMcpConfig` now calls dedicated endpoint instead of publish-status
+
+## 2026-03-04
+
+- [fix] **Frontend-backend API contract alignment** — resolved 7 mismatches between editor and server:
+  - **Blocks**: `fetchBlocks` now expects raw array (backend returns `Block[]`); `NodePalette` handles both array and wrapped responses
+  - **Adapters**: `AdapterInfo` uses `running`/`session_count` (backend shape); `getAdapterStatus` returns raw array; `stopAdapter` calls `POST /api/adapters/stop` with `{adapter_id}` body; `EditorToolbar` uses `adapter.running` and `adapter.session_count`
+  - **Publish**: `getPublishStatus` calls `/graphs/{id}/publish-status`; `PublishStatus` interface matches backend (`graph_id`, `published`, `workflow_id`, `config`)
+  - **MCP config**: `getMcpConfig` uses publish-status endpoint and extracts `config` (no dedicated mcp-config endpoint)
+  - **Block import**: `importBlock` sends JSON `{path}` (backend expects path); accepts `File | string` (File uses `file.name` as path)
+  - **Block export**: `exportBlock` sends `name`/`version` as query params (backend reads from query)
+  - **NodePalette**: CLI hint typo `dan blocks install` → `dan-blocks install`
+
+## 2026-03-04 (server integration)
+
+- [feat] **Deferred server integration endpoints** — wired publish, blocks, and adapters into `dan-serve` (Plans 21-3/21-4/21-5):
+  - **Publish router mount** (21-3 task 7): `PublishRegistry` initialized in lifespan, router mounted at `/api/published/`. New endpoints: `POST /api/graphs/{id}/publish`, `POST /api/graphs/{id}/unpublish`, `GET /api/graphs/{id}/publish-status`. Auto-registers previously published workflows from `*.publish.json` on startup.
+  - **Publish state persistence** (21-3 task 7-3): `graphs/{id}.publish.json` with `{enabled, api_key, rate_limit}` saved on publish, deleted on unpublish, scanned on startup.
+  - **SSE streaming** (21-3 task 3-2): `GET /api/published/{wf_id}/events?session_id=X` — `StreamingResponse` with `text/event-stream`. `PublishSessionStore.subscribe_events()` async generator with auto-termination on session completion.
+  - **WebSocket** (21-3 task 3-3): `WS /api/published/{wf_id}/ws` — bidirectional. `start` message creates session + runs workflow, `submit_input` message delivers HumanNode input. Events forwarded to client.
+  - **Rate limiting** (21-3 task 4-6): `RateLimiter` class with sliding-window counter (`deque` of timestamps). Per-workflow configurable via publish config `rate_limit` field. Returns 429 when exceeded.
+  - **Blocks API** (21-5 task 6-6): `GET /api/blocks` (list), `GET /api/blocks/{name}` (info + README), `POST /api/blocks/import` (from path/URL), `POST /api/blocks/export/{graph_id}` (workflow), `POST /api/blocks/export/{graph_id}/{node_id}` (composite), `DELETE /api/blocks/{name}/{version}` (uninstall). `BlockRegistry` initialized in lifespan with workspace scan.
+  - **Adapter management** (21-4 task 7): `POST /api/adapters/start` (email/telegram/whatsapp), `POST /api/adapters/stop`, `GET /api/adapters/status` (running state, session count, uptime). Adapters run as asyncio background tasks, cleaned up on shutdown.
+  - **Email retry handling** (21-4 task 3-8): `EmailAdapter.wait_for_response()` validates replies against expected schema. Malformed replies trigger "please try again" email with original prompt, max 3 retries per prompt.
+- [test] **Server integration tests** — `tests/test_server/test_server_integration.py` (15 tests): publish/unpublish/status, persistence, blocks list/export/import/remove, adapter start/stop/status
+- [test] **Publish rate limiter + session events** — `tests/test_publish/test_rate_limiter.py` (9 tests): sliding window, per-workflow isolation, event emission, subscribe/terminate
+- [test] **Email adapter retry** — `tests/test_adapters/test_email_retry.py` (7 tests): reply validation, retry counter, schema matching
+
+## 2026-03-04
+
+- [feat] **Frontend block/publish/adapter integration** — deferred editor integration tasks for Plans 21-5, 21-3, 21-4, and 13-2:
+  - **Blocks palette** (21-5 tasks 6-1→6-5): "Installed Blocks" collapsible section in `NodePalette` fetches blocks via `GET /api/blocks`, renders with type icon/version badge/description; draggable blocks with `application/dan-block` data transfer; `GraphCanvas` drop handler creates `CompositeNode` with `metadata.block_name/block_version`; `DanNode` shows purple package badge on block-sourced nodes; `ContextMenu` adds "Export as Block…" (composite nodes) and "Import Block…" (canvas); new `BlockExportDialog` modal with name/version/description/author fields
+  - **Publish button** (21-3 task 7-2): toolbar dropdown with "Publish as MCP", "Publish as HTTP API", "Unpublish" (only when published), "Copy MCP Config"; green dot indicator when published; calls `publishGraph/unpublishGraph/getMcpConfig` API functions
+  - **Adapter status** (21-4 task 7-2): toolbar indicator with message bubble icon + count badge; click opens panel listing active adapters (type icon, status, session count, stop button); polls `GET /api/adapters/status` every 10s
+  - **API client** (`lib/api.ts`): added `fetchBlocks`, `importBlock`, `exportBlock`, `deleteBlock`, `publishGraph`, `unpublishGraph`, `getPublishStatus`, `getMcpConfig`, `getAdapterStatus`, `stopAdapter` with full TypeScript types (`Block`, `PublishStatus`, `AdapterInfo`)
+  - **Checkpoint entry points** (13-2 task 5-2): confirmed already implemented via `CheckpointSection` in `RunHistoryPanel` (Plan 20-3)
+
+- [feat] **Markdown loader block references (21-5 task 5-3)** — flow parser and compiler now support `name@version` block references in chain flow lines (e.g. `-> [my-block@0.1.0] ->`). When the compiler encounters a `@` reference, it resolves via `BlockRegistry`, loads the block graph, and inlines it as a `CompositeNode` with `metadata.block_name` and `metadata.block_version`. Emits warning (or error in strict mode) if block is not installed.
+
+- [test] **Recovery/Debug Workbench tests (Plan 13-2)** — `tests/test_server/test_recovery_workbench.py` with 13 tests covering: variable inspector (`compute_upstream_variables` — connected, unconnected, no-edges, missing-node cases), test case CRUD (create, list, delete via `TestCaseStore`), and checkpoint rerun (scope models, staleness detection, no-store error).
+
+- [test] **Blocks integration tests (21-5 task 8-5)** — `tests/test_blocks/test_integration.py` with 6 tests: export workflow → verify directory structure, export → import → registry scan → load graph (full pipeline), tarball export/import, `BlockResolver` caching verification, missing block error.
+
+- [test] **Adapter integration tests (21-4 task 8-7)** — `tests/test_adapters/test_integration.py` with 18 tests: protocol compliance, full render cycle (approval/text/selection modes, state transitions, no-session error), prompt formatting and response parsing, trigger matching, session store concurrency, `as_callback` bridge.
+
+- [docs] **Architecture updates for Plan 13-2** — added Variable Inspector, Node Test Cases, and `NodeTestCase` schema documentation to `docs/architecture.md`.
+
+- [feat] **Phase 12 — Author & Distribute (Plans 21-1 through 21-5)** — complete implementation of 5 sub-plans. 2495 tests pass (284 new), 15 skipped, 0 failures. All sub-plans implemented with parallel subagents.
+
+- [feat] **PyPI Package (Plan 21-1)** — public API surface cleanup and package structure: version set to 0.1.1, added `authors`/`license`/`readme`/`keywords`/`classifiers`/`project.urls` to pyproject.toml. Added 6 new CLI entry points (`dan-run`, `dan-status`, `dan-logs`, `dan-publish`, `dan-adapter`, `dan-blocks`). Created `src/dan/cli/` package with placeholder modules. Added optional dependency groups: `[cli]` (rich), `[mcp]` (mcp SDK), `[messaging]` (telegram, smtp). Exported `HumanRenderer`/`HumanRenderRequest`/`HumanRenderResponse`/`AutoRenderer`/`ProgrammaticRenderer` from `dan.engine`. Exported `HumanNode` from `dan`. Populated `dan.meta.__init__.py` with `MetaController`, `WorkflowPlanner`, `DiscoveryService`, `RepairEscalator`. Created `LICENSE` (MIT), `docs/PACKAGE_SPLIT.md`, added `editor/dist/` to `.gitignore`.
+
+- [feat] **Publish Workflow as API/MCP (Plan 21-3)** — turn any DAN workflow into a callable service via MCP or HTTP REST. Key features:
+  - **Session management** (`src/dan/publish/session.py`): `PublishSession` model (session_id, workflow_id, status, pending_request, result, error), `PublishSessionStore` (in-memory, lock-protected CRUD), `PublishedHumanRenderer` implementing `HumanRenderer` protocol — parks HumanNode prompts in session, waits on `asyncio.Event` until input submitted, configurable timeout with default_action fallback
+  - **Schema derivation** (`src/dan/publish/schema.py`): `workflow_to_mcp_tools()` generates MCP tool descriptors (run + status + submit_input for human workflows), `workflow_to_openapi_paths()` and `workflow_to_openapi_spec()` generate OpenAPI 3.1 specs. Reuses `derive_workflow_interface()` from `dan.utils.workflow_interface`
+  - **MCP server** (`src/dan/publish/mcp_server.py`): `build_mcp_server()` creates a FastMCP server from workflow graphs, each workflow registers as MCP tools + metadata resource. Supports stdio and streamable HTTP transports. Multi-workflow support via `--dir`. Conditional `mcp` import (optional dep)
+  - **HTTP REST server** (`src/dan/publish/http_server.py`): FastAPI router with endpoints — `POST /run` (sync), `POST /run-async` (returns session_id), `GET /runs/{sid}` (poll), `POST /runs/{sid}/submit-input` (HumanNode), `GET /schema`, `GET /` (list), `GET /health`. Optional `X-API-Key` auth. `PublishRegistry` manages workflows. `create_publish_app()` for standalone
+  - **Portal helpers** (`src/dan/publish/portal.py`): `generate_mcp_config()` produces copy-pasteable Cursor/Claude Desktop JSON, `generate_api_docs()` creates markdown documentation, `generate_openapi_spec()` outputs OpenAPI 3.1 spec
+  - **CLI** (`src/dan/cli/publish.py`): replaces placeholder with full argparse — `dan-publish <wf> --type mcp|http|both`, `--port`, `--name`, `--api-key`, `--dir`, `--generate-config`, `--docs`, `--openapi`. Rich TUI startup banner. HTTP + MCP dual-mode via threading
+  - **76 tests** across 6 test files: session lifecycle (create/update/remove/list), PublishedHumanRenderer (submit/timeout/default/transitions), schema derivation (MCP tools, OpenAPI paths/spec), MCP server building (mock FastMCP, tool registration, multi-workflow), HTTP endpoints (health, list, schema, run-async, auth), portal generation (MCP config, API docs, OpenAPI), CLI argument parsing
+
+- [feat] **Shareable Blocks (Plan 21-5)** — packaging, exporting, importing, and managing reusable workflow components as versioned blocks. Key features:
+  - **Shared utility** (`src/dan/utils/workflow_interface.py`): `WorkflowInterface` Pydantic model and `derive_workflow_interface(graph)` — extracts input/output schemas from a workflow graph (InputNode variables, prompt `{placeholder}` detection, exit-node output ports, HumanNode detection, multi-entry/multi-exit merging). Shared by 21-5 and 21-3.
+  - **Block models** (`src/dan/blocks/models.py`): `DanBlock` manifest (name, semver version, description, author, license, tags, block_type, entry_point, dependencies, input/output schemas), `BlockDependency`, `InstalledBlock` with install path tracking. Semver validation, name validation.
+  - **Export** (`src/dan/blocks/export.py`): `export_workflow_block()`, `export_composite_block()` (extracts sub-graph), `export_agent_collection_block()` (bundles .md files), `pack_block()` (creates `.dan-block.tar.gz`). Auto-derives input/output schemas via `derive_workflow_interface()`. Generates `dan-block.json` manifest, `graph.json`, and `README.md`.
+  - **Import** (`src/dan/blocks/importer.py`): `import_block()` from local directory, `.dan-block.tar.gz` tarball, or HTTP(S) URL. User-level (`~/.dan/blocks/`) and workspace-level scopes. Version conflict warnings, dependency checking, force overwrite.
+  - **Registry** (`src/dan/blocks/registry.py`): `BlockRegistry` class — scans user and workspace block directories, workspace-level overrides user-level (same name+version), `list_blocks()`, `get_block()` (latest version if unspecified), `remove_block()`, cached `_index.json` index.
+  - **Executor/resolver** (`src/dan/blocks/executor.py`): `BlockResolver` with in-memory cache, `load_block_as_graph()`, `resolve_node_block()` for node metadata with `block_name`/`block_version`.
+  - **CLI** (`src/dan/cli/blocks.py`): full argparse with 6 subcommands — `list`, `install`, `export`, `remove`, `pack`, `info`. Rich table output with plain-text fallback.
+  - **67 tests** across 7 test files: model validation (semver, name, enums), workflow interface derivation (InputNode, placeholders, human detection, multi-entry/exit, inferred topology), export (workflow, composite, agent collection, tarball), import (directory, tarball, version conflict, force), registry (scan, override, get latest, remove, index), resolver (cache, missing block), CLI parsing.
+
+- [feat] **Messaging Adapters (Plan 21-4)** — email, Telegram, and WhatsApp adapters that render HumanNode I/O through messaging channels. Key features:
+  - **Adapter protocol & framework** (`src/dan/adapters/base.py`): `MessagingAdapter` protocol (5 async methods), `AdapterConfig` Pydantic model with trigger modes (always/keyword/pattern), `MessagingHumanRenderer` bridging any adapter to the engine's `HumanRenderer` protocol, `AdapterSessionStore` with state machine (idle→running→awaiting_human→completed/failed), prompt formatting and response parsing helpers for all render modes (text/approval/selection/form)
+  - **Email adapter** (`email_adapter.py`): IMAP polling via stdlib `imaplib` + `asyncio.to_thread()`, async SMTP sending via `aiosmtplib`, email thread tracking (Message-ID / In-Reply-To), HTML result formatting
+  - **Telegram adapter** (`telegram_adapter.py`): `python-telegram-bot` with long-polling or webhook, inline keyboards for selection/approval, /start /status /cancel commands, 4096-char message splitting, throttled progress updates, session-per-chat_id, allowed chat whitelist
+  - **WhatsApp adapter** (`whatsapp_adapter.py`): WhatsApp Business Cloud API via `httpx`, FastAPI webhook sub-app with signature verification, interactive button/list messages, session-per-phone-number, documented Business API prerequisites
+  - **CLI** (`dan-adapter`): argparse with `email`/`telegram`/`whatsapp` subcommands, `--config <json>` file loading, Rich TUI status panel (graceful fallback), async runner with signal handling
+  - **78 tests** across 4 test files: protocol compliance, renderer bridge, session concurrency, email IMAP/SMTP mocks, Telegram command handlers + callback queries, WhatsApp webhook payload parsing + signature verification
+
+- [feat] **CLI Mode (Plan 21-2)** — full `dan-run` CLI for executing DAN workflows from the terminal. Key features:
+  - **Argparse-based CLI** with flags: `--api-key`, `--model`, `--base-url`, `--workspace`, `--input key=value`, `--input-json`, `--interactive`/`--headless`, `--quiet`/`--verbose`, `--output-format json`, `--output`, `--artifacts-dir`, `--background`/`--bg`, `--human-timeout`, `--auto-approve`, `--goal`
+  - **Workflow source detection**: JSON file → `Graph.model_validate()`, markdown → `dan.loader.load()`, Python file → `importlib.util.spec_from_file_location` (looks for `graph` attr or `build()` callable), NL goal → `MetaController`
+  - **Rich TUI progress display**: live status table (node name, type, status, duration, tokens), progress counter, final summary (time/tokens/cost/node breakdown), graceful fallback to plain text when rich not installed
+  - **CLIHumanRenderer**: implements `HumanRenderer` protocol for interactive terminal prompts — approval (y/n), selection (numbered list), form (key-value), text (free text), with timeout and default fallback
+  - **Background/supervisor mode**: `--background`/`--bg` spawns via `subprocess.Popen`, writes PID + events to `~/.dan/runs/{run_id}.*`
+  - **dan-status**: lists active/recent background runs with status, duration, progress; `--kill` sends SIGTERM
+  - **dan-logs**: tails event logs for a run, `--follow` for streaming, Rich-formatted output
+  - **Output handling**: `--output <path>` writes JSON, `--quiet` outputs only final JSON, `--output-format json` streams JSONL events, artifact manifest on completion
+  - **Signal handling**: SIGINT/SIGTERM triggers graceful shutdown
+  - **Engine enhancement**: added `human_renderer` parameter to `Engine.__init__()` (passed through to `ExecutionContext`) so CLI can inject its renderer directly without legacy callback wrapping
+  - **63 tests** across 5 test files: argument parsing, config resolution, source detection, HumanRenderer protocol conformance, TUI display classes, end-to-end integration with mocked engine
+
+- [docs] **Phase 12 plan final review** — second review pass fixed 6 remaining stale references: `dan publish` → `dan-publish` (2 occurrences), `AdapterHumanInputResolver` → `MessagingHumanRenderer`, task 2-3 "one MCP tool" clarified to include HumanNode multi-tool pattern, `derive_workflow_interface()` location aligned between 21-3 and 21-5 (both now reference `dan.utils.workflow_interface`), 21-5 task 7-8 deduplicated with 21-1 entry points, 21-2 task 4-5 corrected Engine parameter passing (`human_renderer=` on constructor, not `EngineConfig`).
+
+- [docs] **Phase 12 plan review and patch** — audited all 6 plan files against the actual codebase. Key fixes: (1) replaced non-existent "HumanInputResolver" references with the real `HumanRenderer` protocol from `dan.engine.executor` across 21-2, 21-3, 21-4; (2) redesigned MCP HumanNode interaction in 21-3 from broken notification pattern to multi-call pattern (run→status→submit_input) since MCP tools are request/response; (3) fixed MCP transport from "SSE" to "streamable HTTP" per current SDK; (4) added missing entry points to 21-1 (`dan-status`, `dan-logs`, `dan-adapter`); (5) noted version downgrade 0.2.0→0.1.1 is intentional; (6) fixed package rename approach (pyproject.toml + directory rename, not Python constant); (7) removed duplicate tasks between 21-1 and 21-2; (8) noted `dan.meta.__init__.py` is empty and needs populating; (9) promoted `HumanRenderer`/`HumanRenderRequest`/`HumanRenderResponse` to public API exports; (10) extracted `derive_workflow_interface()` to shared `dan.utils.workflow_interface` to avoid 21-5→21-3 dependency; (11) replaced unmaintained `aioimaplib` with stdlib `imaplib` + `asyncio.to_thread()`; (12) added WhatsApp Business API complexity warnings; (13) fixed Python file execution in CLI from `exec()` to `importlib`; (14) added block nesting decision.
+
+- [docs] **Phase 12 — Author & Distribute plans** — created top-level plan (`21-author-distribute.md`) and five sub-plans: `21-1-pypi-package.md` (public API surface, package structure, version 0.1.1, entry points), `21-2-cli-mode.md` (Rich TUI, interactive HumanNode, meta-orchestrator NL path, background/supervisor mode), `21-3-publish-api-mcp.md` (MCP server generation, HTTP REST fallback, stateful streaming, portal UX), `21-4-messaging-adapters.md` (email + Telegram + WhatsApp as HumanNode renderers), `21-5-shareable-blocks.md` (block package format, export/import, versioning, local registry). Updated `todo.md` with Phase 12 section and sub-plan links.
+
 - [fix] **Phase 11.5 code review fixes (Part 2)** — fixed `Cmd/Ctrl+Shift+M` chat mode keyboard shortcut to not trigger when an input or textarea is focused; removed redundant chat mode string normalization in frontend (trusting the backend API); set correct MIME types (`text/markdown`, `text/x-python`) for exported graph blob downloads.
 
 - [fix] **Phase 11.5 code review fixes** — fixed duplicate `const tid` in `ChatPanel.tsx` `handleApplyMutation`; refined `detect_chat_mode` heuristic to avoid false positives (questions with "error"/"fix" now route to ask, not debug; stem matching for "crash"/"fail" variants); added "auto" to `ChatStore._VALID_MODES` and `loadThread` valid modes for consistent persistence; added click-outside handler to export dropdown in `EditorToolbar.tsx`. 48/48 tests pass.

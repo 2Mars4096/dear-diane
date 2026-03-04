@@ -119,9 +119,9 @@
 ## Phase 8 — Observe & Recover
 > Execution persistence, debugging tools, and iterative refinement capabilities.
 
-- [ ] [13-observe-recover](plans/13-observe-recover.md) — execution persistence, debugging tools, and iterative refinement capabilities
+- [x] [13-observe-recover](plans/13-observe-recover.md) — execution persistence, debugging tools, and iterative refinement capabilities
   - [x] [13-1-run-observability-history](plans/13-1-run-observability-history.md) — run artifacts, history/comparison, and action audit log foundation
-  - [ ] [13-2-recovery-debug-workbench](plans/13-2-recovery-debug-workbench.md) — checkpoint portals, variable inspector, and node test cases UX (variable inspector + node test cases + checkpoint portal backend complete; frontend integration [task 5] and testing/docs [task 6] pending)
+  - [x] [13-2-recovery-debug-workbench](plans/13-2-recovery-debug-workbench.md) — checkpoint portals, variable inspector, node test cases UX, backend tests + docs *(multi-tab consistency [5-5] + frontend tests [6-2] deferred)*
 
 ## Phase 9 — Deep Systems
 > Architectural additions for advanced use cases. Grouped into four clusters; each cluster gets a plan file just-in-time when work begins.
@@ -159,11 +159,12 @@
 ## Phase 10 — Token Optimization
 > Minimize token consumption and maximize cost-efficiency. Model selection (15-3) picks the right model; this phase reduces tokens sent regardless of model — smart context assembly, caching, agent-directed context architecture, and analytics.
 
-- [x] [18-token-optimization](plans/18-token-optimization.md) — smart context assembly, caching, agent-directed context architecture, token analytics
+- [ ] [18-token-optimization](plans/18-token-optimization.md) — smart context assembly, caching, agent-directed context architecture, token analytics, task-level model tiering
   - [x] [18-1-prompt-compression](plans/18-1-prompt-compression.md) — advisory token budgets, context deferral, JIT schema loading, context tools, summarization, reference passing
   - [x] [18-2-caching-layer](plans/18-2-caching-layer.md) — provider prompt caching, node memoization, semantic cache, cache APIs
   - [x] [18-3-context-window-management](plans/18-3-context-window-management.md) — externalized state, history policy, safe loop compaction, advisory token budgets
   - [x] [18-4-token-analytics](plans/18-4-token-analytics.md) — per-node breakdown, waste detection, optimization recommendations, evolving playbooks, editor visualization *(token flow edges and before/after estimation deferred)*
+  - [ ] [18-5-task-level-model-tiering](plans/18-5-task-level-model-tiering.md) — 3-dimension scoring (difficulty/impact/recoverability), 4 model tiers, TierPolicy, adaptive escalation/de-escalation
 
 ## Phase 11 — Meta-Orchestrator
 > Autonomous planning, execution, and self-repair. Given a high-level goal ("write a paper on X in Y format"), the meta-orchestrator discovers relevant past workflows, plans/adapts/generates a workflow graph, executes it, diagnoses failures at every severity level, and applies graduated repairs — from prompt tweaks to full redesign — while allowing human intervention at any step.
@@ -183,14 +184,14 @@
   - [x] [20-3-checkpoint-ui-automode](plans/20-3-checkpoint-ui-automode.md) — C. Run history checkpoint UI, multi-tab checkpoint consistency, auto-mode detection
 
 ## Phase 12 — Author & Distribute
-> CLI, publish as API/MCP, shareable blocks, PyPI package. Comes after Meta-Orchestrator so API surface, cost controls, and autonomous execution are stable before packaging.
+> CLI, publish as API/MCP, messaging adapters, shareable blocks, PyPI package. Comes after Meta-Orchestrator so API surface, cost controls, and autonomous execution are stable before packaging.
 
-- [ ] Author & distribute → (not yet planned)
-- [ ] CLI mode — run workflows in terminal/background. Supervisor-style: start, check progress, inspect logs without blocking. Complements visual editor for headless/CI/server deployments.
-- [ ] Publish workflow as API/MCP — build a workflow, publish as a callable MCP server or HTTP endpoint. Turns workflows into consumable services (Coze-style).
-- [ ] Messaging/comm integrations — email, Slack, Discord, Telegram, WhatsApp adapters. Trigger workflows from external messages; publish workflows as bot backends.
-- [ ] Shareable blocks — publish and import reusable agent-blocks. Registry/marketplace for community sharing.
-- [ ] PyPI package — `pip install dan` with stable public API.
+- [x] [21-author-distribute](plans/21-author-distribute.md) — CLI, publish as API/MCP, messaging adapters, shareable blocks, PyPI package
+  - [x] [21-1-pypi-package](plans/21-1-pypi-package.md) — public API surface, package structure, version 0.1.1, entry points, optional deps, CLI placeholders, LICENSE, PACKAGE_SPLIT.md
+  - [x] [21-2-cli-mode](plans/21-2-cli-mode.md) — `dan-run` with Rich TUI, `--interactive` HumanNode, meta-orchestrator NL path, background mode
+  - [x] [21-3-publish-api-mcp](plans/21-3-publish-api-mcp.md) — MCP server generation, HTTP REST fallback, stateful streaming, easy portal, SSE/WebSocket streaming, rate limiting, dan-serve integration
+  - [x] [21-4-messaging-adapters](plans/21-4-messaging-adapters.md) — email + Telegram + WhatsApp adapters as interactive HumanNode renderers, server integration, email retry *(adapter log streaming to editor deferred)*
+  - [x] [21-5-shareable-blocks](plans/21-5-shareable-blocks.md) — block package format, export/import, versioning, local registry, editor integration, backend API endpoints
 
 ## Backlog (unphased)
 
