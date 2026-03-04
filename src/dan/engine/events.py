@@ -107,6 +107,8 @@ class EventType(str, Enum):
     # -- 19-1: Experience memory events ----------------------------------------
     EXPERIENCE_CONSOLIDATED = "experience_consolidated"
     EXPERIENCE_INDEXED = "experience_indexed"
+    # -- 13-2: Checkpoint portal events ----------------------------------------
+    RERUN_STARTED = "rerun_started"
     # -- 19-4: Meta-orchestrator events ----------------------------------------
     META_SESSION_STARTED = "meta_session_started"
     META_PLAN_CREATED = "meta_plan_created"

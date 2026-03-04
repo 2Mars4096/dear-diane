@@ -853,19 +853,22 @@ class Engine:
                 )
                 if self.checkpoint_store is not None:
                     await self._save_checkpoint(
-                        state, shared_context, artifacts, local_state
+                        state, shared_context, artifacts, local_state,
+                        graph=graph, graph_id=workflow_id or "",
                     )
 
                 if self._check_halt(state):
                     if self.checkpoint_store is not None:
                         await self._save_checkpoint(
-                            state, shared_context, artifacts, local_state
+                            state, shared_context, artifacts, local_state,
+                            graph=graph, graph_id=workflow_id or "",
                         )
                     break
         else:
             await self._execute_with_cycles(
                 graph, state, context, levels, back_edges, cycle_regions,
                 shared_context, artifacts, local_state, global_sem,
+                graph_id=workflow_id or "",
             )
 
         await self._flush_memory_writes(
@@ -935,6 +938,7 @@ class Engine:
         global_sem: asyncio.Semaphore | None = None,
         *,
         skip_checkpoint: bool = False,
+        graph_id: str = "",
     ) -> None:
         """Execute graph with cycle regions handled via bounded iteration."""
         executed_gates: set[str] = set()
@@ -956,7 +960,8 @@ class Engine:
             if self._check_halt(state):
                 if not skip_checkpoint and self.checkpoint_store is not None:
                     await self._save_checkpoint(
-                        state, shared_context, artifacts, local_state, cost_tracker,
+                        state, shared_context, artifacts, local_state,
+                        graph=graph, graph_id=graph_id,
                     )
                 break
 
@@ -989,6 +994,7 @@ class Engine:
             if not skip_checkpoint and self.checkpoint_store is not None:
                 await self._save_checkpoint(
                     state, shared_context, artifacts, local_state,
+                    graph=graph, graph_id=graph_id,
                 )
 
     async def _iterate_cycle(
@@ -1856,7 +1862,7 @@ class Engine:
             await self._execute_with_cycles(
                 sub_graph, sub_state, sub_context, levels, back_edges, cycle_regions,
                 shared_context, artifacts, local_state, global_sem,
-                skip_checkpoint=True,
+                skip_checkpoint=True, graph_id="",
             )
 
         if isinstance(child_context_store, ScopedContextView):
@@ -1949,10 +1955,13 @@ class Engine:
         artifacts: ArtifactStore,
         local_state: LocalStateManager,
         cost_tracker: Any | None = None,
+        *,
+        graph: Graph | None = None,
+        graph_id: str = "",
     ) -> None:
         if self.checkpoint_store is None:
             return
-        checkpoint = {
+        checkpoint: dict[str, Any] = {
             "state": state.snapshot(),
             "shared_context": shared_context.snapshot(),
             "artifacts": artifacts.snapshot(),
@@ -1960,6 +1969,36 @@ class Engine:
         }
         if cost_tracker is not None:
             checkpoint["cost_tracker"] = cost_tracker.snapshot()
+
+        # -- Extended checkpoint metadata for checkpoint portals --------
+        from dan.engine.checkpoint import CheckpointData, compute_graph_revision_hash
+
+        completed_ids = [
+            nid for nid, s in state.node_statuses.items()
+            if s == NodeStatus.COMPLETED
+        ]
+        node_outputs: dict[str, Any] = {}
+        for nid in completed_ids:
+            outputs = state.port_data.get_node_outputs(nid)
+            if outputs:
+                node_outputs[nid] = outputs
+
+        graph_rev: str | None = None
+        if graph is not None:
+            try:
+                graph_rev = compute_graph_revision_hash(graph)
+            except Exception:
+                pass
+
+        checkpoint_data = CheckpointData(
+            run_id=state.run_id,
+            graph_id=graph_id,
+            graph_revision=graph_rev,
+            completed_node_ids=completed_ids,
+            node_outputs=node_outputs,
+        )
+        checkpoint["checkpoint_data"] = checkpoint_data.model_dump()
+
         await self.checkpoint_store.save(state.run_id, checkpoint)
 
     @staticmethod
