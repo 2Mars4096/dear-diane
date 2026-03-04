@@ -1,0 +1,27 @@
+{
+  "key": "principle:1a5fb733-0cbf-43d3-89de-a24b29318936",
+  "value": {
+    "id": "1a5fb733-0cbf-43d3-89de-a24b29318936",
+    "condition": "hallucinated references",
+    "action": "avoid citing papers not in the context",
+    "reason": "",
+    "source_run_ids": [],
+    "source_node_ids": [],
+    "confidence": 0.8,
+    "created_at": 1772607696.0107672,
+    "updated_at": 1772607696.010829,
+    "tags": [
+      "llm_operator"
+    ],
+    "workflow_id": "wf2",
+    "repair_level": "prompt_fix",
+    "suggested_parameter_changes": {},
+    "structural_description": ""
+  },
+  "scope": "workflow",
+  "created_at": 1772607696.010862,
+  "updated_at": 1772607696.010862,
+  "source_run_id": null,
+  "writer_node_id": null,
+  "write_mode": "set"
+}
