@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useGraphStore } from "../store/useGraphStore";
 import * as api from "../lib/api";
 import { resolveCompareSelection } from "../lib/runHistory";
+import type { CheckpointEntry } from "../lib/api";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -68,6 +69,223 @@ function DeltaBadge({ value, unit, invert }: { value: number; unit: string; inve
 }
 
 // ---------------------------------------------------------------------------
+// Staleness badge
+// ---------------------------------------------------------------------------
+
+function StalenessBadge({ checkpoint }: { checkpoint: CheckpointEntry }) {
+  if (checkpoint.missing_nodes && checkpoint.missing_nodes.length > 0) {
+    return (
+      <span
+        className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-red-100 text-red-700"
+        title={`Missing nodes: ${checkpoint.missing_nodes.join(", ")}`}
+      >
+        Incompatible
+      </span>
+    );
+  }
+  if (checkpoint.stale) {
+    return (
+      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-100 text-amber-700">
+        Stale
+      </span>
+    );
+  }
+  if (checkpoint.compatible !== false) {
+    return (
+      <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-green-100 text-green-700">
+        Compatible
+      </span>
+    );
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Checkpoint section for a run
+// ---------------------------------------------------------------------------
+
+function CheckpointSection({ run }: { run: api.RunSummary }) {
+  const [checkpoints, setCheckpoints] = useState<CheckpointEntry[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [rerunTarget, setRerunTarget] = useState<{ cpId: string } | null>(null);
+  const [scopeType, setScopeType] = useState<"downstream_of" | "single_node" | "subgraph">("downstream_of");
+  const [targetNodeId, setTargetNodeId] = useState("");
+  const [rerunning, setRerunning] = useState(false);
+
+  const fetchCheckpoints = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    api.listCheckpoints(run.run_id)
+      .then((res) => {
+        setCheckpoints(res.checkpoints);
+        setLoading(false);
+      })
+      .catch((err) => {
+        setError(String(err));
+        setLoading(false);
+      });
+  }, [run.run_id]);
+
+  useEffect(() => {
+    fetchCheckpoints();
+  }, [fetchCheckpoints]);
+
+  const handleRerun = useCallback(async (cp: CheckpointEntry) => {
+    if (!targetNodeId && scopeType !== "subgraph") return;
+    setRerunning(true);
+    try {
+      const graphId = useGraphStore.getState().graphId;
+      if (!graphId) throw new Error("No graph loaded");
+      const result = await api.rerunFromCheckpoint(run.run_id, {
+        scope_type: scopeType,
+        target_node_id: targetNodeId || undefined,
+        graph_id: graphId,
+      });
+      useGraphStore.getState().addToast({
+        type: "info",
+        message: `Rerun started from checkpoint (${result.run_id.slice(0, 8)})`,
+      });
+      setRerunTarget(null);
+    } catch (err) {
+      useGraphStore.getState().addToast({
+        type: "error",
+        message: (err as Error).message ?? "Rerun failed",
+      });
+    } finally {
+      setRerunning(false);
+    }
+  }, [run.run_id, scopeType, targetNodeId]);
+
+  const handleRunFull = useCallback(() => {
+    useGraphStore.getState().startRun();
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="px-3 py-1.5 text-[10px] text-gray-400 italic">
+        Loading checkpoints…
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="px-3 py-1.5 text-[10px] text-gray-400 italic">
+        No checkpoint data
+      </div>
+    );
+  }
+
+  if (!checkpoints || checkpoints.length === 0) {
+    return (
+      <div className="px-3 py-1.5 text-[10px] text-gray-400 italic">
+        No checkpoints
+      </div>
+    );
+  }
+
+  return (
+    <div className="pl-4 pr-2 pb-1.5 border-b border-gray-100">
+      {checkpoints.map((cp) => {
+        const isStale = cp.stale === true;
+        const hasMissing = (cp.missing_nodes?.length ?? 0) > 0;
+        const isCompatible = cp.compatible !== false && !isStale && !hasMissing;
+
+        return (
+          <div key={cp.checkpoint_id} className="py-1">
+            <div className="flex items-center gap-2 text-[10px]">
+              <StalenessBadge checkpoint={cp} />
+              <span className="text-gray-500">
+                {cp.timestamp
+                  ? new Date(cp.timestamp * 1000).toLocaleString(undefined, {
+                      month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
+                    })
+                  : "—"}
+              </span>
+              <span className="text-gray-500">{cp.completed_node_count} node{cp.completed_node_count !== 1 ? "s" : ""}</span>
+
+              {isCompatible && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setRerunTarget(rerunTarget?.cpId === cp.checkpoint_id ? null : { cpId: cp.checkpoint_id });
+                  }}
+                  className="text-[10px] text-indigo-500 hover:text-indigo-700 font-medium px-1"
+                >
+                  {rerunTarget?.cpId === cp.checkpoint_id ? "Cancel" : "Rerun…"}
+                </button>
+              )}
+
+              {isStale && !hasMissing && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleRunFull(); }}
+                  className="text-[10px] text-amber-600 hover:text-amber-800 font-medium px-1"
+                >
+                  Run Full
+                </button>
+              )}
+            </div>
+
+            {isStale && !hasMissing && (
+              <div className="text-[10px] text-amber-600 mt-0.5">
+                Graph changed since checkpoint
+              </div>
+            )}
+
+            {cp.message && (
+              <div className="text-[10px] text-gray-400 mt-0.5">{cp.message}</div>
+            )}
+
+            {/* Inline scope picker */}
+            {rerunTarget?.cpId === cp.checkpoint_id && isCompatible && (
+              <div className="mt-1.5 p-2 bg-gray-50 rounded border border-gray-200 text-[10px]" onClick={(e) => e.stopPropagation()}>
+                <div className="font-medium text-gray-600 mb-1">Rerun scope</div>
+                <div className="flex flex-col gap-1 mb-1.5">
+                  {(["downstream_of", "single_node", "subgraph"] as const).map((s) => (
+                    <label key={s} className="flex items-center gap-1 cursor-pointer">
+                      <input
+                        type="radio"
+                        name={`scope-${cp.checkpoint_id}`}
+                        checked={scopeType === s}
+                        onChange={() => setScopeType(s)}
+                        className="w-3 h-3"
+                      />
+                      <span className="text-gray-700">
+                        {s === "downstream_of" ? "Downstream of node" : s === "single_node" ? "Single node" : "Full subgraph"}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                {scopeType !== "subgraph" && (
+                  <div className="mb-1.5">
+                    <label className="text-gray-500 block mb-0.5">Target node</label>
+                    <input
+                      type="text"
+                      value={targetNodeId}
+                      onChange={(e) => setTargetNodeId(e.target.value)}
+                      placeholder="node_id"
+                      className="w-full px-1.5 py-0.5 rounded border border-gray-300 bg-white text-[10px] text-gray-700 outline-none focus:ring-1 focus:ring-indigo-400"
+                    />
+                  </div>
+                )}
+                <button
+                  onClick={() => handleRerun(cp)}
+                  disabled={rerunning || (scopeType !== "subgraph" && !targetNodeId)}
+                  className="px-2 py-0.5 rounded bg-indigo-500 text-white font-medium hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  {rerunning ? "Starting…" : "Start Rerun"}
+                </button>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Run List View
 // ---------------------------------------------------------------------------
 
@@ -87,6 +305,7 @@ function RunListView({
   onRefresh: () => void;
 }) {
   const [compareSource, setCompareSource] = useState<string | null>(null);
+  const [expandedRunId, setExpandedRunId] = useState<string | null>(null);
 
   return (
     <div className="flex flex-col h-full">
@@ -129,38 +348,52 @@ function RunListView({
           <div className="p-3 text-xs text-gray-400 text-center">No runs yet.</div>
         )}
         {state.runs.map((run) => (
-          <div
-            key={run.run_id}
-            className="flex items-center gap-2 px-2 py-1.5 text-[11px] border-b border-gray-100 hover:bg-gray-50 cursor-pointer group"
-            onClick={() => {
-              if (compareSource) {
-                if (compareSource !== run.run_id) {
-                  onCompare(compareSource, run);
+          <div key={run.run_id}>
+            <div
+              className="flex items-center gap-2 px-2 py-1.5 text-[11px] border-b border-gray-100 hover:bg-gray-50 cursor-pointer group"
+              onClick={() => {
+                if (compareSource) {
+                  if (compareSource !== run.run_id) {
+                    onCompare(compareSource, run);
+                  }
+                  setCompareSource(null);
+                } else {
+                  onSelect(run);
                 }
-                setCompareSource(null);
-              } else {
-                onSelect(run);
-              }
-            }}
-          >
-            <StatusBadge status={run.status} />
-            <span className="text-gray-500 shrink-0">{formatDate(run.started_at)}</span>
-            <span className="text-gray-700 truncate flex-1">{run.graph_id}</span>
-            <span className="text-gray-400 shrink-0">{formatElapsed(run.elapsed_seconds)}</span>
-            <span className="text-indigo-500 shrink-0">{formatTokens(run.total_tokens)} tok</span>
-            {run.total_cost != null && run.total_cost > 0 && (
-              <span className="text-emerald-600 shrink-0">{formatCost(run.total_cost)}</span>
-            )}
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                setCompareSource(run.run_id);
               }}
-              className="opacity-0 group-hover:opacity-100 text-[10px] text-indigo-500 hover:text-indigo-700 px-1 shrink-0"
-              title="Compare with another run"
             >
-              Compare…
-            </button>
+              <StatusBadge status={run.status} />
+              <span className="text-gray-500 shrink-0">{formatDate(run.started_at)}</span>
+              <span className="text-gray-700 truncate flex-1">{run.graph_id}</span>
+              <span className="text-gray-400 shrink-0">{formatElapsed(run.elapsed_seconds)}</span>
+              <span className="text-indigo-500 shrink-0">{formatTokens(run.total_tokens)} tok</span>
+              {run.total_cost != null && run.total_cost > 0 && (
+                <span className="text-emerald-600 shrink-0">{formatCost(run.total_cost)}</span>
+              )}
+              {(run.status === "completed" || run.status === "failed") && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setExpandedRunId(expandedRunId === run.run_id ? null : run.run_id);
+                  }}
+                  className="text-[10px] text-gray-400 hover:text-indigo-600 px-1 shrink-0"
+                  title="Show checkpoints"
+                >
+                  {expandedRunId === run.run_id ? "▾ CP" : "▸ CP"}
+                </button>
+              )}
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setCompareSource(run.run_id);
+                }}
+                className="opacity-0 group-hover:opacity-100 text-[10px] text-indigo-500 hover:text-indigo-700 px-1 shrink-0"
+                title="Compare with another run"
+              >
+                Compare…
+              </button>
+            </div>
+            {expandedRunId === run.run_id && <CheckpointSection run={run} />}
           </div>
         ))}
       </div>
