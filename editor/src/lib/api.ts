@@ -2,6 +2,12 @@
  * API client for the DAN backend server.
  */
 
+import type {
+  TokenBreakdownResponse,
+  OptimizationReportResponse,
+  OptimizationMutationsResponse,
+} from "../types/graph";
+
 const BASE = "/api";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -278,7 +284,7 @@ export const sendChatMessage = (
   history: Array<{ role: string; content: string }> = [],
   threadId?: string | null,
   clientGraphRevision?: string | null,
-  mode: "ask" | "agent" | "plan" | "debug" = "agent",
+  mode: "ask" | "agent" | "plan" | "debug" | "auto" = "agent",
 ) =>
   request<ChatMessageResponse>("/chat/message", {
     method: "POST",
@@ -300,6 +306,7 @@ export interface ChatThreadSummary {
   created_at: string;
   updated_at: string;
   pinned?: boolean;
+  mode?: string;
 }
 
 export const listChatThreads = (workflowId: string) =>
@@ -317,7 +324,7 @@ export const createChatThread = (workflowId: string, title?: string) =>
 export const updateChatThread = (
   workflowId: string,
   threadId: string,
-  body: { title?: string; messages?: unknown[] },
+  body: { title?: string; messages?: unknown[]; mode?: string },
 ) =>
   request<{ status: string }>(`/chats/${workflowId}/${threadId}`, {
     method: "PUT",

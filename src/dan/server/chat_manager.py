@@ -424,8 +424,57 @@ CHAT_MODE_ALIASES: dict[str, str] = {"build": "agent", "mutate": "agent"}
 
 
 def normalize_chat_mode(mode: str) -> str:
-    """Normalize deprecated mode aliases to canonical mode names."""
+    """Normalize deprecated mode aliases to canonical mode names.
+
+    ``"auto"`` is passed through as-is (the caller resolves it via
+    ``detect_chat_mode``).
+    """
+    if mode == "auto":
+        return "auto"
     return CHAT_MODE_ALIASES.get(mode, mode)
+
+
+def detect_chat_mode(
+    message: str,
+    graph_state: dict | None = None,
+    recent_run_failed: bool = False,
+) -> str:
+    """Heuristic mode detection from message content.
+
+    Priority order: debug > ask > plan > agent (default).
+    """
+    msg_lower = message.lower().strip()
+    words = set(msg_lower.split())
+
+    is_question = msg_lower.endswith("?") or any(
+        msg_lower.startswith(q) for q in (
+            "what", "how", "why", "where", "when", "which",
+            "explain", "describe", "tell me about",
+        )
+    )
+
+    debug_word_patterns = {"bug", "broken"}
+    debug_stem_patterns = ("crash", "fail")
+    debug_phrase_patterns = ["not working", "wrong output"]
+    debug_via_word = bool(words & debug_word_patterns)
+    debug_via_stem = any(
+        any(w.startswith(s) for w in words) for s in debug_stem_patterns
+    )
+    debug_via_phrase = any(p in msg_lower for p in debug_phrase_patterns)
+    debug_via_context = "error" in words and not is_question
+    debug_via_fix = "fix" in words and not is_question
+    if recent_run_failed or debug_via_word or debug_via_stem or debug_via_phrase or debug_via_context or debug_via_fix:
+        return "debug"
+
+    if is_question:
+        return "ask"
+
+    plan_patterns = ["approach", "strategy", "architect", "propose", "how should"]
+    plan_word_patterns = {"plan", "design"}
+    if any(p in msg_lower for p in plan_patterns) or bool(words & plan_word_patterns):
+        return "plan"
+
+    return "agent"
 
 
 ASK_PROMPT = """\
@@ -909,6 +958,7 @@ class ChatCompleteEvent(BaseModel):
     context_window: int = 0
     graph_revision: str
     revision_mismatch: bool = False
+    detected_mode: str | None = None
 
 
 class ChatErrorEvent(BaseModel):
@@ -926,6 +976,7 @@ class ChatMutationEvent(BaseModel):
     context_window: int = 0
     graph_revision: str
     revision_mismatch: bool = False
+    detected_mode: str | None = None
 
 
 class ChatInterruptedEvent(BaseModel):
@@ -1402,6 +1453,7 @@ class ChatManager:
                     provider, messages, message_id,
                     revision, revision_mismatch, graph_dict,
                     cancel_event=cancel_event,
+                    mode=mode,
                 ):
                     yield event
                 return
@@ -1546,10 +1598,13 @@ class ChatManager:
                 )
 
                 normalized_usage = _normalize_usage(result.usage)
+                plan_dump = plan.model_dump()
+                if mode == "debug":
+                    plan_dump.setdefault("metadata", {})["source"] = "debug-fix"
                 yield ChatMutationEvent(
                     message_id=message_id,
                     content=mutation_data.get("reasoning", result.text or ""),
-                    mutation_plan=plan.model_dump(),
+                    mutation_plan=plan_dump,
                     dry_run_result=dry_result.model_dump(),
                     token_usage=normalized_usage,
                     context_window=_get_context_window(self._chat_model),
@@ -1591,6 +1646,7 @@ class ChatManager:
         revision_mismatch: bool,
         graph_dict: dict[str, Any],
         cancel_event: asyncio.Event | None = None,
+        mode: str = "agent",
     ) -> AsyncIterator[ChatStreamEvent]:
         final_content = ""
         token_usage: dict[str, int] = {}
@@ -1642,10 +1698,13 @@ class ChatManager:
                         plan.plan_id,
                         error_summary,
                     )
+                plan_dump = plan.model_dump()
+                if mode == "debug":
+                    plan_dump.setdefault("metadata", {})["source"] = "debug-fix"
                 yield ChatMutationEvent(
                     message_id=message_id,
                     content=mutation_data.get("reasoning", ""),
-                    mutation_plan=plan.model_dump(),
+                    mutation_plan=plan_dump,
                     dry_run_result=dry_result.model_dump(),
                     token_usage=token_usage,
                     context_window=_get_context_window(self._chat_model),

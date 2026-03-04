@@ -10,6 +10,7 @@ import sys
 import re
 import shutil
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import uuid
@@ -38,6 +39,7 @@ from dan.server.chat_manager import (
     ChatManager,
     build_debug_context,
     compute_graph_revision,
+    detect_chat_mode,
     normalize_chat_mode,
 )
 from dan.server.mention_resolver import MentionRef, MentionResolver, CodeResolver
@@ -47,6 +49,7 @@ from dan.server.graph_mutator import GraphMutator, MutationPlan
 from dan.server.graph_store import GraphStore
 from dan.server.run_manager import RunManager, RunStatus
 from dan.server.run_store import RunStore
+from dan.server.test_cases import NodeTestCase, TestCaseRunResult, TestCaseStore
 from dan.server.scoped_run import (
     ScopedRunRequest,
     ScopedRunResponse,
@@ -77,6 +80,7 @@ def _resolve_cache_dir(config: EngineConfig) -> Path:
 _graphs_dir = os.environ.get("DAN_GRAPHS_DIR", "./graphs")
 _graph_store = GraphStore(base_dir=_graphs_dir)
 _chat_store = ChatStore(base_dir=_graphs_dir)
+_test_case_store = TestCaseStore(base_dir=_graphs_dir)
 _run_manager: RunManager | None = None
 _chat_manager: ChatManager | None = None
 _meta_tasks: dict[str, asyncio.Task[Any]] = {}
@@ -1220,7 +1224,7 @@ class ChatMessageRequest(BaseModel):
     thread_id: str | None = None
     history: list[dict[str, str]] = []
     client_graph_revision: str | None = None
-    mode: Literal["ask", "agent", "plan", "debug", "mutate", "build"] = "agent"
+    mode: Literal["ask", "agent", "plan", "debug", "auto", "mutate", "build"] = "agent"
     mentions: list[ChatMentionRef] = []
 
 
@@ -2870,6 +2874,20 @@ async def chat_message(req: ChatMessageRequest):
         try:
             normalized_mode = normalize_chat_mode(req.mode)
             graph_dict = _graph_store.get_graph(req.workflow_id)
+
+            detected_mode: str | None = None
+            if normalized_mode == "auto":
+                recent_run_failed = False
+                if _run_manager is not None:
+                    runs = _run_manager.list_runs()
+                    wf_runs = [r for r in runs if r.graph_id == req.workflow_id]
+                    if wf_runs:
+                        recent_run_failed = wf_runs[0].status.value == "failed"
+                detected_mode = detect_chat_mode(
+                    req.message, graph_dict, recent_run_failed,
+                )
+                normalized_mode = detected_mode
+
             # ask and plan modes use text-only path (no tool calling)
             use_tools = graph_dict is not None and normalized_mode not in ("ask", "plan")
 
@@ -2896,7 +2914,12 @@ async def chat_message(req: ChatMessageRequest):
                 mentions=structured_mentions,
                 debug_context=debug_ctx,
             ):
-                await queue.put(event.model_dump())
+                payload = event.model_dump()
+                if detected_mode and payload.get("type") in (
+                    "chat_complete", "chat_mutation",
+                ):
+                    payload["detected_mode"] = detected_mode
+                await queue.put(payload)
         except Exception as exc:
             await queue.put({"type": "chat_error", "error": str(exc)})
         finally:
@@ -3038,7 +3061,12 @@ async def get_chat_thread(workflow_id: str, thread_id: str):
 async def create_chat_thread(workflow_id: str, body: dict[str, Any] | None = None):
     title = (body or {}).get("title", "")
     thread = _chat_store.create_thread(workflow_id, title=title)
-    return thread.model_dump(mode="json")
+    mode = _chat_store._normalize_mode((body or {}).get("mode"))
+    if mode != "agent":
+        _chat_store.set_mode(workflow_id, thread.id, mode)
+    data = thread.model_dump(mode="json")
+    data["mode"] = mode
+    return data
 
 
 @app.put("/api/chats/{workflow_id}/{thread_id}")
@@ -3052,6 +3080,8 @@ async def update_chat_thread(workflow_id: str, thread_id: str, body: dict[str, A
         thread.messages = [
             StoreChatMessage.model_validate(m) for m in body["messages"]
         ]
+    if "mode" in body:
+        _chat_store.set_mode(workflow_id, thread_id, body["mode"])
     thread.updated_at = datetime.now(timezone.utc)
     _chat_store.save_thread(thread)
     return {"status": "updated"}

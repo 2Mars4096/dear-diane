@@ -296,6 +296,28 @@ class ChatStore:
         path = self._meta_path(workflow_id, thread_id)
         path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
+    _VALID_MODES = {"ask", "agent", "plan", "debug", "auto"}
+    _MODE_ALIASES = {"build": "agent", "mutate": "agent"}
+
+    @classmethod
+    def _normalize_mode(cls, mode: str | None) -> str:
+        """Normalize stored mode to a canonical value, defaulting to 'agent'."""
+        if not mode:
+            return "agent"
+        mode = cls._MODE_ALIASES.get(mode, mode)
+        return mode if mode in cls._VALID_MODES else "agent"
+
+    def set_mode(
+        self, workflow_id: str, thread_id: str, mode: str
+    ) -> bool:
+        thread = self.get_thread(workflow_id, thread_id)
+        if thread is None:
+            return False
+        meta = self.get_thread_meta(workflow_id, thread_id)
+        meta["mode"] = self._normalize_mode(mode)
+        self.set_thread_meta(workflow_id, thread_id, meta)
+        return True
+
     def set_pinned(
         self, workflow_id: str, thread_id: str, pinned: bool
     ) -> bool:
@@ -329,6 +351,7 @@ class ChatStore:
                     "created_at": thread.created_at.isoformat(),
                     "updated_at": thread.updated_at.isoformat(),
                     "pinned": meta.get("pinned", False),
+                    "mode": self._normalize_mode(meta.get("mode")),
                 })
             except (ValueError, OSError):
                 continue
