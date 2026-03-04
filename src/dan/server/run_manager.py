@@ -402,6 +402,142 @@ class RunManager:
         return record
 
     # ------------------------------------------------------------------
+    # Checkpoint portal: partial rerun
+    # ------------------------------------------------------------------
+
+    async def get_checkpoint_info(self, run_id: str) -> dict[str, Any] | None:
+        """Load and return checkpoint metadata for a run.
+
+        Returns a dict with checkpoint_data fields (timestamp,
+        graph_revision, completed_node_ids, node_outputs keys) or
+        None if no checkpoint exists.
+        """
+        engine = Engine(config=self._config)
+        if engine.checkpoint_store is None:
+            return None
+        checkpoint = await engine.checkpoint_store.load(run_id)
+        if checkpoint is None:
+            return None
+        cd = checkpoint.get("checkpoint_data", {})
+        return {
+            "run_id": run_id,
+            "timestamp": cd.get("timestamp"),
+            "graph_id": cd.get("graph_id", ""),
+            "graph_revision": cd.get("graph_revision"),
+            "completed_node_ids": cd.get("completed_node_ids", []),
+            "node_output_keys": list((cd.get("node_outputs") or {}).keys()),
+            "has_state": "state" in checkpoint,
+        }
+
+    async def list_checkpoint_runs(self) -> list[str]:
+        """Return run_ids that have persisted checkpoints."""
+        engine = Engine(config=self._config)
+        if engine.checkpoint_store is None:
+            return []
+        return await engine.checkpoint_store.list_runs()
+
+    async def rerun_from_checkpoint(
+        self,
+        graph: Graph,
+        graph_id: str,
+        source_run_id: str,
+        scope: "RerunScope",
+        session_id: str | None = None,
+    ) -> RunRecord:
+        """Start a partial rerun from a checkpoint.
+
+        Creates a **new** run_id linked to the source checkpoint for
+        provenance.  Validates scope against the checkpoint and the
+        current graph.
+
+        Raises ``ValueError`` for invalid scope.
+        Raises ``RuntimeError`` if the checkpoint is stale (graph changed).
+        """
+        from dan.engine.checkpoint import (
+            CheckpointData,
+            RerunScope,
+            check_checkpoint_staleness,
+            compute_downstream_nodes,
+            compute_subgraph_node_ids,
+        )
+        from dan.engine.state import NodeStatus
+
+        engine = Engine(config=self._config)
+        if engine.checkpoint_store is None:
+            raise ValueError("No checkpoint store configured")
+
+        checkpoint = await engine.checkpoint_store.load(source_run_id)
+        if checkpoint is None:
+            raise ValueError(f"No checkpoint found for run_id '{source_run_id}'")
+
+        cd_raw = checkpoint.get("checkpoint_data", {})
+        cd = CheckpointData(**cd_raw) if cd_raw else CheckpointData(run_id=source_run_id)
+
+        # -- Staleness check -----------------------------------------------
+        staleness = check_checkpoint_staleness(
+            cd.graph_revision,
+            graph,
+            cd.completed_node_ids,
+        )
+        if staleness.stale:
+            raise RuntimeError(staleness.message)
+
+        # -- Determine nodes to rerun vs skip ------------------------------
+        all_node_ids = {n.id for n in graph.nodes}
+        nodes_to_rerun: set[str] = set()
+
+        if scope.scope_type == "downstream_of":
+            if not scope.target_node_id:
+                raise ValueError("downstream_of scope requires target_node_id")
+            if scope.target_node_id not in all_node_ids:
+                raise ValueError(f"Target node '{scope.target_node_id}' not in graph")
+            nodes_to_rerun = compute_downstream_nodes(
+                scope.target_node_id, graph, include_target=True,
+            )
+
+        elif scope.scope_type == "single_node":
+            if not scope.target_node_id:
+                raise ValueError("single_node scope requires target_node_id")
+            if scope.target_node_id not in all_node_ids:
+                raise ValueError(f"Target node '{scope.target_node_id}' not in graph")
+            nodes_to_rerun = {scope.target_node_id}
+
+        elif scope.scope_type == "subgraph":
+            if not scope.sub_graph_key:
+                raise ValueError("subgraph scope requires sub_graph_key")
+            nodes_to_rerun = compute_subgraph_node_ids(graph, scope.sub_graph_key)
+            if not nodes_to_rerun:
+                raise ValueError(f"Sub-graph '{scope.sub_graph_key}' not found or empty")
+
+        else:
+            raise ValueError(f"Unknown scope_type: {scope.scope_type}")
+
+        nodes_to_skip = all_node_ids - nodes_to_rerun
+
+        # -- Create new run ------------------------------------------------
+        new_run_id = f"rerun-{int(time.time() * 1000)}"
+        record = RunRecord(
+            run_id=new_run_id,
+            graph_id=graph_id,
+            status=RunStatus.PENDING,
+        )
+        self._runs[new_run_id] = record
+
+        task = asyncio.create_task(
+            self._rerun_task(
+                record, graph, checkpoint, cd,
+                nodes_to_skip=nodes_to_skip,
+                nodes_to_rerun=nodes_to_rerun,
+                source_run_id=source_run_id,
+                scope=scope,
+                session_id=session_id,
+            ),
+            name=f"dan-rerun-{new_run_id}",
+        )
+        self._tasks[new_run_id] = task
+        return record
+
+    # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
@@ -1000,6 +1136,114 @@ class RunManager:
                 record.node_statuses.update(result.node_statuses)
         except Exception as exc:
             logger.exception("Resume %s failed with exception", record.run_id)
+            record.status = RunStatus.FAILED
+            record.result = RunResult(
+                run_id=record.run_id, success=False,
+                errors={"exception": str(exc)},
+            )
+        finally:
+            await self._enrich_and_persist(record, graph=graph)
+
+    async def _rerun_task(
+        self,
+        record: RunRecord,
+        graph: Graph,
+        checkpoint: dict[str, Any],
+        checkpoint_data: Any,
+        *,
+        nodes_to_skip: set[str],
+        nodes_to_rerun: set[str],
+        source_run_id: str,
+        scope: Any,
+        session_id: str | None = None,
+    ) -> None:
+        """Execute a partial rerun, injecting checkpoint outputs for skipped nodes."""
+        from dan.engine.context_runtime import (
+            ArtifactStore,
+            LocalStateManager,
+            SharedContextStore,
+        )
+        from dan.engine.state import ExecutionState, NodeStatus, PortDataStore
+
+        record.status = RunStatus.RUNNING
+
+        engine = Engine(
+            config=self._config,
+            executor_registry=self._make_executor_registry(),
+            event_callback=self._event_callback,
+            human_input_callback=self._make_human_input_callback(record.run_id),
+        )
+        ecp = self._build_error_context_provider()
+        if ecp is not None:
+            engine.error_context_provider = ecp
+
+        try:
+            # -- Build initial state from checkpoint -----------------------
+            state = ExecutionState(graph, record.run_id)
+
+            # Rehydrate PortDataStore from checkpoint's node_outputs for
+            # skipped nodes so downstream nodes receive their inputs.
+            node_outputs = checkpoint_data.node_outputs or {}
+            for nid in nodes_to_skip:
+                if nid in node_outputs and isinstance(node_outputs[nid], dict):
+                    for port_name, value in node_outputs[nid].items():
+                        state.port_data.set(nid, port_name, value)
+                state.mark(nid, NodeStatus.SKIPPED)
+
+            # Mark nodes-to-rerun as PENDING (default from __init__).
+            for nid in nodes_to_rerun:
+                state.mark(nid, NodeStatus.PENDING)
+
+            # Restore shared context and artifacts from checkpoint.
+            shared_context = SharedContextStore(graph.shared_context)
+            shared_context.restore(checkpoint.get("shared_context", {}))
+
+            artifacts = ArtifactStore()
+            artifacts.restore(checkpoint.get("artifacts", {}))
+
+            local_state = LocalStateManager()
+            local_state.restore(checkpoint.get("local_state", {}))
+
+            # -- Emit rerun provenance event before _execute fires RUN_STARTED -
+            from dan.engine.events import EngineEvent, EventType
+
+            scope_dict = scope.model_dump() if hasattr(scope, "model_dump") else {}
+            await engine._emit(EngineEvent(
+                event_type=EventType.RERUN_STARTED,
+                run_id=record.run_id,
+                data={
+                    "rerun": True,
+                    "provenance": {
+                        "source_checkpoint_id": source_run_id,
+                        "rerun_scope": scope_dict,
+                    },
+                    "nodes_to_rerun": sorted(nodes_to_rerun),
+                    "nodes_skipped": sorted(nodes_to_skip),
+                },
+            ))
+
+            # -- Execute via engine's internal _execute --------------------
+            result = await engine._execute(
+                graph, state, shared_context, artifacts, local_state,
+                session_id=session_id, workflow_id=record.graph_id,
+                cost_tracker_state=checkpoint.get("cost_tracker"),
+            )
+
+            # Tag provenance into result metadata.
+            result.metadata["__rerun_provenance__"] = {
+                "source_checkpoint_id": source_run_id,
+                "rerun_scope": scope_dict,
+                "nodes_rerun": sorted(nodes_to_rerun),
+                "nodes_skipped": sorted(nodes_to_skip),
+            }
+
+            record.result = result
+            record.status = RunStatus.COMPLETED if result.success else RunStatus.FAILED
+            if result.node_statuses:
+                record.node_statuses.update(result.node_statuses)
+
+        except Exception as exc:
+            logger.exception("Rerun %s failed with exception", record.run_id)
             record.status = RunStatus.FAILED
             record.result = RunResult(
                 run_id=record.run_id, success=False,
