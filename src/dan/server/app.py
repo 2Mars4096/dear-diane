@@ -1726,6 +1726,63 @@ async def add_boundary_validators(graph_id: str, node_id: str):
     return {"graph_id": graph_id, "node_id": node_id, "status": "validators_inserted"}
 
 
+# -- 13-2: Variable inspector — upstream inputs for a node --------------------
+
+
+@app.get("/api/graphs/{graph_id}/nodes/{node_id}/inputs")
+async def get_node_inputs(graph_id: str, node_id: str, run_id: str | None = None):
+    """Return upstream variable descriptors (static wiring + optional runtime values)."""
+    data = _graph_store.get_graph(graph_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
+    try:
+        graph = Graph.model_validate(data)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=f"Graph parse error: {exc}")
+
+    target = graph.node_by_id(node_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found in graph")
+
+    from dan.server.variable_inspector import compute_upstream_variables
+
+    variables = compute_upstream_variables(node_id, graph)
+
+    # Optionally enrich with runtime values from a specific run
+    runtime_values: dict[str, Any] = {}
+    if run_id:
+        rm = _require_run_manager()
+        record = rm.get_run(run_id)
+        if record is not None and rm.run_store is not None:
+            # Load node_completed events for upstream source nodes to get their outputs
+            source_node_ids = {v["source_node_id"] for v in variables if v.get("source_node_id")}
+            for src_id in source_node_ids:
+                events = rm.run_store.load_events(
+                    record.graph_id, run_id, node_id=src_id, event_type="node_completed",
+                )
+                if events:
+                    # Take the last completed event's output
+                    last_evt = events[-1]
+                    output = last_evt.get("output") or last_evt.get("outputs") or last_evt.get("data", {}).get("output")
+                    if output is not None:
+                        runtime_values[src_id] = output
+
+    # Attach runtime values to variables
+    for var in variables:
+        src_id = var.get("source_node_id")
+        if src_id and src_id in runtime_values:
+            src_output = runtime_values[src_id]
+            # Extract the specific port value if output is a dict
+            if isinstance(src_output, dict) and var["source_port"] in src_output:
+                var["runtime_value"] = src_output[var["source_port"]]
+            else:
+                var["runtime_value"] = src_output
+        else:
+            var["runtime_value"] = None
+
+    return {"node_id": node_id, "graph_id": graph_id, "variables": variables}
+
+
 @app.get("/api/graphs/{graph_id}/export/markdown")
 async def export_graph_markdown(graph_id: str):
     graph = _graph_store.load_as_model(graph_id)

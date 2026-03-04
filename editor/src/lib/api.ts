@@ -92,6 +92,40 @@ export const addBoundaryValidators = (graphId: string, nodeId: string) =>
     { method: "POST" },
   );
 
+// -- Variable inspector (13-2) -----------------------------------------------
+
+export interface UpstreamVariable {
+  variable_name: string;
+  source_node: string | null;
+  source_node_id: string | null;
+  source_port: string | null;
+  type_hint: string;
+  required: boolean;
+  edge_type: string | null;
+  connected: boolean;
+  context_key?: string;
+  runtime_value?: unknown;
+}
+
+export interface NodeInputsResponse {
+  node_id: string;
+  graph_id: string;
+  variables: UpstreamVariable[];
+}
+
+export const getNodeInputs = (
+  graphId: string,
+  nodeId: string,
+  runId?: string | null,
+) => {
+  const params = new URLSearchParams();
+  if (runId) params.set("run_id", runId);
+  const qs = params.toString();
+  return request<NodeInputsResponse>(
+    `/graphs/${graphId}/nodes/${nodeId}/inputs${qs ? `?${qs}` : ""}`,
+  );
+};
+
 // -- Runs --------------------------------------------------------------------
 
 export interface RunInfo {
