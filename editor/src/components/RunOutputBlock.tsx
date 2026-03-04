@@ -112,12 +112,13 @@ interface RunOutputBlockProps {
 }
 
 export default function RunOutputBlock({ events, runRef }: RunOutputBlockProps) {
-  const [expanded, setExpanded] = useState(true);
   const [expandedNodes, setExpandedNodes] = useState<Set<string>>(new Set());
 
   if (events.length === 0 && !runRef) return null;
 
   const { nodes, runStatus } = deriveNodeStates(events);
+  const hasError = nodes.some((n) => n.status === "failed");
+  const [expanded, setExpanded] = useState(hasError);
   const finalStatus = runRef?.status === "completed" || runRef?.status === "failed"
     ? (runRef.status as "completed" | "failed")
     : runStatus;
@@ -142,7 +143,9 @@ export default function RunOutputBlock({ events, runRef }: RunOutputBlockProps) 
         {expanded ? <ChevronDown size={11} /> : <ChevronRight size={11} />}
         <Play size={11} className="flex-shrink-0" />
         <span className="text-xs font-medium flex-1 text-left">
-          Run {runRef?.scope ? `(${runRef.scope})` : ""}
+          {expanded
+            ? `Run ${runRef?.scope ? `(${runRef.scope})` : ""}`
+            : `${nodes.length} node${nodes.length !== 1 ? "s" : ""} — ${cfg.label}`}
         </span>
         {cfg.icon}
         <span className="text-[10px] font-medium">{cfg.label}</span>

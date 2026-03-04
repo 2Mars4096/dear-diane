@@ -15,6 +15,8 @@ interface GraphDiffPreviewProps {
   disabled?: boolean;
   /** Error message from a failed apply (shown inside modal with Try again). */
   applyError?: string | null;
+  /** Mutation source tag (e.g. "debug-fix") for visual badge. */
+  mutationSource?: string | null;
 }
 
 type FlatItem =
@@ -165,6 +167,7 @@ export default function GraphDiffPreview({
   allowPartialApply = true,
   disabled = false,
   applyError = null,
+  mutationSource = null,
 }: GraphDiffPreviewProps) {
   const flatList = useMemo(() => buildFlatList(diff), [diff]);
   const [checked, setChecked] = useState<boolean[]>(() =>
@@ -213,8 +216,13 @@ export default function GraphDiffPreview({
       <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col">
         <div className="px-5 py-4 border-b border-gray-100 flex items-center justify-between shrink-0">
           <div>
-            <h2 className="text-base font-semibold text-gray-800">
+            <h2 className="text-base font-semibold text-gray-800 flex items-center gap-2">
               Proposed Changes
+              {mutationSource === "debug-fix" && (
+                <span className="px-1.5 py-0.5 text-[10px] font-semibold rounded bg-amber-100 text-amber-700 border border-amber-300">
+                  debug-fix
+                </span>
+              )}
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">{diff.summary}</p>
           </div>
