@@ -106,6 +106,33 @@ export default function ContextMenu({ type, position, targetId, onClose }: Conte
           });
         }
       }
+
+      const hasRun = !!useGraphStore.getState().runId;
+      if (hasRun) {
+        items.push(
+          {
+            label: "Rerun from Here",
+            onClick: () => action(() => useGraphStore.getState().rerunFromNode(targetId, "downstream_of")),
+          },
+          {
+            label: "Rerun This Node",
+            onClick: () => action(() => useGraphStore.getState().rerunFromNode(targetId, "single_node")),
+          },
+        );
+      }
+
+      items.push({
+        label: "Add Test Case",
+        onClick: () =>
+          action(() => {
+            setSelectedNode(targetId);
+            window.dispatchEvent(
+              new CustomEvent("dan:open-test-case-modal", {
+                detail: { nodeId: targetId },
+              }),
+            );
+          }),
+      });
     }
   }
 

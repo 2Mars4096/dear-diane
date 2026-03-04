@@ -1,6 +1,9 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, useCallback } from "react";
 import { useGraphStore } from "../store/useGraphStore";
 import { resolveGraphAtStack } from "../lib/graphAdapter";
+import { getNodeInputs } from "../lib/api";
+import type { UpstreamVariable } from "../lib/api";
+import TestCaseSection from "./TestCasePanel";
 import type { DanNode, InputPort, OutputPort, RetryPolicy } from "../types/graph";
 
 const SKIP_FIELDS = new Set([
@@ -995,6 +998,125 @@ function ParallelSubagentsConfigSection({ nodeId, data }: { nodeId: string; data
   );
 }
 
+// -- 13-2: Upstream Inputs Inspector -----------------------------------------
+
+function UpstreamInputsSection({ nodeId }: { nodeId: string }) {
+  const graphId = useGraphStore((s) => s.graphId);
+  const runId = useGraphStore((s) => s.runId);
+  const edges = useGraphStore((s) => s.edges);
+  const nodeOutputs = useGraphStore((s) => s.nodeOutputs);
+  const [open, setOpen] = useState(false);
+  const [variables, setVariables] = useState<UpstreamVariable[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Count incoming edges for this node to decide if section is relevant
+  const incomingCount = useMemo(
+    () => edges.filter((e) => e.target === nodeId).length,
+    [edges, nodeId],
+  );
+
+  const fetchVariables = useCallback(async () => {
+    if (!graphId) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const resp = await getNodeInputs(graphId, nodeId, runId);
+      // Enrich with live nodeOutputs where available
+      const enriched = resp.variables.map((v) => {
+        if (v.connected && v.source_node_id && !v.runtime_value) {
+          const liveOutput = nodeOutputs[v.source_node_id];
+          if (liveOutput) {
+            const portVal =
+              v.source_port && typeof liveOutput === "object" && v.source_port in liveOutput
+                ? (liveOutput as Record<string, unknown>)[v.source_port!]
+                : liveOutput;
+            return { ...v, runtime_value: portVal };
+          }
+        }
+        return v;
+      });
+      setVariables(enriched);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load inputs");
+    } finally {
+      setLoading(false);
+    }
+  }, [graphId, nodeId, runId, nodeOutputs]);
+
+  useEffect(() => {
+    if (open) fetchVariables();
+  }, [open, fetchVariables]);
+
+  return (
+    <div className="mt-3">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 w-full"
+      >
+        <span className={`text-[10px] transition-transform ${open ? "rotate-90" : ""}`}>&#9654;</span>
+        <h3 className="text-[11px] font-semibold text-gray-400 uppercase">
+          Upstream Inputs
+        </h3>
+        {incomingCount > 0 && (
+          <span className="ml-auto text-[10px] text-gray-400">{incomingCount} edge{incomingCount !== 1 ? "s" : ""}</span>
+        )}
+      </button>
+      {open && (
+        <div className="mt-1 pl-2 border-l border-gray-200">
+          {loading && <p className="text-[10px] text-gray-400">Loading...</p>}
+          {error && <p className="text-[10px] text-red-500">{error}</p>}
+          {!loading && !error && variables.length === 0 && (
+            <p className="text-[10px] text-gray-400">No input ports or incoming edges</p>
+          )}
+          {!loading && !error && variables.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              {variables.map((v, i) => (
+                <div
+                  key={`${v.variable_name}-${i}`}
+                  className={`text-[11px] rounded border px-2 py-1.5 ${
+                    !v.connected
+                      ? "border-amber-300 bg-amber-50"
+                      : "border-gray-200 bg-white"
+                  }`}
+                >
+                  <div className="flex items-center gap-1">
+                    <span className="font-semibold text-gray-700">{v.variable_name}</span>
+                    {v.required && <span className="text-red-400 text-[9px]">*</span>}
+                    <span className="ml-auto text-[10px] text-gray-400 font-mono">{v.type_hint}</span>
+                  </div>
+                  {v.connected ? (
+                    <div className="text-[10px] text-gray-500 mt-0.5">
+                      {v.edge_type === "context" ? (
+                        <>ctx: {v.context_key} &larr; {v.source_node}</>
+                      ) : (
+                        <>{v.source_node}.{v.source_port}</>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="text-[10px] text-amber-600 mt-0.5">
+                      {v.required ? "Missing: no incoming edge (required)" : "No incoming edge (optional)"}
+                    </div>
+                  )}
+                  {v.runtime_value != null && (
+                    <pre className="text-[10px] bg-gray-50 border border-gray-100 rounded p-1 mt-1 overflow-auto max-h-24 font-mono whitespace-pre-wrap">
+                      {typeof v.runtime_value === "string"
+                        ? v.runtime_value.length > 500
+                          ? v.runtime_value.slice(0, 500) + "..."
+                          : v.runtime_value
+                        : JSON.stringify(v.runtime_value, null, 2)?.slice(0, 500)}
+                    </pre>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // -- Main Component ----------------------------------------------------------
 
 export default function ConfigPanel() {
@@ -1169,6 +1291,9 @@ export default function ConfigPanel() {
           </button>
         </div>
 
+        {/* 13-2: Upstream Inputs Inspector */}
+        <UpstreamInputsSection nodeId={d.id} />
+
         {/* 7-2: Dedicated LLM config section — model, temperature, system_prompt, advanced */}
         {(d.node_type === "llm_operator" || d.node_type === "router") && (
           <LLMConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
@@ -1256,6 +1381,15 @@ export default function ConfigPanel() {
 
         {/* 7-1: Retry policy — configurable for all node types */}
         <RetryPolicyEditor nodeId={d.id} policy={d.retry_policy} />
+
+        {/* 13-2: Node Test Cases */}
+        {graphId && (
+          <TestCaseSection
+            workflowId={graphId}
+            nodeId={d.id}
+            inputPorts={d.input_ports}
+          />
+        )}
       </div>
     );
   }
