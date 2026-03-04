@@ -546,3 +546,100 @@ export const runTestCase = (
     `/test-cases/${workflowId}/${nodeId}/${caseId}/run`,
     { method: "POST" },
   );
+
+// -- Blocks (21-5) -----------------------------------------------------------
+
+export interface Block {
+  name: string;
+  version: string;
+  block_type: string;
+  description: string;
+  author?: string;
+  graph_id?: string;
+  entry_node_id?: string;
+  input_schema?: Record<string, unknown>;
+  output_schema?: Record<string, unknown>;
+}
+
+export const fetchBlocks = () =>
+  request<Block[]>("/blocks");
+
+export const importBlock = async (source: File | string): Promise<void> => {
+  const path = typeof source === "string" ? source : source.name;
+  await request<unknown>("/blocks/import", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+};
+
+export const exportBlock = async (
+  graphId: string,
+  nodeId?: string,
+  meta?: { name?: string; version?: string; description?: string; author?: string },
+): Promise<Blob> => {
+  const params = new URLSearchParams();
+  if (meta?.name) params.set("name", meta.name);
+  if (meta?.version) params.set("version", meta.version);
+  const path = nodeId
+    ? `/blocks/export/${graphId}/${nodeId}`
+    : `/blocks/export/${graphId}`;
+  const qs = params.toString();
+  const url = `${BASE}${path}${qs ? `?${qs}` : ""}`;
+  const res = await fetch(url, { method: "POST" });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`${res.status}: ${body}`);
+  }
+  return res.blob();
+};
+
+export const deleteBlock = (name: string, version: string) =>
+  request<{ status: string }>(
+    `/blocks/${encodeURIComponent(name)}/${encodeURIComponent(version)}`,
+    { method: "DELETE" },
+  );
+
+// -- Publish (21-3) ----------------------------------------------------------
+
+export interface PublishStatus {
+  graph_id: string;
+  published: boolean;
+  workflow_id: string | null;
+  config?: Record<string, unknown>;
+}
+
+export const publishGraph = (graphId: string, type: "mcp" | "http") =>
+  request<{ status: string; workflow_id: string; graph_id: string }>(`/graphs/${graphId}/publish`, {
+    method: "POST",
+    body: JSON.stringify({ type }),
+  });
+
+export const unpublishGraph = (graphId: string) =>
+  request<{ status: string }>(`/graphs/${graphId}/unpublish`, {
+    method: "POST",
+  });
+
+export const getPublishStatus = (graphId: string) =>
+  request<PublishStatus>(`/graphs/${graphId}/publish-status`);
+
+export const getMcpConfig = (graphId: string) =>
+  request<{ config: Record<string, unknown> }>(`/graphs/${graphId}/mcp-config`);
+
+// -- Adapters (21-4) ---------------------------------------------------------
+
+export interface AdapterInfo {
+  type: string;
+  running: boolean;
+  session_count: number;
+  adapter_id: string;
+  uptime_seconds?: number;
+}
+
+export const getAdapterStatus = () =>
+  request<AdapterInfo[]>("/adapters/status");
+
+export const stopAdapter = (adapterId: string) =>
+  request<{ status: string }>("/adapters/stop", {
+    method: "POST",
+    body: JSON.stringify({ adapter_id: adapterId }),
+  });

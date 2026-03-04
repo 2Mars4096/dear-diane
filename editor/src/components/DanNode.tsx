@@ -240,6 +240,9 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   const orderedOutputPorts = orderPorts(d.output_ports ?? [], allEdges, allNodes, id, "output", d.node_type);
 
   const dRecord = d as unknown as Record<string, unknown>;
+  const metadata = dRecord.metadata as Record<string, unknown> | undefined;
+  const blockName = metadata?.block_name as string | undefined;
+  const blockVersion = metadata?.block_version as string | undefined;
   const isBlackbox = !!dRecord.is_blackbox;
   const hasBodyGraph =
     (d.node_type === "while_loop" ||
@@ -503,6 +506,18 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
             <text x="12" y="18" textAnchor="middle" fill="white" fontSize="13" fontWeight="bold">!</text>
           </svg>
           {showWasteTooltip && <WasteTooltip findings={nodeWasteFindings} />}
+        </div>
+      )}
+
+      {/* 21-5: Block badge */}
+      {blockName && (
+        <div
+          className="absolute -top-1.5 -right-1.5 w-5 h-5 bg-purple-500 rounded-full border-2 border-white flex items-center justify-center cursor-default drop-shadow-sm"
+          title={`Block: ${blockName}@${blockVersion ?? "?"}`}
+        >
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+          </svg>
         </div>
       )}
     </div>

@@ -1,6 +1,6 @@
 // -- 5-4: Build palette — searchable categorized sidebar ---------------------
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import {
   NODE_TYPE_CATALOG,
   NODE_DESCRIPTIONS,
@@ -12,7 +12,8 @@ import {
   PREDEFINED_AGENT_TEMPLATES,
   type PaletteTemplate,
 } from "../lib/paletteTemplates";
-import type { GraphListItem } from "../lib/api";
+import type { GraphListItem, Block } from "../lib/api";
+import { fetchBlocks } from "../lib/api";
 
 type NodeCatalogItem = (typeof NODE_TYPE_CATALOG)[number];
 
@@ -58,6 +59,16 @@ export default function NodePalette() {
 
   const [search, setSearch] = useState("");
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [blocks, setBlocks] = useState<Block[]>([]);
+  const [blocksLoading, setBlocksLoading] = useState(false);
+
+  useEffect(() => {
+    setBlocksLoading(true);
+    fetchBlocks()
+      .then((res) => setBlocks(Array.isArray(res) ? res : (res as { blocks?: Block[] }).blocks ?? []))
+      .catch(() => {})
+      .finally(() => setBlocksLoading(false));
+  }, []);
 
   const toggleCategory = (cat: string) =>
     setCollapsed((prev) => ({ ...prev, [cat]: !prev[cat] }));
@@ -74,6 +85,11 @@ export default function NodePalette() {
 
   const handleWorkflowDragStart = (e: React.DragEvent, graphId: string) => {
     e.dataTransfer.setData("application/dan-node-type", `workflow:${graphId}`);
+    e.dataTransfer.effectAllowed = "move";
+  };
+
+  const handleBlockDragStart = (e: React.DragEvent, block: Block) => {
+    e.dataTransfer.setData("application/dan-block", JSON.stringify(block));
     e.dataTransfer.effectAllowed = "move";
   };
 
@@ -269,6 +285,73 @@ export default function NodePalette() {
             </div>
           );
         })}
+
+        {/* Installed Blocks section */}
+        <div className="mb-3 mt-1 pt-2 border-t border-gray-200">
+          <button
+            onClick={() => toggleCategory("blocks")}
+            className="flex items-center gap-1 w-full text-[11px] font-semibold text-gray-400 uppercase mb-1.5 hover:text-gray-600 transition-colors"
+          >
+            <span className="text-[9px]">{!q && collapsed["blocks"] ? "▸" : "▾"}</span>
+            Installed Blocks
+            {blocks.length > 0 && (
+              <span className="ml-auto text-[9px] font-normal normal-case text-purple-500 bg-purple-50 px-1 rounded">
+                {blocks.length}
+              </span>
+            )}
+          </button>
+
+          {!((!q && collapsed["blocks"]) ?? false) && (
+            <div className="flex flex-col gap-1">
+              {blocksLoading && (
+                <div className="text-[10px] text-gray-400 italic px-1">Loading…</div>
+              )}
+              {!blocksLoading && blocks.length === 0 && !q && (
+                <div className="text-[10px] text-gray-400 px-1 leading-tight">
+                  No blocks installed — use <code className="text-[9px] bg-gray-100 px-0.5 rounded">dan-blocks install</code> to add
+                </div>
+              )}
+              {!blocksLoading &&
+                blocks
+                  .filter(
+                    (b) =>
+                      !q ||
+                      b.name.toLowerCase().includes(q) ||
+                      b.description.toLowerCase().includes(q) ||
+                      b.block_type.toLowerCase().includes(q),
+                  )
+                  .map((block) => {
+                    const BLOCK_TYPE_ICONS: Record<string, string> = {
+                      composite: "📦",
+                      single_node: "🔧",
+                      template: "📋",
+                    };
+                    return (
+                      <div
+                        key={`${block.name}@${block.version}`}
+                        draggable
+                        onDragStart={(e) => handleBlockDragStart(e, block)}
+                        title={`${block.description || block.name}\n${block.block_type} • v${block.version}${block.author ? ` • by ${block.author}` : ""}`}
+                        className="px-2.5 py-1.5 bg-purple-50 rounded border border-purple-200 text-xs cursor-grab hover:border-purple-400 hover:shadow-sm transition-all select-none text-purple-700"
+                      >
+                        <div className="flex items-center gap-1">
+                          <span className="text-[10px] shrink-0">{BLOCK_TYPE_ICONS[block.block_type] ?? "📦"}</span>
+                          <span className="truncate flex-1">{block.name}</span>
+                          <span className="text-[9px] font-mono bg-purple-100 text-purple-600 px-1 rounded shrink-0">
+                            {block.version}
+                          </span>
+                        </div>
+                        {block.description && (
+                          <div className="text-[10px] text-purple-500 truncate mt-0.5">
+                            {block.description}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );

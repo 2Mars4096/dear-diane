@@ -20,6 +20,7 @@ import { useGraphStore } from "../store/useGraphStore";
 import { createDefaultNode, handleToPortName } from "../lib/graphAdapter";
 import { isValidConnection } from "../lib/connectionValidation";
 import type { DanNode as DanNodeType, NodeTypeString } from "../types/graph";
+import type { Block } from "../lib/api";
 
 const nodeTypes: NodeTypes = {
   danNode: DanNode,
@@ -122,11 +123,49 @@ export default function GraphCanvas() {
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+      const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+
+      // Handle block drops from the Installed Blocks palette
+      const blockData = e.dataTransfer.getData("application/dan-block");
+      if (blockData) {
+        try {
+          const block: Block = JSON.parse(blockData);
+          const subGraphId = `block:${block.name}@${block.version}`;
+          const inputProps = (block.input_schema as Record<string, unknown>)?.properties as Record<string, unknown> | undefined;
+          const outputProps = (block.output_schema as Record<string, unknown>)?.properties as Record<string, unknown> | undefined;
+          const inputPorts = inputProps
+            ? Object.keys(inputProps).map((k) => ({ id: k, name: k, data_type: "any" }))
+            : [{ id: "input", name: "input", data_type: "any" }];
+          const outputPorts = outputProps
+            ? Object.keys(outputProps).map((k) => ({ id: k, name: k, data_type: "any" }))
+            : [{ id: "output", name: "output", data_type: "any" }];
+          const blockNode: DanNodeType = {
+            id: crypto.randomUUID(),
+            node_type: "composite",
+            name: block.name,
+            description: block.description || "",
+            input_ports: inputPorts,
+            output_ports: outputPorts,
+            position,
+            ui: {},
+            metadata: {
+              block_name: block.name,
+              block_version: block.version,
+            },
+            body_graph: subGraphId,
+            input_mappings: {},
+            output_mappings: {},
+            is_blackbox: false,
+          } as DanNodeType;
+          addNode(blockNode);
+        } catch { /* ignore parse errors */ }
+        return;
+      }
+
       // -- 5-4: Build palette — handle template: prefix
       const rawType = e.dataTransfer.getData("application/dan-node-type");
       if (!rawType) return;
 
-      const position = screenToFlowPosition({ x: e.clientX, y: e.clientY });
       if (rawType.startsWith("template:")) {
         addTemplateNode(rawType.slice("template:".length), position);
       } else if (rawType.startsWith("workflow:")) {

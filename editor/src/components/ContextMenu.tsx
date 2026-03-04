@@ -63,6 +63,13 @@ export default function ContextMenu({ type, position, targetId, onClose }: Conte
       disabled: clipboard.nodes.length === 0,
       onClick: () => action(() => pasteClipboard(position)),
     });
+    items.push({
+      label: "Import Block…",
+      onClick: () =>
+        action(() => {
+          window.dispatchEvent(new CustomEvent("dan:import-block"));
+        }),
+    });
   }
 
   if (type === "node") {
@@ -133,6 +140,24 @@ export default function ContextMenu({ type, position, targetId, onClose }: Conte
             );
           }),
       });
+
+      const exportableNode = nodes.find((n) => n.id === targetId);
+      if (exportableNode) {
+        const eData = exportableNode.data as Record<string, unknown>;
+        if (eData.node_type === "composite") {
+          items.push({
+            label: "Export as Block…",
+            onClick: () =>
+              action(() => {
+                window.dispatchEvent(
+                  new CustomEvent("dan:export-block", {
+                    detail: { nodeId: targetId },
+                  }),
+                );
+              }),
+          });
+        }
+      }
     }
   }
 

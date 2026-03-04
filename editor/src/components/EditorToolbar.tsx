@@ -4,6 +4,7 @@ import Spinner from "./Spinner";
 import RunInputsDialog from "./RunInputsDialog";
 import TabBar from "./TabBar";
 import * as api from "../lib/api";
+import type { PublishStatus, AdapterInfo } from "../lib/api";
 
 // ---------------------------------------------------------------------------
 // ExportPreviewModal — shows markdown file list or Python code with actions
@@ -193,6 +194,17 @@ export default function EditorToolbar() {
   const importInputRef = useRef<HTMLInputElement>(null);
   const exportDropdownRef = useRef<HTMLDivElement>(null);
 
+  // -- 21-3: Publish state
+  const [showPublishDropdown, setShowPublishDropdown] = useState(false);
+  const [publishStatus, setPublishStatus] = useState<PublishStatus | null>(null);
+  const [publishLoading, setPublishLoading] = useState(false);
+  const publishDropdownRef = useRef<HTMLDivElement>(null);
+
+  // -- 21-4: Adapter state
+  const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
+  const [showAdapterPanel, setShowAdapterPanel] = useState(false);
+  const adapterPanelRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     if (!showExportDropdown) return;
     const handler = (e: MouseEvent) => {
@@ -203,6 +215,50 @@ export default function EditorToolbar() {
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
   }, [showExportDropdown]);
+
+  // Close publish dropdown on outside click
+  useEffect(() => {
+    if (!showPublishDropdown) return;
+    const handler = (e: MouseEvent) => {
+      if (publishDropdownRef.current && !publishDropdownRef.current.contains(e.target as Node)) {
+        setShowPublishDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showPublishDropdown]);
+
+  // Close adapter panel on outside click
+  useEffect(() => {
+    if (!showAdapterPanel) return;
+    const handler = (e: MouseEvent) => {
+      if (adapterPanelRef.current && !adapterPanelRef.current.contains(e.target as Node)) {
+        setShowAdapterPanel(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showAdapterPanel]);
+
+  // Fetch publish status when graph changes
+  useEffect(() => {
+    if (!graphId) { setPublishStatus(null); return; }
+    api.getPublishStatus(graphId)
+      .then(setPublishStatus)
+      .catch(() => setPublishStatus(null));
+  }, [graphId]);
+
+  // Poll adapter status every 10 seconds
+  useEffect(() => {
+    const poll = () => {
+      api.getAdapterStatus()
+        .then((res) => setAdapters(Array.isArray(res) ? res : []))
+        .catch(() => {});
+    };
+    poll();
+    const interval = setInterval(poll, 10_000);
+    return () => clearInterval(interval);
+  }, []);
 
   const handleCreate = () => {
     const name = newName.trim();
@@ -246,6 +302,64 @@ export default function EditorToolbar() {
       if (importInputRef.current) importInputRef.current.value = "";
     }
   };
+
+  const handlePublish = useCallback(async (type: "mcp" | "http") => {
+    if (!graphId) return;
+    setPublishLoading(true);
+    try {
+      const resp = await api.publishGraph(graphId, type);
+      setPublishStatus({ graph_id: graphId, published: true, workflow_id: resp.workflow_id });
+      addToast({ type: "success", message: `Published as ${type.toUpperCase()}` });
+    } catch (err: unknown) {
+      addToast({ type: "error", message: `Publish failed: ${(err as Error).message}` });
+    } finally {
+      setPublishLoading(false);
+      setShowPublishDropdown(false);
+    }
+  }, [graphId, addToast]);
+
+  const handleUnpublish = useCallback(async () => {
+    if (!graphId) return;
+    setPublishLoading(true);
+    try {
+      await api.unpublishGraph(graphId);
+      setPublishStatus((prev) =>
+        prev ? { ...prev, published: false, workflow_id: null } : null,
+      );
+      addToast({ type: "info", message: "Unpublished" });
+    } catch (err: unknown) {
+      addToast({ type: "error", message: `Unpublish failed: ${(err as Error).message}` });
+    } finally {
+      setPublishLoading(false);
+      setShowPublishDropdown(false);
+    }
+  }, [graphId, addToast]);
+
+  const handleCopyMcpConfig = useCallback(async () => {
+    if (!graphId) return;
+    try {
+      const { config } = await api.getMcpConfig(graphId);
+      await navigator.clipboard.writeText(JSON.stringify(config, null, 2));
+      addToast({ type: "info", message: "MCP config copied to clipboard" });
+    } catch (err: unknown) {
+      addToast({ type: "error", message: `Failed: ${(err as Error).message}` });
+    }
+    setShowPublishDropdown(false);
+  }, [graphId, addToast]);
+
+  const handleStopAdapter = useCallback(async (adapterId: string) => {
+    try {
+      await api.stopAdapter(adapterId);
+      setAdapters((prev) => prev.map((a) =>
+        a.adapter_id === adapterId ? { ...a, running: false } : a,
+      ));
+      addToast({ type: "info", message: "Adapter stopped" });
+    } catch (err: unknown) {
+      addToast({ type: "error", message: `Stop failed: ${(err as Error).message}` });
+    }
+  }, [addToast]);
+
+  const activeAdapters = adapters.filter((a) => a.running);
 
   return (
     <div className="flex flex-col bg-white border-b border-gray-200 shrink-0">
@@ -454,6 +568,133 @@ export default function EditorToolbar() {
         onChange={handleImport}
         className="hidden"
       />
+
+      {/* 21-3: Publish button/dropdown */}
+      <div className="relative" ref={publishDropdownRef}>
+        <button
+          onClick={() => setShowPublishDropdown(!showPublishDropdown)}
+          disabled={!graphId || publishLoading}
+          className={`flex items-center gap-1 px-2 py-1 text-[11px] rounded border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+            publishStatus?.published
+              ? "border-green-400 bg-green-50 text-green-700 hover:bg-green-100"
+              : "border-gray-300 text-gray-500 hover:bg-gray-100"
+          }`}
+          title={publishStatus?.published ? "Published" : "Publish graph"}
+        >
+          {publishStatus?.published && (
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
+          )}
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+          Publish
+          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        {showPublishDropdown && (
+          <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 w-48 py-1">
+            <button
+              onClick={() => handlePublish("mcp")}
+              disabled={publishLoading}
+              className="flex items-center gap-2 w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              Publish as MCP
+            </button>
+            <button
+              onClick={() => handlePublish("http")}
+              disabled={publishLoading}
+              className="flex items-center gap-2 w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 transition-colors disabled:opacity-50"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/></svg>
+              Publish as HTTP API
+            </button>
+            {publishStatus?.published && (
+              <button
+                onClick={handleUnpublish}
+                disabled={publishLoading}
+                className="flex items-center gap-2 w-full text-left px-3 py-1.5 text-[11px] text-red-600 hover:bg-red-50 transition-colors disabled:opacity-50"
+              >
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+                Unpublish
+              </button>
+            )}
+            <div className="border-t border-gray-100 my-0.5" />
+            <button
+              onClick={handleCopyMcpConfig}
+              className="flex items-center gap-2 w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+              Copy MCP Config
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* 21-4: Adapter status indicator */}
+      <div className="relative" ref={adapterPanelRef}>
+        <button
+          onClick={() => setShowAdapterPanel(!showAdapterPanel)}
+          className={`flex items-center gap-1 px-2 py-1 text-[11px] rounded border transition-colors ${
+            activeAdapters.length > 0
+              ? "border-cyan-300 bg-cyan-50 text-cyan-700 hover:bg-cyan-100"
+              : "border-gray-300 text-gray-500 hover:bg-gray-100"
+          }`}
+          title={`${activeAdapters.length} active adapter${activeAdapters.length !== 1 ? "s" : ""}`}
+        >
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+          </svg>
+          {activeAdapters.length > 0 && (
+            <span className="bg-cyan-200 text-cyan-800 text-[9px] font-bold px-1 rounded-full leading-none">
+              {activeAdapters.length}
+            </span>
+          )}
+        </button>
+        {showAdapterPanel && (
+          <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 w-64 py-2">
+            <div className="px-3 pb-1.5 text-[10px] font-semibold text-gray-400 uppercase">
+              Messaging Adapters
+            </div>
+            {adapters.length === 0 && (
+              <div className="px-3 py-2 text-[11px] text-gray-400">No adapters configured</div>
+            )}
+            {adapters.map((adapter) => {
+              const ADAPTER_ICONS: Record<string, string> = { email: "✉", telegram: "✈", whatsapp: "💬" };
+              const statusLabel = adapter.running ? "running" : "stopped";
+              const statusColors: Record<string, string> = {
+                running: "bg-green-100 text-green-700",
+                stopped: "bg-gray-100 text-gray-500",
+                error: "bg-red-100 text-red-700",
+              };
+              return (
+                <div
+                  key={adapter.adapter_id}
+                  className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50"
+                >
+                  <span className="text-sm shrink-0">{ADAPTER_ICONS[adapter.type] ?? "🔌"}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="text-[11px] font-medium text-gray-700 capitalize">{adapter.type}</div>
+                    <div className="text-[10px] text-gray-400">
+                      {adapter.session_count} session{adapter.session_count !== 1 ? "s" : ""}
+                    </div>
+                  </div>
+                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${statusColors[statusLabel] ?? "bg-gray-100 text-gray-500"}`}>
+                    {statusLabel}
+                  </span>
+                  {adapter.running && (
+                    <button
+                      onClick={() => handleStopAdapter(adapter.adapter_id)}
+                      className="text-[10px] text-red-500 hover:text-red-700 font-medium px-1"
+                    >
+                      Stop
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* Far right: status badge */}
       {runStatus && (

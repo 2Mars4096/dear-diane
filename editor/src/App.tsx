@@ -16,7 +16,9 @@ import ExecutionTimeline from "./components/ExecutionTimeline";
 import ChatPanel from "./components/ChatPanel";
 import CommandPalette from "./components/CommandPalette";
 import HumanInputDialog from "./components/HumanInputDialog";
+import BlockExportDialog from "./components/BlockExportDialog";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { importBlock } from "./lib/api";
 
 type BottomTab = "logs" | "output" | "history" | "optimizations";
 
@@ -30,11 +32,46 @@ export default function App() {
   const logFocusCounter = useGraphStore((s) => s.logFocusCounter);
   const historyFocusCounter = useGraphStore((s) => s.historyFocusCounter);
   const wasteFindings = useGraphStore((s) => s.wasteFindings);
+  const addToast = useGraphStore((s) => s.addToast);
   const [bottomTab, setBottomTab] = useState<BottomTab>("logs");
   const [panelHeight, setPanelHeight] = useState(DEFAULT_PANEL_HEIGHT);
   const dragging = useRef(false);
 
+  // 21-5: Block export dialog state
+  const [blockExportNodeId, setBlockExportNodeId] = useState<string | null>(null);
+  const blockImportRef = useRef<HTMLInputElement>(null);
+
   useKeyboardShortcuts();
+
+  // Listen for block export/import custom events
+  useEffect(() => {
+    const handleExport = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { nodeId: string };
+      setBlockExportNodeId(detail.nodeId);
+    };
+    const handleImport = () => {
+      blockImportRef.current?.click();
+    };
+    window.addEventListener("dan:export-block", handleExport);
+    window.addEventListener("dan:import-block", handleImport);
+    return () => {
+      window.removeEventListener("dan:export-block", handleExport);
+      window.removeEventListener("dan:import-block", handleImport);
+    };
+  }, []);
+
+  const handleBlockImport = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      await importBlock(file);
+      addToast({ type: "success", message: `Imported block "${file.name}"` });
+    } catch (err: unknown) {
+      addToast({ type: "error", message: `Block import failed: ${(err as Error).message}` });
+    } finally {
+      if (blockImportRef.current) blockImportRef.current.value = "";
+    }
+  }, [addToast]);
 
   const onDragStart = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -163,6 +200,19 @@ export default function App() {
         <ToastContainer />
         <CommandPalette />
         <HumanInputDialog />
+        {blockExportNodeId && (
+          <BlockExportDialog
+            nodeId={blockExportNodeId}
+            onClose={() => setBlockExportNodeId(null)}
+          />
+        )}
+        <input
+          ref={blockImportRef}
+          type="file"
+          accept=".danblock,.json,.zip"
+          onChange={handleBlockImport}
+          className="hidden"
+        />
       </div>
     </ReactFlowProvider>
   );
