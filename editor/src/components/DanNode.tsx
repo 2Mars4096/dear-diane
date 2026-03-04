@@ -5,7 +5,7 @@ import { orderPorts } from "../lib/portOrdering";
 import { computePortReorder } from "../lib/layout";
 import { useGraphStore } from "../store/useGraphStore";
 import { NodeIcon } from "../lib/nodeIcons";
-import type { DanNode, InputVariable } from "../types/graph";
+import type { DanNode, InputVariable, TokenBreakdown, WasteFinding } from "../types/graph";
 
 const TYPE_COLORS: Record<string, string> = {
   input: "#0ea5e9",
@@ -32,6 +32,105 @@ const STATUS_RING: Record<string, string> = {
   node_skipped: "ring-2 ring-gray-400",
 };
 
+// -- 18-4: Heatmap color interpolation (green -> yellow -> red) ---------------
+
+function heatmapColor(intensity: number): string {
+  // intensity: 0 (low) to 1 (high)
+  const t = Math.max(0, Math.min(1, intensity));
+  if (t <= 0.5) {
+    // green -> yellow
+    const r = Math.round(34 + (234 - 34) * (t * 2));
+    const g = Math.round(197 + (179 - 197) * (t * 2));
+    const b = Math.round(94 + (8 - 94) * (t * 2));
+    return `rgba(${r}, ${g}, ${b}, 0.12)`;
+  } else {
+    // yellow -> red
+    const r = Math.round(234 + (239 - 234) * ((t - 0.5) * 2));
+    const g = Math.round(179 + (68 - 179) * ((t - 0.5) * 2));
+    const b = Math.round(8 + (68 - 8) * ((t - 0.5) * 2));
+    return `rgba(${r}, ${g}, ${b}, 0.15)`;
+  }
+}
+
+// -- 18-4: Waste category display labels --------------------------------------
+
+const WASTE_CATEGORY_LABELS: Record<string, string> = {
+  unused_context: "Unused Context",
+  duplicate: "Duplicate Info",
+  loop_growth: "Loop Growth",
+  oversized_system: "Large System Prompt",
+  unused_memory_rag: "Unused Memory/RAG",
+  jit_opportunity: "JIT Opportunity",
+  memoization_opportunity: "Memoize Opportunity",
+  reference_opportunity: "Reference Opportunity",
+};
+
+// -- 18-4: Token breakdown tooltip component ----------------------------------
+
+function TokenTooltip({ breakdown, model, cost }: {
+  breakdown: TokenBreakdown;
+  model?: string;
+  cost?: number;
+}) {
+  const rows: Array<[string, number | string]> = [];
+  if (breakdown.total_input_tokens > 0)
+    rows.push(["Input tokens", breakdown.total_input_tokens.toLocaleString()]);
+  if (breakdown.total_output_tokens > 0)
+    rows.push(["Output tokens", breakdown.total_output_tokens.toLocaleString()]);
+  if (breakdown.system_tokens && breakdown.system_tokens > 0)
+    rows.push(["  System", breakdown.system_tokens.toLocaleString()]);
+  if (breakdown.user_tokens && breakdown.user_tokens > 0)
+    rows.push(["  User", breakdown.user_tokens.toLocaleString()]);
+  if (breakdown.context_edge_tokens && breakdown.context_edge_tokens > 0)
+    rows.push(["  Context edges", breakdown.context_edge_tokens.toLocaleString()]);
+  if (breakdown.hyperedge_tokens && breakdown.hyperedge_tokens > 0)
+    rows.push(["  Hyperedges", breakdown.hyperedge_tokens.toLocaleString()]);
+  if (breakdown.memory_tokens && breakdown.memory_tokens > 0)
+    rows.push(["  Memory", breakdown.memory_tokens.toLocaleString()]);
+  if (breakdown.rag_tokens && breakdown.rag_tokens > 0)
+    rows.push(["  RAG", breakdown.rag_tokens.toLocaleString()]);
+  if (model) rows.push(["Model", model]);
+  if (cost != null && cost > 0)
+    rows.push(["Cost", cost >= 0.01 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`]);
+  if (breakdown.cache_hit != null)
+    rows.push(["Cache", breakdown.cache_hit ? "hit" : "miss"]);
+
+  return (
+    <div className="absolute z-50 bottom-full left-1/2 -translate-x-1/2 mb-2 px-2.5 py-1.5 bg-gray-900 text-white text-[10px] rounded-md shadow-lg whitespace-nowrap pointer-events-none">
+      <div className="font-semibold mb-0.5">Token Breakdown</div>
+      {rows.map(([label, val], i) => (
+        <div key={i} className="flex justify-between gap-3">
+          <span className="text-gray-300">{label}</span>
+          <span className="font-mono">{val}</span>
+        </div>
+      ))}
+      <div className="absolute left-1/2 -translate-x-1/2 top-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-gray-900" />
+    </div>
+  );
+}
+
+// -- 18-4: Waste tooltip component --------------------------------------------
+
+function WasteTooltip({ findings }: { findings: WasteFinding[] }) {
+  return (
+    <div className="absolute z-50 bottom-full right-0 mb-2 px-2.5 py-1.5 bg-amber-900 text-white text-[10px] rounded-md shadow-lg max-w-[240px] pointer-events-none">
+      <div className="font-semibold mb-0.5">Token Waste Detected</div>
+      {findings.map((f, i) => (
+        <div key={i} className="mt-1 border-t border-amber-700 pt-1">
+          <div className="font-medium text-amber-200">
+            {WASTE_CATEGORY_LABELS[f.category] ?? f.category}
+          </div>
+          <div className="text-gray-200 leading-tight">{f.description}</div>
+          <div className="text-amber-300 mt-0.5">
+            ~{f.estimated_saveable_tokens.toLocaleString()} tokens saveable
+          </div>
+        </div>
+      ))}
+      <div className="absolute right-2 top-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-amber-900" />
+    </div>
+  );
+}
+
 function DanNodeComponent({ id, data, selected }: NodeProps) {
   const nodeStatuses = useGraphStore((s) => s.nodeStatuses);
   const runStatus = useGraphStore((s) => s.runStatus);
@@ -45,11 +144,17 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   const validationErrors = useGraphStore((s) => s.validationErrors);
   const nodeUsage = useGraphStore((s) => s.nodeUsage);
   const nodeCosts = useGraphStore((s) => s.nodeCosts);
+  // -- 18-4: Token analytics
+  const tokenBreakdowns = useGraphStore((s) => s.tokenBreakdowns);
+  const wasteFindings = useGraphStore((s) => s.wasteFindings);
+  const tokenHeatmapEnabled = useGraphStore((s) => s.tokenHeatmapEnabled);
   const nodeErrors = validationErrors[id];
   const d = data as unknown as DanNode;
 
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
+  const [showTokenTooltip, setShowTokenTooltip] = useState(false);
+  const [showWasteTooltip, setShowWasteTooltip] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef(false);
 
@@ -104,6 +209,30 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
     costLabel = cost >= 0.01 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`;
   }
 
+  // -- 18-4: Token heatmap intensity
+  const heatmapBg = useMemo(() => {
+    if (!tokenHeatmapEnabled || !usage || usage.total_tokens === 0) return undefined;
+    // Find max token usage across all nodes to normalize
+    const allUsage = useGraphStore.getState().nodeUsage;
+    let maxTokens = 0;
+    for (const u of Object.values(allUsage)) {
+      if (u.total_tokens > maxTokens) maxTokens = u.total_tokens;
+    }
+    if (maxTokens === 0) return undefined;
+    const intensity = usage.total_tokens / maxTokens;
+    return heatmapColor(intensity);
+  }, [tokenHeatmapEnabled, usage]);
+
+  // -- 18-4: Token breakdown for this node
+  const breakdown = tokenBreakdowns[id] as TokenBreakdown | undefined;
+  const nodeModel = breakdown?.model;
+
+  // -- 18-4: Waste findings for this node
+  const nodeWasteFindings = useMemo(() => {
+    return wasteFindings.filter((f) => f.node_id === id);
+  }, [wasteFindings, id]);
+  const hasWaste = nodeWasteFindings.length > 0;
+
   const iteration = nodeIterations[id];
   const portReorderMap = useMemo(() => computePortReorder(allNodes, allEdges), [allNodes, allEdges]);
   const myReorder = portReorderMap.get(id);
@@ -124,8 +253,11 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
 
   return (
     <div
-      className={`relative rounded-lg shadow-md bg-white border-2 min-w-[160px] ${ringClass} ${animClass} ${dimmed ? "opacity-40" : ""}`}
-      style={{ borderColor: selected ? "#2563eb" : color }}
+      className={`relative rounded-lg shadow-md border-2 min-w-[160px] ${ringClass} ${animClass} ${dimmed ? "opacity-40" : ""}`}
+      style={{
+        borderColor: selected ? "#2563eb" : color,
+        backgroundColor: heatmapBg ?? "white",
+      }}
     >
       {/* Header */}
       <div
@@ -324,8 +456,9 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
           )}
           {tokenLabel && (
             <span
-              className="bg-indigo-50 text-indigo-600 px-1 rounded"
-              title={usage ? `Prompt: ${usage.prompt_tokens.toLocaleString()}, Completion: ${usage.completion_tokens.toLocaleString()}, Total: ${usage.total_tokens.toLocaleString()}` : undefined}
+              className="bg-indigo-50 text-indigo-600 px-1 rounded cursor-default"
+              onMouseEnter={() => breakdown && setShowTokenTooltip(true)}
+              onMouseLeave={() => setShowTokenTooltip(false)}
             >
               {tokenLabel}
             </span>
@@ -338,12 +471,39 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
         </div>
       )}
 
-      {/* 6-4: Validation error badge */}
+      {/* 18-4: Token breakdown tooltip (appears on hover over token label) */}
+      {showTokenTooltip && breakdown && (
+        <TokenTooltip breakdown={breakdown} model={nodeModel} cost={cost} />
+      )}
+
+      {/* 6-4: Validation error badge with Fix This action */}
       {nodeErrors && nodeErrors.length > 0 && (
         <div
-          className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border border-white"
-          title={nodeErrors.join("\n")}
+          className="absolute -top-1 -right-1 w-3 h-3 bg-red-500 rounded-full border border-white cursor-pointer"
+          title={`${nodeErrors.join("\n")}\n\nClick to fix in Debug mode`}
+          onClick={(e) => {
+            e.stopPropagation();
+            const firstLine = nodeErrors[0].split("\n")[0].slice(0, 120);
+            useGraphStore.getState().openDebugWithError(
+              `Fix error in ${d.name || d.node_type}: validation — ${firstLine}`,
+            );
+          }}
         />
+      )}
+
+      {/* 18-4: Waste warning badge */}
+      {hasWaste && (
+        <div
+          className="absolute -top-1.5 -left-1.5 cursor-pointer"
+          onMouseEnter={() => setShowWasteTooltip(true)}
+          onMouseLeave={() => setShowWasteTooltip(false)}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" className="drop-shadow-sm">
+            <path d="M12 2L1 21h22L12 2z" fill="#f59e0b" stroke="#d97706" strokeWidth="1.5" />
+            <text x="12" y="18" textAnchor="middle" fill="white" fontSize="13" fontWeight="bold">!</text>
+          </svg>
+          {showWasteTooltip && <WasteTooltip findings={nodeWasteFindings} />}
+        </div>
       )}
     </div>
   );
