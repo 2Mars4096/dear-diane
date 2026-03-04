@@ -60,6 +60,16 @@ from dan.server.scoped_run import (
 from dan.server.mutation_metrics import mutation_metrics
 from dan.validation.graph import validate_graph
 
+from dan.publish.http_server import PublishRegistry, create_publish_router
+from dan.blocks import BlockRegistry, export_workflow_block, export_composite_block, import_block
+from dan.adapters import (
+    EmailAdapter, EmailAdapterConfig,
+    TelegramAdapter, TelegramAdapterConfig,
+    WhatsAppAdapter, WhatsAppAdapterConfig,
+    MessagingAdapter, MessagingHumanRenderer, AdapterSessionStore,
+)
+from dan.adapters.base import SessionState
+
 logger = logging.getLogger(__name__)
 
 _STRICT_MUTATION_VALIDATION = os.environ.get("DAN_STRICT_MUTATION_VALIDATION", "true").lower() == "true"
@@ -87,6 +97,13 @@ _meta_tasks: dict[str, asyncio.Task[Any]] = {}
 _meta_subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
 _experience_index_cache: Any | None = None
 _experience_index_bootstrap_done = False
+
+_publish_registry: PublishRegistry | None = None
+_block_registry: BlockRegistry | None = None
+_active_adapters: dict[str, tuple[MessagingAdapter, asyncio.Task[Any]]] = {}
+_adapter_session_stores: dict[str, AdapterSessionStore] = {}
+_adapter_start_times: dict[str, float] = {}
+_adapter_renderers: dict[str, tuple[MessagingHumanRenderer, Graph | None]] = {}
 
 
 def _get_engine_config() -> EngineConfig:
@@ -1158,18 +1175,51 @@ def _build_chat_provider_registry():
 _mention_resolver: MentionResolver | None = None
 
 
+def _auto_register_published_workflows(registry: PublishRegistry) -> None:
+    """Scan ``graphs/*.publish.json`` and auto-register previously published workflows."""
+    graphs_path = Path(_graphs_dir)
+    if not graphs_path.exists():
+        return
+    for pub_file in graphs_path.glob("*.publish.json"):
+        graph_id = pub_file.name.replace(".publish.json", "")
+        try:
+            pub_config = json.loads(pub_file.read_text(encoding="utf-8"))
+            if not pub_config.get("enabled", False):
+                continue
+            graph_data = _graph_store.get_graph(graph_id)
+            if graph_data is None:
+                logger.warning("Published graph %s not found, skipping", graph_id)
+                continue
+            graph = Graph.model_validate(graph_data)
+            registry.register(
+                graph,
+                api_key=pub_config.get("api_key"),
+                rate_limit=pub_config.get("rate_limit"),
+            )
+            logger.info("Auto-registered published workflow: %s", graph_id)
+        except Exception:
+            logger.warning("Failed to auto-register %s", pub_file, exc_info=True)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _run_manager, _chat_manager, _mention_resolver
+    global _publish_registry, _block_registry
     _runs_dir = os.environ.get("DAN_RUNS_DIR", os.path.join(_graphs_dir, "runs"))
     _run_store = RunStore(base_dir=_runs_dir)
+    workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
+    _block_registry = BlockRegistry(workspace=Path(workspace_root))
+    _block_registry.scan()
+    engine_config = _get_engine_config()
+    engine_config.block_registry = _block_registry
     _run_manager = RunManager(
-        engine_config=_get_engine_config(),
+        engine_config=engine_config,
         tool_registry=_build_tool_registry(),
         run_store=_run_store,
     )
+    workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
     _mention_resolver = MentionResolver(
-        workspace_root=os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd()),
+        workspace_root=workspace_root,
         chat_store=_chat_store,
     )
     _chat_manager = ChatManager(
@@ -1177,7 +1227,22 @@ async def lifespan(app: FastAPI):
         graph_store=_graph_store,
         mention_resolver=_mention_resolver,
     )
+
+    _publish_registry = PublishRegistry(engine_config)
+    _auto_register_published_workflows(_publish_registry)
+    router = create_publish_router(_publish_registry)
+    app.include_router(router, prefix="/api/published", tags=["published"])
+
     yield
+
+    for aid, (adapter, task) in list(_active_adapters.items()):
+        if not task.done():
+            task.cancel()
+        try:
+            await adapter.stop()
+        except Exception:
+            pass
+    _active_adapters.clear()
 
 
 app = FastAPI(title="Deep Agent Network", version="0.1.0", lifespan=lifespan)
