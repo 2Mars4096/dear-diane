@@ -76,5 +76,6 @@ pnpm-debug.log*
 .idea/
 .vscode/
 .cursor/
+.claude/
 
 /tests
