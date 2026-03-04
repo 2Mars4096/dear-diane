@@ -251,6 +251,9 @@
 - [ ] **Checkpoint/resume for parallel subagents** (7-9 task 3) — capture per-branch completion status, resume pending branches
 - [ ] **Builder DSL for tools** (7-3 task 8-3) — `wf.tool("name", tool_id="file_read")` out of the box
 - [ ] **RAG reranking** (9-1 task 6-4) — LLM-based re-scoring of top_k*3 candidates
+- [ ] **Tier de-escalation telemetry** (18-5 task 4-2) — persist per-node tier success stats across runs, suggest cheaper tiers after repeated success
+- [ ] **Tier badge in editor** (18-5 task 7-2) — show L0/L1/L2/L3 tier alongside model name in DanNode during/after runs
+- [ ] **Tier analytics panel** (18-5 task 7-3) — per-node tier assignment, score decomposition, cost comparison vs. uniform model
 
 ### Stretch goals
 - [x] ~~**Auto-mode detection**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)

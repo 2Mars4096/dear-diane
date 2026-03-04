@@ -2,6 +2,18 @@
 
 ## 2026-03-04
 
+- [feat] **Task-level model tiering (18-5)** — automatic cost-appropriate model assignment per LLM call:
+  - `TierPolicy` strategy with `TaskTier` enum (micro/routine/reasoning/critical), `TierWeights`, per-provider tier maps
+  - `TierScorer` with 3 sub-scorers: `DifficultyScorer` (node type + prompt/schema complexity), `ImpactScorer` (graph topology: terminal/fan-out/HumanNode), `RecoverabilityScorer` (retry/validator/loop signals)
+  - `DEFAULT_TIER_MAPS` for Anthropic/OpenAI/Google ecosystems with `resolve_tier_map()` provider detection
+  - `ModelSelector` gains `"tier"` branch, provider detection, tier map validation, `_last_tier_result` for event enrichment
+  - `LLMExecutor` escalation: bumps tier on normalizer exhaustion, emits `tier_escalation` event, caps at 1 escalation per call
+  - `task_tier` field on 6 LLM-using node types for explicit override
+  - `ExecutionContext.graph` field + `EngineConfig.tier_map`/`tier_params` fields
+  - 54 new tests (scorers, integration, escalation, backward compat); 2617 total tests pass, 0 regressions
+
+## 2026-03-04
+
 - [fix] **Phase 12 hardening — WebSocket rate limiting + adapter session isolation**
   - **WebSocket rate limiting**: `start` messages in the published WS handler now enforce `_check_rate_limit()`, matching the REST endpoints; returns `{"type": "error", "detail": "Rate limit exceeded"}` on 429
   - **Adapter renderer concurrency**: `_run_adapter_message_handler` now creates a **per-session** `MessagingHumanRenderer` from the adapter's transport, eliminating the race on shared `active_session_id` across concurrent conversations
