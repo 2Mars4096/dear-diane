@@ -221,22 +221,64 @@ function NodeGroup({
 
   const hasRichEvents = Boolean(categorized.thinking || categorized.tool || categorized.output || categorized.error);
 
+  const handleInspectInputs = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSelectNode(nodeId);
+  };
+
+  const handleAddTestCase = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSelectNode(nodeId);
+    window.dispatchEvent(new CustomEvent("dan:open-test-case-modal", { detail: { nodeId, prefillFromRun: true } }));
+  };
+
+  const handleRerun = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    useGraphStore.getState().rerunFromNode(nodeId, "downstream_of");
+  };
+
+  const handleFixThis = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const errorEntries = categorized.error ?? [];
+    const firstError = errorEntries[0];
+    const errorType = firstError?.event_type ?? "error";
+    const errorMsg = firstError ? (dataContent(firstError) ?? firstError.message) : "unknown error";
+    const firstLine = errorMsg.split("\n")[0].slice(0, 120);
+    const summary = `Fix error in ${nodeName}: ${errorType} — ${firstLine}`;
+    useGraphStore.getState().openDebugWithError(summary);
+  };
+
   return (
-    <div className="border-b border-gray-100 dark:border-gray-800 last:border-b-0">
-      <button
-        className="flex items-center gap-1.5 w-full px-2 py-1 text-[11px] font-semibold text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50 text-left"
-        onClick={() => setOpen(!open)}
-      >
-        <ChevronIcon open={open} className="text-gray-400 shrink-0" />
-        <span className="truncate">{nodeName}</span>
-        {usage && usage.total_tokens > 0 && (
-          <span className="text-indigo-500 font-normal text-[10px] shrink-0">{usage.total_tokens.toLocaleString()} tok</span>
-        )}
-        {cost != null && cost > 0 && (
-          <span className="text-emerald-600 font-normal text-[10px] shrink-0">{cost >= 0.01 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`}</span>
-        )}
-        <span className="text-gray-400 font-normal ml-auto shrink-0">{entries.length}</span>
-      </button>
+    <div className="group/nodegroup border-b border-gray-100 dark:border-gray-800 last:border-b-0">
+      <div className="flex items-center gap-1.5 w-full px-2 py-1 text-[11px] font-semibold text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-800/50">
+        <button className="flex items-center gap-1.5 flex-1 text-left min-w-0" onClick={() => setOpen(!open)}>
+          <ChevronIcon open={open} className="text-gray-400 shrink-0" />
+          <span className="truncate">{nodeName}</span>
+          {usage && usage.total_tokens > 0 && (
+            <span className="text-indigo-500 font-normal text-[10px] shrink-0">{usage.total_tokens.toLocaleString()} tok</span>
+          )}
+          {cost != null && cost > 0 && (
+            <span className="text-emerald-600 font-normal text-[10px] shrink-0">{cost >= 0.01 ? `$${cost.toFixed(2)}` : `$${cost.toFixed(4)}`}</span>
+          )}
+          <span className="text-gray-400 font-normal ml-auto shrink-0">{entries.length}</span>
+        </button>
+        <div className="flex items-center gap-0.5 shrink-0 opacity-0 group-hover/nodegroup:opacity-100 hover:opacity-100" style={{ opacity: open ? 1 : undefined }}>
+          {categorized.error && categorized.error.length > 0 && (
+            <button onClick={handleFixThis} title="Fix this error in Debug mode" className="p-0.5 rounded text-red-400 hover:text-red-600 hover:bg-red-50">
+              <WrenchIcon className="text-current" />
+            </button>
+          )}
+          <button onClick={handleInspectInputs} title="Inspect inputs" className="p-0.5 rounded text-gray-400 hover:text-indigo-600 hover:bg-indigo-50">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </button>
+          <button onClick={handleAddTestCase} title="Add test case from this run" className="p-0.5 rounded text-gray-400 hover:text-emerald-600 hover:bg-emerald-50">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 11 12 14 22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+          </button>
+          <button onClick={handleRerun} title="Rerun from here" className="p-0.5 rounded text-gray-400 hover:text-amber-600 hover:bg-amber-50">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+          </button>
+        </div>
+      </div>
 
       {open && (
         <div className="pl-4 pr-2 pb-1">
@@ -305,6 +347,10 @@ function RunSummaryBar() {
   const runSummary = useGraphStore((s) => s.runSummary);
   const runStatus = useGraphStore((s) => s.runStatus);
   const nodeCosts = useGraphStore((s) => s.nodeCosts);
+  const nodeUsage = useGraphStore((s) => s.nodeUsage);
+  const wasteFindings = useGraphStore((s) => s.wasteFindings);
+  const nodes = useGraphStore((s) => s.nodes);
+  const [expanded, setExpanded] = useState(false);
   if (!runSummary || (runStatus !== "completed" && runStatus !== "failed")) return null;
   const ok = runStatus === "completed";
   const elapsed = runSummary.elapsed_seconds != null ? `${runSummary.elapsed_seconds}s` : "—";
@@ -316,19 +362,88 @@ function RunSummaryBar() {
     : "no token data";
   const totalCost = Object.values(nodeCosts).reduce((a, b) => a + b, 0);
   const costStr = totalCost > 0 ? `~$${totalCost.toFixed(4)}` : "";
+
+  // 18-4: Top 3 most expensive nodes
+  const nodeNameMap: Record<string, string> = {};
+  for (const n of nodes) {
+    const d = n.data as Record<string, unknown>;
+    nodeNameMap[n.id] = (d?.name ?? d?.label ?? n.id) as string;
+  }
+  const topNodes = Object.entries(nodeUsage)
+    .sort(([, a], [, b]) => b.total_tokens - a.total_tokens)
+    .slice(0, 3);
+
+  // 18-4: Waste summary
+  const totalWaste = wasteFindings.reduce((a, f) => a + f.estimated_saveable_tokens, 0);
+  const wasteCategories = new Set(wasteFindings.map((f) => f.category));
+
   return (
-    <div className={`flex items-center gap-2 px-3 py-1.5 text-[11px] font-medium border-t ${ok ? "bg-green-50 text-green-800 border-green-200" : "bg-red-50 text-red-800 border-red-200"}`}>
-      <span>{ok ? "Completed" : "Failed"} in {elapsed}</span>
-      <span className="text-gray-400">|</span>
-      <span>{tokenStr}</span>
-      {costStr && (
-        <>
-          <span className="text-gray-400">|</span>
-          <span className="text-emerald-700">{costStr}</span>
-        </>
+    <div className={`border-t ${ok ? "border-green-200" : "border-red-200"}`}>
+      <div
+        className={`flex items-center gap-2 px-3 py-1.5 text-[11px] font-medium cursor-pointer ${ok ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`}
+        onClick={() => setExpanded(!expanded)}
+      >
+        <span>{ok ? "Completed" : "Failed"} in {elapsed}</span>
+        <span className="text-gray-400">|</span>
+        <span>{tokenStr}</span>
+        {costStr && (
+          <>
+            <span className="text-gray-400">|</span>
+            <span className="text-emerald-700">{costStr}</span>
+          </>
+        )}
+        {wasteFindings.length > 0 && (
+          <>
+            <span className="text-gray-400">|</span>
+            <span className="text-amber-600">{wasteFindings.length} waste finding{wasteFindings.length > 1 ? "s" : ""}</span>
+          </>
+        )}
+        <span className="ml-auto text-gray-400 text-[10px]">{expanded ? "collapse" : "details"}</span>
+      </div>
+
+      {expanded && (
+        <div className={`px-3 py-2 text-[11px] space-y-2 ${ok ? "bg-green-50/60" : "bg-red-50/60"}`}>
+          {/* Top expensive nodes */}
+          {topNodes.length > 0 && (
+            <div>
+              <div className="font-semibold text-gray-600 mb-0.5">Top Token Consumers</div>
+              {topNodes.map(([nid, u], i) => (
+                <div key={nid} className="flex items-center gap-2 text-gray-500">
+                  <span className="text-gray-400">{i + 1}.</span>
+                  <span className="truncate max-w-[140px]">{nodeNameMap[nid] ?? nid}</span>
+                  <span className="font-mono text-indigo-600">{u.total_tokens.toLocaleString()} tok</span>
+                  {nodeCosts[nid] != null && nodeCosts[nid] > 0 && (
+                    <span className="text-emerald-600">
+                      {nodeCosts[nid] >= 0.01 ? `$${nodeCosts[nid].toFixed(2)}` : `$${nodeCosts[nid].toFixed(4)}`}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Waste summary */}
+          {wasteFindings.length > 0 && (
+            <div>
+              <div className="font-semibold text-amber-700 mb-0.5">
+                Waste Summary: ~{totalWaste.toLocaleString()} tokens saveable across {wasteFindings.length} finding{wasteFindings.length > 1 ? "s" : ""}
+              </div>
+              <div className="text-gray-500">
+                Categories: {[...wasteCategories].join(", ")}
+              </div>
+            </div>
+          )}
+        </div>
       )}
     </div>
   );
+}
+
+type SortKey = "name" | "duration" | "tokens" | "cost";
+
+function SortArrow({ active, dir }: { active: boolean; dir: "asc" | "desc" }) {
+  if (!active) return <span className="text-gray-300 ml-0.5">⇅</span>;
+  return <span className="text-indigo-500 ml-0.5">{dir === "asc" ? "▲" : "▼"}</span>;
 }
 
 export default function LogPanel() {
@@ -339,6 +454,9 @@ export default function LogPanel() {
   const [search, setSearch] = useState("");
   const [nodeFilter, setNodeFilter] = useState<string>("");
   const [typeFilter, setTypeFilter] = useState<string>("");
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
+  const prevLogsEmpty = useRef(true);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const userScrolledUp = useRef(false);
@@ -385,6 +503,20 @@ export default function LogPanel() {
     return result;
   }, [logs, nodeFilter, typeFilter, search]);
 
+  const nodeTimings = useGraphStore((s) => s.nodeTimings);
+  const nodeUsage = useGraphStore((s) => s.nodeUsage);
+  const nodeCosts = useGraphStore((s) => s.nodeCosts);
+
+  useEffect(() => {
+    const wasEmpty = prevLogsEmpty.current;
+    const isNonEmpty = logs.length > 0;
+    if (wasEmpty && isNonEmpty) {
+      setSortKey(null);
+      setSortDir("asc");
+    }
+    prevLogsEmpty.current = logs.length === 0;
+  }, [logs.length]);
+
   const grouped = useMemo(() => {
     const map = new Map<string, LogEntry[]>();
     for (const entry of filteredLogs) {
@@ -395,6 +527,59 @@ export default function LogPanel() {
     }
     return map;
   }, [filteredLogs]);
+
+  const sortedGroupEntries = useMemo(() => {
+    const entries = [...grouped.entries()];
+    if (!sortKey) return entries;
+
+    return entries.sort(([keyA], [keyB]) => {
+      let cmp = 0;
+      switch (sortKey) {
+        case "name": {
+          const nameA = (nodeNameMap[keyA] ?? keyA).toLowerCase();
+          const nameB = (nodeNameMap[keyB] ?? keyB).toLowerCase();
+          cmp = nameA < nameB ? -1 : nameA > nameB ? 1 : 0;
+          break;
+        }
+        case "duration": {
+          const tA = nodeTimings[keyA];
+          const tB = nodeTimings[keyB];
+          const durA = tA?.end != null ? tA.end - tA.start : 0;
+          const durB = tB?.end != null ? tB.end - tB.start : 0;
+          cmp = durA - durB;
+          break;
+        }
+        case "tokens": {
+          const tokA = nodeUsage[keyA]?.total_tokens ?? 0;
+          const tokB = nodeUsage[keyB]?.total_tokens ?? 0;
+          cmp = tokA - tokB;
+          break;
+        }
+        case "cost": {
+          const costA = nodeCosts[keyA] ?? 0;
+          const costB = nodeCosts[keyB] ?? 0;
+          cmp = costA - costB;
+          break;
+        }
+      }
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+  }, [grouped, sortKey, sortDir, nodeNameMap, nodeTimings, nodeUsage, nodeCosts]);
+
+  const toggleSort = useCallback((key: SortKey) => {
+    setSortKey((prev) => {
+      if (prev !== key) {
+        setSortDir("asc");
+        return key;
+      }
+      if (sortDir === "asc") {
+        setSortDir("desc");
+        return key;
+      }
+      setSortDir("asc");
+      return null;
+    });
+  }, [sortDir]);
 
   const distinctNodeIds = useMemo(() => {
     const s = new Set<string>();
@@ -456,13 +641,29 @@ export default function LogPanel() {
         </span>
       </div>
 
+      {/* -- Sort header ------------------------------------------------------ */}
+      <div className="flex items-center gap-0 px-2 py-0.5 border-b border-gray-100 dark:border-gray-800 bg-gray-50/80 dark:bg-gray-900/30 shrink-0 text-[10px] font-medium text-gray-500 uppercase tracking-wide select-none">
+        {(["name", "duration", "tokens", "cost"] as const).map((key) => (
+          <button
+            key={key}
+            onClick={() => toggleSort(key)}
+            className={`px-1.5 py-0.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors ${
+              key === "name" ? "flex-1 text-left" : "shrink-0"
+            }`}
+          >
+            {key === "name" ? "Node" : key.charAt(0).toUpperCase() + key.slice(1)}
+            <SortArrow active={sortKey === key} dir={sortDir} />
+          </button>
+        ))}
+      </div>
+
       {/* -- Log body -------------------------------------------------------- */}
       <div
         ref={scrollRef}
         onScroll={handleScroll}
         className="overflow-y-auto flex-1 min-h-0"
       >
-        {[...grouped.entries()].map(([key, entries]) => (
+        {sortedGroupEntries.map(([key, entries]) => (
           <NodeGroup
             key={key}
             nodeId={key}
