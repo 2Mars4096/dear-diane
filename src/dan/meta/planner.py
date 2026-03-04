@@ -20,8 +20,39 @@ from dan.meta.discovery import DiscoveryResult, DiscoveryService
 
 logger = logging.getLogger(__name__)
 
+_BUILDER_CODE_HARNESS = '''\
+import json, sys, pathlib
+
+_inputs = json.loads(pathlib.Path("_inputs.json").read_text(encoding="utf-8"))
+if _inputs.get("src_path"):
+    sys.path.insert(0, _inputs["src_path"])
+
+# --- user code starts ---
+{{USER_CODE}}
+# --- user code ends ---
+
+# Expect the user code to assign ``graph`` or call ``build()`` at module level.
+_graph = None
+for _name in ("graph", "wf", "workflow", "g"):
+    _g = locals().get(_name)
+    if _g is not None and hasattr(_g, "model_dump"):
+        _graph = _g
+        break
+
+if _graph is None:
+    print("ERROR: builder code must assign the result of .build() to a variable "
+          "named graph, wf, workflow, or g", file=sys.stderr)
+    sys.exit(1)
+
+pathlib.Path("_result.json").write_text(
+    json.dumps(_graph.model_dump(mode="json"), default=str),
+    encoding="utf-8",
+)
+'''
+
 __all__ = [
     "AdaptPlan",
+    "GenerateCodePlan",
     "GeneratePlan",
     "PlanAction",
     "PlanReview",
@@ -69,7 +100,19 @@ class GeneratePlan(BaseModel):
     description: str = ""
 
 
-PlanResult = ReusePlan | AdaptPlan | GeneratePlan
+class GenerateCodePlan(BaseModel):
+    """Generate a new workflow via executable builder DSL code.
+
+    Only available when ``planner_allow_code_generation=True``.
+    The code is executed in a subprocess sandbox.
+    """
+
+    action: Literal["GENERATE_CODE"] = "GENERATE_CODE"
+    code: str = ""
+    description: str = ""
+
+
+PlanResult = ReusePlan | AdaptPlan | GeneratePlan | GenerateCodePlan
 
 
 class PlanReview(BaseModel):
@@ -85,7 +128,7 @@ class PlanReview(BaseModel):
 class PlannerOutput(BaseModel):
     """Combined plan result and review."""
 
-    plan: ReusePlan | AdaptPlan | GeneratePlan
+    plan: ReusePlan | AdaptPlan | GeneratePlan | GenerateCodePlan
     review: PlanReview = Field(default_factory=PlanReview)
 
 
@@ -259,6 +302,8 @@ class WorkflowPlanner:
             return self._execute_reuse(plan)
         if isinstance(plan, AdaptPlan):
             return self._execute_adapt(plan)
+        if isinstance(plan, GenerateCodePlan):
+            return await self._execute_generate_code(plan)
         if isinstance(plan, GeneratePlan):
             return self._execute_generate(plan)
         raise TypeError(f"Unknown plan type: {type(plan)}")
@@ -290,6 +335,8 @@ class WorkflowPlanner:
             return AdaptPlan.model_validate(data)
         if action == "GENERATE":
             return GeneratePlan.model_validate(data)
+        if action == "GENERATE_CODE":
+            return GenerateCodePlan.model_validate(data)
         raise ValueError(f"Unknown action: {data.get('action')}")
 
     def _validate_plan(self, plan: PlanResult) -> PlanReview:
@@ -337,6 +384,16 @@ class WorkflowPlanner:
                     review.errors.append(f"Generate spec compile failed: {exc}")
             review.confidence = 0.5
 
+        elif isinstance(plan, GenerateCodePlan):
+            if not plan.code.strip():
+                review.errors.append("GENERATE_CODE plan has empty code")
+            elif "build()" not in plan.code and ".build()" not in plan.code:
+                review.warnings.append(
+                    "GENERATE_CODE code does not call build() — "
+                    "may not produce a valid graph"
+                )
+            review.confidence = 0.4
+
         review.valid = review.valid and not review.errors
         return review
 
@@ -380,6 +437,57 @@ class WorkflowPlanner:
             "graph": graph_data,
             "description": plan.description,
             "generated": True,
+        }
+
+    async def _execute_generate_code(self, plan: GenerateCodePlan) -> dict[str, Any]:
+        """Execute builder DSL code in a subprocess sandbox.
+
+        The code must use ``dan.builder`` to construct a workflow and call
+        ``build()``.  A wrapper harness serialises the resulting ``Graph``
+        to ``_result.json`` so ``SandboxRunner`` can capture it.
+        """
+        from dan.sandbox import SandboxConfig
+        from dan.sandbox.runner import SandboxRunner
+
+        harness = _BUILDER_CODE_HARNESS.replace("{{USER_CODE}}", plan.code)
+
+        sandbox_config = SandboxConfig(
+            mode="subprocess",
+            timeout_seconds=30,
+            language="python",
+            max_output_bytes=1_000_000,
+        )
+
+        import pathlib as _pathlib
+        src_path = str(_pathlib.Path(__file__).resolve().parents[2])
+
+        runner = SandboxRunner()
+        result, structured = await runner.run(
+            harness, sandbox_config, {"src_path": src_path},
+        )
+
+        if result.exit_code != 0:
+            raise ValueError(
+                f"Builder code execution failed (exit {result.exit_code}):\n"
+                f"{result.stderr or result.stdout}"
+            )
+
+        if not isinstance(structured, dict) or "version" not in structured:
+            raise ValueError(
+                "Builder code did not produce a valid graph in _result.json. "
+                f"Got: {type(structured).__name__}"
+            )
+
+        from dan.models.graph import Graph
+        Graph.model_validate(structured)
+
+        workflow_id = f"meta-code-{uuid.uuid4().hex[:10]}"
+        return {
+            "workflow_id": workflow_id,
+            "graph": structured,
+            "description": plan.description,
+            "generated": True,
+            "code_generated": True,
         }
 
     @staticmethod
