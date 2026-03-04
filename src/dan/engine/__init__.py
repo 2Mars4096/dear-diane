@@ -1,7 +1,19 @@
 """Deep Agent Network — async execution engine."""
 
 from dan.engine.events import EngineEvent, EventType
-from dan.engine.executor import EngineConfig, ExecutionContext, ExecutorRegistry, NodeExecutor, NodeResult
+from dan.engine.executor import (
+    AutoRenderer,
+    EngineConfig,
+    ExecutionContext,
+    ExecutorRegistry,
+    HumanRenderRequest,
+    HumanRenderResponse,
+    HumanRenderer,
+    LegacyCallbackRenderer,
+    NodeExecutor,
+    NodeResult,
+    ProgrammaticRenderer,
+)
 from dan.engine.memory import MemoryEntry, MemoryScope, MemoryWriteRequest, WriteMode
 from dan.engine.memory_pipeline import (
     ConsolidationPipeline,
@@ -28,6 +40,7 @@ from dan.engine.conditions import ConditionError, evaluate_condition
 from dan.engine.normalizer import NormResult, OutputNormalizer
 
 __all__ = [
+    "AutoRenderer",
     "Engine",
     "EngineConfig",
     "EngineEvent",
@@ -36,10 +49,15 @@ __all__ = [
     "ExecutionContext",
     "ExecutionState",
     "ExecutorRegistry",
+    "HumanRenderRequest",
+    "HumanRenderResponse",
+    "HumanRenderer",
+    "LegacyCallbackRenderer",
     "NodeExecutor",
     "NodeResult",
     "NodeStatus",
     "PortDataStore",
+    "ProgrammaticRenderer",
     "RunResult",
     "ArtifactStore",
     "LocalStateManager",

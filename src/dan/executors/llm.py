@@ -45,6 +45,15 @@ def _render_template(template: str, variables: dict[str, Any]) -> str:
         return string.Template(template).safe_substitute(variables)
 
 
+def _escalate_tier(tier: Any) -> Any:
+    """Return the next-higher TaskTier, or the same tier if already at max."""
+    from dan.providers.model_policy import TaskTier
+
+    _ORDER = [TaskTier.micro, TaskTier.routine, TaskTier.reasoning, TaskTier.critical]
+    idx = _ORDER.index(tier) if tier in _ORDER else len(_ORDER) - 1
+    return _ORDER[min(idx + 1, len(_ORDER) - 1)]
+
+
 class LLMExecutor:
     """Executes LLMOperator nodes via the provider registry.
 
@@ -389,6 +398,7 @@ class LLMExecutor:
         policy = node.retry_policy or _LLM_DEFAULT_RETRY
         model = node.model or context.config.llm_default_model
 
+        effective_policy = None
         if context.model_selector is not None:
             effective_policy = context.model_selector.resolve_effective_policy(
                 node, context.config,
@@ -399,11 +409,26 @@ class LLMExecutor:
                 )
                 if selected:
                     model = selected
+                    event_data: dict[str, Any] = {
+                        "model": model,
+                        "policy_strategy": effective_policy.strategy,
+                    }
+                    tier_result = getattr(
+                        context.model_selector, "_last_tier_result", None,
+                    )
+                    if tier_result is not None:
+                        event_data.update({
+                            "tier": tier_result.tier.value,
+                            "tier_score": round(tier_result.tier_score, 3),
+                            "difficulty": round(tier_result.difficulty, 3),
+                            "impact": round(tier_result.impact, 3),
+                            "recoverability": round(tier_result.recoverability, 3),
+                        })
                     await context.emit_event(
                         event_type="model_selected",
                         node_id=node.id,
                         node_type="llm_operator",
-                        data={"model": model, "policy_strategy": effective_policy.strategy},
+                        data=event_data,
                     )
 
         assembled_inputs, deferred_inputs = await self._assemble_inputs(
@@ -467,6 +492,7 @@ class LLMExecutor:
         has_schema = node.output_json_schema is not None
         has_tools = bool(active_tools)
 
+        _escalated = False
         last_error: str | None = None
         cumulative_usage: dict[str, int] = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         for attempt in range(1 + max_norm_retries):
@@ -541,6 +567,97 @@ class LLMExecutor:
                 )
             else:
                 last_error = result.error_message
+
+        # -- 18-5: Tier escalation — one-shot retry with a stronger model ------
+        if (
+            last_error
+            and not _escalated
+            and effective_policy is not None
+            and getattr(effective_policy, "strategy", "") == "tier"
+        ):
+            tier_result = (
+                getattr(context.model_selector, "_last_tier_result", None)
+                if context.model_selector
+                else None
+            )
+            if tier_result is not None:
+                next_tier = _escalate_tier(tier_result.tier)
+                if next_tier != tier_result.tier:
+                    _escalated = True
+                    from dan.providers.tier_defaults import resolve_tier_map
+
+                    esc_providers = []
+                    if context.model_selector is not None:
+                        esc_providers = context.model_selector._detect_providers(
+                            context.config,
+                        )
+                    user_map = getattr(effective_policy, "tier_map", None) or (
+                        getattr(context.config, "tier_map", None)
+                    )
+                    esc_tier_map = resolve_tier_map(esc_providers, user_map)
+                    esc_model = esc_tier_map.get(next_tier.value, model)
+                    if esc_model != model:
+                        await context.emit_event(
+                            event_type="tier_escalation",
+                            node_id=node.id,
+                            node_type="llm_operator",
+                            data={
+                                "from_tier": tier_result.tier.value,
+                                "to_tier": next_tier.value,
+                                "from_model": model,
+                                "to_model": esc_model,
+                                "reason": "output_normalization_exhausted",
+                            },
+                        )
+                        model = esc_model
+                        raw_text, api_error, usage, tool_calls = await self._call_llm(
+                            model, messages, node, context=context,
+                            attempt=0, tools=active_tools,
+                        )
+                        if usage:
+                            for k in cumulative_usage:
+                                cumulative_usage[k] += usage.get(k, 0)
+                            if context.cost_tracker is not None:
+                                context.cost_tracker.record(
+                                    node.id, model, usage,
+                                    cached_input_tokens=usage.get(
+                                        "cached_input_tokens", 0,
+                                    ),
+                                    cache_write_tokens=usage.get(
+                                        "cache_write_tokens", 0,
+                                    ),
+                                )
+                        if not api_error and raw_text and has_schema:
+                            esc_result = OutputNormalizer.normalize(
+                                raw_text, node.output_json_schema,  # type: ignore[arg-type]
+                            )
+                            if esc_result.success:
+                                data = esc_result.data or {}
+                                outputs = {**data, "result": data}
+                                return NodeResult(
+                                    outputs=outputs,
+                                    status=NodeStatus.COMPLETED,
+                                    metadata={
+                                        "model": model,
+                                        "attempts": max_norm_retries + 2,
+                                        "usage": cumulative_usage,
+                                        "escalated": True,
+                                    },
+                                )
+                            last_error = esc_result.error_message
+                        elif not api_error and raw_text and not has_schema:
+                            return NodeResult(
+                                outputs={"text": raw_text},
+                                status=NodeStatus.COMPLETED,
+                                metadata={
+                                    "model": model,
+                                    "attempts": max_norm_retries + 2,
+                                    "usage": cumulative_usage,
+                                    "escalated": True,
+                                },
+                            )
+                        elif api_error:
+                            last_error = api_error
 
         fail_meta = {"model": model, "usage": cumulative_usage}
 

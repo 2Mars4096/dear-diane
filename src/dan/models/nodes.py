@@ -168,6 +168,11 @@ class LLMOperator(NodeBase):
         default=None,
         description="Policy for conversation-style message history assembly",
     )
+    # -- 18-5: Task-level model tiering ----------------------------------------
+    task_tier: str | None = Field(
+        default=None,
+        description="Explicit task tier override (micro/routine/reasoning/critical). Bypasses automatic scoring.",
+    )
 
 
 class ToolOperator(NodeBase):
@@ -222,3 +227,8 @@ class ReflectionNode(NodeBase):
     max_principles: int = 10
     min_confidence: float = 0.3
     dedup_strategy: Literal["embedding_similarity", "exact_key", "none"] = "embedding_similarity"
+    # -- 18-5: Task-level model tiering ----------------------------------------
+    task_tier: str | None = Field(
+        default=None,
+        description="Explicit task tier override (micro/routine/reasoning/critical). Bypasses automatic scoring.",
+    )

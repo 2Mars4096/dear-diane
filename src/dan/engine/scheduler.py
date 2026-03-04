@@ -269,10 +269,13 @@ class Engine:
         human_input_callback: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
         event_callback: EventCallback | None = None,
         memory_store: MemoryStore | None = None,
+        human_renderer: "HumanRenderer | None" = None,
     ) -> None:
+        from dan.engine.executor import HumanRenderer as _HR  # noqa: F811
         self.config = config or EngineConfig()
         self.executor_registry = executor_registry or ExecutorRegistry()
         self.human_input_callback = human_input_callback
+        self.human_renderer: _HR | None = human_renderer
         self.event_callback = event_callback
 
         if checkpoint_store is not None:
@@ -1751,6 +1754,8 @@ class Engine:
             hyperedge_resolver=hyperedge_resolver,
             model_selector=model_selector,
             cost_tracker=cost_tracker,
+            human_renderer=self.human_renderer,
+            graph=graph,
         )
 
     async def _run_subgraph(
@@ -1775,6 +1780,15 @@ class Engine:
     ) -> dict[str, Any]:
         """Execute a named sub-graph and return its outputs."""
         sub_graph = parent_graph.sub_graphs.get(sub_graph_key)
+        if sub_graph is None and sub_graph_key.startswith("block:"):
+            block_ref = sub_graph_key[len("block:"):]
+            registry = self.config.block_registry
+            if registry is not None:
+                try:
+                    from dan.blocks.executor import load_block_as_graph
+                    sub_graph = load_block_as_graph(block_ref, registry)
+                except ValueError as exc:
+                    raise RuntimeError(f"Block '{block_ref}' not found: {exc}") from exc
         if sub_graph is None:
             raise RuntimeError(f"Sub-graph '{sub_graph_key}' not found")
 

@@ -11,6 +11,7 @@ from dan.engine.state import ExecutionState, NodeStatus
 from dan.models.nodes import NodeBase
 
 if TYPE_CHECKING:
+    from dan.blocks.registry import BlockRegistry
     from dan.providers import ProviderConfig
     from dan.providers.registry import ProviderRegistry
     from dan.rag import EmbeddingRegistry
@@ -156,6 +157,9 @@ class EngineConfig:
     cache_dir: str | None = None
     semantic_cache_threshold: float = 0.95
     semantic_cache_ttl_hours: float = 24.0
+    # -- 18-5: Task-level model tiering ----------------------------------------
+    tier_map: dict[str, str] | None = None
+    tier_params: dict[str, dict[str, Any]] | None = None
     # -- 17-3: Self-evolving rules (Tier 3) -----------------------------------
     self_evolving_rules_enabled: bool = False
     self_evolving_approval_required: bool = False
@@ -191,6 +195,8 @@ class EngineConfig:
     meta_max_iterations: int = 5
     meta_timeout_seconds: float | None = None
     meta_pause_on_redesign: bool = True
+    # -- 21-5: Block resolution at runtime -------------------------------------
+    block_registry: BlockRegistry | None = None
 
 
 @dataclass
@@ -241,6 +247,8 @@ class ExecutionContext:
         cost_tracker: Any | None = None,
         # -- 16-3: Human rendering surface --------------------------------------
         human_renderer: HumanRenderer | None = None,
+        # -- 18-5: Task-level model tiering ------------------------------------
+        graph: Any | None = None,
     ) -> None:
         self.state = state
         self.config = config
@@ -263,6 +271,8 @@ class ExecutionContext:
         self.hyperedge_resolver = hyperedge_resolver
         self.model_selector = model_selector
         self.cost_tracker = cost_tracker
+        # -- 18-5: Task-level model tiering
+        self.graph = graph
         # -- 16-3: Auto-wrap legacy callback into renderer protocol
         if human_renderer is not None:
             self.human_renderer: HumanRenderer | None = human_renderer

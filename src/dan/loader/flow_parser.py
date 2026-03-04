@@ -22,9 +22,10 @@ from dan.loader.models import (
 __all__ = ["FlowParseError", "parse_flow_line", "parse_flow_lines"]
 
 AGENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
+BLOCK_REF_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*@\d+\.\d+\.\d+[\w.+-]*$")
 ARROW_SPLIT_RE = re.compile(r"\s*(?:→|->)\s*")
 # Source segment may be "agent" or "agent.port" for each()
-PIPE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_.-]*)\s*\|\s*(\w+)\((.+)\)\s*$", re.DOTALL)
+PIPE_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_@.+-]*)\s*\|\s*(\w+)\((.+)\)\s*$", re.DOTALL)
 
 
 class FlowParseError(Exception):
@@ -35,8 +36,14 @@ class FlowParseError(Exception):
 
 
 def _validate_agent_name(name: str, line: str) -> None:
-    if not AGENT_NAME_RE.match(name):
-        raise FlowParseError(f"Invalid agent name: {name!r}", line=line)
+    if BLOCK_REF_RE.match(name) or AGENT_NAME_RE.match(name):
+        return
+    raise FlowParseError(f"Invalid agent name: {name!r}", line=line)
+
+
+def is_block_reference(name: str) -> bool:
+    """Return True if *name* looks like a block reference (contains ``@``)."""
+    return "@" in name
 
 
 def _parse_segment(segment: str, line: str) -> tuple[str, str | None]:

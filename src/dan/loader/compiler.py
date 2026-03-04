@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from dan.loader.diagnostics import CompileResult, Diagnostic, format_diagnostics
-from dan.loader.flow_parser import FlowParseError, parse_flow_line
+from dan.loader.flow_parser import FlowParseError, is_block_reference, parse_flow_line
 from dan.loader.models import (
     AgentSpec,
     ChainStatement,
@@ -46,6 +46,85 @@ from dan.models.graph import Graph, GraphMetadata
 from dan.models.hyperedges import Hyperedge
 from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, RetryPolicy, ToolOperator
 from dan.models.ports import InputPort, OutputPort
+
+_BLOCK_REF_RE = re.compile(r"^(?P<name>[^@]+)@(?P<version>\d+\.\d+\.\d+[\w.+-]*)$")
+
+
+def _try_resolve_block(
+    ref: str,
+    nodes_by_id: dict[str, "NodeBase"],
+    sub_graphs: dict[str, "Graph"],
+    diagnostics: list["Diagnostic"],
+    *,
+    strict: bool = False,
+) -> "NodeBase | None":
+    """If *ref* is a block reference (``name@version``), resolve it via BlockRegistry.
+
+    On success, creates a ``CompositeNode`` backed by the block's graph and
+    inserts it into *nodes_by_id* and *sub_graphs*.  Returns the node or
+    ``None`` on failure.
+    """
+    m = _BLOCK_REF_RE.match(ref)
+    if m is None:
+        return None
+
+    block_name, block_version = m.group("name"), m.group("version")
+
+    try:
+        from dan.blocks.registry import BlockRegistry
+        from dan.blocks.executor import load_block_as_graph
+    except ImportError:
+        _emit_error(
+            diagnostics,
+            f"Block reference '{ref}' found but dan.blocks is not available",
+        )
+        return None
+
+    registry = BlockRegistry()
+    registry.scan()
+
+    block = registry.get_block(block_name, block_version)
+    if block is None:
+        if strict:
+            _emit_error(
+                diagnostics,
+                f"Block '{ref}' is not installed",
+            )
+        else:
+            _emit_warning(
+                diagnostics,
+                f"Block '{ref}' is not installed — node will be unresolved",
+                hint=f"Install with: dan-blocks install <path> or ensure {block_name}@{block_version} is in ~/.dan/blocks/",
+            )
+        return None
+
+    try:
+        block_graph = load_block_as_graph(ref, registry)
+    except ValueError as exc:
+        _emit_error(diagnostics, f"Failed to load block graph for '{ref}': {exc}")
+        return None
+
+    node_id = ref.replace("@", "_v")
+    sub_key = f"{node_id}__body"
+    sub_graphs[sub_key] = block_graph
+
+    node = CompositeNode(
+        id=node_id,
+        name=block_name,
+        body_graph=sub_key,
+        input_ports=[
+            InputPort(name=p.name, json_schema=p.json_schema, required=getattr(p, "required", True))
+            for p in (block_graph.nodes[0].input_ports if block_graph.nodes else [])
+        ] or [InputPort(name=DEFAULT_INPUT_PORT, json_schema={"type": "object"}, required=False)],
+        output_ports=[
+            OutputPort(name=p.name, json_schema=p.json_schema)
+            for p in (block_graph.nodes[-1].output_ports if block_graph.nodes else [])
+        ] or [OutputPort(name="result", json_schema={"type": "string"})],
+        metadata={"block_name": block_name, "block_version": block_version},
+    )
+    nodes_by_id[node_id] = node
+    return node
+
 
 DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "llm_operator": "text",
@@ -410,6 +489,7 @@ def _compile_flow(
                     diagnostics,
                     edge_counter,
                     strict=strict,
+                    sub_graphs=generated_subgraphs,
                 )
             )
             continue
@@ -781,6 +861,7 @@ def _compile_chain_statement(
     edge_counter: list[int],
     *,
     strict: bool = False,
+    sub_graphs: dict[str, Graph] | None = None,
 ) -> list[DataEdge]:
     edges: list[DataEdge] = []
     if len(stmt.agents) < 2:
@@ -791,9 +872,24 @@ def _compile_chain_statement(
         )
         return edges
 
+    _sub_graphs = sub_graphs if sub_graphs is not None else {}
+
     for index in range(len(stmt.agents) - 1):
         source_id = stmt.agents[index]
         target_id = stmt.agents[index + 1]
+
+        if source_id not in nodes_by_id and is_block_reference(source_id):
+            node = _try_resolve_block(source_id, nodes_by_id, _sub_graphs, diagnostics, strict=strict)
+            if node is not None:
+                source_id = node.id
+                stmt.agents[index] = node.id
+
+        if target_id not in nodes_by_id and is_block_reference(target_id):
+            node = _try_resolve_block(target_id, nodes_by_id, _sub_graphs, diagnostics, strict=strict)
+            if node is not None:
+                target_id = node.id
+                stmt.agents[index + 1] = node.id
+
         if source_id not in nodes_by_id:
             _emit_error(
                 diagnostics,

@@ -153,6 +153,11 @@ class RouterNode(NodeBase):
         default=None,
         description="Policy-driven model selection (ModelPolicy from dan.providers.model_policy)",
     )
+    # -- 18-5: Task-level model tiering ----------------------------------------
+    task_tier: str | None = Field(
+        default=None,
+        description="Explicit task tier override (micro/routine/reasoning/critical). Bypasses automatic scoring.",
+    )
 
 
 class HumanNode(NodeBase):
@@ -389,6 +394,11 @@ class OrchestratorNode(NodeBase):
         default=None,
         description="Policy-driven model selection (ModelPolicy from dan.providers.model_policy)",
     )
+    # -- 18-5: Task-level model tiering ----------------------------------------
+    task_tier: str | None = Field(
+        default=None,
+        description="Explicit task tier override (micro/routine/reasoning/critical). Bypasses automatic scoring.",
+    )
 
     completion_condition: Literal["all_done", "any_done", "orchestrator_halt"] = Field(
         default="all_done",
@@ -524,6 +534,11 @@ class AgentTeamNode(NodeBase):
         default=None,
         description="Policy-driven model selection",
     )
+    # -- 18-5: Task-level model tiering ----------------------------------------
+    task_tier: str | None = Field(
+        default=None,
+        description="Explicit task tier override (micro/routine/reasoning/critical). Bypasses automatic scoring.",
+    )
     turn_strategy: Literal["round_robin", "moderator", "free_form", "sequential"] = Field(
         default="round_robin",
         description="How turns are assigned among agents",
@@ -624,5 +639,10 @@ class VoteNode(NodeBase):
         description="How to select the winner from collected votes",
     )
     vote_config: VoteConfig | None = None
+    # -- 18-5: Task-level model tiering ----------------------------------------
+    task_tier: str | None = Field(
+        default=None,
+        description="Explicit task tier override (micro/routine/reasoning/critical). Bypasses automatic scoring.",
+    )
     parallelism: int = Field(default=3, ge=1, description="Max concurrent LLM calls")
     timeout_seconds: float | None = None

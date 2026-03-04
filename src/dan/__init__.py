@@ -15,6 +15,7 @@ from dan.models.context import (
 )
 from dan.models.nodes import Position, NodeBase, LLMOperator, ToolOperator, CodeOperator
 from dan.models.control_flow import (
+    HumanNode,
     IfElseNode,
     GateNode,
     WhileLoopNode,
@@ -49,6 +50,7 @@ __all__ = [
     "LLMOperator",
     "ToolOperator",
     "CodeOperator",
+    "HumanNode",
     "IfElseNode",
     "GateNode",
     "WhileLoopNode",
