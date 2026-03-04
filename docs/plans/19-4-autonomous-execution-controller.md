@@ -1,7 +1,7 @@
 # 19-4: Autonomous Execution Controller
 
 **Parent:** [19-meta-orchestrator](19-meta-orchestrator.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Build the outer meta-loop that ties planning, execution, diagnosis, and repair into a single autonomous system — receiving a high-level goal and driving it to completion through iterative execution and graduated repair, while allowing human intervention at any step.
 
 ## Existing Baseline
@@ -95,7 +95,7 @@
     - `META_RESUMED` — human resumed (with or without override)
     - `META_SESSION_COMPLETED` — goal achieved
     - `META_SESSION_FAILED` — max iterations reached, goal not achieved
-  - [ ] 5-2. Emit events through `RunManager`'s event callback so they appear in the WebSocket stream and are visible in the editor UI. (Deferred: requires wiring the meta-controller emit callback through RunManager's broadcast system.)
+  - [x] 5-2. Emit events through WebSocket: `_build_meta_controller()` wires `_emit_meta_event()` callback that fans out to `_meta_subscribers`. New WebSocket endpoint `GET /api/meta/sessions/{id}/events/ws` provides live meta-event streaming.
 
 - [x] 6. REST API
   - [x] 6-1. `POST /api/meta/run` — body: `{"goal": "...", "config": {...}}`. Starts a meta-session. Returns `session_id` immediately; execution runs in background.

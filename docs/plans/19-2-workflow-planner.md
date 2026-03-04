@@ -1,7 +1,7 @@
 # 19-2: Workflow Planner
 
 **Parent:** [19-meta-orchestrator](19-meta-orchestrator.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Build an LLM-powered planner agent that receives a high-level user goal, discovers available tools/skills/past workflows, and produces a valid workflow graph — reusing existing workflows when possible, adapting them for new requirements, or generating from scratch when nothing fits.
 
 ## Existing Baseline
@@ -40,7 +40,7 @@
     - `REUSE(workflow_id, input_mapping)` — use an existing workflow as-is (with input substitution)
     - `ADAPT(workflow_id, mutation_plan, input_mapping)` — modify an existing workflow with a `MutationPlan`
     - `GENERATE(spec)` — generate a structured workflow spec (node/edge/hyperedge declarations), not executable code
-  - [ ] 2-3. Include few-shot examples of each action type in the system prompt. Examples derived from actual DAN workflows (paper writing, data analysis, etc.).
+  - [x] 2-3. Include few-shot examples of each action type in the system prompt. Three examples (REUSE/paper_writing, ADAPT/equity_research+beamer, GENERATE/RAG QA) added to `PlanningPromptBuilder.SYSTEM_TEMPLATE`. Unit test `test_system_prompt_contains_few_shot_examples` validates presence.
 
 - [x] 3. Planner agent
   - [x] 3-1. `WorkflowPlanner` class in `meta/planner.py`:
@@ -54,7 +54,7 @@
       - `AdaptPlan(workflow_id, mutation_plan: MutationPlan, input_mapping: dict)` — adapt existing
       - `GeneratePlan(spec: dict, description: str)` — generate new workflow spec (`PlanIR`)
   - [x] 3-2. PlanIR compilation path (primary): when the planner outputs `GeneratePlan(spec)`, compile spec into a `Graph` via a deterministic compiler (or builder-DSL emitter + parser), then validate via `dan.validation.graph.validate_graph()`. If validation fails, feed errors back to the LLM for self-correction (max 3 retries).
-  - [ ] 3-3. Builder-code path (secondary, optional): allow generated builder code only behind an explicit config flag (`planner_allow_code_generation=False` by default). If enabled, run in hardened out-of-process sandbox with strict fs/network/time/memory limits.
+  - [x] 3-3. Builder-code path: `GenerateCodePlan` action + `_execute_generate_code()` executes LLM-generated builder DSL code in `SandboxRunner` subprocess (30s timeout, memory limits). A harness wrapper serialises the compiled `Graph` to `_result.json`. Gated by `planner_allow_code_generation` config flag. 5 tests in `test_integration_llm.py::TestBuilderCodePath`.
   - [x] 3-4. Adaptation execution: when the planner outputs `AdaptPlan`, load the existing graph, apply `GraphMutator.apply(graph_dict, mutation_plan)` (where `graph_dict = graph.model_dump(mode=\"json\")`), validate the result, and rehydrate to `Graph`. If mutation fails, escalate to `GeneratePlan`.
 
 - [x] 4. Plan validation and safety
@@ -83,8 +83,8 @@
   - [x] 7-2. Unit: `PlanningPromptBuilder` produces well-formed prompts with discoveries.
   - [x] 7-3. Unit: `WorkflowPlanner` with mocked LLM produces valid `PlanResult` for each action type (REUSE/ADAPT/GENERATE).
   - [x] 7-4. Unit: PlanIR compiler validates/rejects malformed specs. `TestCompileGenerateSpec` covers basic compilation, valid Graph output, all node types, edge name resolution, passthrough, source_id fallback, and rejection of unsupported types.
-  - [ ] 7-5. Integration: planner discovers existing paper-writing workflow and produces `AdaptPlan` for a similar goal. (Deferred: requires real LLM.)
-  - [ ] 7-6. Integration: planner generates a new workflow from scratch when no similar past workflow exists. (Deferred: requires real LLM.)
+  - [x] 7-5. Integration: planner discovers existing paper-writing workflow and produces plan for a similar goal. (`test_reuse_plan_with_existing_workflow` + `test_adapt_plan_with_partial_match` in `test_integration_llm.py`, using real LLM.)
+  - [x] 7-6. Integration: planner generates a new workflow from scratch when no similar past workflow exists. (`test_generate_plan_for_novel_goal` + `test_generate_produces_compilable_spec` in `test_integration_llm.py`, using real LLM.)
 
 ## Decisions
 

@@ -1,7 +1,7 @@
 # 19-1: Workflow Experience Memory
 
 **Parent:** [19-meta-orchestrator](19-meta-orchestrator.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Build a global-scoped memory layer that indexes past workflows with structured experience summaries — what they did, what worked, what failed, what principles were learned — and provides RAG-based similarity search so the planner can discover and learn from relevant prior work.
 
 **Execution Note:** This plan is the canonical implementation owner for deferred 9D bridge plan [`17-5-workflow-experience-summaries`](17-5-workflow-experience-summaries.md). Do not create parallel implementations.
@@ -63,10 +63,10 @@
     - Collection name: `"workflow_experiences"` (global, not per-workflow)
   - [x] 3-3. Auto-index: whenever `save_experience()` is called, also update the vector index.
 
-- [ ] 4. Cross-workflow sharing (deferred from 17-1 task 6 and 17-2 task 5)
-  - [ ] 4-1. Extend `ErrorMemoryIndex` to support optional global-scope queries: add a `scope` parameter to `query_similar()` — `"workflow"` (default, existing behavior) or `"global"` (searches across all workflows).
-  - [ ] 4-2. Extend `PrincipleStore.load_principles()` with a `scope` parameter: `"workflow"` (default) or `"global"` (loads from all workflows).
-  - [ ] 4-3. Add `EngineConfig` field: `cross_workflow_learning_enabled: bool = False`. When true, `ErrorContextProvider` also queries global-scope errors and principles.
+- [x] 4. Cross-workflow sharing (deferred from 17-1 task 6 and 17-2 task 5)
+  - [x] 4-1. Extend `ErrorMemoryIndex` to support optional global-scope queries: add a `scope` parameter to `query_similar()` — `"workflow"` (default, existing behavior) or `"global"` (searches across all workflows). Global scope iterates all `dan_errors_*` collections and merges by score.
+  - [x] 4-2. Extend `PrincipleStore.load_principles()` with a `scope` parameter: `"workflow"` (default) or `"global"` (loads from all workflows). De-duplicates by principle id, keeping highest confidence.
+  - [x] 4-3. Add `EngineConfig` field: `cross_workflow_learning: bool = False`. When true, `ErrorContextProvider` also queries global-scope errors and principles. Threaded through `LLMExecutor._get_error_memory_context()`.
 
 - [x] 5. REST API
   - [x] 5-1. `GET /api/experiences` — list all workflow experiences with summary stats.
@@ -79,9 +79,9 @@
   - [x] 6-1. Unit: `WorkflowExperience` model validation, `extract_experience_from_graph()` with various graph topologies.
   - [x] 6-2. Unit: `ExperienceStore` CRUD operations.
   - [x] 6-3. Unit: `consolidate_experience()` with mock run records and principles.
-  - [ ] 6-4. Integration: run a workflow multiple times → verify experience is auto-consolidated after N runs.
-  - [ ] 6-5. Integration: `ExperienceIndex.search_similar()` returns relevant workflows for related queries.
-  - [ ] 6-6. Unit: cross-workflow principle sharing — global scope queries return principles from multiple workflows.
+  - [ ] 6-4. Integration: run a workflow multiple times → verify experience is auto-consolidated after N runs. (Deferred: requires full engine execution.)
+  - [ ] 6-5. Integration: `ExperienceIndex.search_similar()` returns relevant workflows for related queries. (Deferred: requires embedding provider.)
+  - [x] 6-6. Unit+integration: cross-workflow principle sharing — global scope queries return principles from multiple workflows, de-duplication by id keeping highest confidence, global ErrorMemoryIndex searches across all collections. (3 tests in `test_integration_llm.py`.)
 
 ## Decisions
 

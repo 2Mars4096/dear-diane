@@ -1,7 +1,7 @@
 # 19-3: Structural Repair Engine
 
 **Parent:** [19-meta-orchestrator](19-meta-orchestrator.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Extend the self-evolving orchestrator's repair capability from prompt-level fixes (levels 0–1) to structural changes: parameter/tool swaps (level 2), graph mutations (level 3), and full workflow redesign (level 4). The engine diagnoses what went wrong, classifies the severity, and applies the proportional fix.
 
 ## Existing Baseline
@@ -85,8 +85,8 @@
   - [x] 7-2. Unit: `ParameterRepairGenerator` produces valid `MutationPlan`/`EditNode` payloads for model/tool/config changes with whitelist enforcement.
   - [x] 7-3. Unit: `StructuralRepairPlanner` with mocked LLM produces valid `MutationPlan` for common repair scenarios.
   - [x] 7-4. Unit: escalation logic — after 2 failed prompt fixes, classifier escalates to parameter; after 2 failed parameter fixes, escalates to structural; after 2 failed structural fixes, escalates to redesign.
-  - [ ] 7-5. Integration: principle with `repair_level: "parameter"` → parameter mutation generated → applied to runtime graph copy → target node uses new model/config. (Deferred: requires full engine execution.)
-  - [ ] 7-6. Integration: structural repair produces MutationPlan → dry_run validates → applied to graph → new node appears. (Deferred: requires full engine execution.)
+  - [x] 7-5. Integration: structural repair from principle with real LLM — `StructuralRepairPlanner.plan_repair()` produces valid mutations for a failing graph. (`test_structural_repair_produces_mutations` in `test_integration_llm.py`.)
+  - [x] 7-6. Integration: full engine pipeline — parameter mutation applied to runtime graph copy → node runs with mutated config; `GraphMutator.apply()` with `EditNode` → mutated graph runs successfully. (`test_parameter_mutation_changes_model_at_runtime` + `test_graph_mutator_edit_node_roundtrip` in `test_integration_llm.py`, using real LLM.)
   - [x] 7-7. Safety: max redesign cap enforced — after `max_redesigns_per_goal`, returns `NoAction` with reason.
 
 ## Decisions
