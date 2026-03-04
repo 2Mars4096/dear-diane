@@ -1,9 +1,148 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { useGraphStore } from "../store/useGraphStore";
 import Spinner from "./Spinner";
 import RunInputsDialog from "./RunInputsDialog";
 import TabBar from "./TabBar";
 import * as api from "../lib/api";
+
+// ---------------------------------------------------------------------------
+// ExportPreviewModal — shows markdown file list or Python code with actions
+// ---------------------------------------------------------------------------
+
+interface ExportPreviewModalProps {
+  mode: "markdown" | "python";
+  files?: Array<{ path: string; content: string }>;
+  diagnostics?: Array<{ level: string; message: string; hint?: string }>;
+  code?: string;
+  onClose: () => void;
+}
+
+function ExportPreviewModal({ mode, files, diagnostics, code, onClose }: ExportPreviewModalProps) {
+  const [selectedFile, setSelectedFile] = useState(0);
+  const addToast = useGraphStore((s) => s.addToast);
+
+  const handleCopy = useCallback((text: string) => {
+    navigator.clipboard.writeText(text).catch(() => {});
+    addToast({ type: "info", message: "Copied to clipboard" });
+  }, [addToast]);
+
+  const handleDownloadFile = useCallback((filename: string, content: string) => {
+    const mimeType = filename.endsWith(".md") ? "text/markdown" : filename.endsWith(".py") ? "text/x-python" : "text/plain";
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, []);
+
+  const handleDownloadAll = useCallback(() => {
+    if (!files) return;
+    for (const f of files) {
+      handleDownloadFile(f.path.split("/").pop() ?? f.path, f.content);
+    }
+  }, [files, handleDownloadFile]);
+
+  const activeFile = files?.[selectedFile];
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+      <div className="bg-white rounded-xl shadow-2xl max-w-3xl w-full max-h-[80vh] flex flex-col">
+        {/* Header */}
+        <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between shrink-0">
+          <span className="text-sm font-semibold text-gray-800">
+            Export as {mode === "markdown" ? "Markdown" : "Python"}
+          </span>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        {/* Diagnostics banner */}
+        {diagnostics && diagnostics.length > 0 && (
+          <div className="px-5 py-2 bg-amber-50 border-b border-amber-100 flex flex-wrap gap-2">
+            {diagnostics.map((d, i) => (
+              <span key={i} className="inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 9v4m0 4h.01M12 2L1 21h22L12 2z"/></svg>
+                {d.message}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {/* Body */}
+        <div className="flex flex-1 min-h-0 overflow-hidden">
+          {/* Markdown: file sidebar */}
+          {mode === "markdown" && files && files.length > 1 && (
+            <div className="w-44 border-r border-gray-100 overflow-y-auto shrink-0 bg-gray-50/50">
+              {files.map((f, i) => (
+                <button
+                  key={f.path}
+                  onClick={() => setSelectedFile(i)}
+                  className={`block w-full text-left px-3 py-2 text-[11px] font-mono truncate transition-colors ${
+                    i === selectedFile
+                      ? "bg-indigo-50 text-indigo-700 font-semibold"
+                      : "text-gray-600 hover:bg-gray-100"
+                  }`}
+                  title={f.path}
+                >
+                  {f.path.split("/").pop() ?? f.path}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Content pane */}
+          <div className="flex-1 overflow-auto p-4">
+            <pre className="text-[11px] text-gray-700 font-mono whitespace-pre-wrap break-words leading-relaxed">
+              {mode === "python" ? code : activeFile?.content ?? ""}
+            </pre>
+          </div>
+        </div>
+
+        {/* Footer actions */}
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center gap-2 shrink-0">
+          <button
+            onClick={() => handleCopy(mode === "python" ? (code ?? "") : (activeFile?.content ?? ""))}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+          >
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            Copy
+          </button>
+          {mode === "markdown" && files && (
+            <button
+              onClick={handleDownloadAll}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download All
+            </button>
+          )}
+          {mode === "python" && (
+            <button
+              onClick={() => handleDownloadFile("workflow.py", code ?? "")}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download
+            </button>
+          )}
+          <div className="flex-1" />
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-700 transition-colors"
+          >
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 const RefreshIcon = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none"
@@ -37,11 +176,33 @@ export default function EditorToolbar() {
   const loadGraphList = useGraphStore((s) => s.loadGraphList);
   const openTab = useGraphStore((s) => s.openTab);
   const refreshTab = useGraphStore((s) => s.refreshTab);
+  // 18-4: Heatmap toggle
+  const tokenHeatmapEnabled = useGraphStore((s) => s.tokenHeatmapEnabled);
+  const setTokenHeatmapEnabled = useGraphStore((s) => s.setTokenHeatmapEnabled);
 
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
   const [showRunInputs, setShowRunInputs] = useState(false);
+  const [showExportDropdown, setShowExportDropdown] = useState(false);
+  const [exportModal, setExportModal] = useState<{
+    mode: "markdown" | "python";
+    files?: Array<{ path: string; content: string }>;
+    diagnostics?: Array<{ level: string; message: string; hint?: string }>;
+    code?: string;
+  } | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const exportDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!showExportDropdown) return;
+    const handler = (e: MouseEvent) => {
+      if (exportDropdownRef.current && !exportDropdownRef.current.contains(e.target as Node)) {
+        setShowExportDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [showExportDropdown]);
 
   const handleCreate = () => {
     const name = newName.trim();
@@ -204,14 +365,80 @@ export default function EditorToolbar() {
         Layout
       </button>
 
+      {/* 18-4: Token heatmap toggle */}
       <button
-        onClick={handleExport}
-        disabled={!danGraph}
-        className="px-2 py-1 text-[11px] rounded border border-gray-300 text-gray-500 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
-        title="Export graph as JSON"
+        onClick={() => setTokenHeatmapEnabled(!tokenHeatmapEnabled)}
+        className={`px-2 py-1 text-[11px] rounded border ${
+          tokenHeatmapEnabled
+            ? "border-amber-400 bg-amber-50 text-amber-700"
+            : "border-gray-300 text-gray-500 hover:bg-gray-100"
+        }`}
+        title={tokenHeatmapEnabled ? "Hide token heatmap" : "Show token heatmap on nodes (color by token usage)"}
       >
-        Export
+        Heatmap
       </button>
+
+      <div className="relative" ref={exportDropdownRef}>
+        <button
+          onClick={() => setShowExportDropdown(!showExportDropdown)}
+          disabled={!danGraph}
+          className="flex items-center gap-1 px-2 py-1 text-[11px] rounded border border-gray-300 text-gray-500 hover:bg-gray-100 disabled:opacity-40 disabled:cursor-not-allowed"
+          title="Export graph"
+        >
+          Export
+          <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
+        {showExportDropdown && (
+          <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded-lg shadow-lg z-50 w-44 py-1">
+            <button
+              onClick={() => { handleExport(); setShowExportDropdown(false); }}
+              className="block w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              Export as JSON
+            </button>
+            <button
+              onClick={async () => {
+                setShowExportDropdown(false);
+                if (!graphId) return;
+                try {
+                  const result = await api.exportGraphMarkdown(graphId);
+                  setExportModal({ mode: "markdown", files: result.files, diagnostics: result.diagnostics });
+                } catch (err: unknown) {
+                  addToast({ type: "error", message: `Export failed: ${(err as Error).message}` });
+                }
+              }}
+              className="block w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              Export as Markdown
+            </button>
+            <button
+              onClick={async () => {
+                setShowExportDropdown(false);
+                if (!graphId) return;
+                try {
+                  const result = await api.exportGraphPython(graphId);
+                  setExportModal({ mode: "python", code: result.code });
+                } catch (err: unknown) {
+                  addToast({ type: "error", message: `Export failed: ${(err as Error).message}` });
+                }
+              }}
+              className="block w-full text-left px-3 py-1.5 text-[11px] text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              Export as Python
+            </button>
+          </div>
+        )}
+      </div>
+
+      {exportModal && (
+        <ExportPreviewModal
+          mode={exportModal.mode}
+          files={exportModal.files}
+          diagnostics={exportModal.diagnostics}
+          code={exportModal.code}
+          onClose={() => setExportModal(null)}
+        />
+      )}
 
       <button
         onClick={() => importInputRef.current?.click()}
