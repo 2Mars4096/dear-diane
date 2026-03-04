@@ -1256,6 +1256,23 @@ app.add_middleware(
 )
 
 
+def _get_publish_registry() -> PublishRegistry:
+    if _publish_registry is None:
+        raise HTTPException(status_code=503, detail="Publish registry not initialised")
+    return _publish_registry
+
+
+def _cleanup_export_dir(path: str) -> None:
+    """Remove temp directory after file response is sent."""
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _get_block_registry() -> BlockRegistry:
+    if _block_registry is None:
+        raise HTTPException(status_code=503, detail="Block registry not initialised")
+    return _block_registry
+
+
 # ------------------------------------------------------------------
 # Request / response schemas
 # ------------------------------------------------------------------
@@ -3524,6 +3541,513 @@ async def delete_meta_session(session_id: str):
     if not deleted:
         raise HTTPException(status_code=404, detail="Session not found")
     return {"status": "deleted", "task_cancelled": task is not None}
+
+
+# ------------------------------------------------------------------
+# Publish router (mounted lazily — registry initialised in lifespan)
+# ------------------------------------------------------------------
+
+
+@app.post("/api/graphs/{graph_id}/publish")
+async def publish_graph(graph_id: str, body: dict[str, Any] | None = None):
+    """Publish a workflow so it's accessible via the publish API."""
+    registry = _get_publish_registry()
+    graph_data = _graph_store.get_graph(graph_id)
+    if graph_data is None:
+        raise HTTPException(status_code=404, detail="Graph not found")
+
+    body = body or {}
+    try:
+        graph = Graph.model_validate(graph_data)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid graph: {exc}")
+
+    api_key = body.get("api_key")
+    rate_limit = body.get("rate_limit")
+    slug = registry.register(graph, api_key=api_key, rate_limit=rate_limit)
+
+    pub_config = {
+        "enabled": True,
+        "api_key": api_key,
+        "rate_limit": rate_limit,
+    }
+    pub_path = Path(_graphs_dir) / f"{graph_id}.publish.json"
+    pub_path.write_text(json.dumps(pub_config, indent=2), encoding="utf-8")
+
+    return {"status": "published", "workflow_id": slug, "graph_id": graph_id}
+
+
+@app.post("/api/graphs/{graph_id}/unpublish")
+async def unpublish_graph(graph_id: str):
+    """Remove a workflow from the publish registry."""
+    registry = _get_publish_registry()
+    graph_data = _graph_store.get_graph(graph_id)
+    if graph_data is None:
+        raise HTTPException(status_code=404, detail="Graph not found")
+
+    try:
+        graph = Graph.model_validate(graph_data)
+        from dan.publish.schema import slugify as _slugify
+        from dan.utils.workflow_interface import derive_workflow_interface as _derive
+        iface = _derive(graph)
+        slug = _slugify(iface.name)
+    except Exception:
+        slug = graph_id
+
+    registry.unregister(slug)
+
+    pub_path = Path(_graphs_dir) / f"{graph_id}.publish.json"
+    if pub_path.exists():
+        pub_path.unlink()
+
+    return {"status": "unpublished", "graph_id": graph_id}
+
+
+@app.get("/api/graphs/{graph_id}/mcp-config")
+async def get_mcp_config(graph_id: str):
+    """Generate MCP client config for a published workflow."""
+    graph_data = _graph_store.get_graph(graph_id)
+    if graph_data is None:
+        raise HTTPException(status_code=404, detail="Graph not found")
+
+    try:
+        graph = Graph.model_validate(graph_data)
+        from dan.publish.portal import generate_mcp_config
+
+        workflow_path = str(Path(_graphs_dir) / f"{graph_id}.json")
+        config = generate_mcp_config(
+            workflow_path,
+            name=graph.metadata.name if graph.metadata else None,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {"config": config}
+
+
+@app.get("/api/graphs/{graph_id}/publish-status")
+async def publish_status(graph_id: str):
+    """Check whether a workflow is currently published."""
+    registry = _get_publish_registry()
+    graph_data = _graph_store.get_graph(graph_id)
+    if graph_data is None:
+        raise HTTPException(status_code=404, detail="Graph not found")
+
+    try:
+        graph = Graph.model_validate(graph_data)
+        from dan.publish.schema import slugify as _slugify
+        from dan.utils.workflow_interface import derive_workflow_interface as _derive
+        iface = _derive(graph)
+        slug = _slugify(iface.name)
+    except Exception:
+        slug = graph_id
+
+    published = registry.is_published(slug)
+    result: dict[str, Any] = {"graph_id": graph_id, "published": published, "workflow_id": slug if published else None}
+
+    pub_path = Path(_graphs_dir) / f"{graph_id}.publish.json"
+    if pub_path.exists():
+        try:
+            result["config"] = json.loads(pub_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    return result
+
+
+# ------------------------------------------------------------------
+# Blocks API (21-5 task 6-6)
+# ------------------------------------------------------------------
+
+
+@app.get("/api/blocks")
+async def list_blocks():
+    """List all installed blocks."""
+    registry = _get_block_registry()
+    registry.scan()
+    blocks = registry.list_blocks()
+    return [
+        {
+            "name": b.name,
+            "version": b.version,
+            "block_type": b.block_type,
+            "description": b.metadata.description if b.metadata else "",
+            "tags": b.metadata.tags if b.metadata else [],
+            "input_schema": b.metadata.input_schema if b.metadata else {},
+            "output_schema": b.metadata.output_schema if b.metadata else {},
+            "install_path": str(b.install_path),
+        }
+        for b in blocks
+    ]
+
+
+@app.get("/api/blocks/{name}")
+async def get_block_info(name: str):
+    """Get metadata and README for a block."""
+    registry = _get_block_registry()
+    block = registry.get_block(name)
+    if block is None:
+        raise HTTPException(status_code=404, detail=f"Block '{name}' not found")
+
+    result: dict[str, Any] = {
+        "name": block.name,
+        "version": block.version,
+        "block_type": block.block_type,
+        "install_path": str(block.install_path),
+        "metadata": block.metadata.model_dump() if block.metadata else {},
+    }
+
+    readme_path = block.install_path / "README.md"
+    if readme_path.exists():
+        result["readme"] = readme_path.read_text(encoding="utf-8")
+
+    return result
+
+
+@app.post("/api/blocks/import")
+async def import_block_endpoint(body: dict[str, Any]):
+    """Import a block from a local path or URL.
+
+    Body: ``{"path": "/path/to/block.dan-block.tar.gz"}`` or
+    ``{"path": "https://example.com/block.tar.gz"}``.
+    """
+    workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
+
+    source = body.get("path")
+    if not source:
+        raise HTTPException(status_code=400, detail="Provide {\"path\": \"...\"} pointing to a tarball, directory, or URL")
+
+    try:
+        installed = import_block(source, workspace=Path(workspace_root))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    registry = _get_block_registry()
+    registry.scan()
+
+    return {
+        "status": "imported",
+        "name": installed.name,
+        "version": installed.version,
+        "block_type": installed.block_type,
+        "install_path": str(installed.install_path),
+    }
+
+
+@app.post("/api/blocks/export/{graph_id}")
+async def export_block_endpoint(graph_id: str, name: str = "", version: str = "0.1.0"):
+    """Export a workflow as a shareable block."""
+    graph_data = _graph_store.get_graph(graph_id)
+    if graph_data is None:
+        raise HTTPException(status_code=404, detail="Graph not found")
+
+    try:
+        graph = Graph.model_validate(graph_data)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid graph: {exc}")
+
+    output_dir = Path(tempfile.mkdtemp(prefix="dan-block-export-"))
+    try:
+        block_dir = export_workflow_block(graph, output_dir, name=name, version=version)
+        from dan.blocks import pack_block
+        tarball = pack_block(block_dir)
+    except Exception as exc:
+        shutil.rmtree(str(output_dir), ignore_errors=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    from starlette.background import BackgroundTask
+    from starlette.responses import FileResponse
+
+    return FileResponse(
+        str(tarball),
+        media_type="application/gzip",
+        filename=tarball.name,
+        background=BackgroundTask(_cleanup_export_dir, str(output_dir)),
+    )
+
+
+@app.post("/api/blocks/export/{graph_id}/{node_id}")
+async def export_composite_block_endpoint(
+    graph_id: str,
+    node_id: str,
+    name: str = "",
+    version: str = "0.1.0",
+):
+    """Export a specific composite node as a shareable block."""
+    graph_data = _graph_store.get_graph(graph_id)
+    if graph_data is None:
+        raise HTTPException(status_code=404, detail="Graph not found")
+
+    try:
+        graph = Graph.model_validate(graph_data)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid graph: {exc}")
+
+    output_dir = Path(tempfile.mkdtemp(prefix="dan-block-export-"))
+    try:
+        block_dir = export_composite_block(graph, node_id, output_dir, name=name, version=version)
+        from dan.blocks import pack_block
+        tarball = pack_block(block_dir)
+    except Exception as exc:
+        shutil.rmtree(str(output_dir), ignore_errors=True)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    from starlette.background import BackgroundTask
+    from starlette.responses import FileResponse
+
+    return FileResponse(
+        str(tarball),
+        media_type="application/gzip",
+        filename=tarball.name,
+        background=BackgroundTask(_cleanup_export_dir, str(output_dir)),
+    )
+
+
+@app.delete("/api/blocks/{name}/{version}")
+async def remove_block(name: str, version: str):
+    """Uninstall a block by name and version."""
+    registry = _get_block_registry()
+    removed = registry.remove_block(name, version)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Block '{name}@{version}' not found")
+    return {"status": "removed", "name": name, "version": version}
+
+
+# ------------------------------------------------------------------
+# Adapter management API (21-4 task 7)
+# ------------------------------------------------------------------
+
+
+def _load_workflow_for_adapter(path: str) -> Graph:
+    """Load a workflow Graph from path (graph_id, JSON, .md, or .py)."""
+    import importlib.util
+
+    # Try graph store first (graph_id like "wf1")
+    data = _graph_store.get_graph(path)
+    if data is not None:
+        return Graph.model_validate(data)
+
+    # Try file-based sources (JSON, markdown, Python)
+    p = Path(path)
+    if not p.exists():
+        if path.endswith((".json", ".md", ".py")):
+            raise FileNotFoundError(f"File not found: {path}")
+        raise ValueError(f"Cannot load workflow: '{path}' is not a valid file or graph ID")
+
+    if p.suffix.lower() == ".json":
+        with open(p) as f:
+            return Graph.model_validate(json.load(f))
+    if p.suffix.lower() == ".md" or (p.is_dir() and p.exists()):
+        from dan.loader import load
+        return load(p)
+    if p.suffix.lower() == ".py":
+        spec = importlib.util.spec_from_file_location("_dan_user_workflow", str(p))
+        if spec is None or spec.loader is None:
+            raise ValueError(f"Cannot load Python module from: {path}")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        if hasattr(mod, "graph"):
+            return mod.graph
+        if hasattr(mod, "build") and callable(mod.build):
+            return mod.build()
+        raise ValueError(
+            f"Python file {path} must export a 'graph' attribute "
+            "or a 'build()' function returning a Graph."
+        )
+
+    raise ValueError(f"Cannot load workflow: '{path}' has unsupported format")
+
+
+def _run_adapter_message_handler(
+    adapter_id: str,
+    external_id: str,
+    message_text: str,
+) -> None:
+    """Handle incoming message: create session, run engine, wire renderer.
+
+    Each invocation creates its own ``MessagingHumanRenderer`` so that
+    concurrent conversations on the same adapter do not race on
+    ``active_session_id``.
+    """
+    entry = _adapter_renderers.get(adapter_id)
+    if entry is None:
+        logger.warning("Adapter %s: no renderer/graph, ignoring message", adapter_id)
+        return
+
+    _base_renderer, graph = entry
+    if graph is None:
+        logger.warning("Adapter %s: no workflow graph loaded, ignoring message", adapter_id)
+        return
+
+    session_store = _adapter_session_stores.get(adapter_id)
+    if session_store is None:
+        logger.warning("Adapter %s: no session store, ignoring message", adapter_id)
+        return
+
+    async def _run() -> None:
+        session = await session_store.create(external_id)
+        session_id = session.session_id
+
+        adapter = None
+        for aid, (a, _) in _active_adapters.items():
+            if aid == adapter_id:
+                adapter = a
+                break
+        if adapter is not None and hasattr(adapter, "register_session"):
+            try:
+                chat_id = int(external_id) if external_id.isdigit() else external_id
+                adapter.register_session(session_id, chat_id)
+            except (ValueError, TypeError):
+                adapter.register_session(session_id, external_id)
+
+        session_renderer = MessagingHumanRenderer(
+            _base_renderer._adapter, session_store,
+        )
+        session_renderer.active_session_id = session_id
+        await session_store.update_state(session_id, SessionState.RUNNING)
+
+        from dan.engine import Engine, EngineConfig
+
+        cfg = _get_engine_config()
+        engine_config = EngineConfig(
+            llm_api_key=cfg.llm_api_key or os.environ.get("DAN_LLM_API_KEY", os.environ.get("LLM_API_KEY", "")),
+            llm_base_url=cfg.llm_base_url or "https://api.vectorengine.ai/v1",
+            llm_default_model=cfg.llm_default_model or "claude-sonnet-4-6",
+            block_registry=_get_block_registry(),
+        )
+
+        engine = Engine(
+            config=engine_config,
+            human_renderer=session_renderer,
+        )
+
+        inputs = {"message": message_text, "user_input": message_text, "input": message_text}
+        try:
+            result = await engine.run(graph, inputs=inputs)
+            if not result.success and result.errors:
+                logger.warning("Adapter %s run failed: %s", adapter_id, result.errors)
+        except Exception:
+            logger.exception("Adapter %s engine run failed", adapter_id)
+        finally:
+            await session_store.remove(session_id)
+            if adapter is not None and hasattr(adapter, "unregister_session"):
+                adapter.unregister_session(session_id)
+
+    asyncio.create_task(_run(), name=f"adapter-{adapter_id}-run")
+
+
+class AdapterStartRequest(BaseModel):
+    type: str
+    workflow_path: str = ""
+    config: dict[str, Any] = {}
+
+
+class AdapterStopRequest(BaseModel):
+    adapter_id: str
+
+
+@app.post("/api/adapters/start")
+async def start_adapter(req: AdapterStartRequest):
+    """Start a messaging adapter in the background."""
+    adapter_id = str(uuid.uuid4())[:12]
+    adapter_type = req.type.lower()
+    config_data = {**req.config, "workflow_path": req.workflow_path}
+
+    adapter: MessagingAdapter
+    if adapter_type == "email":
+        adapter_config = EmailAdapterConfig(**config_data)
+        adapter = EmailAdapter(adapter_config)
+    elif adapter_type == "telegram":
+        adapter_config = TelegramAdapterConfig(**config_data)
+        adapter = TelegramAdapter(adapter_config)
+    elif adapter_type == "whatsapp":
+        adapter_config = WhatsAppAdapterConfig(**config_data)
+        adapter = WhatsAppAdapter(adapter_config)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unknown adapter type: {req.type}")
+
+    session_store = AdapterSessionStore()
+    _adapter_session_stores[adapter_id] = session_store
+
+    graph: Graph | None = None
+    workflow_path = req.workflow_path
+    if workflow_path:
+        try:
+            graph = _load_workflow_for_adapter(workflow_path)
+        except Exception as exc:
+            logger.warning("Could not load workflow for adapter %s: %s", adapter_id, exc)
+
+    renderer = MessagingHumanRenderer(adapter, session_store)
+
+    if graph is not None:
+        async def _on_msg(ext_id: str, text: str) -> None:
+            _run_adapter_message_handler(adapter_id, ext_id, text)
+
+        adapter.set_message_callback(_on_msg)
+
+    async def _run_adapter() -> None:
+        try:
+            await adapter.start()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.exception("Adapter %s (%s) crashed", adapter_id, adapter_type)
+
+    task = asyncio.create_task(_run_adapter(), name=f"adapter-{adapter_id}")
+    _active_adapters[adapter_id] = (adapter, task)
+    _adapter_start_times[adapter_id] = time.time()
+    _adapter_renderers[adapter_id] = (renderer, graph)
+
+    return {
+        "status": "started",
+        "adapter_id": adapter_id,
+        "type": adapter_type,
+    }
+
+
+@app.post("/api/adapters/stop")
+async def stop_adapter(req: AdapterStopRequest):
+    """Stop a running messaging adapter."""
+    entry = _active_adapters.pop(req.adapter_id, None)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Adapter '{req.adapter_id}' not found")
+
+    adapter, task = entry
+    if not task.done():
+        task.cancel()
+    try:
+        await adapter.stop()
+    except Exception:
+        pass
+
+    _adapter_session_stores.pop(req.adapter_id, None)
+    _adapter_start_times.pop(req.adapter_id, None)
+    _adapter_renderers.pop(req.adapter_id, None)
+
+    return {"status": "stopped", "adapter_id": req.adapter_id}
+
+
+@app.get("/api/adapters/status")
+async def adapter_status():
+    """List running adapters with status, session counts, and uptime."""
+    results = []
+    now = time.time()
+    for aid, (adapter, task) in _active_adapters.items():
+        store = _adapter_session_stores.get(aid)
+        session_count = 0
+        if store is not None:
+            sessions = await store.all_sessions()
+            session_count = len(sessions)
+
+        started_at = _adapter_start_times.get(aid, now)
+        results.append({
+            "adapter_id": aid,
+            "type": type(adapter).__name__.replace("Adapter", "").lower(),
+            "running": not task.done(),
+            "session_count": session_count,
+            "uptime_seconds": round(now - started_at, 1),
+        })
+    return results
 
 
 # ------------------------------------------------------------------
