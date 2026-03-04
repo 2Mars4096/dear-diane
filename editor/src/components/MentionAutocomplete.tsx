@@ -52,18 +52,90 @@ const typeLabel: Record<string, string> = {
   gate: "Gate",
 };
 
+const FUZZY_THRESHOLD = 0.3;
+
+function fuzzyScore(query: string, target: string): number {
+  if (!query) return 1;
+  const q = query.toLowerCase();
+  const t = target.toLowerCase();
+
+  if (t.includes(q)) {
+    return 1.0 - q.length / (t.length + 1) * 0.1;
+  }
+
+  let qi = 0;
+  let gaps = 0;
+  let lastMatch = -1;
+  const matchedIndices: number[] = [];
+
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) {
+      if (lastMatch >= 0) gaps += ti - lastMatch - 1;
+      lastMatch = ti;
+      matchedIndices.push(ti);
+      qi++;
+    }
+  }
+
+  if (qi < q.length) return 0;
+
+  const matchRatio = q.length / t.length;
+  const gapPenalty = gaps / (t.length + 1);
+  const startBonus = matchedIndices[0] === 0 ? 0.1 : 0;
+
+  return Math.max(0, matchRatio - gapPenalty * 0.5 + startBonus);
+}
+
+function getFuzzyMatchIndices(query: string, target: string): number[] {
+  if (!query) return [];
+  const q = query.toLowerCase();
+  const t = target.toLowerCase();
+  const indices: number[] = [];
+  let qi = 0;
+  for (let ti = 0; ti < t.length && qi < q.length; ti++) {
+    if (t[ti] === q[qi]) {
+      indices.push(ti);
+      qi++;
+    }
+  }
+  return qi === q.length ? indices : [];
+}
+
 function highlightMatch(name: string, query: string) {
   if (!query) return <>{name}</>;
+
   const lower = name.toLowerCase();
   const idx = lower.indexOf(query.toLowerCase());
-  if (idx === -1) return <>{name}</>;
-  return (
-    <>
-      {name.slice(0, idx)}
-      <span className="font-bold">{name.slice(idx, idx + query.length)}</span>
-      {name.slice(idx + query.length)}
-    </>
-  );
+  if (idx !== -1) {
+    return (
+      <>
+        {name.slice(0, idx)}
+        <span className="font-bold">{name.slice(idx, idx + query.length)}</span>
+        {name.slice(idx + query.length)}
+      </>
+    );
+  }
+
+  const matched = getFuzzyMatchIndices(query, name);
+  if (matched.length === 0) return <>{name}</>;
+
+  const matchSet = new Set(matched);
+  const parts: JSX.Element[] = [];
+  let i = 0;
+  while (i < name.length) {
+    if (matchSet.has(i)) {
+      let end = i;
+      while (end < name.length && matchSet.has(end)) end++;
+      parts.push(<span key={i} className="font-bold">{name.slice(i, end)}</span>);
+      i = end;
+    } else {
+      let end = i;
+      while (end < name.length && !matchSet.has(end)) end++;
+      parts.push(<span key={i}>{name.slice(i, end)}</span>);
+      i = end;
+    }
+  }
+  return <>{parts}</>;
 }
 
 function parsePrefixQuery(query: string): {
@@ -182,73 +254,56 @@ export default function MentionAutocomplete({
   }, [category, graphId]);
 
   const items = useMemo(() => {
-    const all: MentionItem[] = [];
-    const q = subquery.toLowerCase();
+    const scored: Array<MentionItem & { score: number }> = [];
+    const q = subquery;
 
     const shouldInclude = (sec: MentionSection) =>
       category === null || category === sec;
 
+    const tryAdd = (sec: MentionSection, id: string, name: string, nodeType?: string) => {
+      if (!q) {
+        scored.push({ section: sec, id, name, nodeType, score: 1 });
+        return;
+      }
+      const s = fuzzyScore(q, name);
+      if (s >= FUZZY_THRESHOLD) {
+        scored.push({ section: sec, id, name, nodeType, score: s });
+      }
+    };
+
     if (shouldInclude("node") || shouldInclude("subgraph")) {
       if (danGraph) {
         for (const node of danGraph.nodes) {
-          if (!q || node.name.toLowerCase().includes(q)) {
-            const sec = SUBGRAPH_NODE_TYPES.has(node.node_type)
-              ? "subgraph"
-              : "node";
-            if (shouldInclude(sec)) {
-              all.push({
-                section: sec,
-                id: node.id,
-                name: node.name,
-                nodeType: node.node_type,
-              });
-            }
-          }
+          const sec = SUBGRAPH_NODE_TYPES.has(node.node_type)
+            ? "subgraph"
+            : "node";
+          if (shouldInclude(sec)) tryAdd(sec, node.id, node.name, node.node_type);
         }
       }
     }
 
     if (shouldInclude("workflow")) {
-      for (const g of graphList) {
-        if (!q || g.name.toLowerCase().includes(q)) {
-          all.push({ section: "workflow", id: g.graph_id, name: g.name });
-        }
-      }
+      for (const g of graphList) tryAdd("workflow", g.graph_id, g.name);
     }
 
     if (shouldInclude("file")) {
-      for (const f of fileList) {
-        if (!q || f.toLowerCase().includes(q)) {
-          all.push({ section: "file", id: f, name: f });
-        }
-      }
+      for (const f of fileList) tryAdd("file", f, f);
     }
 
     if (shouldInclude("code")) {
-      for (const ref of codeRefs) {
-        if (!q || ref.toLowerCase().includes(q)) {
-          all.push({ section: "code", id: ref, name: ref });
-        }
-      }
+      for (const ref of codeRefs) tryAdd("code", ref, ref);
     }
 
     if (shouldInclude("docs")) {
-      for (const d of docsList) {
-        if (!q || d.toLowerCase().includes(q)) {
-          all.push({ section: "docs", id: d, name: d });
-        }
-      }
+      for (const d of docsList) tryAdd("docs", d, d);
     }
 
     if (shouldInclude("chat")) {
-      for (const t of chatThreads) {
-        if (!q || t.title.toLowerCase().includes(q)) {
-          all.push({ section: "chat", id: t.id, name: t.title });
-        }
-      }
+      for (const t of chatThreads) tryAdd("chat", t.id, t.title);
     }
 
-    return all;
+    if (q) scored.sort((a, b) => b.score - a.score);
+    return scored as MentionItem[];
   }, [
     danGraph,
     graphList,

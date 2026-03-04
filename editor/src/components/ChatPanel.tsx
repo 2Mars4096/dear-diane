@@ -119,13 +119,14 @@ const DEBUG_PROMPTS = [
   "Diagnose errors in my workflow",
 ];
 
-type ChatMode = "ask" | "agent" | "plan" | "debug";
+type ChatMode = "ask" | "agent" | "plan" | "debug" | "auto";
 
 const MODE_CONFIG: Record<ChatMode, { label: string; icon: typeof Sparkles; color: string }> = {
   agent: { label: "Agent", icon: Sparkles, color: "indigo" },
   ask: { label: "Ask", icon: HelpCircle, color: "sky" },
   plan: { label: "Plan", icon: FileText, color: "amber" },
   debug: { label: "Debug", icon: Bug, color: "rose" },
+  auto: { label: "Auto", icon: PencilLine, color: "violet" },
 };
 
 // ---------------------------------------------------------------------------
@@ -249,6 +250,7 @@ export default function ChatPanel() {
   const [contextWindow, setContextWindow] = useState(0);
   const [staleRevision, setStaleRevision] = useState(false);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
+  const [detectedMode, setDetectedMode] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<
     Array<{
@@ -304,6 +306,8 @@ export default function ChatPanel() {
         setThreadTitle((data.title as string) || "");
         setShowThreadList(false);
         setError(null);
+        const storedMode = (data.mode as ChatMode) || "agent";
+        useGraphStore.getState().setChatMode(storedMode);
       } catch (err) {
         console.warn("Failed to load thread:", err);
       }
@@ -354,6 +358,41 @@ export default function ChatPanel() {
   }, [chatOpen, graphId]);
 
   // -------------------------------------------------------------------------
+  // Keyboard shortcut: Cmd/Ctrl+Shift+M to cycle chat modes
+  // -------------------------------------------------------------------------
+
+  useEffect(() => {
+    const CYCLE: ChatMode[] = ["agent", "ask", "plan", "debug"];
+    const handler = (e: globalThis.KeyboardEvent) => {
+      if (e.shiftKey && (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "m") {
+        const activeNode = document.activeElement;
+        const isInputFocused =
+          activeNode?.tagName === "INPUT" ||
+          activeNode?.tagName === "TEXTAREA" ||
+          (activeNode as HTMLElement)?.isContentEditable;
+        if (isInputFocused) return;
+
+        e.preventDefault();
+        const current = useGraphStore.getState().chatMode;
+        const idx = CYCLE.indexOf(current as ChatMode);
+        const next = CYCLE[(idx + 1) % CYCLE.length];
+        useGraphStore.getState().setChatMode(next);
+        const tid = activeThreadIdRef.current;
+        const gid = graphId;
+        if (tid && gid) {
+          api.updateChatThread(gid, tid, { mode: next }).catch(() => {});
+        }
+        useGraphStore.getState().addToast({
+          type: "info",
+          message: `Chat mode: ${MODE_CONFIG[next].label}`,
+        });
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [graphId]);
+
+  // -------------------------------------------------------------------------
   // Auto-scroll on new messages
   // -------------------------------------------------------------------------
 
@@ -365,11 +404,23 @@ export default function ChatPanel() {
     if (chatFocusTrigger > 0) {
       setChatOpen(true);
       setShowThreadList(false);
-      setMessages([]);
-      setActiveThreadId(null);
-      setThreadTitle("");
+      const prefill = useGraphStore.getState().chatPrefill;
+      if (!prefill) {
+        setMessages([]);
+        setActiveThreadId(null);
+        setThreadTitle("");
+      }
       setError(null);
       setBuildJustCompleted(false);
+    }
+  }, [chatFocusTrigger]);
+
+  useEffect(() => {
+    const prefill = useGraphStore.getState().chatPrefill;
+    if (prefill) {
+      setInputText(prefill);
+      useGraphStore.setState({ chatPrefill: null });
+      requestAnimationFrame(() => textareaRef.current?.focus());
     }
   }, [chatFocusTrigger]);
 
@@ -533,6 +584,7 @@ export default function ChatPanel() {
       setError(null);
       setStaleRevision(false);
       setBuildJustCompleted(false);
+      setDetectedMode(null);
 
       const capturedGraphId = graphId;
       const currentDanGraph = useGraphStore.getState().danGraph;
@@ -728,6 +780,7 @@ export default function ChatPanel() {
               );
             } else if (evt.type === "chat_complete") {
               if (evt.context_window) setContextWindow(evt.context_window);
+              if (evt.detected_mode) setDetectedMode(evt.detected_mode);
               setMessages((prev) => {
                 const updated = prev.map((m) =>
                   m.id === assistantId
@@ -756,6 +809,7 @@ export default function ChatPanel() {
               ws.close();
             } else if (evt.type === "chat_mutation") {
               if (evt.context_window) setContextWindow(evt.context_window);
+              if (evt.detected_mode) setDetectedMode(evt.detected_mode);
               setMessages((prev) => {
                 const updated = prev.map((m) =>
                   m.id === assistantId
@@ -1125,7 +1179,6 @@ export default function ChatPanel() {
           ...prev,
           [msg.id]: { historyCursor: pastLen > 0 ? pastLen - 1 : 0 },
         }));
-        const tid = activeThreadIdRef.current;
         if (tid && graphId) {
           api
             .updateChatThread(graphId, tid, {
@@ -1315,14 +1368,22 @@ export default function ChatPanel() {
 
             {/* Mode selector */}
             <div className="flex items-center gap-1 px-2 py-1.5 border-b border-gray-100 bg-gray-50/50 flex-shrink-0">
-              {(["agent", "ask", "plan", "debug"] as const).map((m) => {
+              {(["auto", "agent", "ask", "plan", "debug"] as const).map((m) => {
                 const cfg = MODE_CONFIG[m];
                 const Icon = cfg.icon;
                 const active = chatMode === m;
                 return (
                   <button
                     key={m}
-                    onClick={() => useGraphStore.getState().setChatMode(m)}
+                    onClick={() => {
+                      useGraphStore.getState().setChatMode(m);
+                      if (m !== "auto") setDetectedMode(null);
+                      const tid = activeThreadIdRef.current;
+                      const gid = graphId;
+                      if (tid && gid) {
+                        api.updateChatThread(gid, tid, { mode: m }).catch(() => {});
+                      }
+                    }}
                     className={`flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md transition-colors ${
                       active
                         ? "bg-white text-gray-800 shadow-sm border border-gray-200"
@@ -1331,6 +1392,11 @@ export default function ChatPanel() {
                   >
                     <Icon size={11} />
                     {cfg.label}
+                    {m === "auto" && active && detectedMode && (
+                      <span className="text-[9px] text-violet-600 font-normal">
+                        → {detectedMode.charAt(0).toUpperCase() + detectedMode.slice(1)}
+                      </span>
+                    )}
                   </button>
                 );
               })}
@@ -1423,6 +1489,9 @@ export default function ChatPanel() {
                         }}
                         allowPartialApply={false}
                         disabled={isApplying}
+                        mutationSource={(previewingMessage.mutationPlan as Record<string, unknown> | undefined)?.metadata
+                          ? ((previewingMessage.mutationPlan as Record<string, unknown>).metadata as Record<string, unknown>)?.source as string | undefined
+                          : undefined}
                         applyError={applyError}
                       />
                     )}
@@ -1491,6 +1560,7 @@ export default function ChatPanel() {
                     chatMode === "ask" ? "Ask about your workflow…"
                     : chatMode === "plan" ? "Describe what changes to plan…"
                     : chatMode === "debug" ? "Describe the issue or ask to diagnose…"
+                    : chatMode === "auto" ? "Type anything — mode auto-detected… (@ to mention)"
                     : "Ask about your workflow… (@ to mention)"
                   }
                   rows={1}
@@ -1776,12 +1846,14 @@ function EmptyState({ onSelect, mode, isEmptyGraph }: { onSelect: (text: string)
     ask: ASK_PROMPTS,
     plan: PLAN_PROMPTS,
     debug: DEBUG_PROMPTS,
+    auto: isEmptyGraph ? BUILD_PROMPTS : EXAMPLE_PROMPTS,
   };
   const titleMap: Record<ChatMode, string> = {
     agent: isEmptyGraph ? "Build a Workflow" : "Workflow Assistant",
     ask: "Ask About Your Workflow",
     plan: "Plan Changes",
     debug: "Debug Your Workflow",
+    auto: "Auto Mode",
   };
   const descMap: Record<ChatMode, string> = {
     agent: isEmptyGraph
@@ -1790,6 +1862,7 @@ function EmptyState({ onSelect, mode, isEmptyGraph }: { onSelect: (text: string)
     ask: "Ask questions about your workflow's topology, data flow, and node connections.",
     plan: "Describe a change and get a step-by-step plan before any modifications are made.",
     debug: "Diagnose run failures, identify root causes, and get fix suggestions.",
+    auto: "The assistant will automatically detect the best mode for your message.",
   };
 
   return (
