@@ -168,11 +168,11 @@
 ## Phase 11 — Meta-Orchestrator
 > Autonomous planning, execution, and self-repair. Given a high-level goal ("write a paper on X in Y format"), the meta-orchestrator discovers relevant past workflows, plans/adapts/generates a workflow graph, executes it, diagnoses failures at every severity level, and applies graduated repairs — from prompt tweaks to full redesign — while allowing human intervention at any step.
 
-- [ ] [19-meta-orchestrator](plans/19-meta-orchestrator.md) — autonomous workflow planning, execution, graduated repair, and cross-workflow learning
-  - [ ] [19-1-workflow-experience-memory](plans/19-1-workflow-experience-memory.md) — experience schema/store/index shipped with incremental consolidation, dedupe, auto-indexing; cross-workflow principle sharing deferred (task 4)
-  - [ ] [19-2-workflow-planner](plans/19-2-workflow-planner.md) — reuse-first planner shipped with deterministic Generate compiler, PlanReview, EngineConfig fields; few-shot examples (2-3), builder-code path (3-3), and LLM integration tests (7-5/7-6) deferred
-  - [x] [19-3-structural-repair](plans/19-3-structural-repair.md) — graduated repair engine complete: RepairClassifier, ParameterRepairGenerator, StructuralRepairPlanner, RedesignTrigger, RepairEscalator, RepairActionStore, RedesignResult; all unit tests pass; full-engine integration tests (7-5/7-6) deferred
-  - [ ] [19-4-autonomous-execution-controller](plans/19-4-autonomous-execution-controller.md) — meta-session loop complete: create/run/pause/resume/events, experience feedback (success+failure), cross-session learning; RunManager event-stream wiring (5-2) deferred
+- [x] [19-meta-orchestrator](plans/19-meta-orchestrator.md) — autonomous workflow planning, execution, graduated repair, and cross-workflow learning
+  - [x] [19-1-workflow-experience-memory](plans/19-1-workflow-experience-memory.md) — experience schema/store/index, incremental consolidation, dedupe, auto-indexing, cross-workflow principle sharing (global scope on ErrorMemoryIndex + PrincipleStore + EngineConfig flag)
+  - [x] [19-2-workflow-planner](plans/19-2-workflow-planner.md) — reuse-first planner with deterministic Generate compiler, PlanReview, EngineConfig fields, few-shot examples, builder-code path (sandbox subprocess), LLM integration tests
+  - [x] [19-3-structural-repair](plans/19-3-structural-repair.md) — graduated repair engine: RepairClassifier, ParameterRepairGenerator, StructuralRepairPlanner, RedesignTrigger, RepairEscalator, RepairActionStore, RedesignResult; all unit + LLM + engine pipeline tests pass
+  - [x] [19-4-autonomous-execution-controller](plans/19-4-autonomous-execution-controller.md) — meta-session loop: create/run/pause/resume/events, experience feedback (success+failure), cross-session learning, WebSocket event stream wired end-to-end
 
 ## Phase 12 — Author & Distribute
 > CLI, publish as API/MCP, shareable blocks, PyPI package. Comes after Meta-Orchestrator so API surface, cost controls, and autonomous execution are stable before packaging.

@@ -1,6 +1,20 @@
 # Changelog
 
 ## 2026-03-03
+- [feat] **Phase 11 — final two deferred tasks completed: builder-code path + engine pipeline tests.**
+  - Builder-code path (`GenerateCodePlan`): LLM can generate Python builder DSL code; executed in `SandboxRunner` subprocess with 30s timeout. Harness wraps code to serialize compiled `Graph` to `_result.json`. `_validate_plan()` warns on missing `build()` call. 5 new tests.
+  - Engine pipeline tests: `test_parameter_mutation_changes_model_at_runtime` — builds a workflow, runs it through `Engine`, applies `_apply_parameter_mutations()` to change temperature, runs again; `test_graph_mutator_edit_node_roundtrip` — `GraphMutator.apply()` with `EditNode` mutates prompt+system_prompt, then runs mutated graph. Both use real LLM.
+  - Total Phase 11 test count: 135 (117 unit + 18 integration), all passing.
+
+- [feat] **Phase 11 — Meta-Orchestrator: all deferred items completed, phase fully shipped.**
+  - Cross-workflow principle sharing: `ErrorMemoryIndex.query_similar(scope="global")` searches across all `dan_errors_*` collections; `PrincipleStore.load_principles(scope="global")` iterates all workflow directories with de-duplication by principle id (keeps highest confidence). New `EngineConfig.cross_workflow_learning` flag threads scope through `ErrorContextProvider` → `LLMExecutor`.
+  - Few-shot examples added to `PlanningPromptBuilder.SYSTEM_TEMPLATE`: three concrete examples (REUSE/paper_writing, ADAPT/equity_research+beamer, GENERATE/RAG QA) guiding LLM output format.
+  - Meta-event WebSocket: `_build_meta_controller()` now wires `_emit_meta_event()` callback that fans out to `_meta_subscribers` dict. New endpoint `WS /api/meta/sessions/{id}/events/ws` streams live meta-orchestrator events.
+  - 11 LLM integration tests in `test_integration_llm.py`: planner (generate/reuse/adapt/compilable spec), structural repair, cross-workflow sharing (principles global scope, de-dup, ErrorMemoryIndex global), experience consolidation (roundtrip, incremental), meta-controller end-to-end. All use real LLM via `.env` credentials; marked `@pytest.mark.integration` for CI gating.
+  - Registered `integration` marker in `pyproject.toml`.
+  - All 128 meta-related tests pass (101 unit + 11 integration + 16 API).
+  - All four plan files (19-1 through 19-4) marked **completed**.
+
 - [feat] **Wire analytics event emission end-to-end for 4 declared EventTypes.**
   - `TOKEN_BREAKDOWN_RECORDED`: emitted per-LLM-node after completion in scheduler `_execute_node`, carrying the node's `TokenBreakdown.to_dict()`.
   - `WASTE_DETECTED`: emitted per-finding at run completion in scheduler `_emit_post_run_analytics`, carrying each `WasteFinding.to_dict()`.
