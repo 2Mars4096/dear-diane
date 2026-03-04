@@ -9,6 +9,9 @@ Typed graph orchestration for multi-agent LLM workflows. Design agent networks a
 - **Control-flow primitives** — GateNode (if/else + while loop), ForEach, Reduce, Router, Human-in-the-Loop
 - **Model heterogeneity** — each operator independently specifies its model (cheap for classification, strong for reasoning)
 - **Output normalization** — built-in parse → validate → re-prompt → retry on every LLM operator
+- **Retry & fallback** — per-node `RetryPolicy` with exponential backoff, fallback models, and halt/skip/error failure modes
+- **Multi-provider LLM** — built-in support for OpenAI, Anthropic, and Google; prefix-based routing (`gpt-*`, `claude-*`, `gemini-*`) with per-node model override
+- **11 built-in tools** — file I/O, web search/fetch, HTTP, shell commands, PDF reading, text chunking, JSON extraction, regex — all sandboxed to workspace root
 - **Checkpointing** — resume long-running workflows from the last completed level
 
 ## Quick Start

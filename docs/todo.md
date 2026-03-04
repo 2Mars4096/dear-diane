@@ -121,7 +121,7 @@
 
 - [ ] [13-observe-recover](plans/13-observe-recover.md) — execution persistence, debugging tools, and iterative refinement capabilities
   - [x] [13-1-run-observability-history](plans/13-1-run-observability-history.md) — run artifacts, history/comparison, and action audit log foundation
-  - [ ] [13-2-recovery-debug-workbench](plans/13-2-recovery-debug-workbench.md) — checkpoint portals, variable inspector, and node test cases UX
+  - [ ] [13-2-recovery-debug-workbench](plans/13-2-recovery-debug-workbench.md) — checkpoint portals, variable inspector, and node test cases UX (variable inspector + node test cases + checkpoint portal backend complete; frontend integration [task 5] and testing/docs [task 6] pending)
 
 ## Phase 9 — Deep Systems
 > Architectural additions for advanced use cases. Grouped into four clusters; each cluster gets a plan file just-in-time when work begins.
@@ -149,9 +149,9 @@
 ### 9D — Self-Evolving Orchestrator
 > Orchestrator persists error memories across runs, reflects on failures to extract causal principles, and injects retrieved lessons into future decisions via prompt augmentation. Three tiers of increasing capability; Tier 1 is immediately feasible.
 
-- [ ] [17-self-evolving-orchestrator](plans/17-self-evolving-orchestrator.md) — error memory, reflection, and self-generating rules for orchestrator self-improvement
-  - [ ] [17-1-error-memory-rag](plans/17-1-error-memory-rag.md) — Tier 1: error capture pipeline, RAG indexing of run errors, retrieval at LLM decision points, prompt injection via dynamic hyperedge. **Prerequisites: 9A (done), 13-1 (partially landed). Can start immediately.**
-  - [ ] [17-2-reflection-node](plans/17-2-reflection-node.md) — Tier 2: `ReflectionNode` post-processes failed runs, distills errors into structured causal principles, persists to `PrincipleStore`. Benefits from Phase 8 run history (13-2).
+- [x] [17-self-evolving-orchestrator](plans/17-self-evolving-orchestrator.md) — error memory, reflection, and self-generating rules for orchestrator self-improvement
+  - [x] [17-1-error-memory-rag](plans/17-1-error-memory-rag.md) — Tier 1: error capture pipeline, RAG indexing of run errors, retrieval at LLM decision points, prompt injection. *(Core complete: ErrorRecord, ErrorMemoryIndex, ErrorContextProvider, LLMExecutor injection, REST API. Integration tests deferred.)*
+  - [x] [17-2-reflection-node](plans/17-2-reflection-node.md) — Tier 2: `ReflectionNode` post-processes failed runs, distills errors into structured causal principles, persists to `PrincipleStore`. *(Core complete: model, executor, principle store, scheduling, graduated repair classification. Authoring surfaces and integration tests deferred.)*
   - [x] [17-3-self-generating-rules](plans/17-3-self-generating-rules.md) — Tier 3: principle → hyperedge guidance + runtime parameter mutations, `RuleLifecycleManager` lifecycle/effectiveness tracking, safety bounds.
   - [x] [17-4-observability-event-wiring](plans/17-4-observability-event-wiring.md) — Wire all 11 self-evolving `EventType` values into emission sites. Pure instrumentation — debugging and audit trail.
   - [x] ~~[17-5-workflow-experience-summaries](plans/17-5-workflow-experience-summaries.md)~~ → deferred and promoted to [19-1-workflow-experience-memory](plans/19-1-workflow-experience-memory.md) under Phase 11 (meta-orchestrator).
@@ -159,11 +159,11 @@
 ## Phase 10 — Token Optimization
 > Minimize token consumption and maximize cost-efficiency. Model selection (15-3) picks the right model; this phase reduces tokens sent regardless of model — smart context assembly, caching, agent-directed context architecture, and analytics.
 
-- [x] [18-token-optimization](plans/18-token-optimization.md) — smart context assembly, caching, agent-directed context architecture, token analytics *(backend complete; editor visualization deferred)*
+- [x] [18-token-optimization](plans/18-token-optimization.md) — smart context assembly, caching, agent-directed context architecture, token analytics
   - [x] [18-1-prompt-compression](plans/18-1-prompt-compression.md) — advisory token budgets, context deferral, JIT schema loading, context tools, summarization, reference passing
   - [x] [18-2-caching-layer](plans/18-2-caching-layer.md) — provider prompt caching, node memoization, semantic cache, cache APIs
   - [x] [18-3-context-window-management](plans/18-3-context-window-management.md) — externalized state, history policy, safe loop compaction, advisory token budgets
-  - [x] [18-4-token-analytics](plans/18-4-token-analytics.md) — per-node breakdown, waste detection, optimization recommendations, evolving playbooks *(frontend deferred)*
+  - [x] [18-4-token-analytics](plans/18-4-token-analytics.md) — per-node breakdown, waste detection, optimization recommendations, evolving playbooks, editor visualization *(token flow edges and before/after estimation deferred)*
 
 ## Phase 11 — Meta-Orchestrator
 > Autonomous planning, execution, and self-repair. Given a high-level goal ("write a paper on X in Y format"), the meta-orchestrator discovers relevant past workflows, plans/adapts/generates a workflow graph, executes it, diagnoses failures at every severity level, and applies graduated repairs — from prompt tweaks to full redesign — while allowing human intervention at any step.
@@ -173,6 +173,14 @@
   - [x] [19-2-workflow-planner](plans/19-2-workflow-planner.md) — reuse-first planner with deterministic Generate compiler, PlanReview, EngineConfig fields, few-shot examples, builder-code path (sandbox subprocess), LLM integration tests
   - [x] [19-3-structural-repair](plans/19-3-structural-repair.md) — graduated repair engine: RepairClassifier, ParameterRepairGenerator, StructuralRepairPlanner, RedesignTrigger, RepairEscalator, RepairActionStore, RedesignResult; all unit + LLM + engine pipeline tests pass
   - [x] [19-4-autonomous-execution-controller](plans/19-4-autonomous-execution-controller.md) — meta-session loop: create/run/pause/resume/events, experience feedback (success+failure), cross-session learning, WebSocket event stream wired end-to-end
+
+## Phase 11.5 — Patch & Polish
+> Close documentation debt, polish chat/editor UX with deferred quick-wins, and activate recently-built backend features with frontend integration. No new architecture — purely finishing deferred work.
+
+- [x] [20-patch-polish](plans/20-patch-polish.md) — docs sync, chat/editor UX polish, checkpoint UI, auto-mode detection
+  - [x] [20-1-docs-quick-wins](plans/20-1-docs-quick-wins.md) — A. Docs sync (retry, multi-provider, built-in tools) + per-thread mode persistence, keyboard shortcut, debug diff tag
+  - [x] [20-2-chat-editor-polish](plans/20-2-chat-editor-polish.md) — B. "Fix this" shortcut, collapse run output, fuzzy mention search, markdown export buttons, sortable log columns
+  - [x] [20-3-checkpoint-ui-automode](plans/20-3-checkpoint-ui-automode.md) — C. Run history checkpoint UI, multi-tab checkpoint consistency, auto-mode detection
 
 ## Phase 12 — Author & Distribute
 > CLI, publish as API/MCP, shareable blocks, PyPI package. Comes after Meta-Orchestrator so API surface, cost controls, and autonomous execution are stable before packaging.
@@ -185,12 +193,77 @@
 - [ ] PyPI package — `pip install dan` with stable public API.
 
 ## Backlog (unphased)
+
+### Infrastructure / CI
+- [ ] **Playwright E2E browser tests** (12-6 tasks 5-6) — mode transitions, mention autocomplete, stop generation, export. Requires Playwright setup + CI pipeline.
+- [ ] **CI regression job** (12-6 task 2-8, 3-6) — run NL→mutation golden suite and provider compat matrix on schedule. Requires CI runner.
+- [ ] **Snapshot/regression tests** (8-2 task 6-7, 8-4 task 3-7) — compile known fixtures, compare output graph JSON to stored snapshots. Requires CI snapshot infrastructure.
+- [ ] **Mutation metrics baseline** (12-6 tasks 4-5 through 4-7) — capture 3-5 day baseline on main, set sprint targets, end-of-phase report. Requires production deployment.
+
+### Integration tests requiring real LLM
+- [ ] **Error memory integration test** (17-1 tasks 5-4 through 5-6) — workflow fails → errors indexed → query returns relevant results → LLM receives error context. Requires full engine + embedding provider.
+- [ ] **Reflection multi-run integration test** (17-2 task 8-3) — failed run → reflection triggered → principles stored → next run's prompt includes principles. Requires real LLM + multi-run orchestration.
+- [ ] **Experience consolidation integration test** (19-1 tasks 6-4, 6-5) — multiple runs → experience auto-consolidated → semantic search returns relevant workflows. Requires full engine + embeddings.
+
+### Frontend polish
+- [x] ~~**Fuzzy search in mention autocomplete**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
+- [ ] **Recently used mentions at top** (12-3 task 8-4)
+- [ ] **Preview tooltip on mention hover** (12-3 task 8-5)
+- [x] ~~**Sortable log columns**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
+- [ ] **Token flow edge labels** (18-4 task 3-4) — token count on edges, may be visually noisy
+- [ ] **Before/after token estimation** (18-4 task 4-4) — estimated next-run tokens if suggestion is applied
+- [x] ~~**Per-thread mode persistence**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
+- [x] ~~**Keyboard shortcut to cycle chat modes**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
+- [x] ~~**Debug diff tag**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
+- [x] ~~**"Fix this" shortcut**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
+- [ ] **Code syntax highlighting in mention context** (12-3 task 3-3)
+- [x] ~~**Frontend export buttons**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
+- [x] ~~**Collapse verbose run output**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
+- [ ] **Analytics rule dashboard** (18-4 task 5-6) — show active/pending optimization rules, cumulative savings, effectiveness
+- [x] ~~**Run history checkpoint UI**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)
+- [x] ~~**Multi-tab checkpoint consistency**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)
+
+### Docs sync (batched)
+- [x] ~~**Runtime reliability docs**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
+- [x] ~~**Multi-provider docs**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
+- [x] ~~**Built-in tools docs**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
+
+### Requires new architecture
+- [ ] **Per-operation approval gates** (12-4 task 5) — bidirectional WebSocket handshake for per-tool-call approve/reject
+- [ ] **@Web mentions** (12-3 task 6) — async network calls during mention resolution, loading UX, attribution
+- [ ] **Thread branching** (12-5 task 7) — "Branch from here", parent-child tree, branch indicator in thread list
+- [ ] **Message queuing** (12-5 task 2) — type while LLM generates, queue management, re-resolve mentions on send
+- [ ] **Sandbox execution display** (12-4 task 6) — terminal-like rendering, ANSI colors, file artifacts, resource usage
+
+### Deferred runtime features
+- [ ] **Loop compaction strategy runtime** (18-3 tasks 3-3, 3-4, 3-5) — sliding_window/summarize/diff_based/keep_last runtime implementations in control-flow executors
+- [ ] **Persistent cross-run cache** (18-2 task 2-3) — disk-backed memoization with session memory coordination
+- [ ] **Memory-aware cache invalidation** (18-2 task 2-5) — track memory_dependency_keys, invalidate on memory change
+- [ ] **Automatic state externalization** (18-3 task 1-3) — scheduler/executor writes loop/foreach/team state to StateStore automatically
+- [ ] **Run-level advisory token budget** (18-3 task 4-1) — `token_budget` on EngineConfig as global planning signal
+- [ ] **Principle compaction** (17-2 task 3-4) — ConsolidationPipeline adapter for principle merging at threshold
+- [ ] **ReflectionNode authoring surfaces** (17-2 task 7) — builder DSL `wf.reflection()`, markdown `type: reflection`, editor palette/config
+- [ ] **Two-tier reference resolution** (18-1 task 4-4) — artifact store + memory mirroring for pass_by_reference
+- [ ] **Encode-to-memory pattern** (18-1 task 4-5) — large outputs stored as MemoryItems, downstream retrieves summary
+- [ ] **Hyperedge JIT loading** (18-1 task 7-5) — inject hyperedge summaries, load full rules on demand
+- [ ] **Unified cross-source token budget** (18-3 task 4-4) — budget accounts for edges + system + context + hyperedge + memory + RAG
+- [ ] **Checkpoint/resume for parallel subagents** (7-9 task 3) — capture per-branch completion status, resume pending branches
+- [ ] **Builder DSL for tools** (7-3 task 8-3) — `wf.tool("name", tool_id="file_read")` out of the box
+- [ ] **RAG reranking** (9-1 task 6-4) — LLM-based re-scoring of top_k*3 candidates
+
+### Stretch goals
+- [x] ~~**Auto-mode detection**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)
+- [ ] **Parallel subagent visualization** (7-9 task 5-3) — show parallel branches and fan-in in execution
+- [ ] **ToolExecutor integration test** (7-3 task 9-4) — end-to-end built-in tool via ToolExecutor
+- [ ] **Cross-workflow error migration notes** (17-1 task 6-3) — migration guidance for collection naming/scope
+
+### Existing backlog items
 - [ ] **User system** — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments. (Low priority — revisit when cloud/SaaS deployment becomes a goal.)
-- [ ] **Manager vs worker node distinction** — manager nodes orchestrate and may spawn new nodes; worker nodes only execute and do not hire new nodes. Bottom-layer nodes are workers. Enables token/node budget caps (e.g. limit total tokens or total nodes used).
+- [ ] **Manager vs worker node distinction** — manager nodes orchestrate and may spawn new nodes; worker nodes only execute and do not hire new nodes. Bottom-layer nodes are workers. Enables token/node budget caps.
 - [x] ~~Optimize token usage~~ → promoted to [Phase 10](#phase-10--token-optimization) (Plan 18)
-- [x] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics; core mechanisms for convenient workflow building
+- [x] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics
 - [x] ~~Async loop design~~ → promoted to [Phase 9C](#9c--execution-primitives) (Plan 16-5)
-- [ ] NL mutation quality tracking bundle — now tracked under [12-6-chat-quality-harness](plans/12-6-chat-quality-harness.md) (CI variant, baseline capture, acceptance targets, end-of-phase report).
+- [ ] NL mutation quality tracking bundle — now tracked under [12-6-chat-quality-harness](plans/12-6-chat-quality-harness.md)
 - [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
 - [ ] Thread timeline view — vertical timeline of graph evolution through conversation (stretch, from 10-5 task 5-3)
 - [ ] Canvas drag-to-mention — drag node from canvas onto chat input to create mention (stretch, from 10-2 task 6-4)

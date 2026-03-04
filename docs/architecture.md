@@ -137,6 +137,8 @@ deep-agent-network/
       scoped_run.py              # Scoped execution: full/node/subgraph run builder
       layout.py                  # Topological layout for graph JSON (DAN_LAYOUT_ON_LOAD)
       mutation_metrics.py        # Mutation quality metrics for chat/LLM feedback
+      variable_inspector.py      # Compute upstream inputs for a node: walks incoming edges, infers types, detects missing required inputs (Plan 13-2)
+      test_cases.py              # NodeTestCase schema, TestCaseRunResult, TestCaseStore (filesystem CRUD at test_cases/{workflow_id}/{node_id}.json) (Plan 13-2)
   editor/                        # Phase 2+3.5 — React Flow visual editor
     package.json                 # Dependencies: react, @xyflow/react, zustand, tailwindcss, dagre, allotment, highlight.js, lucide-react
     vite.config.ts               # Vite config: Tailwind plugin, /api proxy to backend
@@ -159,8 +161,9 @@ deep-agent-network/
       components/DanNode.tsx     # Custom node: port handles, status ring, pulse/glow, duration badge, icons, dimming, inline rename, loop badges/counters
       components/AnimatedEdge.tsx # Custom edge: particle flow on active edges, dimming on inactive
       components/NodePalette.tsx  # Searchable categorized sidebar: templates, edge selector, hover previews, saved workflows
-      components/ConfigPanel.tsx  # Node/edge property editor, port editor (add/rename/delete), SchemaEditor (visual + raw JSON)
-      components/ContextMenu.tsx  # Right-click context menu: canvas/node/edge actions (paste, copy, delete, edge type)
+      components/ConfigPanel.tsx  # Node/edge property editor, port editor (add/rename/delete), SchemaEditor (visual + raw JSON), test cases section
+      components/TestCasePanel.tsx # Node test case management: collapsible list, create/edit modal, run/pass/fail display, context menu integration (Plan 13-2)
+      components/ContextMenu.tsx  # Right-click context menu: canvas/node/edge actions (paste, copy, delete, edge type, add test case)
       components/GraphCanvas.tsx  # Main canvas: drop handling, drill-in, validation, animated edges, context menu, edge reconnection
       components/EditorToolbar.tsx # Merged toolbar: graph selector + run controls + auto-layout
       components/TabBar.tsx       # Horizontal workflow tabs with run status badge, close, "+ New" template picker
@@ -179,6 +182,7 @@ deep-agent-network/
       components/ToolCallCard.tsx     # Expandable tool call card: status icon, args/output sections, operations list, duration badge
       components/RunOutputBlock.tsx   # Structured run output: per-node status, collapsible output, timing, "View logs" / "View in History" links
       components/RunHistoryPanel.tsx  # Run history bottom panel tab: filterable run list, event replay view, side-by-side comparison, deep-link support
+      components/TokenAnalyticsPanel.tsx # Token optimization bottom panel tab: waste findings, category filters, one-click apply mutations, re-analyze (Plan 18-4)
       components/GraphDiffPreview.tsx  # Mutation diff preview modal: accept/reject/partial-accept
       components/ToastContainer.tsx   # Fixed bottom-right toast notifications
       components/Spinner.tsx          # Reusable loading spinner
@@ -257,6 +261,18 @@ Like batch normalization in DNNs, every LLM operator has a deterministic, built-
 ### Error Handling / Retry Policy
 
 Every operator carries a `retry_policy`: `max_retries`, `backoff`, `backoff_max`, `fallback_model`, `on_failure` (error / skip / halt). Separate from output normalization — this handles call-level failures (rate limits, timeouts, network errors). `on_failure="halt"` stops the engine at the current topological level (already-running parallel nodes finish) and writes a checkpoint for later resume.
+
+**`RetryPolicy` model** (Pydantic, in `dan.models.nodes`):
+
+| Field | Type | Default | Semantics |
+|---|---|---|---|
+| `max_retries` | `int` | `0` | Retry attempts after initial call |
+| `backoff` | `float` | `1.0` | Initial delay (seconds), doubles each retry |
+| `backoff_max` | `float` | `60.0` | Ceiling on backoff delay |
+| `fallback_model` | `str \| None` | `None` | Alternative model on final failure (LLM only) |
+| `on_failure` | `Literal["error", "skip", "halt"]` | `"error"` | Post-exhaustion behavior |
+
+Attaches to `NodeBase.retry_policy` (optional, defaults to `None` → no retries). `ToolExecutor` reads the policy, catches transient exceptions (`TimeoutError`, `ConnectionError`, `OSError`), retries with exponential backoff capped at `backoff_max`, emits `retry_attempted` events. `LLMExecutor` handles transient API errors similarly, with optional `fallback_model` switch on the final retry.
 
 ### Checkpointing / Resumability
 
@@ -480,18 +496,24 @@ result = await engine.resume(graph, run_id="abc123")
 
 ### LLM Integration
 
-- **Multi-provider dispatch:** `ProviderRegistry` routes model names to the correct API. Resolution: exact `model_provider_map` override → prefix pattern match (`gpt-*`→OpenAI, `claude-*`→Anthropic, `gemini-*`→Google) → `default` fallback (OpenAI-compatible endpoint).
+- **Multi-provider dispatch:** `ProviderRegistry` (in `dan.providers.registry`) routes model names to the correct API. Resolution order: (1) exact `model_provider_map` override → (2) prefix pattern match (`gpt-*`/`o1*`/`o3*`/`o4*`→OpenAI, `claude-*`→Anthropic, `gemini-*`→Google) → (3) `"default"` provider fallback (OpenAI-compatible endpoint). Custom prefix patterns can be added via `registry.add_prefix_pattern()`.
 - **Built-in providers:** `OpenAIProvider` (any OpenAI-compatible endpoint, default), `AnthropicProvider` (optional), `GoogleProvider` (optional). Provider SDKs are optional deps.
-- **Backward compatible:** `EngineConfig.llm_api_key` + `llm_base_url` auto-create a `"default"` provider. Existing vectorengine.ai setup works unchanged.
+- **Key management:** Env vars `DAN_OPENAI_API_KEY`, `DAN_ANTHROPIC_API_KEY`, `DAN_GOOGLE_API_KEY` are scanned at server startup (`app.py` `_get_engine_config()`). Each non-empty key auto-registers the corresponding provider. `DAN_LLM_API_KEY` + `DAN_LLM_BASE_URL` configure the default provider (backward compatible with existing vectorengine.ai setup).
 - Output normalization built into LLM executor: extract JSON -> validate against schema -> re-prompt with error -> retry
 - Transient API errors (rate limits, timeouts) retried with configurable `retry_policy`
 - **Cost estimation:** static `COST_PER_1K_TOKENS` table in `providers/costs.py` covering major models. `estimate_cost()` utility function. Best-effort — unknown models return None.
 
 ### Built-in Tools (`dan.tools`)
 
-- 11 batteries-included tools: file I/O (sandboxed to workspace root), web search/fetch, HTTP requests, shell commands (allowlist-enforced), PDF reading, text chunking, JSON extraction, regex matching
+- 11 batteries-included tools organized by category:
+  - **File I/O** — `file_read`, `file_write`, `list_directory` (sandboxed to `DAN_WORKSPACE_ROOT`)
+  - **Web** — `web_search` (DuckDuckGo), `web_fetch` (URL content), `http_request` (general HTTP)
+  - **Shell** — `shell_command` (subprocess with timeout and allowlist)
+  - **Document** — `pdf_read` (PDF text extraction)
+  - **Text Processing** — `text_chunk` (chunking with overlap), `json_extract` (dot-notation), `regex_match` (match/replace)
+- **Auto-discovery:** Each module exports `TOOL_METADATA` dict (keys: `tool_id`, `description`, `parameters`, `examples`, `category`, `returns`) and an async callable with the same name as `tool_id`. `get_all_tools()` scans all modules and returns `{tool_id: (function, metadata)}`.
 - Auto-registered during server lifespan via `ToolRegistry.register_builtin_tools()` — custom tools can override built-in IDs
-- Graceful degradation: optional SDK tools (pypdf, duckduckgo-search) skip with warning if SDK not installed
+- Graceful degradation: optional SDK tools (`pypdf` for `pdf_read`, `duckduckgo-search` for `web_search`) skip with warning if SDK not installed
 - Workspace root sandboxing: all file tools enforce `DAN_WORKSPACE_ROOT` boundary
 
 ### Tool design (Plan 7-5)
@@ -509,6 +531,15 @@ result = await engine.resume(graph, run_id="abc123")
 - `CheckpointStore` protocol with filesystem default (`FileSystemCheckpointStore`)
 - Checkpoint written after each topological level completes
 - `Engine.resume()` loads checkpoint and continues from pending nodes
+
+### Checkpoint Portals (Phase 8, Plan 13-2)
+
+- **`CheckpointData`** model extends raw checkpoint dict with `graph_revision` (deterministic hash of nodes + edges), `completed_node_ids`, and `node_outputs` — populated on every checkpoint save.
+- **`RerunScope`** model defines three rerun scopes: `downstream_of` (target + all downstream nodes), `single_node` (only target with checkpoint inputs), `subgraph` (all nodes in a named sub-graph).
+- **`compute_graph_revision_hash(graph)`** — deterministic SHA-256 of graph structure (nodes + edges only; metadata excluded so cosmetic changes do not invalidate).
+- **`check_checkpoint_staleness(revision, graph)`** — returns `StalenessResult` with `compatible`, `stale`, `missing_nodes`, and human-readable `message`. Used by API to reject stale reruns with 409.
+- **`RunManager.rerun_from_checkpoint()`** — validates scope, checks staleness, rehydrates `PortDataStore` with checkpoint outputs for skipped nodes, marks skipped nodes as `SKIPPED`, creates new `run_id` with provenance. Result metadata tagged with `__rerun_provenance__`.
+- **API endpoints**: `GET /api/runs/{id}/checkpoints` (list with staleness), `GET /api/runs/{id}/checkpoints/{cpid}` (detail), `POST /api/runs/{id}/rerun` (partial rerun with `RerunScope` body).
 
 ## Workflow Builder API (Phase 1.5)
 
@@ -608,6 +639,9 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 | DELETE | `/api/rag/collections/{name}` | Delete collection |
 | POST | `/api/runs` | Start execution |
 | POST | `/api/runs/{id}/resume` | Resume checkpointed run |
+| GET | `/api/runs/{id}/checkpoints` | List checkpoint markers with staleness info |
+| GET | `/api/runs/{id}/checkpoints/{cpid}` | Checkpoint detail (completed nodes, output keys) |
+| POST | `/api/runs/{id}/rerun` | Partial rerun from checkpoint with RerunScope |
 | GET | `/api/runs/{id}` | Get run status snapshot |
 | GET | `/api/runs` | List all runs |
 | WS | `/api/runs/{id}/events` | Live event stream |

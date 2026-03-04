@@ -647,6 +647,197 @@ engine = Engine(config=config, event_callback=on_event)
 
 ---
 
+## 7b. Retry Policy & Fallback
+
+Every node type inherits a `retry_policy` field from `NodeBase`. The `RetryPolicy` model controls how transient failures (rate limits, timeouts, network errors) are handled.
+
+### RetryPolicy Fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `max_retries` | `int` | `0` | Number of retry attempts after the initial call |
+| `backoff` | `float` | `1.0` | Initial backoff delay in seconds |
+| `backoff_max` | `float` | `60.0` | Maximum backoff delay (exponential: doubles each retry, capped here) |
+| `fallback_model` | `str \| None` | `None` | Alternative model to try on final failure (LLM nodes only) |
+| `on_failure` | `"error" \| "skip" \| "halt"` | `"error"` | What to do after all retries are exhausted |
+
+### Failure Modes
+
+- **`error`** — node status is `FAILED`, error propagates (default)
+- **`skip`** — node status is `SKIPPED`, downstream nodes see empty outputs
+- **`halt`** — node status is `FAILED` with `metadata.halt=True`; the engine stops at the current topological level (already-running parallel nodes finish) and writes a checkpoint for later `Engine.resume()`
+
+### Setting RetryPolicy on Nodes
+
+`RetryPolicy` is set on the node model directly. The builder DSL exposes it through the `metadata` dict or by modifying the compiled graph:
+
+```python
+from dan.models.nodes import RetryPolicy
+
+# Option 1: Set on the compiled graph
+graph = wf.build()
+for node in graph.nodes:
+    if node.node_type == "llm_operator":
+        node.retry_policy = RetryPolicy(
+            max_retries=3,
+            backoff=2.0,
+            fallback_model="gpt-4o-mini",
+            on_failure="halt",
+        )
+
+# Option 2: Set on ToolOperator for transient tool failures
+for node in graph.nodes:
+    if node.node_type == "tool_operator" and node.tool_id == "web_search":
+        node.retry_policy = RetryPolicy(
+            max_retries=2,
+            backoff=1.0,
+            backoff_max=10.0,
+            on_failure="skip",
+        )
+```
+
+### How Executors Respect RetryPolicy
+
+- **`ToolExecutor`**: catches transient exceptions (`TimeoutError`, `ConnectionError`, `OSError`), retries with exponential backoff, emits `retry_attempted` events. Permanent exceptions break immediately.
+- **`LLMExecutor`**: retries transient API errors. If `fallback_model` is set, switches model on final retry.
+- **Separate from output normalization**: output schema validation retries (JSON parse → re-prompt) are controlled by `output_norm_max_retries` on `EngineConfig`, not `RetryPolicy`.
+
+---
+
+## 7c. Multi-Provider LLM Support
+
+DAN supports multiple LLM providers simultaneously via `ProviderRegistry`.
+
+### Supported Providers
+
+| Provider | SDK | Env Var | Model Prefix |
+|---|---|---|---|
+| **OpenAI** (+ compatible endpoints) | `openai` | `DAN_OPENAI_API_KEY` | `gpt-*`, `o1*`, `o3*`, `o4*` |
+| **Anthropic** | `anthropic` (optional) | `DAN_ANTHROPIC_API_KEY` | `claude-*` |
+| **Google** | `google-generativeai` (optional) | `DAN_GOOGLE_API_KEY` | `gemini-*` |
+
+### Configuration
+
+```bash
+# .env — set keys for the providers you want to use
+DAN_LLM_API_KEY=your-default-key        # default provider (OpenAI-compatible)
+DAN_LLM_BASE_URL=https://api.vectorengine.ai/v1
+DAN_LLM_MODEL=claude-sonnet-4-6
+
+# Additional providers (optional)
+DAN_OPENAI_API_KEY=sk-...
+DAN_ANTHROPIC_API_KEY=sk-ant-...
+DAN_GOOGLE_API_KEY=AIza...
+```
+
+### Per-Node Model Dispatch
+
+Each node specifies its model independently. The `ProviderRegistry` resolves model → provider:
+
+1. **Exact override** — `model_provider_map` pins a model to a provider
+2. **Prefix match** — `gpt-*` → OpenAI, `claude-*` → Anthropic, `gemini-*` → Google
+3. **Default fallback** — `EngineConfig.llm_api_key` + `llm_base_url` create a `"default"` provider
+
+```python
+wf = workflow("multi_model")
+classifier = wf.llm("classify", model="gpt-4o-mini", prompt="Classify: {input}")
+writer = wf.llm("write", model="claude-sonnet-4-6", prompt=f"Write: {classifier}")
+summarizer = wf.llm("summarize", model="gemini-2.0-flash", prompt=f"Summarize: {writer}")
+classifier >> writer >> summarizer
+```
+
+### Programmatic Provider Setup
+
+```python
+from dan.engine import Engine, EngineConfig
+from dan.providers import ProviderConfig
+
+config = EngineConfig(
+    llm_base_url="https://api.vectorengine.ai/v1",
+    llm_api_key="default-key",
+    llm_default_model="claude-sonnet-4-6",
+    providers={
+        "openai": ProviderConfig(api_key="sk-..."),
+        "anthropic": ProviderConfig(api_key="sk-ant-..."),
+        "google": ProviderConfig(api_key="AIza..."),
+    },
+)
+engine = Engine(config)
+```
+
+### Cost Estimation
+
+```python
+from dan.providers.costs import estimate_cost
+
+cost = estimate_cost(model="gpt-4o", input_tokens=1000, output_tokens=500)
+# Returns estimated cost in USD, or None for unknown models
+```
+
+---
+
+## 7d. Built-in Tools (`dan.tools`)
+
+DAN ships 11 batteries-included tools, auto-registered during server startup. Each tool module exports a `TOOL_METADATA` dict and an async callable.
+
+### Tool Categories
+
+| Category | Tools | Description |
+|---|---|---|
+| **File I/O** | `file_read`, `file_write`, `list_directory` | Workspace-sandboxed file operations |
+| **Web** | `web_search`, `web_fetch`, `http_request` | DuckDuckGo search, URL fetch, general HTTP |
+| **Shell** | `shell_command` | Subprocess with timeout and allowlist |
+| **Document** | `pdf_read` | PDF text extraction |
+| **Text Processing** | `text_chunk`, `json_extract`, `regex_match` | Chunking, dot-notation extraction, regex |
+
+### Using Tools in Workflows
+
+```python
+wf = workflow("research")
+
+search = wf.tool("search", tool_id="web_search",
+    input_ports=[{"name": "query"}],
+    output_ports=[{"name": "results"}])
+
+fetch = wf.tool("fetch", tool_id="web_fetch",
+    input_ports=[{"name": "url"}],
+    output_ports=[{"name": "content"}])
+
+extract = wf.tool("extract", tool_id="json_extract",
+    tool_config={"path": "data.results"},
+    input_ports=[{"name": "json_text"}],
+    output_ports=[{"name": "result"}])
+```
+
+### Registering Custom Tools
+
+```python
+from dan.executors.tool import ToolRegistry
+
+registry = ToolRegistry()
+registry.register_builtin_tools()  # registers all 11 built-in tools
+
+# Add custom tools (override built-in IDs or add new ones)
+async def my_tool(query: str) -> dict:
+    return {"result": f"processed {query}"}
+
+registry.register("my_custom_tool", my_tool)
+```
+
+### Tool Metadata Pattern
+
+Each tool module follows the same pattern — export `TOOL_METADATA` dict with keys: `tool_id`, `description`, `parameters` (JSON Schema), `examples`, `category`, `returns`. The `get_all_tools()` function in `dan.tools` auto-discovers all modules and returns `{tool_id: (function, metadata)}`.
+
+### Workspace Sandboxing
+
+File tools (`file_read`, `file_write`, `list_directory`) enforce `DAN_WORKSPACE_ROOT` boundary — paths outside the workspace are rejected. Defaults to the current working directory.
+
+### Graceful Degradation
+
+Optional-dependency tools (`web_search` requires `duckduckgo-search`, `pdf_read` requires `pypdf`) skip with a warning if the SDK is not installed. The remaining tools continue to work.
+
+---
+
 ## 8. Complete Example — Paper Writing Workflow
 
 This is the canonical end-to-end example. It uses LLM nodes, ForEach, WhileLoop, Code, and Tool nodes.

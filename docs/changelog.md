@@ -1,5 +1,102 @@
 # Changelog
 
+## 2026-03-04
+
+- [fix] **Phase 11.5 code review fixes (Part 2)** — fixed `Cmd/Ctrl+Shift+M` chat mode keyboard shortcut to not trigger when an input or textarea is focused; removed redundant chat mode string normalization in frontend (trusting the backend API); set correct MIME types (`text/markdown`, `text/x-python`) for exported graph blob downloads.
+
+- [fix] **Phase 11.5 code review fixes** — fixed duplicate `const tid` in `ChatPanel.tsx` `handleApplyMutation`; refined `detect_chat_mode` heuristic to avoid false positives (questions with "error"/"fix" now route to ask, not debug; stem matching for "crash"/"fail" variants); added "auto" to `ChatStore._VALID_MODES` and `loadThread` valid modes for consistent persistence; added click-outside handler to export dropdown in `EditorToolbar.tsx`. 48/48 tests pass.
+
+- [feat] **Per-thread chat mode persistence (Plan 20-1, Task 4)** — chat mode (ask/agent/plan/debug) is now persisted to thread metadata (`*.meta.json`). Switching mode via the segmented control or `Cmd/Ctrl+Shift+M` saves to the backend. Loading/switching threads restores the stored mode. Backward compat: missing/legacy modes (`build`, `mutate`) normalize to `agent`.
+
+- [feat] **Keyboard shortcut to cycle chat modes (Plan 20-1, Task 5)** — `Cmd+Shift+M` (Mac) / `Ctrl+Shift+M` (Windows) cycles Agent → Ask → Plan → Debug with a toast notification. Mode is also persisted to the active thread.
+
+- [feat] **Debug diff tag (Plan 20-1, Task 6)** — mutation plans generated in debug mode are tagged with `source: "debug-fix"` in metadata. `GraphDiffPreview` renders an amber `[debug-fix]` badge next to "Proposed Changes" when this tag is present.
+
+- [docs] **Docs sync for retry, multi-provider, and built-in tools (Plan 20-1, Tasks 1–3)** — added `RetryPolicy` field table and executor behavior to `architecture.md`; expanded provider registry with env var scanning and key management details; enhanced `dan.tools` section with per-category tool list and TOOL_METADATA pattern. Added new sections 7b (Retry Policy), 7c (Multi-Provider), and 7d (Built-in Tools) to `llm-api-guide.md` with usage examples. Updated `README.md` feature list with retry/fallback, multi-provider support, and built-in tools.
+
+- [test] **Chat mode persistence tests (Plan 20-1, Task 7)** — 16 tests in `test_chat_mode.py` covering mode set/get, normalization, fallback to agent, legacy alias handling, coexistence with pinned metadata.
+
+- [feat] **Checkpoint UI & Auto-Mode Detection (Plan 20-3)** — three features completing Phase 11.5 patch plan:
+  - **Run History Checkpoint UI**: each completed/failed run in RunHistoryPanel now has an expandable "CP" button. Clicking it fetches checkpoints from `GET /api/runs/{run_id}/checkpoints` and displays timestamp, completed node count, and staleness status (green Compatible / amber Stale / red Incompatible badges). Compatible checkpoints show inline scope-picker (downstream-of / single-node / subgraph) + target node input to trigger `POST /api/runs/{run_id}/rerun`. Stale checkpoints show amber warning + "Run Full" fallback. Loading placeholder while fetching. `CheckpointEntry` type extracted in `api.ts` with staleness fields.
+  - **Auto-Mode Detection**: new heuristic `detect_chat_mode()` in `chat_manager.py` classifies messages as debug/ask/plan/agent by keyword patterns and recent run failure status. `ChatMessageRequest.mode` extended with `"auto"` literal. When `mode="auto"`, server resolves to concrete mode and includes `detected_mode` in `chat_complete`/`chat_mutation` stream events. Frontend adds "Auto" option (PencilLine icon) to mode selector; shows effective mode badge ("→ Debug", "→ Ask", etc.) after detection. `ChatStreamEvent`, `ChatMode`, store types all updated. 28 pytest tests in `tests/test_server/test_auto_mode.py` cover detection heuristics, priority ordering, and `normalize_chat_mode` pass-through.
+  - **Multi-Tab Checkpoint Consistency audit**: confirmed no-op — test cases, variable inspector, and checkpoint data are all API-fetched on demand, not stored in `TabSnapshot`.
+
+- [feat] **Chat & Editor UX Polish (Plan 20-2)** — implemented five deferred UX features:
+  - **"Fix This" shortcut**: one-click from run error or validation badge to Debug mode with error context pre-filled in chat input. Store action `openDebugWithError` switches mode, opens chat panel, and pre-fills input while preserving thread context. Available in LogPanel (wrench button on error node groups) and DanNode (clickable error badge).
+  - **Collapse verbose run output**: `RunOutputBlock` now defaults to collapsed; auto-expands on error. Collapsed view shows "`N nodes — Status`" summary.
+  - **Fuzzy mention autocomplete**: replaced substring `.includes()` with subsequence fuzzy scoring (gap penalty, start bonus). Results sorted by score, threshold 0.3 filters noise. Highlight shows individual matched characters for non-contiguous matches.
+  - **Frontend export buttons**: Export dropdown in toolbar with JSON/Markdown/Python options. Markdown and Python call `GET /api/graphs/{id}/export/markdown|python`; results shown in ExportPreviewModal with file sidebar, copy-to-clipboard, download actions, and diagnostics banner.
+  - **Sortable log columns**: clickable header row (Node, Duration, Tokens, Cost) above log node groups. Click toggles null→asc→desc→null cycle with ▲/▼ indicators. Resets on new run.
+
+- [docs] **Phase 11.5 plan patch-up** — corrected execution-critical details in `20-*` plans after review: fixed built-in tool IDs in `20-1`, aligned per-thread mode persistence with chat thread metadata APIs, updated `20-3` checkpoint work to target `RunHistoryPanel` + scope-picker rerun flow, and replaced `auto_detect` request flag with explicit `mode: "auto"` contract + `detected_mode` response metadata. Added validation task blocks to `20-1`, `20-2`, and `20-3`.
+
+- [docs] **Todo promotion style normalization** — updated promoted backlog items in `todo.md` from `[ ] ~~item~~ → promoted...` to `[x] ~~item~~ → promoted...` for consistency with existing promotion conventions.
+
+- [docs] **Phase 11.5 — Patch & Polish plan** — created top-level plan (`20-patch-polish.md`) and three sub-plans: `20-1-docs-quick-wins.md` (docs sync + trivial chat UI), `20-2-chat-editor-polish.md` ("Fix this" shortcut, collapse run output, fuzzy mentions, export buttons, sortable logs), `20-3-checkpoint-ui-automode.md` (checkpoint history UI, multi-tab consistency, auto-mode detection). Updated `todo.md` with Phase 11.5 section and annotated 12 backlog items as promoted.
+
+- [docs] **Backlog consolidation** — organized all deferred items from 25+ plan files into categorized backlog sections in `todo.md`: Infrastructure/CI, Integration tests requiring real LLM, Frontend polish, Docs sync, Requires new architecture, Deferred runtime features, Stretch goals. Each item references its source plan and task number.
+
+- [feat] **Checkpoint portal UX integration (Plan 13-2, Task 5)** — surface checkpoint rerun, variable inspection, and test case creation in the editor.
+  - Context menu: "Rerun from Here" (downstream_of scope) and "Rerun This Node" (single_node scope) actions on canvas nodes, visible when a run exists.
+  - LogPanel: node group header now shows action buttons on hover — "Inspect inputs" (selects node), "Add test case from this run" (opens modal with prefill), "Rerun from here" (triggers downstream rerun).
+  - Store: `rerunFromNode(nodeId, scopeType)` action connects to `POST /api/runs/{run_id}/rerun` endpoint, resets run state, and connects WebSocket for the new rerun.
+  - API client: `listCheckpoints()` and `rerunFromCheckpoint()` functions in `api.ts`.
+  - Error handling: stale checkpoints (409) and scope validation errors surface as toast notifications.
+
+- [fix] Fix `test_error_memory_retrieved_event_emitted` test failure — mock's `get_context` was missing `cross_workflow` kwarg added when cross-workflow learning landed.
+
+- [docs] **Category 4: Plan deferral annotation audit** — reviewed all 25+ plan files across Phases 4–11. All `[ ]` items already had proper `*(deferred — reason)*` annotations. Fixed 18-1 Tests parent checkbox (`[ ]` → `[x]` — all sub-tasks were already complete).
+
+- [docs] **Category 1: Plan reconciliation** — updated 10 plan files (1-5, 6, 6-1, 6-2, 6-3, 6-5, 11-4, 17, 17-1, 17-2) to match actual implementation status. Updated todo.md Phase 9D checkboxes.
+
+- [feat] **Token Analytics Frontend (Plan 18-4, Task 3) — editor visualization for token usage, waste detection, and optimization recommendations.**
+  - **Token heatmap on canvas:** nodes color-coded by token consumption (green -> yellow -> red gradient), normalized to max usage in the run. Toggle via toolbar "Heatmap" button. Background color applied to node body when enabled.
+  - **Per-node token tooltip:** hover over the token badge on any completed node to see a detailed breakdown popup — input/output tokens, system/user/context/hyperedge/memory/RAG token split, model name, cost, cache hit status.
+  - **Waste warning badges:** nodes with detected token waste show a yellow triangle warning badge (top-left corner). Hover to see the waste findings with category, description, and estimated saveable tokens.
+  - **Run-level token summary:** expanded the RunSummaryBar in LogPanel with a clickable "details" section showing the top 3 most expensive nodes (with token counts and costs) and a waste summary (finding count, saveable tokens, waste categories).
+  - **Optimizations tab:** new "Optimizations" bottom panel tab (alongside Logs, Output, History) with a badge showing the count of waste findings. Panel shows: summary bar with waste stats, category filter buttons, finding cards sorted by saveable tokens (descending), and one-click "Apply" buttons that call the existing `/api/runs/{run_id}/optimization-mutations` endpoint to apply graph mutations. Each card shows category label, node name, description, saveable tokens, and suggestion text.
+  - **Zustand store additions:** `tokenBreakdowns`, `wasteFindings`, `optimizationMutations`, `tokenHeatmapEnabled`, `analyticsLoading` state; `fetchTokenAnalytics()` action (called auto on run completion), `applyOptimizationMutation()` action, `setTokenHeatmapEnabled()` toggle. TabSnapshot extended to persist analytics across tab switches. Analytics data cleared on new run start.
+  - **API client additions:** `fetchTokenBreakdown()`, `fetchOptimizationReport()`, `fetchOptimizationMutations()` in `api.ts`.
+  - **TypeScript types:** `TokenBreakdown`, `WasteFinding`, `OptimizationReport`, `OptimizationMutation`, and response types in `types/graph.ts`.
+  - Files: `TokenAnalyticsPanel.tsx` (new), `DanNode.tsx` (heatmap + tooltips + waste badge), `LogPanel.tsx` (enhanced RunSummaryBar), `EditorToolbar.tsx` (heatmap toggle), `App.tsx` (optimizations tab), `useGraphStore.ts` (store slice), `api.ts` (API calls), `types/graph.ts` (types).
+  - Remaining deferred: token flow edge labels (3-4), before/after estimation (4-4), analytics dashboard for self-evolving rules (5-6).
+
+- [feat] **Checkpoint portal backend (Plan 13-2, Tasks 1-2)** — checkpoint-based partial rerun infrastructure.
+  - Extended `CheckpointData` model in `engine/checkpoint.py` with `graph_revision` (deterministic hash of graph nodes + edges), `completed_node_ids`, and `node_outputs` fields. Updated `Engine._save_checkpoint()` to populate these fields on every checkpoint write.
+  - `RerunScope` Pydantic model: supports `downstream_of`, `single_node`, and `subgraph` scope types for targeted partial reruns.
+  - `compute_graph_revision_hash()`: deterministic SHA-256 of graph nodes + edges (excludes metadata so cosmetic changes do not invalidate checkpoints). Accepts Graph model or dict.
+  - `check_checkpoint_staleness()`: compares checkpoint's `graph_revision` to current graph, returns `StalenessResult` with `compatible`, `stale`, `missing_nodes`, and `message` fields.
+  - `compute_downstream_nodes()`: BFS traversal from target node to find all downstream dependents for `downstream_of` scope.
+  - `compute_subgraph_node_ids()`: looks up sub-graph by key and returns node IDs for `subgraph` scope.
+  - `RunManager.rerun_from_checkpoint()`: validates scope against checkpoint, checks staleness (rejects with `RuntimeError` on stale), rehydrates `PortDataStore` with checkpoint outputs for skipped nodes, marks skipped nodes as `SKIPPED`, creates new `run_id` with provenance tags.
+  - `RunManager.get_checkpoint_info()` and `list_checkpoint_runs()`: query checkpoint metadata for API consumption.
+  - Three new API endpoints: `GET /api/runs/{run_id}/checkpoints` (list with staleness check), `GET /api/runs/{run_id}/checkpoints/{checkpoint_id}` (detail with completed_node_ids, node_output_keys), `POST /api/runs/{run_id}/rerun` (accepts `RerunScope`, returns 409 on stale checkpoint, 422 on invalid scope).
+  - `RERUN_STARTED` event type: emitted before partial rerun execution with full provenance (`source_checkpoint_id`, `rerun_scope`, `nodes_to_rerun`, `nodes_skipped`). Result metadata tagged with `__rerun_provenance__`.
+  - Fixed latent `NameError` in `_execute_with_cycles` halt-branch checkpoint call (referenced undefined `cost_tracker` variable).
+  - Tests: `test_checkpoint_portal.py` — 30 tests covering CheckpointData model, RerunScope model, graph revision hashing (deterministic, metadata-insensitive, edge-sensitive), staleness detection (compatible/stale/missing nodes), downstream computation (linear/diamond/branch), subgraph node IDs, RunManager checkpoint info, and rerun validation.
+- [feat] **Node test cases (Plan 13-2, Task 4)** — define and run test cases on individual nodes in isolation.
+  - Backend schema: `NodeTestCase` and `TestCaseRunResult` Pydantic models in `src/dan/server/test_cases.py`. Fields: id, name, node_id, inputs, expected_outputs, assertions, tags, notes, timestamps.
+  - Backend persistence: `TestCaseStore` class with file-based storage at `{graphs_dir}/test_cases/{workflow_id}/{node_id}.json`. CRUD: `list_cases`, `get_case`, `save_case` (upsert), `delete_case`. Follows RunStore pattern (atomic write via .tmp rename).
+  - REST API: 4 endpoints in `app.py` — `GET /api/test-cases/{wf}/{node}` (list), `POST /api/test-cases/{wf}/{node}` (create/update), `DELETE /api/test-cases/{wf}/{node}/{id}` (delete), `POST /api/test-cases/{wf}/{node}/{id}/run` (execute). Run endpoint builds synthetic single-node graph and executes via `RunManager.start_run()`, compares outputs against expected values.
+  - Frontend component: `TestCasePanel.tsx` — collapsible "Test Cases" section in ConfigPanel with test case list, per-case Run/Edit/Delete actions, pass/fail indicators, output diff display, and modal for creating/editing cases with JSON input editors per port.
+  - Context menu: "Add Test Case" right-click action on canvas nodes dispatches custom event to open the test case modal.
+  - API client: `listTestCases`, `createOrUpdateTestCase`, `deleteTestCase`, `runTestCase` functions + `NodeTestCase`/`TestCaseRunResult` types in `api.ts`.
+  - Tests: `test_test_cases.py` — 11 tests covering save/list, get, upsert, delete, multiple cases, node isolation, empty list, corrupted file recovery, persistence format, optional expected outputs.
+- [feat] **Variable inspector (Plan 13-2, Task 3)** — upstream inputs diagnostic for any selected node.
+  - Backend: `compute_upstream_variables()` utility in `src/dan/server/variable_inspector.py` — walks incoming edges (data + context), infers types from port schemas, detects unconnected required ports.
+  - REST API: `GET /api/graphs/{graph_id}/nodes/{node_id}/inputs?run_id=` endpoint in `app.py` — returns static wiring + optional runtime values from persisted events.
+  - Frontend: `UpstreamInputsSection` collapsible in `ConfigPanel.tsx` — shows variable name, source provenance, type hint, "likely missing" amber diagnostics, and read-only runtime value preview (live from `nodeOutputs` or persisted from `RunStore`).
+  - API client: `getNodeInputs()` + `UpstreamVariable`/`NodeInputsResponse` types in `api.ts`.
+- [docs] **Plan file reconciliation: fixed stale checkboxes and status markers across 10 plan files.**
+  - Plan 1-5 (Builder API): marked all 44 sub-task checkboxes as [x] — all were implemented but never checked off.
+  - Plan 6 (Phase 3.75 parent): status `in-progress` → `completed` — all 14 sub-plans shipped.
+  - Plans 6-1, 6-2, 6-3, 6-5: status `not-started`/`in-progress` → `completed` — all features implemented and working.
+  - Plan 6-1 (History/Multi-Select): marked all 28 sub-task checkboxes as [x].
+  - Plan 11-4 (Documentation): status `in-progress` → `completed`.
+  - Plans 17-1 (Error Memory), 17-2 (Reflection Node), 17 (parent): status `in-progress` → `completed`. Core implementations are done; explicit deferred items (integration tests, authoring surfaces) preserved as [ ] in plan files.
+  - todo.md Phase 9D: marked 17-1, 17-2, 17 parent as [x] with deferred-item annotations.
+  - Plans 19-1 through 19-4: already marked `completed` — no changes needed (verified).
+
 ## 2026-03-03
 - [feat] **Phase 11 — final two deferred tasks completed: builder-code path + engine pipeline tests.**
   - Builder-code path (`GenerateCodePlan`): LLM can generate Python builder DSL code; executed in `SandboxRunner` subprocess with 30s timeout. Harness wraps code to serialize compiled `Graph` to `_result.json`. `_validate_plan()` warns on missing `build()` call. 5 new tests.
