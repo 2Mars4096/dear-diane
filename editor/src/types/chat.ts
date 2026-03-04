@@ -68,4 +68,5 @@ export interface ChatStreamEvent {
   status?: string;
   output_preview?: string;
   duration_ms?: number;
+  detected_mode?: string;
 }

@@ -365,3 +365,65 @@ export const NODE_DESCRIPTIONS: Record<
     outputs: ["input"],
   },
 };
+
+// -- 18-4: Token Analytics types --------------------------------------------
+
+export interface TokenBreakdown {
+  total_input_tokens: number;
+  total_output_tokens: number;
+  system_tokens?: number;
+  user_tokens?: number;
+  context_edge_tokens?: number;
+  hyperedge_tokens?: number;
+  memory_tokens?: number;
+  rag_tokens?: number;
+  assistant_tokens?: number;
+  output_tokens?: number;
+  cache_hit?: boolean;
+  model?: string;
+}
+
+export interface TokenBreakdownResponse {
+  run_id: string;
+  nodes: Record<string, TokenBreakdown>;
+  run_totals: {
+    total_input_tokens: number;
+    total_output_tokens: number;
+    total_cost: number;
+  };
+}
+
+export interface WasteFinding {
+  category: string;
+  node_id: string;
+  description: string;
+  estimated_saveable_tokens: number;
+  suggestion: string;
+  edge_id?: string;
+}
+
+export interface OptimizationReport {
+  findings: WasteFinding[];
+  total_waste_tokens: number;
+  total_tokens_analyzed: number;
+  waste_percentage: number;
+}
+
+export interface OptimizationReportResponse {
+  run_id: string;
+  report: OptimizationReport;
+}
+
+export interface OptimizationMutation {
+  graph_id: string;
+  mutation: Record<string, unknown>;
+  mutation_plan: Record<string, unknown>;
+  apply_request: Record<string, unknown>;
+  finding: WasteFinding;
+}
+
+export interface OptimizationMutationsResponse {
+  run_id: string;
+  mutations: OptimizationMutation[];
+  count: number;
+}
