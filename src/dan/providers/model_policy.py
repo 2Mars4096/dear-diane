@@ -7,9 +7,10 @@ string at runtime.
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class ModelConstraints(BaseModel):
@@ -88,7 +89,61 @@ class RouterPolicy(BaseModel):
     constraints: ModelConstraints | None = None
 
 
+class TaskTier(str, Enum):
+    """Provider-agnostic model tier — maps to a concrete model via tier map."""
+
+    micro = "micro"
+    routine = "routine"
+    reasoning = "reasoning"
+    critical = "critical"
+
+    @classmethod
+    def from_score(cls, score: float) -> TaskTier:
+        if score < 0.25:
+            return cls.micro
+        if score < 0.50:
+            return cls.routine
+        if score < 0.75:
+            return cls.reasoning
+        return cls.critical
+
+
+class TierWeights(BaseModel):
+    """Weights for the three tier-scoring dimensions.  Must sum to 1.0."""
+
+    difficulty: float = 0.45
+    impact: float = 0.35
+    recoverability: float = 0.20
+
+    @model_validator(mode="after")
+    def _check_sum(self) -> TierWeights:
+        if abs(self.difficulty + self.impact + self.recoverability - 1.0) >= 0.01:
+            msg = (
+                f"TierWeights must sum to 1.0 "
+                f"(got {self.difficulty + self.impact + self.recoverability:.4f})"
+            )
+            raise ValueError(msg)
+        return self
+
+
+class TierPolicy(BaseModel):
+    """Automatic tier-based model selection — assigns the right-weight model per call."""
+
+    strategy: Literal["tier"] = "tier"
+    tier_map: dict[str, str] | None = None
+    tier_params: dict[str, dict[str, Any]] | None = None
+    weights: TierWeights | None = None
+    constraints: ModelConstraints | None = None
+
+
 ModelPolicy = Annotated[
-    Union[StaticPolicy, BudgetPolicy, CascadePolicy, CapabilityPolicy, RouterPolicy],
+    Union[
+        StaticPolicy,
+        BudgetPolicy,
+        CascadePolicy,
+        CapabilityPolicy,
+        RouterPolicy,
+        TierPolicy,
+    ],
     Field(discriminator="strategy"),
 ]

@@ -15,10 +15,11 @@ from dan.providers.model_policy import (
     ModelConstraints,
     RouterPolicy,
     StaticPolicy,
+    TierPolicy,
 )
 
 _POLICY_ADAPTER = TypeAdapter(
-    StaticPolicy | BudgetPolicy | CascadePolicy | CapabilityPolicy | RouterPolicy
+    StaticPolicy | BudgetPolicy | CascadePolicy | CapabilityPolicy | RouterPolicy | TierPolicy
 )
 
 if TYPE_CHECKING:
@@ -28,7 +29,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-ModelPolicy = StaticPolicy | BudgetPolicy | CascadePolicy | CapabilityPolicy | RouterPolicy
+ModelPolicy = StaticPolicy | BudgetPolicy | CascadePolicy | CapabilityPolicy | RouterPolicy | TierPolicy
 
 
 class ModelSelector:
@@ -53,6 +54,8 @@ class ModelSelector:
         self._provider_registry = provider_registry
         self._cost_tracker = cost_tracker
         self._capability_registry = capability_registry
+        self._last_tier_result: Any = None
+        self._tier_map_validated: bool = False
 
     async def select(
         self,
@@ -77,6 +80,10 @@ class ModelSelector:
 
         elif strategy == "router":
             model = await self._select_router(policy, node, context)
+
+        elif strategy == "tier":
+            model, tier_result = self._select_tier(policy, node, context)
+            self._last_tier_result = tier_result
 
         else:
             raise ValueError(f"Unknown policy strategy: {strategy!r}")
@@ -146,6 +153,81 @@ class ModelSelector:
             chosen, policy.candidates,
         )
         return policy.candidates[0]
+
+    def _select_tier(
+        self,
+        policy: TierPolicy,
+        node: Any,
+        context: Any,
+    ) -> tuple[str, Any]:
+        """Score the node and resolve a concrete model from the tier map."""
+        from dan.providers.tier_defaults import resolve_tier_map
+        from dan.providers.tier_scorer import TierScorer
+
+        graph = getattr(context, "graph", None) if context else None
+        weights = policy.weights
+        scorer = TierScorer(graph=graph, weights=weights)
+
+        tool_count = 0
+        if context and hasattr(context, "tool_registry") and context.tool_registry:
+            tool_count = len(getattr(context.tool_registry, "_tools", {}))
+
+        result = scorer.score_node(node, tool_count=tool_count)
+
+        config = getattr(context, "config", None) if context else None
+        configured_providers = self._detect_providers(config)
+        user_map = policy.tier_map or (
+            getattr(config, "tier_map", None) if config else None
+        )
+        tier_map = resolve_tier_map(configured_providers, user_map)
+
+        if not self._tier_map_validated:
+            self._tier_map_validated = True
+            for tier_name, tier_model in tier_map.items():
+                try:
+                    self._provider_registry.resolve(tier_model)
+                except Exception:
+                    logger.warning(
+                        "Tier '%s' maps to model '%s' which no provider can handle",
+                        tier_name,
+                        tier_model,
+                    )
+
+        model = tier_map.get(result.tier.value)
+        if not model:
+            default_model = (
+                getattr(config, "llm_default_model", "claude-sonnet-4-6")
+                if config
+                else "claude-sonnet-4-6"
+            )
+            model = default_model
+            logger.warning(
+                "Tier %s not in tier map, falling back to %s",
+                result.tier.value,
+                model,
+            )
+
+        return model, result
+
+    @staticmethod
+    def _detect_providers(config: Any) -> list[str]:
+        """Detect which provider ecosystems are configured."""
+        if config is None:
+            return []
+        providers: list[str] = []
+        provider_cfg = getattr(config, "providers", {}) or {}
+        model_map = getattr(config, "model_provider_map", {}) or {}
+        if provider_cfg.get("anthropic") or any(
+            k.startswith("claude") for k in model_map
+        ):
+            providers.append("anthropic")
+        if provider_cfg.get("openai") or getattr(config, "llm_api_key", ""):
+            providers.append("openai")
+        if provider_cfg.get("google") or any(
+            k.startswith("gemini") for k in model_map
+        ):
+            providers.append("google")
+        return providers
 
     # ------------------------------------------------------------------
     # Constraint enforcement (advisory — logs warnings)
