@@ -1,0 +1,29 @@
+{
+  "key": "principle:4cde16f0-fdd3-43f7-b16d-1b366e96dd2f",
+  "value": {
+    "id": "4cde16f0-fdd3-43f7-b16d-1b366e96dd2f",
+    "condition": "timeout on API calls",
+    "action": "increase timeout",
+    "reason": "",
+    "source_run_ids": [],
+    "source_node_ids": [
+      "n1"
+    ],
+    "confidence": 0.9,
+    "created_at": 1772639966.9450119,
+    "updated_at": 1772639966.945049,
+    "tags": [],
+    "workflow_id": "wf1",
+    "repair_level": "parameter_fix",
+    "suggested_parameter_changes": {
+      "timeout_seconds": 120
+    },
+    "structural_description": ""
+  },
+  "scope": "workflow",
+  "created_at": 1772639966.945067,
+  "updated_at": 1772639966.945067,
+  "source_run_id": null,
+  "writer_node_id": null,
+  "write_mode": "set"
+}
