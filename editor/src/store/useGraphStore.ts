@@ -17,7 +17,7 @@ import {
   addEdge,
   MarkerType,
 } from "@xyflow/react";
-import type { DanGraph, DanNode, DanEdge, InputVariable, LoopGroup } from "../types/graph";
+import type { DanGraph, DanNode, DanEdge, InputVariable, LoopGroup, TokenBreakdown, WasteFinding, OptimizationMutation } from "../types/graph";
 import {
   danGraphToReactFlow,
   danNodeToReactFlow,
@@ -107,6 +107,9 @@ interface TabSnapshot {
   runSummary: { elapsed_seconds?: number; total_prompt_tokens?: number; total_completion_tokens?: number; total_tokens?: number } | null;
   nodeUsage: Record<string, { prompt_tokens: number; completion_tokens: number; total_tokens: number }>;
   nodeCosts: Record<string, number>;
+  tokenBreakdowns: Record<string, TokenBreakdown>;
+  wasteFindings: WasteFinding[];
+  optimizationMutations: OptimizationMutation[];
 }
 
 interface GraphState {
@@ -262,10 +265,12 @@ interface GraphState {
   restoreTabs: () => Promise<void>;
 
   // -- 10-9: Build-from-intent chat mode / 12-2: Multi-mode chat
-  chatMode: "ask" | "agent" | "plan" | "debug";
-  setChatMode: (mode: "ask" | "agent" | "plan" | "debug") => void;
+  chatMode: "ask" | "agent" | "plan" | "debug" | "auto";
+  setChatMode: (mode: "ask" | "agent" | "plan" | "debug" | "auto") => void;
   openBuildWithAI: () => Promise<void>;
   chatFocusTrigger: number;
+  chatPrefill: string | null;
+  openDebugWithError: (errorContext: string) => void;
 
   // -- 12-1: Log panel focus
   logFocusCounter: number;
@@ -275,6 +280,19 @@ interface GraphState {
   historyFocusCounter: number;
   historyFocusRunId: string | null;
   focusHistoryPanel: (runId?: string) => void;
+
+  // -- 13-2: Checkpoint portal
+  rerunFromNode: (nodeId: string, scopeType: "downstream_of" | "single_node") => Promise<void>;
+
+  // -- 18-4: Token analytics
+  tokenBreakdowns: Record<string, TokenBreakdown>;
+  wasteFindings: WasteFinding[];
+  optimizationMutations: OptimizationMutation[];
+  tokenHeatmapEnabled: boolean;
+  analyticsLoading: boolean;
+  setTokenHeatmapEnabled: (enabled: boolean) => void;
+  fetchTokenAnalytics: () => Promise<void>;
+  applyOptimizationMutation: (index: number) => Promise<void>;
 }
 
 // -- 7-4: Cost estimation (mirrors src/dan/providers/costs.py) ------------------
@@ -340,6 +358,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
       runSummary: s.runSummary ? { ...s.runSummary } : null,
       nodeUsage: { ...s.nodeUsage },
       nodeCosts: { ...s.nodeCosts },
+      tokenBreakdowns: { ...s.tokenBreakdowns },
+      wasteFindings: [...s.wasteFindings],
+      optimizationMutations: [...s.optimizationMutations],
     };
   };
 
@@ -371,6 +392,9 @@ export const useGraphStore = create<GraphState>((set, get) => {
       runSummary: snapshot.runSummary ?? null,
       nodeUsage: snapshot.nodeUsage ?? {},
       nodeCosts: snapshot.nodeCosts ?? {},
+      tokenBreakdowns: snapshot.tokenBreakdowns ?? {},
+      wasteFindings: snapshot.wasteFindings ?? [],
+      optimizationMutations: snapshot.optimizationMutations ?? [],
     });
   };
 
@@ -430,9 +454,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
   // -- 10-9 / 12-2: Chat modes
   chatMode: "agent" as const,
   chatFocusTrigger: 0,
+  chatPrefill: null as string | null,
   logFocusCounter: 0,
   historyFocusCounter: 0,
   historyFocusRunId: null,
+
+  // -- 18-4: Token analytics
+  tokenBreakdowns: {},
+  wasteFindings: [],
+  optimizationMutations: [],
+  tokenHeatmapEnabled: false,
+  analyticsLoading: false,
 
   // -- 6-9: Tab state
   tabs: [],
@@ -848,7 +880,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       const saved = await get().saveGraph();
       if (!saved) return;
       const { run_id } = await api.startRun(graphId, finalInputs);
-      set({ runId: run_id, runStatus: "running", nodeStatuses: {}, nodeOutputs: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, activeExecutionPath: new Set(), logs: [], runSummary: null });
+      set({ runId: run_id, runStatus: "running", nodeStatuses: {}, nodeOutputs: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, activeExecutionPath: new Set(), logs: [], runSummary: null, tokenBreakdowns: {}, wasteFindings: [], optimizationMutations: [] });
       _persistTabState();
       get().addToast({ type: "info", message: `Run started (${run_id.slice(0, 8)})` });
       const ws = api.connectRunEvents(
@@ -867,7 +899,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     if (!graphId || !runId) return;
     try {
       await api.resumeRun(runId, graphId);
-      set({ runStatus: "running", nodeStatuses: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, activeExecutionPath: new Set(), logs: [], runSummary: null });
+      set({ runStatus: "running", nodeStatuses: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, activeExecutionPath: new Set(), logs: [], runSummary: null, tokenBreakdowns: {}, wasteFindings: [], optimizationMutations: [] });
       _persistTabState();
       get().addToast({ type: "info", message: "Run resumed" });
       const ws = api.connectRunEvents(
@@ -878,6 +910,47 @@ export const useGraphStore = create<GraphState>((set, get) => {
       set({ ws });
     } catch (err: unknown) {
       get().addToast({ type: "error", message: (err as Error).message ?? "Failed to resume run" });
+    }
+  },
+
+  rerunFromNode: async (nodeId: string, scopeType: "downstream_of" | "single_node") => {
+    const { graphId, runId } = get();
+    if (!graphId || !runId) {
+      get().addToast({ type: "error", message: "No active run to rerun from" });
+      return;
+    }
+    try {
+      const result = await api.rerunFromCheckpoint(runId, {
+        scope_type: scopeType,
+        target_node_id: nodeId,
+        graph_id: graphId,
+      });
+      set({
+        runId: result.run_id,
+        runStatus: "running",
+        nodeStatuses: {},
+        nodeOutputs: {},
+        nodeTimings: {},
+        nodeUsage: {},
+        nodeCosts: {},
+        activeExecutionPath: new Set(),
+        logs: [],
+        runSummary: null,
+        tokenBreakdowns: {},
+        wasteFindings: [],
+        optimizationMutations: [],
+      });
+      _persistTabState();
+      get().addToast({ type: "info", message: `Rerun started (${scopeType.replace("_", " ")} ${nodeId.slice(0, 12)})` });
+      const ws = api.connectRunEvents(
+        result.run_id,
+        (event) => get().handleRunEvent(event),
+        () => set({ ws: null }),
+      );
+      set({ ws });
+    } catch (err: unknown) {
+      const msg = (err as Error).message ?? "Rerun failed";
+      get().addToast({ type: "error", message: msg });
     }
   },
 
@@ -1100,6 +1173,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     if (eventType === "run_completed" || eventType === "run_failed") {
       _persistTabState();
+      // 18-4: Auto-fetch token analytics after run completion
+      get().fetchTokenAnalytics();
     }
   },
 
@@ -1603,11 +1678,69 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
   // -- 10-9 / 12-2: Multi-mode chat
   setChatMode: (mode) => set({ chatMode: mode }),
+  openDebugWithError: (errorContext) => set((s) => ({
+    chatMode: "debug",
+    chatPrefill: errorContext,
+    chatFocusTrigger: (s.chatFocusTrigger ?? 0) + 1,
+  })),
   focusLogPanel: () => set((s) => ({ logFocusCounter: s.logFocusCounter + 1 })),
   focusHistoryPanel: (runId) => set((s) => ({
     historyFocusCounter: s.historyFocusCounter + 1,
     historyFocusRunId: runId ?? null,
   })),
+
+  // -- 18-4: Token analytics actions -------------------------------------------
+
+  setTokenHeatmapEnabled: (enabled) => set({ tokenHeatmapEnabled: enabled }),
+
+  fetchTokenAnalytics: async () => {
+    const { runId, runStatus } = get();
+    if (!runId || (runStatus !== "completed" && runStatus !== "failed")) return;
+    set({ analyticsLoading: true });
+    try {
+      const [breakdownRes, reportRes, mutationsRes] = await Promise.allSettled([
+        api.fetchTokenBreakdown(runId),
+        api.fetchOptimizationReport(runId),
+        api.fetchOptimizationMutations(runId),
+      ]);
+      const updates: Partial<GraphState> = { analyticsLoading: false };
+      if (breakdownRes.status === "fulfilled") {
+        updates.tokenBreakdowns = breakdownRes.value.nodes as Record<string, TokenBreakdown>;
+      }
+      if (reportRes.status === "fulfilled") {
+        updates.wasteFindings = (reportRes.value.report?.findings ?? []) as WasteFinding[];
+      }
+      if (mutationsRes.status === "fulfilled") {
+        updates.optimizationMutations = (mutationsRes.value.mutations ?? []) as OptimizationMutation[];
+      }
+      set(updates);
+    } catch {
+      set({ analyticsLoading: false });
+    }
+  },
+
+  applyOptimizationMutation: async (index) => {
+    const { optimizationMutations, graphId, addToast, loadGraph } = get();
+    const mutation = optimizationMutations[index];
+    if (!mutation || !graphId) return;
+    try {
+      const result = await api.applyMutation(graphId, mutation.mutation_plan as Record<string, unknown>);
+      if (result.success) {
+        addToast({ type: "success", message: `Applied: ${mutation.finding.suggestion.slice(0, 60)}` });
+        // Remove the applied mutation from the list
+        set((s) => ({
+          optimizationMutations: s.optimizationMutations.filter((_, i) => i !== index),
+        }));
+        // Reload graph to reflect mutations
+        await loadGraph(graphId);
+      } else {
+        const errMsg = result.errors?.[0]?.message ?? "Unknown error";
+        addToast({ type: "error", message: `Failed to apply optimization: ${errMsg}` });
+      }
+    } catch (err: unknown) {
+      addToast({ type: "error", message: `Optimization error: ${(err as Error).message}` });
+    }
+  },
 
   openBuildWithAI: async () => {
     const autoId = `build-${Math.random().toString(36).slice(2, 8)}`;

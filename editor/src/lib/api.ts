@@ -412,6 +412,28 @@ export function connectChatStream(
   return ws;
 }
 
+// -- 18-4: Token Analytics ---------------------------------------------------
+
+export const fetchTokenBreakdown = (runId: string) =>
+  request<TokenBreakdownResponse>(`/runs/${runId}/token-breakdown`);
+
+export const fetchOptimizationReport = (runId: string) =>
+  request<OptimizationReportResponse>(`/runs/${runId}/optimization-report`);
+
+export const fetchOptimizationMutations = (runId: string) =>
+  request<OptimizationMutationsResponse>(`/runs/${runId}/optimization-mutations`);
+
+// -- Graph Export ------------------------------------------------------------
+
+export const exportGraphMarkdown = (graphId: string) =>
+  request<{
+    files: Array<{ path: string; content: string }>;
+    diagnostics: Array<{ level: string; message: string; hint?: string }>;
+  }>(`/graphs/${graphId}/export/markdown`);
+
+export const exportGraphPython = (graphId: string) =>
+  request<{ code: string }>(`/graphs/${graphId}/export/python`);
+
 // -- WebSocket ---------------------------------------------------------------
 
 export function connectRunEvents(
