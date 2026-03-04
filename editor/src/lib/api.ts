@@ -422,3 +422,98 @@ export function connectRunEvents(
   ws.onclose = () => onClose?.();
   return ws;
 }
+
+// -- Checkpoint Portal (13-2) ------------------------------------------------
+
+export interface CheckpointEntry {
+  checkpoint_id: string;
+  timestamp: number | null;
+  graph_id: string;
+  completed_node_count: number;
+  graph_revision: string | null;
+  compatible?: boolean;
+  stale?: boolean;
+  missing_nodes?: string[];
+  message?: string;
+}
+
+export interface CheckpointListResponse {
+  run_id: string;
+  checkpoints: CheckpointEntry[];
+}
+
+export interface RerunResponse {
+  run_id: string;
+  source_run_id: string;
+  scope: { scope_type: string; target_node_id?: string; sub_graph_key?: string };
+  status: string;
+}
+
+export const listCheckpoints = (runId: string) =>
+  request<CheckpointListResponse>(`/runs/${runId}/checkpoints`);
+
+export const rerunFromCheckpoint = (
+  runId: string,
+  body: { scope_type: string; target_node_id?: string; sub_graph_key?: string; graph_id: string },
+) =>
+  request<RerunResponse>(`/runs/${runId}/rerun`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+// -- Node Test Cases (13-2) --------------------------------------------------
+
+export interface NodeTestCase {
+  id: string;
+  name: string;
+  node_id: string;
+  inputs: Record<string, unknown>;
+  expected_outputs: Record<string, unknown> | null;
+  assertions: string[] | null;
+  tags: string[];
+  notes: string;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface TestCaseRunResult {
+  passed: boolean;
+  actual_outputs: Record<string, unknown>;
+  expected_outputs: Record<string, unknown> | null;
+  diff: Record<string, { expected: unknown; actual: unknown }> | null;
+  execution_metadata: Record<string, unknown>;
+  error: string | null;
+}
+
+export const listTestCases = (workflowId: string, nodeId: string) =>
+  request<{ cases: NodeTestCase[] }>(`/test-cases/${workflowId}/${nodeId}`);
+
+export const createOrUpdateTestCase = (
+  workflowId: string,
+  nodeId: string,
+  body: Partial<NodeTestCase>,
+) =>
+  request<{ case: NodeTestCase }>(`/test-cases/${workflowId}/${nodeId}`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
+export const deleteTestCase = (
+  workflowId: string,
+  nodeId: string,
+  caseId: string,
+) =>
+  request<{ status: string; case_id: string }>(
+    `/test-cases/${workflowId}/${nodeId}/${caseId}`,
+    { method: "DELETE" },
+  );
+
+export const runTestCase = (
+  workflowId: string,
+  nodeId: string,
+  caseId: string,
+) =>
+  request<TestCaseRunResult>(
+    `/test-cases/${workflowId}/${nodeId}/${caseId}/run`,
+    { method: "POST" },
+  );

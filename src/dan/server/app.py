@@ -1950,6 +1950,120 @@ async def resume_run(run_id: str, req: ResumeRequest):
     return {"run_id": record.run_id, "status": record.status.value}
 
 
+# ------------------------------------------------------------------
+# Checkpoint portals — partial rerun infrastructure
+# ------------------------------------------------------------------
+
+
+@app.get("/api/runs/{run_id}/checkpoints")
+async def list_run_checkpoints(run_id: str):
+    """List available checkpoint markers for a run.
+
+    Returns timestamp, completed node count, graph_revision, and
+    whether the checkpoint is compatible with the current graph.
+    """
+    rm = _require_run_manager()
+    info = await rm.get_checkpoint_info(run_id)
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"No checkpoint found for run '{run_id}'")
+
+    # If we can determine the graph_id, check staleness against current graph.
+    staleness_info: dict[str, Any] = {}
+    record = rm.get_run(run_id)
+    if record is not None and info.get("graph_revision"):
+        graph = _graph_store.load_as_model(record.graph_id)
+        if graph is not None:
+            from dan.engine.checkpoint import check_checkpoint_staleness
+            staleness = check_checkpoint_staleness(
+                info["graph_revision"],
+                graph,
+                info.get("completed_node_ids"),
+            )
+            staleness_info = staleness.model_dump()
+
+    return {
+        "run_id": run_id,
+        "checkpoints": [{
+            "checkpoint_id": run_id,  # Currently 1 checkpoint per run
+            "timestamp": info.get("timestamp"),
+            "graph_id": info.get("graph_id", ""),
+            "graph_revision": info.get("graph_revision"),
+            "completed_node_count": len(info.get("completed_node_ids", [])),
+            "has_state": info.get("has_state", False),
+            **staleness_info,
+        }],
+    }
+
+
+@app.get("/api/runs/{run_id}/checkpoints/{checkpoint_id}")
+async def get_checkpoint_detail(run_id: str, checkpoint_id: str):
+    """Get detailed checkpoint info: completed_node_ids, node_outputs keys."""
+    rm = _require_run_manager()
+    info = await rm.get_checkpoint_info(run_id)
+    if info is None:
+        raise HTTPException(status_code=404, detail=f"No checkpoint found for run '{run_id}'")
+    return {
+        "checkpoint_id": checkpoint_id,
+        "run_id": run_id,
+        "timestamp": info.get("timestamp"),
+        "graph_id": info.get("graph_id", ""),
+        "graph_revision": info.get("graph_revision"),
+        "completed_node_ids": info.get("completed_node_ids", []),
+        "node_output_keys": info.get("node_output_keys", []),
+    }
+
+
+class RerunRequest(BaseModel):
+    graph_id: str
+    scope_type: Literal["downstream_of", "single_node", "subgraph"]
+    target_node_id: str | None = None
+    sub_graph_key: str | None = None
+    session_id: str | None = None
+
+
+@app.post("/api/runs/{run_id}/rerun")
+async def rerun_from_checkpoint(run_id: str, req: RerunRequest):
+    """Start a partial rerun from a checkpoint.
+
+    Accepts a RerunScope body, validates scope against checkpoint,
+    and starts a partial rerun. Returns a new run_id for provenance.
+
+    Returns 409 Conflict if the checkpoint is stale (graph changed).
+    """
+    rm = _require_run_manager()
+    graph = _graph_store.load_as_model(req.graph_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{req.graph_id}' not found")
+
+    from dan.engine.checkpoint import RerunScope
+
+    scope = RerunScope(
+        scope_type=req.scope_type,
+        target_node_id=req.target_node_id,
+        sub_graph_key=req.sub_graph_key,
+    )
+
+    try:
+        record = await rm.rerun_from_checkpoint(
+            graph, graph_id=req.graph_id,
+            source_run_id=run_id,
+            scope=scope,
+            session_id=req.session_id,
+        )
+    except RuntimeError as exc:
+        # Stale checkpoint — graph changed since checkpoint was taken.
+        raise HTTPException(status_code=409, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    return {
+        "run_id": record.run_id,
+        "status": record.status.value,
+        "source_run_id": run_id,
+        "scope": scope.model_dump(),
+    }
+
+
 @app.get("/api/runs/compare")
 async def compare_runs(run_a: str, run_b: str):
     """Align two runs by node execution order and compute per-node diffs."""
@@ -2332,6 +2446,141 @@ def _build_meta_controller():
         graph_saver=_graph_store.save_graph,
     )
     return controller, planner, session_store
+
+
+# -- Test Cases CRUD ---------------------------------------------------------
+
+
+@app.get("/api/test-cases/{workflow_id}/{node_id}")
+async def list_test_cases(workflow_id: str, node_id: str):
+    """List test cases for a node."""
+    _validate_path_segment(workflow_id, "workflow_id")
+    cases = _test_case_store.list_cases(workflow_id, node_id)
+    return {"cases": [c.model_dump() for c in cases]}
+
+
+@app.post("/api/test-cases/{workflow_id}/{node_id}")
+async def create_or_update_test_case(workflow_id: str, node_id: str, body: dict[str, Any]):
+    """Create or update a test case for a node."""
+    _validate_path_segment(workflow_id, "workflow_id")
+    body.setdefault("node_id", node_id)
+    body.setdefault("updated_at", time.time())
+    if "id" not in body:
+        body["id"] = str(uuid.uuid4())
+    if "created_at" not in body:
+        body["created_at"] = time.time()
+    case = NodeTestCase.model_validate(body)
+    _test_case_store.save_case(workflow_id, node_id, case)
+    return {"case": case.model_dump()}
+
+
+@app.delete("/api/test-cases/{workflow_id}/{node_id}/{case_id}")
+async def delete_test_case(workflow_id: str, node_id: str, case_id: str):
+    """Delete a single test case."""
+    _validate_path_segment(workflow_id, "workflow_id")
+    if not _test_case_store.delete_case(workflow_id, node_id, case_id):
+        raise HTTPException(status_code=404, detail=f"Test case '{case_id}' not found")
+    return {"status": "deleted", "case_id": case_id}
+
+
+@app.post("/api/test-cases/{workflow_id}/{node_id}/{case_id}/run")
+async def run_test_case(workflow_id: str, node_id: str, case_id: str):
+    """Execute a single test case in isolation and return the result."""
+    _validate_path_segment(workflow_id, "workflow_id")
+    rm = _require_run_manager()
+
+    # 1. Load the test case
+    case = _test_case_store.get_case(workflow_id, node_id, case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"Test case '{case_id}' not found")
+
+    # 2. Load the full graph and extract the target node
+    graph = _graph_store.load_as_model(workflow_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{workflow_id}' not found")
+
+    target_node = graph.node_by_id(node_id)
+    if target_node is None:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found in graph")
+
+    # 3. Build a synthetic single-node graph
+    from dan.models.graph import Graph as GraphModel
+
+    synthetic = GraphModel(
+        nodes=[target_node],
+        entry_points=[node_id],
+        exit_points=[node_id],
+    )
+
+    # 4. Execute via RunManager
+    run_id = f"test-{case_id}-{int(time.time() * 1000)}"
+    record = await rm.start_run(
+        synthetic,
+        graph_id=workflow_id,
+        inputs=case.inputs,
+        run_id=run_id,
+    )
+
+    # 5. Wait for completion (with timeout)
+    deadline = time.time() + 120  # 2 minute timeout
+    while True:
+        current = rm.get_run(record.run_id)
+        if current is None:
+            break
+        if current.status.value in ("completed", "failed"):
+            break
+        if time.time() > deadline:
+            break
+        await asyncio.sleep(0.1)
+
+    # 6. Extract results
+    current = rm.get_run(record.run_id)
+    actual_outputs: dict[str, Any] = {}
+    execution_metadata: dict[str, Any] = {}
+    error_msg: str | None = None
+
+    if current and current.result:
+        actual_outputs = current.result.outputs or {}
+        # Extract the node's outputs if nested
+        if node_id in actual_outputs and isinstance(actual_outputs[node_id], dict):
+            actual_outputs = actual_outputs[node_id]
+        if current.result.errors:
+            error_msg = "; ".join(
+                f"{k}: {v}" for k, v in current.result.errors.items()
+            )
+        execution_metadata = {
+            "run_id": record.run_id,
+            "elapsed_seconds": current.elapsed_seconds,
+            "total_tokens": current.total_tokens,
+            "total_cost": current.total_cost,
+            "model": current.model,
+        }
+
+    # 7. Compare against expected outputs
+    passed = True
+    diff: dict[str, Any] | None = None
+
+    if error_msg:
+        passed = False
+    elif case.expected_outputs is not None:
+        diff = {}
+        for key, expected_val in case.expected_outputs.items():
+            actual_val = actual_outputs.get(key)
+            if actual_val != expected_val:
+                diff[key] = {"expected": expected_val, "actual": actual_val}
+        passed = len(diff) == 0
+        if not diff:
+            diff = None
+
+    result = TestCaseRunResult(
+        passed=passed,
+        actual_outputs=actual_outputs,
+        expected_outputs=case.expected_outputs,
+        diff=diff,
+        execution_metadata=execution_metadata,
+        error=error_msg,
+    )
+    return result.model_dump()
 
 
 @app.get("/api/memory/{workflow_id}/{session_id}")
