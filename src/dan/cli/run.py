@@ -174,41 +174,37 @@ def detect_source_type(source: str, *, force_goal: bool = False) -> str:
 # ---------------------------------------------------------------------------
 
 def load_graph_from_json(path: Path) -> Any:
-    from dan.models.graph import Graph
-    with open(path) as f:
-        data = json.load(f)
-    return Graph.model_validate(data)
+    from dan.utils.workflow_loader import load_graph_from_json as _load, WorkflowLoadError
+    try:
+        return _load(path)
+    except WorkflowLoadError as e:
+        _die(str(e))
 
 
 def load_graph_from_markdown(path: Path) -> Any:
-    from dan.loader import load
-    return load(path)
+    from dan.utils.workflow_loader import load_graph_from_markdown as _load, WorkflowLoadError
+    try:
+        return _load(path)
+    except WorkflowLoadError as e:
+        _die(str(e))
 
 
 def load_graph_from_python(path: Path) -> Any:
-    spec = importlib.util.spec_from_file_location("_dan_user_workflow", str(path))
-    if spec is None or spec.loader is None:
-        _die(f"Cannot load Python module from: {path}")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)  # type: ignore[union-attr]
-    if hasattr(mod, "graph"):
-        return mod.graph
-    if hasattr(mod, "build") and callable(mod.build):
-        return mod.build()
-    _die(
-        f"Python file {path} must export a 'graph' attribute "
-        "or a 'build()' function returning a Graph."
-    )
+    from dan.utils.workflow_loader import load_graph_from_python as _load, WorkflowLoadError
+    try:
+        return _load(path)
+    except WorkflowLoadError as e:
+        _die(str(e))
 
 
 def load_workflow(source: str, source_type: str) -> Any:
     """Load a Graph object from the given source."""
-    if source_type == "json":
-        return load_graph_from_json(Path(source))
-    if source_type == "markdown":
-        return load_graph_from_markdown(Path(source))
-    if source_type == "python":
-        return load_graph_from_python(Path(source))
+    from dan.utils.workflow_loader import load_graph, WorkflowLoadError
+    if source_type in ("json", "markdown", "python"):
+        try:
+            return load_graph(Path(source))
+        except WorkflowLoadError as e:
+            _die(str(e))
     _die(f"Cannot load workflow for source type: {source_type}")
 
 
