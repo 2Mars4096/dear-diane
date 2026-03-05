@@ -104,6 +104,7 @@ _active_adapters: dict[str, tuple[MessagingAdapter, asyncio.Task[Any]]] = {}
 _adapter_session_stores: dict[str, AdapterSessionStore] = {}
 _adapter_start_times: dict[str, float] = {}
 _adapter_renderers: dict[str, tuple[MessagingHumanRenderer, Graph | None]] = {}
+_self_knowledge_index: Any | None = None
 
 
 def _get_engine_config() -> EngineConfig:
@@ -1263,6 +1264,7 @@ async def lifespan(app: FastAPI):
     app.include_router(gateway_router)
 
     # Self-knowledge RAG indexing (19-5)
+    global _self_knowledge_index
     _self_knowledge_index = None
     try:
         from dan.rag import build_embedding_registry
@@ -1271,7 +1273,8 @@ async def lifespan(app: FastAPI):
         embedding_registry = build_embedding_registry(engine_config)
         if embedding_registry.has_provider("default"):
             provider = embedding_registry.resolve("text-embedding-3-small")
-            docs_dir = Path(__file__).resolve().parent.parent.parent.parent / "docs"
+            _project_root = Path(__file__).resolve().parents[3]
+            docs_dir = _project_root / "docs"
             doc_paths = []
             for fname in ("llm-api-guide.md", "architecture.md"):
                 p = docs_dir / fname
@@ -1281,9 +1284,12 @@ async def lifespan(app: FastAPI):
             if doc_paths:
                 _self_knowledge_index = SelfKnowledgeIndex(
                     embedding_provider=provider,
+                    embedding_model="text-embedding-3-small",
                 )
+                examples_dir = _project_root / "examples"
                 await _self_knowledge_index.refresh(
                     doc_paths=doc_paths,
+                    examples_dir=examples_dir if examples_dir.is_dir() else None,
                     tool_registry=_run_manager._tool_registry if _run_manager else None,
                 )
                 logger.info("Self-knowledge index refreshed (%d docs)", len(doc_paths))
@@ -2522,6 +2528,7 @@ def _build_meta_controller():
         experience_store=exp_store,
         graph_store=_graph_store,
         tool_registry=rm.tool_registry,
+        self_knowledge=_self_knowledge_index,
     )
     llm_call = _build_meta_llm_call(default_model=rm.engine_config.llm_default_model)
 
