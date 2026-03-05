@@ -366,6 +366,17 @@ export const NODE_DESCRIPTIONS: Record<
   },
 };
 
+// -- 18-5: Model tier info (from model_selected event) ----------------------
+
+export interface TierInfo {
+  tier: "micro" | "routine" | "reasoning" | "critical";
+  tier_score: number;
+  difficulty: number;
+  impact: number;
+  recoverability: number;
+  model: string;
+}
+
 // -- 18-4: Token Analytics types --------------------------------------------
 
 export interface TokenBreakdown {

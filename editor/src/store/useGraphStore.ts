@@ -17,7 +17,7 @@ import {
   addEdge,
   MarkerType,
 } from "@xyflow/react";
-import type { DanGraph, DanNode, DanEdge, InputVariable, LoopGroup, TokenBreakdown, WasteFinding, OptimizationMutation } from "../types/graph";
+import type { DanGraph, DanNode, DanEdge, InputVariable, LoopGroup, TokenBreakdown, WasteFinding, OptimizationMutation, TierInfo } from "../types/graph";
 import {
   danGraphToReactFlow,
   danNodeToReactFlow,
@@ -110,6 +110,8 @@ interface TabSnapshot {
   tokenBreakdowns: Record<string, TokenBreakdown>;
   wasteFindings: WasteFinding[];
   optimizationMutations: OptimizationMutation[];
+  edgeTokenCounts: Record<string, number>;
+  nodeTiers: Record<string, TierInfo>;
 }
 
 interface GraphState {
@@ -290,9 +292,15 @@ interface GraphState {
   optimizationMutations: OptimizationMutation[];
   tokenHeatmapEnabled: boolean;
   analyticsLoading: boolean;
+  edgeTokenCounts: Record<string, number>;
+  showEdgeTokenLabels: boolean;
   setTokenHeatmapEnabled: (enabled: boolean) => void;
+  setShowEdgeTokenLabels: (enabled: boolean) => void;
   fetchTokenAnalytics: () => Promise<void>;
   applyOptimizationMutation: (index: number) => Promise<void>;
+
+  // -- 18-5: Model tier info
+  nodeTiers: Record<string, TierInfo>;
 }
 
 // -- 7-4: Cost estimation (mirrors src/dan/providers/costs.py) ------------------
@@ -314,6 +322,8 @@ const COST_PER_1K: Record<string, { prompt: number; completion: number }> = {
   "gemini-2.5-pro": { prompt: 0.00125, completion: 0.01 },
   "gemini-2.5-flash": { prompt: 0.00015, completion: 0.0006 },
 };
+
+const VALID_TIERS = new Set<string>(["micro", "routine", "reasoning", "critical"]);
 
 function estimateCost(model: string, promptTokens: number, completionTokens: number): number | null {
   let rates = COST_PER_1K[model];
@@ -361,6 +371,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       tokenBreakdowns: { ...s.tokenBreakdowns },
       wasteFindings: [...s.wasteFindings],
       optimizationMutations: [...s.optimizationMutations],
+      edgeTokenCounts: { ...s.edgeTokenCounts },
+      nodeTiers: { ...s.nodeTiers },
     };
   };
 
@@ -395,6 +407,8 @@ export const useGraphStore = create<GraphState>((set, get) => {
       tokenBreakdowns: snapshot.tokenBreakdowns ?? {},
       wasteFindings: snapshot.wasteFindings ?? [],
       optimizationMutations: snapshot.optimizationMutations ?? [],
+      edgeTokenCounts: snapshot.edgeTokenCounts ?? {},
+      nodeTiers: snapshot.nodeTiers ?? {},
     });
   };
 
@@ -463,8 +477,13 @@ export const useGraphStore = create<GraphState>((set, get) => {
   tokenBreakdowns: {},
   wasteFindings: [],
   optimizationMutations: [],
+  edgeTokenCounts: {},
+  showEdgeTokenLabels: false,
   tokenHeatmapEnabled: false,
   analyticsLoading: false,
+
+  // -- 18-5: Model tier info
+  nodeTiers: {},
 
   // -- 6-9: Tab state
   tabs: [],
@@ -880,7 +899,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       const saved = await get().saveGraph();
       if (!saved) return;
       const { run_id } = await api.startRun(graphId, finalInputs);
-      set({ runId: run_id, runStatus: "running", nodeStatuses: {}, nodeOutputs: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, activeExecutionPath: new Set(), logs: [], runSummary: null, tokenBreakdowns: {}, wasteFindings: [], optimizationMutations: [] });
+      set({ runId: run_id, runStatus: "running", nodeStatuses: {}, nodeOutputs: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, nodeTiers: {}, activeExecutionPath: new Set(), logs: [], runSummary: null, tokenBreakdowns: {}, wasteFindings: [], optimizationMutations: [], edgeTokenCounts: {} });
       _persistTabState();
       get().addToast({ type: "info", message: `Run started (${run_id.slice(0, 8)})` });
       const ws = api.connectRunEvents(
@@ -899,7 +918,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     if (!graphId || !runId) return;
     try {
       await api.resumeRun(runId, graphId);
-      set({ runStatus: "running", nodeStatuses: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, activeExecutionPath: new Set(), logs: [], runSummary: null, tokenBreakdowns: {}, wasteFindings: [], optimizationMutations: [] });
+      set({ runStatus: "running", nodeStatuses: {}, nodeTimings: {}, nodeUsage: {}, nodeCosts: {}, nodeTiers: {}, activeExecutionPath: new Set(), logs: [], runSummary: null, tokenBreakdowns: {}, wasteFindings: [], optimizationMutations: [], edgeTokenCounts: {} });
       _persistTabState();
       get().addToast({ type: "info", message: "Run resumed" });
       const ws = api.connectRunEvents(
@@ -933,12 +952,14 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeTimings: {},
         nodeUsage: {},
         nodeCosts: {},
+        nodeTiers: {},
         activeExecutionPath: new Set(),
         logs: [],
         runSummary: null,
         tokenBreakdowns: {},
         wasteFindings: [],
         optimizationMutations: [],
+        edgeTokenCounts: {},
       });
       _persistTabState();
       get().addToast({ type: "info", message: `Rerun started (${scopeType.replace("_", " ")} ${nodeId.slice(0, 12)})` });
@@ -995,6 +1016,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeTimings: {},
         nodeUsage: {},
         nodeCosts: {},
+        edgeTokenCounts: {},
         activeExecutionPath: new Set(Object.keys(info.node_statuses ?? {})),
         logs: [],
       });
@@ -1117,6 +1139,20 @@ export const useGraphStore = create<GraphState>((set, get) => {
         }
       }
 
+      // -- 18-5: Track tier info from model_selected events
+      const isModelSelected = nodeId && eventType === "model_selected" && data.tier && VALID_TIERS.has(String(data.tier));
+      const newTiers = isModelSelected ? { ...s.nodeTiers } : s.nodeTiers;
+      if (isModelSelected) {
+        newTiers[nodeId] = {
+          tier: data.tier as TierInfo["tier"],
+          tier_score: (data.tier_score as number) ?? 0,
+          difficulty: (data.difficulty as number) ?? 0,
+          impact: (data.impact as number) ?? 0,
+          recoverability: (data.recoverability as number) ?? 0,
+          model: (data.model as string) ?? "",
+        };
+      }
+
       // -- 6-6: Loop iteration tracking
       const newIterations = { ...s.nodeIterations };
       if (eventType === "iteration_started" && nodeId) {
@@ -1161,6 +1197,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeTimings: newTimings,
         nodeUsage: newUsage,
         nodeCosts: newCosts,
+        nodeTiers: newTiers,
         activeExecutionPath: new Set(Object.keys(newStatuses)),
         runStatus: newRunStatus,
         runSummary: newRunSummary,
@@ -1692,6 +1729,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   // -- 18-4: Token analytics actions -------------------------------------------
 
   setTokenHeatmapEnabled: (enabled) => set({ tokenHeatmapEnabled: enabled }),
+  setShowEdgeTokenLabels: (enabled) => set({ showEdgeTokenLabels: enabled }),
 
   fetchTokenAnalytics: async () => {
     const { runId, runStatus } = get();
@@ -1714,6 +1752,41 @@ export const useGraphStore = create<GraphState>((set, get) => {
         updates.optimizationMutations = (mutationsRes.value.mutations ?? []) as OptimizationMutation[];
       }
       set(updates);
+
+      // Compute estimated token counts per data edge
+      const { edges, nodeOutputs, nodeUsage } = get();
+      const breakdowns = updates.tokenBreakdowns ?? get().tokenBreakdowns;
+      const incomingDataCount = new Map<string, number>();
+      const outgoingDataCount = new Map<string, number>();
+      for (const e of edges) {
+        const de = e.data?.danEdge as Record<string, unknown> | undefined;
+        if ((de?.edge_type ?? "data") !== "data") continue;
+        incomingDataCount.set(e.target, (incomingDataCount.get(e.target) ?? 0) + 1);
+        outgoingDataCount.set(e.source, (outgoingDataCount.get(e.source) ?? 0) + 1);
+      }
+      const edgeTokenCounts: Record<string, number> = {};
+      for (const edge of edges) {
+        const danEdge = edge.data?.danEdge as Record<string, unknown> | undefined;
+        if ((danEdge?.edge_type ?? "data") !== "data") continue;
+        const targetBd = breakdowns[edge.target];
+        if (targetBd?.context_edge_tokens && targetBd.context_edge_tokens > 0) {
+          const inCount = incomingDataCount.get(edge.target) ?? 1;
+          edgeTokenCounts[edge.id] = Math.round(targetBd.context_edge_tokens / Math.max(inCount, 1));
+          continue;
+        }
+        const output = nodeOutputs[edge.source];
+        if (output) {
+          const len = JSON.stringify(output).length;
+          edgeTokenCounts[edge.id] = Math.ceil(len / 4);
+          continue;
+        }
+        const srcUsage = nodeUsage[edge.source];
+        if (srcUsage?.total_tokens) {
+          const outCount = outgoingDataCount.get(edge.source) ?? 1;
+          edgeTokenCounts[edge.id] = Math.round(srcUsage.total_tokens * 0.3 / Math.max(outCount, 1));
+        }
+      }
+      set({ edgeTokenCounts });
     } catch {
       set({ analyticsLoading: false });
     }
@@ -1841,6 +1914,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       nodeTimings: {},
       nodeUsage: {},
       nodeCosts: {},
+      edgeTokenCounts: {},
       activeExecutionPath: new Set<string>(),
       nodeIterations: {},
       streamingOutputs: {},
@@ -1911,6 +1985,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       nodeTimings: {},
       nodeUsage: {},
       nodeCosts: {},
+      edgeTokenCounts: {},
       activeExecutionPath: new Set<string>(),
       nodeIterations: {},
       streamingOutputs: {},
@@ -1965,6 +2040,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
         nodeTimings: {},
         nodeUsage: {},
         nodeCosts: {},
+        edgeTokenCounts: {},
         activeExecutionPath: new Set<string>(),
         nodeIterations: {},
         streamingOutputs: {},
@@ -2088,6 +2164,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       nodeTimings: {},
       nodeUsage: {},
       nodeCosts: {},
+      edgeTokenCounts: {},
       activeExecutionPath: new Set<string>(),
       nodeIterations: {},
       streamingOutputs: {},
