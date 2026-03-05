@@ -94,6 +94,12 @@ deep-agent-network/
     utils/                       # Phase 9A — shared utilities
       tokens.py                  # estimate_tokens() — tiktoken-backed or character approximation
       workflow_interface.py      # Phase 12 (21-5) — WorkflowInterface model, derive_workflow_interface() for input/output schema extraction
+    client/                      # Phase 13 (23-2) — shared thin client library for dan-serve gateway
+      __init__.py                # Public exports: DanClient, DanClientOrLocal, error types, response models
+      client.py                  # DanClient — async httpx/websockets client (dispatch, runs, events, HumanNode, activity)
+      local.py                   # DanClientOrLocal — transparent server/local wrapper (server via DanClient, fallback to direct Engine)
+      errors.py                  # DanClientError hierarchy: ConnectionError, DispatchError, NotFoundError, ServerError, RunLostError
+      models.py                  # Client-side Pydantic models: DispatchResult, RunSummary, PendingInput, ActivitySnapshot, CancelResult
     adapters/                    # Phase 12 (21-4) — messaging adapter framework
       __init__.py                # Public exports: adapters, configs, renderer, session store
       base.py                    # MessagingAdapter protocol, AdapterConfig, MessagingHumanRenderer, AdapterSessionStore, SessionState, trigger/parse helpers
@@ -139,11 +145,13 @@ deep-agent-network/
       registry.py                # BlockRegistry — scan/list/get/remove, _index.json cache
       executor.py                # BlockResolver, load_block_as_graph(), resolve_node_block()
     publish/                     # Phase 12 (21-3) — publish workflows as MCP/HTTP services
-      __init__.py                # Public API: session, schema, http, portal exports
-      session.py                 # PublishSession, PublishSessionStore, PublishedHumanRenderer (asyncio.Event-based wait), submit_human_input()
+      __init__.py                # Public API: runtime, session, schema, http, portal exports
+      runtime.py                 # PublishRuntime ABC, GatewayRuntime (dan-serve), LocalRuntime (direct Engine), create_publish_runtime() factory — unified execution backend
+      session.py                 # PublishSession, PublishSessionStore, PublishedHumanRenderer (asyncio.Event-based wait), submit_human_input() — used by LocalRuntime
       schema.py                  # slugify(), workflow_to_mcp_tools(), workflow_to_openapi_paths/spec()
-      mcp_server.py              # build_mcp_server(), run_mcp_stdio/http(), load_workflows_from_path() — FastMCP integration (optional mcp dep)
-      http_server.py             # PublishRegistry, create_publish_router(), create_publish_app() — FastAPI REST endpoints
+      mcp_server.py              # build_mcp_server(), run_mcp_stdio/http(), load_workflows_from_path() — FastMCP integration (optional mcp dep), uses PublishRuntime via _RuntimeHolder
+      http_server.py             # PublishRegistry, create_publish_router(), create_publish_app() — FastAPI REST endpoints, runtime initialized via lifespan
+      gateway_mode.py            # DEPRECATED — backwards-compat shim re-exporting PublishGatewayClient (use PublishRuntime instead)
       portal.py                  # generate_mcp_config(), generate_api_docs(), generate_openapi_spec() — consumer-facing output
     cli/                         # Phase 12 — terminal CLI for headless execution
       __init__.py                # load_env(), resolve_config(), ensure_dan_dir(), _try_import_rich()
@@ -170,6 +178,12 @@ deep-agent-network/
       mutation_metrics.py        # Mutation quality metrics for chat/LLM feedback
       variable_inspector.py      # Compute upstream inputs for a node: walks incoming edges, infers types, detects missing required inputs (Plan 13-2)
       test_cases.py              # NodeTestCase schema, TestCaseRunResult, TestCaseStore (filesystem CRUD at test_cases/{workflow_id}/{node_id}.json) (Plan 13-2)
+      gateway/                   # Phase 13 — multi-surface gateway
+        __init__.py              # Package marker
+        models.py                # DispatchRequest/Result, PendingInput, SubmitInputRequest, CancelRequest/Result, ActivitySnapshot, SurfaceRegistration
+        activity.py              # ActivityTracker — surface-aware run activity tracking wrapping RunManager
+        events.py                # GlobalEventBus — cross-surface event streaming with backpressure (max 50 subscribers, drop-oldest)
+        router.py                # FastAPI router at /api/gateway/ — dispatch, cancel, activity, surfaces, pending-inputs, submit-input, WebSocket events
   editor/                        # Phase 2+3.5 — React Flow visual editor
     package.json                 # Dependencies: react, @xyflow/react, zustand, tailwindcss, dagre, allotment, highlight.js, lucide-react
     vite.config.ts               # Vite config: Tailwind plugin, /api proxy to backend
@@ -717,6 +731,15 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 | GET | `/api/adapters/status` | List running adapters |
 | GET | `/api/published/{wf_id}/events` | SSE stream for published workflow |
 | WS | `/api/published/{wf_id}/ws` | Bidirectional WebSocket for published workflow |
+| GET | `/health` | Server health check for discovery |
+| POST | `/api/gateway/dispatch` | Unified workflow dispatch from any surface |
+| POST | `/api/gateway/cancel` | Cancel a running workflow |
+| GET | `/api/gateway/activity` | Activity snapshot (active/recent runs, surfaces) |
+| GET | `/api/gateway/surfaces` | List connected surfaces |
+| POST | `/api/gateway/surfaces/register` | Register a surface |
+| GET | `/api/gateway/pending-inputs` | List all pending HumanNode inputs |
+| POST | `/api/gateway/submit-input` | Submit HumanNode response from any surface |
+| WS | `/api/gateway/events` | Global event bus (all runs, filterable) |
 
 ### Graph Persistence
 

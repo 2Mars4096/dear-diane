@@ -192,12 +192,24 @@
   - [x] [21-3-publish-api-mcp](plans/21-3-publish-api-mcp.md) — MCP server generation, HTTP REST fallback, stateful streaming, easy portal, SSE/WebSocket streaming, rate limiting, dan-serve integration
   - [x] [21-4-messaging-adapters](plans/21-4-messaging-adapters.md) — email + Telegram + WhatsApp adapters as interactive HumanNode renderers, server integration, email retry *(adapter log streaming to editor deferred)*
   - [x] [21-5-shareable-blocks](plans/21-5-shareable-blocks.md) — block package format, export/import, versioning, local registry, editor integration, backend API endpoints
-
-## Cross-Phase Deferred Completion Waves
+## Phase 12.1 — Cross-Phase Deferred Completion Waves
 > Parallel closeout waves used to finish high-ROI deferred tasks across existing phases without opening new architecture scope.
 
 - [x] [22-deferred-wave-1](plans/22-deferred-wave-1.md) — wave 1: tiering finish, token runtime (loop compaction/cache/budget), and mention UX polish
 - [x] [22-deferred-wave-2](plans/22-deferred-wave-2.md) — wave 2: tier docs/editor integration, deferred runtime features, and frontend analytics polish (plus review hardening)
+
+## Phase 13 — Multi-Surface Gateway
+> Unify all interaction surfaces (CLI, messaging adapters, MCP) through `dan-serve` as a central hub with shared run management, cross-surface event streaming, and activity tracking. Any surface can trigger a workflow, observe activity from any other surface, and resolve HumanNode prompts cross-surface.
+
+- [x] [23-multi-surface-gateway](plans/23-multi-surface-gateway.md) — gateway API, thin client protocol, surface refactors
+  - [x] [23-1-gateway-api](plans/23-1-gateway-api.md) — A. Server-side dispatch endpoint, activity tracker, global event bus, cross-surface HumanNode resolution
+  - [x] [23-2-thin-client-protocol](plans/23-2-thin-client-protocol.md) — B. Shared `DanClient` library: HTTP dispatch, WebSocket events, HumanNode relay, fallback mode
+  - [x] [23-3-cli-thin-client](plans/23-3-cli-thin-client.md) — C. Refactor `dan-run`/`dan-status`/`dan-logs` to use `DanClient` with direct-engine fallback
+  - [x] [23-4-adapter-thin-client](plans/23-4-adapter-thin-client.md) — D. Refactor messaging adapters to use `DanClient`, cross-surface HumanNode pickup
+  - [x] [23-5-mcp-thin-client](plans/23-5-mcp-thin-client.md) — E. Refactor `dan-publish` MCP/HTTP to use `DanClient`, server-side sessions
+  - [x] Unified `PublishRuntime` — `GatewayRuntime` (primary) + `LocalRuntime` (fallback) behind ABC; fixes broken MCP status/submit in server mode; `--server`/`--local` flags on `dan-publish` CLI
+
+
 
 ## Backlog (unphased)
 
