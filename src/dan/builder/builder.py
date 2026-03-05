@@ -144,19 +144,24 @@ class WorkflowBuilder:
         *,
         tool_id: str,
         tool_config: dict[str, Any] | None = None,
+        config: dict[str, Any] | None = None,
         name: str | None = None,
         description: str = "",
         input_ports: list[dict[str, Any]] | None = None,
         output_ports: list[dict[str, Any]] | None = None,
     ) -> NodeRef:
-        """Add a tool operator node."""
+        """Add a tool operator node.
+
+        *config* is an alias for *tool_config* for convenience.
+        """
         from dan.models.ports import InputPort, OutputPort
 
+        effective_config = tool_config or config or {}
         kwargs: dict[str, Any] = {
             "name": name or node_id,
             "description": description,
             "tool_id": tool_id,
-            "tool_config": tool_config or {},
+            "tool_config": effective_config,
         }
         pn = _PendingNode(
             id=node_id,
