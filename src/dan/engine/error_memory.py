@@ -467,6 +467,100 @@ class PrincipleStore:
             workflow_id, _DEFAULT_SESSION_ID, f"principle:{principle_id}",
         )
 
+    async def compact(
+        self, workflow_id: str, *, threshold: int = 50,
+    ) -> int:
+        """Compact principles when count exceeds *threshold*.
+
+        Groups principles by ``tags[0]`` (category) and merges those with
+        overlapping action/condition text.  Uses structural merge only:
+        combined guidance text, max confidence, union of tags.
+
+        Returns the number of principles removed via merge.
+        """
+        all_principles = await self.load_principles(workflow_id)
+        if len(all_principles) <= threshold:
+            return 0
+
+        groups: dict[str, list[CausalPrinciple]] = {}
+        for p in all_principles:
+            key = p.tags[0] if p.tags else "uncategorized"
+            groups.setdefault(key, []).append(p)
+
+        removed = 0
+        for _category, members in groups.items():
+            if len(members) < 2:
+                continue
+            merged_away: set[str] = set()
+            for i, a in enumerate(members):
+                if a.id in merged_away:
+                    continue
+                for j in range(i + 1, len(members)):
+                    b = members[j]
+                    if b.id in merged_away:
+                        continue
+                    if not self._should_merge(a, b):
+                        continue
+                    a = self._merge_principles(a, b)
+                    merged_away.add(b.id)
+                members[i] = a
+
+            for pid in merged_away:
+                await self.delete_principle(workflow_id, pid)
+                removed += 1
+
+            merged_members = [m for m in members if m.id not in merged_away]
+            await self.store_principles(workflow_id, merged_members)
+
+        return removed
+
+    @staticmethod
+    def _should_merge(a: CausalPrinciple, b: CausalPrinciple) -> bool:
+        """True if two principles are similar enough to merge."""
+        a_words = set(a.action.lower().split())
+        b_words = set(b.action.lower().split())
+        if not a_words or not b_words:
+            return False
+        if len(a_words) < 5 and len(b_words) < 5:
+            return a_words == b_words
+        overlap = len(a_words & b_words) / len(a_words | b_words)
+        if overlap > 0.7:
+            return True
+        a_cond_words = set(a.condition.lower().split())
+        b_cond_words = set(b.condition.lower().split())
+        if a_cond_words and b_cond_words:
+            cond_overlap = len(a_cond_words & b_cond_words) / len(a_cond_words | b_cond_words)
+            if cond_overlap > 0.7 and overlap > 0.5:
+                return True
+        return False
+
+    @staticmethod
+    def _merge_principles(a: CausalPrinciple, b: CausalPrinciple) -> CausalPrinciple:
+        """Merge *b* into *a*: combine text, max confidence, union tags."""
+        _MAX_MERGED_TEXT = 2000
+
+        merged_action = a.action
+        if b.action and b.action not in a.action:
+            merged_action = f"{a.action}; {b.action}"
+        if len(merged_action) > _MAX_MERGED_TEXT:
+            merged_action = merged_action[:_MAX_MERGED_TEXT] + "..."
+
+        merged_condition = a.condition
+        if b.condition and b.condition not in a.condition:
+            merged_condition = f"{a.condition}; {b.condition}"
+        if len(merged_condition) > _MAX_MERGED_TEXT:
+            merged_condition = merged_condition[:_MAX_MERGED_TEXT] + "..."
+
+        return a.model_copy(update={
+            "action": merged_action,
+            "condition": merged_condition,
+            "confidence": max(a.confidence, b.confidence),
+            "tags": list(set(a.tags) | set(b.tags)),
+            "source_run_ids": list(set(a.source_run_ids) | set(b.source_run_ids)),
+            "source_node_ids": list(set(a.source_node_ids) | set(b.source_node_ids)),
+            "updated_at": time.time(),
+        })
+
     async def expire_principles(
         self, workflow_id: str, max_age_days: int,
     ) -> int:
