@@ -7,6 +7,7 @@ Each workflow gets:
   - ``{name}_run``          — execute the workflow (blocks until done or awaiting input)
   - ``{name}_status``       — get session status  (only if has_human_nodes)
   - ``{name}_submit_input`` — submit HumanNode input (only if has_human_nodes)
+  - ``{name}_cancel``       — cancel a running workflow (only if has_human_nodes)
 
 Workflow metadata is also exposed as an MCP resource for discovery.
 """
@@ -21,14 +22,8 @@ from typing import Any
 
 from dan.engine.executor import EngineConfig
 from dan.models.graph import Graph
+from dan.publish.runtime import PublishRuntime
 from dan.publish.schema import slugify
-from dan.publish.session import (
-    PublishSession,
-    PublishSessionStore,
-    PublishedHumanRenderer,
-    SessionStatus,
-    submit_human_input,
-)
 from dan.utils.workflow_interface import WorkflowInterface, derive_workflow_interface
 
 logger = logging.getLogger(__name__)
@@ -49,6 +44,53 @@ def _require_mcp() -> type:
             "Install it with: pip install dan[mcp]"
         )
     return FastMCP  # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Lazy runtime resolver (per-server, not global)
+# ---------------------------------------------------------------------------
+
+class _RuntimeHolder:
+    """Lazily resolves to gateway or local runtime on first async call.
+
+    Instantiated once per ``build_mcp_server`` invocation and captured by
+    tool closures.  The first tool call triggers server detection; all
+    subsequent calls reuse the resolved runtime.
+    """
+
+    def __init__(
+        self,
+        *,
+        server_url: str | None,
+        force_local: bool,
+        engine_config: EngineConfig | None,
+        human_timeout: float,
+        runtime: PublishRuntime | None,
+    ) -> None:
+        self._server_url = server_url
+        self._force_local = force_local
+        self._engine_config = engine_config
+        self._human_timeout = human_timeout
+        self._resolved: PublishRuntime | None = runtime
+        self._lock = asyncio.Lock()
+
+    async def get(self) -> PublishRuntime:
+        if self._resolved is not None:
+            return self._resolved
+
+        async with self._lock:
+            if self._resolved is not None:
+                return self._resolved
+
+            from dan.publish.runtime import create_publish_runtime
+
+            self._resolved = await create_publish_runtime(
+                server_url=self._server_url,
+                force_local=self._force_local,
+                engine_config=self._engine_config,
+                human_timeout=self._human_timeout,
+            )
+            return self._resolved
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +116,9 @@ def build_mcp_server(
     engine_config: EngineConfig | None = None,
     server_name: str = "dan-publish",
     human_timeout: float = 300.0,
+    server_url: str | None = None,
+    force_local: bool = False,
+    runtime: PublishRuntime | None = None,
 ) -> Any:
     """Build a FastMCP server instance from one or more workflow graphs.
 
@@ -88,16 +133,26 @@ def build_mcp_server(
         Display name for the MCP server.
     human_timeout:
         Default timeout (seconds) for HumanNode prompts.
-
-    Returns
-    -------
-    A ``FastMCP`` instance ready to ``.run()``.
+    server_url:
+        Optional dan-serve URL override.  When set (and ``force_local`` is
+        ``False``), workflow execution routes through the gateway API.
+    force_local:
+        Force direct engine execution regardless of server availability.
+    runtime:
+        Pre-created :class:`PublishRuntime`.  When provided, *server_url*,
+        *force_local*, *engine_config*, and *human_timeout* are ignored
+        and the runtime is used directly (no lazy detection).
     """
     McpClass = _require_mcp()
     mcp = McpClass(server_name)
 
-    config = engine_config or EngineConfig()
-    session_store = PublishSessionStore()
+    holder = _RuntimeHolder(
+        server_url=server_url,
+        force_local=force_local,
+        engine_config=engine_config,
+        human_timeout=human_timeout,
+        runtime=runtime,
+    )
 
     entries: list[_WorkflowEntry] = []
     for graph, name_override in workflows:
@@ -108,7 +163,7 @@ def build_mcp_server(
         entries.append(_WorkflowEntry(graph, iface, slug))
 
     for entry in entries:
-        _register_workflow_tools(mcp, entry, session_store, config, human_timeout)
+        _register_workflow_tools(mcp, entry, holder)
         _register_workflow_resource(mcp, entry)
 
     return mcp
@@ -121,9 +176,7 @@ def build_mcp_server(
 def _register_workflow_tools(
     mcp: Any,
     entry: _WorkflowEntry,
-    store: PublishSessionStore,
-    config: EngineConfig,
-    human_timeout: float,
+    holder: _RuntimeHolder,
 ) -> None:
     """Register MCP tools for a single workflow."""
     slug = entry.slug
@@ -134,15 +187,15 @@ def _register_workflow_tools(
 
     @mcp.tool(name=f"{slug}_run", description=run_desc)
     async def run_tool(**kwargs: Any) -> dict[str, Any]:
-        return await _execute_workflow(
-            graph=graph,
-            inputs=kwargs,
-            store=store,
-            config=config,
-            has_human=iface.has_human_nodes,
-            human_timeout=human_timeout,
-            workflow_id=slug,
-        )
+        rt = await holder.get()
+        if iface.has_human_nodes:
+            session_id = await rt.run_async(slug, graph, kwargs)
+            return {
+                "session_id": session_id,
+                "status": "running",
+                "message": "Execution started. Use status/submit_input tools for interaction.",
+            }
+        return await rt.run_sync(slug, graph, kwargs)
 
     if iface.has_human_nodes:
 
@@ -151,10 +204,11 @@ def _register_workflow_tools(
             description=f"Get execution status for {iface.name}",
         )
         async def status_tool(session_id: str) -> dict[str, Any]:
-            session = await store.get(session_id)
-            if session is None:
+            rt = await holder.get()
+            result = await rt.get_status(session_id)
+            if result is None:
                 return {"error": f"Session '{session_id}' not found"}
-            return session.to_dict()
+            return result
 
         @mcp.tool(
             name=f"{slug}_submit_input",
@@ -163,10 +217,20 @@ def _register_workflow_tools(
         async def submit_tool(session_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
             if data is None:
                 data = {}
-            session = await submit_human_input(store, session_id, data)
-            if session is None:
+            rt = await holder.get()
+            result = await rt.submit_input(session_id, data)
+            if result is None:
                 return {"error": f"Session '{session_id}' not found or not awaiting input"}
-            return session.to_dict()
+            return result
+
+        @mcp.tool(
+            name=f"{slug}_cancel",
+            description=f"Cancel a running execution of {iface.name}",
+        )
+        async def cancel_tool(run_id: str) -> dict[str, Any]:
+            rt = await holder.get()
+            cancelled = await rt.cancel(run_id)
+            return {"run_id": run_id, "cancelled": cancelled}
 
 
 def _register_workflow_resource(mcp: Any, entry: _WorkflowEntry) -> None:
@@ -187,83 +251,6 @@ def _register_workflow_resource(mcp: Any, entry: _WorkflowEntry) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Workflow execution
-# ---------------------------------------------------------------------------
-
-async def _execute_workflow(
-    *,
-    graph: Graph,
-    inputs: dict[str, Any],
-    store: PublishSessionStore,
-    config: EngineConfig,
-    has_human: bool,
-    human_timeout: float,
-    workflow_id: str,
-) -> dict[str, Any]:
-    """Run a workflow graph via the DAN engine.
-
-    For workflows without HumanNodes, blocks until complete and returns
-    the result directly.
-
-    For workflows with HumanNodes, starts execution in the background
-    and returns immediately with a session_id.  The caller polls
-    ``status`` and uses ``submit_input`` for HumanNode interaction.
-    """
-    from dan.engine import Engine
-
-    session = await store.create(workflow_id)
-    renderer = PublishedHumanRenderer(store, timeout=human_timeout)
-    renderer.active_session_id = session.session_id
-
-    engine = Engine(config=config, human_renderer=renderer)
-
-    if has_human:
-        asyncio.create_task(
-            _run_in_background(engine, graph, inputs, store, session.session_id)
-        )
-        return {
-            "session_id": session.session_id,
-            "status": SessionStatus.RUNNING.value,
-            "message": "Execution started. Use status/submit_input tools for interaction.",
-        }
-
-    try:
-        result = await engine.run(graph, inputs=inputs or None)
-        outputs = result.outputs or {}
-        await store.set_result(session.session_id, outputs)
-        return {
-            "session_id": session.session_id,
-            "status": SessionStatus.COMPLETED.value,
-            "output": outputs,
-            "success": result.success,
-        }
-    except Exception as exc:
-        await store.set_error(session.session_id, str(exc))
-        return {
-            "session_id": session.session_id,
-            "status": SessionStatus.FAILED.value,
-            "error": str(exc),
-        }
-
-
-async def _run_in_background(
-    engine: Any,
-    graph: Graph,
-    inputs: dict[str, Any],
-    store: PublishSessionStore,
-    session_id: str,
-) -> None:
-    """Run engine in background task, updating session on completion/failure."""
-    try:
-        result = await engine.run(graph, inputs=inputs or None)
-        outputs = result.outputs or {}
-        await store.set_result(session_id, outputs)
-    except Exception as exc:
-        logger.exception("Background workflow execution failed: %s", exc)
-        await store.set_error(session_id, str(exc))
-
-
-# ---------------------------------------------------------------------------
 # Convenience runners
 # ---------------------------------------------------------------------------
 
@@ -273,6 +260,8 @@ def run_mcp_stdio(
     engine_config: EngineConfig | None = None,
     server_name: str = "dan-publish",
     human_timeout: float = 300.0,
+    server_url: str | None = None,
+    force_local: bool = False,
 ) -> None:
     """Build and run an MCP server over stdio transport (blocking)."""
     mcp = build_mcp_server(
@@ -280,6 +269,8 @@ def run_mcp_stdio(
         engine_config=engine_config,
         server_name=server_name,
         human_timeout=human_timeout,
+        server_url=server_url,
+        force_local=force_local,
     )
     mcp.run(transport="stdio")
 
@@ -292,6 +283,8 @@ def run_mcp_http(
     host: str = "0.0.0.0",
     port: int = 8001,
     human_timeout: float = 300.0,
+    server_url: str | None = None,
+    force_local: bool = False,
 ) -> None:
     """Build and run an MCP server over streamable HTTP transport (blocking)."""
     mcp = build_mcp_server(
@@ -299,6 +292,8 @@ def run_mcp_http(
         engine_config=engine_config,
         server_name=server_name,
         human_timeout=human_timeout,
+        server_url=server_url,
+        force_local=force_local,
     )
     mcp.run(transport="streamable-http", host=host, port=port)
 
@@ -310,34 +305,23 @@ def run_mcp_http(
 def load_workflows_from_path(path: str | Path) -> list[tuple[Graph, str | None]]:
     """Load workflow graph(s) from a file or directory.
 
-    Supports ``.json`` files and directories containing ``.json`` files.
+    Supports ``.json``, ``.md``, and ``.py`` files, and directories
+    containing workflow files.
     Returns a list of ``(Graph, name_override)`` tuples.
     """
+    from dan.utils.workflow_loader import (
+        load_graph,
+        load_workflows_from_directory,
+        WorkflowLoadError,
+    )
+
     p = Path(path)
-    results: list[tuple[Graph, str | None]] = []
 
     if p.is_dir():
-        for f in sorted(p.glob("*.json")):
-            try:
-                g = _load_single(f)
-                results.append((g, None))
-            except Exception:
-                logger.warning("Skipping invalid graph file: %s", f)
-    elif p.suffix == ".json":
-        results.append((_load_single(p), None))
-    elif p.suffix in (".md",):
-        from dan.loader import load
-        results.append((load(p), None))
-    elif p.suffix == ".py":
-        from dan.cli.run import load_graph_from_python
-        results.append((load_graph_from_python(p), None))
-    else:
-        raise ValueError(f"Unsupported workflow source: {p}")
+        return load_workflows_from_directory(p)
 
-    return results
-
-
-def _load_single(path: Path) -> Graph:
-    with open(path) as f:
-        data = json.load(f)
-    return Graph.model_validate(data)
+    try:
+        graph = load_graph(p)
+        return [(graph, None)]
+    except WorkflowLoadError as exc:
+        raise ValueError(str(exc)) from exc

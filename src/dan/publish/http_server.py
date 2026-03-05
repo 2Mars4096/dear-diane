@@ -21,22 +21,20 @@ import collections
 import json
 import logging
 import time
-from typing import Any
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
 from dan.engine.executor import EngineConfig
 from dan.models.graph import Graph
 from dan.publish.schema import slugify
-from dan.publish.session import (
-    PublishSessionStore,
-    PublishedHumanRenderer,
-    SessionStatus,
-    submit_human_input,
-)
 from dan.utils.workflow_interface import WorkflowInterface, derive_workflow_interface
+
+if TYPE_CHECKING:
+    from dan.publish.runtime import PublishRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -123,11 +121,11 @@ class _PublishedWorkflow:
 
 
 class PublishRegistry:
-    """Holds the set of published workflows and shared session store."""
+    """Holds the set of published workflows and shared runtime backend."""
 
     def __init__(self, engine_config: EngineConfig | None = None) -> None:
         self.workflows: dict[str, _PublishedWorkflow] = {}
-        self.session_store = PublishSessionStore()
+        self.runtime: PublishRuntime | None = None
         self.engine_config = engine_config or EngineConfig()
         self.human_timeout = 300.0
         self.rate_limiter = RateLimiter()
@@ -258,22 +256,15 @@ def create_publish_router(registry: PublishRegistry) -> APIRouter:
         wf = registry.get(workflow_id)
         assert wf is not None
 
-        from dan.engine import Engine, AutoRenderer
-
-        renderer = AutoRenderer()
-        engine = Engine(config=registry.engine_config, human_renderer=renderer)
-
+        if registry.runtime is None:
+            raise HTTPException(status_code=503, detail="Runtime not initialized")
         try:
-            result = await engine.run(wf.graph, inputs=body.inputs or None)
-        except Exception as exc:
+            result = await registry.runtime.run_sync(
+                workflow_id, wf.graph, body.inputs
+            )
+            return result
+        except RuntimeError as exc:
             raise HTTPException(status_code=500, detail=str(exc))
-
-        return {
-            "success": result.success,
-            "outputs": result.outputs,
-            "errors": result.errors,
-            "node_statuses": result.node_statuses,
-        }
 
     @router.post("/{workflow_id}/run-async", response_model=RunAsyncResponse)
     async def run_async(workflow_id: str, body: RunRequest, request: Request):
@@ -283,33 +274,25 @@ def create_publish_router(registry: PublishRegistry) -> APIRouter:
         wf = registry.get(workflow_id)
         assert wf is not None
 
-        session = await registry.session_store.create(workflow_id)
-        renderer = PublishedHumanRenderer(
-            registry.session_store, timeout=registry.human_timeout,
+        if registry.runtime is None:
+            raise HTTPException(status_code=503, detail="Runtime not initialized")
+        session_id = await registry.runtime.run_async(
+            workflow_id, wf.graph, body.inputs
         )
-        renderer.active_session_id = session.session_id
-
-        from dan.engine import Engine
-
-        engine = Engine(config=registry.engine_config, human_renderer=renderer)
-        asyncio.create_task(
-            _background_run(engine, wf.graph, body.inputs, registry.session_store, session.session_id)
-        )
-
-        return RunAsyncResponse(
-            session_id=session.session_id,
-            status=SessionStatus.RUNNING.value,
-        )
+        return RunAsyncResponse(session_id=session_id, status="running")
 
     @router.get("/{workflow_id}/runs/{session_id}")
     async def get_session(workflow_id: str, session_id: str, request: Request):
         _check_auth(registry, workflow_id, request)
-        session = await registry.session_store.get(session_id)
-        if session is None:
+        if registry.runtime is None:
+            raise HTTPException(status_code=503, detail="Runtime not initialized")
+        status = await registry.runtime.get_status(session_id)
+        if status is None:
             raise HTTPException(status_code=404, detail="Session not found")
-        if session.workflow_id != workflow_id:
+        wf_id = status.get("workflow_id")
+        if wf_id is not None and wf_id != workflow_id:
             raise HTTPException(status_code=404, detail="Session not found for this workflow")
-        return session.to_dict()
+        return status
 
     @router.post("/{workflow_id}/runs/{session_id}/submit-input")
     async def submit_input(
@@ -319,13 +302,15 @@ def create_publish_router(registry: PublishRegistry) -> APIRouter:
         request: Request,
     ):
         _check_auth(registry, workflow_id, request)
-        session = await submit_human_input(registry.session_store, session_id, body.data)
-        if session is None:
+        if registry.runtime is None:
+            raise HTTPException(status_code=503, detail="Runtime not initialized")
+        result = await registry.runtime.submit_input(session_id, body.data)
+        if result is None:
             raise HTTPException(
                 status_code=400,
                 detail="Session not found or not awaiting input",
             )
-        return session.to_dict()
+        return result
 
     # -- SSE event stream ---------------------------------------------------
 
@@ -337,14 +322,17 @@ def create_publish_router(registry: PublishRegistry) -> APIRouter:
     ):
         """Server-Sent Events stream for a published workflow session."""
         _check_auth(registry, workflow_id, request)
-        session = await registry.session_store.get(session_id)
-        if session is None:
+        if registry.runtime is None:
+            raise HTTPException(status_code=503, detail="Runtime not initialized")
+        status = await registry.runtime.get_status(session_id)
+        if status is None:
             raise HTTPException(status_code=404, detail="Session not found")
-        if session.workflow_id != workflow_id:
+        wf_id = status.get("workflow_id")
+        if wf_id is not None and wf_id != workflow_id:
             raise HTTPException(status_code=404, detail="Session not found for this workflow")
 
         async def _event_generator():
-            async for event in registry.session_store.subscribe_events(session_id):
+            async for event in registry.runtime.subscribe_events(session_id):
                 payload = json.dumps(event)
                 yield f"data: {payload}\n\n"
 
@@ -376,6 +364,7 @@ def create_publish_router(registry: PublishRegistry) -> APIRouter:
         await websocket.accept()
 
         session_id: str | None = None
+        forward_task: asyncio.Task | None = None
         try:
             while True:
                 raw = await websocket.receive_json()
@@ -387,41 +376,30 @@ def create_publish_router(registry: PublishRegistry) -> APIRouter:
                         await websocket.send_json({"type": "error", "detail": "Workflow not found"})
                         continue
 
+                    if registry.runtime is None:
+                        await websocket.send_json({"type": "error", "detail": "Runtime not initialized"})
+                        continue
+
                     try:
                         _check_rate_limit(registry, workflow_id)
                     except HTTPException:
                         await websocket.send_json({"type": "error", "detail": "Rate limit exceeded"})
                         continue
 
-                    session = await registry.session_store.create(workflow_id)
-                    session_id = session.session_id
-                    renderer = PublishedHumanRenderer(
-                        registry.session_store, timeout=registry.human_timeout,
-                    )
-                    renderer.active_session_id = session_id
-
-                    from dan.engine import Engine
-
-                    engine = Engine(config=registry.engine_config, human_renderer=renderer)
                     inputs = raw.get("inputs", {})
-
-                    async def _run_and_stream(sid: str):
-                        try:
-                            result = await engine.run(wf.graph, inputs=inputs or None)
-                            await registry.session_store.set_result(sid, result.outputs or {})
-                        except Exception as exc:
-                            logger.exception("Published WS workflow failed: %s", exc)
-                            await registry.session_store.set_error(sid, str(exc))
-
-                    run_task = asyncio.create_task(_run_and_stream(session_id))
+                    session_id = await registry.runtime.run_async(
+                        workflow_id, wf.graph, inputs
+                    )
 
                     async def _forward_events(sid: str):
                         try:
-                            async for event in registry.session_store.subscribe_events(sid):
+                            async for event in registry.runtime.subscribe_events(sid):
                                 await websocket.send_json({"type": "event", **event})
                         except Exception:
-                            pass
+                            logger.debug("Event forwarding ended for session %s", sid, exc_info=True)
 
+                    if forward_task is not None and not forward_task.done():
+                        forward_task.cancel()
                     forward_task = asyncio.create_task(_forward_events(session_id))
 
                     await websocket.send_json({
@@ -434,8 +412,11 @@ def create_publish_router(registry: PublishRegistry) -> APIRouter:
                     if sid is None:
                         await websocket.send_json({"type": "error", "detail": "No active session"})
                         continue
+                    if registry.runtime is None:
+                        await websocket.send_json({"type": "error", "detail": "Runtime not initialized"})
+                        continue
                     data = raw.get("data", {})
-                    result = await submit_human_input(registry.session_store, sid, data)
+                    result = await registry.runtime.submit_input(sid, data)
                     if result is None:
                         await websocket.send_json({"type": "error", "detail": "Not awaiting input"})
                     else:
@@ -448,23 +429,11 @@ def create_publish_router(registry: PublishRegistry) -> APIRouter:
             pass
         except Exception:
             logger.debug("Published WebSocket error", exc_info=True)
+        finally:
+            if forward_task is not None and not forward_task.done():
+                forward_task.cancel()
 
     return router
-
-
-async def _background_run(
-    engine: Any,
-    graph: Graph,
-    inputs: dict[str, Any],
-    store: PublishSessionStore,
-    session_id: str,
-) -> None:
-    try:
-        result = await engine.run(graph, inputs=inputs or None)
-        await store.set_result(session_id, result.outputs or {})
-    except Exception as exc:
-        logger.exception("Published workflow execution failed: %s", exc)
-        await store.set_error(session_id, str(exc))
 
 
 # ---------------------------------------------------------------------------
@@ -477,9 +446,12 @@ def create_publish_app(
     engine_config: EngineConfig | None = None,
     global_api_key: str | None = None,
     human_timeout: float = 300.0,
+    server_url: str | None = None,
+    force_local: bool = False,
 ) -> FastAPI:
     """Create a standalone FastAPI app for published workflows."""
     from fastapi.middleware.cors import CORSMiddleware
+    from dan.publish.runtime import LocalRuntime, create_publish_runtime
 
     registry = PublishRegistry(engine_config)
     registry.human_timeout = human_timeout
@@ -487,7 +459,36 @@ def create_publish_app(
     for graph, name_override in workflows:
         registry.register(graph, name_override=name_override, api_key=global_api_key)
 
-    app = FastAPI(title="DAN Published Workflows", version="1.0.0")
+    # When force_local, create runtime synchronously (avoids lifespan for tests)
+    if force_local:
+        registry.runtime = LocalRuntime(
+            engine_config=engine_config or EngineConfig(),
+            human_timeout=human_timeout,
+        )
+        logger.info("Publish runtime: local mode")
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        if not app.state.force_local:
+            runtime = await create_publish_runtime(
+                server_url=app.state.server_url,
+                force_local=app.state.force_local,
+                engine_config=app.state.engine_config,
+                human_timeout=app.state.human_timeout,
+            )
+            app.state.registry.runtime = runtime
+            logger.info("Publish runtime: %s mode", runtime.mode)
+        yield
+        if app.state.registry.runtime is not None:
+            await app.state.registry.runtime.close()
+
+    app = FastAPI(title="DAN Published Workflows", version="1.0.0", lifespan=_lifespan)
+    app.state.registry = registry
+    app.state.server_url = server_url
+    app.state.force_local = force_local
+    app.state.engine_config = engine_config or EngineConfig()
+    app.state.human_timeout = human_timeout
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
