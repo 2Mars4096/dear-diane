@@ -29,6 +29,7 @@ class RunStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -50,6 +51,7 @@ class RunRecord:
     elapsed_seconds: float | None = None
     node_usage: dict[str, dict[str, Any]] = field(default_factory=dict)
     model: str | None = None
+    error: str | None = None
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -68,6 +70,7 @@ class RunRecord:
             "total_cost": self.total_cost,
             "elapsed_seconds": self.elapsed_seconds,
             "node_usage": dict(self.node_usage),
+            "error": self.error,
         }
 
     @staticmethod
@@ -85,6 +88,7 @@ class RunRecord:
             total_cost=summary.get("total_cost"),
             elapsed_seconds=summary.get("elapsed_seconds"),
             node_usage=summary.get("node_usage", {}),
+            error=summary.get("error"),
         )
         rec.node_statuses = summary.get("node_statuses", {})
         errors = summary.get("errors", {})
@@ -304,9 +308,43 @@ class RunManager:
     def list_runs(self) -> list[dict[str, Any]]:
         return [r.snapshot() for r in self._runs.values()]
 
+    def cancel_run(self, run_id: str) -> bool:
+        """Cancel a running workflow by cancelling its asyncio task.
+
+        Returns True if the run was found and cancellation was requested,
+        False if the run was not found or already completed.
+        """
+        task = self._tasks.get(run_id)
+        if task is None or task.done():
+            return False
+        record = self._runs.get(run_id)
+        if record is None:
+            return False
+        task.cancel()
+        record.status = RunStatus.CANCELLED
+        record.error = "Cancelled by user"
+        record.finished_at = time.time()
+        cancel_event = {
+            "event_type": "run_cancelled",
+            "run_id": run_id,
+            "timestamp": time.time(),
+            "data": {"reason": "user_cancelled"},
+        }
+        record.events.append(cancel_event)
+        for queue in self._subscribers.get(run_id, []):
+            try:
+                queue.put_nowait(cancel_event)
+            except asyncio.QueueFull:
+                logger.warning("Subscriber queue full for run %s", run_id)
+        return True
+
     def submit_human_input(self, run_id: str, request_id: str, response: dict[str, Any]) -> bool:
-        """Submit a response for a pending human-input request."""
-        evt = self._pending_human_inputs.get(request_id)
+        """Submit a response for a pending human-input request.
+
+        Atomic: only the first caller for a given request_id succeeds.
+        Subsequent callers get False (already resolved).
+        """
+        evt = self._pending_human_inputs.pop(request_id, None)
         if evt is None:
             return False
         self._human_input_responses[request_id] = response
@@ -325,6 +363,14 @@ class RunManager:
                 if rid and rid in self._pending_human_inputs and not self._pending_human_inputs[rid].is_set():
                     pending.append(evt_dict)
         return pending
+
+    def get_all_pending_human_inputs(self) -> list[dict[str, Any]]:
+        """Get all pending human input requests across all active runs."""
+        all_pending: list[dict[str, Any]] = []
+        for run_id in list(self._runs.keys()):
+            pending = self.get_pending_human_inputs(run_id)
+            all_pending.extend(pending)
+        return all_pending
 
     def _make_human_input_callback(self, run_id: str):
         async def callback(request_meta: dict[str, Any]) -> dict[str, Any]:
