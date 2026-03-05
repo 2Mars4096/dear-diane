@@ -124,6 +124,12 @@ class RunManager:
         self._experience_index = None
         self._experience_store = None
 
+    async def _safe_async(self, coro):
+        try:
+            await coro
+        except Exception:
+            logger.warning("Background task failed", exc_info=True)
+
     @property
     def engine_config(self) -> EngineConfig:
         return self._config
@@ -714,17 +720,11 @@ class RunManager:
             if errors:
                 import asyncio
                 try:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.ensure_future(
-                            index.index_errors(record.graph_id, errors)
-                        )
-                    else:
-                        loop.run_until_complete(
-                            index.index_errors(record.graph_id, errors)
-                        )
+                    asyncio.get_running_loop().create_task(
+                        self._safe_async(index.index_errors(record.graph_id, errors))
+                    )
                 except RuntimeError:
-                    asyncio.run(index.index_errors(record.graph_id, errors))
+                    logger.debug("No running loop for error indexing", exc_info=True)
                 logger.debug(
                     "Indexed %d error records for run %s",
                     len(errors), record.run_id,
@@ -777,21 +777,23 @@ class RunManager:
 
             import asyncio
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(
-                        ps.store_principles(record.graph_id, all_principles)
-                    )
-                else:
-                    loop.run_until_complete(
-                        ps.store_principles(record.graph_id, all_principles)
-                    )
+                asyncio.get_running_loop().create_task(
+                    self._safe_async(ps.store_principles(record.graph_id, all_principles))
+                )
             except RuntimeError:
-                asyncio.run(ps.store_principles(record.graph_id, all_principles))
+                logger.debug("No running loop for principle storage", exc_info=True)
             logger.debug(
                 "Persisted %d reflection principles for run %s",
                 len(all_principles), record.run_id,
             )
+
+            try:
+                asyncio.get_running_loop().create_task(
+                    self._safe_async(ps.compact(record.graph_id))
+                )
+            except RuntimeError:
+                logger.debug("No running loop for principle compaction", exc_info=True)
+
             reflection_event = {
                 "reflection_run_id": record.run_id,
                 "principle_count": len(all_principles),
@@ -904,13 +906,11 @@ class RunManager:
                     )
 
             try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(_do_reflection())
-                else:
-                    pass
+                asyncio.get_running_loop().create_task(
+                    self._safe_async(_do_reflection())
+                )
             except RuntimeError:
-                pass
+                logger.debug("No running loop for reflection scheduling", exc_info=True)
         except Exception:
             logger.debug(
                 "Failed to schedule reflection for %s", record.run_id,
