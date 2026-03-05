@@ -174,10 +174,13 @@ class LLMExecutor:
                     run_id=getattr(context, "_run_id", ""),
                 )
 
-        if node.target_input_tokens is not None:
+        target_tokens = node.target_input_tokens
+        if target_tokens is None:
+            target_tokens = inline_inputs.pop("__advisory_target_tokens__", None)
+        if target_tokens is not None:
             selector = ContextSelector()
             inline_inputs, deferred_inputs = selector.select(
-                inline_inputs, node.prompt_template, node.target_input_tokens,
+                inline_inputs, node.prompt_template, target_tokens,
             )
             if deferred_inputs:
                 inline_tokens = sum(
@@ -304,15 +307,15 @@ class LLMExecutor:
                             )
                         )
 
-        if node.target_input_tokens is not None:
+        if target_tokens is not None:
             estimated = estimate_tokens(_render_template(node.prompt_template, inline_inputs))
-            if estimated > node.target_input_tokens:
+            if estimated > target_tokens:
                 await context.emit_event(
                     event_type="token_budget_advisory",
                     node_id=node.id,
                     node_type="llm_operator",
                     data={
-                        "target_input_tokens": node.target_input_tokens,
+                        "target_input_tokens": target_tokens,
                         "estimated_input_tokens": estimated,
                     },
                 )
@@ -399,23 +402,25 @@ class LLMExecutor:
         model = node.model or context.config.llm_default_model
 
         effective_policy = None
+        tier_result = None
+        tier_params: dict[str, Any] = {}
         if context.model_selector is not None:
             effective_policy = context.model_selector.resolve_effective_policy(
                 node, context.config,
             )
             if effective_policy is not None:
-                selected = await context.model_selector.select(
+                select_result = await context.model_selector.select(
                     effective_policy, node, context,
                 )
+                selected = select_result.model
+                tier_result = select_result.tier_result
+                tier_params = select_result.tier_params
                 if selected:
                     model = selected
                     event_data: dict[str, Any] = {
                         "model": model,
                         "policy_strategy": effective_policy.strategy,
                     }
-                    tier_result = getattr(
-                        context.model_selector, "_last_tier_result", None,
-                    )
                     if tier_result is not None:
                         event_data.update({
                             "tier": tier_result.tier.value,
@@ -498,6 +503,7 @@ class LLMExecutor:
         for attempt in range(1 + max_norm_retries):
             raw_text, api_error, usage, tool_calls = await self._call_llm(
                 model, messages, node, context=context, attempt=attempt, tools=active_tools,
+                tier_params=tier_params,
             )
             if usage:
                 for k in cumulative_usage:
@@ -520,6 +526,7 @@ class LLMExecutor:
                     tools=active_tools,
                     context_tool_provider=context_tool_provider,
                     schema_resolver=schema_resolver,
+                    tier_params=tier_params,
                 )
                 if tool_error:
                     last_error = tool_error
@@ -575,16 +582,11 @@ class LLMExecutor:
             and effective_policy is not None
             and getattr(effective_policy, "strategy", "") == "tier"
         ):
-            tier_result = (
-                getattr(context.model_selector, "_last_tier_result", None)
-                if context.model_selector
-                else None
-            )
             if tier_result is not None:
                 next_tier = _escalate_tier(tier_result.tier)
                 if next_tier != tier_result.tier:
                     _escalated = True
-                    from dan.providers.tier_defaults import resolve_tier_map
+                    from dan.providers.tier_defaults import resolve_tier_map, resolve_tier_params
 
                     esc_providers = []
                     if context.model_selector is not None:
@@ -596,7 +598,16 @@ class LLMExecutor:
                     )
                     esc_tier_map = resolve_tier_map(esc_providers, user_map)
                     esc_model = esc_tier_map.get(next_tier.value, model)
-                    if esc_model != model:
+
+                    esc_user_params = getattr(effective_policy, "tier_params", None) or (
+                        getattr(context.config, "tier_params", None)
+                    )
+                    esc_provider_name = esc_providers[0] if esc_providers else "anthropic"
+                    esc_tier_params = resolve_tier_params(
+                        esc_provider_name, esc_user_params,
+                    ).get(next_tier.value, {})
+
+                    if esc_model != model or esc_tier_params != tier_params:
                         await context.emit_event(
                             event_type="tier_escalation",
                             node_id=node.id,
@@ -613,6 +624,7 @@ class LLMExecutor:
                         raw_text, api_error, usage, tool_calls = await self._call_llm(
                             model, messages, node, context=context,
                             attempt=0, tools=active_tools,
+                            tier_params=esc_tier_params,
                         )
                         if usage:
                             for k in cumulative_usage:
@@ -692,6 +704,7 @@ class LLMExecutor:
         tools: list[dict[str, Any]] | None = None,
         context_tool_provider: ContextToolProvider | None = None,
         schema_resolver: ToolSchemaResolver | None = None,
+        tier_params: dict[str, Any] | None = None,
     ) -> tuple[str, str | None, dict[str, int]]:
         """Execute the tool-calling loop until the model returns plain text.
 
@@ -748,6 +761,7 @@ class LLMExecutor:
 
             next_text, api_error, usage, next_tool_calls = await self._call_llm(
                 model, messages, node, context=context, attempt=0, tools=tools,
+                tier_params=tier_params,
             )
             if usage:
                 for k in cumulative_usage:
@@ -907,6 +921,7 @@ class LLMExecutor:
         context: ExecutionContext | None = None,
         attempt: int = 0,
         tools: list[dict[str, Any]] | None = None,
+        tier_params: dict[str, Any] | None = None,
     ) -> tuple[str, str | None, dict[str, int] | None, list[dict[str, Any]] | None]:
         """Call the LLM with retry on transient API errors.
 
@@ -925,6 +940,7 @@ class LLMExecutor:
                 if provider is not None:
                     text, usage, tool_calls = await self._call_via_provider(
                         provider, current_model, messages, node, context, attempt, tools,
+                        tier_params=tier_params,
                     )
                     return text, None, usage, tool_calls
                 else:
@@ -977,11 +993,19 @@ class LLMExecutor:
                                 fallback_kwargs: dict[str, Any] = {}
                                 if tools:
                                     fallback_kwargs["tools"] = self._sorted_tool_schemas(tools)
+                                fb_temp = node.temperature
+                                fb_max = node.max_tokens
+                                if tier_params:
+                                    fb_temp = tier_params.get("temperature", fb_temp)
+                                    fb_max = tier_params.get("max_tokens", fb_max)
+                                    for k, v in tier_params.items():
+                                        if k not in ("temperature", "max_tokens"):
+                                            fallback_kwargs[k] = v
                                 result = await fb_provider.complete(
                                     messages=messages,
                                     model=current_model,
-                                    temperature=node.temperature,
-                                    max_tokens=node.max_tokens,
+                                    temperature=fb_temp,
+                                    max_tokens=fb_max,
                                     **fallback_kwargs,
                                 )
                                 return result.text, None, result.usage, result.tool_calls
@@ -1007,13 +1031,26 @@ class LLMExecutor:
         context: ExecutionContext | None,
         attempt: int,
         tools: list[dict[str, Any]] | None = None,
+        tier_params: dict[str, Any] | None = None,
     ) -> tuple[str, dict[str, int] | None, list[dict[str, Any]] | None]:
         """Call LLM via provider — use complete() when tools are active, else try streaming."""
         if context and getattr(context.config, "prompt_caching_enabled", True):
             from dan.providers import apply_cache_hints
             messages = apply_cache_hints(provider, messages)
 
-        extra_kwargs: dict[str, Any] = {}
+        effective_temperature = node.temperature
+        effective_max_tokens = node.max_tokens
+        tier_extra: dict[str, Any] = {}
+        if tier_params:
+            for k, v in tier_params.items():
+                if k == "temperature":
+                    effective_temperature = v
+                elif k == "max_tokens":
+                    effective_max_tokens = v
+                else:
+                    tier_extra[k] = v
+
+        extra_kwargs: dict[str, Any] = dict(tier_extra)
         if tools:
             extra_kwargs["tools"] = self._sorted_tool_schemas(tools)
 
@@ -1021,8 +1058,8 @@ class LLMExecutor:
             result = await provider.complete(
                 messages=messages,
                 model=model,
-                temperature=node.temperature,
-                max_tokens=node.max_tokens,
+                temperature=effective_temperature,
+                max_tokens=effective_max_tokens,
                 **extra_kwargs,
             )
             return result.text, result.usage, result.tool_calls
@@ -1034,8 +1071,9 @@ class LLMExecutor:
             stream_iter = provider.stream(
                 messages=messages,
                 model=model,
-                temperature=node.temperature,
-                max_tokens=node.max_tokens,
+                temperature=effective_temperature,
+                max_tokens=effective_max_tokens,
+                **tier_extra,
             )
             if inspect.isawaitable(stream_iter):
                 stream_iter = await stream_iter
@@ -1065,8 +1103,9 @@ class LLMExecutor:
             result = await provider.complete(
                 messages=messages,
                 model=model,
-                temperature=node.temperature,
-                max_tokens=node.max_tokens,
+                temperature=effective_temperature,
+                max_tokens=effective_max_tokens,
+                **tier_extra,
             )
             return result.text, result.usage, result.tool_calls
 
