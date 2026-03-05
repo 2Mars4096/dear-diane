@@ -40,6 +40,14 @@ function LoaderIcon({ className }: { className?: string }) {
   );
 }
 
+function ShieldIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+    </svg>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -66,6 +74,34 @@ const CATEGORY_LABELS: Record<string, string> = {
   reference_opportunity: "Pass-by-Reference",
 };
 
+const SAVINGS_FACTORS: Record<string, string> = {
+  jit_opportunity: "tool schema tokens removed on-demand",
+  memoization_opportunity: "avg tokens saved via cache hits",
+  unused_context: "unused context tokens dropped",
+  duplicate: "deduped payload tokens",
+  loop_growth: "bounded iteration token growth",
+  oversized_system: "system prompt tokens trimmed",
+  unused_memory_rag: "unused retrieval tokens removed",
+  reference_opportunity: "pass-by-ref instead of copy",
+};
+
+const STATUS_COLORS: Record<string, string> = {
+  active: "bg-green-100 text-green-700",
+  pending: "bg-amber-100 text-amber-700",
+  applied: "bg-blue-100 text-blue-700",
+  expired: "bg-gray-100 text-gray-500",
+};
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`;
+  return n.toLocaleString();
+}
+
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -75,11 +111,13 @@ function FindingCard({
   mutation,
   mutationIndex,
   nodeName,
+  nodeTokens,
 }: {
   finding: WasteFinding;
   mutation?: OptimizationMutation;
   mutationIndex?: number;
   nodeName: string;
+  nodeTokens: number;
 }) {
   const applyOptimizationMutation = useGraphStore((s) => s.applyOptimizationMutation);
   const [applying, setApplying] = useState(false);
@@ -99,6 +137,10 @@ function FindingCard({
     }
   };
 
+  const savingsLabel = SAVINGS_FACTORS[finding.category];
+  const estSavings = finding.estimated_saveable_tokens;
+  const pct = nodeTokens > 0 ? ((estSavings / nodeTokens) * 100).toFixed(1) : null;
+
   return (
     <div className="border border-gray-200 rounded-md p-2 hover:border-gray-300 transition-colors">
       <div className="flex items-start gap-2">
@@ -115,7 +157,7 @@ function FindingCard({
           <p className="text-[11px] text-gray-700 mt-0.5 leading-snug">
             {finding.description}
           </p>
-          <div className="flex items-center gap-2 mt-1">
+          <div className="flex items-center gap-2 mt-1 flex-wrap">
             <span className="text-[10px] text-amber-600 font-medium">
               ~{finding.estimated_saveable_tokens.toLocaleString()} tokens saveable
             </span>
@@ -125,6 +167,22 @@ function FindingCard({
               </span>
             )}
           </div>
+          {/* 18-4 task 4: Before/after token estimation */}
+          {nodeTokens > 0 ? (
+            <div className="mt-1 flex items-center gap-1.5 text-[10px]">
+              <span className="text-indigo-600 font-medium">
+                Est. savings: ~{formatTokens(estSavings)} tokens
+                {pct ? ` (${pct}%)` : ""}
+              </span>
+              {savingsLabel && (
+                <span className="text-gray-400 italic">(estimated — {savingsLabel})</span>
+              )}
+            </div>
+          ) : (
+            <div className="mt-1 text-[10px] text-gray-400 italic">
+              Run a workflow first to see estimates
+            </div>
+          )}
         </div>
         {mutation && mutationIndex != null && !applied && (
           <button
@@ -152,6 +210,179 @@ function FindingCard({
 }
 
 // ---------------------------------------------------------------------------
+// Optimization Rules Dashboard (18-4 task 5-6)
+// ---------------------------------------------------------------------------
+
+interface OptimizationRule {
+  id: string;
+  name: string;
+  category: string;
+  status: "active" | "pending" | "applied";
+  affectedNodes: string[];
+  tokensSaved: number;
+  effectiveness: number;
+  mutationIndex?: number;
+}
+
+function RulesDashboard({
+  rules,
+  totalSaved,
+  nodeNameMap,
+  applyingId,
+  setApplyingId,
+  disabledIds,
+  setDisabledIds,
+}: {
+  rules: OptimizationRule[];
+  totalSaved: number;
+  nodeNameMap: Record<string, string>;
+  applyingId: string | null;
+  setApplyingId: (id: string | null) => void;
+  disabledIds: Set<string>;
+  setDisabledIds: (updater: (prev: Set<string>) => Set<string>) => void;
+}) {
+  const applyOptimizationMutation = useGraphStore((s) => s.applyOptimizationMutation);
+
+  const handleApply = async (rule: OptimizationRule) => {
+    if (rule.mutationIndex == null) return;
+    setApplyingId(rule.id);
+    try {
+      await applyOptimizationMutation(rule.mutationIndex);
+    } finally {
+      setApplyingId(null);
+    }
+  };
+
+  const handleDisable = (ruleId: string) => {
+    setDisabledIds((prev) => new Set([...prev, ruleId]));
+  };
+
+  const activeRules = rules.filter((r) => r.status !== "applied" && !disabledIds.has(r.id));
+  const pendingRules = activeRules.filter((r) => r.status === "pending");
+  const appliedOrDisabled = rules.filter((r) => r.status === "applied" || disabledIds.has(r.id));
+
+  if (rules.length === 0) {
+    return (
+      <div className="px-3 py-4 text-center">
+        <ShieldIcon className="text-gray-300 mx-auto mb-2" />
+        <p className="text-[11px] text-gray-400">
+          No optimization rules active. Run workflows to generate recommendations.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Cumulative savings banner */}
+      <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50/60 rounded text-[11px]">
+        <CheckIcon className="text-emerald-500" />
+        <span className="text-emerald-700 font-medium">
+          Total savings: ~{formatTokens(totalSaved)} tokens across {rules.length} rule{rules.length !== 1 ? "s" : ""}
+        </span>
+        {pendingRules.length > 0 && (
+          <>
+            <span className="text-gray-300">|</span>
+            <span className="text-amber-600">{pendingRules.length} pending approval</span>
+          </>
+        )}
+      </div>
+
+      {/* Rules table */}
+      <div className="border border-gray-200 rounded-md overflow-hidden">
+        <table className="w-full text-[10px]">
+          <thead>
+            <tr className="bg-gray-50 text-gray-500 uppercase tracking-wide">
+              <th className="text-left px-2 py-1.5 font-medium">Rule</th>
+              <th className="text-left px-2 py-1.5 font-medium">Status</th>
+              <th className="text-left px-2 py-1.5 font-medium">Nodes</th>
+              <th className="text-right px-2 py-1.5 font-medium">Saved</th>
+              <th className="text-right px-2 py-1.5 font-medium">Eff. %</th>
+              <th className="px-2 py-1.5 font-medium w-16" />
+            </tr>
+          </thead>
+          <tbody>
+            {activeRules.map((rule) => {
+              const colorClass = CATEGORY_COLORS[rule.category] ?? "text-gray-600 bg-gray-50";
+              return (
+                <tr key={rule.id} className="border-t border-gray-100 hover:bg-gray-50/50">
+                  <td className="px-2 py-1.5">
+                    <span className={`inline-block px-1 py-0.5 rounded text-[9px] font-medium ${colorClass}`}>
+                      {rule.name}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1.5">
+                    <span className={`inline-block px-1.5 py-0.5 rounded text-[9px] font-medium ${STATUS_COLORS[rule.status] ?? "bg-gray-100 text-gray-600"}`}>
+                      {rule.status}
+                    </span>
+                  </td>
+                  <td className="px-2 py-1.5 text-gray-600 max-w-[120px] truncate" title={rule.affectedNodes.map((n) => nodeNameMap[n] ?? n).join(", ")}>
+                    {rule.affectedNodes.slice(0, 2).map((n) => nodeNameMap[n] ?? n.slice(0, 8)).join(", ")}
+                    {rule.affectedNodes.length > 2 && ` +${rule.affectedNodes.length - 2}`}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-indigo-600">
+                    ~{formatTokens(rule.tokensSaved)}
+                  </td>
+                  <td className="px-2 py-1.5 text-right font-mono text-gray-600">
+                    {rule.effectiveness.toFixed(0)}%
+                  </td>
+                  <td className="px-2 py-1.5 text-right">
+                    {rule.status === "pending" && rule.mutationIndex != null && (
+                      <button
+                        onClick={() => handleApply(rule)}
+                        disabled={applyingId === rule.id}
+                        className="px-1.5 py-0.5 text-[9px] font-medium rounded bg-indigo-50 text-indigo-700 hover:bg-indigo-100 disabled:opacity-50 transition-colors"
+                      >
+                        {applyingId === rule.id ? "..." : "Apply"}
+                      </button>
+                    )}
+                    {rule.status === "active" && (
+                      <button
+                        onClick={() => handleDisable(rule.id)}
+                        className="px-1.5 py-0.5 text-[9px] font-medium rounded bg-gray-100 text-gray-600 hover:bg-red-50 hover:text-red-600 transition-colors"
+                      >
+                        Disable
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+            {appliedOrDisabled.map((rule) => (
+              <tr key={rule.id} className="border-t border-gray-100 opacity-50">
+                <td className="px-2 py-1.5 text-gray-400">{rule.name}</td>
+                <td className="px-2 py-1.5">
+                  <span className="inline-block px-1.5 py-0.5 rounded text-[9px] font-medium bg-gray-100 text-gray-500">
+                    {disabledIds.has(rule.id) ? "disabled" : "applied"}
+                  </span>
+                </td>
+                <td className="px-2 py-1.5 text-gray-400" />
+                <td className="px-2 py-1.5 text-right font-mono text-gray-400">~{formatTokens(rule.tokensSaved)}</td>
+                <td className="px-2 py-1.5 text-right font-mono text-gray-400">{rule.effectiveness.toFixed(0)}%</td>
+                <td className="px-2 py-1.5 text-right">
+                  {disabledIds.has(rule.id) && (
+                    <button
+                      onClick={() => setDisabledIds((prev) => {
+                        const next = new Set(prev);
+                        next.delete(rule.id);
+                        return next;
+                      })}
+                      className="px-1.5 py-0.5 text-[9px] font-medium rounded bg-gray-100 text-gray-600 hover:bg-green-50 hover:text-green-600 transition-colors"
+                    >
+                      Re-enable
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main panel
 // ---------------------------------------------------------------------------
 
@@ -166,6 +397,9 @@ export default function TokenAnalyticsPanel() {
   const nodeCosts = useGraphStore((s) => s.nodeCosts);
   const nodeUsage = useGraphStore((s) => s.nodeUsage);
   const [categoryFilter, setCategoryFilter] = useState<string>("");
+  const [activeSection, setActiveSection] = useState<"findings" | "rules">("findings");
+  const [rulesApplyingId, setRulesApplyingId] = useState<string | null>(null);
+  const [rulesDisabledIds, setRulesDisabledIds] = useState<Set<string>>(new Set());
 
   const nodeNameMap = useMemo(() => {
     const map: Record<string, string> = {};
@@ -176,7 +410,6 @@ export default function TokenAnalyticsPanel() {
     return map;
   }, [nodes]);
 
-  // Build mutation lookup: finding → mutation index
   const mutationByFinding = useMemo(() => {
     const map = new Map<string, { mutation: OptimizationMutation; index: number }>();
     for (let i = 0; i < optimizationMutations.length; i++) {
@@ -198,7 +431,6 @@ export default function TokenAnalyticsPanel() {
     if (categoryFilter) {
       result = result.filter((f) => f.category === categoryFilter);
     }
-    // Sort by saveable tokens descending
     return [...result].sort((a, b) => b.estimated_saveable_tokens - a.estimated_saveable_tokens);
   }, [wasteFindings, categoryFilter]);
 
@@ -206,7 +438,49 @@ export default function TokenAnalyticsPanel() {
   const totalTokens = Object.values(nodeUsage).reduce((a, u) => a + u.total_tokens, 0);
   const totalCost = Object.values(nodeCosts).reduce((a, c) => a + c, 0);
 
-  // No run completed yet
+  // Build optimization rules from findings + mutations
+  const optimizationRules = useMemo(() => {
+    const ruleMap = new Map<string, OptimizationRule>();
+
+    for (const finding of wasteFindings) {
+      const ruleKey = finding.category;
+      const existing = ruleMap.get(ruleKey);
+      const findingKey = `${finding.node_id}::${finding.category}::${finding.description}`;
+      const mutEntry = mutationByFinding.get(findingKey);
+
+      if (existing) {
+        if (!existing.affectedNodes.includes(finding.node_id)) {
+          existing.affectedNodes.push(finding.node_id);
+        }
+        existing.tokensSaved += finding.estimated_saveable_tokens;
+        if (mutEntry && existing.status !== "pending") {
+          existing.status = "pending";
+          existing.mutationIndex = mutEntry.index;
+        }
+      } else {
+        ruleMap.set(ruleKey, {
+          id: ruleKey,
+          name: CATEGORY_LABELS[ruleKey] ?? ruleKey,
+          category: ruleKey,
+          status: mutEntry ? "pending" : "active",
+          affectedNodes: [finding.node_id],
+          tokensSaved: finding.estimated_saveable_tokens,
+          effectiveness: 0,
+          mutationIndex: mutEntry?.index,
+        });
+      }
+    }
+
+    // Recalculate effectiveness as overall
+    for (const rule of ruleMap.values()) {
+      if (totalTokens > 0) {
+        rule.effectiveness = (rule.tokensSaved / totalTokens) * 100;
+      }
+    }
+
+    return [...ruleMap.values()].sort((a, b) => b.tokensSaved - a.tokensSaved);
+  }, [wasteFindings, mutationByFinding, nodeUsage, totalTokens]);
+
   if (!runId || (runStatus !== "completed" && runStatus !== "failed")) {
     return (
       <div className="p-3 text-xs text-gray-400 text-center">
@@ -215,7 +489,6 @@ export default function TokenAnalyticsPanel() {
     );
   }
 
-  // Loading state
   if (analyticsLoading) {
     return (
       <div className="p-3 text-xs text-gray-400 text-center flex items-center justify-center gap-2">
@@ -225,11 +498,9 @@ export default function TokenAnalyticsPanel() {
     );
   }
 
-  // No findings
   if (wasteFindings.length === 0) {
     return (
       <div className="flex flex-col h-full">
-        {/* Summary */}
         <div className="px-3 py-2 border-b border-gray-200 bg-gray-50 shrink-0">
           <div className="flex items-center gap-2 text-[11px]">
             <CheckIcon className="text-green-500" />
@@ -287,49 +558,91 @@ export default function TokenAnalyticsPanel() {
         </div>
       </div>
 
-      {/* Filter bar */}
-      {categories.length > 1 && (
-        <div className="px-3 py-1 border-b border-gray-100 bg-gray-50 shrink-0 flex items-center gap-1">
-          <span className="text-[10px] text-gray-400">Filter:</span>
-          <button
-            onClick={() => setCategoryFilter("")}
-            className={`px-1.5 py-0.5 text-[10px] rounded ${!categoryFilter ? "bg-indigo-100 text-indigo-700" : "text-gray-500 hover:bg-gray-100"}`}
-          >
-            All
-          </button>
-          {categories.map((cat) => (
-            <button
-              key={cat}
-              onClick={() => setCategoryFilter(cat === categoryFilter ? "" : cat)}
-              className={`px-1.5 py-0.5 text-[10px] rounded ${cat === categoryFilter ? "bg-indigo-100 text-indigo-700" : "text-gray-500 hover:bg-gray-100"}`}
-            >
-              {CATEGORY_LABELS[cat] ?? cat}
-            </button>
-          ))}
-        </div>
-      )}
+      {/* Section tabs: Findings / Rules */}
+      <div className="flex items-center gap-0 border-b border-gray-100 bg-gray-50/80 shrink-0 px-2">
+        <button
+          onClick={() => setActiveSection("findings")}
+          className={`px-2.5 py-1 text-[10px] font-medium border-b-2 transition-colors ${
+            activeSection === "findings"
+              ? "border-indigo-500 text-indigo-600"
+              : "border-transparent text-gray-400 hover:text-gray-600"
+          }`}
+        >
+          Findings ({filteredFindings.length})
+        </button>
+        <button
+          onClick={() => setActiveSection("rules")}
+          className={`px-2.5 py-1 text-[10px] font-medium border-b-2 transition-colors flex items-center gap-1 ${
+            activeSection === "rules"
+              ? "border-indigo-500 text-indigo-600"
+              : "border-transparent text-gray-400 hover:text-gray-600"
+          }`}
+        >
+          Rules ({optimizationRules.length})
+        </button>
 
-      {/* Findings list */}
-      <div className="overflow-y-auto flex-1 min-h-0 p-2 space-y-1.5">
-        {filteredFindings.map((finding, i) => {
-          const key = `${finding.node_id}::${finding.category}::${finding.description}`;
-          const entry = mutationByFinding.get(key);
-          return (
-            <FindingCard
-              key={`${key}-${i}`}
-              finding={finding}
-              mutation={entry?.mutation}
-              mutationIndex={entry?.index}
-              nodeName={nodeNameMap[finding.node_id] ?? finding.node_id}
-            />
-          );
-        })}
+        {/* Category filter (only in findings view) */}
+        {activeSection === "findings" && categories.length > 1 && (
+          <div className="flex items-center gap-1 ml-auto">
+            <button
+              onClick={() => setCategoryFilter("")}
+              className={`px-1.5 py-0.5 text-[10px] rounded ${!categoryFilter ? "bg-indigo-100 text-indigo-700" : "text-gray-500 hover:bg-gray-100"}`}
+            >
+              All
+            </button>
+            {categories.map((cat) => (
+              <button
+                key={cat}
+                onClick={() => setCategoryFilter(cat === categoryFilter ? "" : cat)}
+                className={`px-1.5 py-0.5 text-[10px] rounded ${cat === categoryFilter ? "bg-indigo-100 text-indigo-700" : "text-gray-500 hover:bg-gray-100"}`}
+              >
+                {CATEGORY_LABELS[cat] ?? cat}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Content area */}
+      <div className="overflow-y-auto flex-1 min-h-0 p-2">
+        {activeSection === "findings" && (
+          <div className="space-y-1.5">
+            {filteredFindings.map((finding, i) => {
+              const key = `${finding.node_id}::${finding.category}::${finding.description}`;
+              const entry = mutationByFinding.get(key);
+              const nodeTotal = nodeUsage[finding.node_id]?.total_tokens ?? 0;
+              return (
+                <FindingCard
+                  key={`${key}-${i}`}
+                  finding={finding}
+                  mutation={entry?.mutation}
+                  mutationIndex={entry?.index}
+                  nodeName={nodeNameMap[finding.node_id] ?? finding.node_id}
+                  nodeTokens={nodeTotal}
+                />
+              );
+            })}
+          </div>
+        )}
+        {activeSection === "rules" && (
+          <RulesDashboard
+            rules={optimizationRules}
+            totalSaved={totalWaste}
+            nodeNameMap={nodeNameMap}
+            applyingId={rulesApplyingId}
+            setApplyingId={setRulesApplyingId}
+            disabledIds={rulesDisabledIds}
+            setDisabledIds={setRulesDisabledIds}
+          />
+        )}
       </div>
 
       {/* Footer */}
       <div className="px-3 py-1.5 border-t border-gray-100 bg-gray-50 text-[10px] text-gray-400 flex items-center justify-between">
         <span>
-          {filteredFindings.length} of {wasteFindings.length} findings shown
+          {activeSection === "findings"
+            ? `${filteredFindings.length} of ${wasteFindings.length} findings shown`
+            : `${optimizationRules.length} rule${optimizationRules.length !== 1 ? "s" : ""}`}
         </span>
         <button
           onClick={fetchTokenAnalytics}
