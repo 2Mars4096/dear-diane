@@ -290,16 +290,30 @@ class MetaController:
             await self._emit("META_WORKFLOW_PLANNING", session, {"workflow": spec.name})
 
             if self._planner:
-                plan_output = await self._planner.plan(spec.goal)
+                plan_context: dict[str, Any] = {}
+                if spec.required_tools:
+                    plan_context["required_tools"] = spec.required_tools
+                if spec.required_skills:
+                    plan_context["required_skills"] = spec.required_skills
+                if spec.inputs:
+                    plan_context["inputs"] = spec.inputs
+                if spec.outputs:
+                    plan_context["outputs"] = spec.outputs
+                # avoid passing {} so planner omits constraints section
+                plan_output = await self._planner.plan(
+                    spec.goal, plan_context=plan_context if plan_context else None
+                )
                 if plan_output.review.valid:
                     graph_data = await self._planner.execute_plan(plan_output.plan)
-                    wf_id = graph_data.get("id", spec.name) if isinstance(graph_data, dict) else spec.name
+                    wf_id = graph_data.get("workflow_id", spec.name) if isinstance(graph_data, dict) else spec.name
                     built_ids.append(wf_id)
                     session.workflow_ids.append(wf_id)
 
                     if self._run_workflow:
                         try:
-                            result = await self._run_workflow(wf_id)
+                            result = await self._run_workflow(
+                                plan_output.plan, session.session_id
+                            )
                             run_id = result.get("run_id", "") if isinstance(result, dict) else ""
                             run_ids.append(run_id)
                             session.run_ids.append(run_id)

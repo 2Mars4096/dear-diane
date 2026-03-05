@@ -304,7 +304,11 @@ class SystemArchitect:
         return SystemValidationResult(valid=valid, errors=errors, warnings=warnings)
 
     async def build_system(self, plan: SystemPlan) -> SystemManifest:
-        """Plan each workflow, create shared tools/skills, wire the system, validate."""
+        """Plan each workflow, create shared tools/skills, wire the system, validate.
+
+        Note: workflow_ids here are synthetic placeholders (sys-{uuid}). Actual
+        graph persistence and execution happen in MetaController._execute_system.
+        """
         validation = self.validate_system(plan)
         manifest = SystemManifest(
             plan=plan,
@@ -317,7 +321,18 @@ class SystemArchitect:
 
         for spec in plan.workflows:
             try:
-                planner_output = await self._planner.plan(spec.goal)
+                plan_context: dict[str, Any] = {}
+                if spec.required_tools:
+                    plan_context["required_tools"] = spec.required_tools
+                if spec.required_skills:
+                    plan_context["required_skills"] = spec.required_skills
+                if spec.inputs:
+                    plan_context["inputs"] = spec.inputs
+                if spec.outputs:
+                    plan_context["outputs"] = spec.outputs
+                planner_output = await self._planner.plan(
+                    spec.goal, plan_context=plan_context
+                )
                 wf_id = f"sys-{uuid.uuid4().hex[:10]}"
                 manifest.workflow_ids.append(wf_id)
                 logger.info(
