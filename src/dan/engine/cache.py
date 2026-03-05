@@ -123,18 +123,28 @@ class _MemoryEntry:
 class NodeResultCache:
     """Node result memoization with in-memory LRU and optional disk persistence."""
 
+    _DEFAULT_CACHE_DIR = "~/.dan/cache/"
+
     def __init__(
         self,
         *,
         max_size_mb: int = 100,
         cache_dir: str | None = None,
         enabled: bool = True,
+        persistent: bool = False,
+        cache_ttl: int | None = None,
     ) -> None:
         self._enabled = enabled
+        self._persistent = persistent
+        self._default_ttl = cache_ttl
         self._max_bytes = max(1, max_size_mb) * 1024 * 1024
         self._entries: OrderedDict[str, _MemoryEntry] = OrderedDict()
         self._current_bytes = 0
-        self._cache_dir = Path(cache_dir).expanduser() if cache_dir else None
+
+        resolved_dir = cache_dir
+        if resolved_dir is None and persistent:
+            resolved_dir = self._DEFAULT_CACHE_DIR
+        self._cache_dir = Path(resolved_dir).expanduser() if resolved_dir else None
         if self._cache_dir is not None:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -159,8 +169,13 @@ class NodeResultCache:
         }
         return _sha256_json(payload)
 
-    def lookup(self, key: str) -> tuple[NodeResult | None, str]:
-        """Return (result, reason) where reason is hit/miss/expired/corrupt."""
+    def lookup(
+        self,
+        key: str,
+        *,
+        memory_snapshot_hash: str | None = None,
+    ) -> tuple[NodeResult | None, str]:
+        """Return (result, reason) where reason is hit/miss/expired/corrupt/memory_changed."""
         if not self._enabled:
             self._misses += 1
             return None, "disabled"
@@ -180,6 +195,14 @@ class NodeResultCache:
             self.invalidate(key, reason="ttl_expired")
             self._misses += 1
             return None, "expired"
+
+        if memory_snapshot_hash is not None:
+            stored_hash = payload.get("memory_snapshot_hash")
+            dep_keys = payload.get("memory_dependency_keys", [])
+            if dep_keys and stored_hash and stored_hash != memory_snapshot_hash:
+                self.invalidate(key, reason="memory_changed")
+                self._misses += 1
+                return None, "memory_changed"
 
         try:
             result = _deserialize_result(payload["result"])
@@ -201,17 +224,21 @@ class NodeResultCache:
         *,
         ttl: int | None = None,
         memory_dependency_keys: list[str] | None = None,
+        memory_snapshot_hash: str | None = None,
     ) -> None:
         if not self._enabled:
             return
 
+        effective_ttl = ttl if ttl is not None else self._default_ttl
         now = time.time()
-        payload = {
+        payload: dict[str, Any] = {
             "result": _serialize_result(result),
             "created_at": now,
-            "expires_at": (now + ttl) if ttl is not None else None,
+            "expires_at": (now + effective_ttl) if effective_ttl is not None else None,
             "memory_dependency_keys": memory_dependency_keys or [],
         }
+        if memory_snapshot_hash is not None:
+            payload["memory_snapshot_hash"] = memory_snapshot_hash
         size = len(_stable_json(payload).encode("utf-8"))
         self._set_memory(key, payload, size)
         self._save_disk_payload(key, payload)
@@ -283,6 +310,11 @@ class NodeResultCache:
         if path is None or not path.exists():
             return None
         try:
+            if self._default_ttl is not None:
+                mtime = path.stat().st_mtime
+                if time.time() - mtime > self._default_ttl:
+                    path.unlink(missing_ok=True)
+                    return None
             payload = json.loads(path.read_text("utf-8"))
             size = len(_stable_json(payload).encode("utf-8"))
             self._set_memory(key, payload, size)
@@ -490,7 +522,19 @@ class SemanticCache:
         if path is None:
             return
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(_stable_json(payload), encoding="utf-8")
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+        closed = False
+        try:
+            os.write(fd, _stable_json(payload).encode("utf-8"))
+            os.close(fd)
+            closed = True
+            os.replace(tmp, str(path))
+        except BaseException:
+            if not closed:
+                os.close(fd)
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
 
     def _load_payload(self, entry_id: str) -> dict[str, Any] | None:
         path = self._payload_path(entry_id)
