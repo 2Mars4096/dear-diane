@@ -36,9 +36,17 @@ ModelPolicy = StaticPolicy | BudgetPolicy | CascadePolicy | CapabilityPolicy | R
 def _graph_fingerprint(graph) -> str | None:
     if graph is None:
         return None
+    cached = getattr(graph, "_tier_fingerprint", None)
+    if cached is not None:
+        return cached
     node_ids = sorted(n.id for n in graph.nodes)
     edge_ids = sorted(e.id for e in graph.edges)
-    return f"{len(node_ids)}:{','.join(node_ids)}|{len(edge_ids)}:{','.join(edge_ids)}"
+    fp = f"{len(node_ids)}:{','.join(node_ids)}|{len(edge_ids)}:{','.join(edge_ids)}"
+    try:
+        graph._tier_fingerprint = fp
+    except (AttributeError, TypeError):
+        pass
+    return fp
 
 
 @dataclass

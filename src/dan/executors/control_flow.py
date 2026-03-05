@@ -777,6 +777,7 @@ class RouterExecutor:
         assert isinstance(node, RouterNode)
 
         model = node.model or context.config.llm_default_model
+        tier_params: dict[str, Any] = {}
         if context.model_selector is not None:
             effective_policy = context.model_selector.resolve_effective_policy(
                 node, context.config,
@@ -787,6 +788,7 @@ class RouterExecutor:
                 )
                 if select_result.model:
                     model = select_result.model
+                    tier_params = select_result.tier_params
 
         route_desc = "\n".join(
             f"- {name}: {desc}"
@@ -801,7 +803,7 @@ class RouterExecutor:
         )
 
         try:
-            chosen = await self._call_router_llm(context, model, prompt)
+            chosen = await self._call_router_llm(context, model, prompt, tier_params=tier_params)
         except Exception as exc:
             return NodeResult(
                 outputs={},
@@ -828,14 +830,28 @@ class RouterExecutor:
         )
 
     @staticmethod
-    async def _call_router_llm(context: ExecutionContext, model: str, prompt: str) -> str:
+    async def _call_router_llm(
+        context: ExecutionContext,
+        model: str,
+        prompt: str,
+        tier_params: dict[str, Any] | None = None,
+    ) -> str:
         """Dispatch to provider registry, falling back to direct AsyncOpenAI."""
         messages = [{"role": "user", "content": prompt}]
+
+        effective_temp = 0.0
+        extra_kwargs: dict[str, Any] = {}
+        if tier_params:
+            effective_temp = tier_params.get("temperature", effective_temp)
+            for k, v in tier_params.items():
+                if k not in ("temperature", "max_tokens"):
+                    extra_kwargs[k] = v
 
         if context.provider_registry is not None:
             provider = context.provider_registry.resolve(model)
             result = await provider.complete(
-                messages=messages, model=model, temperature=0.0,
+                messages=messages, model=model, temperature=effective_temp,
+                **extra_kwargs,
             )
             return result.text.strip()
 
@@ -847,7 +863,7 @@ class RouterExecutor:
         resp = await client.chat.completions.create(
             model=model,
             messages=messages,
-            temperature=0.0,
+            temperature=effective_temp,
         )
         return (resp.choices[0].message.content or "").strip()
 
@@ -1324,7 +1340,7 @@ class OrchestratorExecutor:
         team_status: dict[str, str] = {}
         orchestrator_log: list[dict] = []
 
-        model = await self._resolve_model(node, context)
+        model, orch_tier_params = await self._resolve_model(node, context)
 
         iteration = 0
         llm_calls = 0
@@ -1349,6 +1365,7 @@ class OrchestratorExecutor:
                 try:
                     llm_result = await self._call_orchestrator_llm(
                         context, model, orchestrator_messages,
+                        tier_params=orch_tier_params,
                     )
                 except Exception as exc:
                     _orch_log.warning("Orchestrator LLM call failed: %s", exc)
@@ -1766,8 +1783,9 @@ class OrchestratorExecutor:
     @staticmethod
     async def _resolve_model(
         node: OrchestratorNode, context: ExecutionContext,
-    ) -> str:
+    ) -> tuple[str, dict[str, Any]]:
         model = node.orchestrator_model or context.config.llm_default_model
+        tier_params: dict[str, Any] = {}
         if context.model_selector is not None:
             effective_policy = context.model_selector.resolve_effective_policy(
                 node, context.config,
@@ -1778,7 +1796,8 @@ class OrchestratorExecutor:
                 )
                 if select_result.model:
                     model = select_result.model
-        return model
+                    tier_params = select_result.tier_params
+        return model, tier_params
 
     @staticmethod
     def _build_team_inputs(
@@ -1799,14 +1818,22 @@ class OrchestratorExecutor:
         context: ExecutionContext,
         model: str,
         messages: list[dict[str, Any]],
+        tier_params: dict[str, Any] | None = None,
     ) -> CompletionResult:
         if context.provider_registry is not None:
             provider = context.provider_registry.resolve(model)
+            effective_temp = 0.0
+            extra_kwargs: dict[str, Any] = {"tools": OrchestratorExecutor.TOOL_SCHEMAS}
+            if tier_params:
+                effective_temp = tier_params.get("temperature", effective_temp)
+                for k, v in tier_params.items():
+                    if k not in ("temperature", "max_tokens"):
+                        extra_kwargs[k] = v
             return await provider.complete(
                 messages=messages,
                 model=model,
-                temperature=0.0,
-                tools=OrchestratorExecutor.TOOL_SCHEMAS,
+                temperature=effective_temp,
+                **extra_kwargs,
             )
 
         from openai import AsyncOpenAI
