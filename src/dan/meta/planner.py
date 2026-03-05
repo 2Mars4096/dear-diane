@@ -198,6 +198,7 @@ Output ONLY a single valid JSON object. No markdown, no explanation."""
         goal: str,
         discoveries: DiscoveryResult,
         error_context: str | None = None,
+        plan_context: dict[str, Any] | None = None,
     ) -> str:
         """Format the user's goal and discovery context into a prompt."""
         sections = [f"## Goal\n{goal}"]
@@ -233,7 +234,30 @@ Output ONLY a single valid JSON object. No markdown, no explanation."""
         if error_context:
             sections.append(f"## Error Context from Prior Attempt\n{error_context}")
 
-        if discoveries.self_knowledge_chunks:
+        if plan_context:
+            ctx_lines: list[str] = []
+            if plan_context.get("required_tools"):
+                ctx_lines.append(
+                    f"Required tools: {', '.join(plan_context['required_tools'])}"
+                )
+            if plan_context.get("required_skills"):
+                ctx_lines.append(
+                    f"Required skills: {', '.join(plan_context['required_skills'])}"
+                )
+            if plan_context.get("inputs"):
+                ctx_lines.append(
+                    f"Inputs: {plan_context['inputs']}"
+                )
+            if plan_context.get("outputs"):
+                ctx_lines.append(
+                    f"Outputs: {plan_context['outputs']}"
+                )
+            if ctx_lines:
+                sections.append("## Plan Constraints\n" + "\n".join(ctx_lines))
+
+        if discoveries.self_knowledge_formatted:
+            sections.append(discoveries.self_knowledge_formatted)
+        elif discoveries.self_knowledge_chunks:
             sk_lines: list[str] = []
             for chunk in discoveries.self_knowledge_chunks:
                 source = chunk.get("source_file", "unknown")
@@ -277,14 +301,19 @@ class WorkflowPlanner:
         self._discovery_top_k = discovery_top_k
 
     async def plan(
-        self, goal: str, error_context: str | None = None,
+        self,
+        goal: str,
+        error_context: str | None = None,
+        plan_context: dict[str, Any] | None = None,
     ) -> PlannerOutput:
         """Discover → prompt → LLM → parse → validate."""
         discoveries = await self._discovery.discover_all(goal, self._discovery_top_k)
 
         builder = PlanningPromptBuilder()
         system_prompt = builder.build_system_prompt()
-        user_prompt = builder.build_user_prompt(goal, discoveries, error_context)
+        user_prompt = builder.build_user_prompt(
+            goal, discoveries, error_context, plan_context
+        )
 
         last_error: str | None = None
         for attempt in range(self._max_retries + 1):
