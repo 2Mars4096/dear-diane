@@ -88,7 +88,7 @@ class EventType(str, Enum):
     LOOP_COMPACTION_APPLIED = "loop_compaction_applied"
     BUDGET_ADVISORY = "budget_advisory"
     # -- 18-1: Smart context assembly events -----------------------------------
-    TOKEN_BUDGET_ADVISORY = "token_budget_advisory"
+    TOKEN_BUDGET_ADVISORY = BUDGET_ADVISORY
     CONTEXT_DEFERRED = "context_deferred"
     INPUT_SUMMARIZED = "input_summarized"
     JIT_SCHEMA_LOADED = "jit_schema_loaded"
