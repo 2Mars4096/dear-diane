@@ -1,6 +1,6 @@
 import { useMemo, useCallback } from "react";
 import { Check, X, Loader2, RotateCcw, ChevronRight, Copy } from "lucide-react";
-import hljs from "highlight.js";
+import hljs from "../lib/hljs";
 import type { ChatMessage } from "../types/chat";
 import {
   mentionTypeColor,
@@ -35,8 +35,14 @@ function applyInlineMarkdown(line: string): string {
 }
 
 function renderMentionHtml(name: string, type: string, id: string): string {
-  const color = mentionTypeColor(type as MentionRef["type"]);
-  return `<button data-mention-type="${escapeHtml(type)}" data-mention-id="${escapeHtml(id)}" class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-xs font-medium cursor-pointer ${color} hover:opacity-80 transition-opacity align-baseline">@${escapeHtml(name)}</button>`;
+  const isCode = type === "code";
+  const color = isCode
+    ? "bg-gray-800 text-gray-200 font-mono"
+    : mentionTypeColor(type as MentionRef["type"]);
+  const inner = isCode
+    ? `<code class="text-[11px]">@${escapeHtml(name)}</code>`
+    : `@${escapeHtml(name)}`;
+  return `<button data-mention-type="${escapeHtml(type)}" data-mention-id="${escapeHtml(id)}" class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-xs font-medium cursor-pointer ${color} hover:opacity-80 transition-opacity align-baseline">${inner}</button>`;
 }
 
 function renderMarkdown(raw: string): string {

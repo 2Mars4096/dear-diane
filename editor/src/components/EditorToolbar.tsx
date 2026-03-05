@@ -180,6 +180,8 @@ export default function EditorToolbar() {
   // 18-4: Heatmap toggle
   const tokenHeatmapEnabled = useGraphStore((s) => s.tokenHeatmapEnabled);
   const setTokenHeatmapEnabled = useGraphStore((s) => s.setTokenHeatmapEnabled);
+  const showEdgeTokenLabels = useGraphStore((s) => s.showEdgeTokenLabels);
+  const setShowEdgeTokenLabels = useGraphStore((s) => s.setShowEdgeTokenLabels);
 
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
@@ -490,6 +492,18 @@ export default function EditorToolbar() {
         title={tokenHeatmapEnabled ? "Hide token heatmap" : "Show token heatmap on nodes (color by token usage)"}
       >
         Heatmap
+      </button>
+
+      <button
+        onClick={() => setShowEdgeTokenLabels(!showEdgeTokenLabels)}
+        className={`px-2 py-1 text-[11px] rounded border ${
+          showEdgeTokenLabels
+            ? "border-indigo-400 bg-indigo-50 text-indigo-700"
+            : "border-gray-300 text-gray-500 hover:bg-gray-100"
+        }`}
+        title={showEdgeTokenLabels ? "Hide edge token labels" : "Show estimated token counts on data edges (after run)"}
+      >
+        Edge Tokens
       </button>
 
       <div className="relative" ref={exportDropdownRef}>

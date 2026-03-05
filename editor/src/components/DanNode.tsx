@@ -5,7 +5,7 @@ import { orderPorts } from "../lib/portOrdering";
 import { computePortReorder } from "../lib/layout";
 import { useGraphStore } from "../store/useGraphStore";
 import { NodeIcon } from "../lib/nodeIcons";
-import type { DanNode, InputVariable, TokenBreakdown, WasteFinding } from "../types/graph";
+import type { DanNode, InputVariable, TokenBreakdown, TierInfo, WasteFinding } from "../types/graph";
 
 const TYPE_COLORS: Record<string, string> = {
   input: "#0ea5e9",
@@ -131,6 +131,38 @@ function WasteTooltip({ findings }: { findings: WasteFinding[] }) {
   );
 }
 
+// -- 18-5: Tier badge styling -------------------------------------------------
+
+const TIER_BADGE: Record<string, { label: string; bg: string; text: string; border: string }> = {
+  micro:     { label: "L0", bg: "bg-green-50",  text: "text-green-700",  border: "border-green-200" },
+  routine:   { label: "L1", bg: "bg-blue-50",   text: "text-blue-700",   border: "border-blue-200" },
+  reasoning: { label: "L2", bg: "bg-orange-50", text: "text-orange-700", border: "border-orange-200" },
+  critical:  { label: "L3", bg: "bg-red-50",    text: "text-red-700",    border: "border-red-200" },
+};
+
+function TierTooltip({ info }: { info: TierInfo }) {
+  const rows: Array<[string, string]> = [
+    ["Tier", `${info.tier} (${TIER_BADGE[info.tier]?.label ?? "?"})`],
+    ["Score", info.tier_score.toFixed(3)],
+    ["Difficulty", info.difficulty.toFixed(3)],
+    ["Impact", info.impact.toFixed(3)],
+    ["Recoverability", info.recoverability.toFixed(3)],
+    ["Model", info.model],
+  ];
+  return (
+    <div className="absolute z-50 bottom-full left-0 mb-2 px-2.5 py-1.5 bg-gray-900 text-white text-[10px] rounded-md shadow-lg whitespace-nowrap pointer-events-none">
+      <div className="font-semibold mb-0.5">Tier Scoring</div>
+      {rows.map(([label, val], i) => (
+        <div key={i} className="flex justify-between gap-3">
+          <span className="text-gray-300">{label}</span>
+          <span className="font-mono">{val}</span>
+        </div>
+      ))}
+      <div className="absolute left-4 top-full w-0 h-0 border-l-4 border-r-4 border-t-4 border-l-transparent border-r-transparent border-t-gray-900" />
+    </div>
+  );
+}
+
 function DanNodeComponent({ id, data, selected }: NodeProps) {
   const nodeStatuses = useGraphStore((s) => s.nodeStatuses);
   const runStatus = useGraphStore((s) => s.runStatus);
@@ -148,6 +180,8 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   const tokenBreakdowns = useGraphStore((s) => s.tokenBreakdowns);
   const wasteFindings = useGraphStore((s) => s.wasteFindings);
   const tokenHeatmapEnabled = useGraphStore((s) => s.tokenHeatmapEnabled);
+  // -- 18-5: Model tier info
+  const nodeTiers = useGraphStore((s) => s.nodeTiers);
   const nodeErrors = validationErrors[id];
   const d = data as unknown as DanNode;
 
@@ -155,6 +189,7 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   const [editName, setEditName] = useState("");
   const [showTokenTooltip, setShowTokenTooltip] = useState(false);
   const [showWasteTooltip, setShowWasteTooltip] = useState(false);
+  const [showTierTooltip, setShowTierTooltip] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelRef = useRef(false);
 
@@ -238,6 +273,9 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   const myReorder = portReorderMap.get(id);
   const orderedInputPorts = orderPorts(d.input_ports ?? [], allEdges, allNodes, id, "input", d.node_type, myReorder);
   const orderedOutputPorts = orderPorts(d.output_ports ?? [], allEdges, allNodes, id, "output", d.node_type);
+
+  const tierInfo = nodeTiers[id];
+  const tierStyle = tierInfo ? TIER_BADGE[tierInfo.tier] : null;
 
   const dRecord = d as unknown as Record<string, unknown>;
   const metadata = dRecord.metadata as Record<string, unknown> | undefined;
@@ -469,6 +507,17 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
           {costLabel && (
             <span className="bg-emerald-50 text-emerald-600 px-1 rounded">
               {costLabel}
+            </span>
+          )}
+          {/* 18-5: Tier badge */}
+          {tierInfo && tierStyle && (
+            <span
+              className={`${tierStyle.bg} ${tierStyle.text} px-1 rounded border ${tierStyle.border} cursor-default relative`}
+              onMouseEnter={() => setShowTierTooltip(true)}
+              onMouseLeave={() => setShowTierTooltip(false)}
+            >
+              {tierStyle.label}
+              {showTierTooltip && <TierTooltip info={tierInfo} />}
             </span>
           )}
         </div>
