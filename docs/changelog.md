@@ -1,5 +1,98 @@
 # Changelog
 
+## 2026-03-05
+
+- [docs] Synced `docs/todo.md` with the new cross-phase wave plans by adding a dedicated section for [22-deferred-wave-1](plans/22-deferred-wave-1.md) and [22-deferred-wave-2](plans/22-deferred-wave-2.md), so the 22-* work is tracked in the main roadmap list (not only backlog cross-links).
+
+- [fix] **Code review round 2 — 12 fixes patched** (1 critical, 11 important):
+  - *Backend (6 fixes):*
+  - **C1**: TierScorer cache key regression — `(len(nodes), len(edges))` collides across subgraphs with same counts; replaced with content-based `_graph_fingerprint()` using sorted node/edge IDs
+  - **I1**: Budget advisory mutated graph nodes permanently via `setattr`; changed to pass advisory through `inputs["__advisory_target_tokens__"]`
+  - **I2**: DIFF_BASED compaction was no-op for AgentTeam (same-length output); added `has_structural_changes` guard for `__summary__`/`__unchanged__` entries
+  - **I3**: `SemanticCache._save_payload` used bare `write_text()`; replaced with atomic `tempfile.mkstemp` + `os.replace`
+  - **I4**: State externalization `except Exception: pass` blocks now log at debug level
+  - **I5**: `_safe_async` logging raised from `debug` to `warning` so background learning failures are visible in production
+  - *Frontend (6 fixes):*
+  - **I-R2-1**: `ChatMessage.tsx` still imported full highlight.js; created shared `lib/hljs.ts` with core + 15 languages, both components now import from it
+  - **I-R2-2**: `VALID_TIERS` Set hoisted to module scope (was allocated on every WS event)
+  - **I-R2-3**: `nodeTiers` spread made conditional — same reference preserved when no tier change, avoiding unnecessary re-renders
+  - **I-R2-4**: Dead per-node effectiveness calculation removed (was immediately overwritten by global recalculation)
+  - **I-R2-5**: Added "Re-enable" button for disabled optimization rules
+  - **I-R2-6**: Edge token computation reduced from O(E²) to O(E) using pre-built lookup maps
+  - Full suite: 2734 passed, 0 regressions. Editor build: 0 new errors.
+
+- [fix] **Code review round 1 — 15 fixes patched** (1 critical, 12 important, 2 minor):
+  - *Frontend (7 fixes):*
+  - **I-1**: `highlight.js` full bundle (1MB+) replaced with core + 9 language imports in `MentionAutocomplete.tsx`
+  - **I-2**: `RulesDashboard` disabled-rules state lifted to parent so it survives tab switches
+  - **I-3**: Dead `formatTokenCount` branch (>= 10k) replaced with `>= 1M` branch in `AnimatedEdge` + `TokenAnalyticsPanel`
+  - **I-4**: Tier event payload validated against `VALID_TIERS` set before `as` cast in `useGraphStore`
+  - **I-5**: IIFE in `DanNode.tsx` tier badge extracted to local variables, avoiding per-render function allocation
+  - **I-7**: Unused `SAVINGS_FACTORS.factor` field removed, type simplified to `Record<string, string>`
+  - **I-8**: `statusColors` hoisted from `.map()` callback to module-scope `STATUS_COLORS` constant
+  - *Backend (8 fixes):*
+  - **C1**: `AgentTeamExecutor._apply_turn_compaction` crash when `LoopCompactor` produces synthetic `__summary__`/`__unchanged__` dicts; now filters and converts to system messages.
+  - **I1**: `ModelSelector.select()` polymorphic return (str | tuple) replaced with `SelectionResult` dataclass; all callers updated.
+  - **I2**: 4 `asyncio.ensure_future` fire-and-forget patterns in `run_manager.py` replaced with `get_running_loop().create_task()` + `_safe_async` wrapper; dead `run_until_complete` branches removed.
+  - **I3**: Duplicate `TOKEN_BUDGET_ADVISORY` / `BUDGET_ADVISORY` event types unified — `TOKEN_BUDGET_ADVISORY` is now an alias for `BUDGET_ADVISORY`.
+  - **I4**: `_should_merge` Jaccard thresholds tightened from 0.5→0.7 (action) and 0.5/0.3→0.7/0.5 (condition+action); added exact-match requirement for short (<5 word) texts.
+  - **I5**: `TierScorer` cache key changed from `id(graph)` (identity) to `(len(nodes), len(edges))` (content-based).
+  - **M1**: Late runtime imports moved to module level in `scheduler.py` (`NodeExecutionSummary`) and `control_flow.py` (`LoopIterationState`, `TeamTurnState`, `LoopCompactor`).
+  - **M3**: `_merge_principles` text growth capped at 2000 chars per field.
+  - Tests updated to match new `SelectionResult` return type and `TOKEN_BUDGET_ADVISORY` alias. Full suite: 2734 passed, 0 regressions. Editor build: 0 new errors.
+
+- [feat] **Deferred Completion Wave 2 (Plan 22-2)** — 3 parallel streams: S1 closes 18-5 docs/editor (TierPolicy docs, tier badge, tier analytics), S2 adds 4 runtime features (state externalization, advisory token budget, tool DSL, principle compaction), S3 adds 3 frontend analytics features (edge token labels, rule dashboard, before/after estimates). 25 new tests, 2734 total, 0 regressions. Phase 10 fully closed.
+- [feat] **Deferred Runtime Features Wave 2** — 4 features with 25 new tests (2734 total, 0 regressions):
+  - **Automatic state externalization** (18-3 task 1-3): Scheduler writes `NodeExecutionSummary` (with `duration_ms`, `cost`, `output_keys`) to `StateStore` after each node. `WhileLoopExecutor`, `ForEachExecutor`, and `AgentTeamExecutor` write `LoopIterationState`/`TeamTurnState` per iteration/branch/turn. All emit `STATE_EXTERNALIZED` events. Graceful no-op when `state_store` is None.
+  - **Run-level advisory token budget** (18-3 task 4-1): Engine emits `BUDGET_ADVISORY` event at run start with total budget and per-node allocation. Logs warning if actual usage exceeds budget at run end. Purely advisory — never blocks.
+  - **Builder DSL for tools** (7-3 task 8-3): Added `config` alias parameter to `WorkflowBuilder.tool()` for convenience (`wf.tool("step", tool_id="file_read", config={"path": "/tmp/data.txt"})`).
+  - **Principle compaction** (17-2 task 3-4): `PrincipleStore.compact()` groups by first tag, merges principles with >50% action/condition word overlap (combined text, max confidence, union tags). Wired into `_persist_reflection_principles` in `run_manager.py`.
+  - Tests: `test_state_externalization.py` (9), `test_tool_dsl.py` (7), `test_principle_compaction.py` (9)
+
+- [feat] **18-5 task 7: Documentation and editor integration for model tiering** — completes Plan 18-5 tasks 7-1, 7-2, 7-3:
+  - **docs/llm-api-guide.md**: New Section 7d "Task-Level Model Tiering" covering TierPolicy usage, 4 tiers with default model mappings, scoring formula (difficulty/impact/recoverability), custom weights, `task_tier` override, custom tier maps, per-tier params, escalation behavior, events, and EngineConfig fields. Updated event types list, EngineConfig table, and import map.
+  - **DanNode.tsx**: Tier badge (L0/L1/L2/L3) with color-coded styling (green/blue/orange/red) shown in the status bar during/after runs. Hover tooltip shows full tier scoring breakdown (score, difficulty, impact, recoverability, model).
+  - **TokenAnalyticsPanel.tsx**: New "Model Tiering" section showing tier distribution counts, per-node tier table (sortable by score, with D/I/R columns), and cost comparison vs uniform-model baseline.
+  - **Store/types**: `TierInfo` type, `nodeTiers` state tracked from `model_selected` events.
+
+- [fix] **18-5 code review round 2 — 5 issues patched** (2 important, 3 suggestions):
+  - **Escalation gate now compares params** (important): `esc_model != model or esc_tier_params != tier_params` — Anthropic L2→L3 escalation (same model, different params like `extended_thinking`) now fires correctly
+  - **TierScorer cache key includes weights** (important): cache keyed on `(graph_id, weights_key)` so per-node policy overrides with different weights get fresh scorers
+  - **Plan decisions updated** to reflect floor-enforcement semantics for explicit `task_tier`
+  - **BFS uses `deque.popleft()`** instead of `list.pop(0)` for O(1) queue ops in ImpactScorer
+  - **Removed dead 2-tuple branch** in LLM executor tuple unpacking
+- [feat] **Deferred Completion Wave 1 (Plan 22)** — 3 parallel streams completing highest-ROI deferred tasks across Phase 10 and Phase 7.2. 77 new tests (46 tier scorer + 31 token runtime), 3 frontend features. Full suite: 2709 passed, 0 failed.
+  - **S1 (18-5 Tiering)**: Fixed `select_sync` bug in OrchestratorExecutor, floor enforcement, escalation cap verified, plan checkboxes synced, 46 scorer tests
+  - **S2 (Token Runtime)**: Loop compaction (5 strategies) wired into WhileLoop/ForEach/AgentTeam executors, persistent cross-run cache, memory-aware invalidation, unified cross-source token budget, 31 tests
+  - **S3 (Frontend UX)**: Recently used mentions, preview tooltip on hover, code syntax highlighting in mentions
+
+- [feat] **Token Optimization Runtime (Plan 22 S2)** — deferred tasks from Plans 18-2 and 18-3:
+  - **Loop compaction runtime**: Enhanced `LoopCompactor` with graceful fallback (logs warning + falls back to `none` instead of raising when persistent recall unavailable), `persist_evicted()` public method, structural summarize format (default cadence 5), diff_based `__unchanged__` markers
+  - **WhileLoopExecutor**: Refactored `_apply_compaction` to delegate to `LoopCompactor`, removing inline compaction logic
+  - **ForEachExecutor**: Added post-processing compaction via `_apply_compaction` — applies `CompactionRule` to accumulated branch results after fan-in
+  - **AgentTeamExecutor**: Added `_apply_turn_compaction` — applies `LoopCompactor` to conversation messages after each turn with persistence + event emission
+  - **Persistent cross-run cache**: `NodeResultCache` gains `persistent: bool` flag (defaults to `~/.dan/cache/`), `cache_ttl` default TTL, file mtime-based TTL check on disk reads
+  - **Memory-aware cache invalidation**: `put()` accepts `memory_snapshot_hash`; `lookup()` compares stored hash with current — returns `memory_changed` reason on mismatch
+  - **Unified cross-source token budget**: `TokenBudgetAdvisor.estimate_source_tokens()` estimates per-source-category tokens (edge_data, system_prompt, context_injection, hyperedge, memory, RAG); `compute_variable_budget()` subtracts fixed sources before allocating variable budget
+  - 31 new tests (21 loop compactor + 10 cache); 2709 total tests pass, 0 regressions
+
+- [feat] **Mention autocomplete UX polish** (12-3 tasks 3-3, 8-4, 8-5):
+  - **Recently used mentions** (8-4): localStorage-backed "Recent" section at top of autocomplete dropdown; tracks last 10 selections as `{type, identifier, label}`; deduped by type+identifier; filtered by current query; recent items excluded from their regular sections to avoid visual duplication
+  - **Preview tooltip on hover** (8-5): 300ms-debounced tooltip positioned to right (or left if constrained) of dropdown; @node shows type label, description, input/output port names (from graph data + NODE_DESCRIPTIONS fallback); @code shows hljs syntax-highlighted reference; @file shows truncated path; @docs/@chat/@workflow show names
+  - **Code syntax highlighting in mentions** (3-3): @code mention pills in chat messages rendered with monospace font + dark background (`bg-gray-800 text-gray-200 font-mono`) via `<code>` wrapper; code mention tooltip uses highlight.js for syntax coloring
+  - Files: `MentionAutocomplete.tsx` (rewritten with recent mentions, tooltip, shared `renderItemButton`), `ChatMessage.tsx` (code mention pill styling)
+
+- [fix] **18-5 code review — 9 issues patched** (2 critical, 4 important, 3 suggestions):
+  - **`_last_tier_result` concurrency hazard** (critical): `ModelSelector.select()` returns `(model, TierResult, tier_params)` tuple for tier strategy instead of storing on shared mutable instance state; eliminates race when parallel `asyncio.gather` LLM nodes overwrite each other's tier result
+  - **`tier_params` wired end-to-end** (critical): `_select_tier()` resolves `resolve_tier_params()` and returns params; `LLMExecutor` threads them through `_call_llm` → `_call_via_provider` → `provider.complete()`/`stream()`, overriding `temperature`/`max_tokens` and passing extras like `extended_thinking`; escalation resolves fresh tier_params for the escalated tier
+  - **TierScorer caching** (important): `ModelSelector` caches `TierScorer` by graph identity so `ImpactScorer._precompute()` runs once per graph instead of O(N) per LLM call
+  - **ImpactScorer sub-graph penalty** (important): -0.15 now only applies to loop bodies (`__body` sub-graph keys), not all sub-graphs
+  - **ImpactScorer transitive `feeds_human`** (important): uses reverse BFS from human nodes for multi-hop reachability, not just direct edge targets
+  - **`_detect_providers` OpenAI false positive** (important): removed `getattr(config, "llm_api_key", "")` check; requires explicit `providers.openai` config or model names starting with `gpt`/`o1`/`o3`/`o4`
+  - **`task_tier` Literal validation** (suggestion): changed from `str | None` to `Literal["micro", "routine", "reasoning", "critical"] | None` on 6 node types for Pydantic v2 validation
+  - **`resolve_tier_map`/`resolve_tier_params` unit tests** (suggestion): 11 new tests for provider preference, partial overrides, fallback, and param merging
+  - **Explicit `task_tier` bypass restored**: reverted floor-enforcement approach back to full scoring bypass as specified in plan — 2632 tests pass, 0 regressions
+
 ## 2026-03-04
 
 - [feat] **Task-level model tiering (18-5)** — automatic cost-appropriate model assignment per LLM call:

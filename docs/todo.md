@@ -159,12 +159,12 @@
 ## Phase 10 — Token Optimization
 > Minimize token consumption and maximize cost-efficiency. Model selection (15-3) picks the right model; this phase reduces tokens sent regardless of model — smart context assembly, caching, agent-directed context architecture, and analytics.
 
-- [ ] [18-token-optimization](plans/18-token-optimization.md) — smart context assembly, caching, agent-directed context architecture, token analytics, task-level model tiering
+- [x] [18-token-optimization](plans/18-token-optimization.md) — smart context assembly, caching, agent-directed context architecture, token analytics, task-level model tiering
   - [x] [18-1-prompt-compression](plans/18-1-prompt-compression.md) — advisory token budgets, context deferral, JIT schema loading, context tools, summarization, reference passing
   - [x] [18-2-caching-layer](plans/18-2-caching-layer.md) — provider prompt caching, node memoization, semantic cache, cache APIs
   - [x] [18-3-context-window-management](plans/18-3-context-window-management.md) — externalized state, history policy, safe loop compaction, advisory token budgets
   - [x] [18-4-token-analytics](plans/18-4-token-analytics.md) — per-node breakdown, waste detection, optimization recommendations, evolving playbooks, editor visualization *(token flow edges and before/after estimation deferred)*
-  - [ ] [18-5-task-level-model-tiering](plans/18-5-task-level-model-tiering.md) — 3-dimension scoring (difficulty/impact/recoverability), 4 model tiers, TierPolicy, adaptive escalation/de-escalation
+  - [x] [18-5-task-level-model-tiering](plans/18-5-task-level-model-tiering.md) — 3-dimension scoring (difficulty/impact/recoverability), 4 model tiers, TierPolicy, adaptive escalation/de-escalation, docs, editor tier badges + analytics *(de-escalation telemetry [4-2] deferred)*
 
 ## Phase 11 — Meta-Orchestrator
 > Autonomous planning, execution, and self-repair. Given a high-level goal ("write a paper on X in Y format"), the meta-orchestrator discovers relevant past workflows, plans/adapts/generates a workflow graph, executes it, diagnoses failures at every severity level, and applies graduated repairs — from prompt tweaks to full redesign — while allowing human intervention at any step.
@@ -193,6 +193,12 @@
   - [x] [21-4-messaging-adapters](plans/21-4-messaging-adapters.md) — email + Telegram + WhatsApp adapters as interactive HumanNode renderers, server integration, email retry *(adapter log streaming to editor deferred)*
   - [x] [21-5-shareable-blocks](plans/21-5-shareable-blocks.md) — block package format, export/import, versioning, local registry, editor integration, backend API endpoints
 
+## Cross-Phase Deferred Completion Waves
+> Parallel closeout waves used to finish high-ROI deferred tasks across existing phases without opening new architecture scope.
+
+- [x] [22-deferred-wave-1](plans/22-deferred-wave-1.md) — wave 1: tiering finish, token runtime (loop compaction/cache/budget), and mention UX polish
+- [x] [22-deferred-wave-2](plans/22-deferred-wave-2.md) — wave 2: tier docs/editor integration, deferred runtime features, and frontend analytics polish (plus review hardening)
+
 ## Backlog (unphased)
 
 ### Infrastructure / CI
@@ -208,19 +214,19 @@
 
 ### Frontend polish
 - [x] ~~**Fuzzy search in mention autocomplete**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
-- [ ] **Recently used mentions at top** (12-3 task 8-4)
-- [ ] **Preview tooltip on mention hover** (12-3 task 8-5)
+- [x] **Recently used mentions at top** (12-3 task 8-4)
+- [x] **Preview tooltip on mention hover** (12-3 task 8-5)
 - [x] ~~**Sortable log columns**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
-- [ ] **Token flow edge labels** (18-4 task 3-4) — token count on edges, may be visually noisy
-- [ ] **Before/after token estimation** (18-4 task 4-4) — estimated next-run tokens if suggestion is applied
+- [x] ~~**Token flow edge labels**~~ (18-4 task 3-4) → completed in [22-deferred-wave-2](plans/22-deferred-wave-2.md) S3
+- [x] ~~**Before/after token estimation**~~ (18-4 task 4-4) → completed in [22-deferred-wave-2](plans/22-deferred-wave-2.md) S3
 - [x] ~~**Per-thread mode persistence**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
 - [x] ~~**Keyboard shortcut to cycle chat modes**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
 - [x] ~~**Debug diff tag**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
 - [x] ~~**"Fix this" shortcut**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
-- [ ] **Code syntax highlighting in mention context** (12-3 task 3-3)
+- [x] **Code syntax highlighting in mention context** (12-3 task 3-3)
 - [x] ~~**Frontend export buttons**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
 - [x] ~~**Collapse verbose run output**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
-- [ ] **Analytics rule dashboard** (18-4 task 5-6) — show active/pending optimization rules, cumulative savings, effectiveness
+- [x] ~~**Analytics rule dashboard**~~ (18-4 task 5-6) → completed in [22-deferred-wave-2](plans/22-deferred-wave-2.md) S3
 - [x] ~~**Run history checkpoint UI**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)
 - [x] ~~**Multi-tab checkpoint consistency**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)
 
@@ -237,23 +243,23 @@
 - [ ] **Sandbox execution display** (12-4 task 6) — terminal-like rendering, ANSI colors, file artifacts, resource usage
 
 ### Deferred runtime features
-- [ ] **Loop compaction strategy runtime** (18-3 tasks 3-3, 3-4, 3-5) — sliding_window/summarize/diff_based/keep_last runtime implementations in control-flow executors
-- [ ] **Persistent cross-run cache** (18-2 task 2-3) — disk-backed memoization with session memory coordination
-- [ ] **Memory-aware cache invalidation** (18-2 task 2-5) — track memory_dependency_keys, invalidate on memory change
-- [ ] **Automatic state externalization** (18-3 task 1-3) — scheduler/executor writes loop/foreach/team state to StateStore automatically
-- [ ] **Run-level advisory token budget** (18-3 task 4-1) — `token_budget` on EngineConfig as global planning signal
-- [ ] **Principle compaction** (17-2 task 3-4) — ConsolidationPipeline adapter for principle merging at threshold
+- [x] ~~**Loop compaction strategy runtime**~~ (18-3 tasks 3-3, 3-4, 3-5) → completed in [22-deferred-wave-1](plans/22-deferred-wave-1.md) S2
+- [x] ~~**Persistent cross-run cache**~~ (18-2 task 2-3) → completed in [22-deferred-wave-1](plans/22-deferred-wave-1.md) S2
+- [x] ~~**Memory-aware cache invalidation**~~ (18-2 task 2-5) → completed in [22-deferred-wave-1](plans/22-deferred-wave-1.md) S2
+- [x] **Automatic state externalization** (18-3 task 1-3) — scheduler/executor writes loop/foreach/team state to StateStore automatically
+- [x] **Run-level advisory token budget** (18-3 task 4-1) — `token_budget` on EngineConfig as global planning signal
+- [x] **Principle compaction** (17-2 task 3-4) — PrincipleStore.compact() merges similar principles at threshold
 - [ ] **ReflectionNode authoring surfaces** (17-2 task 7) — builder DSL `wf.reflection()`, markdown `type: reflection`, editor palette/config
 - [ ] **Two-tier reference resolution** (18-1 task 4-4) — artifact store + memory mirroring for pass_by_reference
 - [ ] **Encode-to-memory pattern** (18-1 task 4-5) — large outputs stored as MemoryItems, downstream retrieves summary
 - [ ] **Hyperedge JIT loading** (18-1 task 7-5) — inject hyperedge summaries, load full rules on demand
-- [ ] **Unified cross-source token budget** (18-3 task 4-4) — budget accounts for edges + system + context + hyperedge + memory + RAG
+- [x] ~~**Unified cross-source token budget**~~ (18-3 task 4-4) → completed in [22-deferred-wave-1](plans/22-deferred-wave-1.md) S2
 - [ ] **Checkpoint/resume for parallel subagents** (7-9 task 3) — capture per-branch completion status, resume pending branches
-- [ ] **Builder DSL for tools** (7-3 task 8-3) — `wf.tool("name", tool_id="file_read")` out of the box
+- [x] **Builder DSL for tools** (7-3 task 8-3) — `wf.tool("name", tool_id="file_read", config={...})` with `config` alias
 - [ ] **RAG reranking** (9-1 task 6-4) — LLM-based re-scoring of top_k*3 candidates
 - [ ] **Tier de-escalation telemetry** (18-5 task 4-2) — persist per-node tier success stats across runs, suggest cheaper tiers after repeated success
-- [ ] **Tier badge in editor** (18-5 task 7-2) — show L0/L1/L2/L3 tier alongside model name in DanNode during/after runs
-- [ ] **Tier analytics panel** (18-5 task 7-3) — per-node tier assignment, score decomposition, cost comparison vs. uniform model
+- [x] ~~**Tier badge in editor** (18-5 task 7-2)~~ — completed (L0–L3 badges + hover tooltip in DanNode)
+- [x] ~~**Tier analytics panel** (18-5 task 7-3)~~ — completed (distribution, cost comparison, per-node table in TokenAnalyticsPanel)
 
 ### Stretch goals
 - [x] ~~**Auto-mode detection**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)

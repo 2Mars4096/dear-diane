@@ -643,7 +643,7 @@ async def on_event(event: EngineEvent) -> None:
 engine = Engine(config=config, event_callback=on_event)
 ```
 
-**Event types:** `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`, `token_budget_advisory`, `context_deferred`, `input_summarized`, `jit_schema_loaded`, `payload_pruned`, `context_tool_called`, `cache_hit`, `cache_miss`, `cache_invalidated`, `semantic_cache_hit`, `state_externalized`, `loop_compaction_applied`, `budget_advisory`, `token_breakdown_recorded`, `waste_detected`, `optimization_report_ready`, `optimization_applied`.
+**Event types:** `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`, `token_budget_advisory`, `context_deferred`, `input_summarized`, `jit_schema_loaded`, `payload_pruned`, `context_tool_called`, `cache_hit`, `cache_miss`, `cache_invalidated`, `semantic_cache_hit`, `state_externalized`, `loop_compaction_applied`, `budget_advisory`, `token_breakdown_recorded`, `waste_detected`, `optimization_report_ready`, `optimization_applied`, `model_selected`, `tier_escalation`.
 
 ---
 
@@ -776,7 +776,149 @@ cost = estimate_cost(model="gpt-4o", input_tokens=1000, output_tokens=500)
 
 ---
 
-## 7d. Built-in Tools (`dan.tools`)
+## 7d. Task-Level Model Tiering (`TierPolicy`)
+
+Automatic model selection based on per-task scoring. Instead of using the same model everywhere (or pinning models per node), `TierPolicy` scores each LLM-using node on three dimensions and maps the result to one of four provider-agnostic tiers.
+
+### Tiers
+
+| Tier | Score Range | Anthropic Default | OpenAI Default | Google Default | Character |
+|---|---|---|---|---|---|
+| **micro** (L0) | `[0, 0.25)` | `claude-3-5-haiku-20241022` | `gpt-4o-mini` | `gemini-2.0-flash` | Cheap, fast |
+| **routine** (L1) | `[0.25, 0.50)` | `claude-sonnet-4-6` | `gpt-4o` | `gemini-2.0-flash` | Standard |
+| **reasoning** (L2) | `[0.50, 0.75)` | `claude-opus-4` | `o3-mini` | `gemini-2.5-pro` | Expensive, strong |
+| **critical** (L3) | `[0.75, 1.0]` | `claude-opus-4` | `o3` | `gemini-2.5-pro` | Most expensive |
+
+### Enabling TierPolicy
+
+Set `default_model_policy` on `EngineConfig`:
+
+```python
+from dan.engine import Engine, EngineConfig
+from dan.providers.model_policy import TierPolicy
+
+engine = Engine(
+    config=EngineConfig(
+        llm_api_key="your-key",
+        providers={"anthropic": ProviderConfig(api_key="sk-ant-...")},
+        default_model_policy=TierPolicy(),  # auto-scoring with default weights
+    ),
+)
+```
+
+Nodes that set an explicit `model` field bypass tiering (resolved as `StaticPolicy`). Nodes with no model and no per-node `model_policy` inherit the engine-level `TierPolicy`.
+
+### How Scoring Works
+
+Each LLM-using node is scored on three orthogonal dimensions:
+
+| Dimension | Weight | What It Measures |
+|---|---|---|
+| **Difficulty** | `0.45` | How hard the reasoning task is (node type base + prompt length + output schema complexity + tool count) |
+| **Impact** | `0.35` | How much damage a wrong answer causes (graph topology: fan-out, feeds-human, terminal position) |
+| **Recoverability** | `0.20` | How well errors can be caught (retry policy, output schema validation, loop body, downstream validators, cascade fallback) |
+
+**Composite score:** `tier_score = difficulty × 0.45 + impact × 0.35 + (1 − recoverability) × 0.20`
+
+The score maps to a tier via `TaskTier.from_score(tier_score)`.
+
+### Custom Weights
+
+```python
+from dan.providers.model_policy import TierPolicy, TierWeights
+
+TierPolicy(
+    weights=TierWeights(difficulty=0.50, impact=0.30, recoverability=0.20),
+)
+```
+
+Weights must sum to 1.0.
+
+### Explicit Tier Override (`task_tier`)
+
+Pin a minimum tier on any LLM-using node:
+
+```python
+node = wf.llm(
+    "critical_analysis",
+    prompt="Analyze: {data}",
+    task_tier="reasoning",  # floor — scoring can only promote, never demote
+)
+```
+
+Supported on: `LLMOperator`, `ReflectionNode`, `RouterNode`, `OrchestratorNode`, `AgentTeamNode`, `VoteNode`.
+
+### Custom Tier Map
+
+Override the default tier-to-model mapping:
+
+```python
+# On TierPolicy directly
+TierPolicy(tier_map={
+    "micro": "gpt-4o-mini",
+    "routine": "gpt-4o",
+    "reasoning": "claude-opus-4",
+    "critical": "claude-opus-4",
+})
+
+# Or on EngineConfig (applies to all TierPolicy nodes)
+EngineConfig(
+    default_model_policy=TierPolicy(),
+    tier_map={
+        "micro": "gemini-2.0-flash",
+        "routine": "claude-sonnet-4-6",
+        "reasoning": "claude-opus-4",
+        "critical": "claude-opus-4",
+    },
+)
+```
+
+Partial overrides are merged on top of the auto-detected provider defaults (preference order: anthropic > openai > google).
+
+### Per-Tier Parameter Overrides (`tier_params`)
+
+Differentiate tiers that share a model (e.g., Anthropic reasoning/critical both use Opus) with call-time parameter overrides:
+
+```python
+EngineConfig(
+    default_model_policy=TierPolicy(),
+    tier_params={
+        "critical": {"extended_thinking": True, "max_tokens": 8192},
+        "micro": {"temperature": 0.3, "max_tokens": 1024},
+    },
+)
+```
+
+Built-in default: Anthropic `critical` tier adds `extended_thinking=True, max_tokens=8192`.
+
+### Escalation Behavior
+
+When output normalization fails (schema validation exhausted), the engine auto-escalates to the next-higher tier:
+
+1. Node is scored as `routine` → model call fails normalization after all retries
+2. Engine bumps to `reasoning` tier, resolves the new model, and retries once
+3. Maximum one escalation per node execution
+
+Emits a `tier_escalation` event with `from_tier`, `to_tier`, `from_model`, `to_model`, and `reason`.
+
+### Events
+
+| Event Type | Data Fields | When |
+|---|---|---|
+| `model_selected` | `model`, `policy_strategy`, `tier`, `tier_score`, `difficulty`, `impact`, `recoverability` | After tier scoring resolves a model |
+| `tier_escalation` | `from_tier`, `to_tier`, `from_model`, `to_model`, `reason` | On auto-escalation after normalization failure |
+
+### EngineConfig Fields (Tiering)
+
+| Field | Type | Default | Purpose |
+|---|---|---|---|
+| `default_model_policy` | `ModelPolicy \| None` | `None` | Set to `TierPolicy()` to enable auto-tiering |
+| `tier_map` | `dict[str, str] \| None` | `None` | Custom tier→model mapping (merged with provider defaults) |
+| `tier_params` | `dict[str, dict] \| None` | `None` | Per-tier LLM parameter overrides (e.g. `extended_thinking`) |
+
+---
+
+## 7e. Built-in Tools (`dan.tools`)
 
 DAN ships 11 batteries-included tools, auto-registered during server startup. Each tool module exports a `TOOL_METADATA` dict and an async callable.
 
@@ -1075,6 +1217,9 @@ dan-serve
 | `semantic_cache_threshold` | `float` | `0.95` | Similarity threshold for semantic cache hits |
 | `semantic_cache_ttl_hours` | `float` | `24.0` | Semantic cache entry TTL |
 | `prompt_caching_enabled` | `bool` | `True` | Enable provider-level prompt cache hints |
+| `default_model_policy` | `ModelPolicy \| None` | `None` | Engine-wide model selection policy; set to `TierPolicy()` for auto-tiering |
+| `tier_map` | `dict[str, str] \| None` | `None` | Custom tier→model mapping for `TierPolicy` (merged with provider defaults) |
+| `tier_params` | `dict[str, dict] \| None` | `None` | Per-tier LLM call parameter overrides (e.g. `{"critical": {"extended_thinking": true}}`) |
 | `optimization_rule_approval_mode` | `str` | `"always_approve"` | `"always_approve"` (human gate) or `"auto_accept"` (activate by default) for evolving optimization rules |
 | `embedding_providers` | `dict[str, ProviderConfig]` | `{}` | Named embedding providers for `RAGOperator` (e.g., `default`, `openai`, `local`) |
 | `embedding_model_provider_map` | `dict[str, str]` | `{}` | Exact embedding model → provider override map |
@@ -1450,5 +1595,12 @@ from dan.models.context import (
     MergeStrategy, CompactionStrategy, CompactionRule,
     FailurePolicy, ContextDeclaration, ContextMode,
     NodeLocalState, SharedContextDeclaration, ArtifactRef, ContextProjection,
+)
+
+# Model policies
+from dan.providers.model_policy import (
+    ModelPolicy, StaticPolicy, BudgetPolicy, CascadePolicy,
+    CapabilityPolicy, RouterPolicy, TierPolicy,
+    TaskTier, TierWeights, ModelConstraints,
 )
 ```
