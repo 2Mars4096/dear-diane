@@ -76,6 +76,18 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="SECS",
         help="HumanNode timeout in seconds (default: 300)",
     )
+    p.add_argument(
+        "--local",
+        action="store_true",
+        default=False,
+        help="Force local engine execution (skip server detection)",
+    )
+    p.add_argument(
+        "--server",
+        metavar="URL",
+        default=None,
+        help="Override dan-serve URL (e.g. http://localhost:8942)",
+    )
 
     # -- LLM config -----------------------------------------------------------
     p.add_argument("--llm-api-key", dest="llm_api_key", help="LLM API key")
@@ -246,6 +258,8 @@ def main() -> None:
             workflows,
             engine_config=engine_config,
             human_timeout=args.human_timeout,
+            server_url=args.server,
+            force_local=args.local,
         )
 
     elif args.server_type == "http":
@@ -268,6 +282,8 @@ def _run_http(
         engine_config=engine_config,
         global_api_key=args.api_key,
         human_timeout=args.human_timeout,
+        server_url=args.server,
+        force_local=args.local,
     )
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
 
@@ -288,6 +304,8 @@ def _run_both(
         engine_config=engine_config,
         global_api_key=args.api_key,
         human_timeout=args.human_timeout,
+        server_url=args.server,
+        force_local=args.local,
     )
 
     http_thread = threading.Thread(
@@ -301,6 +319,8 @@ def _run_both(
         workflows,
         engine_config=engine_config,
         human_timeout=args.human_timeout,
+        server_url=args.server,
+        force_local=args.local,
     )
 
 

@@ -128,6 +128,18 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force interpretation of source as natural-language goal",
     )
+    # -- Server mode ---------------------------------------------------------
+    p.add_argument(
+        "--local",
+        action="store_true",
+        help="Force local engine mode (skip server)",
+    )
+    p.add_argument(
+        "--server",
+        type=str,
+        default=None,
+        help="Server URL (default: http://localhost:8000)",
+    )
     return p
 
 
@@ -677,6 +689,96 @@ def _signal_handler(signum: int, frame: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Server mode execution
+# ---------------------------------------------------------------------------
+
+async def _run_server_mode(
+    *,
+    client: Any,
+    source: str,
+    source_type: str,
+    inputs: dict[str, Any],
+    display: Any,
+    interactive: bool,
+    human_timeout: int,
+) -> int:
+    """Run workflow via DanClientOrLocal in server mode."""
+    from dan.engine.events import EngineEvent
+
+    if source_type == "nl":
+        result = await client.dispatch(text=source, surface_id="cli")
+    else:
+        result = await client.dispatch(
+            workflow_path=str(Path(source).resolve()),
+            inputs=inputs or None,
+            surface_id="cli",
+        )
+
+    run_id = result.run_id
+
+    if hasattr(display, "start"):
+        display.start(0)
+
+    exit_code = 0
+    async for raw_event in client.subscribe_run(run_id):
+        event = EngineEvent.from_dict(raw_event)
+        display.handle_event(event)
+
+        if event.event_type.value == "human_input_needed" and interactive:
+            data = event.data or {}
+            request_id = data.get("request_id")
+            prompt = data.get("prompt", "Input required:")
+            print(f"\n{prompt}")
+            try:
+                loop = asyncio.get_running_loop()
+                user_input = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None, lambda: input("> ")
+                    ),
+                    timeout=human_timeout,
+                )
+                if not request_id:
+                    print(
+                        "Missing request_id for human input event; cancelling run.",
+                        file=sys.stderr,
+                    )
+                    await client.cancel_run(run_id)
+                    return 1
+                submitted = await client.submit_human_input(
+                    run_id,
+                    request_id,
+                    {"response": user_input},
+                )
+                if not submitted:
+                    print(
+                        "Human input request is no longer pending; cancelling run.",
+                        file=sys.stderr,
+                    )
+                    await client.cancel_run(run_id)
+                    return 1
+            except asyncio.TimeoutError:
+                print(
+                    f"\nHuman input timed out after {human_timeout}s; cancelling run.",
+                    file=sys.stderr,
+                )
+                await client.cancel_run(run_id)
+                return 1
+            except (EOFError, KeyboardInterrupt):
+                await client.cancel_run(run_id)
+                return 1
+
+        if event.event_type.value in ("run_completed", "run_failed", "run_cancelled"):
+            if event.event_type.value != "run_completed":
+                exit_code = 1
+            break
+
+    if hasattr(display, "stop"):
+        display.stop()
+
+    return exit_code
+
+
+# ---------------------------------------------------------------------------
 # Core execution
 # ---------------------------------------------------------------------------
 
@@ -704,6 +806,40 @@ async def run_workflow(args: argparse.Namespace) -> int:
         verbose=args.verbose,
         output_format=args.output_format,
     )
+
+    # -- Server mode detection -----------------------------------------------
+    force_local = getattr(args, "local", False)
+    server_url = getattr(args, "server", None)
+
+    if not force_local:
+        from dan.client.local import DanClientOrLocal
+
+        client = DanClientOrLocal(server_url=server_url)
+        mode = await client.detect_mode()
+        if mode == "server":
+            if not args.quiet:
+                print(
+                    f"Connected to dan-serve at {server_url or 'localhost:8000'}",
+                    file=sys.stderr,
+                )
+            try:
+                return await _run_server_mode(
+                    client=client,
+                    source=args.source,
+                    source_type=source_type,
+                    inputs=inputs,
+                    display=display,
+                    interactive=is_interactive,
+                    human_timeout=args.human_timeout,
+                )
+            finally:
+                await client.close()
+        else:
+            if not args.quiet:
+                print(
+                    "dan-serve not detected \u2014 running in local mode.",
+                    file=sys.stderr,
+                )
 
     # -- NL goal path -------------------------------------------------------
     if source_type == "nl":
