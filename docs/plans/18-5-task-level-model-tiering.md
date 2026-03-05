@@ -1,7 +1,7 @@
 # 18-5: Task-Level Model Tiering
 
 **Parent:** [18-token-optimization](18-token-optimization.md)
-**Status:** in-progress (core complete; de-escalation telemetry + editor UI deferred)
+**Status:** in-progress (core + docs + editor UI complete; de-escalation telemetry deferred)
 **Goal:** Automatically assign cost-appropriate models to each LLM call based on task difficulty, output impact, and downstream recoverability — reducing cost without degrading quality.
 
 ## Motivation
@@ -126,7 +126,7 @@ When L2 and L3 share the same model name (e.g. Anthropic Opus), `TierPolicy` can
 - [ ] 4. Adaptive escalation and de-escalation *(4-1, 4-3, 4-4 done; 4-2 deferred)*
   - [x] 4-1. **Escalation on failure**: when output normalizer retries exhaust, record `tier_escalation` event and bump tier by one level for this call (re-select model, retry). Cap at L3.
   - [ ] 4-2. **De-escalation over runs**: persist per-node tier success stats in `CostTracker` (or new `TierTelemetry` sidecar). After N successful runs at tier X, suggest de-escalation to X-1 via token analytics recommendations (18-4 playbook entry). *(deferred — requires multi-run telemetry infrastructure)*
-  - [x] 4-3. **Floor enforcement**: `task_tier` explicit override acts as a floor — `TierScorer` returns declared tier directly, bypassing scoring.
+  - [x] 4-3. **Floor enforcement**: `task_tier` explicit override acts as a floor — scoring always runs; result tier is clamped to be >= the declared tier.
   - [x] 4-4. **Escalation cap**: max 1 escalation per call to bound latency. If L3 also fails, fall through to normal `retry_policy` / `on_failure` handling.
 
 - [x] 5. Default tier map population and provider detection
@@ -142,10 +142,10 @@ When L2 and L3 share the same model name (e.g. Anthropic Opus), `TierPolicy` can
   - [ ] 6-5. De-escalation test: simulate repeated success, verify recommendation appears in token analytics. *(deferred — depends on 4-2)*
   - [x] 6-6. Backward compatibility: graphs without `TierPolicy` behave identically to current behavior.
 
-- [ ] 7. Documentation and editor integration *(7-4 done; 7-1 through 7-3 deferred)*
-  - [ ] 7-1. Update `docs/llm-api-guide.md` with `TierPolicy` usage and `task_tier` override.
-  - [ ] 7-2. Add tier badge to `DanNode.tsx` — show assigned tier (L0/L1/L2/L3) alongside model name during/after runs.
-  - [ ] 7-3. Add tier breakdown to token analytics panel — per-node tier assignment, score decomposition, cost comparison vs. uniform model.
+- [x] 7. Documentation and editor integration
+  - [x] 7-1. Update `docs/llm-api-guide.md` with `TierPolicy` usage and `task_tier` override.
+  - [x] 7-2. Add tier badge to `DanNode.tsx` — show assigned tier (L0/L1/L2/L3) alongside model name during/after runs.
+  - [x] 7-3. Add tier breakdown to token analytics panel — per-node tier assignment, score decomposition, cost comparison vs. uniform model.
   - [x] 7-4. Update `docs/architecture.md` model heterogeneity section.
 
 ## Scoring Signal Reference
@@ -197,11 +197,14 @@ When L2 and L3 share the same model name (e.g. Anthropic Opus), `TierPolicy` can
 
 ## Decisions
 
-- `task_tier` field on node models uses `str | None` (not the `TaskTier` enum) to avoid circular imports between `models/` and `providers/`. Validation happens at runtime in the scorer.
+- `task_tier` field on node models uses `Literal["micro", "routine", "reasoning", "critical"] | None` for Pydantic v2 validation (post-review fix; originally `str | None`).
 - `ExecutionContext.graph` field uses `Any` type, matching the existing pattern for loosely-typed context fields (`model_selector`, `cost_tracker`, etc.).
 - Escalation is injected in `LLMExecutor` after the normalization retry loop exhausts — one additional attempt with the next-higher tier before falling through to the normal failure path.
 - De-escalation (task 4-2) deferred: requires persistent per-node tier telemetry across runs, which is a cross-run storage concern better addressed alongside 18-4 playbook infrastructure.
-- Provider detection uses `EngineConfig.providers` dict keys and `model_provider_map` prefix patterns; defaults to detecting based on API key presence for the default provider.
+- Provider detection uses `EngineConfig.providers` dict keys and `model_provider_map` prefix patterns; `llm_api_key` no longer implies OpenAI (post-review fix).
+- `ModelSelector.select()` returns `(model, TierResult, tier_params)` tuple for tier strategy (post-review fix: avoids concurrency hazard from shared `_last_tier_result`).
+- `TierScorer` cached per graph identity on `ModelSelector` to avoid O(N) `ImpactScorer._precompute()` per LLM call (post-review fix).
+- Explicit `task_tier` uses floor-enforcement: scoring runs normally (populating real difficulty/impact/recoverability values for observability), but the final tier is the higher of the scored tier and the declared tier. This preserves observability data while honoring the author's intent.
 
 ## Notes
 

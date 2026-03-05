@@ -39,7 +39,7 @@
 - [x] 3. @Code mentions
   - [x] 3-1. Frontend: `@code:` trigger autocompletes to `NodeName.field` (via `GET /api/code-refs/{wf}`)
   - [x] 3-2. Backend: `CodeResolver` extracts specific field from node definition in graph
-  - [ ] 3-3. Code blocks rendered with syntax highlighting in the injected context — deferred (plain text for now)
+  - [x] 3-3. Code blocks rendered with syntax highlighting in the injected context — @code mention pills styled with monospace/dark bg in chat; tooltip uses hljs
 - [x] 4. @Docs mentions
   - [x] 4-1. Backend: `DocsResolver` indexes `docs/*.md` and `README.md`
   - [x] 4-2. Frontend: `@docs:` trigger autocompletes doc names (via `GET /api/docs/list`)
@@ -62,9 +62,9 @@
 - [ ] 8. Autocomplete UX enhancements — **deferred** (polish)
   - [x] 8-1. Categorized dropdown: sections for Nodes, Files, Code, Docs, Chats (with category icons)
   - [x] 8-2. Category icons and keyboard navigation (arrow keys + Enter)
-  - [ ] 8-3. Fuzzy search within categories *(deferred — polish, not blocking core mention functionality)*
-  - [ ] 8-4. Recently used mentions at top of list *(deferred — polish, not blocking core mention functionality)*
-  - [ ] 8-5. Preview tooltip: show first few lines of resolved content on hover *(deferred — polish, not blocking core mention functionality)*
+  - [x] 8-3. Fuzzy search within categories *(implemented in 20-2)*
+  - [x] 8-4. Recently used mentions at top of list — localStorage-backed, "Recent" section above categories, deduped by type+identifier
+  - [x] 8-5. Preview tooltip: show first few lines of resolved content on hover — 300ms debounce, positioned right/left of dropdown, type-specific content (node ports/desc, code with hljs, file path, etc.)
 
 ## Decisions
 
