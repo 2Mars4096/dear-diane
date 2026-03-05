@@ -41,7 +41,12 @@ class FakeWorkflowPlanner:
         )
         self.plan_count = 0
 
-    async def plan(self, goal: str, error_context: str | None = None) -> PlannerOutput:
+    async def plan(
+        self,
+        goal: str,
+        error_context: str | None = None,
+        plan_context: dict | None = None,
+    ) -> PlannerOutput:
         self.plan_count += 1
         return self._output
 

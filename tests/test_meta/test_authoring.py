@@ -12,7 +12,7 @@ import pytest
 from dan.meta.authoring import (
     RuntimeAuthor,
     SkillSpec,
-    TestResult,
+    ToolTestResult,
     ToolSpec,
     ToolTestCase,
     ValidationResult,
@@ -232,7 +232,7 @@ class TestRuntimeAuthorToolPipeline:
             test_cases=[ToolTestCase(inputs={"x": 1})],
         )
         result = await author.test_tool(spec)
-        assert isinstance(result, TestResult)
+        assert isinstance(result, ToolTestResult)
         assert result.passed is True
         assert result.total == 1
 
