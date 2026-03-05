@@ -219,14 +219,24 @@ class SelfKnowledgeIndex:
         """
         tools: dict[str, tuple[Any, dict]] = {}
 
-        if tool_registry is not None:
+        if tool_registry is not None and hasattr(tool_registry, "get_metadata"):
             for tid in tool_registry.registered_ids():
                 meta = tool_registry.get_metadata(tid)
                 if meta:
                     tools[tid] = (None, meta)
         else:
             from dan.tools import get_all_tools
-            tools = get_all_tools()
+
+            all_tools = get_all_tools()
+            if tool_registry is not None:
+                registered = set(tool_registry.registered_ids())
+                tools = {
+                    tid: (fn, meta)
+                    for tid, (fn, meta) in all_tools.items()
+                    if tid in registered and meta
+                }
+            else:
+                tools = {k: v for k, v in all_tools.items() if v[1]}
 
         if not tools:
             return {"tools_indexed": 0, "chunks": 0}
