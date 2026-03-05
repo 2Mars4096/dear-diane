@@ -240,8 +240,10 @@ class LoopIterationState(BaseModel):
     status: str  # "completed", "failed", "skipped"
     started_at: float | None = None
     elapsed_seconds: float | None = None
+    duration_ms: float = 0.0
     result_summary: str = ""
     output_keys: list[str] = Field(default_factory=list)
+    output_preview: str = ""
     error: str | None = None
     token_usage: dict[str, int] = Field(default_factory=dict)
 
@@ -271,8 +273,10 @@ class NodeExecutionSummary(BaseModel):
     status: str
     started_at: float | None = None
     elapsed_seconds: float | None = None
+    duration_ms: float = 0.0
     input_tokens: int = 0
     output_tokens: int = 0
     cost: float = 0.0
+    output_keys: list[str] = Field(default_factory=list)
     output_preview: str = ""
     error: str | None = None

@@ -21,7 +21,7 @@ from dan.engine.executor import EngineConfig, ExecutionContext, ExecutorRegistry
 from dan.engine.memory import MemoryEntry, MemoryScope, MemoryWriteRequest
 from dan.engine.memory_store import FileSystemMemoryStore, MemoryStore, NullMemoryStore
 from dan.engine.state import ExecutionState, NodeStatus
-from dan.engine.state_store import FileSystemStateStore, NullStateStore
+from dan.engine.state_store import FileSystemStateStore, NodeExecutionSummary, NullStateStore
 from dan.engine.token_optimization import TokenBudgetAdvisor
 from dan.models.edges import ControlEdge, ContextEdge, DataEdge
 from dan.models.graph import Graph
@@ -811,6 +811,22 @@ class Engine:
             strategy="adaptive",
         )
 
+        _run_token_budget = getattr(self.config, "token_budget", None)
+        if _run_token_budget is not None:
+            _node_count = len(graph.nodes)
+            _per_node = max(1, _run_token_budget // max(1, _node_count))
+            await self._emit(EngineEvent(
+                event_type=EventType.BUDGET_ADVISORY,
+                run_id=state.run_id,
+                data={
+                    "total_budget": _run_token_budget,
+                    "node_count": _node_count,
+                    "per_node_allocation": _per_node,
+                    "phase": "run_start",
+                    "advisory": True,
+                },
+            ))
+
         context = self._make_context(
             state, shared_context, artifacts, local_state, graph,
             session_id=session_id, memory_writes=memory_writes,
@@ -891,6 +907,28 @@ class Engine:
         }
 
         await self._emit_post_run_analytics(state.run_id, graph, node_breakdowns)
+
+        if _run_token_budget is not None:
+            _actual_total = sum(
+                bd.get("total_input_tokens", 0) + bd.get("total_output_tokens", 0)
+                for bd in node_breakdowns.values()
+            )
+            if _actual_total > _run_token_budget:
+                logger.warning(
+                    "Run %s exceeded advisory token budget: %d / %d",
+                    state.run_id, _actual_total, _run_token_budget,
+                )
+                await self._emit(EngineEvent(
+                    event_type=EventType.BUDGET_ADVISORY,
+                    run_id=state.run_id,
+                    data={
+                        "total_budget": _run_token_budget,
+                        "actual_tokens": _actual_total,
+                        "exceeded": True,
+                        "phase": "run_end",
+                        "advisory": True,
+                    },
+                ))
 
         elapsed = round(_time.time() - run_start, 2)
         total_usage = self._aggregate_usage(state)
@@ -1207,6 +1245,7 @@ class Engine:
                         inputs[_k] = _scope.get(_k, _defaults.get(_k))
 
         state.mark(node_id, NodeStatus.RUNNING)
+        _node_start_time = _time.time()
         await self._emit(EngineEvent(
             event_type=EventType.NODE_STARTED,
             run_id=state.run_id,
@@ -1257,10 +1296,7 @@ class Engine:
                 remaining_nodes=max(1, remaining),
             )
             if advisory_tokens is not None and getattr(node, "target_input_tokens", None) is None:
-                try:
-                    setattr(node, "target_input_tokens", advisory_tokens)
-                except Exception:
-                    pass
+                inputs["__advisory_target_tokens__"] = advisory_tokens
             if advisory_tokens is not None:
                 await self._emit(EngineEvent(
                     event_type=EventType.BUDGET_ADVISORY,
@@ -1510,18 +1546,25 @@ class Engine:
                 if isinstance(result.metadata, dict)
                 else {}
             )
-            state_payload = {
-                "node_id": node_id,
-                "node_type": node_type_str,
-                "status": result.status.value,
-                "input_tokens": int(usage.get("prompt_tokens", 0) or 0),
-                "output_tokens": int(usage.get("completion_tokens", 0) or 0),
-                "output_preview": str(result.outputs)[:200],
-                "error": result.error,
-            }
+            _node_elapsed = _time.time() - _node_start_time
+            summary = NodeExecutionSummary(
+                node_id=node_id,
+                node_type=node_type_str or "",
+                status=result.status.value,
+                started_at=_node_start_time,
+                elapsed_seconds=round(_node_elapsed, 3),
+                duration_ms=round(_node_elapsed * 1000, 1),
+                input_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                output_tokens=int(usage.get("completion_tokens", 0) or 0),
+                cost=float(result.metadata.get("cost", 0.0) if isinstance(result.metadata, dict) else 0.0),
+                output_keys=list(result.outputs.keys()),
+                output_preview=str(result.outputs)[:200],
+                error=result.error,
+            )
+            _state_key = f"node:{node_id}:summary"
             try:
                 await context.state_store.write(
-                    state.run_id, f"node:{node_id}", state_payload,
+                    state.run_id, _state_key, summary,
                 )
                 await self._emit(EngineEvent(
                     event_type=EventType.STATE_EXTERNALIZED,
@@ -1530,7 +1573,7 @@ class Engine:
                     node_type=node_type_str,
                     data={
                         "scope": state.run_id,
-                        "keys_written": [f"node:{node_id}"],
+                        "keys_written": [_state_key],
                         "tokens_saved": 0,
                     },
                 ))

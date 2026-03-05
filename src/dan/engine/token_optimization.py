@@ -760,7 +760,12 @@ class HistoryManager:
 
 
 class LoopCompactor:
-    """Applies CompactionRule strategies to loop history payloads."""
+    """Applies CompactionRule strategies to loop iteration payloads.
+
+    When ``require_persistent_recall`` is True and no memory/state store is
+    available, lossy strategies (sliding_window, keep_last) fall back to
+    ``none`` with a logged warning rather than raising.
+    """
 
     def __init__(
         self,
@@ -796,11 +801,21 @@ class LoopCompactor:
         iteration: int,
         context: Any = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        safe, reason = self.validate_safety()
-        if not safe:
-            raise ValueError(reason)
+        """Apply compaction and return (compacted_list, emit_data).
 
+        On safety failure (persistent recall required but unavailable),
+        falls back to ``none`` strategy with a warning.
+        """
+        safe, reason = self.validate_safety()
         strategy = self._rule.strategy
+
+        if not safe:
+            logger.warning(
+                "LoopCompactor: %s — falling back to 'none' for node '%s'",
+                reason, loop_node_id,
+            )
+            strategy = CompactionStrategy.NONE
+
         before = self._token_count(accumulated_payloads)
         compacted = list(accumulated_payloads)
 
@@ -814,18 +829,8 @@ class LoopCompactor:
             compacted = await self._apply_summarize(accumulated_payloads, iteration)
 
         after = self._token_count(compacted)
-        removed = max(0, len(accumulated_payloads) - len(compacted))
-        if self._memory is not None and removed > 0:
-            from dan.engine.memory_pipeline import MemoryItem
-
-            for payload in accumulated_payloads[:removed]:
-                self._memory.append(
-                    MemoryItem(
-                        content=json.dumps(payload, default=str),
-                        source_node_id=loop_node_id,
-                        metadata={"entry_type": "loop_compaction"},
-                    )
-                )
+        evicted = accumulated_payloads[: max(0, len(accumulated_payloads) - len(compacted))]
+        items_persisted = self.persist_evicted(evicted, loop_node_id)
 
         if self._state_store is not None:
             try:
@@ -836,7 +841,7 @@ class LoopCompactor:
                         "strategy": strategy.value,
                         "tokens_before": before,
                         "tokens_after": after,
-                        "removed_items": removed,
+                        "removed_items": len(evicted),
                     },
                 )
             except Exception:
@@ -846,8 +851,30 @@ class LoopCompactor:
             "strategy": strategy.value,
             "tokens_before": before,
             "tokens_after": after,
-            "items_persisted": removed,
+            "items_persisted": items_persisted,
         }
+
+    def persist_evicted(
+        self,
+        evicted_payloads: list[dict[str, Any]],
+        node_id: str,
+        run_id: str = "",
+    ) -> int:
+        """Write evicted payloads to ShortTermMemory. Returns count persisted."""
+        if not evicted_payloads or self._memory is None:
+            return 0
+        from dan.engine.memory_pipeline import MemoryItem
+
+        for payload in evicted_payloads:
+            self._memory.append(
+                MemoryItem(
+                    content=json.dumps(payload, default=str),
+                    source_node_id=node_id,
+                    source_run_id=run_id,
+                    metadata={"entry_type": "loop_compaction"},
+                )
+            )
+        return len(evicted_payloads)
 
     @staticmethod
     def _token_count(payloads: list[dict[str, Any]]) -> int:
@@ -862,29 +889,35 @@ class LoopCompactor:
         return list(payloads[-1:]) if payloads else []
 
     async def _apply_summarize(
-        self, payloads: list[dict[str, Any]], iteration: int
+        self, payloads: list[dict[str, Any]], iteration: int,
     ) -> list[dict[str, Any]]:
-        every = self._rule.summarize_every_n or 1
-        if iteration % every != 0 or len(payloads) <= 1:
-            return payloads
-        summary = {
-            "summary": f"{len(payloads)} loop payloads summarized",
-            "last_payload_preview": str(payloads[-1])[:200],
+        every = self._rule.summarize_every_n or 5
+        if (iteration + 1) % every != 0 or len(payloads) <= 1:
+            return list(payloads)
+        all_keys: set[str] = set()
+        for p in payloads[:-1]:
+            all_keys.update(p.keys())
+        n = len(payloads) - 1
+        summary: dict[str, Any] = {
+            "__summary__": True,
+            "description": f"Iterations 1-{n}: keys={sorted(all_keys)}, total_items={n}",
+            "covered_iterations": n,
+            "keys": sorted(all_keys),
         }
         return [summary, payloads[-1]]
 
     @staticmethod
     def _apply_diff_based(payloads: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if len(payloads) <= 1:
-            return payloads
-        out = [payloads[0]]
+            return list(payloads)
+        out: list[dict[str, Any]] = [payloads[0]]
         prev = payloads[0]
         for payload in payloads[1:]:
             delta: dict[str, Any] = {}
             for k, v in payload.items():
                 if prev.get(k) != v:
                     delta[k] = v
-            out.append(delta)
+            out.append(delta if delta else {"__unchanged__": True})
             prev = payload
         return out
 
@@ -942,6 +975,75 @@ class TokenBudgetAdvisor:
         per_node = max(1, int(remaining / len(pending)))
         for nid in pending:
             self._allocations[nid] = per_node
+
+    # -- unified cross-source budget (18-3 task 4-4) -------------------------
+
+    SOURCE_CATEGORIES = (
+        "edge_data",
+        "system_prompt",
+        "context_injection",
+        "hyperedge_injection",
+        "memory_retrieval",
+        "rag_chunks",
+    )
+
+    def estimate_source_tokens(
+        self,
+        node: Any,
+        context: Any,
+    ) -> dict[str, int]:
+        """Estimate token contribution from each source category.
+
+        Returns a dict mapping source category -> estimated tokens.
+        Advisory only — never blocks execution.
+        """
+        estimates: dict[str, int] = {cat: 0 for cat in self.SOURCE_CATEGORIES}
+
+        system_prompt = getattr(node, "system_prompt", "") or ""
+        if system_prompt:
+            estimates["system_prompt"] = estimate_tokens(system_prompt)
+
+        prompt_template = getattr(node, "prompt_template", "") or ""
+        if prompt_template:
+            estimates["edge_data"] = estimate_tokens(prompt_template)
+
+        if context is not None:
+            if getattr(context, "hyperedge_resolver", None) is not None:
+                estimates["hyperedge_injection"] = 200
+
+            stm = getattr(context, "short_term_memory", None)
+            if stm is not None:
+                estimates["memory_retrieval"] = getattr(stm, "total_tokens", 0)
+
+        return estimates
+
+    def compute_variable_budget(
+        self,
+        node: Any,
+        context: Any,
+        *,
+        node_id: str = "",
+    ) -> dict[str, Any]:
+        """Subtract fixed-source estimates and allocate remaining to variable sources."""
+        source_tokens = self.estimate_source_tokens(node, context)
+        fixed = source_tokens.get("system_prompt", 0) + source_tokens.get("hyperedge_injection", 0)
+        total = self._total_budget or 0
+        remaining_for_variable = max(0, total - fixed)
+        variable_sources = ["edge_data", "context_injection", "memory_retrieval", "rag_chunks"]
+        variable_total = sum(source_tokens.get(s, 0) for s in variable_sources)
+        allocation: dict[str, int] = {}
+        for src in variable_sources:
+            est = source_tokens.get(src, 0)
+            if variable_total > 0 and remaining_for_variable > 0:
+                allocation[src] = int(remaining_for_variable * est / variable_total)
+            else:
+                allocation[src] = est
+        return {
+            "source_estimates": source_tokens,
+            "fixed_tokens": fixed,
+            "variable_budget": remaining_for_variable,
+            "variable_allocation": allocation,
+        }
 
     def summary(self) -> dict[str, Any]:
         remaining = None
