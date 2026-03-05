@@ -72,6 +72,7 @@ class DiscoveryResult(BaseModel):
     patterns: list[PatternInfo] = Field(default_factory=list)
     workflows: list[WorkflowMatch] = Field(default_factory=list)
     self_knowledge_chunks: list[dict[str, Any]] = Field(default_factory=list)
+    self_knowledge_formatted: str = ""  # Token-budgeted prompt section from format_for_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +181,7 @@ class DiscoveryService:
     async def discover_all(self, query: str, top_k: int = 5) -> DiscoveryResult:
         """Run all discovery channels and return a unified result."""
         sk_chunks: list[dict[str, Any]] = []
+        sk_formatted: str = ""
         if self._self_knowledge is not None:
             try:
                 chunks = await self._self_knowledge.retrieve(query)
@@ -193,6 +195,7 @@ class DiscoveryService:
                     }
                     for c in chunks
                 ]
+                sk_formatted = self._self_knowledge.format_for_prompt(chunks)
             except Exception:
                 logger.debug("Self-knowledge retrieval failed", exc_info=True)
 
@@ -202,4 +205,5 @@ class DiscoveryService:
             patterns=self.discover_patterns(),
             workflows=await self.discover_workflows(query, top_k),
             self_knowledge_chunks=sk_chunks,
+            self_knowledge_formatted=sk_formatted,
         )
