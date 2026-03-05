@@ -233,6 +233,20 @@ Output ONLY a single valid JSON object. No markdown, no explanation."""
         if error_context:
             sections.append(f"## Error Context from Prior Attempt\n{error_context}")
 
+        if discoveries.self_knowledge_chunks:
+            sk_lines: list[str] = []
+            for chunk in discoveries.self_knowledge_chunks:
+                source = chunk.get("source_file", "unknown")
+                section = chunk.get("section_title", "")
+                header = f"[Source: {source}"
+                if section:
+                    header += f" > {section}"
+                header += "]"
+                sk_lines.append(f"{header}\n{chunk.get('text', '')}")
+            sections.append(
+                "## DAN API Reference (retrieved)\n" + "\n\n".join(sk_lines)
+            )
+
         return "\n\n".join(sections)
 
 

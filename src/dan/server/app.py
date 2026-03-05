@@ -1139,6 +1139,19 @@ def _build_tool_registry() -> ToolRegistry:
         )
 
     registry.register("rag_index_documents", _rag_index_documents)
+
+    # Auto-discover custom tools (19-6)
+    custom_tools_dir = Path(os.environ.get("DAN_CUSTOM_TOOLS_DIR", "custom_tools"))
+    if custom_tools_dir.is_dir():
+        try:
+            from dan.meta.authoring import RuntimeAuthor
+
+            custom_ids = RuntimeAuthor.register_custom_tools(custom_tools_dir, registry)
+            if custom_ids:
+                logger.info("Registered %d custom tools: %s", len(custom_ids), custom_ids)
+        except Exception:
+            logger.debug("Custom tool discovery failed", exc_info=True)
+
     return registry
 
 
@@ -1248,6 +1261,53 @@ async def lifespan(app: FastAPI):
         graph_store=_graph_store,
     )
     app.include_router(gateway_router)
+
+    # Self-knowledge RAG indexing (19-5)
+    _self_knowledge_index = None
+    try:
+        from dan.rag import build_embedding_registry
+        from dan.meta.self_knowledge import SelfKnowledgeIndex
+
+        embedding_registry = build_embedding_registry(engine_config)
+        if embedding_registry.has_provider("default"):
+            provider = embedding_registry.resolve("text-embedding-3-small")
+            docs_dir = Path(__file__).resolve().parent.parent.parent.parent / "docs"
+            doc_paths = []
+            for fname in ("llm-api-guide.md", "architecture.md"):
+                p = docs_dir / fname
+                if p.exists():
+                    doc_paths.append(p)
+
+            if doc_paths:
+                _self_knowledge_index = SelfKnowledgeIndex(
+                    embedding_provider=provider,
+                )
+                await _self_knowledge_index.refresh(
+                    doc_paths=doc_paths,
+                    tool_registry=_run_manager._tool_registry if _run_manager else None,
+                )
+                logger.info("Self-knowledge index refreshed (%d docs)", len(doc_paths))
+    except Exception:
+        logger.debug("Self-knowledge indexing skipped", exc_info=True)
+
+    app.state.self_knowledge_index = _self_knowledge_index
+
+    # Custom skills discovery (19-6)
+    custom_skills_dir = Path(os.environ.get("DAN_CUSTOM_SKILLS_DIR", "custom_skills"))
+    if custom_skills_dir.is_dir():
+        try:
+            from dan.meta.authoring import RuntimeAuthor
+            from dan.server.skill_library import SKILL_LIBRARY
+
+            skills = RuntimeAuthor.discover_custom_skills(custom_skills_dir)
+            for skill in skills:
+                skill_key = skill.get("name", "").lower().replace(" ", "_")
+                if skill_key and skill_key not in SKILL_LIBRARY:
+                    SKILL_LIBRARY[skill_key] = skill
+            if skills:
+                logger.info("Discovered %d custom skills from %s", len(skills), custom_skills_dir)
+        except Exception:
+            logger.debug("Custom skill discovery failed", exc_info=True)
 
     yield
 

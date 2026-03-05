@@ -112,6 +112,9 @@ deep-agent-network/
       planner.py                 # WorkflowPlanner — LLM-driven reuse-first planning (PlanningPromptBuilder, ReusePlan, AdaptPlan, GeneratePlan, PlanResult, PlanReview, PlannerOutput)
       repair.py                  # Structural Repair Engine — RepairLevel, RepairClassifier, ParameterRepairGenerator, StructuralRepairPlanner, RedesignTrigger, RepairEscalator, RepairActionStore/Record
       controller.py              # Autonomous Execution Controller — MetaSession, MetaSessionStore, MetaController, MetaControllerConfig, HumanOverride
+      self_knowledge.py          # Phase 11 (19-5) — SelfKnowledgeIndex, RetrievedChunk; indexes DAN's own docs for planner grounding
+      authoring.py               # Phase 11 (19-6) — RuntimeAuthor, ToolSpec, SkillSpec; dynamic tool/skill generation, sandbox testing, registration, persistence
+      architect.py               # Phase 11 (19-7) — SystemArchitect, SystemPlan, WorkflowSpec, RoutingConfig, SystemManifest; multi-workflow system decomposition
     executors/                   # Phase 1 — built-in node executors
       __init__.py                # Auto-registers built-in executors
       llm.py                     # LLMExecutor — OpenAI-compatible (vectorengine.ai default)

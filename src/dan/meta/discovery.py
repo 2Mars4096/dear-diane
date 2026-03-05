@@ -71,6 +71,7 @@ class DiscoveryResult(BaseModel):
     skills: list[SkillInfo] = Field(default_factory=list)
     patterns: list[PatternInfo] = Field(default_factory=list)
     workflows: list[WorkflowMatch] = Field(default_factory=list)
+    self_knowledge_chunks: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -101,11 +102,13 @@ class DiscoveryService:
         experience_store: Any | None = None,
         graph_store: Any | None = None,
         tool_registry: Any | None = None,
+        self_knowledge: Any | None = None,
     ) -> None:
         self._experience_index = experience_index
         self._experience_store = experience_store
         self._graph_store = graph_store
         self._tool_registry = tool_registry
+        self._self_knowledge = self_knowledge
 
     def discover_tools(self) -> list[ToolInfo]:
         """Query the tool registry for available tools."""
@@ -176,9 +179,27 @@ class DiscoveryService:
 
     async def discover_all(self, query: str, top_k: int = 5) -> DiscoveryResult:
         """Run all discovery channels and return a unified result."""
+        sk_chunks: list[dict[str, Any]] = []
+        if self._self_knowledge is not None:
+            try:
+                chunks = await self._self_knowledge.retrieve(query)
+                sk_chunks = [
+                    {
+                        "text": c.text,
+                        "source_file": c.source_file,
+                        "section_title": c.section_title,
+                        "doc_type": c.doc_type,
+                        "score": c.score,
+                    }
+                    for c in chunks
+                ]
+            except Exception:
+                logger.debug("Self-knowledge retrieval failed", exc_info=True)
+
         return DiscoveryResult(
             tools=self.discover_tools(),
             skills=self.discover_skills(),
             patterns=self.discover_patterns(),
             workflows=await self.discover_workflows(query, top_k),
+            self_knowledge_chunks=sk_chunks,
         )

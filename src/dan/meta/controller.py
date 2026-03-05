@@ -65,6 +65,13 @@ class MetaSession(BaseModel):
     final_output: dict[str, Any] | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
 
+    # Multi-workflow system fields (19-7)
+    system_plan: dict[str, Any] | None = None
+    workflow_ids: list[str] = Field(default_factory=list)
+    run_ids: list[str] = Field(default_factory=list)
+    is_system: bool = False
+    system_manifest: dict[str, Any] | None = None
+
 
 class MetaControllerConfig(BaseModel):
     """Tuning knobs for the controller loop."""
@@ -75,6 +82,13 @@ class MetaControllerConfig(BaseModel):
     pause_before_repair: bool = False
     pause_on_redesign: bool = True
     timeout_seconds: float | None = None
+
+    # Authoring configuration (19-6)
+    enable_tool_authoring: bool = False
+    enable_skill_authoring: bool = False
+    require_authoring_approval: bool = True
+    custom_tools_dir: str = ""
+    custom_skills_dir: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +191,8 @@ class MetaController:
         emit_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
         graph_loader: Callable[[str], dict[str, Any] | None] | None = None,
         graph_saver: Callable[[str, dict[str, Any]], None] | None = None,
+        architect: Any | None = None,
+        runtime_author: Any | None = None,
     ) -> None:
         self._planner = planner
         self._repair = repair_escalator
@@ -186,6 +202,8 @@ class MetaController:
         self._emit_event = emit_event
         self._graph_loader = graph_loader
         self._graph_saver = graph_saver
+        self._architect = architect
+        self._runtime_author = runtime_author
 
     async def create_session(
         self,
@@ -208,6 +226,118 @@ class MetaController:
         cfg = config or MetaControllerConfig()
         session = await self.create_session(goal, cfg)
         return await self.run_session(session, cfg)
+
+    async def run_system(
+        self,
+        goal: str,
+        config: MetaControllerConfig | None = None,
+    ) -> MetaSession:
+        """Create and run a multi-workflow system session.
+
+        Uses SystemArchitect to decompose the goal, then plans and executes
+        each workflow in dependency order.
+        """
+        cfg = config or MetaControllerConfig()
+        session = await self.create_session(goal, cfg)
+        session.is_system = True
+
+        if self._architect is not None:
+            try:
+                system_plan = await self._architect.plan(goal)
+
+                from dan.meta.architect import SystemPlan
+
+                if isinstance(system_plan, SystemPlan):
+                    session.system_plan = system_plan.model_dump()
+                    session.status = MetaSessionStatus.EXECUTING
+                    await self._save_session(session)
+
+                    manifest = await self._execute_system(session, system_plan, cfg)
+                    session.system_manifest = manifest.model_dump()
+                    session.status = MetaSessionStatus.COMPLETED
+                else:
+                    session.is_system = False
+                    return await self.run_session(session, cfg)
+            except Exception as exc:
+                session.status = MetaSessionStatus.FAILED
+                session.error_context = str(exc)
+                logger.error("System execution failed: %s", exc, exc_info=True)
+        else:
+            session.is_system = False
+            return await self.run_session(session, cfg)
+
+        await self._save_session(session)
+        return session
+
+    async def _execute_system(
+        self,
+        session: MetaSession,
+        plan: Any,
+        config: MetaControllerConfig,
+    ) -> Any:
+        """Execute workflows in dependency order."""
+        from dan.meta.architect import SystemManifest, SystemPlan
+
+        if not isinstance(plan, SystemPlan):
+            plan = SystemPlan.model_validate(plan)
+
+        ordered = self._topo_sort_workflows(plan.workflows)
+
+        built_ids: list[str] = []
+        run_ids: list[str] = []
+
+        for spec in ordered:
+            await self._emit("META_WORKFLOW_PLANNING", session, {"workflow": spec.name})
+
+            if self._planner:
+                plan_output = await self._planner.plan(spec.goal)
+                if plan_output.review.valid:
+                    graph_data = await self._planner.execute_plan(plan_output.plan)
+                    wf_id = graph_data.get("id", spec.name) if isinstance(graph_data, dict) else spec.name
+                    built_ids.append(wf_id)
+                    session.workflow_ids.append(wf_id)
+
+                    if self._run_workflow:
+                        try:
+                            result = await self._run_workflow(wf_id)
+                            run_id = result.get("run_id", "") if isinstance(result, dict) else ""
+                            run_ids.append(run_id)
+                            session.run_ids.append(run_id)
+                        except Exception as exc:
+                            logger.warning("Workflow %s execution failed: %s", spec.name, exc)
+                            run_ids.append("")
+
+        return SystemManifest(
+            plan=plan,
+            workflow_ids=built_ids,
+        )
+
+    @staticmethod
+    def _topo_sort_workflows(workflows: list[Any]) -> list[Any]:
+        """Topological sort of workflow specs by depends_on."""
+        name_to_spec = {w.name: w for w in workflows}
+        in_degree = {w.name: 0 for w in workflows}
+        for w in workflows:
+            for dep in w.depends_on:
+                if dep in in_degree:
+                    in_degree[w.name] += 1
+
+        queue = [name for name, deg in in_degree.items() if deg == 0]
+        result: list[Any] = []
+        while queue:
+            name = queue.pop(0)
+            result.append(name_to_spec[name])
+            for w in workflows:
+                if name in w.depends_on:
+                    in_degree[w.name] -= 1
+                    if in_degree[w.name] == 0:
+                        queue.append(w.name)
+
+        for w in workflows:
+            if w.name not in {r.name for r in result}:
+                result.append(w)
+
+        return result
 
     async def _enrich_goal_with_prior_experience(
         self,

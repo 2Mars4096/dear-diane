@@ -169,11 +169,14 @@
 ## Phase 11 — Meta-Orchestrator
 > Autonomous planning, execution, and self-repair. Given a high-level goal ("write a paper on X in Y format"), the meta-orchestrator discovers relevant past workflows, plans/adapts/generates a workflow graph, executes it, diagnoses failures at every severity level, and applies graduated repairs — from prompt tweaks to full redesign — while allowing human intervention at any step.
 
-- [x] [19-meta-orchestrator](plans/19-meta-orchestrator.md) — autonomous workflow planning, execution, graduated repair, and cross-workflow learning
+- [ ] [19-meta-orchestrator](plans/19-meta-orchestrator.md) — autonomous workflow planning, execution, graduated repair, cross-workflow learning, **self-authoring**
   - [x] [19-1-workflow-experience-memory](plans/19-1-workflow-experience-memory.md) — experience schema/store/index, incremental consolidation, dedupe, auto-indexing, cross-workflow principle sharing (global scope on ErrorMemoryIndex + PrincipleStore + EngineConfig flag)
   - [x] [19-2-workflow-planner](plans/19-2-workflow-planner.md) — reuse-first planner with deterministic Generate compiler, PlanReview, EngineConfig fields, few-shot examples, builder-code path (sandbox subprocess), LLM integration tests
   - [x] [19-3-structural-repair](plans/19-3-structural-repair.md) — graduated repair engine: RepairClassifier, ParameterRepairGenerator, StructuralRepairPlanner, RedesignTrigger, RepairEscalator, RepairActionStore, RedesignResult; all unit + LLM + engine pipeline tests pass
   - [x] [19-4-autonomous-execution-controller](plans/19-4-autonomous-execution-controller.md) — meta-session loop: create/run/pause/resume/events, experience feedback (success+failure), cross-session learning, WebSocket event stream wired end-to-end
+  - [ ] [19-5-self-knowledge-rag](plans/19-5-self-knowledge-rag.md) — index DAN's own docs into dedicated RAG collection; planner retrieves relevant API sections before every planning invocation
+  - [ ] [19-6-runtime-authoring](plans/19-6-runtime-authoring.md) — dynamically generate, sandbox-test, register, and persist custom tools and skills at runtime
+  - [ ] [19-7-system-architect-mode](plans/19-7-system-architect-mode.md) — decompose complex multi-workflow intents into coordinated systems with shared memory, tools/skills, and routing
 
 ## Phase 11.5 — Patch & Polish
 > Close documentation debt, polish chat/editor UX with deferred quick-wins, and activate recently-built backend features with frontend integration. No new architecture — purely finishing deferred work.

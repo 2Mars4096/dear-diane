@@ -1,6 +1,6 @@
 # 19: Phase 11 — Meta-Orchestrator
 
-**Status:** completed
+**Status:** in-progress
 **Goal:** Build an autonomous meta-orchestrator that receives a high-level user goal, plans and constructs (or retrieves and adapts) a workflow graph, executes it, diagnoses failures at every level of severity, and applies graduated repairs — from prompt tweaks to full workflow redesign — while allowing human intervention at any step.
 
 ## Motivation
@@ -62,6 +62,9 @@ Level 1 is built. This phase builds Level 2.
 | [19-2](19-2-workflow-planner.md) | Workflow Planner | LLM agent that receives a goal, queries experience memory, discovers tools/skills, and produces a workflow graph (reuse/adapt/generate) | `meta/planner.py` (new), `meta/discovery.py` (new), `server/app.py` |
 | [19-3](19-3-structural-repair.md) | Structural Repair Engine | Graduated repair: level 2 (parameter/tool swap), level 3 (graph mutation), level 4 (full redesign). Extends 9D's reflection with structural analysis | `meta/repair.py` (new), `server/graph_mutator.py`, `engine/error_memory.py` |
 | [19-4](19-4-autonomous-execution-controller.md) | Autonomous Execution Controller | Outer meta-loop: plan → execute → observe → repair/replan → re-execute. Human override protocol at any step | `meta/controller.py` (new), `server/app.py`, `server/run_manager.py` |
+| [19-5](19-5-self-knowledge-rag.md) | Self-Knowledge RAG | Index DAN's own docs (llm-api-guide, architecture, examples, tool schemas) into dedicated RAG collection; planner retrieves relevant API sections before every planning invocation | `meta/self_knowledge.py` (new), `meta/planner.py`, `meta/discovery.py` |
+| [19-6](19-6-runtime-authoring.md) | Runtime Authoring | Dynamically generate, sandbox-test, register, and persist custom tools and skills at runtime — no external IDE needed | `meta/authoring.py` (new), `meta/planner.py`, `meta/controller.py` |
+| [19-7](19-7-system-architect-mode.md) | System Architect Mode | Decompose complex multi-workflow intents into coordinated systems with shared memory, tools/skills, and routing | `meta/architect.py` (new), `meta/planner.py`, `meta/controller.py` |
 
 ## Dependencies / Sequencing
 
@@ -84,6 +87,19 @@ Level 1 is built. This phase builds Level 2.
    - Implements the human override protocol.
 
 5. **Recommended sequence: 19-1 → 19-2 → 19-3 → 19-4** (serial, each building on the last).
+
+6. **19-5 (Self-Knowledge RAG) can start after 19-2.**
+   - Uses `dan.rag` infrastructure (done) and integrates into `WorkflowPlanner` and `DiscoveryService`.
+
+7. **19-6 (Runtime Authoring) depends on 19-5.**
+   - Uses self-knowledge to ground generated tools/skills in DAN conventions.
+   - Uses `SandboxRunner` (done), `ToolRegistry` (done), `SKILL_LIBRARY` (done).
+
+8. **19-7 (System Architect) depends on 19-5 and 19-6.**
+   - Invokes `WorkflowPlanner` per-workflow and `RuntimeAuthor` for shared tools/skills.
+   - Uses `MemoryStore` GLOBAL scope (done), `GlobalEventBus` (23-1, done).
+
+9. **Recommended sequence for new plans: 19-5 → 19-6 → 19-7** (serial, each building on the last).
 
 ## Graduated Repair Levels
 
