@@ -17,6 +17,7 @@ class EventType(str, Enum):
     RUN_STARTED = "run_started"
     RUN_COMPLETED = "run_completed"
     RUN_FAILED = "run_failed"
+    RUN_CANCELLED = "run_cancelled"
     NODE_STARTED = "node_started"
     NODE_COMPLETED = "node_completed"
     NODE_FAILED = "node_failed"
@@ -34,6 +35,7 @@ class EventType(str, Enum):
     ITERATION_COMPLETED = "iteration_completed"
     HUMAN_INPUT_NEEDED = "human_input_needed"
     HUMAN_INPUT_RECEIVED = "human_input_received"
+    HUMAN_INPUT_RESOLVED = "human_input_resolved"
     # -- 6-10: Gate node event types -------------------------------------------
     GATE_EVALUATED = "gate_evaluated"
     # -- 7-1: Runtime reliability -----------------------------------------------
@@ -142,3 +144,24 @@ class EngineEvent:
             "node_type": self.node_type,
             "data": self.data,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EngineEvent":
+        """Deserialize an EngineEvent from a dict (inverse of to_dict)."""
+        event_type_str = data.get("event_type", "")
+        try:
+            event_type = EventType(event_type_str)
+        except ValueError:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Unknown event type %r, falling back to LOG", event_type_str,
+            )
+            event_type = EventType.LOG
+        return cls(
+            event_type=event_type,
+            run_id=data.get("run_id", ""),
+            timestamp=data.get("timestamp", 0.0),
+            node_id=data.get("node_id"),
+            node_type=data.get("node_type"),
+            data=data.get("data") or {},
+        )
