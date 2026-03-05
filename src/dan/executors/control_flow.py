@@ -37,6 +37,8 @@ from dan.models.control_flow import (
 )
 from dan.models.context import CompactionStrategy, FeedbackSelector, MergeStrategy
 from dan.models.nodes import NodeBase
+from dan.engine.state_store import LoopIterationState, TeamTurnState
+from dan.engine.token_optimization import LoopCompactor
 from dan.utils.tokens import estimate_tokens
 
 logger = logging.getLogger(__name__)
@@ -258,6 +260,7 @@ class WhileLoopExecutor:
 
         for iteration in range(max_iter):
             scope["iteration"] = iteration
+            _iter_start = time.monotonic()
 
             if _has_schema:
                 condition_vars = dict(scope)
@@ -321,14 +324,34 @@ class WhileLoopExecutor:
                 data={"iteration": iteration, "max_iterations": max_iter},
             )
 
-            try:
-                await self._apply_compaction(node, scope, context, iteration)
-            except ValueError as exc:
-                return NodeResult(
-                    outputs=working_data,
-                    status=NodeStatus.FAILED,
-                    error=str(exc),
-                )
+            if getattr(context, "state_store", None) is not None:
+                _iter_elapsed = time.monotonic() - _iter_start
+                try:
+                    iter_state = LoopIterationState(
+                        iteration=iteration,
+                        status="completed",
+                        duration_ms=round(_iter_elapsed * 1000, 1),
+                        output_keys=list(body_output.keys()) if isinstance(body_output, dict) else [],
+                        output_preview=str(body_output)[:200],
+                    )
+                    await context.state_store.write(
+                        context.state.run_id,
+                        f"loop:{node.id}:iter:{iteration}",
+                        iter_state,
+                    )
+                    await context.emit_event(
+                        event_type="state_externalized",
+                        node_id=node.id,
+                        node_type="while_loop",
+                        data={"scope": context.state.run_id, "keys_written": [f"loop:{node.id}:iter:{iteration}"]},
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to externalize state for %s",
+                        node.id, exc_info=True,
+                    )
+
+            await self._apply_compaction(node, scope, context, iteration)
 
             if self._check_stagnation(node, prev_output, body_output, scope):
                 logger.info(
@@ -382,84 +405,23 @@ class WhileLoopExecutor:
         if not history:
             return
 
-        if (
-            rule.strategy in (CompactionStrategy.KEEP_LAST, CompactionStrategy.SLIDING_WINDOW)
-            and getattr(rule, "require_persistent_recall", True)
-            and context.short_term_memory is None
-            and getattr(context, "state_store", None) is None
-        ):
-            raise ValueError(
-                (
-                    f"Unsafe compaction for loop '{node.id}': strategy '{rule.strategy.value}' "
-                    "requires persistent recall (memory or state store). "
-                    "Use summarize/diff_based or enable persistent recall."
-                )
-            )
-
-        before_tokens = sum(estimate_tokens(json.dumps(h, default=str)) for h in history)
-        old_history = list(history)
-
-        if rule.strategy == CompactionStrategy.KEEP_LAST:
-            scope["history"] = history[-1:]
-        elif rule.strategy == CompactionStrategy.SLIDING_WINDOW:
-            window = rule.window_size or 3
-            scope["history"] = history[-window:]
-        elif rule.strategy == CompactionStrategy.SUMMARIZE:
-            every = getattr(rule, "summarize_every_n", None) or 1
-            if iteration % every == 0 and len(history) > 1:
-                scope["history"] = [
-                    {
-                        "summary": f"{len(history)} iterations summarized",
-                        "latest": history[-1],
-                    }
-                ]
-        elif rule.strategy == CompactionStrategy.DIFF_BASED:
-            if len(history) > 2:
-                scope["history"] = [history[0], history[-1]]
-
-        removed = max(0, len(old_history) - len(scope.get("history", [])))
-        if removed > 0 and context.short_term_memory is not None:
-            from dan.engine.memory_pipeline import MemoryItem
-
-            for evicted in old_history[:removed]:
-                context.short_term_memory.append(
-                    MemoryItem(
-                        content=json.dumps(evicted, default=str),
-                        source_node_id=node.id,
-                        source_run_id=getattr(context, "_run_id", ""),
-                        metadata={"entry_type": "loop_compaction"},
-                    )
-                )
-
-        if getattr(context, "state_store", None) is not None:
-            try:
-                await context.state_store.write(
-                    getattr(context.state, "run_id", "run"),
-                    f"loop:{node.id}:iter:{iteration}",
-                    {
-                        "iteration": iteration,
-                        "strategy": rule.strategy.value,
-                        "history_len": len(scope.get("history", [])),
-                    },
-                )
-            except Exception:
-                logger.debug("State externalization failed for loop compaction", exc_info=True)
-
-        after_tokens = sum(
-            estimate_tokens(json.dumps(h, default=str))
-            for h in scope.get("history", [])
+        compactor = LoopCompactor(
+            rule,
+            memory=context.short_term_memory,
+            state_store=getattr(context, "state_store", None),
         )
+        compacted, emit_data = await compactor.compact(
+            history,
+            loop_node_id=node.id,
+            iteration=iteration,
+        )
+        scope["history"] = compacted
+
         await context.emit_event(
             event_type="loop_compaction_applied",
             node_id=node.id,
             node_type="while_loop",
-            data={
-                "iteration": iteration,
-                "strategy": rule.strategy.value,
-                "tokens_before": before_tokens,
-                "tokens_after": after_tokens,
-                "items_persisted_to_memory": removed,
-            },
+            data={"iteration": iteration, **emit_data},
         )
 
     @staticmethod
@@ -647,6 +609,7 @@ class ForEachExecutor:
                     node_type="for_each",
                     data={"index": index, "total": len(items)},
                 )
+                _branch_start = time.monotonic()
                 item_input = {"item": item, "index": index}
                 result = await context.run_subgraph(node.body_graph, item_input, parent_node_id=node.id)
                 await context.emit_event(
@@ -655,6 +618,32 @@ class ForEachExecutor:
                     node_type="for_each",
                     data={"index": index, "total": len(items)},
                 )
+                if getattr(context, "state_store", None) is not None:
+                    _branch_elapsed = time.monotonic() - _branch_start
+                    try:
+                        branch_state = LoopIterationState(
+                            iteration=index,
+                            status="completed",
+                            duration_ms=round(_branch_elapsed * 1000, 1),
+                            output_keys=list(result.keys()) if isinstance(result, dict) else [],
+                            output_preview=str(result)[:200],
+                        )
+                        await context.state_store.write(
+                            context.state.run_id,
+                            f"foreach:{node.id}:branch:{index}",
+                            branch_state,
+                        )
+                        await context.emit_event(
+                            event_type="state_externalized",
+                            node_id=node.id,
+                            node_type="for_each",
+                            data={"scope": context.state.run_id, "keys_written": [f"foreach:{node.id}:branch:{index}"]},
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Failed to externalize state for %s",
+                            node.id, exc_info=True,
+                        )
                 return result
 
         tasks = [run_item(i, item) for i, item in enumerate(items)]
@@ -675,7 +664,11 @@ class ForEachExecutor:
                 error=f"All ForEach branches failed: {'; '.join(errors)}",
             )
 
-        merged = self._merge(outputs, node.merge_strategy)
+        compacted_outputs = await self._apply_compaction(
+            node, outputs, context, len(items),
+        )
+
+        merged = self._merge(compacted_outputs, node.merge_strategy)
 
         return NodeResult(
             outputs={"results": merged},
@@ -686,6 +679,40 @@ class ForEachExecutor:
                 "failed": len(errors),
             },
         )
+
+    @staticmethod
+    async def _apply_compaction(
+        node: ForEachNode,
+        outputs: list[Any],
+        context: ExecutionContext,
+        total_items: int,
+    ) -> list[Any]:
+        rule = node.compaction_rule
+        if rule is None or rule.strategy == CompactionStrategy.NONE:
+            return outputs
+        dict_outputs = [
+            o if isinstance(o, dict) else {"__value__": o} for o in outputs
+        ]
+        if not dict_outputs:
+            return outputs
+
+        compactor = LoopCompactor(
+            rule,
+            memory=context.short_term_memory,
+            state_store=getattr(context, "state_store", None),
+        )
+        compacted, emit_data = await compactor.compact(
+            dict_outputs,
+            loop_node_id=node.id,
+            iteration=total_items - 1,
+        )
+        await context.emit_event(
+            event_type="loop_compaction_applied",
+            node_id=node.id,
+            node_type="for_each",
+            data={"total_items": total_items, **emit_data},
+        )
+        return compacted
 
     @staticmethod
     def _merge(results: list[dict[str, Any]], strategy: MergeStrategy) -> Any:
@@ -755,11 +782,11 @@ class RouterExecutor:
                 node, context.config,
             )
             if effective_policy is not None:
-                selected = await context.model_selector.select(
+                select_result = await context.model_selector.select(
                     effective_policy, node, context,
                 )
-                if selected:
-                    model = selected
+                if select_result.model:
+                    model = select_result.model
 
         route_desc = "\n".join(
             f"- {name}: {desc}"
@@ -1297,7 +1324,7 @@ class OrchestratorExecutor:
         team_status: dict[str, str] = {}
         orchestrator_log: list[dict] = []
 
-        model = self._resolve_model(node, context)
+        model = await self._resolve_model(node, context)
 
         iteration = 0
         llm_calls = 0
@@ -1737,7 +1764,7 @@ class OrchestratorExecutor:
     # ---------------------------------------------------------------
 
     @staticmethod
-    def _resolve_model(
+    async def _resolve_model(
         node: OrchestratorNode, context: ExecutionContext,
     ) -> str:
         model = node.orchestrator_model or context.config.llm_default_model
@@ -1746,14 +1773,11 @@ class OrchestratorExecutor:
                 node, context.config,
             )
             if effective_policy is not None:
-                try:
-                    selected = context.model_selector.select_sync(
-                        effective_policy, node, context,
-                    )
-                except AttributeError:
-                    selected = None
-                if selected:
-                    model = selected
+                select_result = await context.model_selector.select(
+                    effective_policy, node, context,
+                )
+                if select_result.model:
+                    model = select_result.model
         return model
 
     @staticmethod
@@ -2314,6 +2338,32 @@ class AgentTeamExecutor:
                 },
             )
 
+            if getattr(context, "state_store", None) is not None:
+                try:
+                    turn_state = TeamTurnState(
+                        turn_number=turn,
+                        agent_id=current_agent,
+                        status="completed",
+                        message_preview=content[:200],
+                        handoff_to=handoff.target_agent if handoff else None,
+                    )
+                    await context.state_store.write(
+                        context.state.run_id,
+                        f"team:{node.id}:turn:{turn}",
+                        turn_state,
+                    )
+                    await context.emit_event(
+                        event_type="state_externalized",
+                        node_id=node.id,
+                        node_type="agent_team",
+                        data={"scope": context.state.run_id, "keys_written": [f"team:{node.id}:turn:{turn}"]},
+                    )
+                except Exception:
+                    logger.debug(
+                        "Failed to externalize state for %s",
+                        node.id, exc_info=True,
+                    )
+
             if handoff:
                 conversation.handoff_log.append(handoff)
                 await context.emit_event(
@@ -2337,6 +2387,8 @@ class AgentTeamExecutor:
                 )
 
             self._ctx_write(context, conv_key, conversation.model_dump())
+
+            await self._apply_turn_compaction(node, conversation, context, turn)
 
             if self._check_completion(node, conversation, agent_names):
                 completed_via_condition = True
@@ -2430,6 +2482,54 @@ class AgentTeamExecutor:
             if len(history) > 2:
                 return [history[0], history[-1]]
         return history
+
+    @staticmethod
+    async def _apply_turn_compaction(
+        node: AgentTeamNode,
+        conversation: TeamConversation,
+        context: ExecutionContext,
+        turn: int,
+    ) -> None:
+        """Persist evicted messages and emit compaction event after each turn."""
+        rule = node.compaction_rule
+        if rule is None or rule.strategy == CompactionStrategy.NONE:
+            return
+        msgs = [m.model_dump() for m in conversation.messages]
+        if not msgs:
+            return
+
+        compactor = LoopCompactor(
+            rule,
+            memory=context.short_term_memory,
+            state_store=getattr(context, "state_store", None),
+        )
+        compacted, emit_data = await compactor.compact(
+            msgs, loop_node_id=node.id, iteration=turn,
+        )
+        has_structural_changes = any(
+            d.get("__summary__") or d.get("__unchanged__") for d in compacted
+        )
+        if len(compacted) < len(msgs) or has_structural_changes:
+            rebuilt = []
+            for d in compacted:
+                if d.get("__summary__"):
+                    rebuilt.append(TeamMessage(
+                        sender="system",
+                        content=d.get("description", "Previous messages summarized"),
+                        message_type="message",
+                        metadata={"__summary__": True, "covered": d.get("covered_iterations", [])},
+                    ))
+                elif d.get("__unchanged__"):
+                    continue
+                else:
+                    rebuilt.append(TeamMessage(**d))
+            conversation.messages = rebuilt
+            await context.emit_event(
+                event_type="loop_compaction_applied",
+                node_id=node.id,
+                node_type="agent_team",
+                data={"turn": turn, **emit_data},
+            )
 
     @staticmethod
     def _extract_content(agent_output: dict[str, Any]) -> str:
