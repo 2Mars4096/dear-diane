@@ -1229,11 +1229,30 @@ async def lifespan(app: FastAPI):
     )
 
     _publish_registry = PublishRegistry(engine_config)
+    _publish_registry.human_timeout = 300.0
+    from dan.publish.runtime import LocalRuntime
+
+    _publish_registry.runtime = LocalRuntime(
+        engine_config=engine_config,
+        human_timeout=300.0,
+    )
     _auto_register_published_workflows(_publish_registry)
     router = create_publish_router(_publish_registry)
     app.include_router(router, prefix="/api/published", tags=["published"])
 
+    from dan.server.gateway.router import init_gateway, router as gateway_router
+    workspace_root_path = Path(workspace_root)
+    init_gateway(
+        run_manager=_run_manager,
+        workspace=workspace_root_path,
+        graph_store=_graph_store,
+    )
+    app.include_router(gateway_router)
+
     yield
+
+    if _publish_registry is not None and _publish_registry.runtime is not None:
+        await _publish_registry.runtime.close()
 
     for aid, (adapter, task) in list(_active_adapters.items()):
         if not task.done():
@@ -1314,6 +1333,22 @@ class ApplyMutationRequest(BaseModel):
     mutation_plan: dict[str, Any]
     idempotency_key: str | None = None
     source: str | None = None
+
+
+# ------------------------------------------------------------------
+# Health
+# ------------------------------------------------------------------
+
+
+@app.get("/health")
+async def health_check() -> dict[str, Any]:
+    """Health check endpoint for server discovery."""
+    result: dict[str, Any] = {"status": "ok"}
+    if _run_manager is not None:
+        runs = _run_manager.list_runs()
+        active = [r for r in runs if r.get("status") in ("running", "pending")]
+        result["active_runs"] = len(active)
+    return result
 
 
 # ------------------------------------------------------------------
@@ -2483,7 +2518,7 @@ def _build_meta_controller():
                     "workflow_id": workflow_id,
                     "error_context": f"Run {rec.run_id} disappeared",
                 }
-            if current.status in (RunStatus.COMPLETED, RunStatus.FAILED):
+            if current.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
                 break
             await asyncio.sleep(0.1)
 
