@@ -43,6 +43,7 @@ dan-logs = "dan.cli.logs:main"
 dan-publish = "dan.cli.publish:main"
 dan-adapter = "dan.cli.adapter:main"
 dan-blocks = "dan.cli.blocks:main"
+dan-chat = "dan.cli.chat:main"
 
 [project.optional-dependencies]
 pdf = ["pypdf>=4.0"]

@@ -89,6 +89,7 @@ class DanClient:
         inputs: dict[str, Any] | None = None,
         text: str | None = None,
         surface_id: str | None = None,
+        auto_approve: bool = False,
         use_meta: bool = False,
         config_overrides: dict[str, Any] | None = None,
         human_timeout: int | None = None,
@@ -104,6 +105,8 @@ class DanClient:
             body["text"] = text
         if surface_id is not None:
             body["surface_id"] = surface_id
+        if auto_approve:
+            body["auto_approve"] = True
         if use_meta:
             body["use_meta"] = True
         if config_overrides is not None:

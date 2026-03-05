@@ -38,6 +38,9 @@ This phase comes after the meta-orchestrator (Phase 11) is stable, so the CLI ca
 | [21-3](21-3-publish-api-mcp.md) | Publish as API/MCP | MCP server generation, HTTP REST fallback, stateful WebSocket, easy portal, schema derivation | ~2–3 days | 21-2 (headless execution pattern) |
 | [21-4](21-4-messaging-adapters.md) | Messaging Adapters | Adapter protocol, email (IMAP/SMTP), Telegram (Bot API), WhatsApp (Business API), interactive HumanNode rendering | ~3–4 days | 21-1 (package structure) |
 | [21-5](21-5-shareable-blocks.md) | Shareable Blocks | Package format, export/import, versioning, local registry, discovery | ~1–2 days | 21-1 (package structure) |
+| [21-6](21-6-cli-chat-mode.md) | CLI Chat Mode | `dan-chat` REPL, conversational workflow authoring, CLI parity with editor ChatPanel | ~2–3 days | 21-2 (CLI), 23-2 (DanClient) |
+| [21-7](21-7-gateway-text-dispatch.md) | Gateway Text Dispatch | Implement text dispatch so `dan-run "goal"` works with server | ~1 day | 23-1 (gateway API) |
+| [21-8](21-8-local-cli-chat-fallback.md) | Local CLI Chat Fallback | dan-chat without server (optional) | ~2 days | 21-6 (CLI Chat Mode) |
 
 ## Dependencies / Sequencing
 
@@ -47,11 +50,14 @@ This phase comes after the meta-orchestrator (Phase 11) is stable, so the CLI ca
   │    └→ 21-3 (Publish as API/MCP)  ← builds on headless execution from 21-2
   │         └→ (shared) derive_workflow_interface() in dan.utils.workflow_interface
   ├→ 21-4 (Messaging Adapters)       ← independent track, needs package structure from 21-1
-  └→ 21-5 (Shareable Blocks)         ← independent track, needs package structure from 21-1
-       └→ (shared) derive_workflow_interface() — extracted to dan.utils so 21-3 and 21-5 share it
+  ├→ 21-5 (Shareable Blocks)        ← independent track, needs package structure from 21-1
+  │    └→ (shared) derive_workflow_interface() — extracted to dan.utils so 21-3 and 21-5 share it
+  ├→ 21-6 (CLI Chat Mode)            ← dan-chat REPL, depends on 21-2 + 23-2
+  ├→ 21-7 (Gateway Text Dispatch)    ← unblocks dan-run NL with server, depends on 23-1
+  └→ 21-8 (Local CLI Chat Fallback)  ← optional, extends 21-6
 ```
 
-**Parallelizable:** After 21-1 completes, 21-2/21-4/21-5 can run in parallel. 21-3 waits for 21-2. `derive_workflow_interface()` is shared between 21-3 and 21-5 — whichever starts first creates `dan.utils.workflow_interface`, the other reuses it.
+**Parallelizable:** After 21-1 completes, 21-2/21-4/21-5 can run in parallel. 21-3 waits for 21-2. 21-6 and 21-7 are independent; 21-8 depends on 21-6. `derive_workflow_interface()` is shared between 21-3 and 21-5 — whichever starts first creates `dan.utils.workflow_interface`, the other reuses it.
 
 ## Key Decisions
 

@@ -15,6 +15,7 @@ class DispatchRequest(BaseModel):
     inputs: dict[str, Any] | None = None
     text: str | None = None
     surface_id: str | None = None
+    auto_approve: bool = False
     use_meta: bool = False
     config_overrides: dict[str, Any] | None = None
     human_timeout: int | None = None

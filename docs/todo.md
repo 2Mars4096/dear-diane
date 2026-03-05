@@ -195,6 +195,9 @@
   - [x] [21-3-publish-api-mcp](plans/21-3-publish-api-mcp.md) — MCP server generation, HTTP REST fallback, stateful streaming, easy portal, SSE/WebSocket streaming, rate limiting, dan-serve integration
   - [x] [21-4-messaging-adapters](plans/21-4-messaging-adapters.md) — email + Telegram + WhatsApp adapters as interactive HumanNode renderers, server integration, email retry *(adapter log streaming to editor deferred)*
   - [x] [21-5-shareable-blocks](plans/21-5-shareable-blocks.md) — block package format, export/import, versioning, local registry, editor integration, backend API endpoints
+  - [x] [21-6-cli-chat-mode](plans/21-6-cli-chat-mode.md) — `dan-chat` REPL for conversational workflow authoring (CLI parity with editor ChatPanel)
+  - [x] [21-7-gateway-text-dispatch](plans/21-7-gateway-text-dispatch.md) — implement text dispatch so `dan-run "goal"` works with server
+  - [ ] [21-8-local-cli-chat-fallback](plans/21-8-local-cli-chat-fallback.md) — dan-chat without server (optional/stretch)
 ## Phase 12.1 — Cross-Phase Deferred Completion Waves
 > Parallel closeout waves used to finish high-ROI deferred tasks across existing phases without opening new architecture scope.
 

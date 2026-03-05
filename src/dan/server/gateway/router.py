@@ -71,6 +71,149 @@ def _require_bus() -> GlobalEventBus:
 
 # ── Dispatch ──────────────────────────────────────────────────────────
 
+
+async def _dispatch_text(
+    rm: RunManager,
+    tracker: ActivityTracker,
+    bus: GlobalEventBus,
+    goal: str,
+    inputs: dict[str, Any] | None,
+    auto_approve: bool,
+    surface_id: str | None,
+) -> DispatchResult:
+    """Route text goal through MetaController planner, optionally gate on approval."""
+    from dan.models.graph import Graph
+
+    try:
+        from dan.server.app import _build_meta_controller
+    except ImportError:
+        raise HTTPException(
+            503,
+            "MetaController not available (text dispatch requires server initialization)",
+        ) from None
+
+    _, planner, _ = _build_meta_controller()
+    if planner is None:
+        raise HTTPException(503, "WorkflowPlanner not configured")
+
+    planner_output = await planner.plan(goal)
+    if not planner_output.review.valid:
+        raise HTTPException(
+            422,
+            f"Planning failed: {'; '.join(planner_output.review.errors)}",
+        )
+
+    exec_result = await planner.execute_plan(planner_output.plan)
+    graph_data = exec_result.get("graph")
+    workflow_id = exec_result.get("workflow_id", f"meta-{uuid.uuid4().hex[:10]}")
+
+    if not isinstance(graph_data, dict):
+        raise HTTPException(500, "Planner did not produce a valid graph")
+
+    graph = Graph.model_validate(graph_data)
+    workflow_name = workflow_id
+
+    plan_event = {
+        "event_type": "plan_created",
+        "goal": goal,
+        "workflow_id": workflow_id,
+        "timestamp": time.time(),
+    }
+    bus.broadcast(plan_event)
+
+    run_id = f"run-{int(time.time() * 1000)}"
+    if surface_id:
+        tracker.touch_surface(surface_id)
+
+    if auto_approve:
+        record = await rm.start_run(
+            graph=graph,
+            graph_id=workflow_id,
+            inputs=inputs,
+            run_id=run_id,
+        )
+    else:
+        request_id = str(uuid.uuid4())
+        evt = rm.register_meta_approval(request_id)
+        approval_event = {
+            "event_type": "human_input_needed",
+            "run_id": run_id,
+            "node_id": None,
+            "data": {
+                "request_id": request_id,
+                "render_mode": "approval",
+                "prompt": f"Approve plan for goal: {goal[:200]}{'...' if len(goal) > 200 else ''}",
+            },
+            "timestamp": time.time(),
+        }
+        bus.broadcast(approval_event)
+
+        from dan.server.run_manager import RunRecord, RunStatus
+
+        record = RunRecord(
+            run_id=run_id,
+            graph_id=workflow_id,
+            status=RunStatus.PENDING,
+        )
+        rm._runs[run_id] = record
+        rm.emit_event_to_run(run_id, approval_event)
+
+        async def _run_after_approval() -> None:
+            await evt.wait()
+            response = rm._human_input_responses.pop(request_id, {})
+            rm._pending_human_inputs.pop(request_id, None)
+            approved = response.get("approved", response.get("response") == "approve")
+            if not approved:
+                cancel_event = {
+                    "event_type": "run_cancelled",
+                    "run_id": run_id,
+                    "timestamp": time.time(),
+                    "data": {"reason": "plan_rejected"},
+                }
+                record.status = RunStatus.CANCELLED
+                record.events.append(cancel_event)
+                for q in rm._subscribers.get(run_id, []):
+                    try:
+                        q.put_nowait(cancel_event)
+                    except asyncio.QueueFull:
+                        pass
+                bus.broadcast(cancel_event)
+                return
+            await rm.start_run(
+                graph=graph,
+                graph_id=workflow_id,
+                inputs=inputs,
+                run_id=run_id,
+            )
+
+        task = asyncio.create_task(_run_after_approval())
+        _relay_tasks.add(task)
+        task.add_done_callback(_relay_tasks.discard)
+
+    run_event = {
+        "event_type": "run_dispatched",
+        "run_id": run_id,
+        "workflow_name": workflow_name,
+        "surface_id": surface_id,
+        "timestamp": time.time(),
+    }
+    bus.broadcast(run_event)
+
+    relay_task = asyncio.create_task(
+        _relay_run_events_to_bus(rm, run_id, workflow_name, surface_id, bus)
+    )
+    _relay_tasks.add(relay_task)
+    relay_task.add_done_callback(_relay_tasks.discard)
+
+    status = str(record.status.value) if hasattr(record.status, "value") else str(record.status)
+    return DispatchResult(
+        run_id=run_id,
+        workflow_name=workflow_name,
+        status=status,
+        surface_id=surface_id,
+    )
+
+
 @router.post("/dispatch", response_model=DispatchResult)
 async def dispatch_workflow(req: DispatchRequest) -> DispatchResult:
     rm = _require_rm()
@@ -112,9 +255,8 @@ async def dispatch_workflow(req: DispatchRequest) -> DispatchResult:
             raise HTTPException(422, str(exc))
 
     elif req.text:
-        raise HTTPException(
-            501,
-            "Text dispatch (MetaController / IntentRegistry) not yet implemented",
+        return await _dispatch_text(
+            rm, tracker, bus, req.text, req.inputs, req.auto_approve, req.surface_id
         )
 
     if graph is None:

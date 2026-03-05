@@ -164,6 +164,7 @@ deep-agent-network/
       publish.py                 # dan-publish entry point: argparse CLI, MCP/HTTP/both modes, --generate-config/--docs/--openapi output modes (21-3)
       adapter.py                 # dan-adapter placeholder (21-4)
       blocks.py                  # dan-blocks CLI — list/install/export/remove/pack/info subcommands (21-5)
+      chat.py                    # dan-chat entry point: REPL for chat API (POST /api/chat/message, WS /api/chat/{channel_id}/events), mutation confirmation (21-6)
     server/                      # Phase 2 — FastAPI backend for visual editor
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`

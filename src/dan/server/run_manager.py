@@ -383,6 +383,39 @@ class RunManager:
             return response
         return callback
 
+    def register_meta_approval(self, request_id: str) -> asyncio.Event:
+        """Register a pending meta (plan) approval request.
+
+        Used by gateway text dispatch before a run starts. submit_human_input
+        will resolve this when the client approves via POST /api/gateway/submit-input.
+        """
+        evt = asyncio.Event()
+        self._pending_human_inputs[request_id] = evt
+        return evt
+
+    def emit_event_to_run(
+        self,
+        run_id: str,
+        event_dict: dict[str, Any],
+    ) -> None:
+        """Emit an event to a run's record and notify subscribers.
+
+        Used for meta approval and other pre-run events.
+        """
+        record = self._runs.get(run_id)
+        if record is None:
+            return
+        record.events.append(event_dict)
+        if len(record.events) > self._max_event_buffer:
+            record.events = record.events[-self._max_event_buffer:]
+        if self._run_store is not None:
+            self._run_store.append_event(record.graph_id, run_id, event_dict)
+        for queue in self._subscribers.get(run_id, []):
+            try:
+                queue.put_nowait(event_dict)
+            except asyncio.QueueFull:
+                logger.warning("Subscriber queue full for run %s", run_id)
+
     # ------------------------------------------------------------------
     # Subscription
     # ------------------------------------------------------------------

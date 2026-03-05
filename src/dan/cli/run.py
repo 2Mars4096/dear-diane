@@ -701,12 +701,15 @@ async def _run_server_mode(
     display: Any,
     interactive: bool,
     human_timeout: int,
+    auto_approve: bool = False,
 ) -> int:
     """Run workflow via DanClientOrLocal in server mode."""
     from dan.engine.events import EngineEvent
 
     if source_type == "nl":
-        result = await client.dispatch(text=source, surface_id="cli")
+        result = await client.dispatch(
+            text=source, surface_id="cli", auto_approve=auto_approve
+        )
     else:
         result = await client.dispatch(
             workflow_path=str(Path(source).resolve()),
@@ -727,16 +730,32 @@ async def _run_server_mode(
         if event.event_type.value == "human_input_needed" and interactive:
             data = event.data or {}
             request_id = data.get("request_id")
+            render_mode = data.get("render_mode", "text")
             prompt = data.get("prompt", "Input required:")
             print(f"\n{prompt}")
             try:
                 loop = asyncio.get_running_loop()
-                user_input = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        None, lambda: input("> ")
-                    ),
-                    timeout=human_timeout,
-                )
+                if render_mode == "approval":
+                    raw = await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None, lambda: input("[Y/n] ")
+                        ),
+                        timeout=human_timeout,
+                    )
+                    answer = raw.strip().lower() if raw else "y"
+                    approved = answer in ("y", "yes", "true", "1", "approve")
+                    response = {
+                        "approved": approved,
+                        "response": "approve" if approved else "reject",
+                    }
+                else:
+                    user_input = await asyncio.wait_for(
+                        loop.run_in_executor(
+                            None, lambda: input("> ")
+                        ),
+                        timeout=human_timeout,
+                    )
+                    response = {"response": user_input}
                 if not request_id:
                     print(
                         "Missing request_id for human input event; cancelling run.",
@@ -747,7 +766,7 @@ async def _run_server_mode(
                 submitted = await client.submit_human_input(
                     run_id,
                     request_id,
-                    {"response": user_input},
+                    response,
                 )
                 if not submitted:
                     print(
@@ -831,6 +850,7 @@ async def run_workflow(args: argparse.Namespace) -> int:
                     display=display,
                     interactive=is_interactive,
                     human_timeout=args.human_timeout,
+                    auto_approve=args.auto_approve,
                 )
             finally:
                 await client.close()

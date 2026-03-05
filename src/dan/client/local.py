@@ -82,6 +82,7 @@ class DanClientOrLocal:
         inputs: dict[str, Any] | None = None,
         text: str | None = None,
         surface_id: str | None = None,
+        auto_approve: bool = False,
         use_meta: bool = False,
     ) -> DispatchResult:
         if self._is_server_mode and self._client:
@@ -91,6 +92,7 @@ class DanClientOrLocal:
                 inputs=inputs,
                 text=text,
                 surface_id=surface_id,
+                auto_approve=auto_approve,
                 use_meta=use_meta,
             )
         return await self._dispatch_local(

@@ -3059,6 +3059,11 @@ async def chat_message(req: ChatMessageRequest):
             normalized_mode = normalize_chat_mode(req.mode)
             graph_dict = _graph_store.get_graph(req.workflow_id)
 
+            # Scratch bootstrap: create empty graph on first use (plan 21-6)
+            if req.workflow_id == "_scratch" and graph_dict is None:
+                _graph_store.save_graph("_scratch", {"nodes": [], "edges": []})
+                graph_dict = _graph_store.get_graph("_scratch")
+
             detected_mode: str | None = None
             if normalized_mode == "auto":
                 recent_run_failed = False
