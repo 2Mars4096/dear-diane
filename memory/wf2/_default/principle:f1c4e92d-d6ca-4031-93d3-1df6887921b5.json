@@ -1,15 +1,15 @@
 {
-  "key": "principle:0991b72e-cc86-4f9c-a56e-352a2eff981c",
+  "key": "principle:f1c4e92d-d6ca-4031-93d3-1df6887921b5",
   "value": {
-    "id": "0991b72e-cc86-4f9c-a56e-352a2eff981c",
+    "id": "f1c4e92d-d6ca-4031-93d3-1df6887921b5",
     "condition": "hallucinated references",
     "action": "avoid citing papers not in the context",
     "reason": "",
     "source_run_ids": [],
     "source_node_ids": [],
     "confidence": 0.8,
-    "created_at": 1772639675.9401002,
-    "updated_at": 1772643250.6094568,
+    "created_at": 1772643476.544214,
+    "updated_at": 1772643476.5442371,
     "tags": [
       "llm_operator"
     ],
@@ -19,8 +19,8 @@
     "structural_description": ""
   },
   "scope": "workflow",
-  "created_at": 1772639675.9401422,
-  "updated_at": 1772643250.609528,
+  "created_at": 1772643476.5442429,
+  "updated_at": 1772643476.5442429,
   "source_run_id": null,
   "writer_node_id": null,
   "write_mode": "set"

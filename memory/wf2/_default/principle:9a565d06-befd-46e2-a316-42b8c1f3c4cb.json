@@ -1,7 +1,7 @@
 {
-  "key": "principle:02e39d96-973c-43cf-a17f-d04baa9115e4",
+  "key": "principle:9a565d06-befd-46e2-a316-42b8c1f3c4cb",
   "value": {
-    "id": "02e39d96-973c-43cf-a17f-d04baa9115e4",
+    "id": "9a565d06-befd-46e2-a316-42b8c1f3c4cb",
     "condition": "slow model",
     "action": "use faster model",
     "reason": "",
@@ -10,8 +10,8 @@
       "n1"
     ],
     "confidence": 0.8,
-    "created_at": 1772531410.0026822,
-    "updated_at": 1772643250.594027,
+    "created_at": 1772643476.547698,
+    "updated_at": 1772643476.547721,
     "tags": [],
     "workflow_id": "wf2",
     "repair_level": "parameter_fix",
@@ -21,8 +21,8 @@
     "structural_description": ""
   },
   "scope": "workflow",
-  "created_at": 1772531410.0027132,
-  "updated_at": 1772643250.594102,
+  "created_at": 1772643476.5477278,
+  "updated_at": 1772643476.5477278,
   "source_run_id": null,
   "writer_node_id": null,
   "write_mode": "set"
