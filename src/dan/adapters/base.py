@@ -113,6 +113,9 @@ class AdapterConfig(BaseModel):
     error_message: str = "Something went wrong. Please try again."
     trigger_mode: Literal["keyword", "always", "pattern"] = "always"
     trigger_pattern: str | None = None
+    server_url: str | None = None
+    local_mode: bool = False
+    forward_external_prompts: bool = False
 
 
 # ---------------------------------------------------------------------------

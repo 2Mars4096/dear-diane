@@ -30,6 +30,7 @@ from dan.adapters.base import (
     parse_response_text,
     should_trigger,
 )
+from dan.adapters.gateway_mixin import GatewayAdapterMixin
 from dan.adapters.email_adapter import EmailAdapter, EmailAdapterConfig
 from dan.adapters.telegram_adapter import TelegramAdapter, TelegramAdapterConfig
 from dan.adapters.whatsapp_adapter import WhatsAppAdapter, WhatsAppAdapterConfig
@@ -40,6 +41,7 @@ __all__ = [
     "AdapterSessionStore",
     "EmailAdapter",
     "EmailAdapterConfig",
+    "GatewayAdapterMixin",
     "MessagingAdapter",
     "MessagingHumanRenderer",
     "SessionState",
