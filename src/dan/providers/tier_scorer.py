@@ -7,6 +7,7 @@ provider-agnostic model tiers.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -19,6 +20,14 @@ if TYPE_CHECKING:
 _LLM_NODE_TYPES: frozenset[str] = frozenset(
     {"llm_operator", "orchestrator", "router", "agent_team", "vote", "reflection"}
 )
+
+_TIER_ORDER: list[TaskTier] = [TaskTier.micro, TaskTier.routine, TaskTier.reasoning, TaskTier.critical]
+_TIER_FLOOR_SCORE: dict[TaskTier, float] = {
+    TaskTier.micro: 0.0,
+    TaskTier.routine: 0.25,
+    TaskTier.reasoning: 0.50,
+    TaskTier.critical: 0.75,
+}
 
 
 def _clamp(value: float, lo: float = 0.0, hi: float = 1.0) -> float:
@@ -103,10 +112,27 @@ class ImpactScorer:
             if getattr(e, "edge_type", "") == "data":
                 outgoing_data.setdefault(e.source_node_id, []).append(e.target_node_id)
 
-        sub_graph_node_ids: set[str] = set()
-        for sg in graph.sub_graphs.values():
-            for n in sg.nodes:
-                sub_graph_node_ids.add(n.id)
+        loop_body_node_ids: set[str] = set()
+        for sg_key, sg in graph.sub_graphs.items():
+            if "__body" in sg_key:
+                for n in sg.nodes:
+                    loop_body_node_ids.add(n.id)
+
+        human_ids = {
+            nid for nid, nt in node_types.items()
+            if nt in ("human", "human_in_the_loop")
+        }
+        incoming: dict[str, list[str]] = {}
+        for e in graph.edges:
+            incoming.setdefault(e.target_node_id, []).append(e.source_node_id)
+        can_reach_human: set[str] = set(human_ids)
+        queue = deque(human_ids)
+        while queue:
+            current = queue.popleft()
+            for pred in incoming.get(current, []):
+                if pred not in can_reach_human:
+                    can_reach_human.add(pred)
+                    queue.append(pred)
 
         scores: dict[str, float] = {}
         for n in graph.nodes:
@@ -118,10 +144,7 @@ class ImpactScorer:
             targets = outgoing_data.get(nid, [])
             llm_targets = [t for t in targets if node_types.get(t, "") in _LLM_NODE_TYPES]
 
-            feeds_human = any(
-                node_types.get(t, "") in ("human", "human_in_the_loop")
-                for t in targets
-            )
+            feeds_human = nid in can_reach_human and nid not in human_ids
 
             if feeds_human:
                 base = 0.85
@@ -133,7 +156,7 @@ class ImpactScorer:
             fan_out = len(targets)
             base += min(0.30, fan_out * 0.05)
 
-            if nid in sub_graph_node_ids:
+            if nid in loop_body_node_ids:
                 base -= 0.15
 
             scores[nid] = _clamp(base)
@@ -237,21 +260,9 @@ class TierScorer:
 
     def score_node(self, node: Any, tool_count: int = 0) -> TierResult:
         explicit = getattr(node, "task_tier", None)
+        floor_tier: TaskTier | None = None
         if explicit is not None:
-            tier = TaskTier(explicit) if not isinstance(explicit, TaskTier) else explicit
-            threshold = {
-                TaskTier.micro: 0.12,
-                TaskTier.routine: 0.37,
-                TaskTier.reasoning: 0.62,
-                TaskTier.critical: 0.87,
-            }
-            return TierResult(
-                tier=tier,
-                tier_score=threshold[tier],
-                difficulty=0.0,
-                impact=0.0,
-                recoverability=0.0,
-            )
+            floor_tier = TaskTier(explicit) if not isinstance(explicit, TaskTier) else explicit
 
         d = self._difficulty.score(node, tool_count=tool_count)
 
@@ -265,6 +276,10 @@ class TierScorer:
 
         tier_score = _clamp(tier_score)
         tier = TaskTier.from_score(tier_score)
+
+        if floor_tier is not None and _TIER_ORDER.index(floor_tier) > _TIER_ORDER.index(tier):
+            tier = floor_tier
+            tier_score = max(tier_score, _TIER_FLOOR_SCORE[floor_tier])
 
         return TierResult(
             tier=tier,

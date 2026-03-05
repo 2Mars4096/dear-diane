@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from pydantic import TypeAdapter
@@ -32,6 +33,21 @@ logger = logging.getLogger(__name__)
 ModelPolicy = StaticPolicy | BudgetPolicy | CascadePolicy | CapabilityPolicy | RouterPolicy | TierPolicy
 
 
+def _graph_fingerprint(graph) -> str | None:
+    if graph is None:
+        return None
+    node_ids = sorted(n.id for n in graph.nodes)
+    edge_ids = sorted(e.id for e in graph.edges)
+    return f"{len(node_ids)}:{','.join(node_ids)}|{len(edge_ids)}:{','.join(edge_ids)}"
+
+
+@dataclass
+class SelectionResult:
+    model: str
+    tier_result: Any = None
+    tier_params: dict[str, Any] = field(default_factory=dict)
+
+
 class ModelSelector:
     """Resolves a :pydata:`ModelPolicy` to a concrete model string.
 
@@ -54,17 +70,21 @@ class ModelSelector:
         self._provider_registry = provider_registry
         self._cost_tracker = cost_tracker
         self._capability_registry = capability_registry
-        self._last_tier_result: Any = None
         self._tier_map_validated: bool = False
+        self._cached_scorer: Any = None
+        self._cached_scorer_graph_id: str | None = None
+        self._cached_scorer_weights_key: tuple[float, float, float] | None = None
 
     async def select(
         self,
         policy: ModelPolicy,
         node: Any = None,
         context: Any = None,
-    ) -> str:
-        """Resolve *policy* to a model name string."""
+    ) -> SelectionResult:
+        """Resolve *policy* to a :class:`SelectionResult`."""
         strategy = policy.strategy
+        tier_result = None
+        tier_params: dict[str, Any] = {}
 
         if strategy == "static":
             model = policy.model
@@ -82,15 +102,14 @@ class ModelSelector:
             model = await self._select_router(policy, node, context)
 
         elif strategy == "tier":
-            model, tier_result = self._select_tier(policy, node, context)
-            self._last_tier_result = tier_result
+            model, tier_result, tier_params = self._select_tier(policy, node, context)
 
         else:
             raise ValueError(f"Unknown policy strategy: {strategy!r}")
 
         if policy.constraints is not None:
             self._apply_constraints(model, policy.constraints)
-        return model
+        return SelectionResult(model=model, tier_result=tier_result, tier_params=tier_params)
 
     # ------------------------------------------------------------------
     # Strategy implementations
@@ -159,14 +178,28 @@ class ModelSelector:
         policy: TierPolicy,
         node: Any,
         context: Any,
-    ) -> tuple[str, Any]:
+    ) -> tuple[str, Any, dict[str, Any]]:
         """Score the node and resolve a concrete model from the tier map."""
-        from dan.providers.tier_defaults import resolve_tier_map
+        from dan.providers.tier_defaults import resolve_tier_map, resolve_tier_params
         from dan.providers.tier_scorer import TierScorer
 
         graph = getattr(context, "graph", None) if context else None
         weights = policy.weights
-        scorer = TierScorer(graph=graph, weights=weights)
+        graph_fp = _graph_fingerprint(graph)
+        weights_key = (weights.difficulty, weights.impact, weights.recoverability) if weights else None
+        if (
+            self._cached_scorer is not None
+            and self._cached_scorer_graph_id == graph_fp
+            and self._cached_scorer_weights_key == weights_key
+            and graph_fp is not None
+        ):
+            scorer = self._cached_scorer
+        else:
+            scorer = TierScorer(graph=graph, weights=weights)
+            if graph_fp is not None:
+                self._cached_scorer = scorer
+                self._cached_scorer_graph_id = graph_fp
+                self._cached_scorer_weights_key = weights_key
 
         tool_count = 0
         if context and hasattr(context, "tool_registry") and context.tool_registry:
@@ -180,6 +213,13 @@ class ModelSelector:
             getattr(config, "tier_map", None) if config else None
         )
         tier_map = resolve_tier_map(configured_providers, user_map)
+
+        user_params = policy.tier_params or (
+            getattr(config, "tier_params", None) if config else None
+        )
+        provider_name = configured_providers[0] if configured_providers else "anthropic"
+        tier_params_map = resolve_tier_params(provider_name, user_params)
+        params = tier_params_map.get(result.tier.value, {})
 
         if not self._tier_map_validated:
             self._tier_map_validated = True
@@ -207,7 +247,7 @@ class ModelSelector:
                 model,
             )
 
-        return model, result
+        return model, result, params
 
     @staticmethod
     def _detect_providers(config: Any) -> list[str]:
@@ -221,7 +261,9 @@ class ModelSelector:
             k.startswith("claude") for k in model_map
         ):
             providers.append("anthropic")
-        if provider_cfg.get("openai") or getattr(config, "llm_api_key", ""):
+        if provider_cfg.get("openai") or any(
+            k.startswith(("gpt", "o1", "o3", "o4")) for k in model_map
+        ):
             providers.append("openai")
         if provider_cfg.get("google") or any(
             k.startswith("gemini") for k in model_map
