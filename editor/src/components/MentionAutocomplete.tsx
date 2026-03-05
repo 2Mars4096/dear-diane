@@ -6,10 +6,12 @@ import {
   Code,
   BookOpen,
   MessageSquare,
+  Clock,
 } from "lucide-react";
+import hljs from "../lib/hljs";
 import { useGraphStore } from "../store/useGraphStore";
 import { NodeIcon } from "../lib/nodeIcons";
-import { NODE_TYPE_CATALOG } from "../types/graph";
+import { NODE_TYPE_CATALOG, NODE_DESCRIPTIONS } from "../types/graph";
 import type { MentionType } from "../lib/mentionParser";
 import * as api from "../lib/api";
 
@@ -33,6 +35,44 @@ interface MentionAutocompleteProps {
   onDismiss: () => void;
 }
 
+// ---------------------------------------------------------------------------
+// Recent mentions (localStorage)
+// ---------------------------------------------------------------------------
+
+const RECENT_MENTIONS_KEY = "dan_recent_mentions";
+const MAX_RECENT = 10;
+
+interface RecentMention {
+  type: MentionSection;
+  identifier: string;
+  label: string;
+  nodeType?: string;
+}
+
+function getRecentMentions(): RecentMention[] {
+  try {
+    const raw = localStorage.getItem(RECENT_MENTIONS_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch {
+    return [];
+  }
+}
+
+function pushRecentMention(mention: RecentMention): void {
+  const list = getRecentMentions().filter(
+    (m) => !(m.type === mention.type && m.identifier === mention.identifier),
+  );
+  list.unshift(mention);
+  localStorage.setItem(
+    RECENT_MENTIONS_KEY,
+    JSON.stringify(list.slice(0, MAX_RECENT)),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
 const SUBGRAPH_NODE_TYPES = new Set([
   "composite",
   "while_loop",
@@ -53,6 +93,30 @@ const typeLabel: Record<string, string> = {
 };
 
 const FUZZY_THRESHOLD = 0.3;
+
+const SECTION_ORDER: MentionSection[] = [
+  "node",
+  "workflow",
+  "subgraph",
+  "file",
+  "code",
+  "docs",
+  "chat",
+];
+
+const SECTION_LABELS: Record<MentionSection, string> = {
+  node: "Nodes",
+  workflow: "Workflows",
+  subgraph: "Sub-graphs",
+  file: "Files",
+  code: "Code",
+  docs: "Docs",
+  chat: "Past Chats",
+};
+
+// ---------------------------------------------------------------------------
+// Fuzzy matching
+// ---------------------------------------------------------------------------
 
 function fuzzyScore(query: string, target: string): number {
   if (!query) return 1;
@@ -120,7 +184,7 @@ function highlightMatch(name: string, query: string) {
   if (matched.length === 0) return <>{name}</>;
 
   const matchSet = new Set(matched);
-  const parts: JSX.Element[] = [];
+  const parts: React.ReactElement[] = [];
   let i = 0;
   while (i < name.length) {
     if (matchSet.has(i)) {
@@ -149,6 +213,10 @@ function parsePrefixQuery(query: string): {
   }
   return { category: null, subquery: query };
 }
+
+// ---------------------------------------------------------------------------
+// Section icon
+// ---------------------------------------------------------------------------
 
 function SectionIcon({
   section,
@@ -181,15 +249,159 @@ function SectionIcon({
   }
 }
 
-const SECTION_LABELS: Record<MentionSection, string> = {
-  node: "Nodes",
-  workflow: "Workflows",
-  subgraph: "Sub-graphs",
-  file: "Files",
-  code: "Code",
-  docs: "Docs",
-  chat: "Past Chats",
+// ---------------------------------------------------------------------------
+// Preview tooltip (shown on hover with debounce)
+// ---------------------------------------------------------------------------
+
+function escapeHtmlSimple(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+type NodeInfo = {
+  id: string;
+  node_type: string;
+  name: string;
+  description?: string;
+  input_ports: Array<{ name: string }>;
+  output_ports: Array<{ name: string }>;
 };
+
+function MentionPreviewTooltip({
+  item,
+  anchorEl,
+  danGraph,
+}: {
+  item: MentionItem;
+  anchorEl: HTMLElement;
+  danGraph: { nodes: NodeInfo[] } | null;
+}) {
+  const rect = anchorEl.getBoundingClientRect();
+  const parentRect = anchorEl
+    .closest("[data-mention-dropdown]")
+    ?.getBoundingClientRect();
+  const dropdownRight = parentRect?.right ?? rect.right;
+  const dropdownLeft = parentRect?.left ?? rect.left;
+  const spaceRight = window.innerWidth - dropdownRight;
+
+  const style: React.CSSProperties = {
+    position: "fixed",
+    top: Math.min(rect.top, window.innerHeight - 200),
+    ...(spaceRight >= 240
+      ? { left: dropdownRight + 6 }
+      : { right: window.innerWidth - dropdownLeft + 6 }),
+    zIndex: 51,
+  };
+
+  let content: React.ReactNode;
+
+  if (item.section === "node" || item.section === "subgraph") {
+    const node = danGraph?.nodes.find((n) => n.id === item.id);
+    const desc =
+      node?.description ||
+      NODE_DESCRIPTIONS[node?.node_type ?? ""]?.description ||
+      "";
+    content = (
+      <>
+        <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+          {typeLabel[item.nodeType ?? ""] ?? item.nodeType ?? "Node"}
+        </div>
+        {desc && <p className="text-xs text-gray-600 mb-1.5">{desc}</p>}
+        {node && (
+          <div className="text-[10px] text-gray-500 space-y-0.5">
+            {node.input_ports.length > 0 && (
+              <div>
+                <span className="text-gray-400">In:</span>{" "}
+                {node.input_ports.map((p) => p.name).join(", ")}
+              </div>
+            )}
+            {node.output_ports.length > 0 && (
+              <div>
+                <span className="text-gray-400">Out:</span>{" "}
+                {node.output_ports.map((p) => p.name).join(", ")}
+              </div>
+            )}
+          </div>
+        )}
+      </>
+    );
+  } else if (item.section === "code") {
+    const ext = item.name.includes(".")
+      ? (item.name.split(".").pop() ?? "")
+      : "";
+    let highlighted = escapeHtmlSimple(item.name);
+    try {
+      if (ext && hljs.getLanguage(ext)) {
+        highlighted = hljs.highlight(item.name, { language: ext }).value;
+      }
+    } catch {
+      /* ignore */
+    }
+    content = (
+      <>
+        <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+          Code Reference
+        </div>
+        <pre className="text-[11px] bg-gray-900 text-gray-100 rounded p-2 overflow-x-auto font-mono leading-relaxed">
+          <code dangerouslySetInnerHTML={{ __html: highlighted }} />
+        </pre>
+      </>
+    );
+  } else if (item.section === "file") {
+    const parts = item.name.split("/");
+    content = (
+      <>
+        <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+          File
+        </div>
+        <p className="text-xs text-gray-600 font-mono break-all">
+          {parts.length > 2
+            ? `…/${parts.slice(-2).join("/")}`
+            : item.name}
+        </p>
+      </>
+    );
+  } else if (item.section === "docs") {
+    content = (
+      <>
+        <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+          Documentation
+        </div>
+        <p className="text-xs text-gray-600">{item.name}</p>
+      </>
+    );
+  } else if (item.section === "chat") {
+    content = (
+      <>
+        <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+          Chat Thread
+        </div>
+        <p className="text-xs text-gray-600">{item.name}</p>
+      </>
+    );
+  } else {
+    content = (
+      <>
+        <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
+          {SECTION_LABELS[item.section] ?? "Reference"}
+        </div>
+        <p className="text-xs text-gray-600">{item.name}</p>
+      </>
+    );
+  }
+
+  return (
+    <div
+      style={style}
+      className="bg-white border border-gray-200 rounded-lg shadow-lg p-3 w-56 pointer-events-none"
+    >
+      {content}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
 
 export default function MentionAutocomplete({
   query,
@@ -207,6 +419,10 @@ export default function MentionAutocomplete({
   const [chatThreads, setChatThreads] = useState<
     Array<{ id: string; title: string }>
   >([]);
+
+  const [hoveredItem, setHoveredItem] = useState<MentionItem | null>(null);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
+  const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const filesFetched = useRef(false);
   const docsFetched = useRef(false);
@@ -252,6 +468,37 @@ export default function MentionAutocomplete({
         .catch(() => {});
     }
   }, [category, graphId]);
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    };
+  }, []);
+
+  // Recent mentions filtered by current query
+  const recentFiltered = useMemo(() => {
+    const stored = getRecentMentions();
+    if (stored.length === 0) return [];
+    return stored
+      .filter((r) => {
+        if (category && r.type !== category) return false;
+        if (!subquery) return true;
+        return fuzzyScore(subquery, r.label) >= FUZZY_THRESHOLD;
+      })
+      .map(
+        (r): MentionItem => ({
+          section: r.type,
+          id: r.identifier,
+          name: r.label,
+          nodeType: r.nodeType,
+        }),
+      );
+  }, [category, subquery]);
+
+  const recentKeys = useMemo(
+    () => new Set(recentFiltered.map((r) => `${r.section}:${r.id}`)),
+    [recentFiltered],
+  );
 
   const items = useMemo(() => {
     const scored: Array<MentionItem & { score: number }> = [];
@@ -315,27 +562,23 @@ export default function MentionAutocomplete({
     category,
   ]);
 
-  const sectionOrder: MentionSection[] = [
-    "node",
-    "workflow",
-    "subgraph",
-    "file",
-    "code",
-    "docs",
-    "chat",
-  ];
   const grouped = useMemo(() => {
     const map: Partial<Record<MentionSection, MentionItem[]>> = {};
-    for (const sec of sectionOrder) {
-      const secItems = items.filter((i) => i.section === sec);
+    for (const sec of SECTION_ORDER) {
+      const secItems = items.filter(
+        (i) => i.section === sec && !recentKeys.has(`${i.section}:${i.id}`),
+      );
       if (secItems.length > 0) map[sec] = secItems;
     }
     return map;
-  }, [items]);
+  }, [items, recentKeys]);
 
   const flatItems = useMemo(
-    () => sectionOrder.flatMap((sec) => grouped[sec] ?? []),
-    [grouped],
+    () => [
+      ...recentFiltered,
+      ...SECTION_ORDER.flatMap((sec) => grouped[sec] ?? []),
+    ],
+    [grouped, recentFiltered],
   );
 
   const [selectedIdx, setSelectedIdx] = useState(0);
@@ -345,10 +588,34 @@ export default function MentionAutocomplete({
 
   const selectItem = useCallback(
     (item: MentionItem) => {
+      pushRecentMention({
+        type: item.section,
+        identifier: item.id,
+        label: item.name,
+        nodeType: item.nodeType,
+      });
       onSelect({ type: item.section, id: item.id, name: item.name });
     },
     [onSelect],
   );
+
+  const handleItemHover = useCallback(
+    (item: MentionItem, el: HTMLElement) => {
+      if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+      hoverTimerRef.current = setTimeout(() => {
+        setHoveredItem(item);
+        setTooltipAnchor(el);
+      }, 300);
+    },
+    [],
+  );
+
+  const handleItemLeave = useCallback(() => {
+    if (hoverTimerRef.current) clearTimeout(hoverTimerRef.current);
+    hoverTimerRef.current = null;
+    setHoveredItem(null);
+    setTooltipAnchor(null);
+  }, []);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -397,6 +664,55 @@ export default function MentionAutocomplete({
 
   let runningIdx = 0;
 
+  const renderItemButton = (item: MentionItem, idx: number) => {
+    const selected = idx === selectedIdx;
+    return (
+      <button
+        key={`${item.section}-${item.id}-${idx}`}
+        data-selected={selected ? "" : undefined}
+        onMouseDown={(e) => {
+          e.preventDefault();
+          selectItem(item);
+        }}
+        onMouseEnter={(e) => {
+          setSelectedIdx(idx);
+          handleItemHover(item, e.currentTarget);
+        }}
+        onMouseLeave={handleItemLeave}
+        className={`flex items-center gap-2 w-full px-3 py-1.5 text-sm cursor-pointer text-left ${
+          selected ? "bg-indigo-50" : "hover:bg-gray-50"
+        }`}
+      >
+        <SectionIcon section={item.section} nodeType={item.nodeType} />
+
+        <span className="truncate flex-1">
+          {highlightMatch(item.name, subquery)}
+        </span>
+
+        {item.nodeType && (
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 flex-shrink-0">
+            {typeLabel[item.nodeType] ?? item.nodeType}
+          </span>
+        )}
+      </button>
+    );
+  };
+
+  const renderRecentSection = () => {
+    if (recentFiltered.length === 0) return null;
+    const startIdx = runningIdx;
+    runningIdx += recentFiltered.length;
+    return (
+      <div key="__recent">
+        <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider px-3 py-1 flex items-center gap-1">
+          <Clock size={9} />
+          Recent
+        </div>
+        {recentFiltered.map((item, i) => renderItemButton(item, startIdx + i))}
+      </div>
+    );
+  };
+
   const renderSection = (sec: MentionSection, sectionItems: MentionItem[]) => {
     if (sectionItems.length === 0) return null;
     const startIdx = runningIdx;
@@ -406,36 +722,7 @@ export default function MentionAutocomplete({
         <div className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider px-3 py-1">
           {SECTION_LABELS[sec]}
         </div>
-        {sectionItems.map((item, i) => {
-          const idx = startIdx + i;
-          const selected = idx === selectedIdx;
-          return (
-            <button
-              key={`${item.section}-${item.id}`}
-              data-selected={selected ? "" : undefined}
-              onMouseDown={(e) => {
-                e.preventDefault();
-                selectItem(item);
-              }}
-              onMouseEnter={() => setSelectedIdx(idx)}
-              className={`flex items-center gap-2 w-full px-3 py-1.5 text-sm cursor-pointer text-left ${
-                selected ? "bg-indigo-50" : "hover:bg-gray-50"
-              }`}
-            >
-              <SectionIcon section={item.section} nodeType={item.nodeType} />
-
-              <span className="truncate flex-1">
-                {highlightMatch(item.name, subquery)}
-              </span>
-
-              {item.nodeType && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-500 flex-shrink-0">
-                  {typeLabel[item.nodeType] ?? item.nodeType}
-                </span>
-              )}
-            </button>
-          );
-        })}
+        {sectionItems.map((item, i) => renderItemButton(item, startIdx + i))}
       </div>
     );
   };
@@ -443,6 +730,7 @@ export default function MentionAutocomplete({
   return (
     <div
       ref={listRef}
+      data-mention-dropdown
       style={style}
       className="bg-white border border-gray-200 rounded-lg shadow-lg max-h-[300px] overflow-y-auto w-72"
     >
@@ -454,10 +742,18 @@ export default function MentionAutocomplete({
         </div>
       ) : (
         <>
-          {sectionOrder.map((sec) =>
+          {renderRecentSection()}
+          {SECTION_ORDER.map((sec) =>
             grouped[sec] ? renderSection(sec, grouped[sec]) : null,
           )}
         </>
+      )}
+      {hoveredItem && tooltipAnchor && (
+        <MentionPreviewTooltip
+          item={hoveredItem}
+          anchorEl={tooltipAnchor}
+          danGraph={danGraph as { nodes: NodeInfo[] } | null}
+        />
       )}
     </div>
   );
