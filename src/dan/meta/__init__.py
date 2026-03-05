@@ -8,7 +8,7 @@ from dan.meta.architect import (
     SystemValidationResult,
     WorkflowSpec,
 )
-from dan.meta.authoring import RuntimeAuthor, SkillSpec, TestResult, ToolSpec, ValidationResult
+from dan.meta.authoring import RuntimeAuthor, SkillSpec, ToolSpec, ToolTestResult, ValidationResult
 from dan.meta.controller import MetaController, MetaControllerConfig, MetaSession, MetaSessionStatus
 from dan.meta.discovery import DiscoveryService, DiscoveryResult
 from dan.meta.planner import WorkflowPlanner, PlannerOutput
@@ -34,7 +34,7 @@ __all__ = [
     "SystemManifest",
     "SystemPlan",
     "SystemValidationResult",
-    "TestResult",
+    "ToolTestResult",
     "ToolSpec",
     "ValidationResult",
     "WorkflowPlanner",

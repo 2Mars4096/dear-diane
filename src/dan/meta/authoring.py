@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "RuntimeAuthor",
     "SkillSpec",
-    "TestResult",
+    "ToolTestResult",
     "ToolSpec",
     "ToolTestCase",
     "ValidationResult",
@@ -62,7 +62,7 @@ class ToolSpec(BaseModel):
     returns: str = ""
 
 
-class TestResult(BaseModel):
+class ToolTestResult(BaseModel):
     """Result of testing a generated tool."""
 
     passed: bool
@@ -274,10 +274,10 @@ class RuntimeAuthor:
 
         return ToolSpec.model_validate(data)
 
-    async def test_tool(self, spec: ToolSpec) -> TestResult:
+    async def test_tool(self, spec: ToolSpec) -> ToolTestResult:
         """Run test cases through SandboxRunner."""
         if not spec.test_cases:
-            return TestResult(passed=True, total=0)
+            return ToolTestResult(passed=True, total=0)
 
         from dan.sandbox import SandboxConfig
 
@@ -337,7 +337,7 @@ class RuntimeAuthor:
                     )
 
         total = len(spec.test_cases)
-        return TestResult(
+        return ToolTestResult(
             passed=not failures and not errors,
             total=total,
             failures=failures,
