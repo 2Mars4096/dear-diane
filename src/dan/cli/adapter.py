@@ -20,12 +20,262 @@ import asyncio
 import json
 import logging
 import os
+import re
 import signal
 import sys
+from difflib import SequenceMatcher
 from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Pending action tracking (per-conversation)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _PendingAction:
+    kind: str          # 'find', 'send'
+    query: str         # search term or file path
+    results: list[str] = field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Heuristic intent classifier (no LLM call)
+# ---------------------------------------------------------------------------
+
+_CONTINUATION_WORDS = frozenset({
+    "yes", "do it", "just do it", "go ahead", "ok", "sure",
+    "yes please", "send it", "just send it", "please do", "go",
+    "yeah", "yep", "yup", "okay", "please", "do this", "do that",
+})
+
+_CONTINUATION_PHRASES = (
+    "help me do", "just do", "can you do", "can you just",
+    "do this task", "go for it", "send it to me", "what about the file",
+    "i do not see", "good catch",
+)
+
+
+def _extract_search_query_from_send_request(text: str) -> str | None:
+    """Extract a filename-like query from polite send requests.
+
+    Example:
+    ``Good. Can you send me the late payment seasonality doc file under
+    ~/Dropbox folder?`` -> ``late payment seasonality``
+    """
+    lower = text.lower()
+    prefixes = (
+        "can you send me the ",
+        "can you send me ",
+        "could you send me the ",
+        "could you send me ",
+        "would you send me the ",
+        "would you send me ",
+        "please send me the ",
+        "please send me ",
+    )
+    start_idx = -1
+    matched_prefix = ""
+    for prefix in prefixes:
+        idx = lower.find(prefix)
+        if idx >= 0:
+            start_idx = idx
+            matched_prefix = prefix
+            break
+    if start_idx < 0:
+        return None
+
+    query = text[start_idx + len(matched_prefix):].strip().rstrip(".!?,")
+    query_lower = query.lower()
+
+    for marker in (" under ", " from ", " in ", " inside ", " within "):
+        idx = query_lower.find(marker)
+        if idx >= 0:
+            query = query[:idx].strip()
+            query_lower = query.lower()
+            break
+
+    for suffix in (
+        " doc file",
+        " document file",
+        " doc",
+        " document",
+        " file",
+        " pdf",
+        " csv",
+    ):
+        if query_lower.endswith(suffix):
+            query = query[: -len(suffix)].strip()
+            query_lower = query.lower()
+            break
+
+    query = query.strip("\"' ")
+    return query or None
+
+
+def _classify_adapter_intent(
+    text: str,
+    pending: _PendingAction | None,
+) -> tuple[str, str]:
+    """Classify user intent with keyword heuristics.
+
+    Returns ``(intent, param)`` where *intent* is one of:
+
+    - ``continue``      — user agrees to execute pending action
+    - ``file_search``   — find a file locally (param = search query)
+    - ``file_send``     — send a specific file (param = path or name)
+    - ``workflow``      — build / edit a workflow
+    - ``conversation``  — general question or chat (route to LLM)
+    """
+    lower = text.lower().strip()
+    clean = lower.rstrip(".!?,")
+
+    # ── Number selection from pending find results ─────────────────
+    if pending is not None and pending.results:
+        if clean.isdigit():
+            idx = int(clean) - 1
+            if 0 <= idx < len(pending.results):
+                return "file_send", pending.results[idx]
+        for prefix in ("send ", "number ", "#"):
+            if clean.startswith(prefix):
+                rest = clean[len(prefix):].strip()
+                if rest.isdigit():
+                    idx = int(rest) - 1
+                    if 0 <= idx < len(pending.results):
+                        return "file_send", pending.results[idx]
+
+    # ── Continuation: user agrees to pending action ────────────────
+    if pending is not None:
+        if clean in _CONTINUATION_WORDS:
+            return "continue", ""
+        for phrase in _CONTINUATION_PHRASES:
+            if phrase in clean:
+                return "continue", ""
+
+    polite_send_query = _extract_search_query_from_send_request(text)
+    if polite_send_query:
+        return "file_search", polite_send_query
+
+    # ── File send: "send me X", "send the X" ──────────────────────
+    for prefix in ("send me the ", "send me ", "send the ", "get me the ", "get me "):
+        if lower.startswith(prefix):
+            return "file_send", text[len(prefix):].strip().rstrip(".!?,")
+
+    # ── File search: "find X", "look for X" ───────────────────────
+    for prefix in (
+        "find ", "search for ", "look for ", "locate ", "where is ",
+        "can you find ", "help me find ",
+    ):
+        if lower.startswith(prefix):
+            return "file_search", text[len(prefix):].strip().rstrip(".!?,")
+
+    # ── File-related phrases anywhere ──────────────────────────────
+    file_cues = (
+        "the document", "the file", "that file", "that document",
+        "the doc", "that doc", "do you have",
+    )
+    if any(cue in lower for cue in file_cues):
+        return "file_search", text.strip().rstrip(".!?,")
+
+    # ── Workflow build / edit ──────────────────────────────────────
+    workflow_cues = (
+        "build a", "create a workflow", "create a pipeline",
+        "build me a", "make a workflow", "add a node",
+        "add a step", "modify the workflow", "edit the workflow",
+    )
+    if any(cue in lower for cue in workflow_cues):
+        return "workflow", ""
+
+    # ── Default: general conversation ──────────────────────────────
+    return "conversation", ""
+
+
+# ---------------------------------------------------------------------------
+# Local file search helpers
+# ---------------------------------------------------------------------------
+
+def _normalize_search_text(text: str) -> str:
+    """Normalize natural-language file search text for loose matching."""
+    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _score_file_match(query_norm: str, query_tokens: list[str], path: Path) -> float:
+    """Score a candidate file path for natural-language filename matching."""
+    filename_norm = _normalize_search_text(path.name)
+    if not filename_norm:
+        return -1.0
+
+    coverage = sum(1 for token in query_tokens if token in filename_norm)
+    if coverage == 0:
+        return -1.0
+
+    ordered = 1.0 if re.search(r".*".join(map(re.escape, query_tokens)), filename_norm) else 0.0
+    contains_phrase = 1.0 if query_norm and query_norm in filename_norm else 0.0
+    ratio = SequenceMatcher(None, query_norm, filename_norm).ratio() if query_norm else 0.0
+    return (coverage * 10.0) + (ordered * 5.0) + (contains_phrase * 5.0) + ratio
+
+
+def _search_local_files(
+    query: str,
+    search_dirs: list[Path],
+    *,
+    limit: int = 10,
+) -> list[str]:
+    """Search local files by loose filename match.
+
+    Supports natural-language queries such as ``late payment seasonality``
+    matching filenames like ``late_payment_seasonality_20251106.docx``.
+    """
+    query_norm = _normalize_search_text(query)
+    query_tokens = query_norm.split()
+    if not query_norm:
+        return []
+
+    candidates: dict[str, tuple[float, str]] = {}
+
+    def _consider(path: Path) -> None:
+        if not path.is_file():
+            return
+        score = _score_file_match(query_norm, query_tokens, path)
+        if score <= 0:
+            return
+        path_str = str(path)
+        current = candidates.get(path_str)
+        if current is None or score > current[0]:
+            candidates[path_str] = (score, path.name.lower())
+
+    # Fast path: all tokens appear in order with arbitrary separators.
+    exactish_pattern = f"*{'*'.join(query_tokens)}*"
+    for d in search_dirs:
+        if not d.exists():
+            continue
+        try:
+            for match in d.rglob(exactish_pattern):
+                _consider(match)
+        except Exception:
+            continue
+
+    # Fallback: token-wise search for looser matches when exact-ish pattern misses.
+    if not candidates:
+        token_patterns = [f"*{token}*" for token in query_tokens[:4]]
+        for d in search_dirs:
+            if not d.exists():
+                continue
+            for pattern in token_patterns:
+                try:
+                    for match in d.rglob(pattern):
+                        _consider(match)
+                except Exception:
+                    continue
+
+    ranked = sorted(
+        candidates.items(),
+        key=lambda item: (-item[1][0], item[1][1], item[0]),
+    )
+    return [path for path, _meta in ranked[:limit]]
 
 
 # ---------------------------------------------------------------------------
@@ -94,11 +344,28 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any) -> None:
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
+    _force_exit_armed = False
+
+    def _handle_signal() -> None:
+        nonlocal _force_exit_armed
+        if _force_exit_armed:
+            print("\nForce exit.", file=sys.stderr)
+            os._exit(1)
+        _force_exit_armed = True
+        stop_event.set()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, stop_event.set)
+        loop.add_signal_handler(sig, _handle_signal)
 
     conversation_workflows: dict[str, str] = {}
     conversation_history: dict[str, list[dict[str, str]]] = {}
+    conversation_pending: dict[str, _PendingAction] = {}
+
+    _ADAPTER_CONTEXT = """\
+You are DAN, a personal AI assistant connected via messaging.
+Keep replies short (1-3 sentences) — this is a chat app.
+Do NOT suggest commands, numbered options, or ask "would you like me to…?".
+Just answer directly. Do NOT add [DAN] prefix."""
 
     async def _ensure_scratch(http: httpx.AsyncClient, conv_id: str) -> str:
         """Get or create a per-conversation workflow on the server."""
