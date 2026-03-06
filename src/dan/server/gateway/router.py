@@ -179,12 +179,16 @@ async def _dispatch_text(
             if not approved:
                 rm.mark_run_cancelled(run_id, reason="plan_rejected")
                 return
+            # Re-check run state to prevent approve/cancel race
+            current = rm.get_run(run_id)
+            if current is None or current.status == RunStatus.CANCELLED:
+                return
             try:
-                await rm.start_run(
+                await rm.approve_and_start(
+                    run_id=run_id,
                     graph=graph,
                     graph_id=workflow_id,
                     inputs=inputs,
-                    run_id=run_id,
                 )
             except Exception as exc:
                 logger.exception("start_run failed after approval for %s", run_id)

@@ -921,14 +921,21 @@ class GraphMutator:
         working: dict[str, Any],
         alias: dict[str, str],
         add_node_seq: int,
+        original_ids: set[str] | None = None,
     ) -> None:
-        """After a successful add_node, record sequential and explicit aliases."""
+        """After a successful add_node, record sequential and explicit aliases.
+
+        Skips alias installation when the placeholder name collides with a
+        node ID that existed before the mutation batch began.
+        """
         actual_id = working["nodes"][-1]["id"]
         seq_key = f"node_{add_node_seq}"
         if seq_key != actual_id:
-            alias[seq_key] = actual_id
+            if original_ids is None or seq_key not in original_ids:
+                alias[seq_key] = actual_id
         if op.id and op.id != actual_id:
-            alias[op.id] = actual_id
+            if original_ids is None or op.id not in original_ids:
+                alias[op.id] = actual_id
 
     def _apply_all_or_nothing(
         self,
@@ -941,6 +948,7 @@ class GraphMutator:
         has_structural = False
         alias: dict[str, str] = {}
         add_node_seq = 0
+        original_ids = _node_ids(working)
 
         for orig_idx, op in sorted_ops:
             op = self._resolve_op_aliases(op, alias)
@@ -953,7 +961,7 @@ class GraphMutator:
                     has_structural = True
                 if isinstance(op, AddNode):
                     add_node_seq += 1
-                    self._track_add_node_alias(op, working, alias, add_node_seq)
+                    self._track_add_node_alias(op, working, alias, add_node_seq, original_ids)
 
         if errors:
             return MutationResult(success=False, new_graph=None, errors=errors)
@@ -989,6 +997,7 @@ class GraphMutator:
         has_structural = False
         alias: dict[str, str] = {}
         add_node_seq = 0
+        original_ids = _node_ids(working)
 
         for orig_idx, op in sorted_ops:
             op = self._resolve_op_aliases(op, alias)
@@ -1004,7 +1013,7 @@ class GraphMutator:
                     has_structural = True
                 if isinstance(op, AddNode):
                     add_node_seq += 1
-                    self._track_add_node_alias(op, working, alias, add_node_seq)
+                    self._track_add_node_alias(op, working, alias, add_node_seq, original_ids)
 
         if has_structural:
             _recompute_entry_exit_points(working)
@@ -1060,7 +1069,9 @@ class GraphMutator:
     def _op_add_node(self, graph: dict[str, Any], op: AddNode) -> str | None:
         existing_ids = _node_ids(graph)
         if op.id:
-            node_id = op.id if op.id not in existing_ids else _generate_node_id(op.name, existing_ids)
+            if op.id in existing_ids:
+                return f"Node ID '{op.id}' already exists in the graph"
+            node_id = op.id
         else:
             node_id = _generate_node_id(op.name, existing_ids)
 

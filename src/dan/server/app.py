@@ -46,7 +46,7 @@ from dan.server.mention_resolver import MentionRef, MentionResolver, CodeResolve
 from dan.server.chat_store import ChatMessage as StoreChatMessage, ChatStore
 from dan.server.exec import execute_python
 from dan.server.graph_mutator import GraphMutator, MutationPlan
-from dan.server.graph_store import GraphStore
+from dan.server.graph_store import GraphStore, _validate_graph_id
 from dan.server.run_manager import RunManager, RunStatus
 from dan.server.run_store import RunStore
 from dan.server.test_cases import NodeTestCase, TestCaseRunResult, TestCaseStore
@@ -105,6 +105,7 @@ _adapter_session_stores: dict[str, AdapterSessionStore] = {}
 _adapter_start_times: dict[str, float] = {}
 _adapter_renderers: dict[str, tuple[MessagingHumanRenderer, Graph | None]] = {}
 _self_knowledge_index: Any | None = None
+_notification_manager: Any | None = None
 
 
 def _get_engine_config() -> EngineConfig:
@@ -1217,7 +1218,7 @@ def _auto_register_published_workflows(registry: PublishRegistry) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global _run_manager, _chat_manager, _mention_resolver
+    global _run_manager, _chat_manager, _mention_resolver, _notification_manager
     global _publish_registry, _block_registry
     _runs_dir = os.environ.get("DAN_RUNS_DIR", os.path.join(_graphs_dir, "runs"))
     _run_store = RunStore(base_dir=_runs_dir)
@@ -1226,6 +1227,10 @@ async def lifespan(app: FastAPI):
     _block_registry.scan()
     engine_config = _get_engine_config()
     engine_config.block_registry = _block_registry
+    from dan.providers.tier_tracker import TierSuccessTracker
+
+    memory_dir = getattr(engine_config, "memory_dir", "./memory")
+    engine_config.tier_tracker = TierSuccessTracker(Path(memory_dir))
     _run_manager = RunManager(
         engine_config=engine_config,
         tool_registry=_build_tool_registry(),
@@ -1236,10 +1241,51 @@ async def lifespan(app: FastAPI):
         workspace_root=workspace_root,
         chat_store=_chat_store,
     )
+    from dan.server.capability_registry import ChatCapabilityRegistry, CapabilityContext
+    from dan.server.capability_handlers import (
+        register_base_capabilities,
+        register_experience_capabilities,
+        register_publish_capabilities,
+        register_run_lifecycle_capabilities,
+    )
+
+    _capability_registry = ChatCapabilityRegistry()
+    register_base_capabilities(_capability_registry)
+    register_experience_capabilities(_capability_registry)
+    register_run_lifecycle_capabilities(_capability_registry)
+
+    _capability_context = CapabilityContext(
+        workflow_id="",
+        graph_store=_graph_store,
+        run_manager=_run_manager,
+        run_store=_run_store,
+        graphs_dir=_graphs_dir,
+    )
+
+    user_profile = None
+    try:
+        from dan.engine.user_profile import load_user_profile
+
+        user_profile = load_user_profile()
+    except Exception:
+        logger.debug("UserProfile load skipped", exc_info=True)
+
+    conversation_memory = None
+    try:
+        from dan.engine.conversation_memory import ConversationMemoryStore
+
+        conversation_memory = ConversationMemoryStore()
+    except Exception:
+        logger.debug("Conversation memory load skipped", exc_info=True)
+
     _chat_manager = ChatManager(
         provider_registry=_build_chat_provider_registry(),
         graph_store=_graph_store,
         mention_resolver=_mention_resolver,
+        capability_registry=_capability_registry,
+        capability_context=_capability_context,
+        user_profile=user_profile,
+        conversation_memory=conversation_memory,
     )
 
     _publish_registry = PublishRegistry(engine_config)
@@ -1254,6 +1300,10 @@ async def lifespan(app: FastAPI):
     router = create_publish_router(_publish_registry)
     app.include_router(router, prefix="/api/published", tags=["published"])
 
+    _capability_context.publish_registry = _publish_registry
+    _capability_context.block_registry = _block_registry
+    register_publish_capabilities(_capability_registry)
+
     from dan.server.gateway.router import init_gateway, router as gateway_router
     workspace_root_path = Path(workspace_root)
     init_gateway(
@@ -1262,6 +1312,28 @@ async def lifespan(app: FastAPI):
         graph_store=_graph_store,
     )
     app.include_router(gateway_router)
+
+    _notification_manager = None
+    try:
+        from dan.notifications import NotificationManager, load_notification_config
+        from dan.server.gateway.router import _event_bus as _gw_event_bus
+
+        if _gw_event_bus is not None:
+            _notification_manager = NotificationManager(load_notification_config())
+            await _notification_manager.start(_gw_event_bus)
+            logger.info(
+                "Notification manager started with %d channel(s)",
+                len(_notification_manager.channels),
+            )
+    except Exception:
+        logger.warning("Notification manager startup failed", exc_info=True)
+
+    try:
+        from dan.server.gateway.router import _activity_tracker as _gw_tracker
+        if _gw_tracker is not None:
+            _capability_context.activity_tracker = _gw_tracker
+    except ImportError:
+        pass
 
     # Self-knowledge RAG indexing (19-5)
     global _self_knowledge_index
@@ -1298,6 +1370,26 @@ async def lifespan(app: FastAPI):
 
     app.state.self_knowledge_index = _self_knowledge_index
 
+    # Wire experience/discovery into capability context (25-2)
+    try:
+        _exp_index = _get_experience_index()
+    except HTTPException:
+        _exp_index = None
+    _exp_store = _get_experience_store(with_index=_exp_index is not None)
+    from dan.meta.discovery import DiscoveryService
+    _capability_context.experience_store = _exp_store
+    _capability_context.experience_index = _exp_index
+    _capability_context.discovery_service = DiscoveryService(
+        experience_index=_exp_index,
+        experience_store=_exp_store,
+        graph_store=_graph_store,
+        tool_registry=_run_manager.tool_registry if _run_manager else None,
+        self_knowledge=_self_knowledge_index,
+    )
+    _capability_context.principle_store = (
+        _run_manager._get_principle_store() if _run_manager else None
+    )
+
     # Custom skills discovery (19-6)
     custom_skills_dir = Path(os.environ.get("DAN_CUSTOM_SKILLS_DIR", "custom_skills"))
     if custom_skills_dir.is_dir():
@@ -1316,6 +1408,16 @@ async def lifespan(app: FastAPI):
             logger.debug("Custom skill discovery failed", exc_info=True)
 
     yield
+
+    if _notification_manager is not None:
+        try:
+            from dan.server.gateway.router import _event_bus as _gw_event_bus
+
+            if _gw_event_bus is not None:
+                await _notification_manager.stop(_gw_event_bus)
+        except Exception:
+            logger.debug("Notification manager shutdown failed", exc_info=True)
+        _notification_manager = None
 
     if _publish_registry is not None and _publish_registry.runtime is not None:
         await _publish_registry.runtime.close()
@@ -1431,6 +1533,10 @@ async def list_graphs():
 
 @app.post("/api/graphs")
 async def create_graph(req: CreateGraphRequest):
+    try:
+        _validate_graph_id(req.graph_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if _graph_store.get_graph(req.graph_id) is not None:
         raise HTTPException(status_code=409, detail=f"Graph '{req.graph_id}' already exists")
     data = _graph_store.create_graph(req.graph_id, req.data)
@@ -1446,6 +1552,10 @@ _layout_on_load = os.environ.get("DAN_LAYOUT_ON_LOAD", "").lower() in ("1", "tru
 @app.get("/api/graphs/{graph_id}")
 async def get_graph(graph_id: str, layout: bool = False):
     """Load graph. If layout=true or DAN_LAYOUT_ON_LOAD=1, apply topological layout to nodes."""
+    try:
+        _validate_graph_id(graph_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     data = _graph_store.get_graph(graph_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
@@ -1461,12 +1571,20 @@ async def get_graph(graph_id: str, layout: bool = False):
 
 @app.put("/api/graphs/{graph_id}")
 async def update_graph(graph_id: str, body: dict[str, Any]):
+    try:
+        _validate_graph_id(graph_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     _graph_store.save_graph(graph_id, body)
     return {"graph_id": graph_id, "status": "saved"}
 
 
 @app.delete("/api/graphs/{graph_id}")
 async def delete_graph(graph_id: str):
+    try:
+        _validate_graph_id(graph_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not _graph_store.delete_graph(graph_id):
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
     return {"graph_id": graph_id, "status": "deleted"}
@@ -3082,7 +3200,9 @@ async def chat_message(req: ChatMessageRequest):
                 )
                 normalized_mode = detected_mode
 
-            # ask and plan modes use text-only path (no tool calling)
+            # Keep ask/plan on the streaming text path so stop-generation
+            # stays responsive; mutation/capability tool path is for active
+            # construction/execution modes.
             use_tools = graph_dict is not None and normalized_mode not in ("ask", "plan")
 
             # Build debug context for debug mode
@@ -3113,6 +3233,58 @@ async def chat_message(req: ChatMessageRequest):
                     "chat_complete", "chat_mutation",
                 ):
                     payload["detected_mode"] = detected_mode
+                # When capability start_run returns stream_channel_id, create run stream
+                run_stream_id = payload.get("stream_channel_id")
+                if (
+                    run_stream_id
+                    and run_stream_id.startswith("run-")
+                    and _run_manager is not None
+                ):
+                    run_id = run_stream_id[4:]
+                    _reap_stale_chat_streams()
+                    run_queue: asyncio.Queue = asyncio.Queue()
+                    _chat_streams[run_stream_id] = (run_queue, time.monotonic())
+
+                    async def _pipe_tool_run_events() -> None:
+                        rq = _run_manager.subscribe(run_id)
+                        try:
+                            while True:
+                                try:
+                                    evt = await asyncio.wait_for(rq.get(), timeout=30.0)
+                                except asyncio.TimeoutError:
+                                    rec = _run_manager.get_run(run_id)
+                                    if rec is None or rec.status in (
+                                        RunStatus.COMPLETED,
+                                        RunStatus.FAILED,
+                                        RunStatus.CANCELLED,
+                                    ):
+                                        break
+                                    continue
+                                etype = evt.get("event_type", "")
+                                if etype == "_catchup":
+                                    snap = evt.get("snapshot", {})
+                                    if snap.get("status") in ("completed", "failed", "cancelled"):
+                                        for buf in evt.get("buffered_events", []):
+                                            blk = map_run_event_to_chat_block(buf, "full", None)
+                                            if blk is not None:
+                                                await run_queue.put({"type": "chat_run_event", "run_event": blk})
+                                        break
+                                    continue
+                                blk = map_run_event_to_chat_block(evt, "full", None)
+                                if blk is not None:
+                                    await run_queue.put({"type": "chat_run_event", "run_event": blk})
+                                if etype in ("run_completed", "run_failed", "run_cancelled"):
+                                    break
+                        except Exception:
+                            logger.debug("Run event pipe error for %s", run_id, exc_info=True)
+                        finally:
+                            _run_manager.unsubscribe(run_id, rq)
+                            await run_queue.put(None)
+                            # Keep channel mapping until WS consumer drains it
+                            # (or TTL reaper removes stale entries) to avoid
+                            # races where fast runs finish before client subscribes.
+
+                    asyncio.create_task(_pipe_tool_run_events())
                 await queue.put(payload)
         except Exception as exc:
             await queue.put({"type": "chat_error", "error": str(exc)})

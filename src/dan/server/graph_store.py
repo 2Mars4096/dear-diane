@@ -3,11 +3,26 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
 
 from dan.models.graph import Graph
+
+_GRAPH_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
+
+
+def _validate_graph_id(graph_id: str) -> None:
+    """Raise ValueError if graph_id could escape the graphs directory."""
+    if not graph_id or not isinstance(graph_id, str):
+        raise ValueError("Graph ID must be a non-empty string")
+    if ".." in graph_id or "/" in graph_id or "\\" in graph_id:
+        raise ValueError(f"Graph ID contains forbidden characters: {graph_id!r}")
+    if not _GRAPH_ID_RE.match(graph_id):
+        raise ValueError(
+            f"Graph ID must match [A-Za-z0-9_][A-Za-z0-9._-]{{0,63}}, got: {graph_id!r}"
+        )
 
 
 class GraphStore:
@@ -20,6 +35,7 @@ class GraphStore:
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
     def _graph_path(self, graph_id: str) -> Path:
+        _validate_graph_id(graph_id)
         return self.base_dir / f"{graph_id}.json"
 
     def list_graphs(self) -> list[dict[str, Any]]:
@@ -39,18 +55,21 @@ class GraphStore:
         return results
 
     def get_graph(self, graph_id: str) -> dict[str, Any] | None:
+        _validate_graph_id(graph_id)
         path = self._graph_path(graph_id)
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
     def save_graph(self, graph_id: str, data: dict[str, Any]) -> None:
+        _validate_graph_id(graph_id)
         data.setdefault("metadata", {})
         data["metadata"]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
         path = self._graph_path(graph_id)
         path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     def create_graph(self, graph_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+        _validate_graph_id(graph_id)
         if data is None:
             graph = Graph()
             graph.metadata.name = graph_id
@@ -62,6 +81,7 @@ class GraphStore:
         return data
 
     def delete_graph(self, graph_id: str) -> bool:
+        _validate_graph_id(graph_id)
         path = self._graph_path(graph_id)
         if path.exists():
             path.unlink()
@@ -69,6 +89,7 @@ class GraphStore:
         return False
 
     def load_as_model(self, graph_id: str) -> Graph | None:
+        _validate_graph_id(graph_id)
         data = self.get_graph(graph_id)
         if data is None:
             return None
@@ -81,5 +102,6 @@ class GraphStore:
         return None
 
     def set_last_opened(self, graph_id: str) -> None:
+        _validate_graph_id(graph_id)
         path = self.base_dir / self.LAST_OPENED_FILE
         path.write_text(graph_id, encoding="utf-8")

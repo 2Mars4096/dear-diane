@@ -121,6 +121,7 @@ class RunManager:
         self._max_event_buffer = 10000
         self._pending_human_inputs: dict[str, asyncio.Event] = {}
         self._human_input_responses: dict[str, dict[str, Any]] = {}
+        self._human_input_request_ownership: dict[str, str] = {}  # request_id -> run_id
         self._meta_approval_request_by_run: dict[str, str] = {}
         self._meta_approval_run_by_request: dict[str, str] = {}
         self._hydrate_from_store()
@@ -375,9 +376,15 @@ class RunManager:
 
         Atomic: only the first caller for a given request_id succeeds.
         Subsequent callers get False (already resolved).
+        Rejects if run_id doesn't match the original owner.
         """
         evt = self._pending_human_inputs.pop(request_id, None)
         if evt is None:
+            return False
+        canonical_run_id = self._human_input_request_ownership.pop(request_id, None)
+        if canonical_run_id is not None and run_id != canonical_run_id:
+            self._pending_human_inputs[request_id] = evt
+            self._human_input_request_ownership[request_id] = canonical_run_id
             return False
         self._human_input_responses[request_id] = response
         evt.set()
@@ -409,6 +416,7 @@ class RunManager:
             request_id = request_meta["request_id"]
             evt = asyncio.Event()
             self._pending_human_inputs[request_id] = evt
+            self._human_input_request_ownership[request_id] = run_id
             await evt.wait()
             response = self._human_input_responses.pop(request_id, {})
             self._pending_human_inputs.pop(request_id, None)
@@ -424,6 +432,7 @@ class RunManager:
         evt = asyncio.Event()
         self._pending_human_inputs[request_id] = evt
         if run_id:
+            self._human_input_request_ownership[request_id] = run_id
             self._meta_approval_request_by_run[run_id] = request_id
             self._meta_approval_run_by_request[request_id] = run_id
         return evt
@@ -439,6 +448,7 @@ class RunManager:
             self._meta_approval_request_by_run.pop(run_id, None)
         response = self._human_input_responses.pop(request_id, {})
         self._pending_human_inputs.pop(request_id, None)
+        self._human_input_request_ownership.pop(request_id, None)
         return response
 
     def emit_event_to_run(
@@ -488,6 +498,19 @@ class RunManager:
         subs = self._subscribers.get(run_id)
         if subs and queue in subs:
             subs.remove(queue)
+
+    async def approve_and_start(
+        self,
+        run_id: str,
+        graph: Graph,
+        graph_id: str,
+        inputs: dict[str, Any] | None = None,
+    ) -> RunRecord | None:
+        """Atomically check approval state and start run. Returns None if cancelled."""
+        record = self.get_run(run_id)
+        if record is None or record.status == RunStatus.CANCELLED:
+            return None
+        return await self.start_run(graph, graph_id=graph_id, inputs=inputs, run_id=run_id)
 
     # ------------------------------------------------------------------
     # Run lifecycle
