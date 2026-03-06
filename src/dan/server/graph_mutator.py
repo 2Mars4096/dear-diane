@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 
 class AddNode(BaseModel):
     op: Literal["add_node"] = "add_node"
+    id: str = ""
     node_type: str
     name: str
     config: dict[str, Any] = Field(default_factory=dict)
@@ -300,6 +301,11 @@ def _default_ports(
             name = var.get("name", "input") if isinstance(var, dict) else str(var)
             out_ports.append({"name": name, "schema": {}})
         if out_ports:
+            names = {p["name"] for p in out_ports}
+            # Keep variable-specific outputs while also exposing an aggregate
+            # "input" payload for generated plans that wire from input.input.
+            if "input" not in names:
+                out_ports.insert(0, {"name": "input", "schema": {}})
             return [], copy.deepcopy(out_ports)
 
     lookup_key = node_type
@@ -887,6 +893,43 @@ class GraphMutator:
         "edit_edge", "replace_subgraph", "expand_pattern",
     })
 
+    @staticmethod
+    def _resolve_op_aliases(
+        op: GraphOperation, alias: dict[str, str],
+    ) -> GraphOperation:
+        """Rewrite node-ID references in *op* using the alias table."""
+        if not alias:
+            return op
+        updates: dict[str, Any] = {}
+        for field in ("node_id", "source_id", "target_id"):
+            val = getattr(op, field, None)
+            if val and val in alias:
+                updates[field] = alias[val]
+        if isinstance(op, ReplaceSubgraph):
+            new_ids = [alias.get(n, n) for n in op.node_ids_to_remove]
+            if new_ids != op.node_ids_to_remove:
+                updates["node_ids_to_remove"] = new_ids
+        if isinstance(op, ApplySkill):
+            new_targets = [alias.get(n, n) for n in op.target_nodes]
+            if new_targets != op.target_nodes:
+                updates["target_nodes"] = new_targets
+        return op.model_copy(update=updates) if updates else op
+
+    def _track_add_node_alias(
+        self,
+        op: AddNode,
+        working: dict[str, Any],
+        alias: dict[str, str],
+        add_node_seq: int,
+    ) -> None:
+        """After a successful add_node, record sequential and explicit aliases."""
+        actual_id = working["nodes"][-1]["id"]
+        seq_key = f"node_{add_node_seq}"
+        if seq_key != actual_id:
+            alias[seq_key] = actual_id
+        if op.id and op.id != actual_id:
+            alias[op.id] = actual_id
+
     def _apply_all_or_nothing(
         self,
         working: dict[str, Any],
@@ -896,8 +939,11 @@ class GraphMutator:
         applied: list[int] = []
         diagnostics: list[str] = []
         has_structural = False
+        alias: dict[str, str] = {}
+        add_node_seq = 0
 
         for orig_idx, op in sorted_ops:
+            op = self._resolve_op_aliases(op, alias)
             err = self._apply_op(working, op, diagnostics)
             if err:
                 errors.append(OperationError(op_index=orig_idx, op_type=op.op, message=err))
@@ -905,6 +951,9 @@ class GraphMutator:
                 applied.append(orig_idx)
                 if op.op in self._STRUCTURAL_OPS:
                     has_structural = True
+                if isinstance(op, AddNode):
+                    add_node_seq += 1
+                    self._track_add_node_alias(op, working, alias, add_node_seq)
 
         if errors:
             return MutationResult(success=False, new_graph=None, errors=errors)
@@ -938,8 +987,11 @@ class GraphMutator:
         applied: list[int] = []
         diagnostics: list[str] = []
         has_structural = False
+        alias: dict[str, str] = {}
+        add_node_seq = 0
 
         for orig_idx, op in sorted_ops:
+            op = self._resolve_op_aliases(op, alias)
             snapshot = copy.deepcopy(working)
             err = self._apply_op(working, op, diagnostics)
             if err:
@@ -950,6 +1002,9 @@ class GraphMutator:
                 applied.append(orig_idx)
                 if op.op in self._STRUCTURAL_OPS:
                     has_structural = True
+                if isinstance(op, AddNode):
+                    add_node_seq += 1
+                    self._track_add_node_alias(op, working, alias, add_node_seq)
 
         if has_structural:
             _recompute_entry_exit_points(working)
@@ -1004,7 +1059,10 @@ class GraphMutator:
 
     def _op_add_node(self, graph: dict[str, Any], op: AddNode) -> str | None:
         existing_ids = _node_ids(graph)
-        node_id = _generate_node_id(op.name, existing_ids)
+        if op.id:
+            node_id = op.id if op.id not in existing_ids else _generate_node_id(op.name, existing_ids)
+        else:
+            node_id = _generate_node_id(op.name, existing_ids)
 
         config = _default_node_config(op.node_type)
         config.update(op.config)
@@ -1067,10 +1125,28 @@ class GraphMutator:
 
         source_ports = [p["name"] for p in source_node.get("output_ports", [])]
         if op.source_port not in source_ports:
-            return (
-                f"Source node '{op.source_id}' has no output port '{op.source_port}' "
-                f"(available: {source_ports})"
-            )
+            if source_node.get("node_type") == "input" and op.source_port == "input":
+                # Backward-compat: older graphs may have input variables as
+                # output ports but no aggregate "input" output.
+                source_node.setdefault("output_ports", []).append(
+                    {"name": "input", "schema": {}}
+                )
+                source_ports.append("input")
+                msg = (
+                    f"Auto-created output port 'input' on input node '{op.source_id}' "
+                    "(compat for aggregate input wiring)."
+                )
+                if diagnostics is not None:
+                    diagnostics.append(msg)
+                logger.debug(
+                    "Auto-created output port 'input' on input node '%s'",
+                    op.source_id,
+                )
+            else:
+                return (
+                    f"Source node '{op.source_id}' has no output port '{op.source_port}' "
+                    f"(available: {source_ports})"
+                )
 
         target_ports = [p["name"] for p in target_node.get("input_ports", [])]
         if op.target_port not in target_ports:
