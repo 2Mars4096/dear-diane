@@ -34,6 +34,10 @@ from dan.server.graph_store import GraphStore
 from dan.server.mutation_metrics import mutation_metrics
 
 _MUTATION_AUTO_RETRY = os.environ.get("DAN_MUTATION_AUTO_RETRY", "true").lower() == "true"
+try:
+    _MUTATION_AUTO_RETRY_MAX = max(0, int(os.environ.get("DAN_MUTATION_AUTO_RETRY_MAX", "2")))
+except ValueError:
+    _MUTATION_AUTO_RETRY_MAX = 2
 _MAX_CONTEXT_RATIO = float(os.environ.get("DAN_CHAT_MAX_CONTEXT_RATIO", "0.8"))
 _RECENT_MESSAGES_COUNT = int(os.environ.get("DAN_CHAT_RECENT_MESSAGES", "10"))
 
@@ -63,6 +67,7 @@ __all__ = [
     "normalize_chat_mode",
     "build_debug_context",
     "_coerce_strict_edges",
+    "_normalize_generated_mutation_ops",
     "estimate_tokens",
     "compact_history",
     "MODEL_CONTEXT_WINDOWS",
@@ -102,6 +107,7 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
         "type": "object",
         "properties": {
             "op": {"type": "string", "const": "add_node"},
+            "id": {"type": "string", "description": "Stable node ID used in edges and set_position (e.g. 'node_1'). If omitted, auto-generated from name."},
             "node_type": {"type": "string", "enum": NODE_TYPES},
             "name": {"type": "string", "description": "Human-readable node name"},
             "config": {"type": "object", "description": "Node-type-specific configuration"},
@@ -1019,8 +1025,20 @@ ChatStreamEvent = (
 
 
 def compute_graph_revision(graph_dict: dict) -> str:
-    """Stable SHA-256 hash of the graph for concurrency checks."""
-    canonical = json.dumps(graph_dict, sort_keys=True, separators=(",", ":"))
+    """Stable SHA-256 hash of the graph for concurrency checks.
+
+    Normalizes through the Pydantic ``Graph`` model so that missing default
+    fields (``version``, ``sub_graphs``, ``entry_points``, …) do not cause
+    a revision mismatch between callers that round-trip through Pydantic and
+    those that hash the raw dict read from disk.
+    """
+    try:
+        normalized = json.loads(Graph.model_validate(graph_dict).model_dump_json())
+    except Exception:
+        # Fallback for partially-formed dicts used in tests or diagnostics.
+        # Runtime graph-store payloads should validate and use normalized hashing.
+        normalized = graph_dict
+    canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 
@@ -1201,17 +1219,115 @@ def _try_parse_mutation_json(text: str) -> dict[str, Any] | None:
 
 
 def _coerce_strict_edges(operations: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Set strict=True on all add_edge ops when building from intent.
+    """Return a shallow-copied operation list without forcing strict edges.
 
-    Fail-fast on port typos during build mode rather than silently
-    auto-creating ports that may not exist.
+    Build-from-intent plans frequently wire semantic target ports
+    (e.g. ``fundamental_analysis``) that are intended to be auto-created
+    on downstream nodes. Forcing ``strict=True`` causes valid generated plans
+    to fail dry-run/apply with port-not-found errors.
     """
-    result = []
+    return [dict(op) for op in operations]
+
+
+def _normalize_generated_mutation_ops(
+    operations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Normalize common LLM schema drifts in mutation operations.
+
+    This is intentionally conservative: it only repairs a few high-frequency
+    shape mismatches so dry-run can proceed and auto-repair has a chance to
+    converge.
+    """
+    normalized: list[dict[str, Any]] = []
     for op in operations:
-        if op.get("op") == "add_edge" and not op.get("strict"):
-            op = {**op, "strict": True}
-        result.append(op)
-    return result
+        if not isinstance(op, dict):
+            continue
+        op_norm = dict(op)
+        if op_norm.get("op") == "add_edge":
+            # Chat tool schema doesn't carry ContextEdge-specific fields
+            # (context_key/mode). If the model emits edge_type=context here,
+            # resulting graph edges are schema-invalid. Treat as data edge.
+            if op_norm.get("edge_type") == "context":
+                op_norm["edge_type"] = "data"
+            normalized.append(op_norm)
+            continue
+
+        if op_norm.get("op") != "add_node":
+            normalized.append(op_norm)
+            continue
+
+        config = op_norm.get("config")
+        if not isinstance(config, dict):
+            normalized.append(op_norm)
+            continue
+        cfg = dict(config)
+        node_type = op_norm.get("node_type")
+
+        if node_type == "parallel_subagents":
+            branch_graphs = cfg.get("branch_graphs")
+            if isinstance(branch_graphs, dict):
+                cfg["branch_graphs"] = list(branch_graphs.keys())
+            elif isinstance(branch_graphs, str):
+                cfg["branch_graphs"] = [branch_graphs]
+
+            branch_inputs = cfg.get("branch_inputs")
+            if isinstance(branch_inputs, dict):
+                remapped: dict[str, dict[str, Any]] = {}
+                for branch, val in branch_inputs.items():
+                    if isinstance(val, dict):
+                        remapped[branch] = val
+                    elif isinstance(val, str):
+                        remapped[branch] = {"input": val}
+                    else:
+                        remapped[branch] = {"input": val}
+                cfg["branch_inputs"] = remapped
+
+        elif node_type == "validator":
+            on_failure = cfg.get("on_failure")
+            if isinstance(on_failure, str):
+                alias = {
+                    "retry": "route",
+                    "continue": "warn",
+                    "ignore": "warn",
+                    "stop": "halt",
+                    "fail": "halt",
+                }
+                cfg["on_failure"] = alias.get(on_failure, on_failure)
+
+            rules = cfg.get("validation_rules")
+            if isinstance(rules, list):
+                fixed_rules: list[dict[str, Any]] = []
+                for item in rules:
+                    if not isinstance(item, dict):
+                        continue
+                    rule = dict(item)
+                    rule_type = rule.get("rule_type")
+                    if rule_type in ("required_field", "required_fields"):
+                        rule["rule_type"] = "required_keys"
+                        rule_cfg = rule.get("config")
+                        if not isinstance(rule_cfg, dict):
+                            rule_cfg = {}
+                        if "keys" not in rule_cfg:
+                            if isinstance(rule_cfg.get("field"), str):
+                                rule_cfg["keys"] = [rule_cfg["field"]]
+                            elif isinstance(rule_cfg.get("key"), str):
+                                rule_cfg["keys"] = [rule_cfg["key"]]
+                            elif isinstance(rule_cfg.get("fields"), list):
+                                rule_cfg["keys"] = list(rule_cfg["fields"])
+                            elif isinstance(rule_cfg.get("required"), list):
+                                rule_cfg["keys"] = list(rule_cfg["required"])
+                            elif isinstance(rule.get("field"), str):
+                                rule_cfg["keys"] = [rule["field"]]
+                            elif isinstance(rule.get("key"), str):
+                                rule_cfg["keys"] = [rule["key"]]
+                        rule["config"] = rule_cfg
+                    fixed_rules.append(rule)
+                cfg["validation_rules"] = fixed_rules
+
+        op_norm["config"] = cfg
+        normalized.append(op_norm)
+
+    return normalized
 
 
 def _build_args_preview(mutation_data: dict[str, Any]) -> str:
@@ -1469,7 +1585,9 @@ class ChatManager:
                     args_preview=_build_args_preview(mutation_data),
                 )
 
-                ops = mutation_data.get("operations", [])
+                ops = _normalize_generated_mutation_ops(
+                    mutation_data.get("operations", []),
+                )
                 if is_empty_graph:
                     ops = _coerce_strict_edges(ops)
                 plan = MutationPlan.model_validate({
@@ -1482,55 +1600,82 @@ class ChatManager:
                     graph_dict, plan, current_revision=revision,
                 )
 
-                if not dry_result.success and not dry_result.stale_plan and _MUTATION_AUTO_RETRY:
-                    mutation_metrics.record_retry()
-                    error_summary = "; ".join(e.message for e in dry_result.errors)
-                    logger.info(
-                        "Dry-run failed for plan %s, attempting auto-retry: %s",
-                        plan.plan_id,
-                        error_summary,
-                    )
-                    retry_messages = messages + [
-                        {"role": "assistant", "content": result.text or ""},
-                        {
-                            "role": "user",
-                            "content": (
-                                f"The mutation plan produced these errors:\n{error_summary}\n\n"
-                                "Please produce a corrected plan_graph_mutations call "
-                                "that fixes these issues."
-                            ),
-                        },
-                    ]
-                    try:
-                        retry_result: CompletionResult = await provider.complete(
-                            messages=retry_messages,
-                            model=self._chat_model,
-                            temperature=0.5,
-                            tools=[MUTATION_TOOL_SCHEMA],
-                            tool_choice="auto",
+                if (
+                    not dry_result.success
+                    and not dry_result.stale_plan
+                    and _MUTATION_AUTO_RETRY
+                    and _MUTATION_AUTO_RETRY_MAX > 0
+                ):
+                    retry_assistant = result.text or ""
+                    for attempt in range(_MUTATION_AUTO_RETRY_MAX):
+                        mutation_metrics.record_retry()
+                        error_summary = "; ".join(e.message for e in dry_result.errors)
+                        logger.info(
+                            "Dry-run failed for plan %s, attempting auto-retry %d/%d: %s",
+                            plan.plan_id,
+                            attempt + 1,
+                            _MUTATION_AUTO_RETRY_MAX,
+                            error_summary,
                         )
-                        retry_mutation = self._extract_mutation_from_result(retry_result)
-                        if retry_mutation is not None:
-                            retry_ops = retry_mutation.get("operations", [])
-                            if is_empty_graph:
-                                retry_ops = _coerce_strict_edges(retry_ops)
-                            retry_plan = MutationPlan.model_validate({
-                                "operations": retry_ops,
-                                "description": retry_mutation.get("description", ""),
-                                "reasoning": retry_mutation.get("reasoning", ""),
-                                "base_graph_revision": revision,
-                            })
-                            retry_dry = GraphMutator().dry_run(
-                                graph_dict, retry_plan, current_revision=revision,
+                        retry_messages = messages + [
+                            {"role": "assistant", "content": retry_assistant},
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"The mutation plan produced these errors:\n{error_summary}\n\n"
+                                    "Please produce a corrected plan_graph_mutations call "
+                                    "that fixes these issues."
+                                ),
+                            },
+                        ]
+                        try:
+                            retry_result: CompletionResult = await provider.complete(
+                                messages=retry_messages,
+                                model=self._chat_model,
+                                temperature=0.5,
+                                tools=[MUTATION_TOOL_SCHEMA],
+                                tool_choice="auto",
                             )
-                            if retry_dry.success:
-                                plan = retry_plan
-                                dry_result = retry_dry
-                                logger.info(
-                                    "Auto-retry succeeded for plan %s", plan.plan_id
-                                )
-                    except Exception as retry_exc:
-                        logger.debug("Auto-retry LLM call failed: %s", retry_exc)
+                        except Exception as retry_exc:
+                            logger.debug("Auto-retry LLM call failed: %s", retry_exc)
+                            break
+
+                        retry_assistant = retry_result.text or retry_assistant
+                        retry_mutation = self._extract_mutation_from_result(retry_result)
+                        if retry_mutation is None:
+                            continue
+
+                        retry_ops = _normalize_generated_mutation_ops(
+                            retry_mutation.get("operations", []),
+                        )
+                        if is_empty_graph:
+                            retry_ops = _coerce_strict_edges(retry_ops)
+                        retry_plan = MutationPlan.model_validate({
+                            "operations": retry_ops,
+                            "description": retry_mutation.get("description", ""),
+                            "reasoning": retry_mutation.get("reasoning", ""),
+                            "base_graph_revision": revision,
+                        })
+                        retry_dry = GraphMutator().dry_run(
+                            graph_dict, retry_plan, current_revision=revision,
+                        )
+
+                        # Keep latest candidate so the user sees the most
+                        # recent attempted fix if retries still fail.
+                        plan = retry_plan
+                        dry_result = retry_dry
+                        mutation_data = retry_mutation
+                        result = retry_result
+
+                        if retry_dry.success:
+                            logger.info(
+                                "Auto-retry succeeded for plan %s on attempt %d",
+                                plan.plan_id,
+                                attempt + 1,
+                            )
+                            break
+                        if retry_dry.stale_plan:
+                            break
 
                 if dry_result.stale_plan:
                     mutation_metrics.record_stale_plan()
@@ -1564,7 +1709,9 @@ class ChatManager:
                                 replan_result,
                             )
                             if replan_mutation is not None:
-                                replan_ops = replan_mutation.get("operations", [])
+                                replan_ops = _normalize_generated_mutation_ops(
+                                    replan_mutation.get("operations", []),
+                                )
                                 if is_empty_graph:
                                     replan_ops = _coerce_strict_edges(replan_ops)
                                 replan_plan = MutationPlan.model_validate({
@@ -1682,7 +1829,9 @@ class ChatManager:
         if mutation_data is not None:
             try:
                 plan = MutationPlan.model_validate({
-                    "operations": mutation_data.get("operations", []),
+                    "operations": _normalize_generated_mutation_ops(
+                        mutation_data.get("operations", []),
+                    ),
                     "description": mutation_data.get("description", ""),
                     "reasoning": mutation_data.get("reasoning", ""),
                     "base_graph_revision": revision,
