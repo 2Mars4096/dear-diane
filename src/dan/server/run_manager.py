@@ -121,6 +121,8 @@ class RunManager:
         self._max_event_buffer = 10000
         self._pending_human_inputs: dict[str, asyncio.Event] = {}
         self._human_input_responses: dict[str, dict[str, Any]] = {}
+        self._meta_approval_request_by_run: dict[str, str] = {}
+        self._meta_approval_run_by_request: dict[str, str] = {}
         self._hydrate_from_store()
         self._error_memory_index = None
         self._principle_store = None
@@ -314,29 +316,59 @@ class RunManager:
         Returns True if the run was found and cancellation was requested,
         False if the run was not found or already completed.
         """
-        task = self._tasks.get(run_id)
-        if task is None or task.done():
-            return False
         record = self._runs.get(run_id)
         if record is None:
             return False
-        task.cancel()
+
+        if record.status in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
+            return False
+
+        # Pre-run approval gate: no task exists yet. Resolve pending approval and mark cancelled.
+        pending_request_id = self._meta_approval_request_by_run.get(run_id)
+        if pending_request_id:
+            evt = self._pending_human_inputs.get(pending_request_id)
+            self._human_input_responses[pending_request_id] = {
+                "approved": False,
+                "response": "reject",
+                "_cancelled": True,
+            }
+            if evt is not None:
+                evt.set()
+            self.mark_run_cancelled(run_id, reason="user_cancelled")
+            return True
+
+        task = self._tasks.get(run_id)
+        if task is None:
+            if record.status == RunStatus.PENDING:
+                self.mark_run_cancelled(run_id, reason="user_cancelled")
+                return True
+            return False
+        if not task.done():
+            task.cancel()
+        self.mark_run_cancelled(run_id, reason="user_cancelled")
+        return True
+
+    def mark_run_cancelled(self, run_id: str, *, reason: str) -> dict[str, Any] | None:
+        """Mark a run as cancelled and emit a run_cancelled event."""
+        record = self._runs.get(run_id)
+        if record is None:
+            return None
+        if record.status == RunStatus.CANCELLED:
+            return None
         record.status = RunStatus.CANCELLED
-        record.error = "Cancelled by user"
+        record.error = f"Cancelled: {reason}"
         record.finished_at = time.time()
+        req_id = self._meta_approval_request_by_run.pop(run_id, None)
+        if req_id:
+            self._meta_approval_run_by_request.pop(req_id, None)
         cancel_event = {
             "event_type": "run_cancelled",
             "run_id": run_id,
             "timestamp": time.time(),
-            "data": {"reason": "user_cancelled"},
+            "data": {"reason": reason},
         }
-        record.events.append(cancel_event)
-        for queue in self._subscribers.get(run_id, []):
-            try:
-                queue.put_nowait(cancel_event)
-            except asyncio.QueueFull:
-                logger.warning("Subscriber queue full for run %s", run_id)
-        return True
+        self.emit_event_to_run(run_id, cancel_event)
+        return cancel_event
 
     def submit_human_input(self, run_id: str, request_id: str, response: dict[str, Any]) -> bool:
         """Submit a response for a pending human-input request.
@@ -383,7 +415,7 @@ class RunManager:
             return response
         return callback
 
-    def register_meta_approval(self, request_id: str) -> asyncio.Event:
+    def register_meta_approval(self, request_id: str, run_id: str | None = None) -> asyncio.Event:
         """Register a pending meta (plan) approval request.
 
         Used by gateway text dispatch before a run starts. submit_human_input
@@ -391,7 +423,23 @@ class RunManager:
         """
         evt = asyncio.Event()
         self._pending_human_inputs[request_id] = evt
+        if run_id:
+            self._meta_approval_request_by_run[run_id] = request_id
+            self._meta_approval_run_by_request[request_id] = run_id
         return evt
+
+    def pop_meta_approval_response(self, request_id: str) -> dict[str, Any]:
+        """Pop the response for a meta approval request after the event is set.
+
+        Used by gateway _run_after_approval. Returns the stored response and
+        clears pending state. Call only after the approval event has been set.
+        """
+        run_id = self._meta_approval_run_by_request.pop(request_id, None)
+        if run_id:
+            self._meta_approval_request_by_run.pop(run_id, None)
+        response = self._human_input_responses.pop(request_id, {})
+        self._pending_human_inputs.pop(request_id, None)
+        return response
 
     def emit_event_to_run(
         self,
@@ -453,11 +501,16 @@ class RunManager:
         run_id: str | None = None,
         session_id: str | None = None,
     ) -> RunRecord:
+        existing = self._runs.get(run_id) if run_id else None
         record = RunRecord(
             run_id=run_id or f"run-{int(time.time() * 1000)}",
             graph_id=graph_id,
             status=RunStatus.PENDING,
         )
+        if existing is not None:
+            record.events = list(existing.events)
+            record.node_statuses = dict(existing.node_statuses)
+            record.started_at = existing.started_at
         self._runs[record.run_id] = record
         task = asyncio.create_task(
             self._run_task(record, graph, inputs, session_id=session_id),
