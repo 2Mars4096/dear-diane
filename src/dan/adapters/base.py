@@ -116,6 +116,7 @@ class AdapterConfig(BaseModel):
     server_url: str | None = None
     local_mode: bool = False
     forward_external_prompts: bool = False
+    auto_approve: bool = False  # when True, mutations apply without confirmation; default False for messaging safety
 
 
 # ---------------------------------------------------------------------------

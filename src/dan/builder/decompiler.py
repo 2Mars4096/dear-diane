@@ -26,7 +26,7 @@ from dan.models.control_flow import (
     ValidatorNode,
     WhileLoopNode,
 )
-from dan.models.nodes import RAGOperator
+from dan.models.nodes import RAGOperator, ReflectionNode
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph
 from dan.models.hyperedges import Hyperedge
@@ -296,6 +296,24 @@ class _Decompiler:
                 kwargs.append(f"on_failure={node.on_failure!r}")
             if node.strict_mode:
                 kwargs.append(f"strict_mode={node.strict_mode!r}")
+        elif nt == "reflection":
+            method = "wf.reflection"
+            if node.reflection_prompt:
+                kwargs.append(f"reflection_prompt={node.reflection_prompt!r}")
+            if node.reflection_model is not None:
+                kwargs.append(f"reflection_model={node.reflection_model!r}")
+            if node.source != "last_run":
+                kwargs.append(f"source={node.source!r}")
+            if node.source_config:
+                kwargs.append(f"source_config={node.source_config!r}")
+            if node.output_format != "principles":
+                kwargs.append(f"output_format={node.output_format!r}")
+            if node.max_principles != 10:
+                kwargs.append(f"max_principles={node.max_principles!r}")
+            if node.min_confidence != 0.3:
+                kwargs.append(f"min_confidence={node.min_confidence!r}")
+            if node.dedup_strategy != "embedding_similarity":
+                kwargs.append(f"dedup_strategy={node.dedup_strategy!r}")
         else:
             method = f"wf.llm"  # fallback
 

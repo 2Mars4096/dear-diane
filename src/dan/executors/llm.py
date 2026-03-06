@@ -14,6 +14,7 @@ from openai import AsyncOpenAI, APIError, APITimeoutError, RateLimitError
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.normalizer import OutputNormalizer
 from dan.engine.state import NodeStatus
+from dan.engine.hyperedge_runtime import HYPEREDGE_JIT_TOOL
 from dan.engine.token_optimization import (
     ContextSelector,
     ContextToolProvider,
@@ -367,6 +368,8 @@ class LLMExecutor:
         node: LLMOperator,
         context: ExecutionContext,
         deferred_inputs: dict[str, Any],
+        *,
+        jit_hyperedge: bool = False,
     ) -> tuple[list[dict[str, Any]], ContextToolProvider | None, ToolSchemaResolver | None]:
         """Build active tool list, including JIT catalog/context tools when enabled."""
         base_tools = list(node.tools)
@@ -388,6 +391,9 @@ class LLMExecutor:
                 run_scope=getattr(context.state, "run_id", ""),
             )
             base_tools.extend(context_tools.get_tool_definitions())
+
+        if jit_hyperedge:
+            base_tools.append(HYPEREDGE_JIT_TOOL)
 
         return base_tools, context_tools, resolver
 
@@ -484,14 +490,19 @@ class LLMExecutor:
                 )
 
         # -- 15-1: Hyperedge pre-prompt injection ------------------------------
+        jit_hyperedge = False
         if (
             getattr(context, "hyperedge_resolver", None)
             and getattr(context.config, "hyperedge_enforcement", "off") != "off"
         ):
-            messages = context.hyperedge_resolver.apply_pre_prompt(node, messages)
+            jit_loading = getattr(context.config, "hyperedge_jit_loading", False)
+            jit_threshold = getattr(context.config, "hyperedge_jit_threshold", 500)
+            messages, jit_hyperedge = context.hyperedge_resolver.apply_pre_prompt(
+                node, messages, jit_loading=jit_loading, jit_threshold=jit_threshold,
+            )
 
         active_tools, context_tool_provider, schema_resolver = self._prepare_tools(
-            node, context, deferred_inputs,
+            node, context, deferred_inputs, jit_hyperedge=jit_hyperedge,
         )
         max_norm_retries = context.config.output_norm_max_retries
         has_schema = node.output_json_schema is not None
@@ -547,6 +558,7 @@ class LLMExecutor:
                 )
 
             if not has_schema:
+                self._record_tier_outcome(context, node, tier_result, True)
                 return NodeResult(
                     outputs={"text": raw_text},
                     status=NodeStatus.COMPLETED,
@@ -555,6 +567,7 @@ class LLMExecutor:
 
             result = OutputNormalizer.normalize(raw_text, node.output_json_schema)  # type: ignore[arg-type]
             if result.success:
+                self._record_tier_outcome(context, node, tier_result, True)
                 data = result.data or {}
                 outputs = {**data, "result": data}
                 return NodeResult(
@@ -644,6 +657,10 @@ class LLMExecutor:
                                 raw_text, node.output_json_schema,  # type: ignore[arg-type]
                             )
                             if esc_result.success:
+                                self._record_tier_outcome(
+                                    context, node, tier_result, True,
+                                    effective_tier=next_tier.value,
+                                )
                                 data = esc_result.data or {}
                                 outputs = {**data, "result": data}
                                 return NodeResult(
@@ -658,6 +675,10 @@ class LLMExecutor:
                                 )
                             last_error = esc_result.error_message
                         elif not api_error and raw_text and not has_schema:
+                            self._record_tier_outcome(
+                                context, node, tier_result, True,
+                                effective_tier=next_tier.value,
+                            )
                             return NodeResult(
                                 outputs={"text": raw_text},
                                 status=NodeStatus.COMPLETED,
@@ -672,6 +693,7 @@ class LLMExecutor:
                             last_error = api_error
 
         fail_meta = {"model": model, "usage": cumulative_usage}
+        self._record_tier_outcome(context, node, tier_result, False)
 
         if policy.on_failure == "skip":
             return NodeResult(
@@ -801,6 +823,16 @@ class LLMExecutor:
             args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
         except (json.JSONDecodeError, TypeError):
             args = {}
+
+        if fn_name == "load_hyperedge":
+            resolver = getattr(context, "hyperedge_resolver", None)
+            if resolver is not None:
+                name = str(args.get("name", ""))
+                content = resolver.get_hyperedge_content(name)
+                if content is not None:
+                    return content
+                return json.dumps({"error": f"Hyperedge '{name}' not found"})
+            return json.dumps({"error": "Hyperedge resolver not available"})
 
         if context_tool_provider is not None and context_tool_provider.has_tool(fn_name):
             try:
@@ -1126,3 +1158,42 @@ class LLMExecutor:
             and bool(value.get("__ref__"))
             and isinstance(value.get("uri", ""), str)
         )
+
+    @staticmethod
+    def _record_tier_outcome(
+        context: ExecutionContext,
+        node: NodeBase,
+        tier_result: Any,
+        success: bool,
+        *,
+        effective_tier: str | None = None,
+    ) -> None:
+        """Record tier outcome and optionally log de-escalation suggestion (18-5 task 4-2)."""
+        tracker = getattr(context, "tier_tracker", None)
+        if tracker is None:
+            return
+        tier = effective_tier
+        if tier is None and tier_result is not None:
+            tier = getattr(tier_result, "tier", None)
+            tier = tier.value if hasattr(tier, "value") else str(tier) if tier else None
+        if tier is None:
+            return
+        node_type = getattr(node, "node_type", "llm_operator")
+        try:
+            if success:
+                tracker.record_success(node.id, node_type, tier)
+                suggested = tracker.suggest_deescalation(node.id, tier)
+                if suggested:
+                    stats = tracker.get_stats(node.id)
+                    n = stats.consecutive_successes if stats else 0
+                    logger.info(
+                        "Tier de-escalation suggestion: node %s at %s could use %s "
+                        "(%d consecutive successes)",
+                        node.id, tier, suggested, n,
+                    )
+            else:
+                tracker.record_failure(node.id, node_type, tier)
+            tracker.save()
+        except Exception:
+            logger.debug("Tier tracker update failed", exc_info=True)
+

@@ -34,7 +34,7 @@ from dan.models.control_flow import (
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph, GraphMetadata
 from dan.models.hyperedges import Hyperedge
-from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, RAGOperator, ToolOperator
+from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, RAGOperator, ReflectionNode, ToolOperator
 from dan.models.ports import InputPort, OutputPort
 from dan.validation.graph import validate_graph
 
@@ -63,6 +63,7 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "router": "route",
     "human_in_the_loop": "response",
     "validator": "valid",
+    "reflection": "principles",
     "composite": "result",
 }
 
@@ -371,6 +372,8 @@ def _build_node(pn: _PendingNode) -> NodeBase:
         return RAGOperator(**common, **kwargs)
     elif pn.node_type == "validator":
         return ValidatorNode(**common, **kwargs)
+    elif pn.node_type == "reflection":
+        return ReflectionNode(**common, **kwargs)
     elif pn.node_type == "composite":
         return CompositeNode(**common, **kwargs)
     elif pn.node_type == "parallel_subagents":

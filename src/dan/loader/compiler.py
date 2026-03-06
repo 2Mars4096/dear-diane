@@ -44,7 +44,7 @@ from dan.models.control_flow import (
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph, GraphMetadata
 from dan.models.hyperedges import Hyperedge
-from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, RetryPolicy, ToolOperator
+from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, ReflectionNode, RetryPolicy, ToolOperator
 from dan.models.ports import InputPort, OutputPort
 
 _BLOCK_REF_RE = re.compile(r"^(?P<name>[^@]+)@(?P<version>\d+\.\d+\.\d+[\w.+-]*)$")
@@ -137,6 +137,7 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "router": "route",
     "human_in_the_loop": "response",
     "composite": "result",
+    "reflection": "principles",
     "input": "output",
 }
 DEFAULT_INPUT_PORT = "input"
@@ -422,6 +423,38 @@ def _compile_agent(
             id=name,
             name=name,
             body_graph=sub_key,
+            input_ports=input_ports,
+            output_ports=output_ports,
+            metadata=metadata,
+        )
+    elif spec.agent_type == "reflection":
+        raw = spec.raw_frontmatter
+        config: dict[str, Any] = {}
+        if spec.model:
+            config["reflection_model"] = spec.model
+        for key in (
+            "reflection_prompt",
+            "source",
+            "source_config",
+            "output_format",
+            "max_principles",
+            "min_confidence",
+            "dedup_strategy",
+        ):
+            if key in raw:
+                config[key] = raw[key]
+        reflection_prompt = config.get("reflection_prompt", spec.prompt_body or "")
+        node = ReflectionNode(
+            id=name,
+            name=name,
+            reflection_prompt=reflection_prompt,
+            reflection_model=config.get("reflection_model"),
+            source=config.get("source", "last_run"),
+            source_config=config.get("source_config") or {},
+            output_format=config.get("output_format", "principles"),
+            max_principles=config.get("max_principles", 10),
+            min_confidence=config.get("min_confidence", 0.3),
+            dedup_strategy=config.get("dedup_strategy", "embedding_similarity"),
             input_ports=input_ports,
             output_ports=output_ports,
             metadata=metadata,
@@ -1497,6 +1530,8 @@ def _default_output_port_for_agent_type(agent_type: str) -> str:
         return DEFAULT_OUTPUT_PORTS["human_in_the_loop"]
     if agent_type == "composite":
         return DEFAULT_OUTPUT_PORTS["composite"]
+    if agent_type == "reflection":
+        return "principles"
     return "result"
 
 

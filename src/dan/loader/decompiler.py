@@ -23,12 +23,12 @@ from dan.models.control_flow import (
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph
 from dan.models.hyperedges import Hyperedge
-from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, ToolOperator
+from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, ReflectionNode, ToolOperator
 
 _SUPPORTED_NODE_TYPES = frozenset({
     "llm_operator", "tool_operator", "code_operator",
     "human_in_the_loop", "router", "gate", "for_each",
-    "composite", "input",
+    "composite", "reflection", "input",
 })
 
 _SCHEMA_TO_TYPE: dict[str, str] = {
@@ -256,6 +256,24 @@ class _DecompileContext:
                 fm["route_descriptions"] = dict(node.route_descriptions)
         elif isinstance(node, CompositeNode):
             fm["type"] = "composite"
+        elif isinstance(node, ReflectionNode):
+            fm["type"] = "reflection"
+            if node.reflection_model:
+                fm["model"] = node.reflection_model
+            if node.reflection_prompt:
+                fm["reflection_prompt"] = node.reflection_prompt
+            if node.source != "last_run":
+                fm["source"] = node.source
+            if node.source_config:
+                fm["source_config"] = dict(node.source_config)
+            if node.output_format != "principles":
+                fm["output_format"] = node.output_format
+            if node.max_principles != 10:
+                fm["max_principles"] = node.max_principles
+            if node.min_confidence != 0.3:
+                fm["min_confidence"] = node.min_confidence
+            if node.dedup_strategy != "embedding_similarity":
+                fm["dedup_strategy"] = node.dedup_strategy
         else:
             fm["type"] = node.node_type
             self.diagnostics.append(Diagnostic(
@@ -318,6 +336,9 @@ class _DecompileContext:
         elif isinstance(node, HumanInTheLoopNode):
             if node.prompt:
                 parts.append(node.prompt)
+        elif isinstance(node, ReflectionNode):
+            if node.reflection_prompt:
+                parts.append(node.reflection_prompt)
         elif isinstance(node, CompositeNode):
             sub_graph = self.graph.sub_graphs.get(node.body_graph)
             if sub_graph:

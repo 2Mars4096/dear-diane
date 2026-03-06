@@ -34,6 +34,7 @@ from dan.adapters.gateway_mixin import GatewayAdapterMixin
 from dan.adapters.email_adapter import EmailAdapter, EmailAdapterConfig
 from dan.adapters.telegram_adapter import TelegramAdapter, TelegramAdapterConfig
 from dan.adapters.whatsapp_adapter import WhatsAppAdapter, WhatsAppAdapterConfig
+from dan.adapters.whatsapp_web_adapter import WhatsAppWebAdapter, WhatsAppWebAdapterConfig
 
 __all__ = [
     "AdapterConfig",
@@ -49,6 +50,8 @@ __all__ = [
     "TelegramAdapterConfig",
     "WhatsAppAdapter",
     "WhatsAppAdapterConfig",
+    "WhatsAppWebAdapter",
+    "WhatsAppWebAdapterConfig",
     "format_prompt_for_messaging",
     "parse_response_text",
     "should_trigger",

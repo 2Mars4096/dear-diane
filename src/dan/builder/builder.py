@@ -288,6 +288,50 @@ class WorkflowBuilder:
         self._add_node(pn)
         return NodeRef(node_id, "validator", self)
 
+    def reflection(
+        self,
+        node_id: str,
+        *,
+        reflection_prompt: str = "",
+        reflection_model: str | None = None,
+        source: str = "last_run",
+        source_config: dict[str, Any] | None = None,
+        output_format: str = "principles",
+        max_principles: int = 10,
+        min_confidence: float = 0.3,
+        dedup_strategy: str = "embedding_similarity",
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Add a reflection node for post-run analysis."""
+        from dan.models.ports import InputPort, OutputPort
+
+        kwargs: dict[str, Any] = {
+            "name": name or node_id,
+            "description": description,
+            "reflection_prompt": reflection_prompt,
+            "source": source,
+            "source_config": source_config or {},
+            "output_format": output_format,
+            "max_principles": max_principles,
+            "min_confidence": min_confidence,
+            "dedup_strategy": dedup_strategy,
+        }
+        if reflection_model is not None:
+            kwargs["reflection_model"] = reflection_model
+
+        pn = _PendingNode(
+            id=node_id,
+            node_type="reflection",
+            kwargs=kwargs,
+            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
+            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
+        )
+        self._add_node(pn)
+        return NodeRef(node_id, "reflection", self)
+
     def if_else(
         self,
         node_id: str,
