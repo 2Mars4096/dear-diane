@@ -1,0 +1,193 @@
+"""dan-up — start DAN server if needed and drop into dan-chat."""
+from __future__ import annotations
+
+import argparse
+import os
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import IO
+
+DAN_DIR = Path.home() / ".dan"
+PID_FILE = DAN_DIR / "server.pid"
+LOCK_FILE = DAN_DIR / "server.lock"
+LOGS_DIR = DAN_DIR / "logs"
+
+
+def read_pid_file() -> tuple[int | None, int | None]:
+    """Read PID and port from server.pid.  Returns ``(pid, port)`` or ``(None, None)``."""
+    if not PID_FILE.exists():
+        return None, None
+    try:
+        lines = PID_FILE.read_text().strip().split("\n")
+        pid = int(lines[0])
+        port = int(lines[1]) if len(lines) > 1 else 8000
+        return pid, port
+    except (ValueError, IndexError, OSError):
+        return None, None
+
+
+def is_process_alive(pid: int) -> bool:
+    """Check if a process with the given PID is running."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+def write_pid_file(pid: int, port: int) -> None:
+    PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    PID_FILE.write_text(f"{pid}\n{port}\n")
+
+
+def remove_pid_file() -> None:
+    try:
+        PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def acquire_start_lock() -> IO[str] | None:
+    """Acquire a non-blocking process lock for ``dan up`` startup."""
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handle = LOCK_FILE.open("a+", encoding="utf-8")
+    try:
+        import fcntl
+    except ImportError:
+        return handle
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return None
+    return handle
+
+
+def release_start_lock(handle: IO[str] | None) -> None:
+    """Release startup lock handle."""
+    if handle is None:
+        return
+    try:
+        import fcntl
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except (ImportError, OSError):
+        pass
+    try:
+        handle.close()
+    except OSError:
+        pass
+
+
+def check_health(port: int, timeout: float = 2.0) -> bool:
+    """Check if the server health endpoint responds."""
+    try:
+        import httpx
+        resp = httpx.get(f"http://127.0.0.1:{port}/health", timeout=timeout)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def start_server(port: int = 8000) -> int:
+    """Start ``dan-serve`` in the background, return the child PID."""
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    log_path = LOGS_DIR / "server.log"
+    log_file = open(log_path, "a")  # noqa: SIM115 — kept open for subprocess
+    proc = subprocess.Popen(
+        [
+            sys.executable, "-m", "dan.server",
+            "--host", "127.0.0.1",
+            "--port", str(port),
+            "--no-reload",
+        ],
+        stdout=log_file,
+        stderr=log_file,
+        start_new_session=True,
+    )
+    log_file.close()
+    return proc.pid
+
+
+def wait_for_health(port: int, max_wait: float = 15.0) -> bool:
+    """Poll ``/health`` with progressive back-off until the server is ready."""
+    delays = [0.5, 1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+    elapsed = 0.0
+    for delay in delays:
+        if elapsed >= max_wait:
+            break
+        time.sleep(delay)
+        elapsed += delay
+        if check_health(port):
+            return True
+    return False
+
+
+def drop_into_chat(server_url: str) -> None:
+    """``exec`` into ``dan-chat`` connected to *server_url*."""
+    os.execvp(
+        sys.executable,
+        [sys.executable, "-m", "dan.cli.chat", "--server", server_url],
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="dan-up",
+        description="Start DAN server (if needed) and drop into dan-chat.",
+    )
+    parser.add_argument(
+        "--port", type=int, default=8000, help="Server port (default: 8000)"
+    )
+    args = parser.parse_args()
+    port: int = args.port
+    lock_handle = acquire_start_lock()
+    if lock_handle is None:
+        print("dan-up is already running in another terminal.", file=sys.stderr)
+        sys.exit(1)
+
+    server_url: str | None = None
+    try:
+        pid, existing_port = read_pid_file()
+        if pid and is_process_alive(pid) and check_health(existing_port or port):
+            resolved_port = existing_port or port
+            print(f"DAN server already running (PID {pid}, port {resolved_port})")
+            server_url = f"http://127.0.0.1:{resolved_port}"
+        else:
+            if pid:
+                remove_pid_file()
+
+            print(f"Starting DAN server on port {port}...")
+            new_pid = start_server(port)
+            write_pid_file(new_pid, port)
+
+            if wait_for_health(port):
+                print(f"Server ready (PID {new_pid})")
+                server_url = f"http://127.0.0.1:{port}"
+            else:
+                print("Server failed to start within timeout.", file=sys.stderr)
+                print(f"Check logs: {LOGS_DIR / 'server.log'}", file=sys.stderr)
+                if is_process_alive(new_pid):
+                    try:
+                        os.kill(new_pid, signal.SIGTERM)
+                        for _ in range(20):
+                            time.sleep(0.25)
+                            if not is_process_alive(new_pid):
+                                break
+                        if is_process_alive(new_pid):
+                            os.kill(new_pid, signal.SIGKILL)
+                    except OSError:
+                        pass
+                remove_pid_file()
+                sys.exit(1)
+    finally:
+        release_start_lock(lock_handle)
+
+    if server_url:
+        drop_into_chat(server_url)
+
+
+if __name__ == "__main__":
+    main()

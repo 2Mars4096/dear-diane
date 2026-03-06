@@ -705,6 +705,11 @@ async def _run_server_mode(
 ) -> int:
     """Run workflow via DanClientOrLocal in server mode."""
     from dan.engine.events import EngineEvent
+    try:
+        from dan.notifications.terminal import maybe_ring_on_event
+    except Exception:
+        def maybe_ring_on_event(event_type: str) -> None:  # type: ignore[no-redef]
+            _ = event_type
 
     if source_type == "nl":
         result = await client.dispatch(
@@ -726,6 +731,7 @@ async def _run_server_mode(
     async for raw_event in client.subscribe_run(run_id):
         event = EngineEvent.from_dict(raw_event)
         display.handle_event(event)
+        maybe_ring_on_event(event.event_type.value)
 
         if event.event_type.value == "human_input_needed" and interactive:
             data = event.data or {}
@@ -899,6 +905,11 @@ async def _run_graph(
 ) -> int:
     """Execute a loaded Graph and return exit code."""
     from dan.engine import Engine, EngineConfig, AutoRenderer
+    try:
+        from dan.notifications.terminal import maybe_ring_on_event
+    except Exception:
+        def maybe_ring_on_event(event_type: str) -> None:  # type: ignore[no-redef]
+            _ = event_type
 
     engine_config = EngineConfig(
         llm_api_key=cfg["api_key"],
@@ -917,6 +928,9 @@ async def _run_graph(
     async def event_cb(event: Any) -> None:
         if _shutdown_requested:
             return
+        event_type = getattr(getattr(event, "event_type", None), "value", "")
+        if isinstance(event_type, str) and event_type:
+            maybe_ring_on_event(event_type)
         display.handle_event(event)
 
     engine = Engine(

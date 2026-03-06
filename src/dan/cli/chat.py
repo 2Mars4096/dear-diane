@@ -8,10 +8,13 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import re
-import readline  # noqa: F401 — enables arrow-key editing, history, word-skip in input()
+import readline
+import threading
 import time as _time
 import sys
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 import httpx
@@ -163,9 +166,9 @@ class ChatClient:
         return True
 
     async def cancel_run(self, run_id: str) -> bool:
-        """POST /api/runs/{run_id}/cancel."""
+        """POST /api/gateway/cancel."""
         http = await self._get_http()
-        resp = await http.post(f"/api/runs/{run_id}/cancel")
+        resp = await http.post("/api/gateway/cancel", json={"run_id": run_id})
         return resp.status_code == 200
 
     async def list_graphs(self) -> list[dict[str, Any]]:
@@ -207,6 +210,67 @@ class ChatClient:
 
 
 _MAX_HISTORY_MESSAGES = 40
+
+# ── Readline chat history (up/down arrow) ──────────────────────────
+
+_HISTORY_FILE = Path.home() / ".dan" / "chat_history"
+_MAX_READLINE_HISTORY = 500
+
+
+def _load_readline_history() -> None:
+    """Load previous chat inputs so up/down arrows recall them."""
+    try:
+        _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if _HISTORY_FILE.exists():
+            readline.read_history_file(str(_HISTORY_FILE))
+    except (OSError, PermissionError):
+        pass
+    readline.set_history_length(_MAX_READLINE_HISTORY)
+
+
+def _save_readline_history() -> None:
+    try:
+        _HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _HISTORY_FILE.with_suffix(".tmp")
+        readline.write_history_file(str(tmp))
+        tmp.replace(_HISTORY_FILE)
+    except (OSError, PermissionError):
+        pass
+
+
+# ── Message queue (type while LLM is streaming) ───────────────────
+
+class _InputQueue:
+    """Non-blocking input reader: collects lines typed while the LLM streams."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue[str | None] = queue.Queue()
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+
+    def drain(self) -> list[str]:
+        """Return all queued messages (non-blocking)."""
+        items: list[str] = []
+        while True:
+            try:
+                item = self._queue.get_nowait()
+                if item is not None:
+                    items.append(item)
+            except queue.Empty:
+                break
+        return items
+_MAX_UNDO_DEPTH = 10
+
+_undo_stack: list[tuple[str, dict]] = []  # (graph_revision, graph_dict)
+
+_GRAPH_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
+
+
+def _is_valid_graph_id(graph_id: str) -> bool:
+    return bool(graph_id) and ".." not in graph_id and "/" not in graph_id and _GRAPH_ID_RE.match(graph_id) is not None
+
+
+_INVALID_ID_MSG = "Invalid workflow ID: must be alphanumeric with ._- only (max 64 chars)"
 
 
 def _format_mutation_summary(plan: dict[str, Any]) -> str:
@@ -310,14 +374,124 @@ def _format_workflow_list(graphs: list[dict[str, Any]], current_id: str) -> str:
     return "\n".join(lines)
 
 
+def _select_resume_workflow(
+    choice: str,
+    candidate_ids: list[str],
+    *,
+    default_workflow_id: str,
+) -> str:
+    """Resolve startup resume choice to a workflow ID."""
+    normalized = choice.strip().lower()
+    if normalized in ("", "new", "n"):
+        return default_workflow_id
+    if normalized.isdigit():
+        idx = int(normalized) - 1
+        if 0 <= idx < len(candidate_ids):
+            return candidate_ids[idx]
+    return default_workflow_id
+
+
+def _record_recent_workflow(
+    profile: Any | None,
+    workflow_id: str,
+    *,
+    profile_path: Path | None = None,
+) -> None:
+    """Persist workflow recency in UserProfile when available."""
+    if profile is None or not workflow_id or workflow_id == "_scratch":
+        return
+    try:
+        from dan.engine.user_profile import save_user_profile
+
+        profile.touch_workflow(workflow_id)
+        save_user_profile(profile, profile_path)
+    except Exception:
+        logger.debug("Failed to update recent workflows for %s", workflow_id, exc_info=True)
+
+
+def _format_relative_age(seconds: float) -> str:
+    if seconds < 3600:
+        return f"{max(1, int(seconds / 60))}m ago"
+    if seconds < 86400:
+        return f"{int(seconds / 3600)}h ago"
+    return f"{int(seconds / 86400)}d ago"
+
+
+async def _maybe_prompt_resume_workflow(
+    client: Any,
+    workflow_id: str,
+    profile: Any | None,
+) -> str:
+    """Offer quick-resume from recent workflows when starting from scratch."""
+    if workflow_id != "_scratch" or profile is None:
+        return workflow_id
+    recent_workflows = list(getattr(profile, "recent_workflows", []) or [])
+    if not recent_workflows:
+        return workflow_id
+
+    try:
+        graphs = await client.list_graphs()
+        available_ids = {
+            str(g.get("graph_id", ""))
+            for g in graphs
+            if isinstance(g, dict) and g.get("graph_id")
+        }
+    except Exception:
+        available_ids = set()
+
+    if not available_ids:
+        return workflow_id
+
+    candidates: list[Any] = []
+    for item in recent_workflows:
+        wid = str(getattr(item, "workflow_id", "") or "")
+        if not wid or wid == "_scratch" or wid not in available_ids:
+            continue
+        candidates.append(item)
+        if len(candidates) >= 5:
+            break
+    if not candidates:
+        return workflow_id
+
+    print("Recent workflows:")
+    now = _time.time()
+    for idx, item in enumerate(candidates, start=1):
+        wid = str(getattr(item, "workflow_id", ""))
+        opened_at = float(getattr(item, "opened_at", now) or now)
+        age = max(0.0, now - opened_at)
+        print(f"  ({idx}) {wid} [{_format_relative_age(age)}]")
+
+    try:
+        raw = input("Resume? [1-5/new] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print("")
+        return workflow_id
+
+    candidate_ids = [str(getattr(item, "workflow_id", "")) for item in candidates]
+    return _select_resume_workflow(
+        raw,
+        candidate_ids,
+        default_workflow_id=workflow_id,
+    )
+
+
 async def _run_repl(
     client: ChatClient,
     workflow_id: str,
     mode: str,
+    *,
+    confirm_mode: bool = False,
+    profile: Any | None = None,
+    profile_path: Path | None = None,
 ) -> None:
     """REPL loop: read input, POST message, stream WS events, handle mutations."""
+    _undo_stack.clear()
+    _load_readline_history()
+    msg_queue = _InputQueue()
     history: list[dict[str, str]] = []
     client_graph_revision: str | None = None
+    preference_extractor: Any | None = None
+    preference_suggestion_shown = False
 
     Console = None
     try:
@@ -327,11 +501,112 @@ async def _run_repl(
 
     console = Console() if Console else None
 
+    try:
+        from dan.notifications.terminal import maybe_ring_on_event
+    except Exception:
+        def maybe_ring_on_event(event_type: str) -> None:  # type: ignore[no-redef]
+            _ = event_type
+
     def _print(text: str, style: str | None = None) -> None:
         if console and style:
             console.print(text, style=style)
         else:
             print(text)
+
+    def _mark_workflow_recent(wid: str) -> None:
+        _record_recent_workflow(profile, wid, profile_path=profile_path)
+
+    if profile is not None:
+        try:
+            from dan.engine.preference_extractor import PreferenceExtractor
+
+            preference_extractor = PreferenceExtractor()
+        except Exception:
+            logger.debug("PreferenceExtractor unavailable in chat CLI", exc_info=True)
+
+    def _count_model_task_mentions(task: str, model: str) -> int:
+        task_keywords = {
+            "drafting": ("draft", "write", "compose", "author"),
+            "review": ("review", "critique", "feedback", "evaluate"),
+            "coding": ("code", "implement", "program", "script", "debug"),
+            "analysis": ("analyze", "research", "investigate", "study"),
+            "summarization": ("summarize", "summary", "condense", "tldr"),
+        }
+        keywords = task_keywords.get(task, (task,))
+        model_lower = model.lower()
+        count = 0
+        for msg in history:
+            if msg.get("role") != "user":
+                continue
+            text = str(msg.get("content", "")).lower()
+            if model_lower in text and any(kw in text for kw in keywords):
+                count += 1
+        return count
+
+    def _maybe_update_profile_preferences() -> None:
+        nonlocal preference_suggestion_shown
+        if profile is None or preference_extractor is None:
+            return
+        changed = False
+        try:
+            extracted = preference_extractor.extract_from_messages(history)
+        except Exception:
+            logger.debug("Preference extraction failed", exc_info=True)
+            return
+
+        domains = extracted.get("domains")
+        output_format = extracted.get("output_format")
+        before_domains = list(getattr(profile, "common_domains", []))
+        before_output = getattr(profile, "preferred_output_format", "")
+        if domains or output_format:
+            profile.merge_preferences(
+                models=None,
+                domains=domains if isinstance(domains, list) else None,
+                output_format=str(output_format) if output_format else None,
+            )
+            changed = (
+                before_domains != list(getattr(profile, "common_domains", []))
+                or before_output != getattr(profile, "preferred_output_format", "")
+            )
+
+        model_candidates = extracted.get("models")
+        if (
+            not preference_suggestion_shown
+            and isinstance(model_candidates, dict)
+            and model_candidates
+        ):
+            for task, model in model_candidates.items():
+                if (
+                    not isinstance(task, str)
+                    or not isinstance(model, str)
+                    or not task
+                    or not model
+                    or task in getattr(profile, "preferred_models", {})
+                ):
+                    continue
+                if _count_model_task_mentions(task, model) < 3:
+                    continue
+                try:
+                    answer = input(
+                        f"You usually use {model} for {task} — set this as default? [Y/n] ",
+                    ).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    answer = "n"
+                    _print("")
+                preference_suggestion_shown = True
+                if answer in ("", "y", "yes"):
+                    profile.preferred_models[task] = model
+                    changed = True
+                    _print(f"Saved preference: {task} -> {model}")
+                break
+
+        if changed:
+            try:
+                from dan.engine.user_profile import save_user_profile
+
+                save_user_profile(profile, profile_path)
+            except Exception:
+                logger.debug("Failed to persist profile preferences", exc_info=True)
 
     def _status() -> None:
         _print(f"dan-chat — workflow: {workflow_id} (mode: {mode})")
@@ -341,29 +616,62 @@ async def _run_repl(
         _print("  /run         Run the workflow (full)")
         _print("  /run-node @[Name](node:id)  Run a single node")
         _print("  /run-subgraph @[Name](subgraph:key)  Run a subgraph")
-        _print("  /show        Show current graph (nodes & edges)")
+        _print("  /show        Show current graph as ASCII DAG")
+        _print("  /show --code Show graph as Python builder DSL")
+        _print("  /show --json Show raw graph JSON")
+        _print("  /show --stats Show graph statistics")
         _print("  /save [name] Save workflow (prompts for name if on _scratch)")
         _print("  /list        List all saved workflows")
         _print("  /open <id>   Open an existing workflow")
         _print("  /saveas <id> Copy workflow to a new ID and switch")
         _print("  /new [id]    Create a new empty workflow")
         _print("  /rename <n>  Rename current workflow's display name")
+        _print("  /undo        Undo last mutation")
         _print("  /exit        Exit the chat")
         _print("  /help        Show this help")
 
+    # Fetch graph on startup for non-scratch workflows
+    if workflow_id != "_scratch":
+        try:
+            graph_data = await client.get_graph(workflow_id)
+            if graph_data is None:
+                _print(f"Workflow '{workflow_id}' not found on server.", style="red" if console else None)
+                return
+            client_graph_revision = _compute_graph_revision(graph_data)
+            _print(f"Loaded workflow: {workflow_id}")
+            _mark_workflow_recent(workflow_id)
+        except RuntimeError as e:
+            _print(f"Error loading workflow: {e}", style="red" if console else None)
+            return
+
     _status()
     _print("Type /help for commands, /exit to quit.")
+    _print("(You can type while the assistant is responding — messages will be queued.)")
     _print("")
 
+    pending_lines: list[str] = []
+
     while True:
-        try:
-            line = input("> ").strip()
-        except (EOFError, KeyboardInterrupt):
-            _print("")
-            break
+        # Process queued messages first (typed while LLM was streaming)
+        if not pending_lines:
+            queued = msg_queue.drain()
+            if queued:
+                pending_lines.extend(queued)
+
+        if pending_lines:
+            line = pending_lines.pop(0)
+            _print(f"[queued] > {line}", style="dim" if console else None)
+        else:
+            try:
+                line = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
+                _print("")
+                break
 
         if not line:
             continue
+
+        readline.add_history(line)
 
         if line == "/exit":
             if workflow_id == "_scratch":
@@ -395,6 +703,7 @@ async def _run_repl(
                         try:
                             g.setdefault("metadata", {})["name"] = save_name
                             await client.create_graph(save_name, g)
+                            _mark_workflow_recent(save_name)
                             _print(f"Saved as '{save_name}'.")
                         except RuntimeError as e:
                             _print(f"Save failed: {e}", style="red" if console else None)
@@ -402,6 +711,21 @@ async def _run_repl(
 
         if line == "/help":
             _help()
+            continue
+
+        # --- /undo ---
+        if line == "/undo":
+            if not _undo_stack:
+                _print("Nothing to undo.")
+            else:
+                prev_rev, prev_graph = _undo_stack.pop()
+                try:
+                    await client.save_graph(workflow_id, prev_graph)
+                    client_graph_revision = prev_rev
+                    _print("Undone. Graph restored to previous state.")
+                except RuntimeError as e:
+                    _print(f"Undo failed: {e}", style="red" if console else None)
+                    _undo_stack.append((prev_rev, prev_graph))  # restore on failure
             continue
 
         # --- /save [name] ---
@@ -426,6 +750,10 @@ async def _run_repl(
                     _print("No name provided — not saved.")
                     continue
 
+            if not _is_valid_graph_id(save_id):
+                _print(_INVALID_ID_MSG, style="red" if console else None)
+                continue
+
             try:
                 current_graph = await client.get_graph(workflow_id)
                 if current_graph is None:
@@ -437,6 +765,8 @@ async def _run_repl(
                 client_graph_revision = _compute_graph_revision(current_graph)
                 history = []
                 mode = "mutate"
+                _undo_stack.clear()
+                _mark_workflow_recent(workflow_id)
                 _print(f"Saved as '{save_id}'.")
                 _status()
             except RuntimeError as e:
@@ -447,7 +777,8 @@ async def _run_repl(
         if line == "/list":
             try:
                 graphs = await client.list_graphs()
-                _print(_format_workflow_list(graphs, workflow_id))
+                from dan.cli.dag_display import format_workflow_table
+                _print(format_workflow_table(graphs, current_id=workflow_id))
             except RuntimeError as e:
                 _print(f"Error: {e}", style="red" if console else None)
             continue
@@ -459,6 +790,9 @@ async def _run_repl(
                 _print("Usage: /open <workflow-id>")
                 continue
             target_id = parts[1].strip()
+            if not _is_valid_graph_id(target_id):
+                _print(_INVALID_ID_MSG, style="red" if console else None)
+                continue
             try:
                 graph_data = await client.get_graph(target_id)
                 if graph_data is None:
@@ -468,6 +802,8 @@ async def _run_repl(
                 client_graph_revision = _compute_graph_revision(graph_data)
                 history = []
                 mode = "build" if workflow_id == "_scratch" else "mutate"
+                _undo_stack.clear()
+                _mark_workflow_recent(workflow_id)
                 _status()
             except RuntimeError as e:
                 _print(f"Error: {e}", style="red" if console else None)
@@ -480,6 +816,9 @@ async def _run_repl(
                 _print("Usage: /saveas <new-workflow-id>")
                 continue
             new_id = parts[1].strip()
+            if not _is_valid_graph_id(new_id):
+                _print(_INVALID_ID_MSG, style="red" if console else None)
+                continue
             try:
                 current_graph = await client.get_graph(workflow_id)
                 if current_graph is None:
@@ -491,6 +830,8 @@ async def _run_repl(
                 client_graph_revision = _compute_graph_revision(current_graph)
                 history = []
                 mode = "mutate"
+                _undo_stack.clear()
+                _mark_workflow_recent(workflow_id)
                 _print(f"Saved and switched to '{new_id}'.")
                 _status()
             except RuntimeError as e:
@@ -501,6 +842,9 @@ async def _run_repl(
         if line == "/new" or line.startswith("/new "):
             parts = line.split(maxsplit=1)
             new_id = parts[1].strip() if len(parts) > 1 and parts[1].strip() else f"workflow-{int(_time.time())}"
+            if not _is_valid_graph_id(new_id):
+                _print(_INVALID_ID_MSG, style="red" if console else None)
+                continue
             try:
                 result = await client.create_graph(new_id)
                 workflow_id = new_id
@@ -508,6 +852,8 @@ async def _run_repl(
                 client_graph_revision = _compute_graph_revision(new_data)
                 history = []
                 mode = "build"
+                _undo_stack.clear()
+                _mark_workflow_recent(workflow_id)
                 _print(f"Created '{new_id}'.")
                 _status()
             except RuntimeError as e:
@@ -533,16 +879,28 @@ async def _run_repl(
                 _print(f"Error: {e}", style="red" if console else None)
             continue
 
-        # --- /show ---
-        if line == "/show":
+        # --- /show [--code|--json|--stats] ---
+        if line == "/show" or line.startswith("/show "):
+            flags = line[5:].strip()
             try:
                 graph_data = await client.get_graph(workflow_id)
                 if graph_data is None:
                     _print("No graph found (not yet created).")
+                elif flags == "--code":
+                    from dan.builder import decompile
+                    from dan.models.graph import Graph
+                    g = Graph.model_validate(graph_data)
+                    _print(decompile(g))
+                elif flags == "--json":
+                    _print(json.dumps(graph_data, indent=2))
+                elif flags == "--stats":
+                    from dan.cli.dag_display import render_stats
+                    _print(render_stats(graph_data))
                 else:
+                    from dan.cli.dag_display import render_dag
                     _print(f"  Workflow ID: {workflow_id}")
-                    _print(_format_graph_summary(graph_data))
-            except RuntimeError as e:
+                    _print(render_dag(graph_data))
+            except Exception as e:
                 _print(f"Error: {e}", style="red" if console else None)
             continue
 
@@ -583,140 +941,238 @@ async def _run_repl(
         if len(history) > _MAX_HISTORY_MESSAGES:
             history = history[-_MAX_HISTORY_MESSAGES:]
 
-        # Stream events
+        # Stream events (accept queued input in background)
         accumulated = ""
         mutation_plan: dict[str, Any] | None = None
         mutation_dry_run: dict[str, Any] | None = None
         pending_mutation_graph_id: str | None = None
 
+        bg_stop = threading.Event()
+        bg_pause = threading.Event()
+        stdin_lock = threading.Lock()
+
+        def _bg_reader() -> None:
+            """Read lines in background while LLM streams; feed into msg_queue."""
+            while not bg_stop.is_set():
+                try:
+                    if bg_pause.is_set():
+                        if bg_stop.wait(0.05):
+                            return
+                        continue
+                    if bg_stop.wait(0.05):
+                        return
+                    if sys.stdin.closed:
+                        return
+                    import select
+                    with stdin_lock:
+                        ready, _, _ = select.select([sys.stdin], [], [], 0.1)
+                        if ready:
+                            raw = sys.stdin.readline()
+                            if raw:
+                                stripped = raw.strip()
+                                if stripped:
+                                    msg_queue._queue.put(stripped)
+                except Exception:
+                    return
+
+        bg_thread = threading.Thread(target=_bg_reader, daemon=True)
+        bg_thread.start()
+
+        pending_stream_ids: list[str] = [stream_channel_id]
+        seen_stream_ids: set[str] = set()
         try:
-            async for event in client.stream_chat_events(stream_channel_id):
-                if event is None:
-                    break
+            while pending_stream_ids:
+                current_stream_id = pending_stream_ids.pop(0)
+                if current_stream_id in seen_stream_ids:
+                    continue
+                seen_stream_ids.add(current_stream_id)
 
-                ev_type = event.get("type", "")
-
-                if ev_type == "chat_token":
-                    delta = event.get("delta", "")
-                    if delta:
-                        print(delta, end="", flush=True)
-                        accumulated += delta
-
-                elif ev_type == "chat_complete":
-                    if accumulated:
-                        print()  # newline after stream
-                    history.append({"role": "assistant", "content": accumulated})
-                    if len(history) > _MAX_HISTORY_MESSAGES:
-                        history = history[-_MAX_HISTORY_MESSAGES:]
-                    rev = event.get("graph_revision")
-                    if rev:
-                        client_graph_revision = rev
-                    break
-
-                elif ev_type == "chat_error":
-                    err = event.get("error", "Unknown error")
-                    _print(f"\nError: {err}", style="red" if console else None)
-                    break
-
-                elif ev_type == "chat_mutation":
-                    if accumulated:
-                        print()
-                    mutation_plan = event.get("mutation_plan")
-                    dry_run = event.get("dry_run_result", {})
-                    mutation_dry_run = dry_run if isinstance(dry_run, dict) else None
-                    if mutation_plan:
-                        _print("\n--- Mutation proposed ---")
-                        _print(_format_mutation_summary(mutation_plan))
-                        if dry_run:
-                            errs = dry_run.get("errors", [])
-                            if errs:
-                                _print("Dry-run issues:", style="yellow" if console else None)
-                                for e in errs[:3]:
-                                    _print(f"  - {e.get('message', e)}")
-                        pending_mutation_graph_id = workflow_id
-
-                elif ev_type == "chat_run_event":
-                    re = event.get("run_event", {})
-                    summary = re.get("summary", "")
-                    run_event_type = re.get("event_type", "")
-
-                    if run_event_type == "human_input_needed" and active_run_id:
-                        detail = re.get("detail", {})
-                        evt_data = detail.get("data", {})
-                        request_id = evt_data.get("request_id")
-                        render_mode = evt_data.get("render_mode", "text")
-                        prompt_text = evt_data.get("prompt", "Input required:")
-                        _print(f"\n{prompt_text}")
-                        try:
-                            loop = asyncio.get_running_loop()
-                            if render_mode == "approval":
-                                raw = await asyncio.wait_for(
-                                    loop.run_in_executor(None, lambda: input("[Y/n] ")),
-                                    timeout=300,
-                                )
-                                answer = raw.strip().lower() if raw else "y"
-                                approved = answer in ("y", "yes", "true", "1", "approve", "")
-                                hi_response = {
-                                    "approved": approved,
-                                    "response": "approve" if approved else "reject",
-                                }
-                            else:
-                                user_input = await asyncio.wait_for(
-                                    loop.run_in_executor(None, lambda: input("> ")),
-                                    timeout=300,
-                                )
-                                hi_response = {"response": user_input}
-                            if request_id:
-                                ok = await client.submit_human_input(
-                                    active_run_id, request_id, hi_response,
-                                )
-                                if not ok:
-                                    _print("Input request expired.", style="yellow" if console else None)
-                            else:
-                                _print("Missing request_id — cannot submit input.", style="red" if console else None)
-                        except asyncio.TimeoutError:
-                            _print("\nInput timed out.", style="yellow" if console else None)
-                            await client.cancel_run(active_run_id)
-                        except (EOFError, KeyboardInterrupt):
-                            _print("")
-                            await client.cancel_run(active_run_id)
-                    elif summary:
-                        _print(summary)
-
-                    if run_event_type in ("run_completed", "run_failed", "run_cancelled"):
+                async for event in client.stream_chat_events(current_stream_id):
+                    if event is None:
                         break
+
+                    ev_type = event.get("type", "")
+
+                    if ev_type == "chat_token":
+                        delta = event.get("delta", "")
+                        if delta:
+                            print(delta, end="", flush=True)
+                            accumulated += delta
+
+                    elif ev_type == "chat_complete":
+                        complete_content = accumulated or str(event.get("content", "") or "")
+                        if accumulated:
+                            print()  # newline after streamed tokens
+                        elif complete_content:
+                            _print(complete_content)
+                        if complete_content:
+                            history.append({"role": "assistant", "content": complete_content})
+                            if len(history) > _MAX_HISTORY_MESSAGES:
+                                history = history[-_MAX_HISTORY_MESSAGES:]
+                        rev = event.get("graph_revision")
+                        if rev:
+                            client_graph_revision = rev
+                        handoff_stream_id = event.get("stream_channel_id")
+                        if (
+                            isinstance(handoff_stream_id, str)
+                            and handoff_stream_id
+                            and handoff_stream_id not in seen_stream_ids
+                        ):
+                            pending_stream_ids.append(handoff_stream_id)
+                        break
+
+                    elif ev_type == "chat_error":
+                        err = event.get("error", "Unknown error")
+                        _print(f"\nError: {err}", style="red" if console else None)
+                        break
+
+                    elif ev_type == "chat_mutation":
+                        if accumulated:
+                            print()
+                        mutation_plan = event.get("mutation_plan")
+                        dry_run = event.get("dry_run_result", {})
+                        mutation_dry_run = dry_run if isinstance(dry_run, dict) else None
+                        if mutation_plan:
+                            _print("\n--- Mutation proposed ---")
+                            from dan.cli.mutation_diff import format_mutation_diff
+                            _print(format_mutation_diff(mutation_plan))
+                            if dry_run:
+                                errs = dry_run.get("errors", [])
+                                if errs:
+                                    _print("Dry-run issues:", style="yellow" if console else None)
+                                    for e in errs[:3]:
+                                        _print(f"  - {e.get('message', e)}")
+                            pending_mutation_graph_id = workflow_id
+
+                    elif ev_type == "chat_run_event":
+                        re = event.get("run_event", {})
+                        summary = re.get("summary", "")
+                        run_event_type = re.get("event_type", "")
+                        maybe_ring_on_event(run_event_type)
+
+                        detail = re.get("detail", {}) if isinstance(re.get("detail"), dict) else {}
+                        detail_run_id = detail.get("run_id")
+                        if not active_run_id and isinstance(detail_run_id, str) and detail_run_id:
+                            active_run_id = detail_run_id
+
+                        if run_event_type == "human_input_needed" and active_run_id:
+                            evt_data = detail.get("data", {}) if isinstance(detail.get("data"), dict) else {}
+                            request_id = evt_data.get("request_id")
+                            render_mode = evt_data.get("render_mode", "text")
+                            prompt_text = evt_data.get("prompt", "Input required:")
+                            _print(f"\n{prompt_text}")
+                            bg_pause.set()
+                            try:
+                                loop = asyncio.get_running_loop()
+
+                                def _input_approval() -> str:
+                                    with stdin_lock:
+                                        return input("[Y/n] ")
+
+                                def _input_text() -> str:
+                                    with stdin_lock:
+                                        return input("> ")
+
+                                if render_mode == "approval":
+                                    raw = await asyncio.wait_for(
+                                        loop.run_in_executor(None, _input_approval),
+                                        timeout=300,
+                                    )
+                                    answer = raw.strip().lower() if raw else "y"
+                                    approved = answer in ("y", "yes", "true", "1", "approve", "")
+                                    hi_response = {
+                                        "approved": approved,
+                                        "response": "approve" if approved else "reject",
+                                    }
+                                else:
+                                    user_input = await asyncio.wait_for(
+                                        loop.run_in_executor(None, _input_text),
+                                        timeout=300,
+                                    )
+                                    hi_response = {"response": user_input}
+                                if request_id:
+                                    ok = await client.submit_human_input(
+                                        active_run_id, request_id, hi_response,
+                                    )
+                                    if not ok:
+                                        _print("Input request expired.", style="yellow" if console else None)
+                                else:
+                                    _print("Missing request_id — cannot submit input.", style="red" if console else None)
+                            except asyncio.TimeoutError:
+                                _print("\nInput timed out.", style="yellow" if console else None)
+                                await client.cancel_run(active_run_id)
+                            except (EOFError, KeyboardInterrupt):
+                                _print("")
+                                await client.cancel_run(active_run_id)
+                            finally:
+                                bg_pause.clear()
+                        elif summary:
+                            _print(summary)
+
+                        if run_event_type in ("run_completed", "run_failed", "run_cancelled"):
+                            break
 
         except Exception as e:
             _print(f"\nStream error: {e}", style="red" if console else None)
+        finally:
+            bg_stop.set()
+            bg_thread.join(timeout=1.0)
 
-        # Mutation confirmation
+        # Mutation confirmation / auto-apply
         if mutation_plan and pending_mutation_graph_id:
             if not _should_prompt_apply(mutation_dry_run):
                 _print(
                     "Skipping apply: dry-run failed. Send a follow-up message to repair the plan.",
                     style="yellow" if console else None,
                 )
-            elif _prompt_apply_mutation():
-                try:
-                    result = await client.apply_mutation(
-                        pending_mutation_graph_id,
-                        mutation_plan,
-                    )
-                    if result.get("success"):
-                        _print("Mutation applied.")
-                        if result.get("graph_revision"):
-                            client_graph_revision = result["graph_revision"]
-                        else:
-                            new_graph = result.get("new_graph")
-                            if new_graph and isinstance(new_graph, dict):
-                                client_graph_revision = _compute_graph_revision(new_graph)
-                    else:
+            else:
+                # Dry-run passed — snapshot for undo, then apply (prompt in confirm mode)
+
+                async def _do_apply() -> bool:
+                    nonlocal client_graph_revision
+                    pre_graph = await client.get_graph(pending_mutation_graph_id)
+                    if pre_graph is None:
+                        return False
+                    rev = _compute_graph_revision(pre_graph)
+                    snapshot = json.loads(json.dumps(pre_graph))  # deep copy
+                    _undo_stack.append((rev, snapshot))
+                    if len(_undo_stack) > _MAX_UNDO_DEPTH:
+                        _undo_stack.pop(0)
+                    try:
+                        result = await client.apply_mutation(
+                            pending_mutation_graph_id,
+                            mutation_plan,
+                        )
+                        if result.get("success"):
+                            if result.get("graph_revision"):
+                                client_graph_revision = result["graph_revision"]
+                            else:
+                                new_graph = result.get("new_graph")
+                                if new_graph and isinstance(new_graph, dict):
+                                    client_graph_revision = _compute_graph_revision(new_graph)
+                            return True
                         errs = result.get("errors", [])
                         _print(f"Apply failed: {errs}", style="red" if console else None)
-                except RuntimeError as e:
-                    _print(f"Apply failed: {e}", style="red" if console else None)
-            else:
-                _print("Mutation rejected.")
+                        _undo_stack.pop()  # remove snapshot since we didn't apply
+                        return False
+                    except RuntimeError as e:
+                        _print(f"Apply failed: {e}", style="red" if console else None)
+                        _undo_stack.pop()
+                        return False
+
+                if confirm_mode:
+                    if _prompt_apply_mutation():
+                        applied = await _do_apply()
+                        if applied:
+                            _print("Mutation applied.")
+                    else:
+                        _print("Mutation rejected.")
+                else:
+                    applied = await _do_apply()
+                    if applied:
+                        _print("Applied.")
+
+        _maybe_update_profile_preferences()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -742,9 +1198,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--mode",
-        default="build",
+        default=None,
         choices=["build", "mutate", "agent", "ask", "plan", "debug", "auto"],
-        help="Chat mode (default: build for scratch)",
+        help="Chat mode (default: build for scratch, mutate for existing workflows)",
+    )
+    p.add_argument(
+        "--local",
+        action="store_true",
+        help="Force local mode (no server required)",
+    )
+    p.add_argument(
+        "--confirm",
+        action="store_true",
+        default=False,
+        help="Require explicit approval for mutations",
     )
     return p
 
@@ -758,28 +1225,83 @@ def main() -> None:
 
     workflow_id = "_scratch" if args.scratch else args.workflow_id
     mode = args.mode
+    if mode is None:
+        mode = "build" if workflow_id == "_scratch" else "mutate"
     if workflow_id == "_scratch" and mode == "agent":
-        mode = "build"  # Scratch defaults to build-from-scratch
+        mode = "build"
 
+    confirm_mode = args.confirm or os.environ.get("DAN_MUTATION_CONFIRM", "").strip() == "1"
+    force_local = args.local
     base_url = args.server or os.environ.get("DAN_SERVER_URL") or _DEFAULT_URL
 
     async def _main() -> None:
-        client = ChatClient(base_url=base_url)
-        try:
+        client: Any
+        profile: Any | None = None
+        profile_path: Path | None = None
+
+        if force_local:
+            from dan.cli.chat_local import LocalChatRuntime
+            client = LocalChatRuntime()
+            print("dan-chat — local mode (no server)")
+        else:
+            client = ChatClient(base_url=base_url)
             ok, err = await client.ping()
             if not ok:
-                msg = (
-                    f"dan-chat: Server unavailable at {base_url}. "
-                    "Start dan-serve first, or set DAN_SERVER_URL / --server. "
-                    "(Tip: use 127.0.0.1 instead of localhost if you see timeouts.)"
-                )
-                if err:
-                    msg += f"\n  Error: {err}"
-                print(msg, file=sys.stderr)
-                sys.exit(1)
+                await client.close()
+                if args.server:
+                    msg = (
+                        f"dan-chat: Server unavailable at {base_url}. "
+                        "Start dan-serve first, or set DAN_SERVER_URL / --server. "
+                        "(Tip: use 127.0.0.1 instead of localhost if you see timeouts.)"
+                    )
+                    if err:
+                        msg += f"\n  Error: {err}"
+                    print(msg, file=sys.stderr)
+                    sys.exit(1)
+                from dan.cli.chat_local import LocalChatRuntime
+                client = LocalChatRuntime()
+                print("dan-chat — local mode (server unavailable)")
 
-            await _run_repl(client, workflow_id, mode)
+        try:
+            try:
+                from dan.engine.user_profile import (
+                    DEFAULT_PROFILE_PATH,
+                    load_user_profile,
+                    save_user_profile,
+                )
+
+                env_profile_path = os.environ.get("DAN_PROFILE_PATH", "").strip()
+                profile_path = (
+                    Path(env_profile_path).expanduser()
+                    if env_profile_path
+                    else DEFAULT_PROFILE_PATH
+                )
+                profile = load_user_profile(profile_path)
+                profile.increment_session()
+                save_user_profile(profile, profile_path)
+            except Exception:
+                logger.debug("UserProfile unavailable in chat CLI", exc_info=True)
+
+            active_workflow_id = workflow_id
+            active_mode = mode
+            active_workflow_id = await _maybe_prompt_resume_workflow(
+                client,
+                active_workflow_id,
+                profile,
+            )
+            if active_workflow_id != "_scratch" and active_mode == "build":
+                active_mode = "mutate"
+
+            await _run_repl(
+                client,
+                active_workflow_id,
+                active_mode,
+                confirm_mode=confirm_mode,
+                profile=profile,
+                profile_path=profile_path,
+            )
         finally:
+            _save_readline_history()
             await client.close()
 
     asyncio.run(_main())

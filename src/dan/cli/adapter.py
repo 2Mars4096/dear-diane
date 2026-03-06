@@ -2,9 +2,14 @@
 
 Usage::
 
-    dan-adapter email   --workflow wf.md --imap-host imap.example.com …
-    dan-adapter telegram --workflow wf.md --bot-token TOKEN
+    # Chat mode (general-purpose, like dan-chat over messaging):
+    dan-adapter telegram --bot-token TOKEN
+    dan-adapter whatsapp-web
+
+    # Workflow mode (run a specific workflow per message):
+    dan-adapter telegram --bot-token TOKEN --workflow wf.md
     dan-adapter whatsapp --workflow wf.md --access-token TOKEN …
+
     dan-adapter --config adapter-config.json
 """
 
@@ -14,6 +19,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
@@ -23,7 +29,203 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Adapter runner — shared async bootstrap
+# Chat stream helpers
+# ---------------------------------------------------------------------------
+
+def _consume_chat_stream_events(
+    events: list[dict[str, Any]],
+) -> tuple[str, dict[str, Any] | None]:
+    """Merge chat stream events into a final reply and optional mutation plan.
+
+    Some chat flows stream incremental ``chat_token`` events, while others
+    return the full assistant text only on ``chat_complete.content``.  The
+    adapter must handle both.
+    """
+    collected: list[str] = []
+    mutation_plan: dict[str, Any] | None = None
+    complete_content = ""
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        evt_type = event.get("type", "")
+        if evt_type == "chat_token":
+            token = event.get("token", "")
+            collected.append(token)
+        elif evt_type == "chat_mutation":
+            mutation_plan = event.get("mutation_plan")
+            desc = ""
+            if mutation_plan:
+                desc = mutation_plan.get("description", "")
+                ops = mutation_plan.get("operations", [])
+                desc = f"{desc}\n({len(ops)} operations)"
+            collected.append(f"\n📋 Mutation proposed: {desc}")
+        elif evt_type == "chat_complete":
+            complete_content = event.get("content", "") or ""
+            break
+
+    full_reply = "".join(collected).strip()
+    complete_content = complete_content.strip()
+    if complete_content and not full_reply:
+        full_reply = complete_content
+    return full_reply, mutation_plan
+
+
+# ---------------------------------------------------------------------------
+# Chat-mode runner — route messages through the server chat API
+# ---------------------------------------------------------------------------
+
+async def _run_adapter_chat_mode(adapter: Any, config: Any) -> None:
+    """Route adapter messages through the dan-serve chat API (like dan-chat).
+
+    Each messaging conversation gets its own workflow (scratch by default).
+    Messages are sent to POST /api/chat/message and streamed responses are
+    relayed back to the messaging user.
+    """
+    import httpx
+
+    server_url = (
+        config.server_url
+        or os.environ.get("DAN_SERVER_URL")
+        or "http://127.0.0.1:8000"
+    ).rstrip("/")
+
+    await adapter.start()
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop_event.set)
+
+    conversation_workflows: dict[str, str] = {}
+    conversation_history: dict[str, list[dict[str, str]]] = {}
+
+    async def _ensure_scratch(http: httpx.AsyncClient, conv_id: str) -> str:
+        """Get or create a per-conversation workflow on the server."""
+        wf_id = conversation_workflows.get(conv_id)
+        if wf_id:
+            return wf_id
+
+        wf_id = f"_adapter_{conv_id[-12:]}"
+        try:
+            resp = await http.get(f"/api/graphs/{wf_id}")
+            if resp.status_code == 404:
+                await http.post(
+                    "/api/graphs",
+                    json={"graph_id": wf_id, "data": {"nodes": [], "edges": []}},
+                )
+        except Exception:
+            pass
+        conversation_workflows[conv_id] = wf_id
+        return wf_id
+
+    async def on_new_message(external_id: str, text: str) -> None:
+        if hasattr(adapter, "register_session"):
+            key = int(external_id) if external_id.isdigit() else external_id
+            adapter.register_session(external_id, key)
+
+        try:
+            async with httpx.AsyncClient(base_url=server_url, timeout=120.0) as http:
+                wf_id = await _ensure_scratch(http, external_id)
+
+                history = conversation_history.get(external_id, [])
+                history.append({"role": "user", "content": text})
+                if len(history) > 40:
+                    history = history[-40:]
+                conversation_history[external_id] = history
+
+                resp = await http.post("/api/chat/message", json={
+                    "workflow_id": wf_id,
+                    "message": text,
+                    "history": history,
+                    "mode": "auto",
+                })
+                if resp.status_code != 200:
+                    await adapter.send_prompt(external_id, f"Error: {resp.text}", None)
+                    return
+
+                payload = resp.json()
+                channel_id = payload.get("stream_channel_id")
+                if not channel_id:
+                    content = payload.get("content", "")
+                    if content:
+                        await adapter.send_prompt(external_id, content, None)
+                        history.append({"role": "assistant", "content": content})
+                    return
+
+                stream_events: list[dict[str, Any]] = []
+
+                try:
+                    import websockets
+                    ws_url = server_url.replace("http://", "ws://").replace("https://", "wss://")
+                    url = f"{ws_url}/api/chat/{channel_id}/events"
+                    async with websockets.connect(url) as ws:
+                        async for msg in ws:
+                            event = json.loads(msg)
+                            if isinstance(event, dict):
+                                stream_events.append(event)
+                            if isinstance(event, dict) and event.get("type") == "chat_complete":
+                                break
+                except ImportError:
+                    stream_events.append({
+                        "type": "chat_complete",
+                        "content": "(streaming unavailable — websockets not installed)",
+                    })
+                except Exception as ws_exc:
+                    logger.debug("WS stream error: %s", ws_exc)
+
+                full_reply, mutation_plan = _consume_chat_stream_events(stream_events)
+
+                if mutation_plan and config.auto_approve:
+                    try:
+                        apply_resp = await http.post(
+                            f"/api/graphs/{wf_id}/apply-mutation",
+                            json={"mutation_plan": mutation_plan},
+                        )
+                        if apply_resp.status_code == 200:
+                            full_reply += "\n\n✅ Mutation applied."
+                        else:
+                            full_reply += f"\n\n❌ Apply failed: {apply_resp.text[:200]}"
+                    except Exception as apply_exc:
+                        full_reply += f"\n\n❌ Apply error: {apply_exc}"
+                elif mutation_plan:
+                    full_reply += "\n\n(Reply 'apply' to apply, or describe changes.)"
+
+                if full_reply:
+                    await adapter.send_prompt(external_id, full_reply, None)
+                    history.append({"role": "assistant", "content": full_reply})
+
+        except Exception:
+            logger.exception("Chat-mode message handling failed for %s", external_id)
+            try:
+                await adapter.send_prompt(external_id, config.error_message, None)
+            except Exception:
+                pass
+
+    adapter.set_message_callback(on_new_message)
+
+    _print_status_chat(config, server_url)
+    await stop_event.wait()
+    await adapter.stop()
+
+
+def _print_status_chat(config: Any, server_url: str) -> None:
+    try:
+        from rich.console import Console
+        from rich.panel import Panel
+        console = Console()
+        console.print(Panel(
+            f"[bold green]Adapter running (chat mode)[/]\n"
+            f"Server: {server_url}\n"
+            f"Send any message to start chatting with DAN.",
+            title="dan-adapter",
+        ))
+    except ImportError:
+        print(f"dan-adapter: running in chat mode (server={server_url})")
+
+
+# ---------------------------------------------------------------------------
+# Workflow-mode runner — run a specific workflow per message (legacy)
 # ---------------------------------------------------------------------------
 
 async def _run_adapter(adapter: Any, renderer: Any, config: Any) -> None:
@@ -106,7 +308,7 @@ def _print_status(config: Any) -> None:
 
         console = Console()
         console.print(Panel(
-            f"[bold green]Adapter running[/]\n"
+            f"[bold green]Adapter running (workflow mode)[/]\n"
             f"Workflow: {config.workflow_path}\n"
             f"Trigger:  {config.trigger_mode}",
             title="dan-adapter",
@@ -120,7 +322,10 @@ def _print_status(config: Any) -> None:
 # ---------------------------------------------------------------------------
 
 def _add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--workflow", "-w", required=True, help="Path to workflow .md file")
+    parser.add_argument(
+        "--workflow", "-w", default=None,
+        help="Path to workflow file. When omitted, runs in chat mode (like dan-chat over messaging).",
+    )
     parser.add_argument("--timeout", type=float, default=300, help="Response timeout (seconds)")
     parser.add_argument(
         "--trigger-mode", choices=["keyword", "always", "pattern"], default="always",
@@ -128,6 +333,10 @@ def _add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--trigger-pattern", default=None)
     parser.add_argument("--welcome-message", default=None)
     parser.add_argument("--error-message", default=None)
+    parser.add_argument(
+        "--server", default=None,
+        help="DAN server URL for chat mode (default: $DAN_SERVER_URL or http://127.0.0.1:8000)",
+    )
 
 
 def _build_email_parser(sub: Any) -> None:
@@ -167,6 +376,14 @@ def _build_whatsapp_parser(sub: Any) -> None:
     p.set_defaults(adapter_type="whatsapp")
 
 
+def _build_whatsapp_web_parser(sub: Any) -> None:
+    p = sub.add_parser("whatsapp-web", help="Start WhatsApp Web adapter (personal QR pairing)")
+    _add_common_args(p)
+    p.add_argument("--db-path", default="", help="SQLite DB path for session (default: ~/.dan/whatsapp-web/session.sqlite3)")
+    p.add_argument("--allowed-jids", nargs="*", default=[], help="Restrict to these phone JIDs (e.g. 1234567890)")
+    p.set_defaults(adapter_type="whatsapp-web")
+
+
 # ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
@@ -188,6 +405,9 @@ def _load_from_config_file(path: str) -> tuple[str, Any]:
     elif adapter_type == "whatsapp":
         from dan.adapters.whatsapp_adapter import WhatsAppAdapterConfig
         return adapter_type, WhatsAppAdapterConfig(**data)
+    elif adapter_type == "whatsapp-web":
+        from dan.adapters.whatsapp_web_adapter import WhatsAppWebAdapterConfig
+        return adapter_type, WhatsAppWebAdapterConfig(**data)
     else:
         print(f"Error: unknown adapter_type '{adapter_type}'", file=sys.stderr)
         sys.exit(1)
@@ -196,8 +416,8 @@ def _load_from_config_file(path: str) -> tuple[str, Any]:
 def _build_config_from_args(args: argparse.Namespace) -> tuple[str, Any]:
     """Build a typed config from parsed CLI arguments."""
     adapter_type = args.adapter_type
-    common = {
-        "workflow_path": args.workflow,
+    common: dict[str, Any] = {
+        "workflow_path": args.workflow or "",
         "timeout": args.timeout,
         "trigger_mode": args.trigger_mode,
     }
@@ -207,6 +427,8 @@ def _build_config_from_args(args: argparse.Namespace) -> tuple[str, Any]:
         common["welcome_message"] = args.welcome_message
     if args.error_message:
         common["error_message"] = args.error_message
+    if getattr(args, "server", None):
+        common["server_url"] = args.server
 
     if adapter_type == "email":
         from dan.adapters.email_adapter import EmailAdapterConfig
@@ -242,6 +464,13 @@ def _build_config_from_args(args: argparse.Namespace) -> tuple[str, Any]:
             verify_token=args.verify_token,
             app_secret=args.app_secret,
         )
+    elif adapter_type == "whatsapp-web":
+        from dan.adapters.whatsapp_web_adapter import WhatsAppWebAdapterConfig
+        return adapter_type, WhatsAppWebAdapterConfig(
+            **common,
+            db_path=args.db_path,
+            allowed_jids=args.allowed_jids or [],
+        )
     else:
         print(f"Error: unknown adapter type '{adapter_type}'", file=sys.stderr)
         sys.exit(1)
@@ -257,6 +486,9 @@ def _create_adapter(adapter_type: str, config: Any) -> Any:
     elif adapter_type == "whatsapp":
         from dan.adapters.whatsapp_adapter import WhatsAppAdapter
         return WhatsAppAdapter(config)
+    elif adapter_type == "whatsapp-web":
+        from dan.adapters.whatsapp_web_adapter import WhatsAppWebAdapter
+        return WhatsAppWebAdapter(config)
     raise ValueError(f"Unknown adapter type: {adapter_type}")
 
 
@@ -283,6 +515,7 @@ def main() -> None:
     _build_email_parser(sub)
     _build_telegram_parser(sub)
     _build_whatsapp_parser(sub)
+    _build_whatsapp_web_parser(sub)
 
     args = parser.parse_args()
 
@@ -296,8 +529,12 @@ def main() -> None:
 
     adapter = _create_adapter(adapter_type, config)
 
+    chat_mode = not config.workflow_path
     try:
-        asyncio.run(_run_adapter(adapter, None, config))
+        if chat_mode:
+            asyncio.run(_run_adapter_chat_mode(adapter, config))
+        else:
+            asyncio.run(_run_adapter(adapter, None, config))
     except KeyboardInterrupt:
         pass
 
