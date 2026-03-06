@@ -80,9 +80,11 @@ async def _dispatch_text(
     inputs: dict[str, Any] | None,
     auto_approve: bool,
     surface_id: str | None,
+    human_timeout: int | None,
 ) -> DispatchResult:
     """Route text goal through MetaController planner, optionally gate on approval."""
     from dan.models.graph import Graph
+    from pydantic import ValidationError
 
     try:
         from dan.server.app import _build_meta_controller
@@ -108,9 +110,12 @@ async def _dispatch_text(
     workflow_id = exec_result.get("workflow_id", f"meta-{uuid.uuid4().hex[:10]}")
 
     if not isinstance(graph_data, dict):
-        raise HTTPException(500, "Planner did not produce a valid graph")
+        raise HTTPException(422, "Planner produced invalid graph payload")
 
-    graph = Graph.model_validate(graph_data)
+    try:
+        graph = Graph.model_validate(graph_data)
+    except ValidationError as exc:
+        raise HTTPException(422, f"Planner produced invalid graph: {exc}") from exc
     workflow_name = workflow_id
 
     plan_event = {
@@ -134,7 +139,7 @@ async def _dispatch_text(
         )
     else:
         request_id = str(uuid.uuid4())
-        evt = rm.register_meta_approval(request_id)
+        evt = rm.register_meta_approval(request_id, run_id=run_id)
         approval_event = {
             "event_type": "human_input_needed",
             "run_id": run_id,
@@ -158,33 +163,39 @@ async def _dispatch_text(
         rm._runs[run_id] = record
         rm.emit_event_to_run(run_id, approval_event)
 
+        wait_timeout = human_timeout if isinstance(human_timeout, int) and human_timeout > 0 else 300
+
         async def _run_after_approval() -> None:
-            await evt.wait()
-            response = rm._human_input_responses.pop(request_id, {})
-            rm._pending_human_inputs.pop(request_id, None)
+            try:
+                await asyncio.wait_for(evt.wait(), timeout=wait_timeout)
+            except asyncio.TimeoutError:
+                rm.pop_meta_approval_response(request_id)
+                rm.mark_run_cancelled(run_id, reason="approval_timeout")
+                return
+            response = rm.pop_meta_approval_response(request_id)
+            if record.status == RunStatus.CANCELLED or response.get("_cancelled"):
+                return
             approved = response.get("approved", response.get("response") == "approve")
             if not approved:
-                cancel_event = {
-                    "event_type": "run_cancelled",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "data": {"reason": "plan_rejected"},
-                }
-                record.status = RunStatus.CANCELLED
-                record.events.append(cancel_event)
-                for q in rm._subscribers.get(run_id, []):
-                    try:
-                        q.put_nowait(cancel_event)
-                    except asyncio.QueueFull:
-                        pass
-                bus.broadcast(cancel_event)
+                rm.mark_run_cancelled(run_id, reason="plan_rejected")
                 return
-            await rm.start_run(
-                graph=graph,
-                graph_id=workflow_id,
-                inputs=inputs,
-                run_id=run_id,
-            )
+            try:
+                await rm.start_run(
+                    graph=graph,
+                    graph_id=workflow_id,
+                    inputs=inputs,
+                    run_id=run_id,
+                )
+            except Exception as exc:
+                logger.exception("start_run failed after approval for %s", run_id)
+                record.status = RunStatus.FAILED
+                record.error = str(exc)
+                rm.emit_event_to_run(run_id, {
+                    "event_type": "run_failed",
+                    "run_id": run_id,
+                    "error": str(exc),
+                    "timestamp": time.time(),
+                })
 
         task = asyncio.create_task(_run_after_approval())
         _relay_tasks.add(task)
@@ -256,7 +267,7 @@ async def dispatch_workflow(req: DispatchRequest) -> DispatchResult:
 
     elif req.text:
         return await _dispatch_text(
-            rm, tracker, bus, req.text, req.inputs, req.auto_approve, req.surface_id
+            rm, tracker, bus, req.text, req.inputs, req.auto_approve, req.surface_id, req.human_timeout
         )
 
     if graph is None:
