@@ -254,6 +254,16 @@
   - [x] [25-4-run-lifecycle-from-chat](plans/25-4-run-lifecycle-from-chat.md) — D. 9 run lifecycle tools: `start_run`, `get_run_status`, `list_active_runs`, `cancel_run`, `resume_run`, `get_run_logs`, `get_run_checkpoints`, `rerun_from_checkpoint`, `submit_human_input`. Resolved references ("latest", "last_failed", "paused").
   - [x] [25-5-auto-approve-undo](plans/25-5-auto-approve-undo.md) — E. Auto-apply mutations by default, `/undo` command with graph snapshot stack (max 10), `--confirm` flag / `DAN_MUTATION_CONFIRM=1` restores approval prompt.
 
+  - [ ] [25-6-intent-dispatcher](plans/25-6-intent-dispatcher.md) — F. Deterministic intent classifier + dispatcher above `ChatManager`. Classifies every incoming message into one of: `file_request`, `run_control`, `workflow_build`, `workflow_query`, `experience_query`, `publish_share`, `status_check`, `conversation`. Heuristic rules first (fast, no LLM call); LLM fallback only when heuristic is ambiguous. Each intent routes to its registered handler — the LLM never decides which subsystem to call. Acceptance: "send me the late payment doc" always routes to file handler, never to mutation tool.
+    - [ ] 25-6a. Intent taxonomy and heuristic classifier — define the 8 intent categories, keyword/pattern rules for each, confidence threshold for LLM fallback. Unit tests with 30+ example messages covering all categories.
+    - [ ] 25-6b. Handler registry — each intent maps to an async handler function: `FileHandler`, `RunHandler`, `WorkflowBuildHandler`, `ExperienceHandler`, `PublishHandler`, `StatusHandler`, `ConversationHandler`. Handlers wrap existing subsystems (not new logic). `ConversationHandler` delegates to `ChatManager` for LLM response.
+    - [ ] 25-6c. Wire into adapter and `dan-chat` — replace the current "send everything to `/api/chat/message`" path with: classify → dispatch → format result → send to user. The `/api/chat/message` endpoint becomes the `ConversationHandler` backend, not the catch-all.
+    - [ ] 25-6d. File handler — wraps `/find` and `/send` as a handler: parses file-related intents ("send me X", "find the Y doc", "do you have Z"), resolves to local file search, sends via adapter if single match, asks only when multiple matches. No LLM involvement for file ops. *(Temporary adapter-side heuristic + normalized filename matcher shipped in `cli/adapter.py`; server-side concierge version still pending.)*
+    - [ ] 25-6e. Adapter context simplification — remove the long behavioral prompt from adapter. The concierge handles routing; the LLM only sees conversation context for direct Q&A. System prompt becomes minimal: "You are DAN. Answer the user's question about their workflows. Be concise."
+  - [ ] [25-7-action-autonomy-policy](plans/25-7-action-autonomy-policy.md) — G. Define when to act vs. when to ask. Each handler declares its autonomy level: `auto` (execute immediately, report result), `confirm` (show plan, wait for yes/no), `clarify` (ask one short question when genuinely ambiguous). Default is `auto`. Confirmation only when: destructive action (delete workflow, cancel run), multiple ambiguous matches (2+ files found), or high-cost action (>$1 estimated LLM spend). Never ask "would you like me to…?" for routine actions.
+    - [ ] 25-7a. Autonomy model — `ActionPolicy` enum (`auto`, `confirm`, `clarify`) on each handler. `FileHandler.policy = auto` (just send the file). `WorkflowBuildHandler.policy = auto` for simple builds, `confirm` for large mutations. `RunHandler.policy = auto`. Configurable per-user via `UserProfile.action_policy_overrides`.
+    - [ ] 25-7b. Clarification protocol — when a handler needs input, it returns a structured `ClarificationRequest` (question, options if applicable). The concierge sends it and waits for one reply, then re-dispatches. Max one round of clarification per action — no multi-turn interrogation.
+
 ## Phase 16 — Always-On Personal Service
 > Once chat is the unified control plane (Phase 15), make it persistent: always running, always
 > reachable, always remembering. DAN becomes a background service you talk to anytime — from
@@ -267,7 +277,7 @@
   - [x] [26-3-persistent-user-context](plans/26-3-persistent-user-context.md) — C. `UserProfile` model + `PreferenceExtractor` (heuristic) + `ConversationMemoryStore` (keyword search) plus `ChatManager` prompt injection, startup quick-resume, and one-per-session preference suggestions. *(Optional LLM extraction still deferred)*
   - [x] [26-4-notifications](plans/26-4-notifications.md) — D. `NotificationManager` + `MacOSNotifier` + `WebhookNotifier` + `TerminalBellNotifier` + `NotificationConfig`, including `app.py` GlobalEventBus lifecycle wiring.
   - [x] [26-5-rich-cli-display](plans/26-5-rich-cli-display.md) — E. ASCII DAG renderer for `/show` (topological sort, box-drawing). Streaming node-by-node progress during `/run`. Mutation diff display. Rich table for `/list`. `/show --code`/`--json`/`--stats`. Graceful degradation without Rich. (~2 days)
-  - [ ] [26-6-whatsapp-web-adapter](plans/26-6-whatsapp-web-adapter.md) — F. WhatsApp Web adapter for personal use (QR code pairing, no Business API). Implemented: `WhatsAppWebAdapter`, `dan-adapter whatsapp-web`, `neonize` optional dependency, QR pairing docs, and adapter chat-mode wiring. Remaining: live QR smoke test and reviewed mutation-confirmation flow on messaging surfaces.
+  - [x] [26-6-whatsapp-web-adapter](plans/26-6-whatsapp-web-adapter.md) — F. WhatsApp Web adapter for personal use (QR code pairing, no Business API). `WhatsAppWebAdapter` with neonize, QR pairing, LID→phone resolution, self-message echo suppression, chat-mode wiring, `/find` + `/send` file commands, size checks, force-exit handling, adapter context prompt. 16 tests. *(Mutation-confirmation UX on messaging surfaces deferred to 25-7.)*
 
 ## Backlog (unphased)
 
@@ -370,3 +380,7 @@
   - [x] Enforce CRSP formation-month minimum price filter (`|price| >= 1`) across builtin and custom backtests
   - [x] Persist generated custom strategy scripts before execution (`output/scripts/{strategy}.py`) and pass script paths through department outputs
   - [x] Capture generated `build_factor` stdout/stderr and fail fast on empty factor outputs to avoid silent “factor-only/no-plot” runs
+
+### Future vision
+- [ ] **Multi-agent group chat** — multiple DAN agents participating in a shared group conversation on WhatsApp, Telegram, or Discord. Agents coordinate, delegate, and respond in a natural group-chat setting (extends messaging adapters + agent teams).
+- [ ] **In-chat model switching** — let user change LLM model mid-conversation (e.g. `/model gpt-4o`, dropdown in editor chat). Applies to subsequent messages without restarting the thread.
