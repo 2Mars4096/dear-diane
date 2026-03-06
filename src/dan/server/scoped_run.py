@@ -301,9 +301,10 @@ def parse_run_command(text: str) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------------
 
 _CHAT_EVENT_TYPES = frozenset({
-    "run_started", "run_completed", "run_failed",
+    "run_started", "run_completed", "run_failed", "run_cancelled",
     "node_started", "node_completed", "node_failed",
     "node_output", "tool_call_started", "tool_call_result",
+    "human_input_needed",
 })
 
 
@@ -357,6 +358,12 @@ def map_run_event_to_chat_block(
     elif event_type == "tool_call_result":
         tool_name = data.get("tool_id") or data.get("tool_name", "unknown")
         summary = f"Tool '{tool_name}' completed on node '{node_id}'"
+    elif event_type == "run_cancelled":
+        reason = data.get("reason", "cancelled")
+        summary = f"Run cancelled: {reason}"
+    elif event_type == "human_input_needed":
+        prompt = data.get("prompt", "Input required")
+        summary = f"Waiting for input: {prompt}"
     else:
         return None
 

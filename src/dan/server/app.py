@@ -1492,6 +1492,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
             return {
                 "success": True,
                 "new_graph": data,
+                "graph_revision": compute_graph_revision(data),
                 "errors": [],
                 "warnings": [],
                 "diagnostics": [],
@@ -1557,6 +1558,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
 
         mutation_metrics.record_apply(True)
         _graph_store.save_graph(graph_id, result.new_graph)
+        new_revision = compute_graph_revision(result.new_graph)
 
         if req.idempotency_key:
             _applied_mutation_keys.add((graph_id, req.idempotency_key))
@@ -1573,6 +1575,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
         return {
             "success": True,
             "new_graph": result.new_graph,
+            "graph_revision": new_revision,
             "errors": [],
             "warnings": warnings,
             "diagnostics": result.diagnostics,
@@ -1581,6 +1584,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
     else:
         mutation_metrics.record_apply(True)
         _graph_store.save_graph(graph_id, result.new_graph)
+        new_revision = compute_graph_revision(result.new_graph)
 
         if req.idempotency_key:
             _applied_mutation_keys.add((graph_id, req.idempotency_key))
@@ -1597,6 +1601,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
         return {
             "success": True,
             "new_graph": result.new_graph,
+            "graph_revision": new_revision,
             "errors": [],
             "warnings": [],
             "diagnostics": result.diagnostics,
@@ -3177,7 +3182,7 @@ async def _handle_run_command(
                 chat_block = map_run_event_to_chat_block(event, scope, run_target)
                 if chat_block is not None:
                     await queue.put({"type": "chat_run_event", "run_event": chat_block})
-                if event_type in ("run_completed", "run_failed"):
+                if event_type in ("run_completed", "run_failed", "run_cancelled"):
                     break
         except Exception:
             logger.debug("Run event pipe error for %s", record.run_id, exc_info=True)
@@ -3211,6 +3216,7 @@ async def chat_events_ws(websocket: WebSocket, channel_id: str):
             if event is None:
                 break
             await websocket.send_json(event)
+        await websocket.close()
     except WebSocketDisconnect:
         pass
     except Exception:
