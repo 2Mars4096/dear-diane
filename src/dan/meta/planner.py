@@ -11,47 +11,88 @@ import json
 import logging
 import re
 import uuid
+from dataclasses import dataclass, field as dc_field
 from enum import Enum
 from typing import Any, Awaitable, Callable, Literal
+
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from dan.meta.discovery import DiscoveryResult, DiscoveryService
 
+if TYPE_CHECKING:
+    from dan.meta.diagnosis import DiagnosisResult, GenerationError
+    from dan.models.graph import Graph
+
 logger = logging.getLogger(__name__)
 
 _BUILDER_CODE_HARNESS = '''\
-import json, sys, pathlib
+import json, sys, pathlib, traceback
 
 _inputs = json.loads(pathlib.Path("_inputs.json").read_text(encoding="utf-8"))
 if _inputs.get("src_path"):
     sys.path.insert(0, _inputs["src_path"])
 
-# --- user code starts ---
-{{USER_CODE}}
-# --- user code ends ---
+_user_code = _inputs["user_code"]
+_ns = {"__builtins__": __builtins__}
 
-# Expect the user code to assign ``graph`` or call ``build()`` at module level.
+try:
+    _compiled = compile(_user_code, "<builder>", "exec")
+    exec(_compiled, _ns)
+except SyntaxError as _exc:
+    pathlib.Path("_result.json").write_text(json.dumps({
+        "error": {
+            "type": "SyntaxError",
+            "message": str(_exc),
+            "line": _exc.lineno,
+        }
+    }), encoding="utf-8")
+    sys.exit(0)
+except Exception as _exc:
+    _line = None
+    for _frame in reversed(traceback.extract_tb(_exc.__traceback__)):
+        if _frame.filename == "<builder>":
+            _line = _frame.lineno
+            break
+    pathlib.Path("_result.json").write_text(json.dumps({
+        "error": {
+            "type": type(_exc).__name__,
+            "message": str(_exc),
+            "line": _line,
+        }
+    }), encoding="utf-8")
+    sys.exit(0)
+
 _graph = None
 for _name in ("graph", "wf", "workflow", "g"):
-    _g = locals().get(_name)
+    _g = _ns.get(_name)
     if _g is not None and hasattr(_g, "model_dump"):
         _graph = _g
         break
 
 if _graph is None:
-    print("ERROR: builder code must assign the result of .build() to a variable "
-          "named graph, wf, workflow, or g", file=sys.stderr)
-    sys.exit(1)
+    pathlib.Path("_result.json").write_text(json.dumps({
+        "error": {
+            "type": "NameError",
+            "message": "Builder code must assign the result of .build() to a "
+                       "variable named graph, wf, workflow, or g",
+            "line": None,
+        }
+    }), encoding="utf-8")
+    sys.exit(0)
 
-pathlib.Path("_result.json").write_text(
-    json.dumps(_graph.model_dump(mode="json"), default=str),
-    encoding="utf-8",
-)
+pathlib.Path("_result.json").write_text(json.dumps({
+    "graph": _graph.model_dump(mode="json"),
+    "source_code": _user_code,
+}, default=str), encoding="utf-8")
 '''
 
 __all__ = [
     "AdaptPlan",
+    "CodegenDiagnostics",
+    "CodegenPromptBuilder",
+    "CodegenResult",
     "GenerateCodePlan",
     "GeneratePlan",
     "PlanAction",
@@ -60,8 +101,134 @@ __all__ = [
     "PlannerOutput",
     "PlanningPromptBuilder",
     "ReusePlan",
+    "ValidationResult",
     "WorkflowPlanner",
+    "validate_codegen_output",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Codegen result
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class CodegenResult:
+    """Structured outcome of running LLM-generated builder code in the sandbox."""
+
+    success: bool
+    graph: dict | None = None
+    source_code: str = ""
+    error_type: str | None = None
+    error_message: str | None = None
+    error_line: int | None = None
+
+
+@dataclass
+class ValidationResult:
+    """Structured outcome of running the full validation pipeline on a generated graph."""
+
+    success: bool
+    graph: Graph | None = None
+    errors: list[GenerationError] = dc_field(default_factory=list)
+    warnings: list[str] = dc_field(default_factory=list)
+    recoverable_errors: list[GenerationError] = dc_field(default_factory=list)
+    fatal_errors: list[GenerationError] = dc_field(default_factory=list)
+
+
+@dataclass
+class CodegenDiagnostics:
+    """Structured diagnostics for a failed codegen attempt.
+
+    Carries enough context for logging, UI display, and legacy fallback
+    decisions without exposing raw exceptions.
+    """
+
+    attempts: int
+    errors: list[GenerationError] = dc_field(default_factory=list)
+    final_code: str = ""
+    validation_result: ValidationResult | None = None
+    diagnosis_result: DiagnosisResult | None = None
+
+
+_LEGACY_GENERATE_FALLBACK = True
+
+
+def _parse_codegen_result(
+    result: Any,
+    structured: Any,
+    source_code: str = "",
+) -> CodegenResult:
+    """Module-level wrapper for ``WorkflowPlanner._parse_codegen_result``.
+
+    Used by ``ChatManager._sandbox_exec_builder_code`` to avoid reaching
+    into the class method directly.
+    """
+    return WorkflowPlanner._parse_codegen_result(result, structured, source_code)
+
+
+def validate_codegen_output(graph_dict: dict) -> ValidationResult:
+    """Run the full validation pipeline on a generated graph dict.
+
+    Steps:
+    1. Graph.model_validate() — schema compliance
+    2. validate_graph() — design-time checks
+    3. Classify errors as recoverable vs fatal
+    4. Return structured ValidationResult
+    """
+    from dan.models.graph import Graph
+    from dan.validation.graph import validate_graph
+
+    from dan.meta.diagnosis import (
+        ErrorClassifier,
+        GenerationError,
+        GenerationErrorType,
+        GenerationStage,
+    )
+
+    classifier = ErrorClassifier()
+    errors: list[GenerationError] = []
+    warnings: list[str] = []
+
+    # Step 1: Schema validation
+    try:
+        graph = Graph.model_validate(graph_dict)
+    except Exception as e:
+        errors.append(
+            GenerationError(
+                stage=GenerationStage.validation,
+                error_type=GenerationErrorType.schema_mismatch,
+                message=str(e),
+                recoverable=False,
+            )
+        )
+        return ValidationResult(
+            success=False,
+            errors=errors,
+            fatal_errors=list(errors),
+        )
+
+    # Step 2: Design-time validation
+    raw_issues = validate_graph(graph)
+    for msg in raw_issues:
+        if any(kw in msg.lower() for kw in ("warning", "deprecated", "untyped")):
+            warnings.append(msg)
+        else:
+            gen_errors = classifier.classify_validation_errors([msg])
+            errors.extend(gen_errors)
+
+    # Step 3: Classify recoverable vs fatal
+    recoverable = [e for e in errors if e.recoverable]
+    fatal = [e for e in errors if not e.recoverable]
+
+    return ValidationResult(
+        success=len(fatal) == 0 and len(recoverable) == 0,
+        graph=graph if len(fatal) == 0 else None,
+        errors=errors,
+        warnings=warnings,
+        recoverable_errors=recoverable,
+        fatal_errors=fatal,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -275,6 +442,370 @@ Output ONLY a single valid JSON object. No markdown, no explanation."""
 
 
 # ---------------------------------------------------------------------------
+# Codegen prompt construction
+# ---------------------------------------------------------------------------
+
+
+class CodegenPromptBuilder:
+    """Builds prompts that teach an LLM to generate ``dan.builder`` Python code.
+
+    Unlike ``PlanningPromptBuilder`` (which emits JSON mutation plans), this
+    builder produces prompts for writing executable builder DSL scripts that
+    call ``wf.build()`` and yield a validated ``Graph``.
+    """
+
+    _SYSTEM_PROMPT = """\
+You are a workflow engineer for DAN (Deep Agent Network). \
+Given a goal, write Python code using the ``dan.builder`` DSL that constructs \
+a workflow and calls ``build()``.
+
+## Builder DSL Reference
+
+```python
+from dan.builder import workflow
+from dan.builder.refs import NodeRef
+from dan.models.context import MergeStrategy, CompactionRule, CompactionStrategy, FailurePolicy
+
+wf = workflow("name", description="...", tags=[...])
+```
+
+### Node creation methods
+
+| Method | Purpose |
+|--------|---------|
+| `wf.llm(id, prompt=..., system_prompt=..., model=..., output_schema=..., input_ports=[...], output_ports=[...])` | LLM call. Default output port: `text` (or schema fields). |
+| `wf.code(id, code=..., input_ports=[...], output_ports=[...])` | Python sandbox. Code must set `result`. |
+| `wf.tool(id, tool_id=..., tool_config={}, input_ports=[...], output_ports=[...])` | Registered tool call. Default output: `result`. |
+| `wf.gate(id, gate_mode="if_else"\\|"while", condition=..., max_iterations=...)` | Conditional/loop gate. |
+| `wf.rag(id, collection=..., top_k=..., input_ports=[...])` | Vector retrieval. Output: `chunks`. |
+| `wf.validator(id, rules=[...], on_invalid=...)` | Data validation with rule routing. Output: `valid`. |
+| `wf.reduce(id, reducer=...)` | Fan-in aggregation. |
+| `wf.router(id, route_descriptions={...})` | LLM-powered routing. |
+| `wf.human_in_the_loop(id, prompt=...)` | Human approval/input. |
+
+### Sub-graph context managers
+
+```python
+# ForEach — parallel fan-out over a list
+with wf.for_each("id", items=node["port"], parallelism=3,
+                  merge_strategy=MergeStrategy.APPEND) as body:
+    body.llm("step", prompt="Process: {item}")
+
+# WhileLoop — iterate until condition is false
+with wf.while_loop("id", condition="expr", max_iterations=5,
+                    input_ports=[...], output_ports=[...]) as body:
+    body.llm("step", prompt="...")
+
+# Composite — reusable sub-graph
+with wf.composite("id", input_mappings={...}, output_mappings={...}) as sub:
+    a = sub.llm("a", prompt="...")
+    b = sub.llm("b", prompt=f"Continue: {a}")
+    a >> b
+
+# ParallelSubagents — heterogeneous parallel branches
+with wf.parallel_subagents("id", parallelism=2,
+                           merge_strategy=MergeStrategy.APPEND) as parallel:
+    with parallel.branch("b1") as sub:
+        sub.llm("s1", prompt="...")
+    with parallel.branch("b2") as sub:
+        sub.llm("s2", prompt="...")
+
+# Orchestrator — async coordinator with concurrent teams
+with wf.orchestrator("id", completion_condition="all_done") as orch:
+    with orch.team("t1") as sub:
+        sub.llm("s1", prompt="...")
+```
+
+### Edge wiring
+
+```python
+a >> b >> c                           # chain operator (default ports)
+b = wf.llm("b", prompt=f"Use: {a}")  # f-string magic (auto-creates edge)
+wf.edge(a["port"], b["port"])         # explicit port wiring
+```
+
+### Referencing composite outputs
+
+```python
+ref = NodeRef("for_each_id", "for_each", wf)
+wf.edge(ref["results"], downstream["input"])
+```
+
+### Finalize
+
+```python
+graph = wf.build()  # -> validated Graph
+```
+
+## Rules
+
+1. Always call ``wf.build()`` and assign to ``graph``.
+2. Use explicit ``input_ports`` and ``output_ports`` on nodes.
+3. Wire edges explicitly with ``wf.edge()`` for non-trivial data flow.
+4. Use ``NodeRef`` to reference outputs of ``for_each``, ``while_loop``, and other composite nodes.
+5. Prompt templates use ``{variable}`` placeholders matching input port names.
+6. Output ONLY Python code. No markdown fences, no explanation."""
+
+    _FEW_SHOT_EXAMPLES = '''\
+## Example 1: 3-node chain (LLM → LLM → Code)
+```
+from dan.builder import workflow
+
+wf = workflow("simple_chain")
+ideas = wf.llm("idea_gen", prompt="Generate ideas about: {topic}",
+                input_ports=[{"name": "topic"}])
+expand = wf.llm("expand", prompt="Pick the best idea and summarize:\\n{text}",
+                 output_schema={"type": "object",
+                     "properties": {"best_idea": {"type": "string"}, "summary": {"type": "string"}},
+                     "required": ["best_idea", "summary"]},
+                 input_ports=[{"name": "text"}])
+analyze = wf.code("analyze",
+                   code="words = summary.split()\\nresult = {\\"word_count\\": len(words)}",
+                   input_ports=[{"name": "summary"}],
+                   output_ports=[{"name": "word_count"}])
+wf.edge(ideas["text"], expand["text"])
+wf.edge(expand["summary"], analyze["summary"])
+graph = wf.build()
+```
+
+## Example 2: Review loop (WhileLoop)
+```
+from dan.builder import workflow
+from dan.builder.refs import NodeRef
+from dan.models.context import CompactionRule, CompactionStrategy, FailurePolicy
+
+wf = workflow("review_revise")
+draft = wf.llm("draft", prompt="Write a paragraph about: {topic}",
+                input_ports=[{"name": "topic"}])
+init = wf.code("init_state",
+               code='result = {"draft": text, "quality_score": 0, "feedback": "Initial."}',
+               input_ports=[{"name": "text"}],
+               output_ports=[{"name": "draft"}, {"name": "quality_score"}, {"name": "feedback"}])
+wf.edge(draft["text"], init["text"])
+
+with wf.while_loop("review_loop", condition="quality_score < 8", max_iterations=3,
+                    compaction=CompactionRule(strategy=CompactionStrategy.SLIDING_WINDOW, window_size=2),
+                    failure_policy=FailurePolicy(max_iterations=3, stagnation_threshold=2),
+                    input_ports=[{"name": "draft"}, {"name": "quality_score"}, {"name": "feedback"}],
+                    output_ports=[{"name": "draft"}, {"name": "quality_score"}, {"name": "feedback"}]) as body:
+    review = body.llm("review", prompt="Review:\\n{draft}\\nRate 1-10 and give feedback.",
+                       output_schema={"type": "object",
+                           "properties": {"quality_score": {"type": "integer"}, "feedback": {"type": "string"}},
+                           "required": ["quality_score", "feedback"]},
+                       input_ports=[{"name": "draft"}])
+    revise = body.llm("revise", prompt="Revise draft:\\n{draft}\\nFeedback: {feedback}",
+                       input_ports=[{"name": "draft"}, {"name": "feedback"}])
+    body.edge(review["feedback"], revise["feedback"])
+
+loop_ref = NodeRef("review_loop", "while_loop", wf)
+wf.edge(init["draft"], loop_ref["draft"])
+wf.edge(init["quality_score"], loop_ref["quality_score"])
+wf.edge(init["feedback"], loop_ref["feedback"])
+graph = wf.build()
+```
+
+## Example 3: Fan-out (ForEach)
+```
+from dan.builder import workflow
+from dan.builder.refs import NodeRef
+from dan.models.context import MergeStrategy
+
+wf = workflow("fan_out")
+gen = wf.llm("gen_subtopics", prompt="List 4 subtopics for: {topic}",
+             output_schema={"type": "object",
+                 "properties": {"subtopics": {"type": "array", "items": {"type": "string"}}},
+                 "required": ["subtopics"]},
+             input_ports=[{"name": "topic"}])
+
+with wf.for_each("research", items=gen["subtopics"], parallelism=3,
+                  merge_strategy=MergeStrategy.APPEND) as body:
+    body.llm("summarize", prompt="Summarize: {item}",
+             input_ports=[{"name": "item"}, {"name": "index"}])
+
+ref = NodeRef("research", "for_each", wf)
+aggregate = wf.code("aggregate",
+                     code='result = {"report": "\\n".join(str(r) for r in results)}',
+                     input_ports=[{"name": "results"}],
+                     output_ports=[{"name": "report"}])
+wf.edge(ref["results"], aggregate["results"])
+graph = wf.build()
+```
+
+## Example 4: RAG Q&A (Tool → Tool → LLM)
+```
+from dan.builder import workflow
+
+wf = workflow("rag_qa")
+read = wf.tool("read_file", tool_id="file_read",
+               input_ports=[{"name": "path"}],
+               output_ports=[{"name": "content"}])
+chunk = wf.tool("chunk", tool_id="text_chunk",
+                input_ports=[{"name": "text"}, {"name": "chunk_size"}],
+                output_ports=[{"name": "chunks"}])
+wf.edge(read["content"], chunk["text"])
+
+answer = wf.llm("answer",
+                 prompt="Answer based on context:\\nQuestion: {question}\\nContext: {chunks}",
+                 output_schema={"type": "object",
+                     "properties": {"answer": {"type": "string"}, "confidence": {"type": "string"}},
+                     "required": ["answer", "confidence"]},
+                 input_ports=[{"name": "question"}, {"name": "chunks"}])
+wf.edge(chunk["chunks"], answer["chunks"])
+graph = wf.build()
+```
+
+## Example 5: While loop with gate condition
+```
+from dan.builder import workflow
+from dan.builder.refs import NodeRef
+
+wf = workflow("iterative_improve")
+seed = wf.llm("seed", prompt="Draft an outline for: {topic}",
+              input_ports=[{"name": "topic"}])
+init = wf.code("init",
+               code='result = {"draft": text, "score": 0.0}',
+               input_ports=[{"name": "text"}],
+               output_ports=[{"name": "draft"}, {"name": "score"}])
+wf.edge(seed["text"], init["text"])
+
+with wf.while_loop("improve", condition="score < 0.9", max_iterations=5,
+                    input_ports=[{"name": "draft"}, {"name": "score"}],
+                    output_ports=[{"name": "draft"}, {"name": "score"}]) as body:
+    body.llm("refine", prompt="Improve draft:\\n{draft}\\nReturn JSON with draft and score.",
+             output_schema={"type": "object",
+                 "properties": {"draft": {"type": "string"}, "score": {"type": "number"}},
+                 "required": ["draft", "score"]},
+             input_ports=[{"name": "draft"}])
+
+ref = NodeRef("improve", "while_loop", wf)
+wf.edge(init["draft"], ref["draft"])
+wf.edge(init["score"], ref["score"])
+graph = wf.build()
+```
+
+## Example 6: Composite sub-graph
+```
+from dan.builder import workflow
+
+wf = workflow("with_composite")
+source = wf.llm("source", prompt="Describe topic: {topic}",
+                 input_ports=[{"name": "topic"}])
+
+with wf.composite("research_block",
+                   input_mappings={"topic": "inner_topic"},
+                   output_mappings={"inner_result": "result"}) as sub:
+    s1 = sub.llm("search", prompt="Research: {inner_topic}",
+                  input_ports=[{"name": "inner_topic"}])
+    s2 = sub.llm("synthesize", prompt=f"Synthesize findings: {s1}",
+                  input_ports=[{"name": "text"}])
+    s1 >> s2
+
+wf.edge(source["text"], wf._nodes["research_block"]["topic"])
+graph = wf.build()
+```'''
+
+    def build_system_prompt(self) -> str:
+        """Return the system prompt that teaches the builder DSL."""
+        return self._SYSTEM_PROMPT
+
+    def build_few_shot_examples(self) -> str:
+        """Return compact few-shot examples covering 6 key workflow patterns."""
+        return self._FEW_SHOT_EXAMPLES
+
+    def build_user_prompt(
+        self,
+        goal: str,
+        tools: list[str] | None = None,
+        skills: list[str] | None = None,
+        error_context: str | None = None,
+        constraints: dict | None = None,
+        self_knowledge_chunks: str | None = None,
+    ) -> str:
+        """Format the user request into a structured prompt.
+
+        Parameters
+        ----------
+        goal:
+            Natural-language description of the desired workflow.
+        tools:
+            Available tool IDs the workflow may use.
+        skills:
+            Available skill names.
+        error_context:
+            Structured error from a prior failed attempt (for retry).
+        constraints:
+            Dict with optional ``inputs``, ``outputs``, or other requirements.
+        self_knowledge_chunks:
+            Pre-formatted RAG chunks from ``SelfKnowledgeIndex``.
+        """
+        sections: list[str] = [f"## Goal\n{goal}"]
+
+        if tools:
+            sections.append(f"## Available Tools\n{', '.join(tools)}")
+
+        if skills:
+            sections.append(f"## Available Skills\n{', '.join(skills)}")
+
+        if constraints:
+            constraint_lines: list[str] = []
+            if constraints.get("inputs"):
+                constraint_lines.append(f"Required inputs: {constraints['inputs']}")
+            if constraints.get("outputs"):
+                constraint_lines.append(f"Required outputs: {constraints['outputs']}")
+            for key, val in constraints.items():
+                if key not in ("inputs", "outputs"):
+                    constraint_lines.append(f"{key}: {val}")
+            if constraint_lines:
+                sections.append(
+                    "## Constraints\n" + "\n".join(constraint_lines)
+                )
+
+        if error_context:
+            sections.append(
+                "## Error from Prior Attempt\n"
+                "Fix the following error in your generated code:\n"
+                f"{error_context}"
+            )
+
+        if self_knowledge_chunks:
+            sections.append(
+                f"## Relevant API Reference\n{self_knowledge_chunks}"
+            )
+
+        sections.append(
+            "Write Python code using ``dan.builder`` that implements this workflow. "
+            "Output ONLY executable Python code."
+        )
+
+        return "\n\n".join(sections)
+
+    def build_full_prompt(
+        self,
+        goal: str,
+        tools: list[str] | None = None,
+        skills: list[str] | None = None,
+        error_context: str | None = None,
+        constraints: dict | None = None,
+        self_knowledge_chunks: str | None = None,
+    ) -> tuple[str, str]:
+        """Build the complete (system_prompt, user_prompt) pair.
+
+        The system prompt includes the DSL reference and few-shot examples.
+        The user prompt includes the goal and optional context.
+        """
+        system = self.build_system_prompt() + "\n\n" + self.build_few_shot_examples()
+        user = self.build_user_prompt(
+            goal,
+            tools=tools,
+            skills=skills,
+            error_context=error_context,
+            constraints=constraints,
+            self_knowledge_chunks=self_knowledge_chunks,
+        )
+        return system, user
+
+
+# ---------------------------------------------------------------------------
 # WorkflowPlanner
 # ---------------------------------------------------------------------------
 
@@ -340,13 +871,52 @@ class WorkflowPlanner:
         )
 
     async def execute_plan(self, plan: PlanResult) -> dict[str, Any]:
-        """Execute a PlanResult: load, adapt, or compile a graph."""
+        """Execute a PlanResult: load, adapt, or compile a graph.
+
+        For ``GENERATE_CODE`` plans: runs the full codegen pipeline
+        (sandbox → validate → diagnose).  On failure, falls back to the
+        legacy ``GENERATE`` declarative path when ``_LEGACY_GENERATE_FALLBACK``
+        is enabled.
+        """
         if isinstance(plan, ReusePlan):
             return self._execute_reuse(plan)
         if isinstance(plan, AdaptPlan):
             return self._execute_adapt(plan)
         if isinstance(plan, GenerateCodePlan):
-            return await self._execute_generate_code(plan)
+            try:
+                return await self._execute_generate_code(plan)
+            except (ValueError, RuntimeError) as exc:
+                if _LEGACY_GENERATE_FALLBACK:
+                    logger.warning(
+                        "GENERATE_CODE failed (%s); falling back to legacy GENERATE",
+                        exc,
+                    )
+                    try:
+                        fallback_spec = {
+                            "name": plan.description or "Generated Workflow",
+                            "nodes": [
+                                {
+                                    "node_type": "llm_operator",
+                                    "name": "main",
+                                    "config": {
+                                        "prompt_template": plan.description,
+                                    },
+                                }
+                            ],
+                            "edges": [],
+                        }
+                        graph_data = self._compile_generate_spec(fallback_spec)
+                        workflow_id = f"meta-fallback-{uuid.uuid4().hex[:10]}"
+                        return {
+                            "workflow_id": workflow_id,
+                            "graph": graph_data,
+                            "description": plan.description,
+                            "generated": True,
+                            "legacy_fallback": True,
+                        }
+                    except Exception:
+                        logger.exception("Legacy GENERATE fallback also failed")
+                raise
         if isinstance(plan, GeneratePlan):
             return self._execute_generate(plan)
         raise TypeError(f"Unknown plan type: {type(plan)}")
@@ -483,20 +1053,21 @@ class WorkflowPlanner:
         }
 
     async def _execute_generate_code(self, plan: GenerateCodePlan) -> dict[str, Any]:
-        """Execute builder DSL code in a subprocess sandbox.
+        """Execute builder DSL code in a subprocess sandbox with full
+        validation and bounded diagnosis.
 
-        The code must use ``dan.builder`` to construct a workflow and call
-        ``build()``.  A wrapper harness serialises the resulting ``Graph``
-        to ``_result.json`` so ``SandboxRunner`` can capture it.
+        Pipeline: sandbox → parse → validate → (diagnosis if recoverable) → return.
+        On unrecoverable failure, raises ``ValueError`` with ``CodegenDiagnostics``
+        attached as the ``diagnostics`` attribute.
         """
+        from dan.models.graph import Graph
         from dan.sandbox import SandboxConfig
         from dan.sandbox.runner import SandboxRunner
-
-        harness = _BUILDER_CODE_HARNESS.replace("{{USER_CODE}}", plan.code)
 
         sandbox_config = SandboxConfig(
             mode="subprocess",
             timeout_seconds=30,
+            memory_mb=256,
             language="python",
             max_output_bytes=1_000_000,
         )
@@ -506,32 +1077,198 @@ class WorkflowPlanner:
 
         runner = SandboxRunner()
         result, structured = await runner.run(
-            harness, sandbox_config, {"src_path": src_path},
+            _BUILDER_CODE_HARNESS,
+            sandbox_config,
+            {"src_path": src_path, "user_code": plan.code},
         )
 
-        if result.exit_code != 0:
-            raise ValueError(
-                f"Builder code execution failed (exit {result.exit_code}):\n"
-                f"{result.stderr or result.stdout}"
+        codegen = self._parse_codegen_result(result, structured, plan.code)
+
+        # Sandbox execution failed (syntax error, import error, etc.)
+        if not codegen.success:
+            from dan.meta.diagnosis import (
+                DiagnosisLoop,
+                ErrorClassifier,
+                GenerationError,
+                GenerationErrorType,
+                GenerationStage,
             )
 
-        if not isinstance(structured, dict) or "version" not in structured:
-            raise ValueError(
-                "Builder code did not produce a valid graph in _result.json. "
-                f"Got: {type(structured).__name__}"
+            sandbox_errors = [
+                GenerationError(
+                    stage=GenerationStage.sandbox,
+                    error_type=GenerationErrorType(
+                        ErrorClassifier._match_sandbox_error_type(codegen.error_type)
+                    ) if codegen.error_type else GenerationErrorType.runtime_error,
+                    message=codegen.error_message or "Unknown sandbox error",
+                    source_line=codegen.error_line,
+                    recoverable=codegen.error_type in ("SyntaxError", "ImportError", "NameError"),
+                )
+            ]
+
+            recoverable = any(e.recoverable for e in sandbox_errors)
+            if recoverable:
+                diagnosis = DiagnosisLoop(max_attempts=2)
+                diag_result = await diagnosis.diagnose_and_repair(
+                    goal=plan.description,
+                    generated_code=plan.code,
+                    errors=sandbox_errors,
+                    llm_complete=self._llm_complete_for_repair,
+                )
+                if diag_result.success and diag_result.final_graph:
+                    graph = Graph.model_validate(diag_result.final_graph)
+                    workflow_id = f"meta-code-{uuid.uuid4().hex[:10]}"
+                    return {
+                        "workflow_id": workflow_id,
+                        "graph": graph.model_dump(mode="json"),
+                        "description": plan.description,
+                        "generated": True,
+                        "code_generated": True,
+                        "source_code": diag_result.final_code,
+                    }
+
+                diagnostics = CodegenDiagnostics(
+                    attempts=1,
+                    errors=sandbox_errors,
+                    final_code=plan.code,
+                    diagnosis_result=diag_result,
+                )
+                exc = ValueError(
+                    f"Builder code execution failed ({codegen.error_type}): "
+                    f"{codegen.error_message}"
+                )
+                exc.diagnostics = diagnostics  # type: ignore[attr-defined]
+                raise exc
+
+            diagnostics = CodegenDiagnostics(
+                attempts=1,
+                errors=sandbox_errors,
+                final_code=plan.code,
+            )
+            msg = f"Builder code execution failed ({codegen.error_type}): {codegen.error_message}"
+            if codegen.error_line is not None:
+                msg += f" at line {codegen.error_line}"
+            exc = ValueError(msg)
+            exc.diagnostics = diagnostics  # type: ignore[attr-defined]
+            raise exc
+
+        # Sandbox succeeded — run validation pipeline
+        validation = validate_codegen_output(codegen.graph)
+
+        if validation.success:
+            workflow_id = f"meta-code-{uuid.uuid4().hex[:10]}"
+            return {
+                "workflow_id": workflow_id,
+                "graph": validation.graph.model_dump(mode="json") if validation.graph else codegen.graph,
+                "description": plan.description,
+                "generated": True,
+                "code_generated": True,
+                "source_code": codegen.source_code,
+            }
+
+        # Validation failed — try diagnosis if errors are recoverable
+        if validation.recoverable_errors and not validation.fatal_errors:
+            from dan.meta.diagnosis import DiagnosisLoop
+
+            diagnosis = DiagnosisLoop(max_attempts=2)
+            diag_result = await diagnosis.diagnose_and_repair(
+                goal=plan.description,
+                generated_code=codegen.source_code,
+                errors=validation.recoverable_errors,
+                llm_complete=self._llm_complete_for_repair,
+            )
+            if diag_result.success and diag_result.final_graph:
+                repaired = Graph.model_validate(diag_result.final_graph)
+                workflow_id = f"meta-code-{uuid.uuid4().hex[:10]}"
+                return {
+                    "workflow_id": workflow_id,
+                    "graph": repaired.model_dump(mode="json"),
+                    "description": plan.description,
+                    "generated": True,
+                    "code_generated": True,
+                    "source_code": diag_result.final_code,
+                }
+
+            diagnostics = CodegenDiagnostics(
+                attempts=1,
+                errors=list(validation.errors),
+                final_code=codegen.source_code,
+                validation_result=validation,
+                diagnosis_result=diag_result,
+            )
+            exc = ValueError(
+                f"Codegen validation failed with {len(validation.errors)} error(s); "
+                f"diagnosis repair unsuccessful"
+            )
+            exc.diagnostics = diagnostics  # type: ignore[attr-defined]
+            raise exc
+
+        # Fatal errors — no diagnosis possible
+        diagnostics = CodegenDiagnostics(
+            attempts=1,
+            errors=list(validation.errors),
+            final_code=codegen.source_code,
+            validation_result=validation,
+        )
+        exc = ValueError(
+            f"Codegen validation failed with {len(validation.fatal_errors)} fatal error(s)"
+        )
+        exc.diagnostics = diagnostics  # type: ignore[attr-defined]
+        raise exc
+
+    async def _llm_complete_for_repair(self, system: str, user: str) -> str:
+        """Simple completion wrapper for DiagnosisLoop re-prompts.
+
+        No function calling, no streaming — just a plain text completion.
+        """
+        return await self._call_llm(system, user)
+
+    @staticmethod
+    def _parse_codegen_result(
+        result: Any,
+        structured: Any,
+        source_code: str,
+    ) -> CodegenResult:
+        """Parse sandbox output into a ``CodegenResult``."""
+        if structured is None:
+            return CodegenResult(
+                success=False,
+                source_code=source_code,
+                error_type="SandboxError",
+                error_message=result.stderr or f"Sandbox exited with code {result.exit_code}",
             )
 
-        from dan.models.graph import Graph
-        Graph.model_validate(structured)
+        if not isinstance(structured, dict):
+            return CodegenResult(
+                success=False,
+                source_code=source_code,
+                error_type="SandboxError",
+                error_message=f"Invalid _result.json: expected dict, got {type(structured).__name__}",
+            )
 
-        workflow_id = f"meta-code-{uuid.uuid4().hex[:10]}"
-        return {
-            "workflow_id": workflow_id,
-            "graph": structured,
-            "description": plan.description,
-            "generated": True,
-            "code_generated": True,
-        }
+        if "error" in structured:
+            err = structured["error"]
+            return CodegenResult(
+                success=False,
+                source_code=source_code,
+                error_type=err.get("type"),
+                error_message=err.get("message"),
+                error_line=err.get("line"),
+            )
+
+        if "graph" in structured:
+            return CodegenResult(
+                success=True,
+                graph=structured["graph"],
+                source_code=structured.get("source_code", source_code),
+            )
+
+        return CodegenResult(
+            success=False,
+            source_code=source_code,
+            error_type="SandboxError",
+            error_message="No 'graph' or 'error' key in _result.json",
+        )
 
     @staticmethod
     def _compile_generate_spec(spec: dict[str, Any]) -> dict[str, Any]:
