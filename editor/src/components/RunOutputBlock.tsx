@@ -13,7 +13,7 @@ import { useGraphStore } from "../store/useGraphStore";
 
 interface NodeState {
   nodeId: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "cancelled";
   summary: string;
   output?: string;
   error?: string;
@@ -23,10 +23,10 @@ interface NodeState {
 
 function deriveNodeStates(events: RunEventPayload[]): {
   nodes: NodeState[];
-  runStatus: "running" | "completed" | "failed";
+  runStatus: "running" | "completed" | "failed" | "cancelled";
 } {
   const nodeMap = new Map<string, NodeState>();
-  let runStatus: "running" | "completed" | "failed" = "running";
+  let runStatus: "running" | "completed" | "failed" | "cancelled" = "running";
 
   for (const evt of events) {
     const nodeId = evt.node_id;
@@ -37,6 +37,17 @@ function deriveNodeStates(events: RunEventPayload[]): {
     }
     if (evt.event_type === "run_failed") {
       runStatus = "failed";
+      continue;
+    }
+    if (evt.event_type === "run_cancelled") {
+      runStatus = "cancelled";
+      for (const node of nodeMap.values()) {
+        if (node.status === "running") {
+          node.status = "cancelled";
+          node.summary = node.summary || "Cancelled";
+          node.endTime = Date.now();
+        }
+      }
       continue;
     }
 
@@ -98,12 +109,18 @@ const RUN_STATUS_CONFIG = {
     label: "Failed",
     color: "text-red-600 bg-red-50 border-red-100",
   },
+  cancelled: {
+    icon: <X size={12} className="text-gray-500" />,
+    label: "Cancelled",
+    color: "text-gray-600 bg-gray-50 border-gray-100",
+  },
 } as const;
 
 const NODE_STATUS_ICON = {
   running: <Loader2 size={10} className="animate-spin text-blue-400" />,
   completed: <Check size={10} className="text-green-400" />,
   failed: <X size={10} className="text-red-400" />,
+  cancelled: <X size={10} className="text-gray-400" />,
 } as const;
 
 interface RunOutputBlockProps {
@@ -119,8 +136,11 @@ export default function RunOutputBlock({ events, runRef }: RunOutputBlockProps) 
   const { nodes, runStatus } = deriveNodeStates(events);
   const hasError = nodes.some((n) => n.status === "failed");
   const [expanded, setExpanded] = useState(hasError);
-  const finalStatus = runRef?.status === "completed" || runRef?.status === "failed"
-    ? (runRef.status as "completed" | "failed")
+  const finalStatus =
+    runRef?.status === "completed" ||
+    runRef?.status === "failed" ||
+    runRef?.status === "cancelled"
+      ? (runRef.status as "completed" | "failed" | "cancelled")
     : runStatus;
   const cfg = RUN_STATUS_CONFIG[finalStatus];
 

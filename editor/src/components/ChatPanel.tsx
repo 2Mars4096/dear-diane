@@ -21,7 +21,6 @@ import {
   Download,
   Search,
   Pin,
-  Copy,
   HelpCircle,
   FileText,
   Bug,
@@ -36,6 +35,14 @@ import type { ApplyMutationResult } from "../lib/api";
 import ChatMessageBubble from "./ChatMessage";
 import GraphDiffPreview from "./GraphDiffPreview";
 import MentionAutocomplete from "./MentionAutocomplete";
+import {
+  buildAutoApplyPreviewMessage,
+  parseRunIdFromStreamChannel,
+  readMutationConfirmPreference,
+  shouldAutoApplyMutation,
+  summarizeMutationPlan,
+  writeMutationConfirmPreference,
+} from "../lib/chatMutation";
 import { computeGraphDiff } from "../lib/graphDiff";
 import {
   findMentionQuery,
@@ -223,6 +230,7 @@ export default function ChatPanel() {
   const [chatOpen, setChatOpen] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
+  const [isRunStreaming, setIsRunStreaming] = useState(false);
   const [inputText, setInputText] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [panelWidth, setPanelWidth] = useState(DEFAULT_WIDTH);
@@ -251,6 +259,9 @@ export default function ChatPanel() {
   const [staleRevision, setStaleRevision] = useState(false);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [detectedMode, setDetectedMode] = useState<string | null>(null);
+  const [mutationConfirmMode, setMutationConfirmMode] = useState<boolean>(() =>
+    readMutationConfirmPreference(),
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<
     Array<{
@@ -270,6 +281,7 @@ export default function ChatPanel() {
   const applyingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const runStreamHandoffRef = useRef(false);
   const dragging = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
   const prevGraphIdRef = useRef<string | null>(null);
@@ -465,7 +477,7 @@ export default function ChatPanel() {
       if (!ta) return;
       const ref: MentionRef = {
         name: mention.name,
-        type: mention.type,
+        type: mention.type as MentionRef["type"],
         id: mention.id,
       };
       const { newText, newCursorPos } = insertMention(
@@ -493,6 +505,116 @@ export default function ChatPanel() {
   useEffect(() => {
     return () => wsRef.current?.close();
   }, []);
+
+  // -------------------------------------------------------------------------
+  // Mutation preference + run stream helpers
+  // -------------------------------------------------------------------------
+
+  const toggleMutationConfirmMode = useCallback(() => {
+    setMutationConfirmMode((prev) => {
+      const next = !prev;
+      writeMutationConfirmPreference(next);
+      useGraphStore.getState().addToast({
+        type: "info",
+        message: next
+          ? "Review diffs before apply enabled"
+          : "Auto-apply mutations enabled",
+      });
+      return next;
+    });
+  }, []);
+
+  const attachRunStream = useCallback(
+    (
+      streamChannelId: string,
+      assistantId: string,
+      capturedGraphId: string | null,
+      initialRunRef?: { runId: string; scope: string; status: string } | null,
+    ) => {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const runWs = new WebSocket(
+        `${proto}//${location.host}/api/chat/${streamChannelId}/events`,
+      );
+      wsRef.current = runWs;
+      setActiveChannelId(null); // run streams are observational, not stoppable via chat stop route
+      setIsStreaming(false);
+      setIsRunStreaming(true);
+
+      runWs.onmessage = (ev) => {
+        try {
+          const parsed = JSON.parse(ev.data);
+          if (parsed.type === "chat_run_event" && parsed.run_event) {
+            const re = parsed.run_event as {
+              event_type: string;
+              node_id?: string | null;
+              summary: string;
+              detail?: Record<string, unknown>;
+            };
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === assistantId
+                  ? {
+                      ...m,
+                      content: m.content ? `${m.content}\n${re.summary}` : re.summary,
+                      runEvents: [
+                        ...(m.runEvents || []),
+                        {
+                          type: "run_event",
+                          event_type: re.event_type,
+                          node_id: re.node_id,
+                          summary: re.summary,
+                          detail: re.detail,
+                        },
+                      ],
+                      runRef: m.runRef
+                        ? {
+                            ...m.runRef,
+                            status:
+                              re.event_type === "run_completed"
+                                ? "completed"
+                                : re.event_type === "run_failed"
+                                  ? "failed"
+                                  : re.event_type === "run_cancelled"
+                                    ? "cancelled"
+                                    : m.runRef.status,
+                          }
+                        : initialRunRef ?? m.runRef,
+                    }
+                  : m,
+              ),
+            );
+            if (
+              re.event_type === "run_completed" ||
+              re.event_type === "run_failed" ||
+              re.event_type === "run_cancelled"
+            ) {
+              setIsRunStreaming(false);
+              setMessages((prev) => {
+                const tid = activeThreadIdRef.current;
+                if (tid && capturedGraphId) {
+                  api
+                    .updateChatThread(capturedGraphId, tid, {
+                      messages: prev.map(toBackendMessage),
+                    })
+                    .catch((err: unknown) =>
+                      console.warn("Failed to save thread:", err),
+                    );
+                }
+                return prev;
+              });
+              runWs.close();
+            }
+          }
+        } catch {
+          /* ignore parse errors */
+        }
+      };
+
+      runWs.onerror = () => setIsRunStreaming(false);
+      runWs.onclose = () => setIsRunStreaming(false);
+    },
+    [],
+  );
 
   // -------------------------------------------------------------------------
   // Width resize via left drag handle
@@ -652,98 +774,30 @@ export default function ChatPanel() {
         }
 
         if (resBody.type === "run_started") {
+          const initialRunRef = {
+            runId: resBody.run_id as string,
+            scope: (resBody.scope as string) ?? "full",
+            status: "running",
+          };
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantId
                 ? {
                     ...m,
                     content: `Started ${resBody.scope ?? "full"} run.`,
-                    runRef: {
-                      runId: resBody.run_id as string,
-                      scope: (resBody.scope as string) ?? "full",
-                      status: "running",
-                    },
+                    runRef: initialRunRef,
                   }
                 : m,
             ),
           );
 
           if (resBody.stream_channel_id) {
-            const proto = location.protocol === "https:" ? "wss:" : "ws:";
-            const runWs = new WebSocket(
-              `${proto}//${location.host}/api/chat/${resBody.stream_channel_id}/events`,
+            attachRunStream(
+              resBody.stream_channel_id as string,
+              assistantId,
+              capturedGraphId,
+              initialRunRef,
             );
-            wsRef.current = runWs;
-
-            runWs.onmessage = (ev) => {
-              try {
-                const parsed = JSON.parse(ev.data);
-                if (parsed.type === "chat_run_event" && parsed.run_event) {
-                  const re = parsed.run_event as {
-                    event_type: string;
-                    node_id?: string | null;
-                    summary: string;
-                    detail?: Record<string, unknown>;
-                  };
-                  setMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantId
-                        ? {
-                            ...m,
-                            content: m.content + "\n" + re.summary,
-                            runEvents: [
-                              ...(m.runEvents || []),
-                              {
-                                type: "run_event",
-                                event_type: re.event_type,
-                                node_id: re.node_id,
-                                summary: re.summary,
-                                detail: re.detail,
-                              },
-                            ],
-                            runRef: m.runRef
-                              ? {
-                                  ...m.runRef,
-                                  status:
-                                    re.event_type === "run_completed"
-                                      ? "completed"
-                                      : re.event_type === "run_failed"
-                                        ? "failed"
-                                        : m.runRef.status,
-                                }
-                              : m.runRef,
-                          }
-                        : m,
-                    ),
-                  );
-                  if (
-                    re.event_type === "run_completed" ||
-                    re.event_type === "run_failed"
-                  ) {
-                    setIsStreaming(false);
-                    setMessages((prev) => {
-                      const tid = activeThreadIdRef.current;
-                      if (tid && capturedGraphId) {
-                        api
-                          .updateChatThread(capturedGraphId, tid, {
-                            messages: prev.map(toBackendMessage),
-                          })
-                          .catch((err: unknown) =>
-                            console.warn("Failed to save thread:", err),
-                          );
-                      }
-                      return prev;
-                    });
-                    runWs.close();
-                  }
-                }
-              } catch {
-                /* ignore parse errors */
-              }
-            };
-
-            runWs.onerror = () => setIsStreaming(false);
-            runWs.onclose = () => setIsStreaming(false);
           } else {
             setIsStreaming(false);
           }
@@ -803,25 +857,43 @@ export default function ChatPanel() {
                 }
                 return updated;
               });
-              setIsStreaming(false);
-              setActiveChannelId(null);
               wsClosedIntentionally = true;
-              ws.close();
+              if (evt.stream_channel_id) {
+                runStreamHandoffRef.current = true;
+                ws.close();
+                const runId = parseRunIdFromStreamChannel(evt.stream_channel_id);
+                attachRunStream(
+                  evt.stream_channel_id,
+                  assistantId,
+                  capturedGraphId,
+                  runId
+                    ? { runId, scope: "full", status: "running" }
+                    : null,
+                );
+              } else {
+                ws.close();
+                setIsStreaming(false);
+                setActiveChannelId(null);
+              }
             } else if (evt.type === "chat_mutation") {
               if (evt.context_window) setContextWindow(evt.context_window);
               if (evt.detected_mode) setDetectedMode(evt.detected_mode);
+              let nextMutationMessage: ChatMessage | null = null;
               setMessages((prev) => {
                 const updated = prev.map((m) =>
                   m.id === assistantId
-                    ? {
-                        ...m,
-                        content: evt.content ?? m.content,
-                        tokenUsage: evt.token_usage ?? null,
-                        mutationPlan: evt.mutation_plan ?? null,
-                        dryRunResult: evt.dry_run_result ?? null,
-                        mutationStatus: "proposed" as const,
-                        mutationId: evt.message_id ?? null,
-                      }
+                    ? (() => {
+                        const built = buildAutoApplyPreviewMessage(
+                          m,
+                          evt.mutation_plan ?? null,
+                          evt.dry_run_result ?? null,
+                          evt.message_id ?? null,
+                          evt.content ?? m.content,
+                          evt.token_usage ?? null,
+                        );
+                        nextMutationMessage = built;
+                        return built;
+                      })()
                     : m,
                 );
                 const tid = activeThreadIdRef.current;
@@ -840,6 +912,18 @@ export default function ChatPanel() {
               setActiveChannelId(null);
               wsClosedIntentionally = true;
               ws.close();
+              if (
+                nextMutationMessage &&
+                shouldAutoApplyMutation(
+                  (nextMutationMessage as ChatMessage).dryRunResult ?? null,
+                  mutationConfirmMode,
+                )
+              ) {
+                const autoMessage = nextMutationMessage;
+                setTimeout(() => {
+                  void applyMutationForMessage(autoMessage, { auto: true });
+                }, 0);
+              }
             } else if (evt.type === "chat_interrupted") {
               setMessages((prev) => {
                 const updated = prev.map((m) =>
@@ -935,6 +1019,10 @@ export default function ChatPanel() {
         };
 
         ws.onclose = (event) => {
+          if (runStreamHandoffRef.current) {
+            runStreamHandoffRef.current = false;
+            return;
+          }
           if (!wsClosedIntentionally && event.code !== 1000 && event.code !== 1005) {
             setError("Connection lost — your response may be incomplete. Click Retry to resend.");
             useGraphStore.getState().addToast({ type: "error", message: "Chat stream disconnected" });
@@ -1127,14 +1215,18 @@ export default function ChatPanel() {
     setApplyError(null);
   }, []);
 
-  const handleApplyMutation = useCallback(
-    async () => {
-      const msg = previewingMessage;
-      if (!msg || !graphId || !msg.mutationPlan || applyingRef.current) return;
+  const applyMutationForMessage = useCallback(
+    async (
+      msg: ChatMessage,
+      options?: { auto?: boolean },
+    ) => {
+      if (!graphId || !msg.mutationPlan || applyingRef.current) return;
       applyingRef.current = true;
       setIsApplying(true);
       setApplyError(null);
       const plan = msg.mutationPlan as Record<string, unknown>;
+      const preApplyGraph =
+        useGraphStore.getState().danGraph as Record<string, unknown> | null;
       try {
         const res: ApplyMutationResult = await api.applyMutation(graphId, plan);
         if (!res.success) {
@@ -1142,15 +1234,22 @@ export default function ChatPanel() {
           setApplyError(
             res.stale_plan ? `${errMsg} (graph changed — try again)` : errMsg,
           );
+          if (options?.auto) {
+            setPreviewingMessage(msg);
+            useGraphStore.getState().addToast({
+              type: "error",
+              message: errMsg,
+            });
+          }
           return;
         }
         if (res.diagnostics?.length) {
           const addToast = useGraphStore.getState().addToast;
-          const msg =
+          const diagMsg =
             res.diagnostics.length === 1
               ? res.diagnostics[0]
               : `${res.diagnostics.length} warnings: ${res.diagnostics[0]}${res.diagnostics.length > 1 ? "…" : ""}`;
-          addToast({ type: "warning", message: msg });
+          addToast({ type: "warning", message: diagMsg });
         }
         pushSnapshot();
         await loadGraph(graphId);
@@ -1163,14 +1262,14 @@ export default function ChatPanel() {
               graphId,
               tid,
               msg.id,
-              currentGraph as Record<string, unknown>,
+              currentGraph as unknown as Record<string, unknown>,
             )
             .catch((err: unknown) =>
               console.warn("Failed to save checkpoint:", err),
             );
         }
 
-        const updated = messages.map((m) =>
+        const updated = messagesRef.current.map((m) =>
           m.id === msg.id ? { ...m, mutationStatus: "applied" as const } : m,
         );
         setMessages(updated);
@@ -1188,23 +1287,47 @@ export default function ChatPanel() {
               console.warn("Failed to save thread:", err),
             );
         }
-        setPreviewingMessage(null);
+        if (!options?.auto) {
+          setPreviewingMessage(null);
+        }
         setApplyError(null);
         // Detect build-from-intent completion: graph went from empty to non-empty
-        const wasEmpty = (currentGraph?.nodes as unknown[] | undefined)?.length === 0;
+        const wasEmpty =
+          ((preApplyGraph as { nodes?: unknown[] } | null)?.nodes?.length ?? 0) === 0;
         const isNowPopulated = (useGraphStore.getState().danGraph?.nodes?.length ?? 0) > 0;
         if (wasEmpty && isNowPopulated) {
           setBuildJustCompleted(true);
         }
+        if (options?.auto) {
+          useGraphStore.getState().addToast({
+            type: "success",
+            message: summarizeMutationPlan(plan),
+          });
+        }
       } catch (err) {
-        setApplyError(err instanceof Error ? err.message : "Apply failed");
+        const errorMessage =
+          err instanceof Error ? err.message : "Apply failed";
+        setApplyError(errorMessage);
+        if (options?.auto) {
+          setPreviewingMessage(msg);
+          useGraphStore.getState().addToast({
+            type: "error",
+            message: errorMessage,
+          });
+        }
       } finally {
         applyingRef.current = false;
         setIsApplying(false);
       }
     },
-    [previewingMessage, graphId, messages, pushSnapshot, loadGraph],
+    [graphId, pushSnapshot, loadGraph],
   );
+
+  const handleApplyMutation = useCallback(async () => {
+    const msg = previewingMessage;
+    if (!msg) return;
+    await applyMutationForMessage(msg);
+  }, [previewingMessage, applyMutationForMessage]);
 
   const handleRejectMutation = useCallback(() => {
     const msg = previewingMessage;
@@ -1400,6 +1523,24 @@ export default function ChatPanel() {
                   </button>
                 );
               })}
+              <div className="ml-auto">
+                <button
+                  onClick={toggleMutationConfirmMode}
+                  className={`flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md transition-colors ${
+                    mutationConfirmMode
+                      ? "bg-amber-50 text-amber-700 border border-amber-200"
+                      : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                  }`}
+                  title={
+                    mutationConfirmMode
+                      ? "Review diffs before applying chat mutations"
+                      : "Auto-apply chat mutations"
+                  }
+                >
+                  {mutationConfirmMode ? <PencilLine size={11} /> : <CheckCircle2 size={11} />}
+                  {mutationConfirmMode ? "Review diffs" : "Auto-apply"}
+                </button>
+              </div>
             </div>
 
             {/* Messages area */}
@@ -1575,8 +1716,8 @@ export default function ChatPanel() {
                     onDismiss={dismissMention}
                   />
                 )}
-                {isStreaming ? (
-                  activeChannelId ? (
+                {isStreaming || isRunStreaming ? (
+                  isStreaming && activeChannelId ? (
                     <button
                       onClick={handleStop}
                       className="text-red-500 hover:text-red-700 transition-colors p-0.5 flex-shrink-0"

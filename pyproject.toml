@@ -44,6 +44,9 @@ dan-publish = "dan.cli.publish:main"
 dan-adapter = "dan.cli.adapter:main"
 dan-blocks = "dan.cli.blocks:main"
 dan-chat = "dan.cli.chat:main"
+dan-up = "dan.cli.up:main"
+dan-down = "dan.cli.down:main"
+dan-service = "dan.cli.service:main"
 
 [project.optional-dependencies]
 pdf = ["pypdf>=4.0"]
@@ -64,6 +67,7 @@ messaging = [
     "python-telegram-bot>=21.0",
     "aiosmtplib>=3.0",
 ]
+whatsapp-web = ["neonize>=0.3"]
 all = [
     "pypdf>=4.0",
     "duckduckgo-search>=6.0",
@@ -94,6 +98,8 @@ packages = ["src/dan"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+addopts = "-m 'not integration and not quality_suite'"
 markers = [
     "integration: tests that require a live LLM API key (deselect with -m 'not integration')",
+    "quality_suite: generation quality suite tests (deselect with -m 'not quality_suite')",
 ]

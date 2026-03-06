@@ -275,7 +275,11 @@ export const listCodeRefs = (workflowId: string) =>
 
 export interface ChatMessageResponse {
   message_id: string;
-  stream_channel_id: string;
+  stream_channel_id?: string;
+  type?: "run_started" | "run_error";
+  run_id?: string;
+  scope?: string;
+  error?: { message?: string } | Record<string, unknown>;
 }
 
 export const sendChatMessage = (

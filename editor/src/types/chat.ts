@@ -69,4 +69,5 @@ export interface ChatStreamEvent {
   output_preview?: string;
   duration_ms?: number;
   detected_mode?: string;
+  stream_channel_id?: string;
 }
