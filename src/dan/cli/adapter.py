@@ -373,7 +373,8 @@ Just answer directly. Do NOT add [DAN] prefix."""
         if wf_id:
             return wf_id
 
-        wf_id = f"_adapter_{conv_id[-12:]}"
+        sanitized = re.sub(r"[^A-Za-z0-9]", "", conv_id)[-12:] or "default"
+        wf_id = f"_adapter_{sanitized}"
         try:
             resp = await http.get(f"/api/graphs/{wf_id}")
             if resp.status_code == 404:
@@ -386,10 +387,171 @@ Just answer directly. Do NOT add [DAN] prefix."""
         conversation_workflows[conv_id] = wf_id
         return wf_id
 
+    def _extract_embedded_commands(reply: str) -> list[str]:
+        """Extract /find and /send commands embedded in LLM reply text."""
+        cmds: list[str] = []
+        for line in reply.splitlines():
+            stripped = line.strip()
+            # Match lines like: /find late payment, "Type: /send foo.pdf", etc.
+            for prefix in ("/find ", "/send "):
+                idx = stripped.find(prefix)
+                if idx >= 0:
+                    cmd = stripped[idx:].strip()
+                    if cmd.endswith("`"):
+                        cmd = cmd.rstrip("`")
+                    if cmd.endswith("*"):
+                        cmd = cmd.rstrip("*")
+                    if len(cmd) > len(prefix):
+                        cmds.append(cmd)
+                    break
+        return cmds
+
+    async def _handle_local_command(external_id: str, text: str) -> bool:
+        """Handle adapter-local commands. Returns True if handled."""
+        stripped = text.strip()
+
+        if stripped.startswith("/send "):
+            await _handle_send_command(external_id, stripped[6:].strip())
+            return True
+
+        if stripped.startswith("/find "):
+            await _handle_find_command(external_id, stripped[6:].strip())
+            return True
+
+        return False
+
+    async def _handle_send_command(external_id: str, query: str) -> None:
+        """Send a local file to the user via WhatsApp."""
+        path = Path(query).expanduser()
+
+        if not path.exists():
+            candidates = _search_local_files(query, [Path.home()], limit=5)
+
+            if not candidates:
+                await adapter.send_prompt(
+                    external_id,
+                    f"[DAN] File not found: {query}\n"
+                    f"Try /find <keyword> to search, or use a full path.",
+                    None,
+                )
+                return
+
+            if len(candidates) == 1:
+                path = Path(candidates[0])
+            else:
+                listing = "\n".join(f"  {i+1}. {c}" for i, c in enumerate(candidates))
+                await adapter.send_prompt(
+                    external_id,
+                    f"[DAN] Multiple matches:\n{listing}\n\nUse /send <full_path> to pick one.",
+                    None,
+                )
+                return
+
+        if not path.is_file():
+            await adapter.send_prompt(external_id, f"[DAN] Not a file: {path}", None)
+            return
+
+        if hasattr(adapter, "send_file"):
+            result = await adapter.send_file(external_id, str(path))
+            if result.get("ok"):
+                await adapter.send_prompt(
+                    external_id,
+                    f"[DAN] Sent: {path.name} ({result.get('size_mb', '?')} MB)",
+                    None,
+                )
+            else:
+                await adapter.send_prompt(
+                    external_id,
+                    f"[DAN] Failed to send: {result.get('error', 'unknown error')}",
+                    None,
+                )
+        else:
+            await adapter.send_prompt(
+                external_id,
+                f"[DAN] File sending not supported on this adapter.",
+                None,
+            )
+
+    async def _handle_find_command(external_id: str, query: str) -> None:
+        """Search for local files matching a query — auto-send single match."""
+        search_dirs = [
+            Path.home() / "Dropbox",
+            Path.home() / "Documents",
+            Path.home() / "Desktop",
+            Path.home() / "Downloads",
+        ]
+
+        results = _search_local_files(query, search_dirs, limit=10)
+
+        conversation_pending[external_id] = _PendingAction("find", query, results)
+
+        if not results:
+            await adapter.send_prompt(
+                external_id,
+                f"[DAN] No files found matching '{query}' in Dropbox, Documents, Desktop, Downloads.",
+                None,
+            )
+            return
+
+        if len(results) == 1:
+            await _handle_send_command(external_id, results[0])
+            return
+
+        listing = "\n".join(f"  {i+1}. {r}" for i, r in enumerate(results))
+        await adapter.send_prompt(
+            external_id,
+            f"[DAN] Found {len(results)} file(s):\n{listing}\n\nReply with a number to send.",
+            None,
+        )
+
     async def on_new_message(external_id: str, text: str) -> None:
         if hasattr(adapter, "register_session"):
             key = int(external_id) if external_id.isdigit() else external_id
             adapter.register_session(external_id, key)
+
+        # ── Explicit /commands (/find, /send) ──────────────────────
+        if await _handle_local_command(external_id, text):
+            return
+
+        # ── Heuristic intent classification ────────────────────────
+        pending = conversation_pending.get(external_id)
+        intent, param = _classify_adapter_intent(text, pending)
+        logger.info(
+            "Intent for %s: %s (param=%r, pending=%s)",
+            external_id, intent, param[:60] if param else "", pending,
+        )
+
+        if intent == "continue" and pending is not None:
+            if pending.kind == "find":
+                if len(pending.results) == 1:
+                    await _handle_send_command(external_id, pending.results[0])
+                elif pending.results:
+                    listing = "\n".join(
+                        f"  {i+1}. {r}" for i, r in enumerate(pending.results)
+                    )
+                    await adapter.send_prompt(
+                        external_id,
+                        f"[DAN] Which one?\n{listing}\n\nReply with a number.",
+                        None,
+                    )
+                else:
+                    await _handle_find_command(external_id, pending.query)
+            elif pending.kind == "send":
+                await _handle_send_command(external_id, pending.query)
+            return
+
+        if intent == "file_search" and param:
+            await _handle_find_command(external_id, param)
+            return
+
+        if intent == "file_send" and param:
+            await _handle_send_command(external_id, param)
+            return
+
+        # ── Route to server chat API ───────────────────────────────
+        # Only workflow-build requests get the full tool pipeline;
+        # everything else uses ask mode (text-only, no 24 tools).
+        chat_mode = "auto" if intent == "workflow" else "ask"
 
         try:
             async with httpx.AsyncClient(base_url=server_url, timeout=120.0) as http:
@@ -401,11 +563,16 @@ Just answer directly. Do NOT add [DAN] prefix."""
                     history = history[-40:]
                 conversation_history[external_id] = history
 
+                history_with_context = [
+                    {"role": "system", "content": _ADAPTER_CONTEXT},
+                    *history,
+                ]
+
                 resp = await http.post("/api/chat/message", json={
                     "workflow_id": wf_id,
                     "message": text,
-                    "history": history,
-                    "mode": "auto",
+                    "history": history_with_context,
+                    "mode": chat_mode,
                 })
                 if resp.status_code != 200:
                     await adapter.send_prompt(external_id, f"Error: {resp.text}", None)
