@@ -2289,7 +2289,7 @@ class ChatManager:
                 node_type_reference=NODE_TYPE_REFERENCE,
                 graph_summary=graph_text,
             )
-        if self._capability_registry is not None:
+        if self._capability_registry is not None and mode not in ("ask", "plan"):
             system_content += "\n" + CAPABILITY_TOOLS_REFERENCE
         user_context_block = self._compose_user_context_block()
         if user_context_block:
