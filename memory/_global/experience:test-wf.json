@@ -1,0 +1,31 @@
+{
+  "key": "experience:test-wf",
+  "value": {
+    "workflow_id": "test-wf",
+    "name": "",
+    "description": "Workflow with 0 nodes: [].",
+    "tags": [],
+    "node_types_used": [],
+    "tools_used": [],
+    "skills_applied": [],
+    "run_count": 1,
+    "success_count": 1,
+    "last_run_at": 1772774079.412189,
+    "avg_elapsed_seconds": 0.02,
+    "avg_total_cost": null,
+    "success_patterns": [],
+    "failure_patterns": [],
+    "principles": [],
+    "processed_run_ids": [
+      "race-2"
+    ],
+    "created_at": 1772774079.417983,
+    "updated_at": 1772774079.4218721
+  },
+  "scope": "global",
+  "created_at": 1772774079.421908,
+  "updated_at": 1772774079.421908,
+  "source_run_id": null,
+  "writer_node_id": null,
+  "write_mode": "set"
+}
