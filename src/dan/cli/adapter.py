@@ -580,11 +580,14 @@ Just answer directly. Do NOT add [DAN] prefix."""
 
                 payload = resp.json()
                 channel_id = payload.get("stream_channel_id")
+                logger.info("Chat response for %s: channel=%s", external_id, channel_id)
                 if not channel_id:
                     content = payload.get("content", "")
                     if content:
                         await adapter.send_prompt(external_id, content, None)
                         history.append({"role": "assistant", "content": content})
+                    else:
+                        logger.warning("No channel and no content in response: %s", payload)
                     return
 
                 stream_events: list[dict[str, Any]] = []
@@ -593,20 +596,25 @@ Just answer directly. Do NOT add [DAN] prefix."""
                     import websockets
                     ws_url = server_url.replace("http://", "ws://").replace("https://", "wss://")
                     url = f"{ws_url}/api/chat/{channel_id}/events"
+                    logger.info("Connecting to WS: %s", url)
                     async with websockets.connect(url) as ws:
                         async for msg in ws:
                             event = json.loads(msg)
                             if isinstance(event, dict):
+                                evt_type = event.get("type", "")
+                                logger.info("WS event: %s", evt_type)
                                 stream_events.append(event)
                             if isinstance(event, dict) and event.get("type") == "chat_complete":
                                 break
+                    logger.info("WS stream finished, %d events collected", len(stream_events))
                 except ImportError:
+                    logger.error("websockets not installed — cannot stream chat events")
                     stream_events.append({
                         "type": "chat_complete",
                         "content": "(streaming unavailable — websockets not installed)",
                     })
                 except Exception as ws_exc:
-                    logger.debug("WS stream error: %s", ws_exc)
+                    logger.error("WS stream error: %s", ws_exc, exc_info=True)
 
                 full_reply, mutation_plan = _consume_chat_stream_events(stream_events)
 
