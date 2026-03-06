@@ -1,6 +1,6 @@
 # CLI Reference
 
-DAN provides eight command-line tools. All are installed automatically with `pip install -e ".[dev]"`.
+DAN provides eleven command-line tools. All are installed automatically with `pip install -e ".[dev]"`.
 
 ## Overview
 
@@ -9,6 +9,9 @@ DAN provides eight command-line tools. All are installed automatically with `pip
 | `dan-serve` | Start the backend server (editor + API) |
 | `dan-run` | Execute a workflow (JSON, markdown, Python, or NL goal) |
 | `dan-chat` | Conversational REPL for building/modifying/running workflows |
+| `dan-up` | Start server (if needed) and drop into `dan-chat` |
+| `dan-down` | Stop background server via PID file |
+| `dan-service` | OS-level service management (launchd / systemd) |
 | `dan-status` | List active and recent runs |
 | `dan-logs` | Tail event logs for a run |
 | `dan-publish` | Publish workflows as MCP servers or HTTP APIs |
@@ -37,7 +40,7 @@ Place these in a `.env` file at the project root; all commands auto-load it.
 Start the FastAPI backend. Powers the visual editor, chat API, run management, and all other commands that connect to a server.
 
 ```bash
-dan-serve                    # default: localhost:8000 with auto-reload
+dan-serve                    # default: 127.0.0.1:8000 with auto-reload
 dan-serve --port 9000        # custom port
 dan-serve --no-reload        # production mode (no file watcher)
 ```
@@ -52,7 +55,7 @@ dan-serve --no-reload        # production mode (no file watcher)
 | `--no-reload` | Disable auto-reload | Off |
 
 **Notes:**
-- The visual editor frontend connects to this server (default `http://localhost:8000`)
+- The visual editor frontend connects to this server (default `http://127.0.0.1:8000`)
 - Other commands (`dan-chat`, `dan-run` in server mode, `dan-status`, `dan-logs`) require `dan-serve` running
 - Graphs are stored in `./graphs/` as JSON files
 
@@ -101,7 +104,7 @@ dan-run workflow.json --bg
 | `--background`, `--bg` | Run in background; print run ID and exit | Off |
 | `--goal` | Force NL goal interpretation | Auto-detected |
 | `--local` | Force local engine (skip server) | Auto |
-| `--server SERVER` | Server URL | `http://localhost:8000` |
+| `--server SERVER` | Server URL | `http://127.0.0.1:8000` |
 | `--api-key` | LLM API key | `$DAN_LLM_API_KEY` |
 | `--model` | Default LLM model | `$DAN_LLM_MODEL` |
 | `--base-url` | LLM base URL | `$DAN_LLM_BASE_URL` |
@@ -119,10 +122,12 @@ Interactive REPL for conversational workflow authoring. Think Claude Code for wo
 
 ```bash
 dan-chat                              # start with a scratch (empty) workflow
-dan-chat --workflow-id my-workflow    # load an existing workflow
+dan-chat --workflow-id my-workflow    # load an existing workflow (fetches graph, defaults to mutate mode)
 dan-chat --mode debug                # start in debug mode
 dan-chat --server http://myhost:9000  # connect to a different server
 ```
+
+Loading an existing workflow (`--workflow-id`) fetches the graph on startup and verifies it exists. If the workflow is not found (404), `dan-chat` exits with an error. Mode defaults to `mutate` for existing workflows (use `--mode build` to override).
 
 **Options:**
 
@@ -131,7 +136,14 @@ dan-chat --server http://myhost:9000  # connect to a different server
 | `--workflow-id ID` | Workflow to load | `_scratch` |
 | `--scratch` | Use scratch workflow (same as default) | — |
 | `--server URL` | Server URL | `$DAN_SERVER_URL` or `http://127.0.0.1:8000` |
-| `--mode MODE` | Chat mode | `build` |
+| `--mode MODE` | Chat mode | `build` (scratch) / `mutate` (existing) |
+| `--confirm` | Require explicit `Apply? [Y/n]` before each mutation | Off (auto-apply) |
+
+`DAN_MUTATION_CONFIRM=1` is equivalent to `--confirm`.
+
+**Input features:**
+- **Up/down arrows** recall previous messages (readline history persisted to `~/.dan/chat_history`)
+- **Type while streaming** — messages typed during LLM response are queued and sent after the current response finishes (shown as `[queued] >` when processed)
 
 **Chat modes:**
 
@@ -139,10 +151,10 @@ dan-chat --server http://myhost:9000  # connect to a different server
 |------|----------|
 | `build` | Build a workflow from scratch — LLM generates full graph mutations |
 | `mutate` | Modify an existing workflow — LLM produces targeted mutations |
-| `agent` | General-purpose assistant with graph-aware context |
-| `ask` | Text-only Q&A (no tool calling / mutations) |
-| `plan` | Planning mode — discuss architecture before building |
-| `debug` | Debug mode — includes recent run failures in context |
+| `agent` | General-purpose assistant with graph-aware context and full tool access |
+| `ask` | Q&A with read-only capability tools (experience search, run status, graph listing — no mutations) |
+| `plan` | Planning mode with read-only tools — discuss architecture before building |
+| `debug` | Debug mode — includes recent run failures in context, limited write tools |
 | `auto` | Auto-detect mode from message content |
 
 **REPL commands:**
@@ -159,6 +171,7 @@ dan-chat --server http://myhost:9000  # connect to a different server
 | `/saveas <id>` | Copy workflow to a new ID and switch |
 | `/new [id]` | Create a new empty workflow (auto-names if omitted) |
 | `/rename <name>` | Rename current workflow's display name |
+| `/undo` | Revert the last applied mutation (client-side snapshot stack, max 10) |
 | `/help` | Show available commands |
 | `/exit` | Exit the REPL |
 
@@ -174,7 +187,7 @@ Type /help for commands, /exit to quit.
 
 [LLM streams response...]
 
---- Mutation proposed ---
+--- Mutation applied ---
   Scraping and summarization pipeline
   Operations: 5
     1. add_node (url_input)
@@ -182,8 +195,8 @@ Type /help for commands, /exit to quit.
     3. add_node (key_points_extractor)
     4. add_node (summary_writer)
     5. add_edge (url_input → web_scraper)
-Apply mutation? [Y/n] y
-Mutation applied.
+
+(Use /undo to revert. Use --confirm to require approval before each mutation.)
 
 > /show
   Workflow: _scratch
@@ -243,15 +256,99 @@ Renamed to 'URL Scraper Pipeline'.
 > /exit
 ```
 
-When exiting from `_scratch` with a non-empty graph, `dan-chat` prompts to save:
+When exiting from `_scratch` with a non-empty graph, `dan-chat` auto-generates a name from your first message and prompts to save:
 
 ```
 > /exit
-Save workflow before exiting? [name / Enter to skip] my-pipeline
-Saved as 'my-pipeline'.
+Save as 'url-scraper'? [Y/n/custom name] y
+Saved as 'url-scraper'.
 ```
 
-**Requirements:** `dan-serve` must be running. For local-only chat, see plan 21-8 (not yet implemented).
+Enter accepts the suggestion, `n` skips saving, or type a custom name.
+
+**Server mode** (default): connects to `dan-serve` for full capabilities. **Local mode** (`--local`): runs in-process without a server — useful for quick sessions. `dan-up` handles this automatically.
+
+---
+
+## `dan-up`
+
+Start the DAN server in the background (if not already running) and drop into `dan-chat`.
+
+```bash
+dan-up                # start server on port 8000, then chat
+dan-up --port 9000    # custom port
+```
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--port PORT` | Server port | `8000` |
+
+**Behavior:**
+1. Checks `~/.dan/server.pid` — if server is already running and healthy, skips to step 3.
+2. Starts `dan-serve` in the background, writes PID file, polls `/health` until ready.
+3. Drops into `dan-chat` connected to the running server.
+
+---
+
+## `dan-down`
+
+Stop a background DAN server started by `dan-up`.
+
+```bash
+dan-down    # sends SIGTERM, falls back to SIGKILL after timeout
+```
+
+Reads `~/.dan/server.pid` to find the process.
+
+---
+
+## `dan-service`
+
+OS-level service management. Install DAN as a login service so it starts automatically, with health monitoring and log management.
+
+```bash
+dan-service install                     # install as OS service (default port 8000)
+dan-service install --port 9000         # custom port
+dan-service uninstall                   # remove OS service
+dan-service start                       # start the service now
+dan-service stop                        # stop the service
+dan-service status                      # show running/stopped, PID, port, health
+dan-service health                      # health check probe (exit 0 = OK, 1 = fail)
+dan-service logs                        # show last 50 lines from server logs
+dan-service logs -f                     # follow live output
+dan-service logs -n 100                 # last 100 lines
+```
+
+**Subcommands:**
+
+| Subcommand | Description |
+|------------|-------------|
+| `install` | Generate and install OS service config (launchd plist on macOS, systemd unit on Linux). Enables auto-start at login with `KeepAlive`/`Restart=on-failure`. |
+| `uninstall` | Remove the service config and stop the running service. |
+| `start` | Start the service via `launchctl bootstrap` (macOS) or `systemctl --user start` (Linux). |
+| `stop` | Stop the service via `launchctl bootout` (macOS) or `systemctl --user stop` (Linux). Falls back to PID file if no service installed. |
+| `status` | Display server status: running/stopped, PID, port, health check result, active runs. Rich formatting if `rich` is installed. |
+| `health` | Probe `GET /health`. Prints `OK` and exits 0, or prints `FAIL` and exits 1. |
+| `logs` | Tail server logs from `~/.dan/logs/`. Supports `-f` (follow) and `-n N` (line count). |
+
+**Install options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--host HOST` | Bind address | `127.0.0.1` |
+| `--port PORT` | Bind port | `8000` |
+
+**Platform support:**
+- **macOS:** Generates a launchd plist at `~/Library/LaunchAgents/com.dan.server.plist`. `RunAtLoad` + `KeepAlive` for automatic restart.
+- **Linux:** Generates a systemd user unit at `~/.config/systemd/user/dan-server.service`. `Restart=on-failure`, `RestartSec=5`.
+- **Other platforms:** Not supported for service install. Use `dan-up` for manual lifecycle.
+
+**Log management:**
+- Logs written to `~/.dan/logs/server.stdout.log` and `server.stderr.log`.
+- Rotation: keeps last 5 files (`.1` through `.5`). Rotated on each service start.
+- Total budget: 50 MB default, configurable via `DAN_LOG_MAX_SIZE` env var (bytes).
 
 ---
 
@@ -339,26 +436,80 @@ dan-publish --dir ./graphs/
 
 ## `dan-adapter`
 
-Start messaging adapters that bridge HumanNode interactions to external channels. Users can interact with running workflows via email, Telegram, or WhatsApp.
+Connect DAN to messaging channels. Two modes:
+
+- **Chat mode** (default, no `--workflow`): general-purpose conversational interface, same as `dan-chat` but over Telegram / WhatsApp / email. Build workflows, ask questions, run, share — all from your messaging app.
+- **Workflow mode** (`--workflow FILE`): runs a specific workflow per incoming message, with HumanNode prompts relayed through the messaging channel.
 
 ```bash
+# Chat mode — talk to DAN like dan-chat, over messaging:
+dan-adapter telegram --bot-token "BOT_TOKEN"
+dan-adapter whatsapp-web
+
+# Workflow mode — run a specific workflow per message:
+dan-adapter telegram --bot-token "BOT_TOKEN" --workflow wf.md
+dan-adapter whatsapp-web --workflow wf.md
+
+# WhatsApp Business API (commercial use)
+dan-adapter whatsapp --access-token "TOKEN" --phone-number-id "ID"
+
 # Email adapter
-dan-adapter email --imap-host imap.gmail.com --smtp-host smtp.gmail.com \
-  --email user@gmail.com --password "app-password"
-
-# Telegram bot
-dan-adapter telegram --token "BOT_TOKEN"
-
-# WhatsApp Business API
-dan-adapter whatsapp --phone-id "PHONE_NUMBER_ID" --token "ACCESS_TOKEN"
+dan-adapter email --workflow wf.md --imap-host imap.gmail.com --smtp-host smtp.gmail.com \
+  --imap-user user@gmail.com --imap-password "app-password" \
+  --smtp-host smtp.gmail.com --target-email user@gmail.com
 
 # From a config file
-dan-adapter -c adapter-config.json email
+dan-adapter -c adapter-config.json telegram
 ```
 
-**Subcommands:** `email`, `telegram`, `whatsapp`
+**Subcommands:** `email`, `telegram`, `whatsapp`, `whatsapp-web`
 
-Each adapter registers as a HumanNode renderer — when a workflow run reaches a HumanNode, the adapter delivers the prompt through the configured channel and waits for a response.
+| Subcommand | Setup | Best for |
+|------------|-------|----------|
+| `whatsapp-web` | QR code scan, 2 minutes | Personal use |
+| `telegram` | BotFather token, 5 minutes | Personal/team |
+| `whatsapp` | Meta Business API, 1-2 days | Commercial |
+| `email` | IMAP/SMTP credentials | Formal workflows |
+
+**Chat mode** requires `dan-serve` running (or `dan-up`). Messages route through the server's chat API — same capability router, experience memory, publish/share, and run lifecycle as `dan-chat`.
+
+**Workflow mode** can run standalone (no server needed) — the adapter loads the workflow and runs the engine directly.
+
+### WhatsApp Web setup
+
+```bash
+pip install 'dan[whatsapp-web]'    # install neonize dependency
+dan-adapter whatsapp-web            # chat mode (general-purpose)
+dan-adapter whatsapp-web -w wf.md   # workflow mode (specific workflow)
+```
+
+1. A QR code appears in the terminal
+2. Open WhatsApp on your phone → Settings → Linked Devices → Link a Device
+3. Scan the QR code
+4. Send any message — DAN responds through your personal WhatsApp
+
+Session data is stored in `~/.dan/whatsapp-web/` so you only need to pair once.
+
+### Telegram setup
+
+```bash
+# 1. Message @BotFather on Telegram, send /newbot, get a token
+# 2. Run:
+dan-adapter telegram --bot-token "YOUR_TOKEN"
+# 3. Message your bot — DAN responds
+```
+
+**Common options (all subcommands):**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-w`, `--workflow` | Workflow file path. When omitted, runs in chat mode. | Chat mode |
+| `--server` | DAN server URL (chat mode) | `$DAN_SERVER_URL` or `http://127.0.0.1:8000` |
+| `--timeout` | Response timeout (seconds) | `300` |
+| `--trigger-mode` | `always` / `keyword` / `pattern` | `always` |
+| `--trigger-pattern` | Pattern for keyword/pattern trigger mode | — |
+| `--welcome-message` | Greeting on `/start` | Default |
+| `--error-message` | Error fallback message | Default |
 
 ---
 
@@ -394,20 +545,18 @@ dan-blocks remove my-block               # uninstall a block
 ### Build and run from the terminal
 
 ```bash
-# 1. Start the server
+# Quickest way — starts server + drops into chat
+dan-up
+
+# Or manually:
 dan-serve &
-
-# 2. Build a workflow interactively
 dan-chat
-
-# 3. After building, run it
-dan-run graphs/_scratch.json
 ```
 
 ### One-shot NL execution
 
 ```bash
-dan-serve &
+dan-up    # if server not running
 dan-run "Analyze sentiment in customer reviews from reviews.csv" --auto-approve
 ```
 

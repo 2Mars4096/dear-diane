@@ -123,9 +123,9 @@ When L2 and L3 share the same model name (e.g. Anthropic Opus), `TierPolicy` can
   - [x] 3-3. Emit `model_selected` event with `tier`, `tier_score`, `difficulty`, `impact`, `recoverability` breakdown for observability.
   - [x] 3-4. Support `TierPolicy` as `EngineConfig.default_model_policy` — the primary intended use. Nodes with explicit `model` or `model_policy` still override.
 
-- [ ] 4. Adaptive escalation and de-escalation *(4-1, 4-3, 4-4 done; 4-2 deferred)*
+- [x] 4. Adaptive escalation and de-escalation
   - [x] 4-1. **Escalation on failure**: when output normalizer retries exhaust, record `tier_escalation` event and bump tier by one level for this call (re-select model, retry). Cap at L3.
-  - [ ] 4-2. **De-escalation over runs**: persist per-node tier success stats in `CostTracker` (or new `TierTelemetry` sidecar). After N successful runs at tier X, suggest de-escalation to X-1 via token analytics recommendations (18-4 playbook entry). *(deferred — requires multi-run telemetry infrastructure)*
+  - [x] 4-2. **De-escalation over runs**: persist per-node tier success stats in `TierSuccessTracker` (`providers/tier_tracker.py`). After N successful runs at tier X, suggest de-escalation to X-1 via `suggest_deescalation()`; LLMExecutor logs suggestion when available. Storage: `{memory_dir}/tier_stats.json`.
   - [x] 4-3. **Floor enforcement**: `task_tier` explicit override acts as a floor — scoring always runs; result tier is clamped to be >= the declared tier.
   - [x] 4-4. **Escalation cap**: max 1 escalation per call to bound latency. If L3 also fails, fall through to normal `retry_policy` / `on_failure` handling.
 
@@ -139,7 +139,7 @@ When L2 and L3 share the same model name (e.g. Anthropic Opus), `TierPolicy` can
   - [x] 6-2. Unit tests for `TierScorer` end-to-end: verify score → tier mapping across boundary cases.
   - [x] 6-3. Integration test: build a multi-node graph, run with `TierPolicy` as default, verify different nodes receive different tier scores.
   - [x] 6-4. Escalation test: `_escalate_tier()` helper: micro→routine, routine→reasoning, reasoning→critical, critical→critical.
-  - [ ] 6-5. De-escalation test: simulate repeated success, verify recommendation appears in token analytics. *(deferred — depends on 4-2)*
+  - [x] 6-5. De-escalation test: 9 tests in `test_tier_tracker.py` — record success/failure, suggest after threshold, never below micro, persistence round-trip, stats accuracy.
   - [x] 6-6. Backward compatibility: graphs without `TierPolicy` behave identically to current behavior.
 
 - [x] 7. Documentation and editor integration

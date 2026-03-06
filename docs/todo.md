@@ -1,5 +1,9 @@
 # Todo
 
+## External Automation Tasks
+- [x] [2026-03-06-orbis-resume-state-design](plans/2026-03-06-orbis-resume-state-design.md) — design for matching-only persisted resume and stage-aware continuation in the external Orbis runner
+- [x] [2026-03-06-orbis-resume-state-implementation](plans/2026-03-06-orbis-resume-state-implementation.md) — implemented and verified resume flow, current-page shortcut, and safe task-reopen logic
+
 ## Phase 0 — Solidify Abstractions
 - [x] [1-phase-0-formal-spec](plans/1-phase-0-formal-spec.md) — formal spec as Python types + versioned graph JSON contract
 
@@ -164,7 +168,7 @@
   - [x] [18-2-caching-layer](plans/18-2-caching-layer.md) — provider prompt caching, node memoization, semantic cache, cache APIs
   - [x] [18-3-context-window-management](plans/18-3-context-window-management.md) — externalized state, history policy, safe loop compaction, advisory token budgets
   - [x] [18-4-token-analytics](plans/18-4-token-analytics.md) — per-node breakdown, waste detection, optimization recommendations, evolving playbooks, editor visualization *(token flow edges and before/after estimation deferred)*
-  - [x] [18-5-task-level-model-tiering](plans/18-5-task-level-model-tiering.md) — 3-dimension scoring (difficulty/impact/recoverability), 4 model tiers, TierPolicy, adaptive escalation/de-escalation, docs, editor tier badges + analytics *(de-escalation telemetry [4-2] deferred)*
+  - [x] [18-5-task-level-model-tiering](plans/18-5-task-level-model-tiering.md) — 3-dimension scoring (difficulty/impact/recoverability), 4 model tiers, TierPolicy, adaptive escalation/de-escalation, docs, editor tier badges + analytics, tier de-escalation telemetry (4-2)
 
 ## Phase 11 — Meta-Orchestrator
 > Autonomous planning, execution, and self-repair. Given a high-level goal ("write a paper on X in Y format"), the meta-orchestrator discovers relevant past workflows, plans/adapts/generates a workflow graph, executes it, diagnoses failures at every severity level, and applies graduated repairs — from prompt tweaks to full redesign — while allowing human intervention at any step.
@@ -197,14 +201,14 @@
   - [x] [21-5-shareable-blocks](plans/21-5-shareable-blocks.md) — block package format, export/import, versioning, local registry, editor integration, backend API endpoints
   - [x] [21-6-cli-chat-mode](plans/21-6-cli-chat-mode.md) — `dan-chat` REPL for conversational workflow authoring (CLI parity with editor ChatPanel)
   - [x] [21-7-gateway-text-dispatch](plans/21-7-gateway-text-dispatch.md) — implement text dispatch so `dan-run "goal"` works with server
-  - [ ] ~~[21-8-local-cli-chat-fallback](plans/21-8-local-cli-chat-fallback.md)~~ — promoted to [25-1-local-chat-fallback](plans/25-1-local-chat-fallback.md) under Phase 15
+  - [ ] ~~[21-8-local-cli-chat-fallback](plans/21-8-local-cli-chat-fallback.md)~~ — promoted to [26-1-local-chat-and-launcher](plans/26-1-local-chat-and-launcher.md) under Phase 16
 
 ## Phase 12.1 — Cross-Phase Deferred Completion Waves
 > Parallel closeout waves used to finish high-ROI deferred tasks across existing phases without opening new architecture scope.
 
 - [x] [22-deferred-wave-1](plans/22-deferred-wave-1.md) — wave 1: tiering finish, token runtime (loop compaction/cache/budget), and mention UX polish
 - [x] [22-deferred-wave-2](plans/22-deferred-wave-2.md) — wave 2: tier docs/editor integration, deferred runtime features, and frontend analytics polish (plus review hardening)
-- [ ] [22-3-review-hardening](plans/22-3-review-hardening.md) — round 3 review: graph ID sanitization, approval race, cancel route, human-input ownership, context-edge semantics, strict-edge restore, alias collisions, CLI startup, docs cleanup
+- [x] [22-3-review-hardening](plans/22-3-review-hardening.md) — round 3 review: graph ID sanitization, approval race, cancel route, human-input ownership, context-edge semantics, strict-edge restore, alias collisions, CLI startup, docs cleanup
 
 ## Phase 13 — Multi-Surface Gateway
 > Unify all interaction surfaces (CLI, messaging adapters, MCP) through `dan-serve` as a central hub with shared run management, cross-surface event streaming, and activity tracking. Any surface can trigger a workflow, observe activity from any other surface, and resolve HumanNode prompts cross-surface.
@@ -222,42 +226,55 @@
 > requires LLMs to produce structurally precise graph operations (exact port names, node configs,
 > edge types) — a task they fail at frequently (12+ schema-drift fixes in the last week alone).
 > Switch to higher-level generation where LLMs produce what they're good at (intent, structure,
-> code) and deterministic compilers handle the rest.
+> code) and deterministic compilers handle the rest. Keep all four sub-plans, but execute them
+> with hard boundaries: prove each block standalone first, then compose them. Do not add heavy
+> runtime autonomy or long-lived self-repair loops to the core path. The goal is boringly reliable
+> generation, not a more complicated orchestrator.
 
-- [ ] [24-reliable-generation](plans/24-reliable-generation.md) — builder codegen, intent compiler, quality suite, auto-diagnosis
-  - [ ] [24-1-builder-codegen-path](plans/24-1-builder-codegen-path.md) — A. LLM generates `dan.builder` Python DSL in chat mode; sandbox-execute via `SandboxRunner`; compile to graph; replace mutation JSON as primary build-from-intent path. Few-shot examples in system prompt. Fallback to mutation path for small edits on existing graphs.
-  - [ ] [24-2-intent-compiler](plans/24-2-intent-compiler.md) — B. Two-phase generation: Phase 1 — LLM produces structured intent (goal, stages[], per-stage purpose/model/iteration, data sources, review loops). Phase 2 — deterministic compiler maps intent → graph via template expansion + builder DSL. Separates "what" (LLM-good) from "how" (code-good).
-  - [ ] [24-3-generation-quality-suite](plans/24-3-generation-quality-suite.md) — C. 15+ golden test intents (paper writing, RAG QA, data analysis, multi-step chain, review loop, fan-out, etc.). Automated eval: intent → generate → validate graph → dry-run. Success rate tracking. CI regression gate.
-  - [ ] [24-4-auto-diagnosis-loop](plans/24-4-auto-diagnosis-loop.md) — D. When a generated workflow fails at runtime, auto-extract error context, map to responsible node, regenerate targeted fix (not full re-plan). Wire into MetaController repair engine (19-3).
+- [x] [24-reliable-generation](plans/24-reliable-generation.md) — builder codegen, intent compiler, quality suite, and bounded diagnosis with composition gates
+  - [x] [24-1-builder-codegen-path](plans/24-1-builder-codegen-path.md) — A. Make builder DSL codegen the main generation path for new workflows. LLM generates `dan.builder` Python, run it in `SandboxRunner`, compile to graph, validate, and only then save/apply. Keep scope narrow: one-shot generation + deterministic validation + clear error reporting. No hidden retries beyond a small bounded repair pass. Acceptance: generated builder code is readable, reproducible, and round-trips cleanly through the existing graph pipeline.
+  - [x] [24-2-intent-compiler](plans/24-2-intent-compiler.md) — B. Add a second, constrained path for common workflow shapes. Phase 1: LLM emits a compact structured intent (goal, stages, inputs, outputs, loop/review requirements, data sources). Phase 2: a deterministic compiler maps that intent to templates/builder code. Keep it narrow and explicit: only support a small catalog of common patterns at first, with strict diagnostics when intent exceeds compiler coverage. Acceptance: common cases are more predictable than free-form codegen, and unsupported cases fail fast back to the primary path.
+  - [x] [24-3-generation-quality-suite](plans/24-3-generation-quality-suite.md) — C. Build the verification harness before trusting composition. Curate golden intents across the main workload families (paper writing, literature review, RAG QA, multi-step analysis, review loop, fan-out, tool-heavy flows). Evaluate both paths independently: intent/codegen → graph validation → compile/load round-trip → dry-run/smoke-run. Track pass rates, failure modes, and regression snapshots. Acceptance: every new generation change must prove it did not break known cases before rollout.
+  - [x] [24-4-bounded-diagnosis-loop](plans/24-4-bounded-diagnosis-loop.md) — D. Add a small, explicit repair loop for failed generations/runs: extract validation/runtime errors, map them to the smallest responsible artifact (intent schema, builder code block, graph edge/port, node config), and attempt a targeted correction. Keep this outside the steady-state runtime path: bounded attempts only, no autonomous long-running redesign loop inside the core engine. Acceptance: diagnosis improves recovery on known failures without making normal generation slower or harder to reason about.
+  - [x] Post-completion hardening: enforce quality-suite fixture constraints (`min_nodes`, `node_types`) and baseline total-count regression checks; wire diagnosis port auto-fix to real `edge_endpoint` errors with fallback to re-prompt when deterministic repair is unavailable; scope port rewrites to wiring contexts and emit explicit mismatch error taxonomy for quality triage.
 
-## Phase 15 — Frictionless UX
-> Reduce steps from "I have an idea" to "workflow running." Today: start server → start chat →
-> describe → wait → review diff → approve → /run → provide inputs → wait. Target: one command →
-> describe → it runs. Auto-approve by default, rich CLI visualization, no server dependency.
+## Phase 15 — Chat as Unified Control Plane
+> Collapse all existing capabilities behind the conversational interface. Today DAN has 8 CLI
+> commands, a visual editor, messaging adapters, and a meta-orchestrator — but they're separate
+> surfaces with separate UX. The goal: **chat is the single front door**, whether the user is in
+> `dan-chat`, the editor ChatPanel, Telegram, WhatsApp, or another conversational client. The
+> meta-orchestrator routes intent to the right subsystem, and the user never leaves the
+> conversation. "Have you done a lit review before?" → memory query. "Adapt it for supply chain"
+> → planner. "Run it" → engine. "Share it with John" → publish. Same behavior across chat surfaces.
 
-- [ ] [25-frictionless-ux](plans/25-frictionless-ux.md) — single-command launch, auto-approve, rich display, local-first chat
-  - [ ] [25-1-local-chat-fallback](plans/25-1-local-chat-fallback.md) — A. `dan-chat` works without `dan-serve` (promotes deferred 21-8). In-process engine + direct LLM calls. No server dependency for basic chat-and-build. Server mode remains for multi-surface/visual editor.
-  - [ ] [25-2-unified-launcher](plans/25-2-unified-launcher.md) — B. `dan up` — checks for running server, starts in background if needed, drops into chat. `dan down` — stops background server. PID file at `~/.dan/server.pid`. Single command from zero to chatting.
-  - [ ] [25-3-auto-approve-undo](plans/25-3-auto-approve-undo.md) — C. Auto-apply mutations by default in `dan-chat` (no `Apply? [Y/n]` prompt). `/undo` reverts last mutation. `--confirm` flag restores approval workflow for cautious use. Trust-but-verify over ask-every-time.
-  - [ ] [25-4-rich-cli-display](plans/25-4-rich-cli-display.md) — D. ASCII DAG visualization for `/show` (topological column layout with box-drawing characters). Streaming node-by-node progress during `/run`. Workflow diff display on mutations. Rich table for `/list`.
+- [x] [25-chat-control-plane](plans/25-chat-control-plane.md) — chat as unified shell over all existing subsystems and chat surfaces
+  - [x] [25-1-capability-router](plans/25-1-capability-router.md) — A. `ChatCapabilityRegistry` + `CapabilityContext` + multi-tool dispatch in `ChatManager`. Mode-aware filtering (ask/plan read-only). Base tools: `list_graphs`, `get_activity`.
+  - [x] [25-2-experience-in-chat](plans/25-2-experience-in-chat.md) — B. 5 experience tools: `search_workflow_history`, `get_workflow_details`, `search_run_history`, `get_learned_principles`, `discover_capabilities`. Lexical fallback when embedding index unavailable.
+  - [x] [25-3-publish-share-from-chat](plans/25-3-publish-share-from-chat.md) — C. 8 publish/share/export tools: `publish_workflow`, `unpublish_workflow`, `export_workflow`, `share_workflow`, `list_published`, `get_publish_status`, `import_block`, `list_blocks`.
+  - [x] [25-4-run-lifecycle-from-chat](plans/25-4-run-lifecycle-from-chat.md) — D. 9 run lifecycle tools: `start_run`, `get_run_status`, `list_active_runs`, `cancel_run`, `resume_run`, `get_run_logs`, `get_run_checkpoints`, `rerun_from_checkpoint`, `submit_human_input`. Resolved references ("latest", "last_failed", "paused").
+  - [x] [25-5-auto-approve-undo](plans/25-5-auto-approve-undo.md) — E. Auto-apply mutations by default, `/undo` command with graph snapshot stack (max 10), `--confirm` flag / `DAN_MUTATION_CONFIRM=1` restores approval prompt.
 
-## Phase 16 — Always-On Service
-> DAN as a persistent background service you can talk to anytime. Starts at login, notifies on
-> completion, remembers context across sessions, reachable from terminal, browser, or messaging.
-> The "personal AI workflow service" experience.
+## Phase 16 — Always-On Personal Service
+> Once chat is the unified control plane (Phase 15), make it persistent: always running, always
+> reachable, always remembering. DAN becomes a background service you talk to anytime — from
+> `dan-chat`, the editor chat, Telegram, WhatsApp, or any future chat surface. It remembers your
+> past work, preferences, and patterns across sessions. It notifies you when things finish or need
+> attention.
 
-- [ ] [26-always-on-service](plans/26-always-on-service.md) — daemon mode, notifications, persistent user context, proactive service
-  - [ ] [26-1-daemon-mode](plans/26-1-daemon-mode.md) — A. `dan service install` creates macOS launchd plist (+ Linux systemd unit). `dan service start/stop/status/logs`. Auto-start at login. Health checks. Log rotation to `~/.dan/logs/`.
-  - [ ] [26-2-notifications](plans/26-2-notifications.md) — B. Push notifications on run completion/failure. macOS Notification Center via `osascript`/`terminal-notifier`. Terminal bell. Optional webhook callback URL. Wired to `GlobalEventBus` subscriber.
-  - [ ] [26-3-persistent-user-context](plans/26-3-persistent-user-context.md) — C. Cross-session conversation memory — DAN remembers past requests, preferences, common patterns. "You built an equity research pipeline last week — want to reuse it?" Quick-resume recent workflows. Preference extraction (preferred models, output formats, domains).
-  - [ ] [26-4-proactive-service](plans/26-4-proactive-service.md) — D. Scheduled/recurring runs (cron-style). Background improvement suggestions ("your review loop always takes 5 iterations — want me to adjust the prompt?"). Activity digest notifications.
+- [x] [26-always-on-service](plans/26-always-on-service.md) — daemon mode, zero-friction entry, persistent memory, notifications, rich CLI display *(phase complete; optional LLM-based preference extraction remains deferred)*
+  - [x] [26-1-local-chat-and-launcher](plans/26-1-local-chat-and-launcher.md) — A. `dan-chat` works without `dan-serve` (promotes deferred 21-8): in-process ChatManager plus local `RunManager`/`RunStore` for `/run` parity, cancellation, and HumanNode handling. `dan up` checks for running server, uses startup lock (`~/.dan/server.lock`), starts in background if needed, and drops into chat. `dan down` stops background server. PID file at `~/.dan/server.pid`.
+  - [x] [26-2-daemon-mode](plans/26-2-daemon-mode.md) — B. `dan-service install/uninstall/start/stop/status/health/logs`. macOS launchd plist + Linux systemd unit. Auto-start at login, `KeepAlive`/`Restart`. Health checks. Log rotation to `~/.dan/logs/`. 51 tests.
+  - [x] [26-3-persistent-user-context](plans/26-3-persistent-user-context.md) — C. `UserProfile` model + `PreferenceExtractor` (heuristic) + `ConversationMemoryStore` (keyword search) plus `ChatManager` prompt injection, startup quick-resume, and one-per-session preference suggestions. *(Optional LLM extraction still deferred)*
+  - [x] [26-4-notifications](plans/26-4-notifications.md) — D. `NotificationManager` + `MacOSNotifier` + `WebhookNotifier` + `TerminalBellNotifier` + `NotificationConfig`, including `app.py` GlobalEventBus lifecycle wiring.
+  - [x] [26-5-rich-cli-display](plans/26-5-rich-cli-display.md) — E. ASCII DAG renderer for `/show` (topological sort, box-drawing). Streaming node-by-node progress during `/run`. Mutation diff display. Rich table for `/list`. `/show --code`/`--json`/`--stats`. Graceful degradation without Rich. (~2 days)
+  - [ ] [26-6-whatsapp-web-adapter](plans/26-6-whatsapp-web-adapter.md) — F. WhatsApp Web adapter for personal use (QR code pairing, no Business API). Implemented: `WhatsAppWebAdapter`, `dan-adapter whatsapp-web`, `neonize` optional dependency, QR pairing docs, and adapter chat-mode wiring. Remaining: live QR smoke test and reviewed mutation-confirmation flow on messaging surfaces.
 
 ## Backlog (unphased)
 
 ### Infrastructure / CI
 - [ ] **Playwright E2E browser tests** (12-6 tasks 5-6) — mode transitions, mention autocomplete, stop generation, export. Requires Playwright setup + CI pipeline.
 - [ ] **CI regression job** (12-6 task 2-8, 3-6) — run NL→mutation golden suite and provider compat matrix on schedule. Requires CI runner.
-- [ ] **Snapshot/regression tests** (8-2 task 6-7, 8-4 task 3-7) — compile known fixtures, compare output graph JSON to stored snapshots. Requires CI snapshot infrastructure.
+- [x] ~~**Snapshot/regression tests**~~ (8-2 task 6-7, 8-4 task 3-7) — `tests/test_snapshots/` with 8 golden snapshots (5 builder + 3 loader). `UPDATE_SNAPSHOTS=1` regenerates.
 - [ ] **Mutation metrics baseline** (12-6 tasks 4-5 through 4-7) — capture 3-5 day baseline on main, set sprint targets, end-of-phase report. Requires production deployment.
 
 ### Integration tests requiring real LLM
@@ -292,7 +309,7 @@
 - [ ] **Per-operation approval gates** (12-4 task 5) — bidirectional WebSocket handshake for per-tool-call approve/reject
 - [ ] **@Web mentions** (12-3 task 6) — async network calls during mention resolution, loading UX, attribution
 - [ ] **Thread branching** (12-5 task 7) — "Branch from here", parent-child tree, branch indicator in thread list
-- [ ] **Message queuing** (12-5 task 2) — type while LLM generates, queue management, re-resolve mentions on send
+- [x] ~~**Message queuing**~~ (12-5 task 2) — CLI implemented: background `select.select` + queue during streaming, processed after response. Editor re-resolve mentions deferred.
 - [ ] **Sandbox execution display** (12-4 task 6) — terminal-like rendering, ANSI colors, file artifacts, resource usage
 
 ### Deferred runtime features
@@ -302,23 +319,23 @@
 - [x] **Automatic state externalization** (18-3 task 1-3) — scheduler/executor writes loop/foreach/team state to StateStore automatically
 - [x] **Run-level advisory token budget** (18-3 task 4-1) — `token_budget` on EngineConfig as global planning signal
 - [x] **Principle compaction** (17-2 task 3-4) — PrincipleStore.compact() merges similar principles at threshold
-- [ ] **ReflectionNode authoring surfaces** (17-2 task 7) — builder DSL `wf.reflection()`, markdown `type: reflection`, editor palette/config
-- [ ] **Two-tier reference resolution** (18-1 task 4-4) — artifact store + memory mirroring for pass_by_reference
+- [x] ~~**ReflectionNode authoring surfaces**~~ (17-2 task 7) — builder DSL `wf.reflection()`, markdown `type: reflection`, both decompilers. Editor palette/config deferred (frontend).
+- [x] **Two-tier reference resolution** (18-1 task 4-4) — artifact store + threshold-based ref passing; memory mirroring deferred
 - [ ] **Encode-to-memory pattern** (18-1 task 4-5) — large outputs stored as MemoryItems, downstream retrieves summary
 - [ ] **Hyperedge JIT loading** (18-1 task 7-5) — inject hyperedge summaries, load full rules on demand
 - [x] ~~**Unified cross-source token budget**~~ (18-3 task 4-4) → completed in [22-deferred-wave-1](plans/22-deferred-wave-1.md) S2
 - [ ] **Checkpoint/resume for parallel subagents** (7-9 task 3) — capture per-branch completion status, resume pending branches
 - [x] **Builder DSL for tools** (7-3 task 8-3) — `wf.tool("name", tool_id="file_read", config={...})` with `config` alias
 - [ ] **RAG reranking** (9-1 task 6-4) — LLM-based re-scoring of top_k*3 candidates
-- [ ] **Tier de-escalation telemetry** (18-5 task 4-2) — persist per-node tier success stats across runs, suggest cheaper tiers after repeated success
+- [x] **Tier de-escalation telemetry** (18-5 task 4-2) — persist per-node tier success stats across runs, suggest cheaper tiers after repeated success
 - [x] ~~**Tier badge in editor** (18-5 task 7-2)~~ — completed (L0–L3 badges + hover tooltip in DanNode)
 - [x] ~~**Tier analytics panel** (18-5 task 7-3)~~ — completed (distribution, cost comparison, per-node table in TokenAnalyticsPanel)
 
 ### Stretch goals
 - [x] ~~**Auto-mode detection**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)
 - [ ] **Parallel subagent visualization** (7-9 task 5-3) — show parallel branches and fan-in in execution
-- [ ] **ToolExecutor integration test** (7-3 task 9-4) — end-to-end built-in tool via ToolExecutor
-- [ ] **Cross-workflow error migration notes** (17-1 task 6-3) — migration guidance for collection naming/scope
+- [x] **ToolExecutor integration test** (7-3 task 9-4) — end-to-end built-in tool via ToolExecutor
+- [x] ~~**Cross-workflow error migration notes**~~ (17-1 task 6-3) — added to `docs/bugs.md`: collection naming, global vs workflow scope, cross-environment migration, principle dedup
 
 ### Existing backlog items
 - [ ] **User system** — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments. (Low priority — revisit when cloud/SaaS deployment becomes a goal.)

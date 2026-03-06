@@ -32,7 +32,7 @@
   - [x] 3-4. Structural equivalence: node types, port names, edge connections, sub-graphs compared
   - [x] 3-5. Test suite: simple chain + complex workflow (ForEach, loop, if) round-trips pass
   - [x] 3-6. Known asymmetries documented: position/ui dropped, metadata.source dropped, edge IDs regenerated
-  - [ ] 3-7. Regression snapshots (deferred — snapshot testing infrastructure not yet in place)
+  - [x] 3-7. Regression snapshots
 
 - [x] 4. Tests
   - [x] 4-1. Unit: node→agent file decompilation (TestDecompileSimpleWorkflow, TestDecompileComplexWorkflow)

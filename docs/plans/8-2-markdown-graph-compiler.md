@@ -51,7 +51,7 @@
   - [x] 6-4. Unit: compiler diagnostics — error cases (missing agent file, port mismatch), warnings (ambiguous wire)
   - [x] 6-5. Integration: compile a simple 3-agent workflow markdown → valid Graph → validate with existing graph validators
   - [x] 6-6. Integration: compile a workflow with ForEach + Loop → verify sub_graphs and control-flow node structure
-  - [ ] 6-7. Snapshot: compile known fixture workflow → compare output graph JSON to stored snapshot (catches unintended regressions) *(deferred — snapshot tests, nice-to-have; no CI snapshot infrastructure yet)*
+  - [x] 6-7. Snapshot: compile known fixture workflow → compare output graph JSON to stored snapshot (catches unintended regressions)
   - [x] 6-8. Fixture files: add compiled workflow fixtures to `tests/fixtures/markdown/`
 
 ## Decisions

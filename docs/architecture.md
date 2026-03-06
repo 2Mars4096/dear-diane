@@ -67,7 +67,7 @@ deep-agent-network/
     engine/                      # Phase 1 — async execution engine
       __init__.py                # Public API: Engine, EngineConfig, RunResult, etc.
       state.py                   # NodeStatus, PortDataStore, ExecutionState
-      context_runtime.py         # SharedContextStore, ArtifactStore, LocalStateManager, ScopedContextView (Layers 2-4 + boundary isolation)
+      context_runtime.py         # SharedContextStore, ArtifactStore, LocalStateManager, ScopedContextView; resolve_reference/create_reference for pass_by_reference (18-1)
       executor.py                # EngineConfig, NodeExecutor protocol, ExecutionContext, ExecutorRegistry
       conditions.py              # Safe expression evaluator for IfElse/WhileLoop conditions
       normalizer.py              # OutputNormalizer — JSON extraction, schema validation, re-prompt
@@ -82,6 +82,9 @@ deep-agent-network/
       state_store.py             # Phase 10 (18-3) — StateStore protocol, FileSystemStateStore (atomic JSON), NullStateStore; typed schemas (LoopIterationState, TeamTurnState, NodeExecutionSummary)
       token_optimization.py      # Phase 10 (18-1/18-3/18-4) — SummarizationConfig, PromptAnalyzer, ContextSelector, PayloadPruner, ToolSchemaResolver, ContextToolProvider, HistoryManager, LoopCompactor, TokenBudgetAdvisor, TokenWasteAnalyzer, WasteFinding, TokenOptimizationReport, OptimizationPlaybook, PlaybookEntry
       cache.py                   # Phase 10 (18-2) — NodeResultCache (LRU+TTL+disk) and SemanticCache (EmbeddingRegistry + VectorStore)
+      user_profile.py            # Phase 16 (26-3) — UserProfile Pydantic model, RecentWorkflow, load/save to ~/.dan/profile.json, format_recent_workflows()
+      preference_extractor.py    # Phase 16 (26-3) — PreferenceExtractor heuristic extraction (model preferences, domains, output format) from conversation history
+      conversation_memory.py     # Phase 16 (26-3) — ConversationMemoryStore, ConversationSummary, cross-session keyword search, context block formatting
       scheduler.py               # Topological sort (DAG fast-path + cycle-aware for gate loops), parallel dispatch, Engine.run()/resume(), event emission
     rag/                         # Phase 6 — RAG / knowledge retrieval subsystem
       __init__.py                # EmbeddingProvider protocol, EmbeddingResult, OpenAI/Local providers, EmbeddingRegistry
@@ -115,6 +118,17 @@ deep-agent-network/
       self_knowledge.py          # Phase 11 (19-5) — SelfKnowledgeIndex, RetrievedChunk; indexes DAN's own docs for planner grounding
       authoring.py               # Phase 11 (19-6) — RuntimeAuthor, ToolSpec, SkillSpec; dynamic tool/skill generation, sandbox testing, registration, persistence
       architect.py               # Phase 11 (19-7) — SystemArchitect, SystemPlan, WorkflowSpec, RoutingConfig, SystemManifest; multi-workflow system decomposition
+      intent_schema.py           # Phase 24-2 — WorkflowIntent, StageIntent, StageType Pydantic models; structured intent for deterministic compilation
+      intent_compiler.py         # Phase 24-2 — IntentCompiler (WorkflowIntent → builder DSL code), CoverageChecker, CoverageResult; deterministic fast path for common workflow shapes
+      intent_extraction.py      # Phase 24-2 — Intent extraction prompt, tool schema, few-shot examples for LLM function-calling
+      diagnosis.py               # Phase 24-4 — GenerationError, ErrorClassifier, ArtifactMapper, CorrectionStrategySelector, AutoFixApplier, DiagnosisLoop, DiagnosisMetrics; bounded repair for failed generations
+    notifications/               # Phase 16 (26-4) — push notification channels for run events
+      __init__.py                # Public API: NotificationConfig, NotificationManager, load_notification_config
+      config.py                  # NotificationConfig, ChannelConfig, WebhookConfig, load/save from ~/.dan/notifications.json + env vars
+      manager.py                 # NotificationManager — subscribes to GlobalEventBus, filters notification events, dispatches to channels
+      macos.py                   # MacOSNotifier — osascript / terminal-notifier for macOS Notification Center
+      terminal.py                # Terminal bell helpers (should_ring_bell, ring_bell, maybe_ring_on_event) + TerminalBellNotifier channel adapter
+      webhook.py                 # WebhookNotifier — async httpx POST with retry, custom headers, structured JSON payload
     executors/                   # Phase 1 — built-in node executors
       __init__.py                # Auto-registers built-in executors
       llm.py                     # LLMExecutor — OpenAI-compatible (vectorengine.ai default)
@@ -158,22 +172,33 @@ deep-agent-network/
       portal.py                  # generate_mcp_config(), generate_api_docs(), generate_openapi_spec() — consumer-facing output
     cli/                         # Phase 12 — terminal CLI for headless execution
       __init__.py                # load_env(), resolve_config(), ensure_dan_dir(), _try_import_rich()
-      run.py                     # dan-run entry point: argparse CLI, source detection, CLIHumanRenderer, TUI display, background mode
+      run.py                     # dan-run entry point: argparse CLI, source detection, CLIHumanRenderer, TUI display, background mode, optional terminal bell on run-complete/fail/input-needed events
       status.py                  # dan-status entry point: list active/recent background runs from ~/.dan/runs/
       logs.py                    # dan-logs entry point: tail JSONL event logs with --follow streaming
       publish.py                 # dan-publish entry point: argparse CLI, MCP/HTTP/both modes, --generate-config/--docs/--openapi output modes (21-3)
       adapter.py                 # dan-adapter placeholder (21-4)
       blocks.py                  # dan-blocks CLI — list/install/export/remove/pack/info subcommands (21-5)
-      chat.py                    # dan-chat entry point: REPL for chat API (POST /api/chat/message, WS /api/chat/{channel_id}/events), mutation confirmation (21-6)
+      dag_display.py             # ASCII DAG renderer: render_dag(), render_stats(), format_workflow_table(); topological sort, box-drawing (Unicode/ASCII), per-type colors via Rich
+      mutation_diff.py           # Mutation diff display: format_mutation_diff(); ANSI-colored +/-/~ prefixes with graceful degradation
+      run_progress.py            # RunProgressTracker: streaming node execution progress with status icons, elapsed time, final summary
+      chat.py                    # dan-chat entry point: REPL for chat API with --local fallback to LocalChatRuntime (21-6, 26-1), quick-resume + profile recency updates + one-per-session preference suggestion prompts (26-3), /show flags (26-5), optional terminal bell hooks (26-4)
+      chat_local.py              # LocalChatRuntime — in-process ChatManager mirroring ChatClient interface for serverless operation (26-1)
+      up.py                      # dan-up entry point: check/start server, startup lock (`~/.dan/server.lock`), PID file management, drop into dan-chat (26-1)
+      down.py                    # dan-down entry point: stop background server via PID file (26-1)
+      service.py                 # dan-service entry point: OS-level service management (install/uninstall/start/stop/status/health/logs) — macOS launchd + Linux systemd (26-2)
+      service_runner.py          # Shared service runner: log rotation + PID bookkeeping + uvicorn launch, used by launchd/systemd/manual starts (26-2)
     server/                      # Phase 2 — FastAPI backend for visual editor
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
-      app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry, experience APIs, and meta-orchestrator APIs (plan/validate/run/pause/resume/events)
+      app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry, experience APIs, and meta-orchestrator APIs (plan/validate/run/pause/resume/events); lifespan wires ChatManager with user profile + conversation memory and manages NotificationManager subscription to GlobalEventBus
+      chat_factory.py            # Shared factory for LocalChatRuntime chat dependencies; server lifespan currently wires directly in app.py (26-1)
       exec.py                    # execute_python() — shared Python executor for run_python and run_strategy_script
       graph_store.py             # Filesystem-based graph JSON persistence
       graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run; TOOL_PORT_MANIFESTS for tool-specific port declarations; ApplySkill mutation op
       skill_library.py           # SKILL_LIBRARY: domain-specific prompt-injection skills (management_science_writing, informs_latex_style) targeted by node tags
-      chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history)
+      capability_registry.py     # Phase 15 (25-1) — ChatCapabilityRegistry, CapabilityContext, CapabilityResult, build_tool_schema(); mode-aware multi-tool dispatch for chat-as-control-plane
+      capability_handlers.py     # Phase 15 (25-1–25-4) — 24 capability tool handlers (experience, run lifecycle, publish/share/export, graph); register_*_capabilities() functions
+      chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA) + capability tools (ChatCapabilityRegistry), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history), profile/memory prompt injection, and conversation-summary persistence (26-3 integration)
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
       run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing + RunStore integration + metric enrichment + learning event emissions (dual origin/reflection routing) + incremental experience consolidation/indexing + emit_rule_lifecycle_event() for API-driven rule management
       run_store.py               # Filesystem-backed persistence for run summaries (JSON) and event logs (JSONL). Layout: runs/{workflow_id}/{run_id}.json + .events.jsonl
@@ -253,8 +278,23 @@ deep-agent-network/
     test_engine/                 # Engine unit + integration tests
     test_builder/                # Builder DSL unit + integration tests
     test_loader/                 # Markdown loader parser/compiler/type-inference tests
+    test_snapshots/              # Snapshot/regression tests (builder + loader output vs stored JSON)
     test_migration/              # Migration helper tests (legacy → gate)
+    test_cli/                   # CLI unit tests (LocalChatRuntime, PID management, dan up/down, chat parser flags, chat_factory)
     test_server/                 # Server API, run manager, and event tests
+    test_notifications/          # Notification infrastructure tests (config, manager, macos, webhook, terminal bell)
+    quality_suite/               # Generation quality suite: golden intent loader + tests
+      loader.py                  # load_golden_intents() — validates and returns fixture list
+      graph_equivalence.py       # GraphEquivalenceChecker + round_trip_check()
+      codegen_runner.py          # Codegen path evaluator: fixture → WorkflowIntent → compile → exec → validate → round-trip
+      intent_runner.py           # Intent compiler path evaluator: fixture → coverage → compile → validate → round-trip
+      report.py                  # GenerationQualityReport + baseline regression comparison
+      __main__.py                # python -m tests.quality_suite CLI entry point
+      test_quality_suite.py      # 25 tests for runners, reports, baseline, topology, conversions
+    fixtures/
+      golden_intents/            # 18 golden intent JSON fixtures (5 families × 3 variants + 3 edge cases) + schema.json
+      generation_quality_baseline.json  # Committed pass-rate baseline for regression detection
+      markdown/                  # Markdown loader test fixtures
   graphs/                        # Saved graph JSON files (filesystem persistence)
   pyproject.toml                 # Pydantic v2 + OpenAI SDK + FastAPI + uvicorn + httpx + pytest; optional: anthropic, google-generativeai, pypdf, duckduckgo-search
   README.md                      # User-facing project overview, quick start, feature summary
@@ -447,6 +487,10 @@ Inheritance: hyperedges on a parent graph propagate to sub-graphs unless explici
 
 When multiple hyperedges attach to the same node, they compose in order: `policy > rule > skill`. Within the same type, more specific scope wins (node ID > tag > type > subgraph).
 
+#### Hyperedge JIT Loading (18-1)
+
+When `EngineConfig.hyperedge_jit_loading=True`, hyperedges whose content exceeds `hyperedge_jit_threshold` (default 500 tokens) are injected as compact one-line summaries instead of full content. The LLM receives a `load_hyperedge(name)` tool to fetch full skill/rule content on demand. This reduces prompt tokens for workflows with many or large hyperedges.
+
 #### Why Hyperedges, Not Context Edges
 
 Context edges (Layer 3) carry *data* — key-value pairs that nodes read/write. Hyperedges carry *behavior modifiers* — they change how nodes execute, not what data they consume. A skill doesn't add a key to the shared context store; it modifies the prompt of every node it's attached to. This is a fundamentally different concern.
@@ -550,6 +594,7 @@ result = await engine.resume(graph, run_id="abc123")
 - **Multi-provider dispatch:** `ProviderRegistry` (in `dan.providers.registry`) routes model names to the correct API. Resolution order: (1) exact `model_provider_map` override → (2) prefix pattern match (`gpt-*`/`o1*`/`o3*`/`o4*`→OpenAI, `claude-*`→Anthropic, `gemini-*`→Google) → (3) `"default"` provider fallback (OpenAI-compatible endpoint). Custom prefix patterns can be added via `registry.add_prefix_pattern()`.
 - **Built-in providers:** `OpenAIProvider` (any OpenAI-compatible endpoint, default), `AnthropicProvider` (optional), `GoogleProvider` (optional). Provider SDKs are optional deps.
 - **Key management:** Env vars `DAN_OPENAI_API_KEY`, `DAN_ANTHROPIC_API_KEY`, `DAN_GOOGLE_API_KEY` are scanned at server startup (`app.py` `_get_engine_config()`). Each non-empty key auto-registers the corresponding provider. `DAN_LLM_API_KEY` + `DAN_LLM_BASE_URL` configure the default provider (backward compatible with existing vectorengine.ai setup).
+- **`DAN_USE_CODEGEN_BUILD`** (default `"1"`): When `"1"`, empty-graph build mode uses the builder-codegen generation path (Phase 14). Set to `"0"` to force the legacy mutation-JSON path for all builds. Only affects new workflow creation; edit-mode mutations are always unchanged.
 - Output normalization built into LLM executor: extract JSON -> validate against schema -> re-prompt with error -> retry
 - Transient API errors (rate limits, timeouts) retried with configurable `retry_policy`
 - **Cost estimation:** static `COST_PER_1K_TOKENS` table in `providers/costs.py` covering major models. `estimate_cost()` utility function. Best-effort — unknown models return None.

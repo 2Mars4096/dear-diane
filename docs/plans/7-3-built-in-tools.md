@@ -44,7 +44,7 @@
   - [x] 9-1. Unit test per tool: happy path, edge cases (empty input, missing file, timeout, invalid URL)
   - [x] 9-2. Unit: `get_all_tools()` discovers all tools
   - [x] 9-3. Unit: `TOOL_METADATA` schema validation for every tool
-  - [ ] 9-4. Integration: `ToolExecutor` with built-in tool registry runs a `file_read` tool node *(deferred — e2e test, not blocking core functionality)*
+  - [x] 9-4. Integration: `ToolExecutor` with built-in tool registry runs a `file_read` tool node — 4 tests in `test_tool_executor_integration.py`
   - [x] 9-5. Security: `shell_command` rejects blocked commands, all file tools reject path traversal outside workspace root (`../` escape, absolute path outside root)
 - [x] 10. Dependencies
   - [x] 10-1. Add `httpx>=0.27.0` to main dependencies

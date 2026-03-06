@@ -1182,6 +1182,7 @@ dan-serve
 | `human_in_the_loop` | `wf.human_in_the_loop()` | `response` | Human input |
 | `rag_operator` | `wf.rag()` | `chunks` | Vector-store retrieval |
 | `validator` | `wf.validator()` | `valid` | Data validation with rule routing |
+| `reflection` | `wf.reflection()` | `principles` | Post-run analysis, distills errors into causal principles |
 | `input` | *(loader/scoped_run only)* | *(variable-based)* | Workflow entry variables — created by loader or scoped_run, not by builder |
 
 ### Edge Types
@@ -1211,6 +1212,7 @@ dan-serve
 | `checkpoint_enabled` | `bool` | `True` | Enable checkpointing |
 | `output_norm_max_retries` | `int` | `3` | Schema validation retries |
 | `token_budget` | `int \| None` | `None` | Advisory run-level token budget (guidance only) |
+| `pass_by_reference_threshold_tokens` | `int` | `2000` | When `pass_by_reference=True` on ContextEdge, only store ref in ArtifactStore if value exceeds this token count |
 | `cache_enabled` | `bool` | `True` | Enable memoization + semantic cache lookups |
 | `cache_max_size_mb` | `int` | `100` | Max in-memory cache size before LRU eviction |
 | `cache_dir` | `str \| None` | `None` | Optional persistent cache directory |

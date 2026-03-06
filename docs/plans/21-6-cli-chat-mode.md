@@ -76,8 +76,11 @@ This plan adds `dan-chat` — a REPL that sends messages to `POST /api/chat/mess
 | `src/dan/server/app.py` | Scratch bootstrap in `chat_message` handler; `_pipe_run_events` `run_cancelled` break |
 | `src/dan/server/scoped_run.py` | `_CHAT_EVENT_TYPES` + `map_run_event_to_chat_block` for `human_input_needed`, `run_cancelled` |
 | `src/dan/server/gateway/router.py` | `_run_after_approval` `start_run` exception handling |
+| `src/dan/server/chat_manager.py` | Chat-plan normalization, strict-edge coercion, mutation auto-repair |
+| `src/dan/server/graph_mutator.py` | Node alias tracking, explicit ID collision handling |
+| `src/dan/executors/input.py` | Aggregate input payload for generated ports |
 | `pyproject.toml` | `dan-chat` entry point |
-| `tests/test_cli/test_chat.py` | 33 unit tests |
+| `tests/test_cli/test_chat.py` | unit + integration tests |
 
 ## Patch: Workflow Management Commands
 

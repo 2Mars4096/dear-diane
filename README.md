@@ -88,7 +88,7 @@ All surfaces compile to the same `dan_graph_v1` JSON and coexist:
 |---------|----------|-------------|
 | **Python DSL** (`dan.builder`) | Most programmable — loops, parameterization, testing | Power users, CI, programmatic generation |
 | **Visual Editor** | Most interactive — drag-and-drop, live execution, debugging | Exploration, debugging, demos |
-| **Markdown agents** (`dan.loader`) | Most accessible — natural language, minimal syntax | Rapid authoring, non-programmers *(coming soon)* |
+| **Markdown agents** (`dan.loader`) | Most accessible — natural language, minimal syntax | Rapid authoring, non-programmers |
 
 ## Visual Editor
 
@@ -122,19 +122,29 @@ dan-run workflow.json --interactive        # prompt for HumanNode inputs
 
 ### `dan-chat` — Conversational Workflow Authoring
 
-Build, modify, and run workflows through an interactive REPL (CLI equivalent of the editor's chat panel):
+Build, modify, and run workflows through an interactive REPL. Chat is the unified control plane — the LLM can search workflow history, start/cancel runs, publish/export workflows, and manage the full run lifecycle without leaving the conversation.
 
 ```bash
 dan-chat                                  # start with scratch workflow
 dan-chat --workflow-id my-workflow        # load an existing workflow
-dan-chat --mode build                     # build-from-scratch mode (default)
+dan-chat --local                          # force local mode (no server required)
+dan-chat --confirm                        # require approval before mutations
+```
+
+`dan-chat` works without a running server — when the server is unavailable, it automatically falls back to local mode with an in-process ChatManager. Use `--local` to force local mode even if a server is running.
+
+### `dan-up` / `dan-down` — Server Lifecycle
+
+```bash
+dan-up                                    # start server (if needed) and drop into chat
+dan-up --port 9000                        # use custom port
+dan-down                                  # stop background server
 ```
 
 Inside the REPL:
-- **Chat naturally** — describe what you want and the LLM proposes graph mutations
-- **Review & apply** — see mutation summaries, dry-run results, then `Apply mutation? [Y/n]`
-- `/show` — inspect current graph (nodes, edges, types)
-- `/run` — execute the workflow, with full event streaming and human input prompts
+- **Chat naturally** — describe what you want and the LLM proposes and auto-applies mutations
+- **24 capability tools** — experience search, run lifecycle, publish/share/export, graph listing — the LLM picks the right tool based on your intent
+- `/undo` — revert the last mutation; `/show` — inspect current graph; `/run` — execute
 - `/help` — list all commands
 
 See [docs/cli.md](docs/cli.md) for the full CLI reference with all options, environment variables, and common workflows.
