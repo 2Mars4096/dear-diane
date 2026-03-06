@@ -169,6 +169,45 @@ class DanClient:
                     async for msg in ws:
                         received_any = True
                         data = json.loads(msg)
+                        if isinstance(data, dict) and data.get("event_type") == "_catchup":
+                            emitted_pending_ids: set[str] = set()
+                            pending_events = [
+                                evt
+                                for evt in (data.get("pending_human_inputs") or [])
+                                if isinstance(evt, dict)
+                            ]
+                            pending_req_ids: set[str] = set()
+                            for evt in pending_events:
+                                evt_data = evt.get("data")
+                                if isinstance(evt_data, dict):
+                                    req_id = evt_data.get("request_id")
+                                    if req_id:
+                                        pending_req_ids.add(req_id)
+                            replay = list(data.get("buffered_events") or [])
+                            replay.extend(pending_events)
+                            for evt in replay:
+                                if not isinstance(evt, dict):
+                                    continue
+                                evt_type = evt.get("event_type")
+                                req_id = None
+                                evt_data = evt.get("data")
+                                if isinstance(evt_data, dict):
+                                    req_id = evt_data.get("request_id")
+                                if evt_type == "human_input_needed" and req_id:
+                                    # Replay only currently pending prompts.
+                                    if req_id not in pending_req_ids:
+                                        continue
+                                    if req_id in emitted_pending_ids:
+                                        continue
+                                    emitted_pending_ids.add(req_id)
+                                yield evt
+                                if evt_type in (
+                                    "run_completed",
+                                    "run_failed",
+                                    "run_cancelled",
+                                ):
+                                    return
+                            continue
                         yield data
                         if data.get("event_type") in (
                             "run_completed",

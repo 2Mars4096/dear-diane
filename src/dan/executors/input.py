@@ -23,4 +23,9 @@ class InputExecutor:
         outputs: dict[str, Any] = {}
         for var in node.variables:
             outputs[var.name] = inputs.get(var.name, var.default)
+        # Provide an aggregate payload for "input" output-port wiring.
+        # This keeps generated plans like input.input -> llm.input functional
+        # while preserving variable-specific outputs.
+        if "input" not in outputs:
+            outputs["input"] = dict(outputs)
         return NodeResult(outputs=outputs, status=NodeStatus.COMPLETED)
