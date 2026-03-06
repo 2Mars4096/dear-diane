@@ -109,6 +109,36 @@ The editor is a full-featured workflow builder inspired by LangFlow, Flowise, an
 - **Edge types** — toggle between data/control/context edges; color-coded with labels
 - **Auto-layout** — dagre-based layout with one click
 
+## CLI Tools
+
+### `dan-run` — Execute a Workflow
+
+```bash
+dan-run workflow.json                     # run a JSON graph
+dan-run examples/paper_writing.py         # run a Python builder script
+dan-run "Summarize the latest AI papers"  # natural-language goal → MetaController plans + runs
+dan-run workflow.json --interactive        # prompt for HumanNode inputs
+```
+
+### `dan-chat` — Conversational Workflow Authoring
+
+Build, modify, and run workflows through an interactive REPL (CLI equivalent of the editor's chat panel):
+
+```bash
+dan-chat                                  # start with scratch workflow
+dan-chat --workflow-id my-workflow        # load an existing workflow
+dan-chat --mode build                     # build-from-scratch mode (default)
+```
+
+Inside the REPL:
+- **Chat naturally** — describe what you want and the LLM proposes graph mutations
+- **Review & apply** — see mutation summaries, dry-run results, then `Apply mutation? [Y/n]`
+- `/show` — inspect current graph (nodes, edges, types)
+- `/run` — execute the workflow, with full event streaming and human input prompts
+- `/help` — list all commands
+
+See [docs/cli.md](docs/cli.md) for the full CLI reference with all options, environment variables, and common workflows.
+
 ## Builder DSL
 
 ```python
@@ -179,6 +209,10 @@ The backend exposes a REST + WebSocket API:
 | GET | `/api/graphs/{id}` | Load graph JSON |
 | PUT | `/api/graphs/{id}` | Save graph JSON |
 | DELETE | `/api/graphs/{id}` | Delete graph |
+| POST | `/api/graphs/{id}/apply-mutation` | Apply chat-generated mutation |
+| POST | `/api/chat/message` | Send chat message (NL workflow authoring) |
+| WS | `/api/chat/{channel}/events` | Stream chat/mutation events |
+| POST | `/api/gateway/dispatch` | Unified workflow dispatch (JSON, NL text, workflow ID) |
 | POST | `/api/runs` | Start execution |
 | POST | `/api/runs/{id}/resume` | Resume from checkpoint |
 | GET | `/api/runs/{id}` | Run status |
@@ -197,9 +231,18 @@ The backend exposes a REST + WebSocket API:
 | 3 — Paper-writing proof of concept (end-to-end workflow) | Done |
 | 3.5 — Frontend design (multi-layer nav, execution viz, logging, palette, polish) | Done |
 | 3.75 — Visual editor full editing (tabs, gates, ports, validation, workflow reuse) | Done |
-| 4 — Memory & context scoping | Planned |
-| 5 — Markdown agent format (`dan.loader`) | Planned |
-| 6 — Shareable blocks / marketplace | Planned |
+| 4 — Core hardening (retry/fallback, multi-provider, tools, templates) | Done |
+| 5 — Markdown agent format (`dan.loader`) | Done |
+| 6 — Extended capabilities (RAG, sandbox, validators) | Done |
+| 7 — Author & Distribute (CLI, publish API/MCP, messaging, blocks, PyPI) | Done |
+| 7.1 — Structure review | Done |
+| 7.2 — Cursor-parity chat experience | Done |
+| 8 — Observe & recover (persistence, debug workbench) | Done |
+| 9 — Deep systems (memory, behavior modifiers, execution primitives, self-evolving) | Done |
+| 10 — Token optimization (compression, caching, context management, analytics) | Done |
+| 11 — Meta-orchestrator (autonomous planning, repair, self-knowledge) | In progress |
+| 12 — Author & Distribute v2 (dan-chat, gateway text dispatch) | Done |
+| 13 — Multi-surface gateway | Done |
 
 ## License
 

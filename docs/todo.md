@@ -169,14 +169,14 @@
 ## Phase 11 — Meta-Orchestrator
 > Autonomous planning, execution, and self-repair. Given a high-level goal ("write a paper on X in Y format"), the meta-orchestrator discovers relevant past workflows, plans/adapts/generates a workflow graph, executes it, diagnoses failures at every severity level, and applies graduated repairs — from prompt tweaks to full redesign — while allowing human intervention at any step.
 
-- [ ] [19-meta-orchestrator](plans/19-meta-orchestrator.md) — autonomous workflow planning, execution, graduated repair, cross-workflow learning, **self-authoring**
+- [x] [19-meta-orchestrator](plans/19-meta-orchestrator.md) — autonomous workflow planning, execution, graduated repair, cross-workflow learning, **self-authoring**
   - [x] [19-1-workflow-experience-memory](plans/19-1-workflow-experience-memory.md) — experience schema/store/index, incremental consolidation, dedupe, auto-indexing, cross-workflow principle sharing (global scope on ErrorMemoryIndex + PrincipleStore + EngineConfig flag)
   - [x] [19-2-workflow-planner](plans/19-2-workflow-planner.md) — reuse-first planner with deterministic Generate compiler, PlanReview, EngineConfig fields, few-shot examples, builder-code path (sandbox subprocess), LLM integration tests
   - [x] [19-3-structural-repair](plans/19-3-structural-repair.md) — graduated repair engine: RepairClassifier, ParameterRepairGenerator, StructuralRepairPlanner, RedesignTrigger, RepairEscalator, RepairActionStore, RedesignResult; all unit + LLM + engine pipeline tests pass
   - [x] [19-4-autonomous-execution-controller](plans/19-4-autonomous-execution-controller.md) — meta-session loop: create/run/pause/resume/events, experience feedback (success+failure), cross-session learning, WebSocket event stream wired end-to-end
-  - [ ] [19-5-self-knowledge-rag](plans/19-5-self-knowledge-rag.md) — index DAN's own docs into dedicated RAG collection; planner retrieves relevant API sections before every planning invocation
-  - [ ] [19-6-runtime-authoring](plans/19-6-runtime-authoring.md) — dynamically generate, sandbox-test, register, and persist custom tools and skills at runtime
-  - [ ] [19-7-system-architect-mode](plans/19-7-system-architect-mode.md) — decompose complex multi-workflow intents into coordinated systems with shared memory, tools/skills, and routing
+  - [x] [19-5-self-knowledge-rag](plans/19-5-self-knowledge-rag.md) — index DAN's own docs into dedicated RAG collection; planner retrieves relevant API sections before every planning invocation
+  - [x] [19-6-runtime-authoring](plans/19-6-runtime-authoring.md) — dynamically generate, sandbox-test, register, and persist custom tools and skills at runtime
+  - [x] [19-7-system-architect-mode](plans/19-7-system-architect-mode.md) — decompose complex multi-workflow intents into coordinated systems with shared memory, tools/skills, and routing
 
 ## Phase 11.5 — Patch & Polish
 > Close documentation debt, polish chat/editor UX with deferred quick-wins, and activate recently-built backend features with frontend integration. No new architecture — purely finishing deferred work.
@@ -197,12 +197,14 @@
   - [x] [21-5-shareable-blocks](plans/21-5-shareable-blocks.md) — block package format, export/import, versioning, local registry, editor integration, backend API endpoints
   - [x] [21-6-cli-chat-mode](plans/21-6-cli-chat-mode.md) — `dan-chat` REPL for conversational workflow authoring (CLI parity with editor ChatPanel)
   - [x] [21-7-gateway-text-dispatch](plans/21-7-gateway-text-dispatch.md) — implement text dispatch so `dan-run "goal"` works with server
-  - [ ] [21-8-local-cli-chat-fallback](plans/21-8-local-cli-chat-fallback.md) — dan-chat without server (optional/stretch)
+  - [ ] ~~[21-8-local-cli-chat-fallback](plans/21-8-local-cli-chat-fallback.md)~~ — promoted to [25-1-local-chat-fallback](plans/25-1-local-chat-fallback.md) under Phase 15
+
 ## Phase 12.1 — Cross-Phase Deferred Completion Waves
 > Parallel closeout waves used to finish high-ROI deferred tasks across existing phases without opening new architecture scope.
 
 - [x] [22-deferred-wave-1](plans/22-deferred-wave-1.md) — wave 1: tiering finish, token runtime (loop compaction/cache/budget), and mention UX polish
 - [x] [22-deferred-wave-2](plans/22-deferred-wave-2.md) — wave 2: tier docs/editor integration, deferred runtime features, and frontend analytics polish (plus review hardening)
+- [ ] [22-3-review-hardening](plans/22-3-review-hardening.md) — round 3 review: graph ID sanitization, approval race, cancel route, human-input ownership, context-edge semantics, strict-edge restore, alias collisions, CLI startup, docs cleanup
 
 ## Phase 13 — Multi-Surface Gateway
 > Unify all interaction surfaces (CLI, messaging adapters, MCP) through `dan-serve` as a central hub with shared run management, cross-surface event streaming, and activity tracking. Any surface can trigger a workflow, observe activity from any other surface, and resolve HumanNode prompts cross-surface.
@@ -215,7 +217,40 @@
   - [x] [23-5-mcp-thin-client](plans/23-5-mcp-thin-client.md) — E. Refactor `dan-publish` MCP/HTTP to use `DanClient`, server-side sessions
   - [x] Unified `PublishRuntime` — `GatewayRuntime` (primary) + `LocalRuntime` (fallback) behind ABC; fixes broken MCP status/submit in server mode; `--server`/`--local` flags on `dan-publish` CLI
 
+## Phase 14 — Reliable Workflow Generation
+> Fix the core "describe what you want → working workflow" loop. The current mutation-JSON path
+> requires LLMs to produce structurally precise graph operations (exact port names, node configs,
+> edge types) — a task they fail at frequently (12+ schema-drift fixes in the last week alone).
+> Switch to higher-level generation where LLMs produce what they're good at (intent, structure,
+> code) and deterministic compilers handle the rest.
 
+- [ ] [24-reliable-generation](plans/24-reliable-generation.md) — builder codegen, intent compiler, quality suite, auto-diagnosis
+  - [ ] [24-1-builder-codegen-path](plans/24-1-builder-codegen-path.md) — A. LLM generates `dan.builder` Python DSL in chat mode; sandbox-execute via `SandboxRunner`; compile to graph; replace mutation JSON as primary build-from-intent path. Few-shot examples in system prompt. Fallback to mutation path for small edits on existing graphs.
+  - [ ] [24-2-intent-compiler](plans/24-2-intent-compiler.md) — B. Two-phase generation: Phase 1 — LLM produces structured intent (goal, stages[], per-stage purpose/model/iteration, data sources, review loops). Phase 2 — deterministic compiler maps intent → graph via template expansion + builder DSL. Separates "what" (LLM-good) from "how" (code-good).
+  - [ ] [24-3-generation-quality-suite](plans/24-3-generation-quality-suite.md) — C. 15+ golden test intents (paper writing, RAG QA, data analysis, multi-step chain, review loop, fan-out, etc.). Automated eval: intent → generate → validate graph → dry-run. Success rate tracking. CI regression gate.
+  - [ ] [24-4-auto-diagnosis-loop](plans/24-4-auto-diagnosis-loop.md) — D. When a generated workflow fails at runtime, auto-extract error context, map to responsible node, regenerate targeted fix (not full re-plan). Wire into MetaController repair engine (19-3).
+
+## Phase 15 — Frictionless UX
+> Reduce steps from "I have an idea" to "workflow running." Today: start server → start chat →
+> describe → wait → review diff → approve → /run → provide inputs → wait. Target: one command →
+> describe → it runs. Auto-approve by default, rich CLI visualization, no server dependency.
+
+- [ ] [25-frictionless-ux](plans/25-frictionless-ux.md) — single-command launch, auto-approve, rich display, local-first chat
+  - [ ] [25-1-local-chat-fallback](plans/25-1-local-chat-fallback.md) — A. `dan-chat` works without `dan-serve` (promotes deferred 21-8). In-process engine + direct LLM calls. No server dependency for basic chat-and-build. Server mode remains for multi-surface/visual editor.
+  - [ ] [25-2-unified-launcher](plans/25-2-unified-launcher.md) — B. `dan up` — checks for running server, starts in background if needed, drops into chat. `dan down` — stops background server. PID file at `~/.dan/server.pid`. Single command from zero to chatting.
+  - [ ] [25-3-auto-approve-undo](plans/25-3-auto-approve-undo.md) — C. Auto-apply mutations by default in `dan-chat` (no `Apply? [Y/n]` prompt). `/undo` reverts last mutation. `--confirm` flag restores approval workflow for cautious use. Trust-but-verify over ask-every-time.
+  - [ ] [25-4-rich-cli-display](plans/25-4-rich-cli-display.md) — D. ASCII DAG visualization for `/show` (topological column layout with box-drawing characters). Streaming node-by-node progress during `/run`. Workflow diff display on mutations. Rich table for `/list`.
+
+## Phase 16 — Always-On Service
+> DAN as a persistent background service you can talk to anytime. Starts at login, notifies on
+> completion, remembers context across sessions, reachable from terminal, browser, or messaging.
+> The "personal AI workflow service" experience.
+
+- [ ] [26-always-on-service](plans/26-always-on-service.md) — daemon mode, notifications, persistent user context, proactive service
+  - [ ] [26-1-daemon-mode](plans/26-1-daemon-mode.md) — A. `dan service install` creates macOS launchd plist (+ Linux systemd unit). `dan service start/stop/status/logs`. Auto-start at login. Health checks. Log rotation to `~/.dan/logs/`.
+  - [ ] [26-2-notifications](plans/26-2-notifications.md) — B. Push notifications on run completion/failure. macOS Notification Center via `osascript`/`terminal-notifier`. Terminal bell. Optional webhook callback URL. Wired to `GlobalEventBus` subscriber.
+  - [ ] [26-3-persistent-user-context](plans/26-3-persistent-user-context.md) — C. Cross-session conversation memory — DAN remembers past requests, preferences, common patterns. "You built an equity research pipeline last week — want to reuse it?" Quick-resume recent workflows. Preference extraction (preferred models, output formats, domains).
+  - [ ] [26-4-proactive-service](plans/26-4-proactive-service.md) — D. Scheduled/recurring runs (cron-style). Background improvement suggestions ("your review loop always takes 5 iterations — want me to adjust the prompt?"). Activity digest notifications.
 
 ## Backlog (unphased)
 
