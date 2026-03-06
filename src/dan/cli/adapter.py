@@ -634,8 +634,23 @@ Just answer directly. Do NOT add [DAN] prefix."""
                     full_reply += "\n\n(Reply 'apply' to apply, or describe changes.)"
 
                 if full_reply:
-                    await adapter.send_prompt(external_id, full_reply, None)
+                    clean_reply = full_reply
+                    while clean_reply.startswith("[DAN] "):
+                        clean_reply = clean_reply[6:]
+                    clean_reply = clean_reply.strip()
+
+                    if clean_reply:
+                        logger.info("Sending reply to %s (%d chars)", external_id, len(clean_reply))
+                        await adapter.send_prompt(external_id, clean_reply, None)
+
+                    embedded_cmds = _extract_embedded_commands(clean_reply)
+                    for cmd in embedded_cmds:
+                        logger.info("Auto-executing embedded command: %s", cmd)
+                        await _handle_local_command(external_id, cmd)
+
                     history.append({"role": "assistant", "content": full_reply})
+                else:
+                    logger.warning("No reply content to send for %s (events: %d)", external_id, len(stream_events))
 
         except Exception:
             logger.exception("Chat-mode message handling failed for %s", external_id)
@@ -978,7 +993,12 @@ def main() -> None:
         else:
             asyncio.run(_run_adapter(adapter, None, config))
     except KeyboardInterrupt:
-        pass
+        print("\nShutting down...", file=sys.stderr)
+        try:
+            asyncio.get_event_loop().run_until_complete(adapter.stop())
+        except Exception:
+            pass
+        os._exit(0)
 
 
 if __name__ == "__main__":
