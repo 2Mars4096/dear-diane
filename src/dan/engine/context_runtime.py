@@ -109,6 +109,13 @@ class ArtifactStore:
     def has(self, uri: str) -> bool:
         return uri in self._store and len(self._store[uri]) > 0
 
+    def get(self, uri: str) -> Any | None:
+        """Fetch artifact by URI; return None if not found (no KeyError)."""
+        try:
+            return self.fetch(uri)
+        except KeyError:
+            return None
+
     def snapshot(self) -> dict[str, Any]:
         return {
             uri: [
@@ -125,6 +132,33 @@ class ArtifactStore:
                 (ArtifactRef.model_validate(v["ref"]), v["data"])
                 for v in versions
             ]
+
+
+def resolve_reference(value: Any, artifacts: ArtifactStore) -> Any:
+    """If value is a reference dict (__ref__ key), resolve from ArtifactStore."""
+    if isinstance(value, dict) and "__ref__" in value:
+        ref_key = value["__ref__"]
+        if isinstance(ref_key, str):
+            resolved = artifacts.get(ref_key)
+            return resolved if resolved is not None else value
+    return value
+
+
+def create_reference(
+    key: str,
+    value: Any,
+    artifacts: ArtifactStore,
+    preview_chars: int = 200,
+) -> dict[str, Any]:
+    """Store value in ArtifactStore and return a lightweight reference."""
+    artifacts.store(
+        key,
+        value,
+        description=f"Reference {key}",
+    )
+    preview = str(value)[:preview_chars]
+    size = len(str(value))
+    return {"__ref__": key, "__preview__": preview, "__size__": size}
 
 
 class ScopedContextView(SharedContextStore):

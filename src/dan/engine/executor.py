@@ -160,6 +160,7 @@ class EngineConfig:
     # -- 18-5: Task-level model tiering ----------------------------------------
     tier_map: dict[str, str] | None = None
     tier_params: dict[str, dict[str, Any]] | None = None
+    tier_tracker: Any | None = None  # TierSuccessTracker for de-escalation telemetry (18-5 task 4-2)
     # -- 17-3: Self-evolving rules (Tier 3) -----------------------------------
     self_evolving_rules_enabled: bool = False
     self_evolving_approval_required: bool = False
@@ -172,6 +173,9 @@ class EngineConfig:
     state_store_dir: str | None = None
     # -- 18-1: Smart context assembly -----------------------------------------
     token_budget: int | None = None  # Advisory run-level token budget
+    hyperedge_jit_loading: bool = False
+    hyperedge_jit_threshold: int = 500  # Token estimate; above this, use JIT summary
+    pass_by_reference_threshold_tokens: int = 2000  # Only use ref when value exceeds this
     # -- 18-4: Token analytics ------------------------------------------------
     optimization_rule_approval_mode: str = "always_approve"  # "always_approve" | "auto_accept"
     # -- 19-1: Experience memory -----------------------------------------------
@@ -249,6 +253,7 @@ class ExecutionContext:
         human_renderer: HumanRenderer | None = None,
         # -- 18-5: Task-level model tiering ------------------------------------
         graph: Any | None = None,
+        tier_tracker: Any | None = None,
     ) -> None:
         self.state = state
         self.config = config
@@ -273,6 +278,7 @@ class ExecutionContext:
         self.cost_tracker = cost_tracker
         # -- 18-5: Task-level model tiering
         self.graph = graph
+        self.tier_tracker = tier_tracker
         # -- 16-3: Auto-wrap legacy callback into renderer protocol
         if human_renderer is not None:
             self.human_renderer: HumanRenderer | None = human_renderer

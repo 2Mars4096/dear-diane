@@ -15,7 +15,14 @@ from typing import Any, Awaitable, Callable
 
 from dan.engine.cache import NodeResultCache, SemanticCache
 from dan.engine.checkpoint import CheckpointStore, FileSystemCheckpointStore
-from dan.engine.context_runtime import ArtifactStore, LocalStateManager, ScopedContextView, SharedContextStore
+from dan.engine.context_runtime import (
+    ArtifactStore,
+    LocalStateManager,
+    ScopedContextView,
+    SharedContextStore,
+    create_reference,
+    resolve_reference,
+)
 from dan.engine.events import EngineEvent, EventType
 from dan.engine.executor import EngineConfig, ExecutionContext, ExecutorRegistry, NodeResult
 from dan.engine.memory import MemoryEntry, MemoryScope, MemoryWriteRequest
@@ -834,6 +841,7 @@ class Engine:
             hyperedge_resolver=hyperedge_resolver,
             model_selector=model_selector,
             cost_tracker=cost_tracker,
+            tier_tracker=getattr(self.config, "tier_tracker", None),
         )
         context._node_result_cache = node_result_cache
         context._semantic_cache = semantic_cache
@@ -1234,6 +1242,7 @@ class Engine:
                 inputs[port.name] = state.port_data.get(virtual_src, port.name)
 
         self._read_context_edges(node_id, graph, context, inputs)
+        self._resolve_input_references(inputs, context)
 
         if context.active_loop_scope_id:
             _gate = graph.node_by_id(context.active_loop_scope_id)
@@ -1685,6 +1694,15 @@ class Engine:
                     pass
 
     @staticmethod
+    def _resolve_input_references(
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> None:
+        """Resolve reference dicts (__ref__) in inputs from ArtifactStore."""
+        for key in list(inputs):
+            inputs[key] = resolve_reference(inputs[key], context.artifacts)
+
+    @staticmethod
     def _write_context_edges(
         node_id: str,
         graph: Graph,
@@ -1700,25 +1718,23 @@ class Engine:
                 continue
             value_to_write = value
             if edge.pass_by_reference:
-                uri = (
-                    f"artifact://{getattr(context.state, 'run_id', 'run')}/"
-                    f"{node_id}/{edge.source_port}/{int(_time.time() * 1000)}"
+                threshold = getattr(
+                    context.config,
+                    "pass_by_reference_threshold_tokens",
+                    2000,
                 )
-                try:
-                    ref = context.artifacts.store(
-                        uri=uri,
-                        data=value,
-                        description=f"ContextEdge ref {edge.id} ({node_id}.{edge.source_port})",
+                token_count = estimate_tokens(str(value))
+                if token_count > threshold:
+                    key = (
+                        f"ref:{getattr(context.state, 'run_id', 'run')}:"
+                        f"{node_id}:{edge.source_port}:{int(_time.time() * 1000)}"
                     )
-                    value_to_write = {
-                        "__ref__": True,
-                        "uri": ref.uri,
-                        "summary": str(value)[:200],
-                        "tokens": estimate_tokens(str(value)),
-                        "source_edge_id": edge.id,
-                    }
-                except Exception:
-                    value_to_write = value
+                    try:
+                        value_to_write = create_reference(
+                            key, value, context.artifacts, preview_chars=200
+                        )
+                    except Exception:
+                        value_to_write = value
             try:
                 if edge.mode.value == "write":
                     context.shared_context.write(edge.context_key, value_to_write)
@@ -1744,6 +1760,7 @@ class Engine:
         hyperedge_resolver: Any | None = None,
         model_selector: Any | None = None,
         cost_tracker: Any | None = None,
+        tier_tracker: Any | None = None,
     ) -> ExecutionContext:
         tool_registry = None
         if self.executor_registry.has("tool_operator"):
@@ -1774,6 +1791,7 @@ class Engine:
                 parent_node_id=parent_node_id,
                 model_selector=model_selector,
                 cost_tracker=cost_tracker,
+                tier_tracker=tier_tracker,
             )
 
         return ExecutionContext(
@@ -1799,6 +1817,7 @@ class Engine:
             cost_tracker=cost_tracker,
             human_renderer=self.human_renderer,
             graph=graph,
+            tier_tracker=tier_tracker,
         )
 
     async def _run_subgraph(
@@ -1820,6 +1839,7 @@ class Engine:
         parent_node_id: str | None = None,
         model_selector: Any | None = None,
         cost_tracker: Any | None = None,
+        tier_tracker: Any | None = None,
     ) -> dict[str, Any]:
         """Execute a named sub-graph and return its outputs."""
         sub_graph = parent_graph.sub_graphs.get(sub_graph_key)
@@ -1868,6 +1888,7 @@ class Engine:
             hyperedge_resolver=child_resolver,
             model_selector=model_selector,
             cost_tracker=cost_tracker,
+            tier_tracker=tier_tracker,
         )
 
         if inputs:

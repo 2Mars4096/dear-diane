@@ -18,12 +18,34 @@ from dan.models.hyperedges import (
     HyperedgeViolation,
     ValidationResult,
 )
+from dan.utils.tokens import estimate_tokens
 
 if TYPE_CHECKING:
     from dan.models.graph import Graph
     from dan.models.nodes import NodeBase
 
 logger = logging.getLogger(__name__)
+
+# Tool schema for JIT loading of hyperedge content (Plan 18-1 task 7-5)
+HYPEREDGE_JIT_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "load_hyperedge",
+        "description": "Load the full content of a skill or rule by name.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Name of the skill or rule to load"},
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+JIT_SYSTEM_INSTRUCTION = (
+    "Some skills or rules are summarized above. Use the load_hyperedge(name) tool "
+    "to retrieve full content when you need the complete instructions."
+)
 
 
 class HyperedgeResolver:
@@ -155,33 +177,66 @@ class HyperedgeResolver:
 
         return best
 
+    def _summarize_hyperedge(self, he: Hyperedge) -> str:
+        """Generate a one-line summary of a hyperedge for JIT injection."""
+        name = he.name
+        edge_type = he.hyperedge_type
+        content = he.content or ""
+        summary = content.split(".")[0][:100] if content else name
+        return f"[{edge_type}: {name}] {summary}"
+
+    def get_hyperedge_content(self, name: str) -> str | None:
+        """Return full content of a hyperedge by name, or None if not found."""
+        for he in self._hyperedges:
+            if he.name == name:
+                return he.content
+        return None
+
     # ------------------------------------------------------------------
     # Pre-prompt hook
     # ------------------------------------------------------------------
 
     def apply_pre_prompt(
-        self, node: NodeBase, messages: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+        self,
+        node: NodeBase,
+        messages: list[dict[str, Any]],
+        *,
+        jit_loading: bool = False,
+        jit_threshold: int = 500,
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Inject hyperedge content into *messages* based on type.
 
-        Returns a new list (original is not mutated).
+        When jit_loading=True and a hyperedge's content exceeds jit_threshold
+        (token estimate), inject a summary instead of full content. In that
+        case, the load_hyperedge tool should be made available.
+
+        Returns (modified_messages, jit_tool_needed).
         """
         resolved = self.resolve(node, "pre_prompt")
         if not resolved:
-            return messages
+            return messages, False
 
         messages = [dict(m) for m in messages]
+        jit_tool_needed = False
 
         for he in resolved:
+            use_summary = (
+                jit_loading
+                and estimate_tokens(he.content) > jit_threshold
+            )
+            if use_summary:
+                jit_tool_needed = True
+            content = self._summarize_hyperedge(he) if use_summary else he.content
+
             if he.hyperedge_type == "skill":
                 sys_idx = next(
                     (i for i, m in enumerate(messages) if m.get("role") == "system"),
                     None,
                 )
                 if sys_idx is not None:
-                    messages.insert(sys_idx, {"role": "system", "content": he.content})
+                    messages.insert(sys_idx, {"role": "system", "content": content})
                 else:
-                    messages.insert(0, {"role": "system", "content": he.content})
+                    messages.insert(0, {"role": "system", "content": content})
 
             elif he.hyperedge_type == "style":
                 sys_idx = next(
@@ -190,9 +245,9 @@ class HyperedgeResolver:
                 )
                 if sys_idx is not None:
                     messages[sys_idx] = dict(messages[sys_idx])
-                    messages[sys_idx]["content"] += f"\n\n{he.content}"
+                    messages[sys_idx]["content"] += f"\n\n{content}"
                 else:
-                    messages.insert(0, {"role": "system", "content": he.content})
+                    messages.insert(0, {"role": "system", "content": content})
 
             elif he.hyperedge_type == "guardrail":
                 sys_idx = next(
@@ -201,11 +256,11 @@ class HyperedgeResolver:
                 )
                 if sys_idx is not None:
                     messages[sys_idx] = dict(messages[sys_idx])
-                    messages[sys_idx]["content"] += f"\n\n[Constraint] {he.content}"
+                    messages[sys_idx]["content"] += f"\n\n[Constraint] {content}"
                 else:
                     messages.insert(
                         0,
-                        {"role": "system", "content": f"[Constraint] {he.content}"},
+                        {"role": "system", "content": f"[Constraint] {content}"},
                     )
 
             elif he.hyperedge_type == "override":
@@ -215,11 +270,22 @@ class HyperedgeResolver:
                 )
                 if sys_idx is not None:
                     messages[sys_idx] = dict(messages[sys_idx])
-                    messages[sys_idx]["content"] = he.content
+                    messages[sys_idx]["content"] = content
                 else:
-                    messages.insert(0, {"role": "system", "content": he.content})
+                    messages.insert(0, {"role": "system", "content": content})
 
-        return messages
+        if jit_tool_needed:
+            sys_idx = next(
+                (i for i, m in enumerate(messages) if m.get("role") == "system"),
+                None,
+            )
+            if sys_idx is not None:
+                messages[sys_idx] = dict(messages[sys_idx])
+                messages[sys_idx]["content"] += f"\n\n{JIT_SYSTEM_INSTRUCTION}"
+            else:
+                messages.insert(0, {"role": "system", "content": JIT_SYSTEM_INSTRUCTION})
+
+        return messages, jit_tool_needed
 
     # ------------------------------------------------------------------
     # Post-output hook

@@ -1,0 +1,109 @@
+from __future__ import annotations
+
+import json
+import logging
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+# Use same DAN_DIR as cli/__init__.py
+DAN_DIR = Path.home() / ".dan"
+DEFAULT_PROFILE_PATH = DAN_DIR / "profile.json"
+
+
+class RecentWorkflow(BaseModel):
+    workflow_id: str
+    opened_at: float = Field(default_factory=time.time)
+
+
+class UserProfile(BaseModel):
+    user_id: str = "local"
+    display_name: str = ""
+    preferred_models: dict[str, str] = Field(default_factory=dict)
+    # e.g. {"drafting": "claude-sonnet-4-6", "review": "gpt-4o", "coding": "claude-sonnet-4-6"}
+    preferred_output_format: str = ""  # "markdown", "json", "latex", or empty
+    common_domains: list[str] = Field(default_factory=list)
+    # e.g. ["supply chain", "equity research"]
+    model_overrides: dict[str, str] = Field(default_factory=dict)
+    # per-workflow model preferences: {"workflow_id": "model_name"}
+    recent_workflows: list[RecentWorkflow] = Field(default_factory=list)
+    session_count: int = 0
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def touch_workflow(self, workflow_id: str) -> None:
+        """Record a workflow as recently used. Keeps last 10, deduped."""
+        self.recent_workflows = [
+            rw for rw in self.recent_workflows if rw.workflow_id != workflow_id
+        ]
+        self.recent_workflows.insert(0, RecentWorkflow(workflow_id=workflow_id))
+        self.recent_workflows = self.recent_workflows[:10]
+        self.updated_at = datetime.now(timezone.utc)
+
+    def increment_session(self) -> None:
+        self.session_count += 1
+        self.updated_at = datetime.now(timezone.utc)
+
+    def merge_preferences(
+        self,
+        models: dict[str, str] | None = None,
+        domains: list[str] | None = None,
+        output_format: str | None = None,
+    ) -> None:
+        """Merge extracted preferences into profile without overwriting existing."""
+        if models:
+            for k, v in models.items():
+                if k not in self.preferred_models:
+                    self.preferred_models[k] = v
+        if domains:
+            existing = set(self.common_domains)
+            for d in domains:
+                if d not in existing:
+                    self.common_domains.append(d)
+        if output_format and not self.preferred_output_format:
+            self.preferred_output_format = output_format
+        self.updated_at = datetime.now(timezone.utc)
+
+
+def load_user_profile(path: Path | None = None) -> UserProfile:
+    """Load profile from disk, or return fresh default."""
+    p = path or DEFAULT_PROFILE_PATH
+    if p.exists():
+        try:
+            return UserProfile.model_validate_json(p.read_text(encoding="utf-8"))
+        except Exception:
+            logger.warning("Failed to load profile from %s, using defaults", p)
+    return UserProfile()
+
+
+def save_user_profile(profile: UserProfile, path: Path | None = None) -> None:
+    """Persist profile to disk (atomic write)."""
+    p = path or DEFAULT_PROFILE_PATH
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
+    tmp.replace(p)
+
+
+def format_recent_workflows(profile: UserProfile) -> str:
+    """Format recent workflows for display on startup."""
+    if not profile.recent_workflows:
+        return ""
+    lines = ["Recent workflows:"]
+    now = time.time()
+    for i, rw in enumerate(profile.recent_workflows[:5], 1):
+        age = now - rw.opened_at
+        if age < 3600:
+            ago = f"{int(age / 60)}m ago"
+        elif age < 86400:
+            ago = f"{int(age / 3600)}h ago"
+        else:
+            ago = f"{int(age / 86400)}d ago"
+        lines.append(f"  ({i}) {rw.workflow_id} [{ago}]")
+    lines.append("  Resume? [1-5/new]")
+    return "\n".join(lines)
