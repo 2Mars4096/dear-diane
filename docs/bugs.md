@@ -4,6 +4,11 @@
 
 - **Vibe research LLM calls may fail with provider quota/auth errors**: External dependency issue (`vectorengine.ai` returning 401/403 such as `Token not provided` or `insufficient_quota`). Workflow currently continues with fallback-safe outputs, but strategy generation/backtests degrade when LLM nodes fail.
 
+## Known Limitations (Adapter)
+
+- **Adapter heuristic classifier is keyword-only.** `_classify_adapter_intent()` uses keyword matching, not LLM intent classification. It handles common patterns (file requests, continuations, workflow build) but will miss nuanced intent (e.g. "remember that analysis we did last month" should probably search experience, but routes to conversation). The full fix is 25-6 (intent dispatcher with LLM fallback).
+- **Adapter file search is filename-only, not content-aware.** `_search_local_files()` now normalizes separators (`space`/`_`/`-`) and ranks token matches, so natural-language queries match filenames more reliably, but it still searches filenames only. It will not find a file based purely on content inside the document.
+
 ## Known Limitations (Phase 15)
 
 - **Multi-tool dispatch doesn't re-call LLM.** When the LLM returns multiple capability tool calls, results are formatted directly to the user without a second LLM round-trip for synthesis. Acceptable for V1 (low latency), but complex multi-tool scenarios may produce mechanical output.
@@ -21,6 +26,8 @@ When renaming workflows or moving error data between environments:
 
 ## Resolved Bugs
 
+- **[26-6-A2] Adapter `/find` missed real files when query words used spaces but filenames used underscores/hyphens:** `_handle_find_command()` built a literal recursive glob like `**/*late payment seasonality*`, so `/Users/lizhi/Dropbox/late_payment_seasonality_20251106.docx` was invisible to the matcher even though all tokens were present in order. Fixed by replacing literal glob matching with `_search_local_files()` normalized token search + ranking, and reusing the same helper for `_handle_send_command()` fallback resolution.
+- **[26-6-A1] Polite adapter file requests fell through to fake tool-call text:** The quick adapter classifier only matched direct imperative prefixes like `send me ...`, so real chat phrasing such as `"Good. Can you send me the late payment seasonality doc file under ~/Dropbox folder?"` was classified as `conversation` and forwarded to server `ask` mode. At the same time, `ChatManager._build_messages()` still appended `CAPABILITY_TOOLS_REFERENCE` in `ask` mode even though the text-only path does not pass executable tools, so some models emitted textual tool-call markup (for example `<minimax:tool_call>`) with fabricated paths. Fixed by adding polite-send query extraction on the adapter side and only injecting capability-tool guidance in non-`ask`/`plan` modes.
 - **[24-4-H1] Diagnosis port auto-fix not triggered for real validator port errors:** Validation messages like `has no output/input port ... (available: [...])` were classified as `edge_endpoint`, but auto-fix only handled `port_conflict`/`missing_port`, so deterministic port-rename repair did not run on common cases. Fixed by extending strategy selection and auto-fix application to `edge_endpoint` port messages.
 - **[24-4-H2] Diagnosis loop could dead-end on auto-fix without fallback:** If strategy selected `auto_fix` but no deterministic patch could be inferred, the attempt failed and retried with the same strategy. Fixed by degrading to focused `re_prompt` within the same attempt when `llm_complete` is available.
 - **[24-4-H3] Port auto-fix replacement scope was too broad:** Replacing quoted strings globally could rewrite unrelated literals outside edge/port wiring expressions. Fixed by constraining rewrites to known port contexts (`.port(...)`, `source_port`/`target_port`, and `connect(...)` port arguments).
