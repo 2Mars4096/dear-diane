@@ -108,6 +108,7 @@ class LocalChatRuntime:
     ) -> dict[str, Any]:
         await self._ensure_init()
         s = self._services
+        from dan.server.chat_manager import build_debug_context, detect_chat_mode, normalize_chat_mode
 
         from dan.server.scoped_run import parse_run_command
         run_cmd = parse_run_command(message)
@@ -117,17 +118,56 @@ class LocalChatRuntime:
         channel_id = uuid.uuid4().hex[:12]
         queue = self._new_stream_queue()
         self._pending_streams[channel_id] = queue
+        normalized_mode = normalize_chat_mode(mode)
+        graph_dict = s.graph_store.get_graph(workflow_id)
+        if normalized_mode == "auto":
+            recent_run_failed = False
+            if getattr(s, "run_manager", None) is not None:
+                runs = s.run_manager.list_runs()
+                wf_runs = [r for r in runs if getattr(r, "graph_id", None) == workflow_id]
+                if wf_runs:
+                    status = getattr(wf_runs[0], "status", None)
+                    recent_run_failed = str(getattr(status, "value", status)).lower() == "failed"
+            normalized_mode = detect_chat_mode(message, graph_dict, recent_run_failed)
+        debug_context = ""
+        if normalized_mode == "debug" and getattr(s, "run_manager", None) is not None:
+            debug_context = build_debug_context(s.run_manager.list_runs(), workflow_id)
 
         async def _stream() -> None:
             try:
-                async for event in s.chat_manager.send_message_with_tools(
-                    workflow_id=workflow_id,
-                    message=message,
-                    history=history or [],
-                    thread_id=thread_id,
-                    client_graph_revision=client_graph_revision,
-                    mode=mode,
+                concierge = getattr(s, "concierge", None)
+                if (
+                    concierge is not None
+                    and callable(getattr(concierge, "process", None))
+                    and not hasattr(concierge, "assert_called")
                 ):
+                    from dan.server.concierge import SurfaceMessage
+
+                    source_msg = SurfaceMessage(
+                        surface="cli",
+                        external_id=thread_id or workflow_id or "local-cli",
+                        text=message,
+                        metadata={
+                            "workflow_id": workflow_id,
+                            "thread_id": thread_id,
+                            "client_graph_revision": client_graph_revision,
+                            "mode": normalized_mode,
+                            "debug_context": debug_context,
+                            "request_history": history or [],
+                        },
+                    )
+                    event_stream = concierge.process(source_msg)
+                else:
+                    event_stream = s.chat_manager.send_message_with_tools(
+                        workflow_id=workflow_id,
+                        message=message,
+                        history=history or [],
+                        thread_id=thread_id,
+                        client_graph_revision=client_graph_revision,
+                        mode=normalized_mode,
+                        debug_context=debug_context,
+                    )
+                async for event in event_stream:
                     ev_dict = (
                         event.model_dump()
                         if hasattr(event, "model_dump")

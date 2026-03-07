@@ -90,6 +90,7 @@ class ChatClient:
             "thread_id": thread_id,
             "client_graph_revision": client_graph_revision,
             "mode": mode,
+            "surface": "cli",
         }
         http = await self._get_http()
         try:
@@ -651,13 +652,62 @@ async def _run_repl(
 
     pending_lines: list[str] = []
 
-    while True:
-        # Process queued messages first (typed while LLM was streaming)
-        if not pending_lines:
-            queued = msg_queue.drain()
-            if queued:
-                pending_lines.extend(queued)
+    async def _replay_queued_through_api(queued_text: str) -> None:
+        """Send a queued message through the server chat API so the
+        server-side ProjectMessageQueue can manage ordering."""
+        nonlocal client_graph_revision
+        _print(f"[queued] > {queued_text}", style="dim" if console else None)
+        readline.add_history(queued_text)
+        try:
+            q_resp = await client.send_chat_message(
+                workflow_id,
+                queued_text,
+                history=history,
+                thread_id=workflow_id,
+                client_graph_revision=client_graph_revision,
+                mode=mode,
+            )
+        except RuntimeError as e:
+            _print(f"Error: {e}", style="red" if console else None)
+            return
+        history.append({"role": "user", "content": queued_text})
+        if len(history) > _MAX_HISTORY_MESSAGES:
+            history[:] = history[-_MAX_HISTORY_MESSAGES:]
+        q_channel = q_resp.get("stream_channel_id")
+        if not q_channel:
+            return
+        q_acc = ""
+        try:
+            async for event in client.stream_chat_events(q_channel):
+                if event is None:
+                    break
+                ev_type = event.get("type", "")
+                if ev_type == "chat_token":
+                    delta = event.get("delta", "")
+                    if delta:
+                        print(delta, end="", flush=True)
+                        q_acc += delta
+                elif ev_type == "chat_complete":
+                    content = q_acc or str(event.get("content", "") or "")
+                    if q_acc:
+                        print()
+                    elif content:
+                        _print(content)
+                    if content:
+                        history.append({"role": "assistant", "content": content})
+                        if len(history) > _MAX_HISTORY_MESSAGES:
+                            history[:] = history[-_MAX_HISTORY_MESSAGES:]
+                    rev = event.get("graph_revision")
+                    if rev:
+                        client_graph_revision = rev
+                    break
+                elif ev_type == "chat_error":
+                    _print(f"\nError: {event.get('error', 'Unknown')}", style="red" if console else None)
+                    break
+        except Exception as e:
+            _print(f"\nStream error: {e}", style="red" if console else None)
 
+    while True:
         if pending_lines:
             line = pending_lines.pop(0)
             _print(f"[queued] > {line}", style="dim" if console else None)
@@ -910,6 +960,7 @@ async def _run_repl(
                 workflow_id,
                 line,
                 history=history,
+                thread_id=workflow_id,
                 client_graph_revision=client_graph_revision,
                 mode=mode,
             )
@@ -1171,6 +1222,14 @@ async def _run_repl(
                     applied = await _do_apply()
                     if applied:
                         _print("Applied.")
+
+        # Drain messages typed during streaming and replay through server API
+        queued_replay = msg_queue.drain()
+        for q_line in queued_replay:
+            if q_line.startswith("/"):
+                pending_lines.append(q_line)
+            else:
+                await _replay_queued_through_api(q_line)
 
         _maybe_update_profile_preferences()
 
