@@ -31,6 +31,8 @@ class UserProfile(BaseModel):
     # e.g. ["supply chain", "equity research"]
     model_overrides: dict[str, str] = Field(default_factory=dict)
     # per-workflow model preferences: {"workflow_id": "model_name"}
+    action_policy_overrides: dict[str, str] = Field(default_factory=dict)
+    search_dirs: list[str] = Field(default_factory=list)
     recent_workflows: list[RecentWorkflow] = Field(default_factory=list)
     session_count: int = 0
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
