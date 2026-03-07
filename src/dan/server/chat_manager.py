@@ -66,6 +66,7 @@ __all__ = [
     "compute_graph_revision",
     "BUILD_FROM_INTENT_PROMPT",
     "ASK_PROMPT",
+    "CONVERSATION_PROMPT",
     "PLAN_PROMPT",
     "DEBUG_PROMPT",
     "EMPTY_GRAPH_SUMMARY_PLACEHOLDER",
@@ -546,6 +547,31 @@ the graph.
 - If the workflow is empty, say so and suggest the user switch to Agent mode \
 to build one.
 - Do not use any tools. Respond in plain text only.
+- NEVER fabricate live data (stock prices, exchange rates, weather, scores, \
+dates of future events, or any time-sensitive facts). If the user asks for \
+real-time information you do not have, say so clearly: "I'd need to search \
+the web for current data on that." Do NOT invent numbers or present training \
+data as current.
+"""
+
+CONVERSATION_PROMPT = """\
+You are DAN, a personal AI assistant. Answer the user's question directly and concisely.
+
+## Your capabilities
+- You can search the web for current information using the web_search tool.
+- Use web_search for ANY time-sensitive data: stock prices, exchange rates, \
+weather, sports scores, event dates, recent news, or current facts.
+- NEVER fabricate live data. If you need real-time information, call web_search.
+- Do NOT present training data as current — always search first.
+
+## Current workflow context
+{graph_summary}
+
+## Guidelines
+- Be concise and direct — 1-3 sentences when possible.
+- For factual questions requiring current data, ALWAYS use web_search first.
+- For general knowledge questions, answer directly.
+- Do NOT suggest commands, numbered options, or ask "would you like me to…?"
 """
 
 PLAN_PROMPT = """\
@@ -1574,6 +1600,7 @@ class ChatManager:
         mode: str = "agent",
         cancel_event: asyncio.Event | None = None,
         debug_context: str = "",
+        prompt_context: str = "",
         mentions: list[Any] | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream a text-only LLM response (no function calling)."""
@@ -1600,6 +1627,7 @@ class ChatManager:
 
             messages = self._build_messages(
                 summary, message, history, mode=mode, debug_context=debug_context,
+                prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
             )
 
@@ -1669,6 +1697,7 @@ class ChatManager:
         mode: str = "agent",
         cancel_event: asyncio.Event | None = None,
         debug_context: str = "",
+        prompt_context: str = "",
         mentions: list[Any] | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Process a user message using LLM function calling for graph mutations.
@@ -1755,6 +1784,7 @@ class ChatManager:
             # -- Mutation path (extended with capability tools) -------------
             messages = self._build_messages(
                 summary, message, history, mode=mode, debug_context=debug_context,
+                prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
             )
             provider = self._providers.resolve(self._chat_model)
@@ -1982,7 +2012,13 @@ class ChatManager:
                         graph = Graph.model_validate(graph_dict)
                         summary = build_graph_summary(graph, workflow_id)
                         revision = summary.revision
-                        replan_messages = self._build_messages(summary, message, history, mode=mode)
+                        replan_messages = self._build_messages(
+                            summary,
+                            message,
+                            history,
+                            mode=mode,
+                            prompt_context=prompt_context,
+                        )
                         replan_messages.append({
                             "role": "user",
                             "content": (
@@ -2256,6 +2292,7 @@ class ChatManager:
         history: list[dict[str, str]],
         mode: str = "agent",
         debug_context: str = "",
+        prompt_context: str = "",
         mentions: list[Any] | None = None,
         workflow_id: str = "",
         graph_dict: dict[str, Any] | None = None,
@@ -2277,6 +2314,10 @@ class ChatManager:
                 node_type_reference=NODE_TYPE_REFERENCE,
                 graph_summary=graph_text,
             )
+        elif mode == "conversation":
+            system_content = CONVERSATION_PROMPT.format(
+                graph_summary=graph_text,
+            )
         elif mode == "debug":
             system_content = DEBUG_PROMPT.format(
                 node_type_reference=NODE_TYPE_REFERENCE,
@@ -2291,6 +2332,8 @@ class ChatManager:
             )
         if self._capability_registry is not None and mode not in ("ask", "plan"):
             system_content += "\n" + CAPABILITY_TOOLS_REFERENCE
+        if prompt_context:
+            system_content = f"{system_content.rstrip()}\n\n{prompt_context.strip()}"
         user_context_block = self._compose_user_context_block()
         if user_context_block:
             system_content = f"{system_content.rstrip()}\n\n{user_context_block}"
