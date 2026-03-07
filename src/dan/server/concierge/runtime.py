@@ -34,6 +34,14 @@ from .memory_bridge import WorkflowMemoryIndex, enrich_planning_context
 from .queue import ProjectMessageQueue, QueueDecision
 from .solver import GoalResolver, PlanBuilder, SolverDecision
 
+_NUMERIC_CLAIM_RE = re.compile(
+    r"\$\s?\d[\d,]*(?:\.\d+)?"
+    r"|\b\d+(?:\.\d+)?%"
+    r"|\b(?:price|close|open|high|low|volume|cap)\b[^.]*?\$?\d",
+    re.IGNORECASE,
+)
+_unsourced_claim_warnings: int = 0
+
 
 class Concierge:
     def __init__(
@@ -233,6 +241,10 @@ class Concierge:
         auto_note = str(msg.metadata.get("clarification_auto_note") or "").strip()
         if auto_note and content:
             content = f"{auto_note}\n\n{content}"
+        had_tool_call = classification.intent not in (
+            IntentCategory.CONVERSATION, IntentCategory.DIRECT_TASK,
+        )
+        content = self._check_unsourced_claims(content, had_tool_call)
         if self.promoter and self.promoter.should_propose(context.project, context.task):
             proposal = self.promoter.build_proposal(context.project, context.task)
             content = f"{content}\n\nSave as reusable workflow? -> {proposal.save_command}"
@@ -357,6 +369,16 @@ class Concierge:
         label_prefix = self._format_reply_label(context)
         if label_prefix and content and not content.startswith("[DAN"):
             content = f"{label_prefix} {content}"
+
+        had_tool_call = (
+            exec_result is not None
+            and exec_result.metadata.get("execution_mode") not in ("conversation_synthesis",)
+        ) or (
+            handler_result is not None
+            and handler_result.content
+            and handler_result.content != content
+        )
+        content = self._check_unsourced_claims(content, had_tool_call)
 
         if self.promoter and decision.save_candidate:
             if self.promoter.should_propose(context.project, context.task):
@@ -510,6 +532,27 @@ class Concierge:
             is_new_project=False,
             is_new_task=False,
             confidence=1.0,
+        )
+
+    @staticmethod
+    def _check_unsourced_claims(content: str, had_tool_call: bool) -> str:
+        """Append a disclaimer if the response contains numeric claims
+        that were not sourced from a tool call (web_search, etc.)."""
+        global _unsourced_claim_warnings
+        if had_tool_call or not content:
+            return content
+        if not _NUMERIC_CLAIM_RE.search(content):
+            return content
+        _unsourced_claim_warnings += 1
+        logger.debug(
+            "Unsourced numeric claim detected (total warnings: %d)",
+            _unsourced_claim_warnings,
+        )
+        return (
+            f"{content}\n\n"
+            "_Note: This response may contain data from my training "
+            "rather than a live source. For current prices or stats, "
+            "ask me to search the web._"
         )
 
     def _record_assistant_turn(self, context, msg: SurfaceMessage, content: str) -> None:
