@@ -30,6 +30,9 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+_DAN_PREFIX = "[DAN]"
+_DAN_SCOPED_PREFIX = "[DAN - "
+
 
 # ---------------------------------------------------------------------------
 # Pending action tracking (per-conversation)
@@ -37,9 +40,24 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _PendingAction:
-    kind: str          # 'find', 'send'
+    kind: str          # 'find', 'send', 'apply_mutation'
     query: str         # search term or file path
     results: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def _strip_dan_prefix(text: str) -> str:
+    clean = text.strip()
+    while clean.startswith(f"{_DAN_PREFIX} ") or clean.startswith(_DAN_SCOPED_PREFIX):
+        idx = clean.find("] ")
+        if idx >= 0:
+            clean = clean[idx + 2:]
+        elif clean.startswith(_DAN_SCOPED_PREFIX):
+            clean = clean[len(_DAN_SCOPED_PREFIX):]
+        else:
+            clean = clean[len(_DAN_PREFIX) + 1:]
+        clean = clean.strip()
+    return clean
 
 
 # ---------------------------------------------------------------------------
@@ -59,61 +77,21 @@ _CONTINUATION_PHRASES = (
 )
 
 
+def _looks_like_apply_reply(text: str) -> bool:
+    clean = text.strip().lower().rstrip(".!?,;:")
+    if not clean:
+        return False
+    if re.fullmatch(r"apply(?:\s+it)?(?:\s+please)?", clean):
+        return True
+    if clean.startswith("apply"):
+        return True
+    return SequenceMatcher(None, clean, "apply").ratio() >= 0.88
+
+
 def _extract_search_query_from_send_request(text: str) -> str | None:
-    """Extract a filename-like query from polite send requests.
+    from dan.server.concierge import extract_search_query_from_send_request as _shared_extract
 
-    Example:
-    ``Good. Can you send me the late payment seasonality doc file under
-    ~/Dropbox folder?`` -> ``late payment seasonality``
-    """
-    lower = text.lower()
-    prefixes = (
-        "can you send me the ",
-        "can you send me ",
-        "could you send me the ",
-        "could you send me ",
-        "would you send me the ",
-        "would you send me ",
-        "please send me the ",
-        "please send me ",
-    )
-    start_idx = -1
-    matched_prefix = ""
-    for prefix in prefixes:
-        idx = lower.find(prefix)
-        if idx >= 0:
-            start_idx = idx
-            matched_prefix = prefix
-            break
-    if start_idx < 0:
-        return None
-
-    query = text[start_idx + len(matched_prefix):].strip().rstrip(".!?,")
-    query_lower = query.lower()
-
-    for marker in (" under ", " from ", " in ", " inside ", " within "):
-        idx = query_lower.find(marker)
-        if idx >= 0:
-            query = query[:idx].strip()
-            query_lower = query.lower()
-            break
-
-    for suffix in (
-        " doc file",
-        " document file",
-        " doc",
-        " document",
-        " file",
-        " pdf",
-        " csv",
-    ):
-        if query_lower.endswith(suffix):
-            query = query[: -len(suffix)].strip()
-            query_lower = query.lower()
-            break
-
-    query = query.strip("\"' ")
-    return query or None
+    return _shared_extract(text)
 
 
 def _classify_adapter_intent(
@@ -198,24 +176,15 @@ def _classify_adapter_intent(
 # ---------------------------------------------------------------------------
 
 def _normalize_search_text(text: str) -> str:
-    """Normalize natural-language file search text for loose matching."""
-    return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
+    from dan.server.concierge.classifier import _normalize_search_text as _shared_normalize
+
+    return _shared_normalize(text)
 
 
 def _score_file_match(query_norm: str, query_tokens: list[str], path: Path) -> float:
-    """Score a candidate file path for natural-language filename matching."""
-    filename_norm = _normalize_search_text(path.name)
-    if not filename_norm:
-        return -1.0
+    from dan.server.concierge.classifier import _score_file_match as _shared_score
 
-    coverage = sum(1 for token in query_tokens if token in filename_norm)
-    if coverage == 0:
-        return -1.0
-
-    ordered = 1.0 if re.search(r".*".join(map(re.escape, query_tokens)), filename_norm) else 0.0
-    contains_phrase = 1.0 if query_norm and query_norm in filename_norm else 0.0
-    ratio = SequenceMatcher(None, query_norm, filename_norm).ratio() if query_norm else 0.0
-    return (coverage * 10.0) + (ordered * 5.0) + (contains_phrase * 5.0) + ratio
+    return _shared_score(query_norm, query_tokens, path)
 
 
 def _search_local_files(
@@ -224,58 +193,14 @@ def _search_local_files(
     *,
     limit: int = 10,
 ) -> list[str]:
-    """Search local files by loose filename match.
+    from dan.server.concierge import search_local_files as _shared_search
 
-    Supports natural-language queries such as ``late payment seasonality``
-    matching filenames like ``late_payment_seasonality_20251106.docx``.
-    """
-    query_norm = _normalize_search_text(query)
-    query_tokens = query_norm.split()
-    if not query_norm:
-        return []
+    return _shared_search(query, search_dirs, limit=limit)
 
-    candidates: dict[str, tuple[float, str]] = {}
 
-    def _consider(path: Path) -> None:
-        if not path.is_file():
-            return
-        score = _score_file_match(query_norm, query_tokens, path)
-        if score <= 0:
-            return
-        path_str = str(path)
-        current = candidates.get(path_str)
-        if current is None or score > current[0]:
-            candidates[path_str] = (score, path.name.lower())
-
-    # Fast path: all tokens appear in order with arbitrary separators.
-    exactish_pattern = f"*{'*'.join(query_tokens)}*"
-    for d in search_dirs:
-        if not d.exists():
-            continue
-        try:
-            for match in d.rglob(exactish_pattern):
-                _consider(match)
-        except Exception:
-            continue
-
-    # Fallback: token-wise search for looser matches when exact-ish pattern misses.
-    if not candidates:
-        token_patterns = [f"*{token}*" for token in query_tokens[:4]]
-        for d in search_dirs:
-            if not d.exists():
-                continue
-            for pattern in token_patterns:
-                try:
-                    for match in d.rglob(pattern):
-                        _consider(match)
-                except Exception:
-                    continue
-
-    ranked = sorted(
-        candidates.items(),
-        key=lambda item: (-item[1][0], item[1][1], item[0]),
-    )
-    return [path for path, _meta in ranked[:limit]]
+def _surface_name_for_adapter_type(adapter_type: str) -> str:
+    known = {"email", "telegram", "whatsapp", "whatsapp-web"}
+    return adapter_type if adapter_type in known else "server"
 
 
 # ---------------------------------------------------------------------------
@@ -294,6 +219,8 @@ def _consume_chat_stream_events(
     collected: list[str] = []
     mutation_plan: dict[str, Any] | None = None
     complete_content = ""
+    error_message = ""
+    last_tool_name = ""
 
     for event in events:
         if not isinstance(event, dict):
@@ -302,6 +229,8 @@ def _consume_chat_stream_events(
         if evt_type == "chat_token":
             token = event.get("token", "")
             collected.append(token)
+        elif evt_type == "chat_tool_call_start":
+            last_tool_name = str(event.get("tool_name", "") or "").strip()
         elif evt_type == "chat_mutation":
             mutation_plan = event.get("mutation_plan")
             desc = ""
@@ -313,11 +242,25 @@ def _consume_chat_stream_events(
         elif evt_type == "chat_complete":
             complete_content = event.get("content", "") or ""
             break
+        elif evt_type == "chat_error":
+            error_message = str(event.get("error", "") or "").strip()
+            break
 
     full_reply = "".join(collected).strip()
     complete_content = complete_content.strip()
-    if complete_content and not full_reply:
-        full_reply = complete_content
+    if complete_content:
+        if not full_reply:
+            full_reply = complete_content
+        elif complete_content not in full_reply:
+            full_reply = f"{full_reply}\n\n{complete_content}".strip()
+    elif error_message:
+        prefix = "I hit an internal error while processing that request"
+        if last_tool_name:
+            prefix = f"{prefix} with `{last_tool_name}`"
+        if full_reply:
+            full_reply = f"{full_reply}\n\n{prefix}: {error_message}".strip()
+        else:
+            full_reply = f"{prefix}: {error_message}"
     return full_reply, mutation_plan
 
 
@@ -325,7 +268,7 @@ def _consume_chat_stream_events(
 # Chat-mode runner — route messages through the server chat API
 # ---------------------------------------------------------------------------
 
-async def _run_adapter_chat_mode(adapter: Any, config: Any) -> None:
+async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = "server") -> None:
     """Route adapter messages through the dan-serve chat API (like dan-chat).
 
     Each messaging conversation gets its own workflow (scratch by default).
@@ -361,11 +304,23 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any) -> None:
     conversation_history: dict[str, list[dict[str, str]]] = {}
     conversation_pending: dict[str, _PendingAction] = {}
 
-    _ADAPTER_CONTEXT = """\
+    _ADAPTER_CONTEXT = f"""\
 You are DAN, a personal AI assistant connected via messaging.
 Keep replies short (1-3 sentences) — this is a chat app.
 Do NOT suggest commands, numbered options, or ask "would you like me to…?".
-Just answer directly. Do NOT add [DAN] prefix."""
+Just answer directly. Do NOT add {_DAN_PREFIX} prefix."""
+
+    def _server_unavailable_message() -> str:
+        return (
+            f"DAN server unavailable at {server_url}. "
+            "Please start dan-serve and try again."
+        )
+
+    def _stream_unavailable_message() -> str:
+        return (
+            "DAN accepted the request, but the reply stream failed. "
+            "Please try again."
+        )
 
     async def _ensure_scratch(http: httpx.AsyncClient, conv_id: str) -> str:
         """Get or create a per-conversation workflow on the server."""
@@ -430,7 +385,7 @@ Just answer directly. Do NOT add [DAN] prefix."""
             if not candidates:
                 await adapter.send_prompt(
                     external_id,
-                    f"[DAN] File not found: {query}\n"
+                    f"File not found: {query}\n"
                     f"Try /find <keyword> to search, or use a full path.",
                     None,
                 )
@@ -442,13 +397,13 @@ Just answer directly. Do NOT add [DAN] prefix."""
                 listing = "\n".join(f"  {i+1}. {c}" for i, c in enumerate(candidates))
                 await adapter.send_prompt(
                     external_id,
-                    f"[DAN] Multiple matches:\n{listing}\n\nUse /send <full_path> to pick one.",
+                    f"Multiple matches:\n{listing}\n\nUse /send <full_path> to pick one.",
                     None,
                 )
                 return
 
         if not path.is_file():
-            await adapter.send_prompt(external_id, f"[DAN] Not a file: {path}", None)
+            await adapter.send_prompt(external_id, f"Not a file: {path}", None)
             return
 
         if hasattr(adapter, "send_file"):
@@ -456,19 +411,19 @@ Just answer directly. Do NOT add [DAN] prefix."""
             if result.get("ok"):
                 await adapter.send_prompt(
                     external_id,
-                    f"[DAN] Sent: {path.name} ({result.get('size_mb', '?')} MB)",
+                    f"Sent: {path.name} ({result.get('size_mb', '?')} MB)",
                     None,
                 )
             else:
                 await adapter.send_prompt(
                     external_id,
-                    f"[DAN] Failed to send: {result.get('error', 'unknown error')}",
+                    f"Failed to send: {result.get('error', 'unknown error')}",
                     None,
                 )
         else:
             await adapter.send_prompt(
                 external_id,
-                f"[DAN] File sending not supported on this adapter.",
+                f"File sending not supported on this adapter.",
                 None,
             )
 
@@ -488,7 +443,7 @@ Just answer directly. Do NOT add [DAN] prefix."""
         if not results:
             await adapter.send_prompt(
                 external_id,
-                f"[DAN] No files found matching '{query}' in Dropbox, Documents, Desktop, Downloads.",
+                f"No files found matching '{query}' in Dropbox, Documents, Desktop, Downloads.",
                 None,
             )
             return
@@ -500,7 +455,7 @@ Just answer directly. Do NOT add [DAN] prefix."""
         listing = "\n".join(f"  {i+1}. {r}" for i, r in enumerate(results))
         await adapter.send_prompt(
             external_id,
-            f"[DAN] Found {len(results)} file(s):\n{listing}\n\nReply with a number to send.",
+            f"Found {len(results)} file(s):\n{listing}\n\nReply with a number to send.",
             None,
         )
 
@@ -513,46 +468,53 @@ Just answer directly. Do NOT add [DAN] prefix."""
         if await _handle_local_command(external_id, text):
             return
 
-        # ── Heuristic intent classification ────────────────────────
+        # ── Reply to local /find clarification (number selection) ───
+        # /find sets conversation_pending; server concierge has no access to it.
         pending = conversation_pending.get(external_id)
-        intent, param = _classify_adapter_intent(text, pending)
-        logger.info(
-            "Intent for %s: %s (param=%r, pending=%s)",
-            external_id, intent, param[:60] if param else "", pending,
-        )
+        if pending is not None and pending.kind == "find" and pending.results:
+            clean = text.strip().lower().rstrip(".!?,")
+            if clean.isdigit():
+                idx = int(clean) - 1
+                if 0 <= idx < len(pending.results):
+                    await _handle_send_command(external_id, pending.results[idx])
+                    conversation_pending.pop(external_id, None)
+                    return
+            for prefix in ("send ", "number ", "#"):
+                if clean.startswith(prefix):
+                    rest = clean[len(prefix):].strip()
+                    if rest.isdigit():
+                        idx = int(rest) - 1
+                        if 0 <= idx < len(pending.results):
+                            await _handle_send_command(external_id, pending.results[idx])
+                            conversation_pending.pop(external_id, None)
+                            return
 
-        if intent == "continue" and pending is not None:
-            if pending.kind == "find":
-                if len(pending.results) == 1:
-                    await _handle_send_command(external_id, pending.results[0])
-                elif pending.results:
-                    listing = "\n".join(
-                        f"  {i+1}. {r}" for i, r in enumerate(pending.results)
-                    )
-                    await adapter.send_prompt(
-                        external_id,
-                        f"[DAN] Which one?\n{listing}\n\nReply with a number.",
-                        None,
-                    )
-                else:
-                    await _handle_find_command(external_id, pending.query)
-            elif pending.kind == "send":
-                await _handle_send_command(external_id, pending.query)
-            return
+        if pending is not None and pending.kind == "apply_mutation" and _looks_like_apply_reply(text):
+            mutation_plan = pending.metadata.get("mutation_plan")
+            workflow_id = pending.query
+            if mutation_plan:
+                try:
+                    async with httpx.AsyncClient(base_url=server_url, timeout=120.0) as http:
+                        apply_resp = await http.post(
+                            f"/api/graphs/{workflow_id}/apply-mutation",
+                            json={"mutation_plan": mutation_plan},
+                        )
+                    if apply_resp.status_code == 200:
+                        await adapter.send_prompt(external_id, "Applied.", None)
+                    else:
+                        await adapter.send_prompt(
+                            external_id,
+                            f"Apply failed: {apply_resp.text[:200]}",
+                            None,
+                        )
+                except Exception as exc:
+                    await adapter.send_prompt(external_id, f"Apply error: {exc}", None)
+                finally:
+                    conversation_pending.pop(external_id, None)
+                return
 
-        if intent == "file_search" and param:
-            await _handle_find_command(external_id, param)
-            return
-
-        if intent == "file_send" and param:
-            await _handle_send_command(external_id, param)
-            return
-
-        # ── Route to server chat API ───────────────────────────────
-        # Only workflow-build requests get the full tool pipeline;
-        # everything else uses ask mode (text-only, no 24 tools).
-        chat_mode = "auto" if intent == "workflow" else "ask"
-
+        # ── Route to server chat API (shared concierge) ─────────────
+        # All other messages go through the server's concierge.
         try:
             async with httpx.AsyncClient(base_url=server_url, timeout=120.0) as http:
                 wf_id = await _ensure_scratch(http, external_id)
@@ -572,7 +534,9 @@ Just answer directly. Do NOT add [DAN] prefix."""
                     "workflow_id": wf_id,
                     "message": text,
                     "history": history_with_context,
-                    "mode": chat_mode,
+                    "thread_id": str(external_id),
+                    "mode": "auto",
+                    "surface": _surface_name_for_adapter_type(adapter_type),
                 })
                 if resp.status_code != 200:
                     await adapter.send_prompt(external_id, f"Error: {resp.text}", None)
@@ -615,6 +579,13 @@ Just answer directly. Do NOT add [DAN] prefix."""
                     })
                 except Exception as ws_exc:
                     logger.error("WS stream error: %s", ws_exc, exc_info=True)
+                    if history and history[-1].get("role") == "user":
+                        history.pop()
+                    try:
+                        await adapter.send_prompt(external_id, _stream_unavailable_message(), None)
+                    except Exception:
+                        pass
+                    return
 
                 full_reply, mutation_plan = _consume_chat_stream_events(stream_events)
 
@@ -631,15 +602,27 @@ Just answer directly. Do NOT add [DAN] prefix."""
                     except Exception as apply_exc:
                         full_reply += f"\n\n❌ Apply error: {apply_exc}"
                 elif mutation_plan:
+                    conversation_pending[external_id] = _PendingAction(
+                        "apply_mutation",
+                        wf_id,
+                        metadata={"mutation_plan": mutation_plan},
+                    )
                     full_reply += "\n\n(Reply 'apply' to apply, or describe changes.)"
 
                 if full_reply:
-                    clean_reply = full_reply
-                    while clean_reply.startswith("[DAN] "):
-                        clean_reply = clean_reply[6:]
-                    clean_reply = clean_reply.strip()
+                    clean_reply = _strip_dan_prefix(full_reply)
 
-                    if clean_reply:
+                    # Concierge file response: "Found file: /path" — send the file instead of text
+                    sent_file = False
+                    if "Found file: " in clean_reply:
+                        match = re.search(r"Found file:\s*(.+?)(?:\n|$)", clean_reply)
+                        if match:
+                            path_str = match.group(1).strip()
+                            if Path(path_str).is_file() and hasattr(adapter, "send_file"):
+                                await _handle_send_command(external_id, path_str)
+                                sent_file = True
+
+                    if not sent_file and clean_reply:
                         logger.info("Sending reply to %s (%d chars)", external_id, len(clean_reply))
                         await adapter.send_prompt(external_id, clean_reply, None)
 
@@ -652,8 +635,20 @@ Just answer directly. Do NOT add [DAN] prefix."""
                 else:
                     logger.warning("No reply content to send for %s (events: %d)", external_id, len(stream_events))
 
+        except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
+            logger.warning("Chat-mode server unavailable for %s: %s", external_id, exc)
+            history = conversation_history.get(external_id, [])
+            if history and history[-1].get("role") == "user":
+                history.pop()
+            try:
+                await adapter.send_prompt(external_id, _server_unavailable_message(), None)
+            except Exception:
+                pass
         except Exception:
             logger.exception("Chat-mode message handling failed for %s", external_id)
+            history = conversation_history.get(external_id, [])
+            if history and history[-1].get("role") == "user":
+                history.pop()
             try:
                 await adapter.send_prompt(external_id, config.error_message, None)
             except Exception:
@@ -989,7 +984,7 @@ def main() -> None:
     chat_mode = not config.workflow_path
     try:
         if chat_mode:
-            asyncio.run(_run_adapter_chat_mode(adapter, config))
+            asyncio.run(_run_adapter_chat_mode(adapter, config, adapter_type))
         else:
             asyncio.run(_run_adapter(adapter, None, config))
     except KeyboardInterrupt:
