@@ -144,6 +144,7 @@ Loading an existing workflow (`--workflow-id`) fetches the graph on startup and 
 **Input features:**
 - **Up/down arrows** recall previous messages (readline history persisted to `~/.dan/chat_history`)
 - **Type while streaming** — messages typed during LLM response are queued and sent after the current response finishes (shown as `[queued] >` when processed)
+- **Concierge routing** — server and local chat now pass messages through the shared concierge layer first, so status checks/file-like requests can bypass the full mutation/tool path and project/task context is tracked separately from raw thread history
 
 **Chat modes:**
 
@@ -471,7 +472,9 @@ dan-adapter -c adapter-config.json telegram
 | `whatsapp` | Meta Business API, 1-2 days | Commercial |
 | `email` | IMAP/SMTP credentials | Formal workflows |
 
-**Chat mode** requires `dan-serve` running (or `dan-up`). Messages route through the server's chat API — same capability router, experience memory, publish/share, and run lifecycle as `dan-chat`.
+**Chat mode** requires `dan-serve` running (or `dan-up`). Messages route through the server's chat API — same capability router, experience memory, publish/share, run lifecycle, and now the shared concierge routing layer as `dan-chat`.
+
+Adapter chat mode now routes natural-language messages through the server's concierge (same as `dan-chat`); explicit `/find` and `/send` still use local handling for their number-reply follow-ups. File responses from the concierge are detected and sent as attachments.
 
 **Workflow mode** can run standalone (no server needed) — the adapter loads the workflow and runs the engine directly.
 

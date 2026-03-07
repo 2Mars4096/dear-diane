@@ -9,6 +9,28 @@
 - **Shared contract:** versioned graph JSON (`dan_graph_v1`) between Python and TypeScript
 - **Testing:** pytest, pytest-asyncio, httpx (ASGI test client); vitest (editor unit tests)
 
+## Concierge Runtime
+
+- `src/dan/server/concierge/` is the shared Phase 15 control-plane package.
+- `ProjectStore` + `ProjectContextResolver` add a durable `Project` scope plus lightweight `Task` scope above raw chat threads.
+- `Project` records now also persist pending follow-up state (`confirm` / `clarify`) and linked meta-session IDs so a later `"yes"` / `"2"` reply or a status check can resume the right concierge-managed workstream.
+- `classifier.py` + `handlers.py` keep deterministic routing above `ChatManager`; conversation/build flows delegate back into the existing LLM chat paths instead of every message going through the full capability-tool decision loop. One-shot utility requests now have a dedicated `direct_task` lane so simple fact/drafting asks can bypass workflow build; external fact/stock queries first try direct web lookup and return a safe failure if live data cannot be verified. `classify_intent_with_llm_fallback()` calls the LLM when heuristic confidence < 0.6, with bias toward simpler categories over `workflow_build`.
+- `policy.py`, `queue.py`, `progress.py`, and `promotion.py` are the shared behavior-policy modules so server/local/adapters can converge on one decision model. `estimate_action_cost()` provides heuristic cost estimates; `DAN_COST_CONFIRM_THRESHOLD` (default $1) forces confirmation for expensive actions. `ProjectMessageQueue` enforces bounded parallelism (max 3 active projects per surface). `ProgressReporter.start_push()` emits periodic progress via async callback.
+- `ChatManager` accepts `prompt_context` so concierge-scoped project/task summaries can be injected at the system-message layer without replacing the existing prompt builder.
+- Reply labels follow citation rules: `[DAN - <Project>]` when multiple projects active, `[DAN - <Project> / <Task>]` for multi-task projects, quiet for single-project. Auto-summarization triggers every 10 turns or on task completion.
+- `/save <name>` command renames scratch workflows, writes experience, and updates project state. Handler-specific clarification: `DirectTaskHandler` asks for missing file context, `RunHandler` disambiguates multiple runs, `WorkflowBuildHandler` asks modify-vs-create. `MetaGoalHandler` enriches goals with similar workflows and principles before delegation.
+
+### Solver Runtime Layer (25-8 through 25-11)
+
+The solver sits above the concierge foundation and changes the top-level control flow from classifier-first to goal-first:
+
+- **`solver.py`** — `GoalResolver` (fast-path + LLM + heuristic), `PlanBuilder`, `SolverDecision` model, `ExecutionMode` (10 modes), `TerminalOutcome`
+- **`memory_bridge.py`** — `WorkflowMemoryIndex` wrapping `ExperienceStore`/`ExperienceIndex` for semantic retrieval, reuse scoring, duplicate detection
+- **`executor.py`** — `ExecutionSelector` mapping solver decisions to handler backends, fallback ladder execution, apology detection, partial-result formatting
+- **`policy.py` additions** — `FALLBACK_LADDER`, `validate_terminal_content()`, `suggest_fallback_strategy()`, `format_terminal_message()`
+
+Flow: `classify_intent()` → fast-path check → `GoalResolver.resolve()` → `PlanBuilder.build_plan()` → `ExecutionSelector.execute()` → handler backend → terminal outcome validation. The solver path is optional; when `goal_resolver` is `None`, the old handler-dispatch path runs unchanged.
+
 ## Directory Structure
 
 ```
@@ -191,7 +213,7 @@ deep-agent-network/
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
       app.py                     # FastAPI application — CRUD, runs, WebSocket, built-in tool registry, experience APIs, and meta-orchestrator APIs (plan/validate/run/pause/resume/events); lifespan wires ChatManager with user profile + conversation memory and manages NotificationManager subscription to GlobalEventBus
-      chat_factory.py            # Shared factory for LocalChatRuntime chat dependencies; server lifespan currently wires directly in app.py (26-1)
+      chat_factory.py            # Shared factory for LocalChatRuntime chat dependencies; now builds capability context + concierge for local parity (26-1, 25-6)
       exec.py                    # execute_python() — shared Python executor for run_python and run_strategy_script
       graph_store.py             # Filesystem-based graph JSON persistence
       graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run; TOOL_PORT_MANIFESTS for tool-specific port declarations; ApplySkill mutation op
@@ -200,6 +222,7 @@ deep-agent-network/
       capability_handlers.py     # Phase 15 (25-1–25-4) — 24 capability tool handlers (experience, run lifecycle, publish/share/export, graph); register_*_capabilities() functions
       chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA) + capability tools (ChatCapabilityRegistry), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history), profile/memory prompt injection, and conversation-summary persistence (26-3 integration)
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
+      concierge/                # Phase 15 (25-6/25-7) — deterministic routing/runtime layer: project/task store, classifier, handlers, policy, queue, progress, promotion
       run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing + RunStore integration + metric enrichment + learning event emissions (dual origin/reflection routing) + incremental experience consolidation/indexing + emit_rule_lifecycle_event() for API-driven rule management
       run_store.py               # Filesystem-backed persistence for run summaries (JSON) and event logs (JSONL). Layout: runs/{workflow_id}/{run_id}.json + .events.jsonl
       scoped_run.py              # Scoped execution: full/node/subgraph run builder
