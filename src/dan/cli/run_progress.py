@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Any
 
@@ -149,3 +150,43 @@ class RunProgressTracker:
             lines.append(f"  Avg node time: {_format_duration(avg)}")
 
         return "\n".join(lines)
+
+
+class MultiProjectProgressTracker:
+    """Aggregate progress across several concurrent projects."""
+
+    def __init__(self, *, use_rich: bool = False) -> None:
+        self._use_rich = use_rich
+        self._trackers: dict[str, RunProgressTracker] = {}
+        self._run_ids: dict[str, str] = {}
+
+    def add_project(self, project_label: str, run_id: str) -> RunProgressTracker:
+        tracker = RunProgressTracker(use_rich=self._use_rich)
+        self._trackers[project_label] = tracker
+        self._run_ids[project_label] = run_id
+        return tracker
+
+    def remove_project(self, project_label: str) -> None:
+        self._trackers.pop(project_label, None)
+        self._run_ids.pop(project_label, None)
+
+    def handle_event(self, project_label: str, event: dict[str, Any]) -> str | None:
+        tracker = self._trackers.get(project_label)
+        if tracker is None:
+            return None
+        return tracker.update(event)
+
+    def get_summary(self) -> str:
+        if not self._trackers:
+            return "  No active projects."
+        lines: list[str] = []
+        for label, tracker in self._trackers.items():
+            completed = sum(1 for s in tracker._node_status.values() if s == "completed")
+            total = len(tracker._node_status)
+            elapsed = _format_duration(time.monotonic() - tracker._run_start)
+            lines.append(f"  {label}: {tracker._run_status} ({completed}/{total} nodes, {elapsed})")
+        return "\n".join(lines)
+
+    def print_summary(self) -> None:
+        sys.stdout.write(self.get_summary() + "\n")
+        sys.stdout.flush()
