@@ -106,6 +106,7 @@ _adapter_start_times: dict[str, float] = {}
 _adapter_renderers: dict[str, tuple[MessagingHumanRenderer, Graph | None]] = {}
 _self_knowledge_index: Any | None = None
 _notification_manager: Any | None = None
+_concierge: Any | None = None
 
 
 def _get_engine_config() -> EngineConfig:
@@ -1219,7 +1220,7 @@ def _auto_register_published_workflows(registry: PublishRegistry) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _run_manager, _chat_manager, _mention_resolver, _notification_manager
-    global _publish_registry, _block_registry
+    global _publish_registry, _block_registry, _concierge
     _runs_dir = os.environ.get("DAN_RUNS_DIR", os.path.join(_graphs_dir, "runs"))
     _run_store = RunStore(base_dir=_runs_dir)
     workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
@@ -1389,6 +1390,20 @@ async def lifespan(app: FastAPI):
     _capability_context.principle_store = (
         _run_manager._get_principle_store() if _run_manager else None
     )
+    try:
+        from dan.server.concierge import build_concierge
+        meta_controller, _meta_planner, _meta_store = _build_meta_controller()
+
+        _concierge = build_concierge(
+            chat_manager=_chat_manager,
+            capability_context=_capability_context,
+            user_profile=user_profile,
+            conversation_memory=conversation_memory,
+            meta_controller=meta_controller,
+        )
+    except Exception:
+        logger.warning("Concierge startup failed", exc_info=True)
+        _concierge = None
 
     # Custom skills discovery (19-6)
     custom_skills_dir = Path(os.environ.get("DAN_CUSTOM_SKILLS_DIR", "custom_skills"))
@@ -1493,8 +1508,9 @@ class ChatMessageRequest(BaseModel):
     thread_id: str | None = None
     history: list[dict[str, str]] = []
     client_graph_revision: str | None = None
-    mode: Literal["ask", "agent", "plan", "debug", "auto", "mutate", "build"] = "agent"
+    mode: Literal["ask", "agent", "plan", "debug", "auto", "mutate", "build", "conversation"] = "agent"
     mentions: list[ChatMentionRef] = []
+    surface: str | None = None
 
 
 class ApplyMutationRequest(BaseModel):
@@ -3155,7 +3171,7 @@ async def stop_chat_stream(channel_id: str, req: StopRequest | None = None):
 
 
 @app.post("/api/chat/message")
-async def chat_message(req: ChatMessageRequest):
+async def chat_message(req: ChatMessageRequest, concierge: bool = True):
     import time
 
     if _chat_manager is None:
@@ -3200,34 +3216,55 @@ async def chat_message(req: ChatMessageRequest):
                 )
                 normalized_mode = detected_mode
 
-            # Keep ask/plan on the streaming text path so stop-generation
-            # stays responsive; mutation/capability tool path is for active
-            # construction/execution modes.
-            use_tools = graph_dict is not None and normalized_mode not in ("ask", "plan")
-
-            # Build debug context for debug mode
             debug_ctx = ""
             if normalized_mode == "debug" and _run_manager is not None:
                 debug_ctx = build_debug_context(
                     _run_manager.list_runs(), req.workflow_id,
                 )
 
-            send = (
-                _chat_manager.send_message_with_tools
-                if use_tools
-                else _chat_manager.send_message
-            )
-            async for event in send(
-                workflow_id=req.workflow_id,
-                message=req.message,
-                history=req.history,
-                thread_id=req.thread_id,
-                client_graph_revision=req.client_graph_revision,
-                mode=normalized_mode,
-                cancel_event=cancel_event,
-                mentions=structured_mentions,
-                debug_context=debug_ctx,
-            ):
+            if concierge and _concierge is not None:
+                from dan.server.concierge import SurfaceMessage
+
+                event_stream = _concierge.process(
+                    SurfaceMessage(
+                        surface=req.surface or "server",
+                        external_id=req.thread_id or req.workflow_id or "server-chat",
+                        text=req.message,
+                        metadata={
+                            "workflow_id": req.workflow_id,
+                            "thread_id": req.thread_id,
+                            "request_history": req.history,
+                            "client_graph_revision": req.client_graph_revision,
+                            "mode": normalized_mode,
+                            "debug_context": debug_ctx,
+                            "mentions": structured_mentions,
+                            "cancel_event": cancel_event,
+                        },
+                    )
+                )
+            else:
+                # Keep ask/plan on the streaming text path so stop-generation
+                # stays responsive; mutation/capability tool path is for active
+                # construction/execution modes.
+                use_tools = graph_dict is not None and normalized_mode not in ("ask", "plan")
+
+                send = (
+                    _chat_manager.send_message_with_tools
+                    if use_tools
+                    else _chat_manager.send_message
+                )
+                event_stream = send(
+                    workflow_id=req.workflow_id,
+                    message=req.message,
+                    history=req.history,
+                    thread_id=req.thread_id,
+                    client_graph_revision=req.client_graph_revision,
+                    mode=normalized_mode,
+                    cancel_event=cancel_event,
+                    mentions=structured_mentions,
+                    debug_context=debug_ctx,
+                )
+            async for event in event_stream:
                 payload = event.model_dump()
                 if detected_mode and payload.get("type") in (
                     "chat_complete", "chat_mutation",

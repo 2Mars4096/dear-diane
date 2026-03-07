@@ -14,8 +14,8 @@ from typing import Any, Callable, Awaitable
 
 logger = logging.getLogger(__name__)
 
-ALL_MODES = ("ask", "plan", "debug", "agent", "build", "mutate")
-READ_ONLY_MODES = ("ask", "plan")
+ALL_MODES = ("ask", "plan", "debug", "agent", "build", "mutate", "conversation")
+READ_ONLY_MODES = ("ask", "plan", "conversation")
 
 
 @dataclass

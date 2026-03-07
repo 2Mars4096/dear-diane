@@ -52,6 +52,66 @@ def _truncate(text: str, limit: int = 500) -> str:
     return text[:limit] + "…" if len(text) > limit else text
 
 
+# ── Web search tool ────────────────────────────────────────────────
+
+WEB_SEARCH_CAPABILITY_SCHEMA = build_tool_schema(
+    name="web_search",
+    description=(
+        "Search the web for current information. Use when the user asks about "
+        "live data: stock prices, exchange rates, weather, sports scores, "
+        "recent events, or any time-sensitive facts you don't have."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query — be specific and include relevant keywords.",
+            },
+        },
+        "required": ["query"],
+    },
+)
+
+
+async def handle_web_search(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    query = args.get("query", "").strip()
+    if not query:
+        return CapabilityResult(success=False, message="No search query provided.")
+    try:
+        from dan.tools.web_search import web_search
+        result = await web_search(query=query, num_results=5)
+    except ImportError:
+        return CapabilityResult(
+            success=False,
+            message="Web search is not available (duckduckgo-search package not installed).",
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Web search failed: {exc}")
+
+    results = result.get("results", [])
+    if not results:
+        return CapabilityResult(success=True, message="No web results found for that query.")
+
+    lines = []
+    for item in results[:5]:
+        title = item.get("title", "").strip()
+        snippet = item.get("snippet", "").strip()
+        url = item.get("url", "").strip()
+        parts = [p for p in (title, snippet, url) if p]
+        if parts:
+            lines.append(" — ".join(parts))
+
+    return CapabilityResult(
+        success=True,
+        message="\n\n".join(lines),
+        data=result,
+    )
+
+
 # ── Graph tools ────────────────────────────────────────────────────
 
 LIST_GRAPHS_SCHEMA = build_tool_schema(
@@ -1781,4 +1841,11 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_get_activity,
         modes=list(ALL_MODES),
         category="run",
+    )
+    registry.register(
+        "web_search",
+        WEB_SEARCH_CAPABILITY_SCHEMA,
+        handle_web_search,
+        modes=["agent", "build", "mutate", "conversation", "debug"],
+        category="web",
     )

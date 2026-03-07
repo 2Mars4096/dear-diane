@@ -24,6 +24,10 @@ class ChatServices:
         run_manager: Any | None = None,
         mention_resolver: Any | None = None,
         engine_config: Any | None = None,
+        capability_context: Any | None = None,
+        user_profile: Any | None = None,
+        conversation_memory: Any | None = None,
+        concierge: Any | None = None,
     ) -> None:
         self.graph_store = graph_store
         self.chat_store = chat_store
@@ -31,6 +35,10 @@ class ChatServices:
         self.run_manager = run_manager
         self.mention_resolver = mention_resolver
         self.engine_config = engine_config
+        self.capability_context = capability_context
+        self.user_profile = user_profile
+        self.conversation_memory = conversation_memory
+        self.concierge = concierge
 
 
 def _build_engine_config() -> Any:
@@ -152,6 +160,15 @@ def build_chat_services(
     from dan.server.chat_manager import ChatManager
     from dan.server.run_store import RunStore
     from dan.server.run_manager import RunManager
+    from dan.server.gateway.activity import ActivityTracker
+    from dan.server.capability_registry import ChatCapabilityRegistry, CapabilityContext
+    from dan.server.capability_handlers import (
+        register_base_capabilities,
+        register_experience_capabilities,
+        register_publish_capabilities,
+        register_run_lifecycle_capabilities,
+    )
+    from dan.server.concierge import build_concierge
 
     _graphs_dir = str(graphs_dir) if graphs_dir else os.environ.get("DAN_GRAPHS_DIR", "./graphs")
     _workspace = str(workspace_root) if workspace_root else os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
@@ -181,6 +198,20 @@ def build_chat_services(
         tool_registry=tool_registry,
         run_store=run_store,
     )
+    activity_tracker = ActivityTracker(run_manager)
+
+    capability_registry = ChatCapabilityRegistry()
+    register_base_capabilities(capability_registry)
+    register_experience_capabilities(capability_registry)
+    register_run_lifecycle_capabilities(capability_registry)
+    capability_context = CapabilityContext(
+        workflow_id="",
+        graph_store=graph_store,
+        run_manager=run_manager,
+        run_store=run_store,
+        activity_tracker=activity_tracker,
+        graphs_dir=_graphs_dir,
+    )
 
     user_profile = None
     try:
@@ -202,6 +233,15 @@ def build_chat_services(
         provider_registry=provider_registry,
         graph_store=graph_store,
         mention_resolver=mention_resolver,
+        capability_registry=capability_registry,
+        capability_context=capability_context,
+        user_profile=user_profile,
+        conversation_memory=conversation_memory,
+    )
+    register_publish_capabilities(capability_registry)
+    concierge = build_concierge(
+        chat_manager=chat_manager,
+        capability_context=capability_context,
         user_profile=user_profile,
         conversation_memory=conversation_memory,
     )
@@ -213,4 +253,8 @@ def build_chat_services(
         run_manager=run_manager,
         mention_resolver=mention_resolver,
         engine_config=engine_config,
+        capability_context=capability_context,
+        user_profile=user_profile,
+        conversation_memory=conversation_memory,
+        concierge=concierge,
     )
