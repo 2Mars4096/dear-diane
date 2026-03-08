@@ -107,6 +107,7 @@ _adapter_renderers: dict[str, tuple[MessagingHumanRenderer, Graph | None]] = {}
 _self_knowledge_index: Any | None = None
 _notification_manager: Any | None = None
 _concierge: Any | None = None
+_dispatcher: Any | None = None
 
 
 def _get_engine_config() -> EngineConfig:
@@ -1220,7 +1221,7 @@ def _auto_register_published_workflows(registry: PublishRegistry) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _run_manager, _chat_manager, _mention_resolver, _notification_manager
-    global _publish_registry, _block_registry, _concierge
+    global _publish_registry, _block_registry, _concierge, _dispatcher
     _runs_dir = os.environ.get("DAN_RUNS_DIR", os.path.join(_graphs_dir, "runs"))
     _run_store = RunStore(base_dir=_runs_dir)
     workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
@@ -1394,16 +1395,23 @@ async def lifespan(app: FastAPI):
         from dan.server.concierge import build_concierge
         meta_controller, _meta_planner, _meta_store = _build_meta_controller()
 
-        _concierge = build_concierge(
+        result = build_concierge(
             chat_manager=_chat_manager,
             capability_context=_capability_context,
             user_profile=user_profile,
             conversation_memory=conversation_memory,
             meta_controller=meta_controller,
+            enable_dispatcher=True,
         )
+        if isinstance(result, tuple):
+            _concierge, _dispatcher = result
+        else:
+            _concierge = result
+            _dispatcher = None
     except Exception:
         logger.warning("Concierge startup failed", exc_info=True)
         _concierge = None
+        _dispatcher = None
 
     # Custom skills discovery (19-6)
     custom_skills_dir = Path(os.environ.get("DAN_CUSTOM_SKILLS_DIR", "custom_skills"))
@@ -3225,23 +3233,25 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
             if concierge and _concierge is not None:
                 from dan.server.concierge import SurfaceMessage
 
-                event_stream = _concierge.process(
-                    SurfaceMessage(
-                        surface=req.surface or "server",
-                        external_id=req.thread_id or req.workflow_id or "server-chat",
-                        text=req.message,
-                        metadata={
-                            "workflow_id": req.workflow_id,
-                            "thread_id": req.thread_id,
-                            "request_history": req.history,
-                            "client_graph_revision": req.client_graph_revision,
-                            "mode": normalized_mode,
-                            "debug_context": debug_ctx,
-                            "mentions": structured_mentions,
-                            "cancel_event": cancel_event,
-                        },
-                    )
+                _surface_msg = SurfaceMessage(
+                    surface=req.surface or "server",
+                    external_id=req.thread_id or req.workflow_id or "server-chat",
+                    text=req.message,
+                    metadata={
+                        "workflow_id": req.workflow_id,
+                        "thread_id": req.thread_id,
+                        "request_history": req.history,
+                        "client_graph_revision": req.client_graph_revision,
+                        "mode": normalized_mode,
+                        "debug_context": debug_ctx,
+                        "mentions": structured_mentions,
+                        "cancel_event": cancel_event,
+                    },
                 )
+                if _dispatcher is not None:
+                    event_stream = _dispatcher.dispatch(_surface_msg)
+                else:
+                    event_stream = _concierge.process(_surface_msg)
             else:
                 # Keep ask/plan on the streaming text path so stop-generation
                 # stays responsive; mutation/capability tool path is for active
@@ -3266,11 +3276,41 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                 )
             async for event in event_stream:
                 payload = event.model_dump()
-                if detected_mode and payload.get("type") in (
+                evt_type = payload.get("type", "")
+
+                if evt_type == "chat_queued" and _dispatcher is not None:
+                    queued_channel = payload.get("stream_channel_id", "")
+                    if queued_channel:
+                        _reap_stale_chat_streams()
+                        queued_q: asyncio.Queue = asyncio.Queue()
+                        _chat_streams[queued_channel] = (queued_q, time.monotonic())
+
+                        async def _pipe_queued(ch: str, qq: asyncio.Queue) -> None:
+                            bus = _dispatcher.get_response_bus(ch)
+                            if bus is None:
+                                return
+                            try:
+                                while True:
+                                    bus_event = await bus.get()
+                                    if bus_event is None:
+                                        break
+                                    await qq.put(bus_event.model_dump())
+                            except Exception:
+                                logger.warning("Queued stream pipe error for %s", ch, exc_info=True)
+                            finally:
+                                await qq.put(None)
+                                _dispatcher.cleanup_response_bus(ch)
+
+                        _pipe_task = asyncio.create_task(_pipe_queued(queued_channel, queued_q))
+                        _dispatcher._track_task(_pipe_task)
+                    payload["status"] = "queued"
+                    await queue.put(payload)
+                    continue
+
+                if detected_mode and evt_type in (
                     "chat_complete", "chat_mutation",
                 ):
                     payload["detected_mode"] = detected_mode
-                # When capability start_run returns stream_channel_id, create run stream
                 run_stream_id = payload.get("stream_channel_id")
                 if (
                     run_stream_id
@@ -3330,7 +3370,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
             await queue.put(None)
 
     asyncio.create_task(_produce())
-    return {"message_id": uuid.uuid4().hex[:12], "stream_channel_id": stream_channel_id}
+    return {"message_id": uuid.uuid4().hex[:12], "stream_channel_id": stream_channel_id, "status": "processing"}
 
 
 async def _handle_run_command(
