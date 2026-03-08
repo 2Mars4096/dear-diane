@@ -87,7 +87,7 @@ async def handle_web_search(
     except ImportError:
         return CapabilityResult(
             success=False,
-            message="Web search is not available (duckduckgo-search package not installed).",
+            message="Web search is not available. Set DAN_TAVILY_API_KEY or DAN_BRAVE_API_KEY, or install duckduckgo-search.",
         )
     except Exception as exc:
         return CapabilityResult(success=False, message=f"Web search failed: {exc}")
