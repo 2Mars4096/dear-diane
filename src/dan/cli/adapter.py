@@ -30,8 +30,12 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_DAN_PREFIX = "[DAN]"
-_DAN_SCOPED_PREFIX = "[DAN - "
+from dan.server.concierge.identity import (
+    get_bot_name,
+    format_bare_prefix,
+    starts_with_prefix,
+    strip_prefix,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -47,17 +51,7 @@ class _PendingAction:
 
 
 def _strip_dan_prefix(text: str) -> str:
-    clean = text.strip()
-    while clean.startswith(f"{_DAN_PREFIX} ") or clean.startswith(_DAN_SCOPED_PREFIX):
-        idx = clean.find("] ")
-        if idx >= 0:
-            clean = clean[idx + 2:]
-        elif clean.startswith(_DAN_SCOPED_PREFIX):
-            clean = clean[len(_DAN_SCOPED_PREFIX):]
-        else:
-            clean = clean[len(_DAN_PREFIX) + 1:]
-        clean = clean.strip()
-    return clean
+    return strip_prefix(text)
 
 
 # ---------------------------------------------------------------------------
@@ -150,6 +144,12 @@ def _classify_adapter_intent(
         if lower.startswith(prefix):
             return "file_search", text[len(prefix):].strip().rstrip(".!?,")
 
+    # ── Document action: summarize/review/read + paper/document/pdf ─
+    doc_actions = ("summarize", "summary", "review", "proofread", "analyze", "read through")
+    doc_nouns = ("paper", "pdf", "document", "manuscript", "article", "thesis", "report")
+    if any(a in lower for a in doc_actions) and any(n in lower for n in doc_nouns):
+        return "conversation", ""
+
     # ── File-related phrases anywhere ──────────────────────────────
     file_cues = (
         "the document", "the file", "that file", "that document",
@@ -207,6 +207,17 @@ def _surface_name_for_adapter_type(adapter_type: str) -> str:
 # Chat stream helpers
 # ---------------------------------------------------------------------------
 
+_FUNCTION_CALL_XML_RE = re.compile(
+    r"<FunctionCall>.*?</FunctionCall>",
+    re.DOTALL,
+)
+
+
+def _strip_function_call_xml(text: str) -> str:
+    """Remove <FunctionCall>...</FunctionCall> XML leaked by LLM fallback text streams."""
+    return _FUNCTION_CALL_XML_RE.sub("", text).strip()
+
+
 def _consume_chat_stream_events(
     events: list[dict[str, Any]],
 ) -> tuple[str, dict[str, Any] | None]:
@@ -247,7 +258,9 @@ def _consume_chat_stream_events(
             break
 
     full_reply = "".join(collected).strip()
+    full_reply = _strip_function_call_xml(full_reply)
     complete_content = complete_content.strip()
+    complete_content = _strip_function_call_xml(complete_content)
     if complete_content:
         if not full_reply:
             full_reply = complete_content
@@ -303,22 +316,24 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
     conversation_workflows: dict[str, str] = {}
     conversation_history: dict[str, list[dict[str, str]]] = {}
     conversation_pending: dict[str, _PendingAction] = {}
+    shared_http = httpx.AsyncClient(base_url=server_url, timeout=120.0)
+    _adapter_bg_tasks: set[asyncio.Task[None]] = set()
 
+    _bot = get_bot_name()
+    _bare = format_bare_prefix()
     _ADAPTER_CONTEXT = f"""\
-You are DAN, a personal AI assistant connected via messaging.
-Keep replies short (1-3 sentences) — this is a chat app.
-Do NOT suggest commands, numbered options, or ask "would you like me to…?".
-Just answer directly. Do NOT add {_DAN_PREFIX} prefix."""
+You are {_bot}, a messaging AI assistant. Short replies (1-3 sentences). \
+Answer directly — no commands, no numbered options, no {_bare} prefix."""
 
     def _server_unavailable_message() -> str:
         return (
-            f"DAN server unavailable at {server_url}. "
+            f"{_bot} server unavailable at {server_url}. "
             "Please start dan-serve and try again."
         )
 
     def _stream_unavailable_message() -> str:
         return (
-            "DAN accepted the request, but the reply stream failed. "
+            f"{_bot} accepted the request, but the reply stream failed. "
             "Please try again."
         )
 
@@ -494,11 +509,10 @@ Just answer directly. Do NOT add {_DAN_PREFIX} prefix."""
             workflow_id = pending.query
             if mutation_plan:
                 try:
-                    async with httpx.AsyncClient(base_url=server_url, timeout=120.0) as http:
-                        apply_resp = await http.post(
-                            f"/api/graphs/{workflow_id}/apply-mutation",
-                            json={"mutation_plan": mutation_plan},
-                        )
+                    apply_resp = await shared_http.post(
+                        f"/api/graphs/{workflow_id}/apply-mutation",
+                        json={"mutation_plan": mutation_plan},
+                    )
                     if apply_resp.status_code == 200:
                         await adapter.send_prompt(external_id, "Applied.", None)
                     else:
