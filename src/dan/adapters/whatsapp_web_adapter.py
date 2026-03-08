@@ -441,7 +441,10 @@ class WhatsAppWebAdapter:
         self._recent_outbound[jid] = kept
         return matched
 
-    _REPLY_PREFIX = "[DAN] "
+    @staticmethod
+    def _reply_prefix() -> str:
+        from dan.server.concierge.identity import format_bare_prefix
+        return f"{format_bare_prefix()} "
 
     def _resolve_recipient(self, jid: str) -> Any:
         """Resolve a JID string to a neonize JID suitable for sending.
@@ -480,7 +483,7 @@ class WhatsAppWebAdapter:
             return
         try:
             recipient = self._resolve_recipient(jid)
-            prefixed = f"{self._REPLY_PREFIX}{text}"
+            prefixed = f"{self._reply_prefix()}{text}"
             for chunk in _split_message(prefixed):
                 self._record_outbound_message(jid, chunk)
                 logger.info("Sending WhatsApp message to %s (%d chars)", jid, len(chunk))

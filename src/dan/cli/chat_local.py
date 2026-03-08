@@ -135,12 +135,19 @@ class LocalChatRuntime:
 
         async def _stream() -> None:
             try:
+                dispatcher = getattr(s, "dispatcher", None)
                 concierge = getattr(s, "concierge", None)
-                if (
+                has_dispatcher = (
+                    dispatcher is not None
+                    and callable(getattr(dispatcher, "dispatch", None))
+                    and not hasattr(dispatcher, "assert_called")
+                )
+                has_concierge = (
                     concierge is not None
                     and callable(getattr(concierge, "process", None))
                     and not hasattr(concierge, "assert_called")
-                ):
+                )
+                if has_dispatcher or has_concierge:
                     from dan.server.concierge import SurfaceMessage
 
                     source_msg = SurfaceMessage(
@@ -156,7 +163,10 @@ class LocalChatRuntime:
                             "request_history": history or [],
                         },
                     )
-                    event_stream = concierge.process(source_msg)
+                    if has_dispatcher:
+                        event_stream = dispatcher.dispatch(source_msg)
+                    else:
+                        event_stream = concierge.process(source_msg)
                 else:
                     event_stream = s.chat_manager.send_message_with_tools(
                         workflow_id=workflow_id,
@@ -173,6 +183,34 @@ class LocalChatRuntime:
                         if hasattr(event, "model_dump")
                         else {"type": str(type(event).__name__)}
                     )
+                    if ev_dict.get("type") == "chat_queued" and dispatcher is not None:
+                        queued_ch = ev_dict.get("stream_channel_id", "")
+                        if queued_ch:
+                            queued_q = self._new_stream_queue()
+                            self._pending_streams[queued_ch] = queued_q
+
+                            async def _pipe_queued(ch: str, qq: asyncio.Queue) -> None:
+                                bus = dispatcher.get_response_bus(ch)
+                                if bus is None:
+                                    return
+                                try:
+                                    while True:
+                                        bus_event = await bus.get()
+                                        if bus_event is None:
+                                            break
+                                        self._enqueue_stream_item(
+                                            qq,
+                                            bus_event.model_dump() if hasattr(bus_event, "model_dump") else bus_event,
+                                        )
+                                except Exception:
+                                    pass
+                                finally:
+                                    self._enqueue_stream_item(qq, None)
+                                    dispatcher.cleanup_response_bus(ch)
+
+                            _pipe_task = asyncio.create_task(_pipe_queued(queued_ch, queued_q))
+                            if hasattr(dispatcher, '_track_task'):
+                                dispatcher._track_task(_pipe_task)
                     self._enqueue_stream_item(queue, ev_dict)
             except Exception as exc:
                 self._enqueue_stream_item(queue, {"type": "chat_error", "error": str(exc)})
