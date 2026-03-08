@@ -274,7 +274,9 @@
   - [x] [25-9-workflow-memory-and-reuse](plans/25-9-workflow-memory-and-reuse.md) — I. Make workflow/experience memory a semantic planning input: retrieve similar workflows, choose reuse vs. adapt vs. build, and learn from corrections.
   - [x] [25-10-execution-selector](plans/25-10-execution-selector.md) — J. Turn solver decisions into concrete execution backends while preserving deterministic prechecks and shared handlers as actuators.
   - [x] [25-11-fallback-and-completion-policy](plans/25-11-fallback-and-completion-policy.md) — K. Encode the "never just stop" runtime contract: alternate paths, useful subsets, capability-building, human-action scaffolding, and productive terminal outcomes.
-  - [ ] [25-12-tool-aware-conversation](plans/25-12-tool-aware-conversation.md) — L. Eliminate fabricated live-data responses: give conversation paths real tool access (web search), activate solver runtime on adapter surfaces, add post-execution validation for unsourced claims.
+  - [x] [25-12-tool-aware-conversation](plans/25-12-tool-aware-conversation.md) — L. Eliminate fabricated live-data responses: give conversation paths real tool access (web search), activate solver runtime on adapter surfaces, add post-execution validation for unsourced claims.
+
+- [x] [25-13-conversation-file-tools](plans/25-13-conversation-file-tools.md) — file_read + pdf_read as capability tools, web search provider cascade (Tavily/Brave/DDG), CAPABILITY_TOOLS_REFERENCE fixes, FunctionCall XML leak fix
 
 ## Phase 16 — Always-On Personal Service
 > Once chat is the unified control plane (Phase 15), make it persistent: always running, always
@@ -290,6 +292,16 @@
   - [x] [26-4-notifications](plans/26-4-notifications.md) — D. `NotificationManager` + `MacOSNotifier` + `WebhookNotifier` + `TerminalBellNotifier` + `NotificationConfig`, including `app.py` GlobalEventBus lifecycle wiring.
   - [x] [26-5-rich-cli-display](plans/26-5-rich-cli-display.md) — E. ASCII DAG renderer for `/show` (topological sort, box-drawing). Streaming node-by-node progress during `/run`. Mutation diff display. Rich table for `/list`. `/show --code`/`--json`/`--stats`. Graceful degradation without Rich. (~2 days)
   - [x] [26-6-whatsapp-web-adapter](plans/26-6-whatsapp-web-adapter.md) — F. WhatsApp Web adapter for personal use (QR code pairing, no Business API). `WhatsAppWebAdapter` with neonize, QR pairing, LID→phone resolution, self-message echo suppression, chat-mode wiring, `/find` + `/send` file commands, size checks, force-exit handling, adapter context prompt. 16 tests. *(Mutation-confirmation UX on messaging surfaces deferred to 25-7.)*
+
+## Phase 17 — Async Message Dispatch
+> Process independent user messages concurrently across projects while serializing within the same
+> task. The router feels like a parallel assistant, not a serial queue. Configurable bot identity
+> replaces all hardcoded `[DAN` prefixes.
+
+- [x] [27-async-message-dispatch](plans/27-async-message-dispatch.md) — concurrent project dispatch, same-task serialization, configurable bot name
+  - [x] [27-1-configurable-bot-identity](plans/27-1-configurable-bot-identity.md) — A. Replace hardcoded `[DAN` with `DAN_BOT_NAME` env var, shared `identity.py` module. 26 tests.
+  - [x] [27-2-concurrent-project-dispatcher](plans/27-2-concurrent-project-dispatcher.md) — B. `ConcurrentDispatcher` wrapping `Concierge`: per-project asyncio tasks, same-task serial queues, cross-project parallelism. `ChatQueuedEvent` for deferred response delivery. 6 tests.
+  - [x] [27-3-surface-async-acceptance](plans/27-3-surface-async-acceptance.md) — C. Server endpoint returns `status: "processing"|"queued"`, pipes queued stream channels. Adapter uses shared `httpx.AsyncClient` + background task dispatch. `LocalChatRuntime` uses dispatcher. `dan-chat` CLI local mode gets queued event handling.
 
 ## Backlog (unphased)
 

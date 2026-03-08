@@ -16,6 +16,8 @@
 - `Project` records now also persist pending follow-up state (`confirm` / `clarify`) and linked meta-session IDs so a later `"yes"` / `"2"` reply or a status check can resume the right concierge-managed workstream.
 - `classifier.py` + `handlers.py` keep deterministic routing above `ChatManager`; conversation/build flows delegate back into the existing LLM chat paths instead of every message going through the full capability-tool decision loop. One-shot utility requests now have a dedicated `direct_task` lane so simple fact/drafting asks can bypass workflow build; external fact/stock queries first try direct web lookup and return a safe failure if live data cannot be verified. `classify_intent_with_llm_fallback()` calls the LLM when heuristic confidence < 0.6, with bias toward simpler categories over `workflow_build`.
 - `policy.py`, `queue.py`, `progress.py`, and `promotion.py` are the shared behavior-policy modules so server/local/adapters can converge on one decision model. `estimate_action_cost()` provides heuristic cost estimates; `DAN_COST_CONFIRM_THRESHOLD` (default $1) forces confirmation for expensive actions. `ProjectMessageQueue` enforces bounded parallelism (max 3 active projects per surface). `ProgressReporter.start_push()` emits periodic progress via async callback.
+- `identity.py` is the single source of truth for bot name and prefix formatting. `get_bot_name()` reads `DAN_BOT_NAME` env var (default `"DAN"`). All prefix formatting (`format_prefix()`, `format_bare_prefix()`, `starts_with_prefix()`, `strip_prefix()`) reads from this module.
+- `dispatcher.py` provides `ConcurrentDispatcher` — a concurrency layer wrapping `Concierge`. Different projects process in parallel (per-project asyncio tasks); same-project messages queue and drain serially so follow-ups see prior results. `ChatQueuedEvent` signals deferred response delivery with a pre-allocated `stream_channel_id`. `build_concierge()` returns `(Concierge, ConcurrentDispatcher)` when `enable_dispatcher=True`.
 - `ChatManager` accepts `prompt_context` so concierge-scoped project/task summaries can be injected at the system-message layer without replacing the existing prompt builder.
 - Reply labels follow citation rules: `[DAN - <Project>]` when multiple projects active, `[DAN - <Project> / <Task>]` for multi-task projects, quiet for single-project. Auto-summarization triggers every 10 turns or on task completion.
 - `/save <name>` command renames scratch workflows, writes experience, and updates project state. Handler-specific clarification: `DirectTaskHandler` asks for missing file context, `RunHandler` disambiguates multiple runs, `WorkflowBuildHandler` asks modify-vs-create. `MetaGoalHandler` enriches goals with similar workflows and principles before delegation.
@@ -30,6 +32,14 @@ The solver sits above the concierge foundation and changes the top-level control
 - **`policy.py` additions** — `FALLBACK_LADDER`, `validate_terminal_content()`, `suggest_fallback_strategy()`, `format_terminal_message()`
 
 Flow: `classify_intent()` → fast-path check → `GoalResolver.resolve()` → `PlanBuilder.build_plan()` → `ExecutionSelector.execute()` → handler backend → terminal outcome validation. The solver path is optional; when `goal_resolver` is `None`, the old handler-dispatch path runs unchanged.
+
+### Tool-Aware Conversation (25-12)
+
+- `web_search` registered as a capability tool for `conversation` mode
+- `ConversationHandler` uses `send_message_with_tools` instead of text-only `send_message`
+- `DirectTaskHandler` fallback uses `conversation` mode for tool access
+- Solver `_SOLVER_SYSTEM_PROMPT` routes live-data queries to `direct_action`
+- `_check_unsourced_claims()` appends training-data disclaimer on unsourced numeric patterns
 
 ## Directory Structure
 
@@ -219,7 +229,7 @@ deep-agent-network/
       graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run; TOOL_PORT_MANIFESTS for tool-specific port declarations; ApplySkill mutation op
       skill_library.py           # SKILL_LIBRARY: domain-specific prompt-injection skills (management_science_writing, informs_latex_style) targeted by node tags
       capability_registry.py     # Phase 15 (25-1) — ChatCapabilityRegistry, CapabilityContext, CapabilityResult, build_tool_schema(); mode-aware multi-tool dispatch for chat-as-control-plane
-      capability_handlers.py     # Phase 15 (25-1–25-4) — 24 capability tool handlers (experience, run lifecycle, publish/share/export, graph); register_*_capabilities() functions
+      capability_handlers.py     # Phase 15 (25-1–25-4, 25-13) — 35 capability tool handlers (experience, run lifecycle, publish/share/export, graph, all 11 built-in tools); register_*_capabilities() functions
       chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA) + capability tools (ChatCapabilityRegistry), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history), profile/memory prompt injection, and conversation-summary persistence (26-3 integration)
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
       concierge/                # Phase 15 (25-6/25-7) — deterministic routing/runtime layer: project/task store, classifier, handlers, policy, queue, progress, promotion
@@ -616,7 +626,7 @@ result = await engine.resume(graph, run_id="abc123")
 
 - **Multi-provider dispatch:** `ProviderRegistry` (in `dan.providers.registry`) routes model names to the correct API. Resolution order: (1) exact `model_provider_map` override → (2) prefix pattern match (`gpt-*`/`o1*`/`o3*`/`o4*`→OpenAI, `claude-*`→Anthropic, `gemini-*`→Google) → (3) `"default"` provider fallback (OpenAI-compatible endpoint). Custom prefix patterns can be added via `registry.add_prefix_pattern()`.
 - **Built-in providers:** `OpenAIProvider` (any OpenAI-compatible endpoint, default), `AnthropicProvider` (optional), `GoogleProvider` (optional). Provider SDKs are optional deps.
-- **Key management:** Env vars `DAN_OPENAI_API_KEY`, `DAN_ANTHROPIC_API_KEY`, `DAN_GOOGLE_API_KEY` are scanned at server startup (`app.py` `_get_engine_config()`). Each non-empty key auto-registers the corresponding provider. `DAN_LLM_API_KEY` + `DAN_LLM_BASE_URL` configure the default provider (backward compatible with existing vectorengine.ai setup).
+- **Key management:** Env vars `DAN_OPENAI_API_KEY`, `DAN_ANTHROPIC_API_KEY`, `DAN_GOOGLE_API_KEY` are scanned at server startup (`app.py` `_get_engine_config()`). Each non-empty key auto-registers the corresponding provider. `DAN_LLM_API_KEY` + `DAN_LLM_BASE_URL` configure the default provider (backward compatible with existing vectorengine.ai setup). `DAN_TAVILY_API_KEY` enables Tavily for the `web_search` tool (recommended); `DAN_BRAVE_API_KEY` enables Brave Search as second choice; falls back to DuckDuckGo scraping when neither is set.
 - **`DAN_USE_CODEGEN_BUILD`** (default `"1"`): When `"1"`, empty-graph build mode uses the builder-codegen generation path (Phase 14). Set to `"0"` to force the legacy mutation-JSON path for all builds. Only affects new workflow creation; edit-mode mutations are always unchanged.
 - Output normalization built into LLM executor: extract JSON -> validate against schema -> re-prompt with error -> retry
 - Transient API errors (rate limits, timeouts) retried with configurable `retry_policy`
@@ -626,13 +636,14 @@ result = await engine.resume(graph, run_id="abc123")
 
 - 11 batteries-included tools organized by category:
   - **File I/O** — `file_read`, `file_write`, `list_directory` (sandboxed to `DAN_WORKSPACE_ROOT`)
-  - **Web** — `web_search` (DuckDuckGo), `web_fetch` (URL content), `http_request` (general HTTP)
+  - **Web** — `web_search` (Tavily → Brave → DuckDuckGo cascade), `web_fetch` (URL content), `http_request` (general HTTP)
   - **Shell** — `shell_command` (subprocess with timeout and allowlist)
   - **Document** — `pdf_read` (PDF text extraction)
   - **Text Processing** — `text_chunk` (chunking with overlap), `json_extract` (dot-notation), `regex_match` (match/replace)
 - **Auto-discovery:** Each module exports `TOOL_METADATA` dict (keys: `tool_id`, `description`, `parameters`, `examples`, `category`, `returns`) and an async callable with the same name as `tool_id`. `get_all_tools()` scans all modules and returns `{tool_id: (function, metadata)}`.
 - Auto-registered during server lifespan via `ToolRegistry.register_builtin_tools()` — custom tools can override built-in IDs
-- Graceful degradation: optional SDK tools (`pypdf` for `pdf_read`, `duckduckgo-search` for `web_search`) skip with warning if SDK not installed
+- Graceful degradation: optional SDK tools (`pypdf` for `pdf_read`, `duckduckgo-search` for `web_search` fallback) skip with warning if SDK not installed
+- **Web search provider cascade:** `web_search` checks `DAN_TAVILY_API_KEY` → Tavily (recommended, built for LLM agents); then `DAN_BRAVE_API_KEY` → Brave Search; then DuckDuckGo scraping (zero-config). Each provider auto-falls back to the next on failure.
 - Workspace root sandboxing: all file tools enforce `DAN_WORKSPACE_ROOT` boundary
 
 ### Tool design (Plan 7-5)

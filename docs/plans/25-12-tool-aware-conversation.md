@@ -1,7 +1,7 @@
 # 25-12: Tool-Aware Conversation & Solver Activation
 
 **Parent:** [25-chat-control-plane](25-chat-control-plane.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Eliminate the class of bugs where the LLM fabricates live data by giving conversation paths real tool access and activating the solver runtime on adapter surfaces.
 
 ## Problem Statement
@@ -17,36 +17,36 @@ These compound: narrow classifier → wrong handler → LLM without tools → ha
 ## Tasks
 
 ### Layer 1: Conversation with tool access (medium-term)
-- [ ] 1. Give `ConversationHandler` access to `web_search` as an LLM-callable tool
-  - [ ] 1-1. Add a `conversation_with_tools` execution mode that passes `web_search` (and optionally other read-only tools) to the LLM alongside the conversation prompt
-  - [ ] 1-2. When the LLM decides it needs live data, it calls `web_search` as a tool call rather than fabricating
-  - [ ] 1-3. Keep `ask` mode read-only for graph questions; add a new `conversation` mode that includes read-only external tools
-- [ ] 2. Give `DirectTaskHandler` fallback the same tool access
-  - [ ] 2-1. Replace `_fallback_to_chat` with a tool-aware path so even misclassified direct tasks can still reach web search via LLM tool calling
-  - [ ] 2-2. Remove the classifier-gated `_should_search_web` pre-check — let the LLM decide when to search
+- [x] 1. Give `ConversationHandler` access to `web_search` as an LLM-callable tool
+  - [x] 1-1. Add a `conversation_with_tools` execution mode that passes `web_search` (and optionally other read-only tools) to the LLM alongside the conversation prompt
+  - [x] 1-2. When the LLM decides it needs live data, it calls `web_search` as a tool call rather than fabricating
+  - [x] 1-3. Keep `ask` mode read-only for graph questions; add a new `conversation` mode that includes read-only external tools
+- [x] 2. Give `DirectTaskHandler` fallback the same tool access
+  - [x] 2-1. Replace `_fallback_to_chat` with a tool-aware path so even misclassified direct tasks can still reach web search via LLM tool calling
+  - [x] 2-2. Remove the classifier-gated `_should_search_web` pre-check — let the LLM decide when to search
 
 ### Layer 2: Solver activation on all surfaces (long-term)
-- [ ] 3. Activate the solver runtime for adapter-originated messages
-  - [ ] 3-1. Ensure `build_concierge(use_solver=True)` is the default for server-side concierge used by adapter chat mode
-  - [ ] 3-2. The solver's `GoalResolver` replaces keyword classification: "user needs live financial data" → `DIRECT_ACTION` with web search, not "does the message contain 'stock price'?"
-  - [ ] 3-3. Verify the solver path works end-to-end from WhatsApp → server API → concierge → solver → web search → formatted reply
-- [ ] 4. Teach the solver to recognize live-data needs
-  - [ ] 4-1. Add "needs real-time data" as a signal in the solver LLM prompt so the planner routes to web search for prices, weather, scores, etc.
-  - [ ] 4-2. The solver should prefer web search over LLM knowledge for any time-sensitive query
-  - [ ] 4-3. When web search fails, the solver should say so explicitly rather than falling back to fabrication
+- [x] 3. Activate the solver runtime for adapter-originated messages
+  - [x] 3-1. Ensure `build_concierge(use_solver=True)` is the default for server-side concierge used by adapter chat mode
+  - [x] 3-2. The solver's `GoalResolver` replaces keyword classification: "user needs live financial data" → `DIRECT_ACTION` with web search, not "does the message contain 'stock price'?"
+  - [x] 3-3. Verify the solver path works end-to-end from WhatsApp → server API → concierge → solver → web search → formatted reply
+- [x] 4. Teach the solver to recognize live-data needs
+  - [x] 4-1. Add "needs real-time data" as a signal in the solver LLM prompt so the planner routes to web search for prices, weather, scores, etc.
+  - [x] 4-2. The solver should prefer web search over LLM knowledge for any time-sensitive query
+  - [x] 4-3. When web search fails, the solver should say so explicitly rather than falling back to fabrication
 
 ### Layer 3: Execution-aware reflection (long-term)
-- [ ] 5. Post-execution validation for live-data claims
-  - [ ] 5-1. Add a reflection step gated by a cheap regex pre-filter (detect `$123.45`, `12.3%`, date patterns) — only invoke LLM reflection when suspected unsourced numeric claims are found, to avoid adding latency to every response
-  - [ ] 5-2. Flag unsourced numeric claims with a disclaimer: "Note: I couldn't verify this with a live source"
-  - [ ] 5-3. Track which responses contained unsourced claims for quality monitoring
+- [x] 5. Post-execution validation for live-data claims
+  - [x] 5-1. Add a reflection step gated by a cheap regex pre-filter (detect `$123.45`, `12.3%`, date patterns) — only invoke LLM reflection when suspected unsourced numeric claims are found, to avoid adding latency to every response
+  - [x] 5-2. Flag unsourced numeric claims with a disclaimer: "Note: I couldn't verify this with a live source"
+  - [x] 5-3. Track which responses contained unsourced claims for quality monitoring
 
 ### Tests and rollout
-- [ ] 6. Add targeted tests
-  - [ ] 6-1. Test: "rocket lab close price" via conversation path triggers web search tool call (not fabrication)
-  - [ ] 6-2. Test: solver-enabled adapter path routes live-data queries to web search
-  - [ ] 6-3. Test: text-only fallback with honesty guard refuses to fabricate prices
-  - [ ] 6-4. Test: graph-specific ask-mode questions still work without tools (no regression)
+- [x] 6. Add targeted tests
+  - [x] 6-1. Test: "rocket lab close price" via conversation path triggers web search tool call (not fabrication)
+  - [x] 6-2. Test: solver-enabled adapter path routes live-data queries to web search
+  - [x] 6-3. Test: text-only fallback with honesty guard refuses to fabricate prices
+  - [x] 6-4. Test: graph-specific ask-mode questions still work without tools (no regression)
 
 ## Decisions
 
