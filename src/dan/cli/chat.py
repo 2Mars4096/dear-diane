@@ -652,47 +652,40 @@ async def _run_repl(
 
     pending_lines: list[str] = []
 
-    async def _replay_queued_through_api(queued_text: str) -> None:
-        """Send a queued message through the server chat API so the
-        server-side ProjectMessageQueue can manage ordering."""
+    _background_listeners: list[asyncio.Task[None]] = []
+
+    async def _consume_stream_to_terminal(
+        channel: str,
+        *,
+        stream_tokens: bool = True,
+    ) -> None:
+        """Consume a stream channel and print to terminal.
+
+        When *stream_tokens* is False, buffer the full response and print
+        as a single labeled block (used for background/queued responses).
+        """
         nonlocal client_graph_revision
-        _print(f"[queued] > {queued_text}", style="dim" if console else None)
-        readline.add_history(queued_text)
+        acc = ""
         try:
-            q_resp = await client.send_chat_message(
-                workflow_id,
-                queued_text,
-                history=history,
-                thread_id=workflow_id,
-                client_graph_revision=client_graph_revision,
-                mode=mode,
-            )
-        except RuntimeError as e:
-            _print(f"Error: {e}", style="red" if console else None)
-            return
-        history.append({"role": "user", "content": queued_text})
-        if len(history) > _MAX_HISTORY_MESSAGES:
-            history[:] = history[-_MAX_HISTORY_MESSAGES:]
-        q_channel = q_resp.get("stream_channel_id")
-        if not q_channel:
-            return
-        q_acc = ""
-        try:
-            async for event in client.stream_chat_events(q_channel):
+            async for event in client.stream_chat_events(channel):
                 if event is None:
                     break
                 ev_type = event.get("type", "")
                 if ev_type == "chat_token":
                     delta = event.get("delta", "")
                     if delta:
-                        print(delta, end="", flush=True)
-                        q_acc += delta
+                        if stream_tokens:
+                            print(delta, end="", flush=True)
+                        acc += delta
                 elif ev_type == "chat_complete":
-                    content = q_acc or str(event.get("content", "") or "")
-                    if q_acc:
-                        print()
+                    content = acc or str(event.get("content", "") or "")
+                    if stream_tokens:
+                        if acc:
+                            print()
+                        elif content:
+                            _print(content)
                     elif content:
-                        _print(content)
+                        _print(f"\n{content}")
                     if content:
                         history.append({"role": "assistant", "content": content})
                         if len(history) > _MAX_HISTORY_MESSAGES:
