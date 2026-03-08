@@ -529,40 +529,42 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
 
         # ── Route to server chat API (shared concierge) ─────────────
         # All other messages go through the server's concierge.
-        try:
-            async with httpx.AsyncClient(base_url=server_url, timeout=120.0) as http:
-                wf_id = await _ensure_scratch(http, external_id)
+        # Stream consumption runs in a background task so concurrent
+        # messages are dispatched without blocking.
+        async def _dispatch_to_server(ext_id: str, txt: str) -> None:
+            try:
+                wf_id = await _ensure_scratch(shared_http, ext_id)
 
-                history = conversation_history.get(external_id, [])
-                history.append({"role": "user", "content": text})
+                history = conversation_history.get(ext_id, [])
+                history.append({"role": "user", "content": txt})
                 if len(history) > 40:
                     history = history[-40:]
-                conversation_history[external_id] = history
+                conversation_history[ext_id] = history
 
                 history_with_context = [
                     {"role": "system", "content": _ADAPTER_CONTEXT},
                     *history,
                 ]
 
-                resp = await http.post("/api/chat/message", json={
+                resp = await shared_http.post("/api/chat/message", json={
                     "workflow_id": wf_id,
-                    "message": text,
+                    "message": txt,
                     "history": history_with_context,
-                    "thread_id": str(external_id),
+                    "thread_id": str(ext_id),
                     "mode": "auto",
                     "surface": _surface_name_for_adapter_type(adapter_type),
                 })
                 if resp.status_code != 200:
-                    await adapter.send_prompt(external_id, f"Error: {resp.text}", None)
+                    await adapter.send_prompt(ext_id, f"Error: {resp.text}", None)
                     return
 
                 payload = resp.json()
                 channel_id = payload.get("stream_channel_id")
-                logger.info("Chat response for %s: channel=%s", external_id, channel_id)
+                logger.info("Chat response for %s: channel=%s status=%s", ext_id, channel_id, payload.get("status"))
                 if not channel_id:
                     content = payload.get("content", "")
                     if content:
-                        await adapter.send_prompt(external_id, content, None)
+                        await adapter.send_prompt(ext_id, content, None)
                         history.append({"role": "assistant", "content": content})
                     else:
                         logger.warning("No channel and no content in response: %s", payload)
@@ -575,9 +577,9 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
                     ws_url = server_url.replace("http://", "ws://").replace("https://", "wss://")
                     url = f"{ws_url}/api/chat/{channel_id}/events"
                     logger.info("Connecting to WS: %s", url)
-                    async with websockets.connect(url) as ws:
-                        async for msg in ws:
-                            event = json.loads(msg)
+                    async with websockets.connect(url, ping_interval=None, ping_timeout=None) as ws:
+                        async for ws_msg in ws:
+                            event = json.loads(ws_msg)
                             if isinstance(event, dict):
                                 evt_type = event.get("type", "")
                                 logger.info("WS event: %s", evt_type)
@@ -596,7 +598,7 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
                     if history and history[-1].get("role") == "user":
                         history.pop()
                     try:
-                        await adapter.send_prompt(external_id, _stream_unavailable_message(), None)
+                        await adapter.send_prompt(ext_id, _stream_unavailable_message(), None)
                     except Exception:
                         pass
                     return
@@ -605,7 +607,7 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
 
                 if mutation_plan and config.auto_approve:
                     try:
-                        apply_resp = await http.post(
+                        apply_resp = await shared_http.post(
                             f"/api/graphs/{wf_id}/apply-mutation",
                             json={"mutation_plan": mutation_plan},
                         )
@@ -616,7 +618,7 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
                     except Exception as apply_exc:
                         full_reply += f"\n\n❌ Apply error: {apply_exc}"
                 elif mutation_plan:
-                    conversation_pending[external_id] = _PendingAction(
+                    conversation_pending[ext_id] = _PendingAction(
                         "apply_mutation",
                         wf_id,
                         metadata={"mutation_plan": mutation_plan},
@@ -626,52 +628,56 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
                 if full_reply:
                     clean_reply = _strip_dan_prefix(full_reply)
 
-                    # Concierge file response: "Found file: /path" — send the file instead of text
                     sent_file = False
                     if "Found file: " in clean_reply:
                         match = re.search(r"Found file:\s*(.+?)(?:\n|$)", clean_reply)
                         if match:
                             path_str = match.group(1).strip()
                             if Path(path_str).is_file() and hasattr(adapter, "send_file"):
-                                await _handle_send_command(external_id, path_str)
+                                await _handle_send_command(ext_id, path_str)
                                 sent_file = True
 
                     if not sent_file and clean_reply:
-                        logger.info("Sending reply to %s (%d chars)", external_id, len(clean_reply))
-                        await adapter.send_prompt(external_id, clean_reply, None)
+                        logger.info("Sending reply to %s (%d chars)", ext_id, len(clean_reply))
+                        await adapter.send_prompt(ext_id, clean_reply, None)
 
                     embedded_cmds = _extract_embedded_commands(clean_reply)
                     for cmd in embedded_cmds:
                         logger.info("Auto-executing embedded command: %s", cmd)
-                        await _handle_local_command(external_id, cmd)
+                        await _handle_local_command(ext_id, cmd)
 
                     history.append({"role": "assistant", "content": full_reply})
                 else:
-                    logger.warning("No reply content to send for %s (events: %d)", external_id, len(stream_events))
+                    logger.warning("No reply content to send for %s (events: %d)", ext_id, len(stream_events))
 
-        except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
-            logger.warning("Chat-mode server unavailable for %s: %s", external_id, exc)
-            history = conversation_history.get(external_id, [])
-            if history and history[-1].get("role") == "user":
-                history.pop()
-            try:
-                await adapter.send_prompt(external_id, _server_unavailable_message(), None)
+            except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
+                logger.warning("Chat-mode server unavailable for %s: %s", ext_id, exc)
+                history = conversation_history.get(ext_id, [])
+                if history and history[-1].get("role") == "user":
+                    history.pop()
+                try:
+                    await adapter.send_prompt(ext_id, _server_unavailable_message(), None)
+                except Exception:
+                    pass
             except Exception:
-                pass
-        except Exception:
-            logger.exception("Chat-mode message handling failed for %s", external_id)
-            history = conversation_history.get(external_id, [])
-            if history and history[-1].get("role") == "user":
-                history.pop()
-            try:
-                await adapter.send_prompt(external_id, config.error_message, None)
-            except Exception:
-                pass
+                logger.exception("Chat-mode message handling failed for %s", ext_id)
+                history = conversation_history.get(ext_id, [])
+                if history and history[-1].get("role") == "user":
+                    history.pop()
+                try:
+                    await adapter.send_prompt(ext_id, config.error_message, None)
+                except Exception:
+                    pass
+
+        _task = asyncio.create_task(_dispatch_to_server(external_id, text))
+        _adapter_bg_tasks.add(_task)
+        _task.add_done_callback(_adapter_bg_tasks.discard)
 
     adapter.set_message_callback(on_new_message)
 
     _print_status_chat(config, server_url)
     await stop_event.wait()
+    await shared_http.aclose()
     await adapter.stop()
 
 
@@ -683,7 +689,7 @@ def _print_status_chat(config: Any, server_url: str) -> None:
         console.print(Panel(
             f"[bold green]Adapter running (chat mode)[/]\n"
             f"Server: {server_url}\n"
-            f"Send any message to start chatting with DAN.",
+            f"Send any message to start chatting with {get_bot_name()}.",
             title="dan-adapter",
         ))
     except ImportError:
