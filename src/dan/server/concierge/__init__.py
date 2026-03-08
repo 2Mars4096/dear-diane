@@ -10,7 +10,9 @@ from .classifier import (
 )
 from .context_resolver import ProjectContextResolver, ResolvedContext
 from .executor import ExecutionResult, ExecutionSelector
+from .dispatcher import ConcurrentDispatcher
 from .handlers import HandlerRegistry, HandlerResult
+from .identity import format_bare_prefix, format_prefix, get_bot_name, starts_with_prefix, strip_prefix
 from .memory_bridge import ExperienceContext, ReuseRecommendation, WorkflowCandidate, WorkflowMemoryIndex
 from .models import Project, SurfaceMessage, Task, TaskTurn
 from .policy import ActionPolicy, BehaviorPolicy, ClarificationRequest, ClarificationResponse, ExecutionPolicy, FALLBACK_LADDER, format_terminal_message, resolve_policy, suggest_fallback_strategy, validate_terminal_content
@@ -28,6 +30,7 @@ __all__ = [
     "ClarificationRequest",
     "ClarificationResponse",
     "Concierge",
+    "ConcurrentDispatcher",
     "ExecutionMode",
     "ExecutionPolicy",
     "ExecutionResult",
@@ -39,6 +42,11 @@ __all__ = [
     "HandlerRegistry",
     "HandlerResult",
     "IntentCategory",
+    "format_bare_prefix",
+    "format_prefix",
+    "get_bot_name",
+    "starts_with_prefix",
+    "strip_prefix",
     "PlanBuilder",
     "PlanStep",
     "Project",

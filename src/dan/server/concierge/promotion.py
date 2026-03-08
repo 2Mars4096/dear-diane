@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .identity import format_prefix
 from .models import Project, Task
 
 
@@ -39,7 +40,7 @@ class WorkflowPromoter:
     def build_proposal(self, project: Project, task: Task) -> PromotionProposal:
         workflow_id = project.linked_workflow_ids[-1]
         return PromotionProposal(
-            summary=f"[DAN - {project.label}] Done! This workflow is reusable.",
+            summary=f"{format_prefix(project.label)} Done! This workflow is reusable.",
             workflow_id=workflow_id,
             suggested_name=project.label,
             save_command=f"/save {project.label}",

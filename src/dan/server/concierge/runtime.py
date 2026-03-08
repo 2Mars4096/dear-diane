@@ -3,12 +3,16 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from typing import Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, AsyncIterator
+
+if TYPE_CHECKING:
+    from .dispatcher import ConcurrentDispatcher
 
 from dan.server.chat_manager import ChatCompleteEvent, ChatErrorEvent, ChatStreamEvent
 
 from .classifier import ClassificationResult, IntentCategory, classify_intent
 from .context_resolver import ProjectContextResolver, ResolvedContext
+from .identity import format_bare_prefix, format_prefix, starts_with_prefix
 
 logger = logging.getLogger(__name__)
 from .handlers import (
@@ -61,6 +65,7 @@ class Concierge:
         plan_builder: PlanBuilder | None = None,
         memory_index: WorkflowMemoryIndex | None = None,
         execution_selector: ExecutionSelector | None = None,
+        bot_name: str | None = None,
     ) -> None:
         self.project_store = project_store
         self.context_resolver = context_resolver
@@ -75,6 +80,7 @@ class Concierge:
         self.goal_resolver = goal_resolver
         self.plan_builder = plan_builder or PlanBuilder()
         self.memory_index = memory_index
+        self.bot_name = bot_name
         self._current_surface_id: str | None = None
         self.auto_summarize_turn_threshold: int = 10
         self.handlers = HandlerRegistry()
@@ -113,7 +119,7 @@ class Concierge:
             decision = self.queue.enqueue(msg, context, classification)
             if decision == QueueDecision.QUEUED:
                 yield self._complete_event(
-                    content=f"[DAN - {context.project.label}] Queued — I'll get to this after the current action.",
+                    content=f"{format_prefix(context.project.label)} Queued — I'll get to this after the current action.",
                 )
                 return
 
@@ -147,7 +153,7 @@ class Concierge:
                 "paused",
                 msg.external_id,
             )
-            yield self._complete_event(content=f"[DAN - {context.project.label}] Please confirm before I do that.")
+            yield self._complete_event(content=f"{format_prefix(context.project.label)} Please confirm before I do that.")
             return
 
         self.queue.mark_active(msg.external_id, context.project.project_id)
@@ -214,13 +220,18 @@ class Concierge:
         if result.events is not None:
             final_content = ""
             stream_channel_id: str | None = None
+            saw_tool_call = False
             async for event in result.events:
-                if getattr(event, "type", "") == "chat_complete":
+                evt_type = getattr(event, "type", "")
+                if evt_type == "chat_complete":
                     final_content = getattr(event, "content", "") or ""
                     stream_channel_id = getattr(event, "stream_channel_id", None)
+                elif evt_type == "chat_tool_call_start":
+                    saw_tool_call = True
                 yield event
             if final_content:
-                self._record_assistant_turn(context, msg, final_content)
+                checked = self._check_unsourced_claims(final_content, saw_tool_call)
+                self._record_assistant_turn(context, msg, checked)
             self._finalize_task(
                 context,
                 msg,
@@ -236,7 +247,7 @@ class Concierge:
 
         content = result.content
         label_prefix = self._format_reply_label(context)
-        if label_prefix and content and not content.startswith("[DAN"):
+        if label_prefix and content and not starts_with_prefix(content):
             content = f"{label_prefix} {content}"
         auto_note = str(msg.metadata.get("clarification_auto_note") or "").strip()
         if auto_note and content:
@@ -346,13 +357,18 @@ class Concierge:
         if handler_result is not None and handler_result.events is not None:
             final_content = ""
             stream_channel_id = None
+            saw_tool_call = False
             async for event in handler_result.events:
-                if getattr(event, "type", "") == "chat_complete":
+                evt_type = getattr(event, "type", "")
+                if evt_type == "chat_complete":
                     final_content = getattr(event, "content", "") or ""
                     stream_channel_id = getattr(event, "stream_channel_id", None)
+                elif evt_type == "chat_tool_call_start":
+                    saw_tool_call = True
                 yield event
             if final_content:
-                self._record_assistant_turn(context, msg, final_content)
+                checked = self._check_unsourced_claims(final_content, saw_tool_call)
+                self._record_assistant_turn(context, msg, checked)
             self._finalize_task(
                 context, msg, classification.intent, bool(final_content),
                 task_status_override=(handler_result.task_update or {}).get("status"),
@@ -367,7 +383,7 @@ class Concierge:
         if auto_note and content:
             content = f"{auto_note}\n\n{content}"
         label_prefix = self._format_reply_label(context)
-        if label_prefix and content and not content.startswith("[DAN"):
+        if label_prefix and content and not starts_with_prefix(content):
             content = f"{label_prefix} {content}"
 
         had_tool_call = (
@@ -426,7 +442,7 @@ class Concierge:
             if reply in {"no", "n", "cancel", "stop"}:
                 self.project_store.clear_pending_action(project.project_id, msg.external_id)
                 self.project_store.update_task_status(project.project_id, task.task_id, "paused", msg.external_id)
-                return self._complete_event(content=f"[DAN - {project.label}] Cancelled."), context, ClassificationResult(
+                return self._complete_event(content=f"{format_prefix(project.label)} Cancelled."), context, ClassificationResult(
                     intent=IntentCategory(pending.intent),
                     confidence=1.0,
                     raw_text=pending.original_text,
@@ -449,7 +465,7 @@ class Concierge:
                     confidence=1.0,
                     raw_text=pending.original_text,
                 ), replay_msg
-            return self._complete_event(content=f"[DAN - {project.label}] Please answer yes or no."), context, ClassificationResult(
+            return self._complete_event(content=f"{format_prefix(project.label)} Please answer yes or no."), context, ClassificationResult(
                 intent=IntentCategory(pending.intent),
                 confidence=1.0,
                 raw_text=pending.original_text,
@@ -497,7 +513,7 @@ class Concierge:
                     }
                 )
                 return replay[0], replay[1], replay[2], replay_msg
-            return self._complete_event(content=f"[DAN - {project.label}] I couldn't resolve that choice."), context, ClassificationResult(
+            return self._complete_event(content=f"{format_prefix(project.label)} I couldn't resolve that choice."), context, ClassificationResult(
                 intent=IntentCategory(pending.intent),
                 confidence=1.0,
                 raw_text=pending.original_text,
@@ -518,7 +534,7 @@ class Concierge:
                 return project
         labels = ", ".join(project.label for project in projects[:5])
         return self._complete_event(
-            content=f"[DAN] Multiple projects are waiting for a reply. Which project? Use /project <label>. Pending: {labels}"
+            content=f"{format_bare_prefix()} Multiple projects are waiting for a reply. Which project? Use /project <label>. Pending: {labels}"
         )
 
     def _pending_context_fallback(self, surface_id: str, projects: list[Project]) -> ResolvedContext:
@@ -611,6 +627,8 @@ class Concierge:
         ), replay_msg
 
     async def _drain_queued_messages(self, context, msg: SurfaceMessage) -> AsyncIterator[ChatStreamEvent]:
+        if msg.metadata.get("skip_queue"):
+            return
         queued = self.queue.drain(context.project.project_id, context.task.task_id, msg.external_id)
         for queued_msg in queued:
             replay = queued_msg.model_copy(
@@ -660,10 +678,10 @@ class Concierge:
             return ""
         active_projects = self.project_store.list_active(surface_id)
         if len(active_projects) > 1:
-            return f"[DAN - {context.project.label}]"
+            return format_prefix(context.project.label, bot_name=self.bot_name)
         active_tasks = [t for t in context.project.tasks if t.status == "active"]
         if len(active_tasks) > 1:
-            return f"[DAN - {context.project.label} / {context.task.label}]"
+            return format_prefix(context.project.label, context.task.label, bot_name=self.bot_name)
         return ""
 
     def _handle_save_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
@@ -773,7 +791,9 @@ def build_concierge(
     conversation_memory: Any = None,
     meta_controller: Any = None,
     use_solver: bool = True,
-) -> Concierge:
+    enable_dispatcher: bool = True,
+    max_concurrent_projects: int = 5,
+) -> "Concierge | tuple[Concierge, ConcurrentDispatcher]":
     project_store = ProjectStore()
     resolver = ProjectContextResolver(
         project_store=project_store,
@@ -799,7 +819,7 @@ def build_concierge(
         goal_resolver = GoalResolver(
             llm=getattr(capability_context, "llm_provider", None),
         )
-    return Concierge(
+    concierge = Concierge(
         project_store=project_store,
         context_resolver=resolver,
         chat_manager=chat_manager,
@@ -813,3 +833,10 @@ def build_concierge(
         goal_resolver=goal_resolver,
         memory_index=memory_index,
     )
+    if not enable_dispatcher:
+        return concierge
+    from .dispatcher import ConcurrentDispatcher
+    dispatcher = ConcurrentDispatcher(
+        concierge, max_concurrent_projects=max_concurrent_projects,
+    )
+    return concierge, dispatcher

@@ -25,6 +25,7 @@ from dan.server.chat_manager import ChatStreamEvent
 from .classifier import ClassificationResult, IntentCategory, search_local_files
 from .classifier import _looks_like_direct_web_lookup
 from .context_resolver import ResolvedContext
+from .identity import format_prefix
 from .models import SurfaceMessage
 from .policy import ClarificationRequest
 from .progress import ProgressReporter
@@ -594,7 +595,7 @@ class MetaGoalHandler:
         asyncio.create_task(self.meta_controller.run_session(session))
         await asyncio.sleep(0)
         return HandlerResult(
-            content=f"[DAN - {context.project.label}] Meta session started: {session.session_id}",
+            content=f"{format_prefix(context.project.label)} Meta session started: {session.session_id}",
             project_update={"linked_meta_session_id": session.session_id},
             task_update={"status": "active"},
         )

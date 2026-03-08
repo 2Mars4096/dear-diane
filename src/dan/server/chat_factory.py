@@ -28,6 +28,7 @@ class ChatServices:
         user_profile: Any | None = None,
         conversation_memory: Any | None = None,
         concierge: Any | None = None,
+        dispatcher: Any | None = None,
     ) -> None:
         self.graph_store = graph_store
         self.chat_store = chat_store
@@ -39,6 +40,7 @@ class ChatServices:
         self.user_profile = user_profile
         self.conversation_memory = conversation_memory
         self.concierge = concierge
+        self.dispatcher = dispatcher
 
 
 def _build_engine_config() -> Any:
@@ -239,12 +241,17 @@ def build_chat_services(
         conversation_memory=conversation_memory,
     )
     register_publish_capabilities(capability_registry)
-    concierge = build_concierge(
+    result = build_concierge(
         chat_manager=chat_manager,
         capability_context=capability_context,
         user_profile=user_profile,
         conversation_memory=conversation_memory,
+        enable_dispatcher=True,
     )
+    if isinstance(result, tuple):
+        concierge, dispatcher = result
+    else:
+        concierge, dispatcher = result, None
 
     return ChatServices(
         graph_store=graph_store,
@@ -257,4 +264,5 @@ def build_chat_services(
         user_profile=user_profile,
         conversation_memory=conversation_memory,
         concierge=concierge,
+        dispatcher=dispatcher,
     )

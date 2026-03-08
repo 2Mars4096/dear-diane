@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Coroutine
 
+from .identity import format_prefix
 from .models import Project, Task
 
 logger = logging.getLogger(__name__)
@@ -68,7 +69,7 @@ class ProgressReporter:
         return ProgressSnapshot(project_label=project.label)
 
     def format_for_surface(self, snapshot: ProgressSnapshot, surface: str) -> str:
-        prefix = f"[DAN - {snapshot.project_label}]"
+        prefix = format_prefix(snapshot.project_label)
         if snapshot.run_id is None:
             return f"{prefix} Idle"
         return (

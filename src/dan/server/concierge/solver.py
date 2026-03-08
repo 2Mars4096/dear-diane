@@ -84,25 +84,18 @@ _FAST_PATH_INTENTS = frozenset({
 _FAST_PATH_CONFIDENCE = 0.85
 
 _SOLVER_SYSTEM_PROMPT = (
-    "You are a goal-resolution engine. Given the user's message and context, determine:\n"
-    "1. user_goal — what the user actually needs (not just what they said)\n"
-    "2. requested_deliverable — the concrete output they should receive\n"
-    "3. execution_mode — one of: direct_action, workflow_reuse, workflow_adapt, "
-    "workflow_build, run_control, status_pull, experience_lookup, publish_share, "
-    "conversation_synthesis, meta_delegate\n"
-    "4. assumptions — any assumptions you made to avoid asking unnecessary questions\n"
-    "5. clarification_question — ONLY set this if ambiguity genuinely blocks useful "
-    "action; otherwise leave null and proceed with your best interpretation\n\n"
-    "IMPORTANT — live data routing:\n"
-    "If the user needs ANY time-sensitive information (stock prices, exchange rates, "
-    "weather, sports scores, event dates, current news, closing prices, market data, "
-    "or any fact that changes over time), set execution_mode to 'direct_action'. "
-    "The conversation handler has web_search access and will look it up. "
-    "NEVER assume you know current prices, dates, or live stats — route to direct_action "
-    "so the system can search the web.\n\n"
-    "Reply with valid JSON matching this schema:\n"
-    '{"user_goal": "...", "requested_deliverable": "...", "execution_mode": "...", '
-    '"assumptions": [...], "clarification_question": null}'
+    "Resolve the user's goal. Return JSON with:\n"
+    "- user_goal: what they actually need\n"
+    "- requested_deliverable: concrete output\n"
+    "- execution_mode: direct_action | workflow_reuse | workflow_adapt | "
+    "workflow_build | run_control | status_pull | experience_lookup | "
+    "publish_share | conversation_synthesis | meta_delegate\n"
+    "- assumptions: list of assumptions made\n"
+    "- clarification_question: null unless ambiguity blocks useful action\n\n"
+    "ROUTING RULE: Time-sensitive queries (prices, rates, weather, scores, "
+    "news, market data) → direct_action. Never guess live data.\n\n"
+    '{"user_goal":"...","requested_deliverable":"...","execution_mode":"...",'
+    '"assumptions":[...],"clarification_question":null}'
 )
 
 
@@ -112,7 +105,7 @@ _LIVE_DATA_PATTERNS = (
     "exchange rate", "weather", "temperature", "forecast",
     "sports score", "game score", "election result",
     "current price", "latest price", "price of",
-    "how much is", "what is .* trading",
+    "how much is", "what is .{1,40} trading at",
 )
 
 _LIVE_DATA_RE = re.compile(
