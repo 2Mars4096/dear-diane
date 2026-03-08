@@ -700,6 +700,44 @@ async def _run_repl(
         except Exception as e:
             _print(f"\nStream error: {e}", style="red" if console else None)
 
+    async def _replay_queued_through_api(queued_text: str) -> None:
+        """Send a queued message through the server chat API.
+
+        If the server returns ``status: "queued"``, spawn a background
+        listener that will print the response as a complete block when
+        it arrives.  Otherwise stream tokens inline as before.
+        """
+        _print(f"[queued] > {queued_text}", style="dim" if console else None)
+        readline.add_history(queued_text)
+        try:
+            q_resp = await client.send_chat_message(
+                workflow_id,
+                queued_text,
+                history=history,
+                thread_id=workflow_id,
+                client_graph_revision=client_graph_revision,
+                mode=mode,
+            )
+        except RuntimeError as e:
+            _print(f"Error: {e}", style="red" if console else None)
+            return
+        history.append({"role": "user", "content": queued_text})
+        if len(history) > _MAX_HISTORY_MESSAGES:
+            history[:] = history[-_MAX_HISTORY_MESSAGES:]
+        q_channel = q_resp.get("stream_channel_id")
+        if not q_channel:
+            return
+
+        if q_resp.get("status") == "queued":
+            _print(f"  [queued — response will arrive when ready]", style="dim" if console else None)
+            task = asyncio.create_task(
+                _consume_stream_to_terminal(q_channel, stream_tokens=False),
+            )
+            _background_listeners.append(task)
+            return
+
+        await _consume_stream_to_terminal(q_channel, stream_tokens=True)
+
     while True:
         if pending_lines:
             line = pending_lines.pop(0)
