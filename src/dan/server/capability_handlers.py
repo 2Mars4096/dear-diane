@@ -112,6 +112,720 @@ async def handle_web_search(
     )
 
 
+# ── File read tools ────────────────────────────────────────────────
+
+FILE_READ_CAPABILITY_SCHEMA = build_tool_schema(
+    name="file_read",
+    description=(
+        "Read a text file and return its contents. Accepts absolute paths "
+        "(~/Dropbox/..., /Users/...) or workspace-relative paths. "
+        "Use when the user references a specific file to read, review, or analyze."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path to the file (absolute or relative to workspace).",
+            },
+        },
+        "required": ["path"],
+    },
+)
+
+
+def _resolve_user_path(raw_path: str) -> Path:
+    """Resolve a user-provided path, expanding ~ and handling absolute/relative."""
+    expanded = Path(raw_path).expanduser()
+    if expanded.is_absolute():
+        return expanded
+    workspace = Path(os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd()))
+    return (workspace / expanded).resolve()
+
+
+_FILE_READ_MAX = 100_000  # ~100KB text cap for chat context
+
+
+async def handle_file_read(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    raw_path = args.get("path", "").strip()
+    if not raw_path:
+        return CapabilityResult(success=False, message="No file path provided.")
+    try:
+        resolved = _resolve_user_path(raw_path)
+        if not resolved.is_file():
+            return CapabilityResult(success=False, message=f"File not found: {raw_path}")
+        content = resolved.read_text(encoding="utf-8", errors="replace")
+        if len(content) > _FILE_READ_MAX:
+            content = content[:_FILE_READ_MAX] + f"\n\n[truncated — file is {len(content):,} chars, showing first {_FILE_READ_MAX:,}]"
+        return CapabilityResult(
+            success=True,
+            message=content,
+            data={"path": str(resolved), "size": resolved.stat().st_size},
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Failed to read file: {exc}")
+
+
+PDF_READ_CAPABILITY_SCHEMA = build_tool_schema(
+    name="pdf_read",
+    description=(
+        "Extract text from a PDF file. Accepts absolute paths "
+        "(~/Dropbox/..., /Users/...) or workspace-relative paths. "
+        "Use when the user asks to read, summarize, review, or analyze a PDF document."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Path to the PDF file (absolute or relative to workspace).",
+            },
+        },
+        "required": ["path"],
+    },
+)
+
+_PDF_READ_MAX = 12_000  # chars — fits in LLM context alongside system prompt
+
+
+async def handle_pdf_read(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    raw_path = args.get("path", "").strip()
+    if not raw_path:
+        return CapabilityResult(success=False, message="No PDF path provided.")
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        return CapabilityResult(
+            success=False,
+            message="PDF reading is not available (pypdf package not installed).",
+        )
+    try:
+        resolved = _resolve_user_path(raw_path)
+        if not resolved.is_file():
+            return CapabilityResult(success=False, message=f"PDF not found: {raw_path}")
+        reader = PdfReader(str(resolved))
+        pages_text = [page.extract_text() or "" for page in reader.pages]
+        full_text = "\n".join(pages_text)
+        if len(full_text) > _PDF_READ_MAX:
+            full_text = full_text[:_PDF_READ_MAX] + f"\n\n[truncated — {len(reader.pages)} pages, showing first {_PDF_READ_MAX:,} chars]"
+        metadata = {}
+        if reader.metadata:
+            for key in ("title", "author", "subject"):
+                val = getattr(reader.metadata, key, None)
+                if val:
+                    metadata[key] = str(val)
+        header = ""
+        if metadata.get("title"):
+            header = f"Title: {metadata['title']}\n"
+        if metadata.get("author"):
+            header += f"Author: {metadata['author']}\n"
+        if header:
+            header += "\n"
+        return CapabilityResult(
+            success=True,
+            message=f"{header}{full_text}",
+            data={"path": str(resolved), "num_pages": len(reader.pages), "metadata": metadata},
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Failed to read PDF: {exc}")
+
+
+# ── Current datetime tool ─────────────────────────────────────────
+
+CURRENT_DATETIME_CAPABILITY_SCHEMA = build_tool_schema(
+    name="current_datetime",
+    description=(
+        "Get the current date and time. Use when the user asks about today's date, "
+        "current time, day of the week, or needs time-relative calculations "
+        "(e.g. 'how many days until June 1?', 'what day is it?')."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {},
+    },
+)
+
+
+async def handle_current_datetime(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    from datetime import datetime, timezone
+
+    now = datetime.now()
+    utc = datetime.now(timezone.utc)
+    return CapabilityResult(
+        success=True,
+        message=f"Local: {now.strftime('%A, %B %d, %Y %I:%M %p')} | UTC: {utc.strftime('%Y-%m-%d %H:%M:%S')}",
+        data={"local": now.isoformat(), "utc": utc.isoformat()},
+    )
+
+
+# ── Send email tool ───────────────────────────────────────────────
+
+SEND_EMAIL_CAPABILITY_SCHEMA = build_tool_schema(
+    name="send_email",
+    description=(
+        "Send an email to a recipient. Requires DAN_SMTP_* env vars to be configured. "
+        "Use when the user asks to email something to someone."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "to": {"type": "string", "description": "Recipient email address."},
+            "subject": {"type": "string", "description": "Email subject line."},
+            "body": {"type": "string", "description": "Email body (plain text)."},
+        },
+        "required": ["to", "subject", "body"],
+    },
+)
+
+
+async def handle_send_email(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    to = args.get("to", "").strip()
+    subject = args.get("subject", "").strip()
+    body = args.get("body", "").strip()
+    if not to or not subject or not body:
+        return CapabilityResult(success=False, message="'to', 'subject', and 'body' are all required.")
+
+    smtp_host = os.environ.get("DAN_SMTP_HOST", "").strip()
+    smtp_user = os.environ.get("DAN_SMTP_USER", "").strip()
+    smtp_password = os.environ.get("DAN_SMTP_PASSWORD", "").strip()
+    if not smtp_host or not smtp_user or not smtp_password:
+        return CapabilityResult(
+            success=False,
+            message="Email not configured. Set DAN_SMTP_HOST, DAN_SMTP_USER, and DAN_SMTP_PASSWORD in .env.",
+        )
+
+    try:
+        import aiosmtplib
+        from email.mime.text import MIMEText
+        from email.mime.multipart import MIMEMultipart
+
+        from_name = os.environ.get("DAN_SMTP_FROM_NAME", "DAN")
+        port = int(os.environ.get("DAN_SMTP_PORT", "587"))
+
+        msg = MIMEMultipart("alternative")
+        msg["From"] = f"{from_name} <{smtp_user}>"
+        msg["To"] = to
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
+
+        await aiosmtplib.send(
+            msg,
+            hostname=smtp_host,
+            port=port,
+            username=smtp_user,
+            password=smtp_password,
+            use_tls=True,
+        )
+        return CapabilityResult(success=True, message=f"Email sent to {to}.")
+    except ImportError:
+        return CapabilityResult(success=False, message="aiosmtplib not installed. Run: pip install 'dan[messaging]'")
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Failed to send email: {exc}")
+
+
+# ── Screenshot tool (macOS) ──────────────────────────────────────
+
+SCREENSHOT_CAPABILITY_SCHEMA = build_tool_schema(
+    name="screenshot",
+    description=(
+        "Take a screenshot of the current screen (macOS). "
+        "Returns the path to the saved screenshot image. "
+        "Use when the user asks to capture what's on screen."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "filename": {"type": "string", "description": "Optional filename (default: screenshot_<timestamp>.png)."},
+        },
+    },
+)
+
+
+async def handle_screenshot(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    import asyncio
+    import sys
+    from datetime import datetime
+
+    if sys.platform != "darwin":
+        return CapabilityResult(success=False, message="Screenshot is only supported on macOS.")
+
+    filename = args.get("filename", "").strip()
+    if not filename:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"screenshot_{ts}.png"
+
+    dan_dir = Path.home() / ".dan" / "screenshots"
+    dan_dir.mkdir(parents=True, exist_ok=True)
+    filepath = dan_dir / filename
+
+    proc = await asyncio.create_subprocess_exec(
+        "screencapture", "-x", str(filepath),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        return CapabilityResult(success=False, message=f"screencapture failed: {stderr.decode()}")
+    if not filepath.exists():
+        return CapabilityResult(success=False, message="Screenshot file was not created.")
+    return CapabilityResult(
+        success=True,
+        message=f"Screenshot saved to {filepath}",
+        data={"path": str(filepath)},
+    )
+
+
+# ── Clipboard tool (macOS) ───────────────────────────────────────
+
+CLIPBOARD_CAPABILITY_SCHEMA = build_tool_schema(
+    name="clipboard",
+    description=(
+        "Read from or write to the system clipboard (macOS). "
+        "Use 'read' to get current clipboard contents. "
+        "Use 'write' to copy text to clipboard."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "action": {"type": "string", "enum": ["read", "write"], "description": "read or write."},
+            "content": {"type": "string", "description": "Text to copy (required for 'write')."},
+        },
+        "required": ["action"],
+    },
+)
+
+
+async def handle_clipboard(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    import asyncio
+    import sys
+
+    if sys.platform != "darwin":
+        return CapabilityResult(success=False, message="Clipboard is only supported on macOS.")
+
+    action = args.get("action", "read").strip()
+
+    if action == "read":
+        proc = await asyncio.create_subprocess_exec(
+            "pbpaste",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        content = stdout.decode("utf-8", errors="replace")
+        if not content:
+            return CapabilityResult(success=True, message="(clipboard is empty)")
+        if len(content) > 10_000:
+            content = content[:10_000] + "\n\n[truncated]"
+        return CapabilityResult(success=True, message=content)
+
+    elif action == "write":
+        text = args.get("content", "")
+        if not text:
+            return CapabilityResult(success=False, message="No content provided to copy.")
+        proc = await asyncio.create_subprocess_exec(
+            "pbcopy",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate(input=text.encode("utf-8"))
+        return CapabilityResult(success=True, message=f"Copied {len(text)} chars to clipboard.")
+
+    return CapabilityResult(success=False, message=f"Unknown action: {action}. Use 'read' or 'write'.")
+
+
+# ── Config tool (set env vars at runtime + persist to .env) ──────
+
+_CONFIGURABLE_PREFIXES = (
+    "DAN_SMTP_", "DAN_BRAVE_API_KEY", "DAN_TAVILY_API_KEY",
+    "DAN_GOOGLE_API_KEY", "DAN_ANTHROPIC_API_KEY", "DAN_OPENAI_API_KEY",
+)
+
+SET_CONFIG_CAPABILITY_SCHEMA = build_tool_schema(
+    name="set_config",
+    description=(
+        "Set a DAN configuration value. Updates the running server immediately "
+        "and persists to .env for future restarts. Use when the user provides "
+        "API keys, SMTP credentials, or other settings. "
+        "Allowed keys: DAN_SMTP_* (email), DAN_TAVILY_API_KEY, DAN_BRAVE_API_KEY, "
+        "DAN_OPENAI_API_KEY, DAN_ANTHROPIC_API_KEY, DAN_GOOGLE_API_KEY."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "key": {"type": "string", "description": "Environment variable name (e.g. DAN_SMTP_HOST)."},
+            "value": {"type": "string", "description": "Value to set."},
+        },
+        "required": ["key", "value"],
+    },
+)
+
+
+def _update_env_file(key: str, value: str) -> None:
+    """Update or append a key=value in the .env file."""
+    env_path = Path(os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())) / ".env"
+    if not env_path.exists():
+        env_path.write_text(f"{key}={value}\n")
+        return
+
+    lines = env_path.read_text().splitlines(keepends=True)
+    found = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith(f"{key}=") or stripped.startswith(f"{key} ="):
+            lines[i] = f"{key}={value}\n"
+            found = True
+            break
+    if not found:
+        if lines and not lines[-1].endswith("\n"):
+            lines.append("\n")
+        lines.append(f"{key}={value}\n")
+    env_path.write_text("".join(lines))
+
+
+async def handle_set_config(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    key = args.get("key", "").strip().upper()
+    value = args.get("value", "").strip()
+    if not key:
+        return CapabilityResult(success=False, message="No key provided.")
+
+    if not any(key.startswith(p) if p.endswith("_") else key == p for p in _CONFIGURABLE_PREFIXES):
+        allowed = ", ".join(_CONFIGURABLE_PREFIXES)
+        return CapabilityResult(
+            success=False,
+            message=f"Key '{key}' is not in the allowed list. Configurable prefixes: {allowed}",
+        )
+
+    os.environ[key] = value
+    try:
+        _update_env_file(key, value)
+    except Exception as exc:
+        return CapabilityResult(
+            success=True,
+            message=f"Set {key} in running server (but failed to persist to .env: {exc}). Will be lost on restart.",
+        )
+
+    display_value = value[:4] + "..." if len(value) > 8 else value
+    return CapabilityResult(
+        success=True,
+        message=f"Set {key}={display_value} (active now + saved to .env).",
+    )
+
+
+# ── Remaining built-in tools as capabilities ──────────────────────
+
+LIST_DIRECTORY_CAPABILITY_SCHEMA = build_tool_schema(
+    name="list_directory",
+    description=(
+        "List files and directories at a given path. Accepts absolute paths "
+        "(~/Dropbox/...) or workspace-relative. Supports glob filtering and recursive traversal."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Directory path (absolute or relative)."},
+            "glob_pattern": {"type": "string", "description": "Optional glob filter (e.g. '*.pdf')."},
+            "recursive": {"type": "boolean", "description": "Recurse into subdirectories."},
+        },
+        "required": ["path"],
+    },
+)
+
+
+async def handle_list_directory(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    raw_path = args.get("path", "").strip()
+    if not raw_path:
+        return CapabilityResult(success=False, message="No directory path provided.")
+    resolved = _resolve_user_path(raw_path)
+    if not resolved.is_dir():
+        return CapabilityResult(success=False, message=f"Directory not found: {raw_path}")
+    glob_pattern = args.get("glob_pattern", "")
+    recursive = args.get("recursive", False)
+    try:
+        if glob_pattern:
+            iterator = resolved.rglob(glob_pattern) if recursive else resolved.glob(glob_pattern)
+        else:
+            iterator = resolved.rglob("*") if recursive else resolved.iterdir()
+        entries = []
+        for p in sorted(iterator):
+            kind = "dir" if p.is_dir() else "file"
+            size = p.stat().st_size if p.is_file() else 0
+            entries.append(f"  {kind}  {size:>8}  {p.name}")
+            if len(entries) >= 200:
+                entries.append(f"  ... (truncated at 200 entries)")
+                break
+        return CapabilityResult(
+            success=True,
+            message=f"{resolved}/\n" + "\n".join(entries) if entries else f"{resolved}/ (empty)",
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Failed to list directory: {exc}")
+
+
+WEB_FETCH_CAPABILITY_SCHEMA = build_tool_schema(
+    name="web_fetch",
+    description=(
+        "Fetch content from a URL and return it as text. "
+        "Use when the user shares a link and asks to read, summarize, or extract info from it."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "URL to fetch."},
+        },
+        "required": ["url"],
+    },
+)
+
+
+async def handle_web_fetch(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    url = args.get("url", "").strip()
+    if not url:
+        return CapabilityResult(success=False, message="No URL provided.")
+    try:
+        from dan.tools.web_fetch import web_fetch
+        result = await web_fetch(url=url)
+        content = result.get("content", "")
+        if len(content) > _FILE_READ_MAX:
+            content = content[:_FILE_READ_MAX] + "\n\n[truncated]"
+        return CapabilityResult(success=True, message=content, data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Failed to fetch URL: {exc}")
+
+
+FILE_WRITE_CAPABILITY_SCHEMA = build_tool_schema(
+    name="file_write",
+    description=(
+        "Write or append content to a file. Accepts absolute paths. "
+        "Use when the user asks to save, create, or write content to a file."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "File path (absolute or relative)."},
+            "content": {"type": "string", "description": "Content to write."},
+            "mode": {"type": "string", "enum": ["overwrite", "append"], "description": "Write mode."},
+        },
+        "required": ["path", "content"],
+    },
+)
+
+
+async def handle_file_write(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    raw_path = args.get("path", "").strip()
+    content = args.get("content", "")
+    mode = args.get("mode", "overwrite")
+    if not raw_path:
+        return CapabilityResult(success=False, message="No file path provided.")
+    try:
+        resolved = _resolve_user_path(raw_path)
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        if mode == "append":
+            with open(resolved, "a", encoding="utf-8") as f:
+                f.write(content)
+        else:
+            resolved.write_text(content, encoding="utf-8")
+        return CapabilityResult(
+            success=True,
+            message=f"Wrote {len(content):,} chars to {resolved}",
+            data={"path": str(resolved), "size": len(content)},
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Failed to write file: {exc}")
+
+
+SHELL_COMMAND_CAPABILITY_SCHEMA = build_tool_schema(
+    name="shell_command",
+    description=(
+        "Execute a shell command and return its output. "
+        "Use when the user asks to run a command, check system info, or perform a terminal operation."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "command": {"type": "string", "description": "Shell command to execute."},
+            "working_directory": {"type": "string", "description": "Optional working directory."},
+            "timeout": {"type": "integer", "description": "Timeout in seconds (default 30)."},
+        },
+        "required": ["command"],
+    },
+)
+
+
+async def handle_shell_command(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    command = args.get("command", "").strip()
+    if not command:
+        return CapabilityResult(success=False, message="No command provided.")
+    try:
+        from dan.tools.shell_command import shell_command
+        result = await shell_command(
+            command=command,
+            working_directory=args.get("working_directory", ""),
+            timeout=args.get("timeout", 30),
+        )
+        stdout = result.get("stdout", "")
+        stderr = result.get("stderr", "")
+        code = result.get("return_code", -1)
+        parts = []
+        if stdout:
+            parts.append(stdout[:_FILE_READ_MAX])
+        if stderr:
+            parts.append(f"stderr: {stderr[:2000]}")
+        parts.append(f"exit code: {code}")
+        return CapabilityResult(success=code == 0, message="\n".join(parts), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Command failed: {exc}")
+
+
+HTTP_REQUEST_CAPABILITY_SCHEMA = build_tool_schema(
+    name="http_request",
+    description=(
+        "Send an HTTP request (GET, POST, PUT, DELETE, etc.). "
+        "Use for REST API calls when the user asks to interact with an external service."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "url": {"type": "string", "description": "Request URL."},
+            "method": {"type": "string", "enum": ["GET", "POST", "PUT", "DELETE", "PATCH"], "description": "HTTP method."},
+            "headers": {"type": "object", "description": "Optional request headers."},
+            "body": {"type": "string", "description": "Optional request body."},
+        },
+        "required": ["url"],
+    },
+)
+
+
+async def handle_http_request(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    url = args.get("url", "").strip()
+    if not url:
+        return CapabilityResult(success=False, message="No URL provided.")
+    try:
+        from dan.tools.http_request import http_request
+        result = await http_request(
+            url=url,
+            method=args.get("method", "GET"),
+            headers=args.get("headers", {}),
+            body=args.get("body", ""),
+        )
+        body = result.get("body", "")
+        if len(body) > _FILE_READ_MAX:
+            body = body[:_FILE_READ_MAX] + "\n\n[truncated]"
+        status = result.get("status_code", 0)
+        return CapabilityResult(
+            success=200 <= status < 400,
+            message=f"HTTP {status}\n\n{body}",
+            data=result,
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"HTTP request failed: {exc}")
+
+
+TEXT_CHUNK_CAPABILITY_SCHEMA = build_tool_schema(
+    name="text_chunk",
+    description="Split text into overlapping chunks by character or word count. Useful for processing long documents.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "description": "Text to chunk."},
+            "chunk_size": {"type": "integer", "description": "Size per chunk (default 1000)."},
+            "overlap": {"type": "integer", "description": "Overlap between chunks (default 200)."},
+        },
+        "required": ["text"],
+    },
+)
+
+
+async def handle_text_chunk(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    text = args.get("text", "")
+    if not text:
+        return CapabilityResult(success=False, message="No text provided.")
+    try:
+        from dan.tools.text_chunk import text_chunk
+        result = await text_chunk(
+            text=text,
+            chunk_size=args.get("chunk_size", 1000),
+            overlap=args.get("overlap", 200),
+        )
+        chunks = result.get("chunks", [])
+        return CapabilityResult(
+            success=True,
+            message=f"Split into {len(chunks)} chunks.",
+            data=result,
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Chunking failed: {exc}")
+
+
+JSON_EXTRACT_CAPABILITY_SCHEMA = build_tool_schema(
+    name="json_extract",
+    description="Extract a value from JSON data using dot-notation path (e.g. 'a.b.0.name').",
+    parameters={
+        "type": "object",
+        "properties": {
+            "data": {"type": "string", "description": "JSON string to extract from."},
+            "path": {"type": "string", "description": "Dot-notation path (e.g. 'results.0.title')."},
+        },
+        "required": ["data", "path"],
+    },
+)
+
+
+async def handle_json_extract(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    data = args.get("data", "")
+    path = args.get("path", "")
+    if not data or not path:
+        return CapabilityResult(success=False, message="Both 'data' and 'path' are required.")
+    try:
+        from dan.tools.json_extract import json_extract
+        result = await json_extract(data=data, path=path)
+        value = result.get("value")
+        return CapabilityResult(success=True, message=json.dumps(value, indent=2, default=str), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"JSON extraction failed: {exc}")
+
+
+REGEX_MATCH_CAPABILITY_SCHEMA = build_tool_schema(
+    name="regex_match",
+    description="Apply a regex pattern to text. Returns matches or performs substitution when 'replacement' is provided.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "description": "Text to match against."},
+            "pattern": {"type": "string", "description": "Regular expression pattern."},
+            "replacement": {"type": "string", "description": "Optional replacement string for substitution."},
+        },
+        "required": ["text", "pattern"],
+    },
+)
+
+
+async def handle_regex_match(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    text = args.get("text", "")
+    pattern = args.get("pattern", "")
+    if not text or not pattern:
+        return CapabilityResult(success=False, message="Both 'text' and 'pattern' are required.")
+    try:
+        from dan.tools.regex_match import regex_match
+        result = await regex_match(text=text, pattern=pattern, replacement=args.get("replacement"))
+        if "result" in result:
+            return CapabilityResult(success=True, message=result["result"][:_FILE_READ_MAX], data=result)
+        matches = result.get("matches", [])
+        return CapabilityResult(
+            success=True,
+            message=f"{len(matches)} matches found:\n" + "\n".join(str(m) for m in matches[:50]),
+            data=result,
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Regex operation failed: {exc}")
+
+
 # ── Graph tools ────────────────────────────────────────────────────
 
 LIST_GRAPHS_SCHEMA = build_tool_schema(
@@ -1848,4 +2562,109 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_web_search,
         modes=["agent", "build", "mutate", "conversation", "debug"],
         category="web",
+    )
+    registry.register(
+        "file_read",
+        FILE_READ_CAPABILITY_SCHEMA,
+        handle_file_read,
+        modes=list(ALL_MODES),
+        category="file",
+    )
+    registry.register(
+        "pdf_read",
+        PDF_READ_CAPABILITY_SCHEMA,
+        handle_pdf_read,
+        modes=list(ALL_MODES),
+        category="file",
+    )
+    registry.register(
+        "current_datetime",
+        CURRENT_DATETIME_CAPABILITY_SCHEMA,
+        handle_current_datetime,
+        modes=list(ALL_MODES),
+        category="system",
+    )
+    registry.register(
+        "send_email",
+        SEND_EMAIL_CAPABILITY_SCHEMA,
+        handle_send_email,
+        modes=WRITE_MODES,
+        category="communication",
+    )
+    registry.register(
+        "screenshot",
+        SCREENSHOT_CAPABILITY_SCHEMA,
+        handle_screenshot,
+        modes=list(ALL_MODES),
+        category="system",
+    )
+    registry.register(
+        "clipboard",
+        CLIPBOARD_CAPABILITY_SCHEMA,
+        handle_clipboard,
+        modes=list(ALL_MODES),
+        category="system",
+    )
+    registry.register(
+        "set_config",
+        SET_CONFIG_CAPABILITY_SCHEMA,
+        handle_set_config,
+        modes=WRITE_MODES,
+        category="system",
+    )
+    registry.register(
+        "list_directory",
+        LIST_DIRECTORY_CAPABILITY_SCHEMA,
+        handle_list_directory,
+        modes=list(ALL_MODES),
+        category="file",
+    )
+    registry.register(
+        "web_fetch",
+        WEB_FETCH_CAPABILITY_SCHEMA,
+        handle_web_fetch,
+        modes=list(ALL_MODES),
+        category="web",
+    )
+    registry.register(
+        "file_write",
+        FILE_WRITE_CAPABILITY_SCHEMA,
+        handle_file_write,
+        modes=WRITE_MODES,
+        category="file",
+    )
+    registry.register(
+        "shell_command",
+        SHELL_COMMAND_CAPABILITY_SCHEMA,
+        handle_shell_command,
+        modes=WRITE_MODES,
+        category="system",
+    )
+    registry.register(
+        "http_request",
+        HTTP_REQUEST_CAPABILITY_SCHEMA,
+        handle_http_request,
+        modes=WRITE_MODES,
+        category="web",
+    )
+    registry.register(
+        "text_chunk",
+        TEXT_CHUNK_CAPABILITY_SCHEMA,
+        handle_text_chunk,
+        modes=list(ALL_MODES),
+        category="text",
+    )
+    registry.register(
+        "json_extract",
+        JSON_EXTRACT_CAPABILITY_SCHEMA,
+        handle_json_extract,
+        modes=list(ALL_MODES),
+        category="text",
+    )
+    registry.register(
+        "regex_match",
+        REGEX_MATCH_CAPABILITY_SCHEMA,
+        handle_regex_match,
+        modes=list(ALL_MODES),
+        category="text",
     )
