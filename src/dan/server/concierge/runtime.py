@@ -38,7 +38,7 @@ from .memory_bridge import WorkflowMemoryIndex, enrich_planning_context
 from .queue import ProjectMessageQueue, QueueDecision
 from .solver import GoalResolver, PlanBuilder, SolverDecision
 
-_NUMERIC_CLAIM_RE = re.compile(
+_NUMERIC_CLAIM_RE_LEGACY = re.compile(
     r"\$\s?\d[\d,]*(?:\.\d+)?"
     r"|\b\d+(?:\.\d+)?%"
     r"|\b(?:price|close|open|high|low|volume|cap)\b[^.]*?\$?\d",
@@ -557,7 +557,7 @@ class Concierge:
         global _unsourced_claim_warnings
         if had_tool_call or not content:
             return content
-        if not _NUMERIC_CLAIM_RE.search(content):
+        if not _NUMERIC_CLAIM_RE_LEGACY.search(content):
             return content
         _unsourced_claim_warnings += 1
         logger.debug(

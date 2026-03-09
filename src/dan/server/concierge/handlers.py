@@ -275,6 +275,7 @@ class FileHandler:
             debug_context=str(msg.metadata.get("debug_context") or ""),
             prompt_context=_project_prompt_context(context),
             mentions=msg.metadata.get("mentions") or [],
+            surface=msg.surface,
         )
         return HandlerResult(events=events)
 
@@ -314,6 +315,7 @@ class DirectTaskHandler:
             debug_context=str(msg.metadata.get("debug_context") or ""),
             prompt_context=_project_prompt_context(context),
             mentions=msg.metadata.get("mentions") or [],
+            surface=msg.surface,
         )
         return HandlerResult(events=events)
 
@@ -534,6 +536,7 @@ class ConversationHandler:
             debug_context=str(msg.metadata.get("debug_context") or ""),
             prompt_context=_project_prompt_context(context),
             mentions=msg.metadata.get("mentions") or [],
+            surface=msg.surface,
         )
         return HandlerResult(events=events)
 
@@ -570,6 +573,7 @@ class WorkflowBuildHandler:
             debug_context=str(msg.metadata.get("debug_context") or ""),
             prompt_context=_project_prompt_context(context),
             mentions=msg.metadata.get("mentions") or [],
+            surface=msg.surface,
         )
         return HandlerResult(
             events=events,
