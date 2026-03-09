@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import string
+import time
 from typing import Any
 
 from openai import AsyncOpenAI, APIError, APITimeoutError, RateLimitError
@@ -406,6 +407,7 @@ class LLMExecutor:
         assert isinstance(node, LLMOperator)
         policy = node.retry_policy or _LLM_DEFAULT_RETRY
         model = node.model or context.config.llm_default_model
+        started_at = time.perf_counter()
 
         effective_policy = None
         tier_result = None
@@ -441,6 +443,27 @@ class LLMExecutor:
                         node_type="llm_operator",
                         data=event_data,
                     )
+        if node.model is None and getattr(context.config, "memory_kernel", None) is not None:
+            try:
+                from dan.engine.outcome_trackers import ModelOutcomeTracker, ModelRecommender
+
+                recommender = ModelRecommender(
+                    ModelOutcomeTracker(context.config.memory_kernel)
+                )
+                empirical_model = recommender.suggest(node.id)
+                if empirical_model:
+                    model = empirical_model
+                    await context.emit_event(
+                        event_type="model_selected",
+                        node_id=node.id,
+                        node_type="llm_operator",
+                        data={
+                            "model": model,
+                            "policy_strategy": "empirical_recommendation",
+                        },
+                    )
+            except Exception:
+                logger.debug("Empirical model recommendation failed", exc_info=True)
 
         assembled_inputs, deferred_inputs = await self._assemble_inputs(
             node, inputs, context, model,
@@ -559,6 +582,10 @@ class LLMExecutor:
 
             if not has_schema:
                 self._record_tier_outcome(context, node, tier_result, True)
+                self._record_prompt_outcome(
+                    context, node, rendered_prompt, assembled_inputs,
+                    raw_text, True, cumulative_usage, started_at,
+                )
                 return NodeResult(
                     outputs={"text": raw_text},
                     status=NodeStatus.COMPLETED,
@@ -570,6 +597,10 @@ class LLMExecutor:
                 self._record_tier_outcome(context, node, tier_result, True)
                 data = result.data or {}
                 outputs = {**data, "result": data}
+                self._record_prompt_outcome(
+                    context, node, rendered_prompt, assembled_inputs,
+                    raw_text, True, cumulative_usage, started_at,
+                )
                 return NodeResult(
                     outputs=outputs,
                     status=NodeStatus.COMPLETED,
@@ -663,6 +694,10 @@ class LLMExecutor:
                                 )
                                 data = esc_result.data or {}
                                 outputs = {**data, "result": data}
+                                self._record_prompt_outcome(
+                                    context, node, rendered_prompt, assembled_inputs,
+                                    raw_text, True, cumulative_usage, started_at,
+                                )
                                 return NodeResult(
                                     outputs=outputs,
                                     status=NodeStatus.COMPLETED,
@@ -679,6 +714,10 @@ class LLMExecutor:
                                 context, node, tier_result, True,
                                 effective_tier=next_tier.value,
                             )
+                            self._record_prompt_outcome(
+                                context, node, rendered_prompt, assembled_inputs,
+                                raw_text, True, cumulative_usage, started_at,
+                            )
                             return NodeResult(
                                 outputs={"text": raw_text},
                                 status=NodeStatus.COMPLETED,
@@ -694,6 +733,16 @@ class LLMExecutor:
 
         fail_meta = {"model": model, "usage": cumulative_usage}
         self._record_tier_outcome(context, node, tier_result, False)
+        self._record_prompt_outcome(
+            context,
+            node,
+            rendered_prompt,
+            assembled_inputs,
+            last_error or "",
+            False,
+            cumulative_usage,
+            started_at,
+        )
 
         if policy.on_failure == "skip":
             return NodeResult(
@@ -710,6 +759,36 @@ class LLMExecutor:
             error=last_error or "LLM execution failed",
             metadata=fail_meta,
         )
+
+    def _record_prompt_outcome(
+        self,
+        context: ExecutionContext,
+        node: LLMOperator,
+        rendered_prompt: str,
+        assembled_inputs: dict[str, Any],
+        output_summary: str,
+        outcome: bool,
+        usage: dict[str, int],
+        started_at: float,
+    ) -> None:
+        memory_kernel = getattr(context.config, "memory_kernel", None)
+        if memory_kernel is None:
+            return
+        try:
+            from dan.engine.outcome_trackers import PromptTracker
+
+            tracker = PromptTracker(memory_kernel)
+            tracker.record(
+                node_id=node.id,
+                prompt_hash=tracker.prompt_hash(rendered_prompt),
+                input_summary=json.dumps(assembled_inputs, default=str)[:500],
+                output_summary=(output_summary or "")[:500],
+                outcome=outcome,
+                tokens_used=int(usage.get("total_tokens", 0) or 0),
+                latency_ms=(time.perf_counter() - started_at) * 1000.0,
+            )
+        except Exception:
+            logger.debug("Prompt outcome tracking failed", exc_info=True)
 
     # -- Tool-calling loop helpers --------------------------------------------
 
