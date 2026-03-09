@@ -49,9 +49,10 @@ dan-down = "dan.cli.down:main"
 dan-service = "dan.cli.service:main"
 
 [project.optional-dependencies]
-pdf = ["pypdf>=4.0"]
+pdf = ["pypdf>=4.0", "pymupdf>=1.24"]
+spreadsheet = ["openpyxl>=3.1"]
 search = ["duckduckgo-search>=6.0"]
-all-tools = ["pypdf>=4.0", "duckduckgo-search>=6.0"]
+all-tools = ["pypdf>=4.0", "pymupdf>=1.24", "duckduckgo-search>=6.0", "openpyxl>=3.1"]
 anthropic = ["anthropic>=0.40"]
 google = ["google-generativeai>=0.8"]
 all-providers = ["anthropic>=0.40", "google-generativeai>=0.8"]
@@ -70,6 +71,7 @@ messaging = [
 whatsapp-web = ["neonize>=0.3"]
 all = [
     "pypdf>=4.0",
+    "pymupdf>=1.24",
     "duckduckgo-search>=6.0",
     "anthropic>=0.40",
     "google-generativeai>=0.8",
