@@ -321,7 +321,9 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
             if full_reply:
                 clean_reply = _strip_dan_prefix(full_reply)
                 if clean_reply:
-                    from dan.server.concierge.actions import split_message_for_surface
+                    from dan.server.concierge.actions import split_message_for_surface, strip_html_for_messaging
+                    if adapter_type in ("whatsapp", "whatsapp-web", "telegram"):
+                        clean_reply = strip_html_for_messaging(clean_reply)
                     parts = split_message_for_surface(clean_reply, adapter_type)
                     for part in parts:
                         logger.info("Sending reply to %s (%d chars)", ext_id, len(part))
@@ -399,7 +401,7 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
             if cmd == "/help":
                 await adapter.send_prompt(
                     external_id,
-                    "Available commands: /find <query>, /send <path>, /status, /cancel, /show, /list\n"
+                    "Available commands: /find <query>, /send <path>, /status, /cancel, /show, /list, /mcp\n"
                     "Or just type naturally — I can do anything!",
                     None,
                 )
@@ -410,11 +412,11 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
                 _adapter_bg_tasks.add(_task)
                 _task.add_done_callback(_adapter_bg_tasks.discard)
             else:
-                await adapter.send_prompt(
-                    external_id,
-                    "Unknown command. Try /find, /send, /status, /cancel, /show, or /help.",
-                    None,
-                )
+                # Forward unrecognized slash commands to the server —
+                # the concierge handles /mcp, /save, /build-*, /memory-*, etc.
+                _task = asyncio.create_task(_dispatch_to_server(external_id, stripped))
+                _adapter_bg_tasks.add(_task)
+                _task.add_done_callback(_adapter_bg_tasks.discard)
             return
 
         _task = asyncio.create_task(_dispatch_to_server(external_id, text, attachment_path))
