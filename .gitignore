@@ -65,6 +65,15 @@ examples/beamer_writer_md/
 output/
 checkpoints/
 
+# Memory store (runtime-generated, not source-controlled)
+memory/
+
+# Graph runtime data (runs, chats, UI state, adapter scratch files)
+graphs/.last_opened
+graphs/runs/
+graphs/chats/
+graphs/_*.json
+
 # Editor build output (pre-built before packaging)
 editor/dist/
 
