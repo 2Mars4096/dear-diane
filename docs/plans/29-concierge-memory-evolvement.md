@@ -1,6 +1,6 @@
 # 29: Concierge-First Architecture — Memory Kernel, Workflow Reuse & Self-Evolvement
 
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Make the concierge the persistent intelligent agent that owns memory, drives iterative workflow building, and learns from every interaction. Workflows become compiled execution artifacts; the concierge is the brain.
 
 ## Problem
@@ -81,6 +81,8 @@ User (CLI / WhatsApp / Telegram / Editor)
 | [29-5](29-5-concierge-parallelism.md) | Concierge Parallelism | Universal fan-out principle: parallelize all independent sub-tasks (turn prep, tool calls, info gathering, diagnosis, memory extraction, build steps). Resource-based concurrency. Priority queuing. | ~4 days | 29-2 |
 | [29-6](29-6-self-evolvement-loop.md) | Self-Evolvement Loop | Passive learning (memory extraction, pattern filing, cross-section reinforcement) AND active adaptation (prompt optimization, per-node model learning, skill evolution, topology suggestions). Both halves needed for genuine self-improvement. | ~7 days | 29-1, 29-3, 29-4 |
 | [29-7](29-7-essential-tools.md) | Essential Tools Expansion | Fill critical tool gaps: current_datetime, clipboard, python_eval, send_email, notify, file ops (move/copy/delete), csv_read, spreadsheet_read, git tools (status/diff/log/commit/branch), image_describe, audio_transcribe, compress, translate, diff. Complements 26-7 (inbound media). | ~4 days | None (independent) |
+| [29-8](29-8-practical-research-quality-and-audit.md) | Practical Research Quality & Audit | Make the chat system reliable on daily research/report tasks (equity research, deep research, PDF literature summary, literature search + gated-paper handoff) and persist end-to-end chat provenance for debugging and evaluation. | ~4 days | 29-2, 29-4, 28-6 |
+| [29-9](29-9-mcp-tool-bridge.md) | MCP Tool Bridge | Consume external MCP servers (Stata, R, databases, custom APIs) as first-class chat tools. Chat-time `/mcp install` command. Auto-connect on startup. Config format matches Cursor/Claude Desktop. | ~4 days | None (independent) |
 
 ## Dependencies / Sequencing
 
@@ -93,9 +95,11 @@ User (CLI / WhatsApp / Telegram / Editor)
   └→ 29-6 (Self-Evolvement) ← needs memory + building + reuse in place
 
 29-7 (Essential Tools) ← independent, can start anytime
+29-8 (Practical Research Quality & Audit) ← depends on 29-2 chat orchestration + 29-4 reuse behavior, validates daily-use quality
+29-9 (MCP Tool Bridge) ← independent, can start anytime (plugs into capability registry)
 ```
 
-Critical path: 29-1 → 29-2 → 29-3 → 29-6. Parallelizable: 29-4, 29-5, and 29-7 can proceed alongside 29-3. 29-7 has no dependencies and can start at any time.
+Critical path: 29-1 → 29-2 → 29-3 → 29-6. Parallelizable: 29-4, 29-5, 29-7, and 29-9 can proceed alongside 29-3. 29-8 starts once the stateful concierge and reuse-first path are good enough to evaluate real daily tasks end-to-end.
 
 ## What This Phase Does NOT Do
 
@@ -115,10 +119,24 @@ Critical path: 29-1 → 29-2 → 29-3 → 29-6. Parallelizable: 29-4, 29-5, and 
 - "Build me a data analysis pipeline" → concierge checks memory for similar workflows → reuses/adapts if found → builds from scratch only if nothing matches
 - Multi-message goal: "analyze my CSV data" → (concierge builds workflow) → "actually, the delimiter is tab" → (concierge modifies and re-runs) → "great, save this" → (stored as reusable asset)
 
+**Practical daily tasks:**
+- "Write me a research report on Rocket Lab (RKLB). Include recent news, financials, sentiment, and a view." → current date is anchored, multiple web queries run, article/report pages are fetched, the final report is structured, and every numeric claim is source-backed
+- "Do a deep research report on [topic]." → multiple research angles are searched, promising sources are fetched, synthesis is broad rather than one-shot, and the final answer includes a usable source list
+- "Summarize this paper at /path/file.pdf." → `pdf_read` is used before summarization, and the answer is grounded in the actual document content
+- "Do a literature review on [topic]." → web search + fetch + local PDF reading are chained together; inaccessible papers trigger an explicit user handoff instead of fabrication
+
+**Auditability:**
+- Every research-oriented chat turn can be reconstructed from durable audit records: user request, assembled prompt/messages, tool calls/results, cited URLs/files, final answer, and linked run/memory IDs
+- Audit records preserve enough raw detail for debugging, with secret redaction rather than best-effort summaries only
+
 **Self-evolvement:**
 - After 10 workflow builds, common patterns are automatically extracted as reusable templates
 - User preference corrections ("I prefer Claude for writing") persist and influence all future builds
 - Workflow failures produce principles that improve the next generation attempt
+
+**Responsiveness:**
+- If a user query takes more than 5 seconds before the first response, the concierge emits a short reassuring progress note explaining what it is currently doing — not generic filler
+- Very long turns (deep research, multi-fetch) emit periodic progress updates (~15 s intervals)
 
 **Parallelism:**
 - Independent sub-tasks (memory search + workflow lookup) execute concurrently within a single turn
@@ -146,6 +164,11 @@ Critical path: 29-1 → 29-2 → 29-3 → 29-6. Parallelizable: 29-4, 29-5, and 
 
 ## Notes
 
+- Follow-up patch (2026-03-09): `ChatManager._build_messages()` now injects memory-kernel context from `user_message` in both the LLM-first and legacy prompt paths, fixing the prompt-assembly crash uncovered by the broader suite. Related tests were refreshed for the current architecture: unified LLM-first prompt assertions, mode-agnostic publish/share capability availability, `create_session_for_goal()` in the legacy meta-goal handler test, and CLI local-mode integration coverage that does not depend on a running dev server.
+- Review patch (2026-03-09): the Phase 29 goal-orchestrator path now only activates when both `memory_kernel` and `meta_controller` are wired, build sessions persist across turns instead of being recreated, workflow-asset memories store goal descriptions plus reuse counters, and `pdf_read` vision mode is available through the chat capability layer with explicit truncation metadata.
+- Practical daily-task quality is now an explicit Phase 29 acceptance target. Plan [29-8](29-8-practical-research-quality-and-audit.md) turns the four real-world research/report flows from [28-6](28-6-real-world-test-scenarios.md) into hard acceptance criteria and adds full chat-level provenance/audit.
 - Phase 18 (LLM-First Chat) simplifies the routing stack. Phase 19 assumes that cleanup is done and builds on the simplified path. If Phase 18 is incomplete, Phase 19 works anyway — the memory kernel and orchestration loop sit above whatever routing exists.
 - The existing `ExperienceStore`, `ErrorMemoryIndex`, `PrincipleStore`, and `UserProfile` are good building blocks. The unified memory kernel wraps/adapts them rather than rewriting from scratch.
 - The `ConcurrentDispatcher` is a good foundation for 29-5. The changes are about removing artificial caps and adding priority, not a rewrite.
+- Fast-command path (2026-03-09): commands (`/save`, `/build-*`, `/memory-*`, `/mcp`, preference confirmations) now skip the parallel prep phase (memory retrieval + context resolution + speculative reuse search) and respond instantly without any LLM involvement. Dispatcher bypass list also extended.
+- 2026-03-09 final reconciliation: All 8 sub-plans reviewed against code. 29-1 → completed (all kernel, adapters, policies, consolidation shipped). 29-2 → completed (goal orchestration, MetaController bridge, autonomy levels). 29-3 → completed (build session state machine, diagnosis, structural review). 29-4 → completed (reuse/adapt/generate, catalog tools, adapter parity, feedback loop). 29-5 → completed (fan-out utility, resource tracking, priority queuing, unified queue). 29-6 → in-progress (§1-5 LLM extraction and §2-6 reflection principle extraction now shipped; prompt optimization §7, skill evolution §9, and integration tests §12 remain). 29-7 → completed (32 tools shipped). 29-8 → completed (audit model, research hardening, scenario regression).

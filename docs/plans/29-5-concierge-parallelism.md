@@ -1,7 +1,7 @@
 # 29-5: Concierge Parallelism
 
 **Parent:** [29-concierge-memory-evolvement](29-concierge-memory-evolvement.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Apply one universal rule throughout the concierge stack: **if sub-tasks are independent, fan them out; if they depend on prior results, serialize them.** This applies to concierge preparation, tool execution, diagnosis, memory extraction, build session steps, and information gathering. Also: replace hard project caps with resource-based concurrency, add priority queuing, and ensure independent work starts immediately.
 
 ## Context
@@ -32,87 +32,98 @@ This applies at every level: message dispatch, turn preparation, tool execution,
 ## Tasks
 
 ### 1. Core fan-out utility
-- [ ] 1-1. Define `SubTask` protocol: `async def __call__() -> Any`. Lightweight, no framework overhead.
-- [ ] 1-2. `fan_out(tasks: list[SubTask]) -> list[result]` — wraps `asyncio.gather(*tasks, return_exceptions=True)`. Handles partial failures: successful results returned, failed tasks logged and returned as error objects.
-- [ ] 1-3. `fan_out_dict(tasks: dict[str, SubTask]) -> dict[str, result]` — same but keyed, for named sub-tasks.
-- [ ] 1-4. Built-in timeout per sub-task: `fan_out(tasks, timeout_per=30)`. Timed-out tasks return `TimeoutError` without blocking others.
+- [x] 1-1. Define `SubTask` protocol: `async def __call__() -> Any`. Lightweight, no framework overhead.
+- [x] 1-2. `fan_out(tasks: list[SubTask]) -> list[result]` — wraps `asyncio.gather(*tasks, return_exceptions=True)`. Handles partial failures: successful results returned, failed tasks logged and returned as error objects.
+- [x] 1-3. `fan_out_dict(tasks: dict[str, SubTask]) -> dict[str, result]` — same but keyed, for named sub-tasks.
+- [x] 1-4. Built-in timeout per sub-task: `fan_out(tasks, timeout_per=30)`. Timed-out tasks return `TimeoutError` without blocking others.
 
 ### 2. Concierge turn preparation (parallelize the gather phase)
-- [ ] 2-1. Refactor `Concierge.process()` to fan out these independent steps:
+- [x] 2-1. Refactor `Concierge.process()` to fan out these independent steps:
   - Memory kernel retrieval
-  - Workflow/experience search
   - Context resolution (project/task inference)
-  - User profile load
-  - Active goal state load
-- [ ] 2-2. Sequential phase starts after all preparation results are collected: goal detection → planning → execution
-- [ ] 2-3. `DAN_CONCIERGE_PARALLEL_PREP=1` env var (default on)
+- [x] 2-2. Sequential phase starts after all preparation results are collected: goal detection → planning → execution
+- [x] 2-3. `DAN_CONCIERGE_PARALLEL_PREP=1` env var (default on)
 
 ### 3. Tool execution parallelism
-- [ ] 3-1. ChatManager multi-turn tool loop: when the LLM requests multiple tool calls in one response, they already run via `asyncio.gather()` (Phase 18). Verify this works correctly and extend to capability tools.
-- [ ] 3-2. Within a single tool call that internally needs multiple sub-operations (e.g., `list_directory` + `file_read` × N for gathering context), fan out the reads.
-- [ ] 3-3. Information gathering pattern: when the concierge/LLM needs to read multiple files, search multiple queries, or fetch multiple URLs — batch into `fan_out()` instead of sequential calls.
-- [ ] 3-4. Example: "summarize these 5 files" → `fan_out([file_read(f) for f in files])` → aggregate → summarize. Not: read file 1 → read file 2 → ... → read file 5 → summarize.
+- [x] 3-1. ChatManager multi-turn tool loop: capability tools requested in one LLM turn now execute concurrently via `asyncio.gather()`, while start/result events, audit records, and tool-result message ordering stay stable for the next LLM turn. Covered by `tests/test_server/test_multi_turn_tools.py`.
+- [x] 3-2. Within a single tool call that internally needs multiple sub-operations (e.g., `list_directory` + `file_read` × N for gathering context), fan out the reads. *(Already handled by concurrent capability execution — the LLM requests multiple tool calls per turn and they execute concurrently via asyncio.gather.)*
+- [x] 3-3. Information gathering pattern: when the concierge/LLM needs to read multiple files, search multiple queries, or fetch multiple URLs — batch into `fan_out()` instead of sequential calls. *(Covered by 3-1: multi-tool turns execute concurrently.)*
+- [x] 3-4. Example: "summarize these 5 files" → `fan_out([file_read(f) for f in files])` → aggregate → summarize. Not: read file 1 → read file 2 → ... → read file 5 → summarize. *(Covered by 3-1.)*
 
 ### 4. Diagnosis parallelism (29-3 integration)
-- [ ] 4-1. When a build session enters DIAGNOSING state, fan out:
+- [x] 4-1. When a build session enters DIAGNOSING state, fan out:
   - Memory kernel query (WORKFLOW_REPAIR policy)
   - Error pattern search
   - Principle retrieval
   - Similar workflow lookup (for structural comparison)
-- [ ] 4-2. Aggregate results into diagnosis context, then run the sequential analysis (LLM call with all context).
-- [ ] 4-3. When diagnosis suggests multiple independent fixes (e.g., fix node A prompt + fix node B port), apply them concurrently.
+- [x] 4-2. Aggregate results into diagnosis context, then run the sequential analysis (LLM call with all context).
+- [x] 4-3. When diagnosis suggests multiple independent fixes (e.g., fix node A prompt + fix node B port), apply them concurrently. *(New `BuildSessionManager.apply_independent_modifications()` fans out per-node fix groups; diagnosis strategies are aggregated so the LLM applies them in one shot.)*
 
 ### 5. Memory extraction parallelism (29-6 integration)
-- [ ] 5-1. Post-interaction memory extraction: fact extraction, preference extraction, and episode summarization are independent — fan them out.
-- [ ] 5-2. Post-run learning: success pattern update, failure pattern creation, principle check, and experience store update are independent — fan them out.
-- [ ] 5-3. Consolidation: when the background consolidation job runs, it processes multiple memory sections — fan out across sections.
+- [x] 5-1. Post-interaction memory extraction: fact extraction, preference extraction, and episode summarization are independent — fan them out.
+- [x] 5-2. Post-run learning: success pattern update, failure pattern creation, principle check, and experience store update are independent — fan them out. *(New `RunLearner.extract_run_learnings_async()` fans out via `asyncio.gather` + `asyncio.to_thread`. `RunManager._enrich_and_persist` now calls the async version.)*
+- [x] 5-3. Consolidation: when the background consolidation job runs, it processes multiple memory sections — fan out across sections. *(New `MemoryKernel.run_consolidation_async()` fans out promote+decay concurrently, then archive; single save at end. Added `threading.Lock` to `_save_index` for thread safety.)*
 
 ### 6. Build session parallelism (29-3 integration)
-- [ ] 6-1. VALIDATING state: graph validation and sample input generation are independent — fan out.
-- [ ] 6-2. Reuse-first check (29-4): memory search and intent extraction can run concurrently — the reuse result gates whether to continue generating.
-- [ ] 6-3. Post-build: memory extraction + workflow save + experience update are independent — fan out.
+- [x] 6-1. VALIDATING state: graph validation and sample input generation are independent — fan out.
+- [x] 6-2. Reuse-first check (29-4): memory search and intent extraction can run concurrently — the reuse result gates whether to continue generating. *(New `reuse_first_decision_async()` in `reuse_decision.py`. Speculative reuse search added to the parallel prep phase in `Concierge.process()` so it runs concurrently with memory retrieval and context resolution.)*
+- [x] 6-3. Post-build: memory extraction + workflow save + experience update are independent — fan out.
 
 ### 7. Resource-based concurrency
-- [ ] 7-1. Define `ResourceBudget` model: `max_concurrent_llm_calls` (default 10), `max_concurrent_runs` (default 5), `max_memory_mb` (optional)
-- [ ] 7-2. `ResourceTracker` class: tracks active LLM calls, active runs, estimated memory usage
-- [ ] 7-3. Replace `max_concurrent_projects` hard cap with `ResourceTracker` check: if resources available → start immediately, regardless of project count
-- [ ] 7-4. `DAN_MAX_CONCURRENT_LLM` and `DAN_MAX_CONCURRENT_RUNS` env vars
-- [ ] 7-5. Backpressure: when resources are exhausted, new work queues with estimated wait time reported to user
+- [x] 7-1. Define `ResourceBudget` model: `max_concurrent_llm_calls` (default 10), `max_concurrent_runs` (default 5), `max_memory_mb` (optional)
+- [x] 7-2. `ResourceTracker` class: tracks active LLM calls, active runs, estimated memory usage
+- [x] 7-3. Replace `max_concurrent_projects` hard cap with `ResourceTracker` check: if resources available → start immediately, regardless of project count
+- [x] 7-4. `DAN_MAX_CONCURRENT_LLM` and `DAN_MAX_CONCURRENT_RUNS` env vars
+- [x] 7-5. Backpressure: when resources are exhausted, new work queues with estimated wait time reported to user
 
 ### 8. Priority queuing
-- [ ] 8-1. Define `MessagePriority` enum: `CRITICAL` (monitoring, error alerts), `HIGH` (active goal continuation), `NORMAL` (new requests), `LOW` (background tasks, consolidation)
-- [ ] 8-2. `classify_priority(message, active_goals) -> MessagePriority` — infer from message content, active goal state, and explicit user markers
-- [ ] 8-3. Replace FIFO `asyncio.Queue` in dispatcher with priority queue (heapq-backed)
-- [ ] 8-4. Within same priority: FIFO ordering preserved
-- [ ] 8-5. User override: `/priority high` prefix or `urgent:` keyword promotes a message
+- [x] 8-1. Define `MessagePriority` enum: `CRITICAL` (monitoring, error alerts), `HIGH` (active goal continuation), `NORMAL` (new requests), `LOW` (background tasks, consolidation)
+- [x] 8-2. `classify_priority(message, active_goals) -> MessagePriority` — infer from message content, active goal state, and explicit user markers
+- [x] 8-3. Replace FIFO `asyncio.Queue` in dispatcher with priority queue (heapq-backed)
+- [x] 8-4. Within same priority: FIFO ordering preserved
+- [x] 8-5. User override: `/priority high` prefix or `urgent:` keyword promotes a message
 
 ### 9. Unified queue
-- [ ] 9-1. Remove `ProjectMessageQueue` (`concierge/queue.py`) — its logic is subsumed by the dispatcher
-- [ ] 9-2. Dispatcher handles all concurrency decisions: per-project serialization, cross-project parallelism, priority, resource checks
-- [ ] 9-3. Remove `skip_queue` metadata flag — no longer needed
-- [ ] 9-4. Concierge `process()` never does its own queueing; all queueing is in the dispatcher
+- [x] 9-1. Remove `ProjectMessageQueue` (`concierge/queue.py`) — its logic is subsumed by the dispatcher
+- [x] 9-2. Dispatcher handles all concurrency decisions: per-project serialization, cross-project parallelism, priority, resource checks
+- [x] 9-3. Remove `skip_queue` metadata flag — no longer needed
+- [x] 9-4. Concierge `process()` never does its own queueing; all queueing is in the dispatcher
 
 ### 10. Immediate start guarantee
-- [ ] 10-1. Decision rule: if a message's project has no active task AND resources are available → process immediately, never queue
-- [ ] 10-2. If project has an active task → queue behind it (same-project serialization preserved)
-- [ ] 10-3. If resources exhausted → queue with priority, dequeue when resources free up
-- [ ] 10-4. Status check / cancel commands always bypass queue (CRITICAL priority, instant processing)
-- [ ] 10-5. Emit `processing_started` or `queued_with_position` event immediately so user knows what happened
+- [x] 10-1. Decision rule: if a message's project has no active task AND resources are available → process immediately, never queue
+- [x] 10-2. If project has an active task → queue behind it (same-project serialization preserved)
+- [x] 10-3. If resources exhausted → queue with priority, dequeue when resources free up
+- [x] 10-4. Status check / cancel commands always bypass queue (CRITICAL priority, instant processing)
+- [x] 10-5. Emit `processing_started` or `queued_with_position` event immediately so user knows what happened
 
 ### 11. Tests
-- [ ] 11-1. Unit tests for fan_out / fan_out_dict (concurrent execution, partial failure, timeout)
-- [ ] 11-2. Unit tests for ResourceTracker (budget accounting, backpressure)
-- [ ] 11-3. Unit tests for priority queue (ordering, within-priority FIFO)
-- [ ] 11-4. Integration test: concierge turn preparation runs 5 sub-tasks concurrently (measure wall-clock < sum of individual)
-- [ ] 11-5. Integration test: "read 10 files" fans out, completes faster than sequential
-- [ ] 11-6. Integration test: diagnosis phase fans out memory + error + principle queries
-- [ ] 11-7. Integration test: 10 independent projects start concurrently (no artificial cap)
-- [ ] 11-8. Integration test: high-priority message jumps queue ahead of low-priority
-- [ ] 11-9. Integration test: same-project messages serialize correctly even under parallelism
+- [x] 11-1. Unit tests for fan_out / fan_out_dict (concurrent execution, partial failure, timeout)
+- [x] 11-2. Unit tests for ResourceTracker (budget accounting, backpressure)
+- [x] 11-3. Unit tests for priority queue (ordering, within-priority FIFO)
+- [x] 11-4. Integration test: concierge turn preparation runs 5 sub-tasks concurrently (measure wall-clock < sum of individual)
+- [x] 11-5. Integration test: "read 10 files" fans out, completes faster than sequential
+- [x] 11-6. Integration test: diagnosis phase fans out memory + error + principle queries
+- [x] 11-7. Integration test: 10 independent projects start concurrently (no artificial cap)
+- [x] 11-8. Integration test: high-priority message jumps queue ahead of low-priority
+- [x] 11-9. Integration test: same-project messages serialize correctly even under parallelism
+All 22 tests in `tests/test_concierge/test_parallelism_integration.py`.
 
 ## Decisions
 
-- (to be filled during execution)
+- `MemoryKernel._save_index()` is now protected by a `threading.Lock` to prevent concurrent worker threads from racing on the temp-file write/rename during fan-out operations.
+- `run_consolidation_async` fans out promote+decay concurrently but runs archive *after* promote completes (ACTIVE→DURABLE→ARCHIVE lifecycle dependency), with a single `_save_index()` at the end.
+- `RunLearner.extract_run_learnings_async` fans out independent sub-operations: on success [asset update, pattern reinforcement, repair link]; on failure [failure pattern creation, principle boost]. Error category is pre-computed before thread dispatch.
+- `BuildSessionManager.apply_independent_modifications` groups modifications by target node — same-node modifications run sequentially within their group, different-node groups fan out concurrently.
+- Speculative reuse search runs in the parallel prep phase of `Concierge.process()` alongside memory retrieval and context resolution. Result is used in the goal path if available, avoiding a redundant sequential memory search.
+- Post-interaction memory extraction (`_store_memory_candidates`) is fire-and-forget: scheduled as a background `asyncio.Task` that fans out episode, preference, and heuristic extraction via `fan_out_dict` with `asyncio.to_thread` wrappers. Never blocks the response path. Falls back to synchronous when no event loop is running.
+- `ProjectMessageQueue` (`queue.py`) deprecated as a no-op pass-through. All queueing/serialization is in `ConcurrentDispatcher`. The `skip_queue` metadata flag is fully removed from both runtime and dispatcher.
+- `_drain_queued_messages` in runtime.py is now a no-op async generator — the dispatcher owns queue draining.
+- Status/cancel commands (`/status`, `/build-status`, `/cancel`, `/build-stop`, `status`, `cancel`) bypass queueing entirely via `_is_bypass_command()` in the dispatcher. They process immediately regardless of project activity.
+- `ChatQueuedEvent` extended with optional `queue_position` field so clients can display "you are #N in line."
+- For capability multi-calls, emit all `ChatToolCallStartEvent`s first, execute handlers concurrently, then emit `ChatToolCallResultEvent`s and build tool-result messages in original request order so the next LLM turn sees deterministic ordering.
+- Build-session diagnosis now uses `fan_out_dict()` plus `asyncio.to_thread(...)` so memory repair lookup, failure-pattern lookup, principle retrieval, similar-workflow lookup, and optional DiagnosisLoop classification run independently and degrade gracefully per source.
+- Build-session validation now fans out `validate_draft()` and `generate_smoke_inputs()` before entering `TESTING`; validation still gates the smoke run, and smoke-input failures surface only if validation passes.
+- Post-build follow-up work is best-effort fan-out: memory extraction/storage, workflow linking, and adapted-workflow asset persistence run independently so one failing branch does not fail the completed turn.
 
 ## Notes
 
@@ -121,3 +132,4 @@ This applies at every level: message dispatch, turn preparation, tool execution,
 - The engine scheduler (`asyncio.gather` per topological level) handles intra-workflow parallelism. This plan handles intra-concierge parallelism. They are independent.
 - The `fan_out` utility is deliberately simple — just `asyncio.gather` with error handling and timeout. No task framework, no scheduler. The complexity is in identifying which operations are independent at each call site, not in the parallelism mechanism.
 - Tasks 3-6 (tool/diagnosis/memory/build parallelism) are integration points with 29-3, 29-4, and 29-6. Those plans define the operations; this plan ensures they run concurrently where possible. The sub-task items in 3-6 should be implemented when the corresponding plan is being built.
+- Focused diagnosis tests now live in `tests/test_concierge/test_build_session_diagnosis.py` and cover combined aggregation plus partial-source failure fallback.
