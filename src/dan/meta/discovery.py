@@ -104,12 +104,14 @@ class DiscoveryService:
         graph_store: Any | None = None,
         tool_registry: Any | None = None,
         self_knowledge: Any | None = None,
+        memory_kernel: Any | None = None,
     ) -> None:
         self._experience_index = experience_index
         self._experience_store = experience_store
         self._graph_store = graph_store
         self._tool_registry = tool_registry
         self._self_knowledge = self_knowledge
+        self._memory_kernel = memory_kernel
 
     def discover_tools(self) -> list[ToolInfo]:
         """Query the tool registry for available tools."""
@@ -165,6 +167,14 @@ class DiscoveryService:
 
             reuse_bonus = 0.1 if (success_rate is not None and success_rate > 0.7) else 0.0
             reuse_fit = min(1.0, score + reuse_bonus)
+
+            if self._memory_kernel is not None:
+                try:
+                    from dan.engine.generation_stats import load_generation_stats
+                    gen_stats = load_generation_stats(self._memory_kernel)
+                    reuse_fit = gen_stats.adjust_reuse_score(wf_id, reuse_fit)
+                except Exception:
+                    pass
 
             matches.append(WorkflowMatch(
                 workflow_id=wf_id,

@@ -403,6 +403,12 @@ Output ONLY a single valid JSON object. No markdown, no explanation."""
 
         if plan_context:
             ctx_lines: list[str] = []
+            if plan_context.get("adapt_workflow_id"):
+                ctx_lines.append(
+                    f"ADAPT REQUIRED: You MUST use action ADAPT with workflow_id=\"{plan_context['adapt_workflow_id']}\". "
+                    "The user chose to adapt this workflow. Produce mutations to bridge the gap between the "
+                    "existing workflow and the goal."
+                )
             if plan_context.get("required_tools"):
                 ctx_lines.append(
                     f"Required tools: {', '.join(plan_context['required_tools'])}"

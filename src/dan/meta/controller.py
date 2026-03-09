@@ -72,6 +72,9 @@ class MetaSession(BaseModel):
     is_system: bool = False
     system_manifest: dict[str, Any] | None = None
 
+    # Concierge goal context (29-4): adapt_workflow_id, memory_context, etc.
+    goal_context: dict[str, Any] = Field(default_factory=dict)
+
 
 class MetaControllerConfig(BaseModel):
     """Tuning knobs for the controller loop."""
@@ -179,7 +182,12 @@ class MetaSessionStore:
 
 
 class MetaController:
-    """Outer meta-loop: goal → plan → execute → diagnose → repair → loop."""
+    """Outer meta-loop: goal → plan → execute → diagnose → repair → loop.
+
+    **Deprecated (29-2):** Prefer the concierge with memory_kernel, which owns
+    ConciergeGoal state and calls run_session internally. This controller remains
+    for backward compatibility and as the execution backend used by the concierge.
+    """
 
     def __init__(
         self,
@@ -215,6 +223,24 @@ class MetaController:
         session = MetaSession(goal=goal, max_iterations=cfg.max_iterations)
         await self._save_session(session)
         await self._emit("META_SESSION_STARTED", session, {"goal": goal})
+        return session
+
+    async def create_session_for_goal(self, goal: Any, config: MetaControllerConfig | None = None) -> MetaSession:
+        """Create and persist a MetaSession from a ConciergeGoal (29-2 legacy path)."""
+        cfg = config or MetaControllerConfig(max_iterations=goal.max_iterations)
+        session = MetaSession(
+            session_id=goal.id,
+            goal=goal.description,
+            status=MetaSessionStatus.PLANNING,
+            max_iterations=cfg.max_iterations,
+            plan_result=goal.plan_result,
+            workflow_id=goal.workflow_id,
+            run_history=list(goal.run_history),
+            iteration=goal.iteration,
+            goal_context=dict(getattr(goal, "context", {}) or {}),
+        )
+        await self._save_session(session)
+        await self._emit("META_SESSION_STARTED", session, {"goal": goal.description})
         return session
 
     async def run(
@@ -328,30 +354,8 @@ class MetaController:
 
     @staticmethod
     def _topo_sort_workflows(workflows: list[Any]) -> list[Any]:
-        """Topological sort of workflow specs by depends_on."""
-        name_to_spec = {w.name: w for w in workflows}
-        in_degree = {w.name: 0 for w in workflows}
-        for w in workflows:
-            for dep in w.depends_on:
-                if dep in in_degree:
-                    in_degree[w.name] += 1
-
-        queue = [name for name, deg in in_degree.items() if deg == 0]
-        result: list[Any] = []
-        while queue:
-            name = queue.pop(0)
-            result.append(name_to_spec[name])
-            for w in workflows:
-                if name in w.depends_on:
-                    in_degree[w.name] -= 1
-                    if in_degree[w.name] == 0:
-                        queue.append(w.name)
-
-        for w in workflows:
-            if w.name not in {r.name for r in result}:
-                result.append(w)
-
-        return result
+        from dan.meta.utils import topo_sort_workflows
+        return topo_sort_workflows(workflows)
 
     async def _enrich_goal_with_prior_experience(
         self,
@@ -435,7 +439,12 @@ class MetaController:
                         session.error_context = "No planner configured"
                         break
 
-                    planner_output = await self._planner.plan(session.goal, session.error_context)
+                    plan_context: dict[str, Any] | None = None
+                    if session.goal_context and session.goal_context.get("adapt_workflow_id"):
+                        plan_context = {"adapt_workflow_id": session.goal_context["adapt_workflow_id"]}
+                    planner_output = await self._planner.plan(
+                        session.goal, session.error_context, plan_context=plan_context
+                    )
                     session.plan_result = planner_output.plan.model_dump()
                     await self._emit("META_PLAN_CREATED", session, {
                         "plan": session.plan_result,
@@ -602,21 +611,8 @@ class MetaController:
 
     @staticmethod
     def _plan_from_dict(plan_dict: dict[str, Any] | None) -> Any | None:
-        if not isinstance(plan_dict, dict):
-            return None
-        try:
-            from dan.meta.planner import AdaptPlan, GeneratePlan, ReusePlan
-
-            action = str(plan_dict.get("action", "")).upper()
-            if action == "REUSE":
-                return ReusePlan.model_validate(plan_dict)
-            if action == "ADAPT":
-                return AdaptPlan.model_validate(plan_dict)
-            if action == "GENERATE":
-                return GeneratePlan.model_validate(plan_dict)
-        except Exception:
-            logger.debug("Failed to parse plan from session", exc_info=True)
-        return None
+        from dan.meta.utils import plan_from_dict
+        return plan_from_dict(plan_dict)
 
     async def _checkpoint_pause(self, session: MetaSession, stage: str) -> bool:
         """Pause when requested by config or external API at step checkpoints."""
