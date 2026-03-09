@@ -24,6 +24,7 @@ except ImportError:
 from dan.models.graph import Graph
 from dan.providers import CompletionResult, StreamChunk
 from dan.providers.registry import ProviderRegistry
+from dan.providers.costs import estimate_cost
 from dan.server.capability_registry import CapabilityResult
 from dan.server.graph_mutator import (
     GraphMutator,
@@ -428,42 +429,72 @@ Read-only modes (ask/plan): lookup + browse + file read + web read only.
 SURFACE_HINTS = {
     "whatsapp": (
         "## Surface: WhatsApp\n"
+        "- Current model: {model_name}\n"
         "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
         "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
         "- ABSOLUTELY NO HTML tags (<div>, <p>, <h2>, <span>, <ul>, <li>, etc.) \u2014 WhatsApp renders these as raw text\n"
         "- No code blocks, no markdown tables \u2014 plain text only\n"
         "- Never include raw HTML from web_fetch results in your response \u2014 always summarize in plain text\n"
         "- Never reproduce raw extracted text from pdf_read or file_read \u2014 always produce a structured summary or answer\n"
+        "- NEVER echo back full script or code content from tool results (Stata do-files, Python scripts, shell commands, etc.) \u2014 the user cannot review code in chat. Only report: what you ran, key numeric results, errors, or a 1-line summary of what the script does\n"
         "- URLs on their own line (auto-linkified)\n"
         "- For long reports, organize into clearly separated sections"
     ),
     "whatsapp-web": (
         "## Surface: WhatsApp\n"
+        "- Current model: {model_name}\n"
         "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
         "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
         "- ABSOLUTELY NO HTML tags (<div>, <p>, <h2>, <span>, <ul>, <li>, etc.) \u2014 WhatsApp renders these as raw text\n"
         "- No code blocks, no markdown tables \u2014 plain text only\n"
         "- Never include raw HTML from web_fetch results in your response \u2014 always summarize in plain text\n"
         "- Never reproduce raw extracted text from pdf_read or file_read \u2014 always produce a structured summary or answer\n"
+        "- NEVER echo back full script or code content from tool results (Stata do-files, Python scripts, shell commands, etc.) \u2014 the user cannot review code in chat. Only report: what you ran, key numeric results, errors, or a 1-line summary of what the script does\n"
         "- URLs on their own line (auto-linkified)\n"
         "- For long reports, organize into clearly separated sections"
     ),
     "telegram": (
         "## Surface: Telegram\n"
-        "- Concise replies. Markdown formatting supported.\n"
-        "- Use **bold** and `code` where helpful."
+        "- Current model: {model_name}\n"
+        "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
+        "- Telegram supports Markdown: **bold**, _italic_, `code`, ```code blocks```, [links](url), ~~strikethrough~~, ||spoilers||\n"
+        "- Use code blocks for data/code output — they render properly in Telegram\n"
+        "- No raw HTML tags — use Markdown only\n"
+        "- Never echo back full script or code content from tool results — only report: what you ran, key results, errors, or a 1-line summary\n"
+        "- Never reproduce raw extracted text from pdf_read or file_read — always produce a structured summary or answer\n"
+        "- URLs on their own line (auto-linkified)\n"
+        "- For long reports, organize into clearly separated sections"
     ),
     "server": (
         "## Surface: Editor\n"
+        "- Current model: {model_name}\n"
         "- Detailed responses welcome. Full markdown supported.\n"
         "- Include code blocks, tables, and structured formatting."
     ),
     "cli": (
         "## Surface: CLI\n"
+        "- Current model: {model_name}\n"
         "- Concise but can be detailed when asked.\n"
         "- Terminal-friendly formatting."
     ),
 }
+
+
+def _resolve_surface_hints(surface: str | None, model_name: str) -> str:
+    """Resolve exact or family surface hints, including `telegram:<bot>`."""
+    surface_key = surface or "server"
+    base_key = surface_key.split(":", 1)[0]
+    hints = SURFACE_HINTS.get(surface_key) or SURFACE_HINTS.get(base_key, SURFACE_HINTS["server"])
+    if surface_key.startswith("telegram:"):
+        bot_name = surface_key.split(":", 1)[1]
+        hints = (
+            f"{hints}\n"
+            f"- You are speaking as the Telegram bot `{bot_name}`\n"
+            f"- Keep this bot's persona and project focus consistent across the whole reply"
+        )
+    if "{model_name}" in hints:
+        hints = hints.format(model_name=model_name)
+    return hints
 
 UNIFIED_SYSTEM_PROMPT = """\
 You are DAN, a personal AI assistant with full tool access. You help with anything: \
@@ -1120,6 +1151,7 @@ class ChatCompleteEvent(BaseModel):
     message_id: str
     content: str
     token_usage: dict[str, int] = Field(default_factory=dict)
+    estimated_cost: float | None = None
     context_window: int = 0
     graph_revision: str
     revision_mismatch: bool = False
@@ -1949,10 +1981,16 @@ class ChatManager:
                     user_message=message,
                     assistant_message=final_content,
                 )
+                
+                cost = estimate_cost(self._chat_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
+                if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
+                    final_content += f"\n\n[~${cost:.4f}]"
+
                 yield ChatCompleteEvent(
                     message_id=message_id,
                     content=final_content,
                     token_usage=token_usage,
+                    estimated_cost=cost,
                     context_window=_get_context_window(self._chat_model),
                     graph_revision=summary.revision,
                     revision_mismatch=revision_mismatch,
@@ -2100,37 +2138,47 @@ class ChatManager:
                     all_tools.append(MUTATION_TOOL_SCHEMA)
 
             try:
-                complete_task: asyncio.Task[CompletionResult] = asyncio.create_task(
-                    provider.complete(
-                        messages=messages,
-                        model=self._chat_model,
-                        temperature=0.7,
-                        tools=all_tools,
-                        tool_choice="auto",
-                    ),
-                )
-                cancel_wait_task: asyncio.Task[bool] | None = None
-                if cancel_event is not None:
-                    cancel_wait_task = asyncio.create_task(cancel_event.wait())
-                    done, pending = await asyncio.wait(
-                        {complete_task, cancel_wait_task},
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    if cancel_wait_task in done and cancel_event.is_set():
-                        complete_task.cancel()
-                        try:
-                            await complete_task
-                        except asyncio.CancelledError:
-                            pass
-                        yield ChatInterruptedEvent(
-                            message_id=message_id,
-                            content="",
-                            token_usage={},
+                # Retry loop for transient errors
+                for attempt in range(2):
+                    try:
+                        complete_task: asyncio.Task[CompletionResult] = asyncio.create_task(
+                            provider.complete(
+                                messages=messages,
+                                model=self._chat_model,
+                                temperature=0.7,
+                                tools=all_tools,
+                                tool_choice="auto",
+                            ),
                         )
-                        return
-                    for task in pending:
-                        task.cancel()
-                result: CompletionResult = await complete_task
+                        cancel_wait_task: asyncio.Task[bool] | None = None
+                        if cancel_event is not None:
+                            cancel_wait_task = asyncio.create_task(cancel_event.wait())
+                            done, pending = await asyncio.wait(
+                                {complete_task, cancel_wait_task},
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if cancel_wait_task in done and cancel_event.is_set():
+                                complete_task.cancel()
+                                try:
+                                    await complete_task
+                                except asyncio.CancelledError:
+                                    pass
+                                yield ChatInterruptedEvent(
+                                    message_id=message_id,
+                                    content="",
+                                    token_usage={},
+                                )
+                                return
+                            for task in pending:
+                                task.cancel()
+                        result: CompletionResult = await complete_task
+                        break
+                    except Exception as e:
+                        if attempt == 0 and ("timeout" in str(e).lower() or "rate" in str(e).lower() or "connection" in str(e).lower()):
+                            logger.warning(f"Transient error in LLM call, retrying: {e}")
+                            await asyncio.sleep(2)
+                            continue
+                        raise
             except Exception as exc:
                 logger.debug(
                     "Tool-calling complete() failed (%s), falling back to stream",
@@ -2185,10 +2233,16 @@ class ChatManager:
                         surface=surface,
                         audit_metadata=audit_metadata,
                     )
+                    
+                    cost = estimate_cost(self._chat_model, normalized_usage.get("prompt_tokens", 0), normalized_usage.get("completion_tokens", 0))
+                    if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
+                        content += f"\n\n[~${cost:.4f}]"
+                        
                     yield ChatCompleteEvent(
                         message_id=message_id,
                         content=content,
                         token_usage=normalized_usage,
+                        estimated_cost=cost,
                         context_window=_get_context_window(self._chat_model),
                         graph_revision=revision,
                         revision_mismatch=revision_mismatch,
@@ -2477,6 +2531,23 @@ class ChatManager:
                         output_preview=pending["output_preview"],
                         duration_ms=pending["duration_ms"],
                     )
+                    
+                    if pending["status"] == "success" and cap_result.data and isinstance(cap_result.data, dict):
+                        file_path = cap_result.data.get("path") or cap_result.data.get("file_path")
+                        if not file_path and isinstance(cap_result.data.get("result"), dict):
+                            file_path = cap_result.data["result"].get("path") or cap_result.data["result"].get("file_path")
+                            
+                        if file_path and isinstance(file_path, str) and os.path.isfile(file_path):
+                            try:
+                                stat = os.stat(file_path)
+                                yield ChatFileAttachmentEvent(
+                                    path=file_path,
+                                    filename=os.path.basename(file_path),
+                                    size=stat.st_size,
+                                )
+                            except Exception as e:
+                                logger.debug("Failed to emit file attachment event for %s: %s", file_path, e)
+
                     audit_tool_records.append({
                         "tool_name": cap_name,
                         "args": cap_args,
@@ -2566,10 +2637,16 @@ class ChatManager:
                 surface=surface,
                 audit_metadata=audit_metadata,
             )
+            token_usage = _normalize_usage(result.usage)
+            cost = estimate_cost(self._chat_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
+            if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
+                final_content += f"\n\n[~${cost:.4f}]"
+
             yield ChatCompleteEvent(
                 message_id=message_id,
                 content=final_content,
-                token_usage=_normalize_usage(result.usage),
+                token_usage=token_usage,
+                estimated_cost=cost,
                 context_window=_get_context_window(self._chat_model),
                 graph_revision=revision,
                 revision_mismatch=revision_mismatch,
@@ -2704,10 +2781,16 @@ class ChatManager:
             user_message=user_message,
             assistant_message=final_content,
         )
+        
+        cost = estimate_cost(self._chat_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
+        if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
+            final_content += f"\n\n[~${cost:.4f}]"
+
         yield ChatCompleteEvent(
             message_id=message_id,
             content=final_content,
             token_usage=token_usage,
+            estimated_cost=cost,
             context_window=_get_context_window(self._chat_model),
             graph_revision=revision,
             revision_mismatch=revision_mismatch,
@@ -2794,7 +2877,7 @@ class ChatManager:
             if summary.node_count > 0:
                 graph_text = serialize_for_prompt(summary)
                 workflow_block = f"## Current Workflow\n{graph_text}"
-            surface_hints = SURFACE_HINTS.get(surface or "server", SURFACE_HINTS["server"])
+            surface_hints = _resolve_surface_hints(surface, self._chat_model)
 
             system_content = UNIFIED_SYSTEM_PROMPT.format(
                 surface_hints=surface_hints,
@@ -2858,6 +2941,8 @@ class ChatManager:
             return messages
 
         # Legacy path: mode-specific prompts
+        surface_hints = _resolve_surface_hints(surface, self._chat_model)
+            
         is_empty = summary.node_count == 0 and summary.edge_count == 0
         graph_text = (
             EMPTY_GRAPH_SUMMARY_PLACEHOLDER
@@ -2894,6 +2979,8 @@ class ChatManager:
         if self._capability_registry is not None:
             mcp_block = self._compose_mcp_tools_block()
             system_content += "\n" + CAPABILITY_TOOLS_REFERENCE.format(mcp_block=mcp_block)
+        if surface_hints:
+            system_content += f"\n\n{surface_hints}"
         if prompt_context:
             system_content = f"{system_content.rstrip()}\n\n{prompt_context.strip()}"
         user_context_block = self._compose_user_context_block()
@@ -2993,10 +3080,15 @@ class ChatManager:
                     final_content = chunk.accumulated
                     token_usage = _normalize_usage(chunk.usage)
 
+            cost = estimate_cost(self._chat_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
+            if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
+                final_content += f"\n\n[~${cost:.4f}]"
+
             yield ChatCompleteEvent(
                 message_id=message_id,
                 content=final_content,
                 token_usage=token_usage,
+                estimated_cost=cost,
                 context_window=_get_context_window(self._chat_model),
                 graph_revision="",
             )

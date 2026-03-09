@@ -1,7 +1,7 @@
 # 29-9: MCP Tool Bridge — Consume External MCP Servers as Chat Tools
 
 **Parent:** [29-concierge-memory-evolvement](29-concierge-memory-evolvement.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Let the concierge discover, connect to, and use tools from external MCP servers (like mcp_stata) alongside built-in tools — installable at runtime from chat.
 
 ## Problem
@@ -92,7 +92,7 @@ Single module (not a package — consistent with `dan.publish.mcp_server` being 
 
 ### 6. Startup integration
 - [x] 6-1. Wire `MCPBridge` creation into `build_chat_services()` in `chat_factory.py` — create bridge, load config, auto-connect servers with `autoConnect: true`, register tools. Log failures without blocking startup.
-- [ ] 6-2. Wire into `app.py` server lifespan — same auto-connect + `bridge.shutdown()` in lifespan teardown. *(deferred — app.py server mode uses same chat_factory path)*
+- [x] 6-2. Wire into `app.py` server lifespan — same auto-connect + `bridge.shutdown()` in lifespan teardown.
 - [x] 6-3. Add `mcp_bridge: Any = None` field to `CapabilityContext` dataclass.
 - [x] 6-4. Pass bridge reference to `Concierge.__init__` so `/mcp` commands can access it.
 - [x] 6-5. Dynamic prompt hint: `get_mcp_tool_hint(bridge)` builds hint string listing MCP tools for system prompt.
@@ -108,12 +108,12 @@ Single module (not a package — consistent with `dan.publish.mcp_server` being 
 - [x] 8-1. Unit tests for `MCPBridge` (mock the `mcp` client classes): connect stores session, disconnect removes, call_tool proxies, shutdown cleans up, reconnect on failure, import guard without `mcp` package
 - [x] 8-2. Unit tests for config persistence: load/save/add/remove, atomic write, missing file creates empty, env var override
 - [x] 8-3. Unit tests for capability registration: schema translation, result formatting (text, image, error, multi-content), naming convention, unregister, category-based bulk remove
-- [ ] 8-4. Unit tests for chat commands: parse `/mcp list`/`install`/`remove`/`tools`, error messages for bad args, known-server resolution *(deferred — requires concierge test harness)*
-- [ ] 8-5. Integration test (optional, requires `mcp` dep): spawn a trivial in-process MCP server, connect via bridge, list tools, call a tool, verify round-trip
+- [x] 8-4. Unit tests for chat commands: parse `/mcp list`/`install`/`remove`/`tools`, error messages for bad args, known-server resolution
+- [x] 8-5. Integration test (optional, requires `mcp` dep): spawn a trivial in-process MCP server, connect via bridge, list tools, call a tool, verify round-trip
 
 ### 9. Docs
 - [x] 9-1. Update `docs/architecture.md` — add MCP bridge section under "Built-in Tools"
-- [ ] 9-2. Update `README.md` — add MCP integration section with quick-start (`/mcp install stata`) *(deferred — README update when feature is validated)*
+- [x] 9-2. Update `README.md` — add MCP integration section with quick-start (`/mcp install stata`)
 - [x] 9-3. Changelog entry on completion
 
 ## Dependencies
@@ -139,3 +139,4 @@ Single module (not a package — consistent with `dan.publish.mcp_server` being 
 - `SepineTam/stata-mcp` (93 stars, v1.13.40) is more full-featured: TOML config, RAM monitoring, security validation. Either works — the bridge is server-agnostic.
 - The capability registry already supports dynamic registration — `register()` can be called at any time. Adding `unregister()` is a one-line method. The LLM sees whatever tools are registered at the time of the next `get_tools(mode)` call.
 - The concierge slash-command dispatch chain in `process()` is sequential: `_handle_save_command` → `_handle_build_command` → `_handle_memory_command` → (new) `_handle_mcp_command` → preference confirmation → pending follow-up → normal routing. Each returns `None` to pass through.
+- 2026-03-10 closeout: server-mode startup now wires MCP auto-connect and shutdown through `app.py` using the shared `autoconnect_configured_mcp_servers()` helper, capability-registry mode filtering is now actually enforced for MCP tools, `call_tool()` now preserves embedded MCP resources instead of stringifying them away, focused concierge command coverage was added in `tests/test_concierge/test_mcp_commands.py`, the optional real round-trip test lives in `tests/test_mcp_bridge_integration.py` and skips automatically when the `mcp` dependency is unavailable, and `README.md` now documents MCP quick-start usage.

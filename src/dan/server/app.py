@@ -109,6 +109,7 @@ _self_knowledge_index: Any | None = None
 _notification_manager: Any | None = None
 _concierge: Any | None = None
 _dispatcher: Any | None = None
+_mcp_bridge: Any | None = None
 
 
 def _get_engine_config() -> EngineConfig:
@@ -152,6 +153,19 @@ def _get_engine_config() -> EngineConfig:
             default_model=os.environ.get("DAN_LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
         )
 
+    default_model_policy = None
+    if os.environ.get("DAN_ENABLE_TIER_POLICY", "0").lower() in ("1", "true", "yes"):
+        from dan.providers.model_policy import TierPolicy
+        tier_map = None
+        tier_map_env = os.environ.get("DAN_TIER_MAP")
+        if tier_map_env:
+            import json
+            try:
+                tier_map = json.loads(tier_map_env)
+            except Exception:
+                logger.warning("Failed to parse DAN_TIER_MAP JSON, using defaults")
+        default_model_policy = TierPolicy(tier_map=tier_map)
+
     return EngineConfig(
         llm_base_url=os.environ.get("DAN_LLM_BASE_URL", "https://api.vectorengine.ai/v1"),
         llm_api_key=os.environ.get("DAN_LLM_API_KEY", os.environ.get("LLM_API_KEY", "")),
@@ -161,12 +175,49 @@ def _get_engine_config() -> EngineConfig:
         providers=providers,
         embedding_providers=embedding_providers,
         default_embedding_model=default_embedding_model,
+        default_model_policy=default_model_policy,
         cache_enabled=os.environ.get("DAN_CACHE_ENABLED", "true").lower() in ("1", "true", "yes"),
         cache_max_size_mb=int(os.environ.get("DAN_CACHE_MAX_SIZE_MB", "100")),
         cache_dir=os.environ.get("DAN_CACHE_DIR") or None,
         semantic_cache_threshold=float(os.environ.get("DAN_SEMANTIC_CACHE_THRESHOLD", "0.95")),
         semantic_cache_ttl_hours=float(os.environ.get("DAN_SEMANTIC_CACHE_TTL_HOURS", "24")),
     )
+
+
+async def _initialize_mcp_bridge_for_server(
+    *,
+    capability_registry: Any,
+    tool_registry: ToolRegistry | None,
+    capability_context: Any,
+) -> Any | None:
+    """Create the MCP bridge for the main server path and auto-connect configured servers."""
+    try:
+        from dan.mcp_bridge import MCPBridge, autoconnect_configured_mcp_servers
+    except Exception:
+        logger.debug("MCP bridge not available", exc_info=True)
+        capability_context.mcp_bridge = None
+        return None
+
+    bridge = MCPBridge()
+    try:
+        await autoconnect_configured_mcp_servers(
+            bridge,
+            capability_registry,
+            tool_registry,
+        )
+    except Exception:
+        logger.warning("MCP bridge startup failed", exc_info=True)
+    capability_context.mcp_bridge = bridge
+    return bridge
+
+
+async def _shutdown_mcp_bridge_for_server(bridge: Any | None) -> None:
+    if bridge is None:
+        return
+    try:
+        await bridge.shutdown()
+    except Exception:
+        logger.debug("MCP bridge shutdown failed", exc_info=True)
 
 
 # -- Built-in tools available to all server-side runs -------------------------
@@ -1236,7 +1287,21 @@ async def _consolidation_loop(kernel: Any, interval_hours: float) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _run_manager, _chat_manager, _mention_resolver, _notification_manager
-    global _publish_registry, _block_registry, _concierge, _dispatcher
+    global _publish_registry, _block_registry, _concierge, _dispatcher, _mcp_bridge
+
+    if os.environ.get("DAN_LEARNING_MODE") == "1":
+        os.environ.setdefault("DAN_PROMPT_OPTIMIZATION", "1")
+        os.environ.setdefault("DAN_MODEL_LEARNING", "1")
+        os.environ.setdefault("DAN_TOPOLOGY_LEARNING", "1")
+        os.environ.setdefault("DAN_SKILL_LEARNING", "1")
+        logger.info(
+            "Learning features active: prompt_opt=%s model=%s topology=%s skill=%s",
+            os.environ.get("DAN_PROMPT_OPTIMIZATION"),
+            os.environ.get("DAN_MODEL_LEARNING"),
+            os.environ.get("DAN_TOPOLOGY_LEARNING"),
+            os.environ.get("DAN_SKILL_LEARNING"),
+        )
+
     _runs_dir = os.environ.get("DAN_RUNS_DIR", os.path.join(_graphs_dir, "runs"))
     _run_store = RunStore(base_dir=_runs_dir)
     workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
@@ -1265,6 +1330,8 @@ async def lifespan(app: FastAPI):
         register_publish_capabilities,
         register_run_lifecycle_capabilities,
         register_workflow_catalog_capabilities,
+        register_tool_capabilities,
+        register_introspection_capabilities,
     )
 
     _capability_registry = ChatCapabilityRegistry()
@@ -1272,6 +1339,8 @@ async def lifespan(app: FastAPI):
     register_experience_capabilities(_capability_registry)
     register_run_lifecycle_capabilities(_capability_registry)
     register_workflow_catalog_capabilities(_capability_registry)
+    register_tool_capabilities(_capability_registry)
+    register_introspection_capabilities(_capability_registry)
 
     _capability_context = CapabilityContext(
         workflow_id="",
@@ -1279,7 +1348,14 @@ async def lifespan(app: FastAPI):
         run_manager=_run_manager,
         run_store=_run_store,
         graphs_dir=_graphs_dir,
+        test_case_store=_test_case_store,
     )
+    _mcp_bridge = await _initialize_mcp_bridge_for_server(
+        capability_registry=_capability_registry,
+        tool_registry=_run_manager.tool_registry if _run_manager is not None else None,
+        capability_context=_capability_context,
+    )
+    app.state.mcp_bridge = _mcp_bridge
 
     user_profile = None
     try:
@@ -1332,6 +1408,8 @@ async def lifespan(app: FastAPI):
         conversation_memory=conversation_memory,
         memory_kernel=memory_kernel,
     )
+    
+    _capability_context.chat_manager = _chat_manager
 
     _publish_registry = PublishRegistry(engine_config)
     _publish_registry.human_timeout = 300.0
@@ -1364,6 +1442,7 @@ async def lifespan(app: FastAPI):
         from dan.server.gateway.router import _event_bus as _gw_event_bus
 
         if _gw_event_bus is not None:
+            _capability_context.event_bus = _gw_event_bus
             _notification_manager = NotificationManager(load_notification_config())
             await _notification_manager.start(_gw_event_bus)
             logger.info(
@@ -1458,6 +1537,9 @@ async def lifespan(app: FastAPI):
             meta_controller=meta_controller,
             memory_kernel=memory_kernel,
             enable_dispatcher=True,
+            mcp_bridge=_mcp_bridge,
+            capability_registry=_capability_registry,
+            tool_registry=_run_manager.tool_registry if _run_manager is not None else None,
         )
         if isinstance(result, tuple):
             _concierge, _dispatcher = result
@@ -1500,6 +1582,19 @@ async def lifespan(app: FastAPI):
                 _consolidation_interval_hours,
             )
 
+    # 31-5: Startup feature log
+    model_name = getattr(engine_config, "llm_default_model", "claude-sonnet-4-6")
+    tier_policy = "on" if os.environ.get("DAN_ENABLE_TIER_POLICY") == "1" else "off"
+    learning = "on" if os.environ.get("DAN_LEARNING_MODE") == "1" else "off"
+    mcp_count = len(_mcp_bridge._clients) if _mcp_bridge and hasattr(_mcp_bridge, "_clients") else 0
+    notif_count = len(_notification_manager.channels) if _notification_manager else 0
+    autonomy = os.environ.get("DAN_CONCIERGE_AUTONOMY", "auto")
+    
+    logger.info(
+        "DAN Server started | Model: %s | Tier: %s | Learning: %s | MCP: %d server(s) | Notifications: %d channel(s) | Autonomy: %s",
+        model_name, tier_policy, learning, mcp_count, notif_count, autonomy
+    )
+
     yield
 
     if _consolidation_task is not None and not _consolidation_task.done():
@@ -1530,6 +1625,8 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
     _active_adapters.clear()
+    await _shutdown_mcp_bridge_for_server(_mcp_bridge)
+    _mcp_bridge = None
 
 
 app = FastAPI(title="Deep Agent Network", version="0.1.0", lifespan=lifespan)
@@ -1596,6 +1693,7 @@ class ChatMessageRequest(BaseModel):
     mode: Literal["ask", "agent", "plan", "debug", "auto", "mutate", "build", "conversation"] = "agent"
     mentions: list[ChatMentionRef] = []
     surface: str | None = None
+    attachment_path: str | None = None
 
 
 class ApplyMutationRequest(BaseModel):
@@ -2345,6 +2443,19 @@ async def start_run(req: RunRequest):
         graph, graph_id=req.graph_id, inputs=req.inputs, run_id=req.run_id,
         session_id=req.session_id,
     )
+    from dan.server.gateway.router import _event_bus
+    if _event_bus is not None:
+        from dan.server.run_relay import relay_run_events_to_bus
+        import asyncio
+        asyncio.create_task(
+            relay_run_events_to_bus(
+                rm=rm,
+                run_id=record.run_id,
+                workflow_name=req.graph_id,
+                surface_id=None,
+                bus=_event_bus,
+            )
+        )
     return {"run_id": record.run_id, "status": record.status.value}
 
 
@@ -3323,6 +3434,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                         "debug_context": debug_ctx,
                         "mentions": structured_mentions,
                         "cancel_event": cancel_event,
+                        "selected_path": req.attachment_path,
                     },
                 )
                 if _dispatcher is not None:

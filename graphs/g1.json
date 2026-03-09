@@ -1,0 +1,49 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "g",
+    "description": "",
+    "updated_at": "2026-02-27T13:00:25Z"
+  },
+  "nodes": [
+    {
+      "id": "a",
+      "node_type": "llm_operator",
+      "name": "A",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 0,
+        "y": 0
+      },
+      "ui": {},
+      "metadata": {},
+      "model": "claude-sonnet-4-6",
+      "prompt_template": "",
+      "system_prompt": "",
+      "temperature": 0.7
+    }
+  ],
+  "edges": [],
+  "sub_graphs": {},
+  "entry_points": [
+    "a"
+  ],
+  "exit_points": [
+    "a"
+  ],
+  "shared_context": [],
+  "artifact_refs": []
+}

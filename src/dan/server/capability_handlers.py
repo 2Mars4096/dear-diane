@@ -480,6 +480,8 @@ async def handle_clipboard(args: dict[str, Any], ctx: CapabilityContext) -> Capa
 _CONFIGURABLE_PREFIXES = (
     "DAN_SMTP_", "DAN_BRAVE_API_KEY", "DAN_TAVILY_API_KEY",
     "DAN_GOOGLE_API_KEY", "DAN_ANTHROPIC_API_KEY", "DAN_OPENAI_API_KEY",
+    "DAN_STATA_", "DAN_MCP_", "DAN_TOOL_", "DAN_PATH_",
+    "DAN_LLM_MODEL", "DAN_CHAT_MODEL", "DAN_LLM_BASE_URL",
 )
 
 SET_CONFIG_CAPABILITY_SCHEMA = build_tool_schema(
@@ -487,9 +489,13 @@ SET_CONFIG_CAPABILITY_SCHEMA = build_tool_schema(
     description=(
         "Set a DAN configuration value. Updates the running server immediately "
         "and persists to .env for future restarts. Use when the user provides "
-        "API keys, SMTP credentials, or other settings. "
-        "Allowed keys: DAN_SMTP_* (email), DAN_TAVILY_API_KEY, DAN_BRAVE_API_KEY, "
-        "DAN_OPENAI_API_KEY, DAN_ANTHROPIC_API_KEY, DAN_GOOGLE_API_KEY."
+        "API keys, SMTP credentials, tool paths, or other settings. "
+        "Allowed prefixes: DAN_SMTP_* (email), DAN_TAVILY_API_KEY, DAN_BRAVE_API_KEY, "
+        "DAN_OPENAI_API_KEY, DAN_ANTHROPIC_API_KEY, DAN_GOOGLE_API_KEY, "
+        "DAN_STATA_* (e.g. DAN_STATA_PATH for Stata binary), "
+        "DAN_MCP_* (MCP server settings), DAN_TOOL_* (tool paths), "
+        "DAN_PATH_* (general binary/executable paths), "
+        "DAN_LLM_MODEL, DAN_CHAT_MODEL, DAN_LLM_BASE_URL."
     ),
     parameters={
         "type": "object",
@@ -501,6 +507,53 @@ SET_CONFIG_CAPABILITY_SCHEMA = build_tool_schema(
     },
 )
 
+
+GET_CONFIG_CAPABILITY_SCHEMA = build_tool_schema(
+    name="get_config",
+    description="Get the current DAN configuration, including active model, base URL, bot name, and active features.",
+    parameters={
+        "type": "object",
+        "properties": {},
+    },
+)
+
+async def handle_get_config(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    import os
+    from urllib.parse import urlparse
+
+    model = getattr(ctx, "chat_manager", None)
+    current_model = model._chat_model if model else os.environ.get("DAN_CHAT_MODEL") or os.environ.get("DAN_LLM_MODEL", "unknown")
+    
+    base_url = os.environ.get("DAN_LLM_BASE_URL", "")
+    if base_url:
+        try:
+            parsed = urlparse(base_url)
+            base_url = parsed.hostname or base_url
+        except Exception:
+            pass
+
+    features = []
+    for f in ("DAN_PROMPT_OPTIMIZATION", "DAN_MODEL_LEARNING", "DAN_TOPOLOGY_LEARNING", "DAN_SKILL_LEARNING", "DAN_MEMORY_EXTRACTION_LLM", "DAN_MEMORY_DUAL_WRITE"):
+        if os.environ.get(f, "0") == "1":
+            features.append(f)
+            
+    tier_policy = os.environ.get("DAN_ENABLE_TIER_POLICY", "0") == "1"
+    
+    mcp_servers = []
+    if getattr(ctx, "mcp_bridge", None):
+        mcp_servers = list(ctx.mcp_bridge.get_connected_servers().keys())
+
+    config = {
+        "model": current_model,
+        "base_url_host": base_url,
+        "bot_name": os.environ.get("DAN_BOT_NAME", "DAN"),
+        "active_learning_features": features,
+        "tier_policy_enabled": tier_policy,
+        "mcp_servers_connected": mcp_servers,
+    }
+    
+    import json
+    return CapabilityResult(success=True, message=json.dumps(config, indent=2))
 
 def _update_env_file(key: str, value: str) -> None:
     """Update or append a key=value in the .env file."""
@@ -538,8 +591,13 @@ async def handle_set_config(args: dict[str, Any], ctx: CapabilityContext) -> Cap
         )
 
     os.environ[key] = value
+    
+    if key in ("DAN_LLM_MODEL", "DAN_CHAT_MODEL") and hasattr(ctx, "chat_manager") and ctx.chat_manager:
+        ctx.chat_manager._chat_model = value
+        
     try:
-        _update_env_file(key, value)
+        from dan.utils.env import update_env_file
+        update_env_file(key, value)
     except Exception as exc:
         return CapabilityResult(
             success=True,
@@ -2353,6 +2411,18 @@ async def handle_start_run(
         record = await ctx.run_manager.start_run(
             graph, graph_id=graph_id, inputs=inputs, run_id=run_id, session_id=session_id
         )
+        if ctx.event_bus is not None:
+            from dan.server.run_relay import relay_run_events_to_bus
+            import asyncio
+            asyncio.create_task(
+                relay_run_events_to_bus(
+                    rm=ctx.run_manager,
+                    run_id=record.run_id,
+                    workflow_name=graph_id,
+                    surface_id=None,
+                    bus=ctx.event_bus,
+                )
+            )
     except Exception as exc:
         logger.exception("start_run failed")
         return CapabilityResult(success=False, message=f"Start run failed: {exc}")
@@ -3040,6 +3110,13 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         category="system",
     )
     registry.register(
+        "get_config",
+        GET_CONFIG_CAPABILITY_SCHEMA,
+        handle_get_config,
+        modes=list(ALL_MODES),
+        category="system",
+    )
+    registry.register(
         "list_directory",
         LIST_DIRECTORY_CAPABILITY_SCHEMA,
         handle_list_directory,
@@ -3123,3 +3200,779 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         modes=list(ALL_MODES),
         category="text",
     )
+
+# ── Extra tools (DAN_FULL_TOOLS) ───────────────────────────────────
+
+import os
+from dan.server.variable_inspector import compute_upstream_variables
+
+
+from dan.tools.python_eval import python_eval as _tool_python_eval
+from dan.tools.python_eval import TOOL_METADATA as _META_PYTHON_EVAL
+
+PYTHON_EVAL_CAPABILITY_SCHEMA = build_tool_schema(
+    name="python_eval",
+    description=_META_PYTHON_EVAL["description"],
+    parameters=_META_PYTHON_EVAL["parameters"],
+)
+
+async def handle_python_eval(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "python_eval" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "python_eval" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "python_eval" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_python_eval(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in python_eval: {exc}")
+
+
+from dan.tools.csv_read import csv_read as _tool_csv_read
+from dan.tools.csv_read import TOOL_METADATA as _META_CSV_READ
+
+CSV_READ_CAPABILITY_SCHEMA = build_tool_schema(
+    name="csv_read",
+    description=_META_CSV_READ["description"],
+    parameters=_META_CSV_READ["parameters"],
+)
+
+async def handle_csv_read(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "csv_read" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "csv_read" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "csv_read" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_csv_read(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in csv_read: {exc}")
+
+
+from dan.tools.compress import compress as _tool_compress
+from dan.tools.compress import TOOL_METADATA as _META_COMPRESS
+
+COMPRESS_CAPABILITY_SCHEMA = build_tool_schema(
+    name="compress",
+    description=_META_COMPRESS["description"],
+    parameters=_META_COMPRESS["parameters"],
+)
+
+async def handle_compress(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "compress" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "compress" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "compress" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_compress(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in compress: {exc}")
+
+
+from dan.tools.file_copy import file_copy as _tool_file_copy
+from dan.tools.file_copy import TOOL_METADATA as _META_FILE_COPY
+
+FILE_COPY_CAPABILITY_SCHEMA = build_tool_schema(
+    name="file_copy",
+    description=_META_FILE_COPY["description"],
+    parameters=_META_FILE_COPY["parameters"],
+)
+
+async def handle_file_copy(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "file_copy" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "file_copy" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "file_copy" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_file_copy(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in file_copy: {exc}")
+
+
+from dan.tools.file_move import file_move as _tool_file_move
+from dan.tools.file_move import TOOL_METADATA as _META_FILE_MOVE
+
+FILE_MOVE_CAPABILITY_SCHEMA = build_tool_schema(
+    name="file_move",
+    description=_META_FILE_MOVE["description"],
+    parameters=_META_FILE_MOVE["parameters"],
+)
+
+async def handle_file_move(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "file_move" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "file_move" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "file_move" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_file_move(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in file_move: {exc}")
+
+
+from dan.tools.file_delete import file_delete as _tool_file_delete
+from dan.tools.file_delete import TOOL_METADATA as _META_FILE_DELETE
+
+FILE_DELETE_CAPABILITY_SCHEMA = build_tool_schema(
+    name="file_delete",
+    description=_META_FILE_DELETE["description"],
+    parameters=_META_FILE_DELETE["parameters"],
+)
+
+async def handle_file_delete(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "file_delete" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "file_delete" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "file_delete" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_file_delete(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in file_delete: {exc}")
+
+
+from dan.tools.git_status import git_status as _tool_git_status
+from dan.tools.git_status import TOOL_METADATA as _META_GIT_STATUS
+
+GIT_STATUS_CAPABILITY_SCHEMA = build_tool_schema(
+    name="git_status",
+    description=_META_GIT_STATUS["description"],
+    parameters=_META_GIT_STATUS["parameters"],
+)
+
+async def handle_git_status(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "git_status" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "git_status" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "git_status" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_git_status(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in git_status: {exc}")
+
+
+from dan.tools.git_diff import git_diff as _tool_git_diff
+from dan.tools.git_diff import TOOL_METADATA as _META_GIT_DIFF
+
+GIT_DIFF_CAPABILITY_SCHEMA = build_tool_schema(
+    name="git_diff",
+    description=_META_GIT_DIFF["description"],
+    parameters=_META_GIT_DIFF["parameters"],
+)
+
+async def handle_git_diff(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "git_diff" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "git_diff" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "git_diff" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_git_diff(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in git_diff: {exc}")
+
+
+from dan.tools.git_log import git_log as _tool_git_log
+from dan.tools.git_log import TOOL_METADATA as _META_GIT_LOG
+
+GIT_LOG_CAPABILITY_SCHEMA = build_tool_schema(
+    name="git_log",
+    description=_META_GIT_LOG["description"],
+    parameters=_META_GIT_LOG["parameters"],
+)
+
+async def handle_git_log(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "git_log" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "git_log" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "git_log" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_git_log(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in git_log: {exc}")
+
+
+from dan.tools.git_branch import git_branch as _tool_git_branch
+from dan.tools.git_branch import TOOL_METADATA as _META_GIT_BRANCH
+
+GIT_BRANCH_CAPABILITY_SCHEMA = build_tool_schema(
+    name="git_branch",
+    description=_META_GIT_BRANCH["description"],
+    parameters=_META_GIT_BRANCH["parameters"],
+)
+
+async def handle_git_branch(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "git_branch" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "git_branch" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "git_branch" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_git_branch(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in git_branch: {exc}")
+
+
+from dan.tools.git_commit import git_commit as _tool_git_commit
+from dan.tools.git_commit import TOOL_METADATA as _META_GIT_COMMIT
+
+GIT_COMMIT_CAPABILITY_SCHEMA = build_tool_schema(
+    name="git_commit",
+    description=_META_GIT_COMMIT["description"],
+    parameters=_META_GIT_COMMIT["parameters"],
+)
+
+async def handle_git_commit(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "git_commit" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "git_commit" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "git_commit" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_git_commit(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in git_commit: {exc}")
+
+
+from dan.tools.git_worktree import git_worktree as _tool_git_worktree
+from dan.tools.git_worktree import TOOL_METADATA as _META_GIT_WORKTREE
+
+GIT_WORKTREE_CAPABILITY_SCHEMA = build_tool_schema(
+    name="git_worktree",
+    description=_META_GIT_WORKTREE["description"],
+    parameters=_META_GIT_WORKTREE["parameters"],
+)
+
+async def handle_git_worktree(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "git_worktree" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "git_worktree" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "git_worktree" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_git_worktree(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in git_worktree: {exc}")
+
+
+from dan.tools.notify import notify as _tool_notify
+from dan.tools.notify import TOOL_METADATA as _META_NOTIFY
+
+NOTIFY_CAPABILITY_SCHEMA = build_tool_schema(
+    name="notify",
+    description=_META_NOTIFY["description"],
+    parameters=_META_NOTIFY["parameters"],
+)
+
+async def handle_notify(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "notify" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "notify" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "notify" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_notify(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in notify: {exc}")
+
+
+from dan.tools.text_diff import text_diff as _tool_text_diff
+from dan.tools.text_diff import TOOL_METADATA as _META_TEXT_DIFF
+
+TEXT_DIFF_CAPABILITY_SCHEMA = build_tool_schema(
+    name="text_diff",
+    description=_META_TEXT_DIFF["description"],
+    parameters=_META_TEXT_DIFF["parameters"],
+)
+
+async def handle_text_diff(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    try:
+        # For paths, we might want to resolve them, but let's just pass kwargs for now.
+        # Wait, csv_read needs path resolution. Let's do it generically if 'path' in args?
+        # Actually, let's just pass args. The tools handle their own paths or we can wrap.
+        if "path" in args and "text_diff" in ("csv_read", "file_copy", "file_move", "file_delete", "compress"):
+            args["path"] = str(_resolve_user_path(args["path"]))
+        if "source" in args and "text_diff" in ("file_copy", "file_move"):
+            args["source"] = str(_resolve_user_path(args["source"]))
+        if "destination" in args and "text_diff" in ("file_copy", "file_move"):
+            args["destination"] = str(_resolve_user_path(args["destination"]))
+        
+        result = await _tool_text_diff(**args)
+        return CapabilityResult(
+            success=True,
+            message="Success",
+            data=result,
+            output_preview=str(result)[:1000]
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error in text_diff: {exc}")
+
+def register_tool_capabilities(registry: ChatCapabilityRegistry) -> None:
+    if os.environ.get('DAN_FULL_TOOLS') != '1':
+        return
+    logger.info('DAN_FULL_TOOLS=1: Registering 13 extra built-in tools.')
+
+    registry.register(
+        "python_eval",
+        PYTHON_EVAL_CAPABILITY_SCHEMA,
+        handle_python_eval,
+        modes=["agent", "debug"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "csv_read",
+        CSV_READ_CAPABILITY_SCHEMA,
+        handle_csv_read,
+        modes=["agent", "conversation"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "compress",
+        COMPRESS_CAPABILITY_SCHEMA,
+        handle_compress,
+        modes=["agent"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "file_copy",
+        FILE_COPY_CAPABILITY_SCHEMA,
+        handle_file_copy,
+        modes=["agent"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "file_move",
+        FILE_MOVE_CAPABILITY_SCHEMA,
+        handle_file_move,
+        modes=["agent"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "file_delete",
+        FILE_DELETE_CAPABILITY_SCHEMA,
+        handle_file_delete,
+        modes=["agent"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "git_status",
+        GIT_STATUS_CAPABILITY_SCHEMA,
+        handle_git_status,
+        modes=["agent", "ask", "debug"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "git_diff",
+        GIT_DIFF_CAPABILITY_SCHEMA,
+        handle_git_diff,
+        modes=["agent", "ask", "debug"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "git_log",
+        GIT_LOG_CAPABILITY_SCHEMA,
+        handle_git_log,
+        modes=["agent", "ask", "debug"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "git_branch",
+        GIT_BRANCH_CAPABILITY_SCHEMA,
+        handle_git_branch,
+        modes=["agent"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "git_commit",
+        GIT_COMMIT_CAPABILITY_SCHEMA,
+        handle_git_commit,
+        modes=["agent"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "git_worktree",
+        GIT_WORKTREE_CAPABILITY_SCHEMA,
+        handle_git_worktree,
+        modes=["agent"],
+        category="extra",
+    )
+
+
+    registry.register(
+        "notify",
+        NOTIFY_CAPABILITY_SCHEMA,
+        handle_notify,
+        modes=list(ALL_MODES),
+        category="extra",
+    )
+
+
+    registry.register(
+        "text_diff",
+        TEXT_DIFF_CAPABILITY_SCHEMA,
+        handle_text_diff,
+        modes=["agent", "ask", "debug"],
+        category="extra",
+    )
+
+
+# ── Introspection tools ────────────────────────────────────────────
+
+INSPECT_NODE_SCHEMA = build_tool_schema(
+    name="inspect_node",
+    description="Inspect a node in a workflow graph, including its config, ports, and upstream variables.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "The workflow ID"},
+            "node_id": {"type": "string", "description": "The node ID to inspect"},
+            "run_id": {"type": "string", "description": "Optional run ID to get runtime values"}
+        },
+        "required": ["workflow_id", "node_id"]
+    }
+)
+
+async def handle_inspect_node(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    workflow_id = args.get("workflow_id")
+    node_id = args.get("node_id")
+    run_id = args.get("run_id")
+    if not workflow_id or not node_id:
+        return CapabilityResult(success=False, message="Missing workflow_id or node_id")
+    
+    try:
+        graph = ctx.graph_store.load_graph(workflow_id)
+        if not graph:
+            return CapabilityResult(success=False, message=f"Workflow not found: {workflow_id}")
+        
+        node = graph.get_node(node_id)
+        if not node:
+            return CapabilityResult(success=False, message=f"Node not found: {node_id}")
+        
+        upstream_vars = compute_upstream_variables(graph, node_id, run_id=run_id, run_store=ctx.run_store)
+        
+        data = {
+            "node_id": node.id,
+            "type": node.type,
+            "config": node.config,
+            "upstream_variables": upstream_vars,
+        }
+        return CapabilityResult(success=True, message="Node inspected", data=data)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error inspecting node: {exc}")
+
+LIST_TEST_CASES_SCHEMA = build_tool_schema(
+    name="list_test_cases",
+    description="List test cases for a specific node in a workflow.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string"},
+            "node_id": {"type": "string"}
+        },
+        "required": ["workflow_id", "node_id"]
+    }
+)
+
+async def handle_list_test_cases(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    workflow_id = args.get("workflow_id")
+    node_id = args.get("node_id")
+    if not workflow_id or not node_id:
+        return CapabilityResult(success=False, message="Missing workflow_id or node_id")
+    
+    if not ctx.test_case_store:
+        return CapabilityResult(success=False, message="Test case store not available")
+    
+    try:
+        cases = ctx.test_case_store.list_cases(workflow_id, node_id)
+        cases_data = [c.dict() if hasattr(c, "dict") else c.model_dump() for c in cases]
+        return CapabilityResult(success=True, message=f"Found {len(cases)} test cases", data=cases_data)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error listing test cases: {exc}")
+
+RUN_TEST_CASE_SCHEMA = build_tool_schema(
+    name="run_test_case",
+    description="Run a specific test case for a node.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string"},
+            "node_id": {"type": "string"},
+            "case_id": {"type": "string"}
+        },
+        "required": ["workflow_id", "node_id", "case_id"]
+    }
+)
+
+async def handle_run_test_case(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    workflow_id = args.get("workflow_id")
+    node_id = args.get("node_id")
+    case_id = args.get("case_id")
+    
+    if not all([workflow_id, node_id, case_id]):
+        return CapabilityResult(success=False, message="Missing required arguments")
+        
+    if not ctx.test_case_store:
+        return CapabilityResult(success=False, message="Test case store not available")
+        
+    try:
+        case = ctx.test_case_store.get_case(workflow_id, node_id, case_id)
+        if not case:
+            return CapabilityResult(success=False, message=f"Test case {case_id} not found")
+            
+        graph = ctx.graph_store.load_graph(workflow_id)
+        if not graph:
+            return CapabilityResult(success=False, message=f"Workflow not found: {workflow_id}")
+            
+        node = graph.get_node(node_id)
+        if not node:
+            return CapabilityResult(success=False, message=f"Node not found: {node_id}")
+            
+        from dan.models.graph import Graph as GraphModel
+        
+        synthetic = GraphModel(
+            nodes=[node],
+            entry_points=[node_id],
+            exit_points=[node_id],
+        )
+        
+        import time
+        import asyncio
+        run_id = f"test-{case_id}-{int(time.time() * 1000)}"
+        record = await ctx.run_manager.start_run(
+            synthetic,
+            graph_id=workflow_id,
+            inputs=case.inputs,
+            run_id=run_id,
+        )
+        
+        deadline = time.time() + 120
+        while True:
+            record = ctx.run_manager.get_run(run_id)
+            if record.status in ("completed", "failed", "cancelled"):
+                break
+            if time.time() > deadline:
+                return CapabilityResult(success=False, message="Test case execution timed out")
+            await asyncio.sleep(0.5)
+            
+        actual_outputs = record.state.get(node_id, {}) if record.state else {}
+                
+        # Compare with expected
+        expected_outputs = case.expected_outputs or {}
+        passed = True
+        diffs = {}
+        
+        for k, v in expected_outputs.items():
+            actual = actual_outputs.get(k)
+            if actual != v:
+                passed = False
+                diffs[k] = {"expected": v, "actual": actual}
+                
+        data = {
+            "run_id": run_id,
+            "status": run.status,
+            "passed": passed,
+            "actual_outputs": actual_outputs,
+            "expected_outputs": expected_outputs,
+            "diffs": diffs
+        }
+        
+        return CapabilityResult(
+            success=True, 
+            message="Test case passed" if passed else "Test case failed",
+            data=data
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Error running test case: {exc}")
+
+def register_introspection_capabilities(registry: ChatCapabilityRegistry) -> None:
+    registry.register(
+        "inspect_node",
+        INSPECT_NODE_SCHEMA,
+        handle_inspect_node,
+        modes=["agent", "ask", "debug"],
+        category="introspection",
+    )
+    registry.register(
+        "list_test_cases",
+        LIST_TEST_CASES_SCHEMA,
+        handle_list_test_cases,
+        modes=["agent", "ask", "debug"],
+        category="introspection",
+    )
+    registry.register(
+        "run_test_case",
+        RUN_TEST_CASE_SCHEMA,
+        handle_run_test_case,
+        modes=["agent", "debug"],
+        category="introspection",
+    )
+

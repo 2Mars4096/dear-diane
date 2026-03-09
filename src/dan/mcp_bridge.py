@@ -240,12 +240,25 @@ class MCPBridge:
 
         texts: list[str] = []
         images: list[dict] = []
+        resources: list[dict[str, Any]] = []
         for item in result.content:
-            if hasattr(item, "text"):
-                texts.append(item.text)
+            text_value = getattr(item, "text", None)
+            if isinstance(text_value, str):
+                texts.append(text_value)
             elif hasattr(item, "data") and hasattr(item, "mimeType"):
                 images.append({"data": item.data, "mime_type": item.mimeType})
                 texts.append(f"[Image: {item.mimeType}]")
+            elif hasattr(item, "resource"):
+                resource_obj = item.resource
+                if hasattr(resource_obj, "model_dump"):
+                    payload = resource_obj.model_dump(exclude_none=True)
+                elif isinstance(resource_obj, dict):
+                    payload = dict(resource_obj)
+                else:
+                    payload = {"value": str(resource_obj)}
+                resources.append(payload)
+                uri = payload.get("uri") if isinstance(payload, dict) else None
+                texts.append(f"[Resource: {uri}]" if uri else "[Resource]")
             else:
                 texts.append(str(item))
 
@@ -255,6 +268,11 @@ class MCPBridge:
         out: dict[str, Any] = {"result": combined, "success": True}
         if images:
             out["images"] = images
+        if resources:
+            if len(resources) == 1:
+                out["resource"] = resources[0]
+            else:
+                out["resources"] = resources
         return out
 
     def list_servers(self) -> dict[str, ServerStatus]:
@@ -332,6 +350,37 @@ async def install_mcp_package(package_name: str) -> tuple[bool, str]:
 
 
 # ---------------------------------------------------------------------------
+# Startup helpers
+# ---------------------------------------------------------------------------
+
+
+async def autoconnect_configured_mcp_servers(
+    bridge: MCPBridge,
+    capability_registry: ChatCapabilityRegistry,
+    tool_registry: ToolRegistry | None,
+    *,
+    config: MCPConfig | None = None,
+    path: str | Path | None = None,
+) -> list[str]:
+    """Connect and register all configured auto-connect MCP servers.
+
+    Returns the list of server names successfully connected.
+    """
+    mcp_config = config or load_mcp_config(path)
+    connected: list[str] = []
+    for name, server_cfg in mcp_config.servers.items():
+        if not server_cfg.auto_connect:
+            continue
+        try:
+            await bridge.connect(name, server_cfg)
+            register_mcp_tools(capability_registry, tool_registry, bridge, name)
+            connected.append(name)
+        except Exception:
+            logger.warning("Failed to auto-connect MCP server %r", name, exc_info=True)
+    return connected
+
+
+# ---------------------------------------------------------------------------
 # Capability + ToolRegistry integration
 # ---------------------------------------------------------------------------
 
@@ -381,10 +430,16 @@ def register_mcp_tools(
                 return CapabilityResult(success=False, message="MCP bridge not available")
             result = await ctx.mcp_bridge.call_tool(_s, _t, args)
             if result.get("success"):
+                data = {
+                    key: value
+                    for key, value in result.items()
+                    if key not in {"success", "result"}
+                }
                 return CapabilityResult(
                     success=True,
                     message=result.get("result", ""),
                     output_preview=result.get("result", "")[:500],
+                    data=data or None,
                 )
             return CapabilityResult(
                 success=False,

@@ -44,9 +44,11 @@ dan-publish = "dan.cli.publish:main"
 dan-adapter = "dan.cli.adapter:main"
 dan-blocks = "dan.cli.blocks:main"
 dan-chat = "dan.cli.chat:main"
+dan-ask = "dan.cli.chat:main_ask"
 dan-up = "dan.cli.up:main"
 dan-down = "dan.cli.down:main"
 dan-service = "dan.cli.service:main"
+dan-bot = "dan.cli.bot:main"
 
 [project.optional-dependencies]
 pdf = ["pypdf>=4.0", "pymupdf>=1.24"]

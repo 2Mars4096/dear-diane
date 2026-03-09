@@ -312,7 +312,7 @@
   - [x] [28-2-unified-tool-dispatch](plans/28-2-unified-tool-dispatch.md) — B. Multi-turn tool loop (10 turns), mode-agnostic tools, `DAN_LLM_FIRST_CHAT` flag
   - [x] [28-3-response-actions](plans/28-3-response-actions.md) — C. File delivery events, message splitting, claim validation
   - [x] [28-4-system-prompt-design](plans/28-4-system-prompt-design.md) — D. Unified prompt with tool catalog, surface hints, anti-fabrication rules
-  - [ ] [28-5-cleanup-dead-code](plans/28-5-cleanup-dead-code.md) — E. Remove dead classifier, handlers, mode-gating code (deferred until verified)
+- [ ] [28-5-cleanup-dead-code](plans/28-5-cleanup-dead-code.md) — E. Remove dead classifier, handlers, mode-gating code *(in progress: removed unused classifier fallback/re-export and deprecated runtime queue plumbing; solver, handlers, and mode plumbing still require broader cleanup decisions)*
   - [x] [28-6-real-world-test-scenarios](plans/28-6-real-world-test-scenarios.md) — F. 5 scenarios, 38 tests: lit review, equity report, deep research, computer task, casual utility
 
 ## Phase 19 — Concierge-First Architecture: Memory, Reuse & Self-Evolvement
@@ -322,16 +322,40 @@
 > workflow selection. Multi-round build/test/diagnose loop. Automatic learning extraction.
 > Concierge-level parallelism for independent sub-tasks.
 
-- [ ] [29-concierge-memory-evolvement](plans/29-concierge-memory-evolvement.md) — concierge-first architecture: memory kernel, workflow reuse, self-evolvement *(active; plans reconciled to current code and practical research/audit acceptance added)*
+- [x] [29-concierge-memory-evolvement](plans/29-concierge-memory-evolvement.md) — concierge-first architecture: memory kernel, workflow reuse, self-evolvement *(complete: all 9 sub-plans reconciled to the current codebase, including MCP bridge closeout)*
   - [x] [29-1-unified-memory-kernel](plans/29-1-unified-memory-kernel.md) — A. Typed memory store (fact/preference/pattern/failure/principle/episode/working_state), per-type ranking, task-specific retrieval policies, adapter layer over existing stores, temporal consolidation *(complete: all kernel CRUD, adapters, retrieval policies, dual-write, consolidation, preference parity shipped)*
   - [x] [29-2-concierge-as-orchestrator](plans/29-2-concierge-as-orchestrator.md) — B. Fold MetaController into concierge, stateful goals/plans spanning messages, autonomous build→run→diagnose loop, memory-informed decisions, autonomy levels (interactive/supervised/autonomous) *(complete: plan→execute→diagnose→repair→check-in loop, shared utility extraction in meta/utils.py)*
   - [x] [29-3-iterative-workflow-building](plans/29-3-iterative-workflow-building.md) — C. Multi-round build session: draft→validate→test→diagnose→modify→re-test state machine, smoke testing, user intervention, post-build memory extraction *(completed: diagnosis now surfaces failure patterns/principles explicitly and pauses for structural review outside autonomous mode; 61 tests)*
   - [x] [29-4-experience-driven-reuse](plans/29-4-experience-driven-reuse.md) — D. Wire experience retrieval into primary build path, reuse-first decision (REUSE/ADAPT/GENERATE), workflow catalog in chat, adapter parity, experience feedback loop *(complete: all 7 task groups shipped)*
 - [x] [29-5-concierge-parallelism](plans/29-5-concierge-parallelism.md) — E. Universal fan-out: all parallelism tasks complete. Turn prep, tool execution, diagnosis, validation, memory extraction, resource-based concurrency, priority queuing, unified queue, immediate-start, post-run learning fan-out, consolidation fan-out, concurrent fix application, reuse-gate parallelism; 22 tests in `test_parallelism_integration.py`
-  - [ ] [29-6-self-evolvement-loop](plans/29-6-self-evolvement-loop.md) — F. Passive learning (memory extraction, pattern filing, cross-section reinforcement) + active adaptation (prompt optimization via A/B testing, per-node model selection learning, skill/hyperedge evolution, topology suggestions) *(§1–§6, §8, §10, §11 complete including LLM extraction §1-5 and failure reflection §2-6; remaining: prompt optimization §7-2..7-7, skill evolution §9, integration tests §12)*
+  - [x] [29-6-self-evolvement-loop](plans/29-6-self-evolvement-loop.md) — F. Passive learning (memory extraction, pattern filing, cross-section reinforcement) + active adaptation (prompt optimization via A/B testing, per-node model selection learning, skill/hyperedge evolution, topology suggestions) *(complete: prompt optimization, model learning, skill evolution, topology suggestions, monitoring, and documented test coverage are all represented in the current implementation/plan notes)*
   - [x] [29-7-essential-tools](plans/29-7-essential-tools.md) — G. Fill critical tool gaps: 32 tools shipped (current_datetime, clipboard, python_eval, send_email, notify, file ops, csv_read, spreadsheet_read, git tools, image_describe, audio_transcribe, compress, translate, diff)
   - [x] [29-8-practical-research-quality-and-audit](plans/29-8-practical-research-quality-and-audit.md) — H. Daily-use acceptance for equity research, deep research, PDF literature summary, and literature search + gated-paper handoff, plus end-to-end chat provenance/audit *(complete: audit model, research hardening, scenario regression)*
-  - [ ] [29-9-mcp-tool-bridge](plans/29-9-mcp-tool-bridge.md) — I. Consume external MCP servers (Stata, R, databases) as first-class chat tools. `/mcp install` from chat. Auto-connect on startup.
+  - [x] [29-9-mcp-tool-bridge](plans/29-9-mcp-tool-bridge.md) — I. Consume external MCP servers (Stata, R, databases) as first-class chat tools. `/mcp install` from chat. Auto-connect on startup. *(complete: server + local startup wiring, concierge command coverage, optional real round-trip test, README quick-start)*
+
+## Phase 20 — Telegram Multi-Bot Platform
+> Make Telegram a first-class DAN surface with multi-bot group chats, per-bot project focus,
+> Telegram-native UX (forum topics, message editing, reactions, polls), and zero-friction bot
+> management. Telegram natively supports multiple bots in one group — the only messaging platform
+> that does. Each bot focuses on its assigned projects. Friends in the group get responses too.
+
+- [ ] [30-telegram-platform](plans/30-telegram-platform.md) — Telegram multi-bot platform: adapter upgrade, multi-bot group chat, native features, bot management
+  - [x] [30-1-adapter-upgrade](plans/30-1-adapter-upgrade.md) — A. Feature-parity single bot: chat-mode routing via concierge, media handling, voice transcription, file commands, surface hints, `dan-adapter telegram` chat-mode
+  - [x] [30-2-multi-bot-group-chat](plans/30-2-multi-bot-group-chat.md) — B. BotFleet coordinator, MessageRouter (@mention / topic / keyword / default routing), per-bot project assignment, friend interactions, cross-bot awareness, shared concierge
+  - [ ] [30-3-telegram-native-features](plans/30-3-telegram-native-features.md) — C. Forum topics for projects, message editing for streaming, reactions for status, polls for decisions, large file support (2GB), reply-to threading, bot commands menu, inline keyboards, pinned messages, Mini Apps (stretch)
+  - [ ] [30-4-bot-management](plans/30-4-bot-management.md) — D. `dan-bot create/list/start/stop/start-all/remove/edit/assign` CLI, `~/.dan/telegram/config.json`, BotFather setup guide, privacy mode detection, fleet daemon mode
+
+## Phase 21 — Daily-Use Quality-of-Life & Power-Ups
+> Activate dormant features, add missing control surfaces, improve visibility, expose hidden
+> capabilities, and polish rough edges. No new architecture — purely wiring, env vars, commands,
+> and docs to make everything that's built work smoothly for daily use.
+
+- [x] [31-daily-use-qol](plans/31-daily-use-qol.md) — daily-use QoL: model control, visibility, capability exposure, power-user speed, defaults & docs
+  - [x] [31-1-model-control](plans/31-1-model-control.md) — A. `/model` command, TierPolicy activation (`DAN_ENABLE_TIER_POLICY`), `get_config` tool, `set_config` expansion for `DAN_LLM_*`, model name in surface hints
+  - [x] [31-2-visibility-feedback](plans/31-2-visibility-feedback.md) — B. Chat cost tracking (`/cost`), notification wiring for chat-initiated runs, error retry UX (`/retry`), `/status` fast command
+  - [x] [31-3-capability-exposure](plans/31-3-capability-exposure.md) — C. Expose 13 built-in tools (python_eval, csv_read, git tools, etc.) as chat capabilities, workflow introspection tools, `DAN_LEARNING_MODE` bundle
+  - [x] [31-4-power-user-speed](plans/31-4-power-user-speed.md) — D. CLI pipe/one-shot mode (`dan ask`), memory management commands (`/memory-delete`, `/memory-forget`, `/memory-confirm`), prep timeout, file auto-read
+  - [x] [31-5-defaults-and-docs](plans/31-5-defaults-and-docs.md) — E. `.env.example` overhaul (30+ vars), startup feature banner, feature bundles, `docs/cli.md` update (`dan-ask`, new flags, 8+ slash commands), `docs/llm-api-guide.md` (13 new capability tools), `docs/architecture.md`, `docs/development-plan.md`, README
 
 ## Backlog (unphased)
 
@@ -436,5 +460,6 @@
   - [x] Capture generated `build_factor` stdout/stderr and fail fast on empty factor outputs to avoid silent “factor-only/no-plot” runs
 
 ### Future vision
-- [ ] **Multi-agent group chat** — multiple DAN agents participating in a shared group conversation on WhatsApp, Telegram, or Discord. Agents coordinate, delegate, and respond in a natural group-chat setting (extends messaging adapters + agent teams).
-- [ ] **In-chat model switching** — let user change LLM model mid-conversation (e.g. `/model gpt-4o`, dropdown in editor chat). Applies to subsequent messages without restarting the thread.
+- [ ] ~~**Multi-agent group chat**~~ → promoted to [Phase 20](#phase-20--telegram-multi-bot-platform) (Plan 30, Telegram-first). Discord adapter deferred to future phase.
+- [x] ~~**In-chat model switching**~~ → promoted to [31-1-model-control](plans/31-1-model-control.md) under Phase 21
+- [ ] **Project retrospective distillation** — auto-review completed projects and distill reusable artifacts: generate workflow templates from successful run patterns, extract skills/rules/hyperedges from repeated working patterns, and codify domain-specific conventions. Periodic or on-demand; feeds back into experience memory and planner few-shot examples.

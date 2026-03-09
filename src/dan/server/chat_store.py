@@ -48,6 +48,7 @@ class ChatMessage(BaseModel):
         "proposed", "applied", "partial", "rejected", "reverted"
     ] | None = None
     token_usage: dict[str, int] | None = None
+    estimated_cost: float | None = None
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )

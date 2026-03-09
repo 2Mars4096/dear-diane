@@ -5,12 +5,38 @@ dependency wiring stays in one place.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def _run_async_init_sync(fn: Any, *args: Any, **kwargs: Any) -> Any:
+    """Run async startup work from sync code, even under an active event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(fn(*args, **kwargs))
+
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(fn(*args, **kwargs))
+        except BaseException as exc:  # pragma: no cover - surfaced to caller
+            error["exc"] = exc
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+    if "exc" in error:
+        raise error["exc"]
+    return result.get("value")
 
 
 class ChatServices:
@@ -94,6 +120,19 @@ def _build_engine_config() -> Any:
             default_model=os.environ.get("DAN_LOCAL_EMBEDDING_MODEL", "all-MiniLM-L6-v2"),
         )
 
+    default_model_policy = None
+    if os.environ.get("DAN_ENABLE_TIER_POLICY", "0").lower() in ("1", "true", "yes"):
+        from dan.providers.model_policy import TierPolicy
+        tier_map = None
+        tier_map_env = os.environ.get("DAN_TIER_MAP")
+        if tier_map_env:
+            import json
+            try:
+                tier_map = json.loads(tier_map_env)
+            except Exception:
+                logger.warning("Failed to parse DAN_TIER_MAP JSON, using defaults")
+        default_model_policy = TierPolicy(tier_map=tier_map)
+
     return EngineConfig(
         llm_base_url=os.environ.get("DAN_LLM_BASE_URL", "https://api.vectorengine.ai/v1"),
         llm_api_key=os.environ.get("DAN_LLM_API_KEY", os.environ.get("LLM_API_KEY", "")),
@@ -103,6 +142,7 @@ def _build_engine_config() -> Any:
         providers=providers,
         embedding_providers=embedding_providers,
         default_embedding_model=default_embedding_model,
+        default_model_policy=default_model_policy,
         cache_enabled=os.environ.get("DAN_CACHE_ENABLED", "true").lower() in ("1", "true", "yes"),
         cache_max_size_mb=int(os.environ.get("DAN_CACHE_MAX_SIZE_MB", "100")),
         cache_dir=os.environ.get("DAN_CACHE_DIR") or None,
@@ -266,21 +306,18 @@ def build_chat_services(
 
     mcp_bridge = None
     try:
-        from dan.mcp_bridge import MCPBridge, load_mcp_config, register_mcp_tools
+        from dan.mcp_bridge import MCPBridge, autoconnect_configured_mcp_servers
+
         mcp_bridge = MCPBridge()
-        mcp_config = load_mcp_config()
-        for name, server_cfg in mcp_config.servers.items():
-            if server_cfg.auto_connect:
-                try:
-                    import asyncio
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        logger.debug("Skipping MCP auto-connect in async context — use /mcp install or restart in sync mode")
-                    else:
-                        loop.run_until_complete(mcp_bridge.connect(name, server_cfg))
-                        register_mcp_tools(capability_registry, tool_registry, mcp_bridge, name)
-                except Exception:
-                    logger.warning("Failed to auto-connect MCP server %r", name, exc_info=True)
+        try:
+            _run_async_init_sync(
+                autoconnect_configured_mcp_servers,
+                mcp_bridge,
+                capability_registry,
+                tool_registry,
+            )
+        except Exception:
+            logger.warning("MCP auto-connect failed during local chat startup", exc_info=True)
     except Exception:
         logger.debug("MCP bridge not available", exc_info=True)
 

@@ -390,6 +390,7 @@ The paper-writing workflow already in `development-plan.md` Section 1 is the tar
 | **10** | Token optimization | Prompt compression, provider caching, truncation policies, token analytics & waste detection | Not started |
 | **11** | Meta-Orchestrator | Goal→workflow planning, similarity retrieval+adaptation, graduated repair (L1–L4), autonomous execution with human override | Not started |
 | **12** | Author & distribute | CLI, publish as API/MCP, messaging integrations, shareable blocks, PyPI package | **Completed** |
+| **21** | Daily-Use QoL | Model control, visibility, capability exposure, CLI power-user features, defaults overhaul | **Completed** |
 
 ---
 

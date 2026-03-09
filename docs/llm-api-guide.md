@@ -1582,7 +1582,40 @@ There are 14 typed events: `run_started`, `run_completed`, `run_failed`, `node_s
 
 ---
 
-## 14. Import Map
+## 14. Chat Capability Tools
+
+When using `dan-chat` (or the chat API), the LLM has access to a registry of capability tools to inspect, manage, and evolve the system. To access the full suite of file and system tools, set `DAN_FULL_TOOLS=1` in your environment. Without it, only a minimal safe subset is exposed.
+
+### File & System Tools (requires `DAN_FULL_TOOLS=1`)
+- `python_eval`: Evaluate arbitrary Python expressions.
+- `csv_read`: Read and query CSV files with pandas-like operations.
+- `compress`: Create zip/tar archives from directories.
+- `file_copy`: Copy files or directories.
+- `file_move`: Move or rename files.
+- `file_delete`: Delete files securely.
+- `notify`: Send cross-channel notifications (desktop bell, webhook).
+- `text_diff`: Generate unified diffs between two texts.
+
+### Git Tools (requires `DAN_FULL_TOOLS=1`)
+- `git_status`: Get working tree status.
+- `git_diff`: View unstaged or staged changes.
+- `git_log`: View commit history.
+- `git_branch`: List, create, or switch branches.
+- `git_commit`: Stage and commit changes.
+- `git_worktree`: Manage multiple working trees.
+
+### Introspection & Testing
+- `inspect_node`: Read the fully resolved state, metadata, and schemas for a specific node in the current graph.
+- `list_test_cases`: Find unit tests for the current workflow.
+- `run_test_case`: Execute a specific test case against the workflow and return the trace.
+
+### Configuration
+- `get_config`: Read current environment variables and active feature flags (e.g., `DAN_LEARNING_MODE`, `DAN_LLM_MODEL`).
+- `set_config`: Update environment variables persistently (writes to `.env` if available).
+
+---
+
+## 15. Import Map
 
 ```python
 # Builder

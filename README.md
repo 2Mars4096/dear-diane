@@ -36,12 +36,18 @@ cd editor && npm install && cd ..
 
 ### Configure
 
+DAN is highly configurable via environment variables. See `.env.example` for the full list of options, including model tiering, learning features, cost controls, and MCP servers.
+
 ```bash
 cp .env.example .env
-# Edit .env with your LLM provider credentials:
-#   DAN_LLM_BASE_URL=https://api.vectorengine.ai/v1
-#   DAN_LLM_API_KEY=your-key
-#   DAN_LLM_MODEL=claude-sonnet-4-6
+```
+
+**Quick Start Setup:**
+To enable the best daily-use experience, uncomment these bundles in your `.env`:
+```env
+DAN_LEARNING_MODE=1      # Turn on all safe learning features (prompt optimization, memory, etc.)
+DAN_FULL_TOOLS=1         # Expose all 32+ tools in chat (file ops, git, system)
+DAN_ENABLE_TIER_POLICY=1 # Auto-assign models by task difficulty
 ```
 
 ### Run the Visual Editor
@@ -132,6 +138,43 @@ dan-chat --confirm                        # require approval before mutations
 ```
 
 `dan-chat` works without a running server — when the server is unavailable, it automatically falls back to local mode with an in-process ChatManager. Use `--local` to force local mode even if a server is running.
+
+**Chat Commands:**
+Inside the REPL, use slash commands to manage your session:
+- `/model [name]` — view or change the LLM for this chat
+- `/cost` — display cumulative session cost
+- `/status` — view active servers, channels, and session info
+- `/run` — execute the current workflow
+- `/show` — display current graph as ASCII DAG
+- `/list`, `/open`, `/save`, `/saveas`, `/new`, `/rename` — manage files
+- `/mcp list`, `/mcp tools`, `/mcp install` — manage MCP servers
+- `/undo` — revert the last graph mutation
+- `/retry` — retry the last prompt
+- `/memory-delete`, `/memory-forget`, `/memory-confirm`, `/memory-reject` — manage learned memory
+- `/help` — list all commands
+
+### MCP Server Integration
+
+DAN can also consume external MCP servers as first-class tools in chat and workflow execution.
+
+```bash
+# Install the optional MCP client dependency
+pip install -e ".[mcp]"
+
+# Start chat or the server
+dan-chat
+# or
+dan-serve
+
+# From chat, install and connect a known MCP server
+/mcp install stata
+
+# Inspect configured servers and tools
+/mcp list
+/mcp tools stata
+```
+
+Configured MCP servers are stored in `~/.dan/mcp.json` using the `mcpServers` format shared by tools like Cursor and Claude Desktop. Servers with `autoConnect: true` are connected automatically on startup.
 
 ### `dan-up` / `dan-down` — Server Lifecycle
 

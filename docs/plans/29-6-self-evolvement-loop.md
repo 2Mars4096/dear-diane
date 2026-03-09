@@ -1,7 +1,7 @@
 # 29-6: Self-Evolvement Loop
 
 **Parent:** [29-concierge-memory-evolvement](29-concierge-memory-evolvement.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Close the learning loop with both passive learning (extract and file knowledge) and active adaptation (use accumulated knowledge to improve prompts, model choices, skills, and topology). DAN should not just remember what happened — it should change what it does next time.
 
 ## Context
@@ -152,3 +152,4 @@ After 29-1 (memory kernel), 29-3 (iterative building), and 29-4 (experience reus
 - 2026-03-09 (e): Implemented prompt optimization pipeline (§7-2..7-7). `PromptAnalyzer` (threshold-gated analysis of prompt/outcome pairs), `PromptVariantGenerator` (heuristic: step-by-step, reinforce-format, simplify), `PromptABTest` (create/select/record/check_promotion/promote with original baseline tracking), `_is_safe_variant()` safety check, all gated by `DAN_PROMPT_OPTIMIZATION=1`. 53 tests in `tests/test_engine/test_prompt_optimization.py`.
 - 2026-03-09 (e): Implemented LLM-based memory extraction (§1-5) and reflection-based principle extraction for new failure patterns (§2-6). `extract_with_llm()` uses OpenAI-compatible API gated by `DAN_MEMORY_EXTRACTION_LLM=1` (default off); falls back to heuristic when no API key or on error. `_parse_llm_response()` handles JSON/markdown-fenced output. `_maybe_extract_new_principle()` checks existing principles; if no coverage for the error category, creates a low-confidence (0.3) principle with workflow context. Wired into both sync `_on_failure()` and async `extract_run_learnings_async()`. 21 new tests.
 - 2026-03-09 (e): Implemented skill/hyperedge evolution (§9). `SkillEffectivenessTracker` records per-execution skill telemetry and computes effectiveness deltas (with vs. without). `SkillPromoter` promotes high-confidence principles to skill hyperedges. `SkillRefiner` proposes heuristic refinements with lineage tracking via `related_ids`. All opt-in (`DAN_SKILL_LEARNING=1`). 18 tests.
+- 2026-03-09 (review): Checklist re-audited against the current codebase. Prompt optimization (§7), skill evolution (§9), and the listed integration-test/documentation claims are already represented in the plan notes and code paths, so the sub-plan status was promoted from in-progress to completed.

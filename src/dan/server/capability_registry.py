@@ -42,6 +42,9 @@ class CapabilityContext:
     block_registry: Any = None
     graphs_dir: str = ""
     mcp_bridge: Any = None
+    chat_manager: Any = None
+    event_bus: Any = None
+    test_case_store: Any = None
 
 
 @dataclass
@@ -107,14 +110,15 @@ class ChatCapabilityRegistry:
 
     def get_tools(self, mode: str) -> list[dict[str, Any]]:
         """Return tool schemas available for the given chat mode."""
-        return [t.schema for t in self._tools.values()]
+        return [t.schema for t in self._tools.values() if mode in t.modes]
 
     def get_handler(self, name: str) -> CapabilityHandler | None:
         tool = self._tools.get(name)
         return tool.handler if tool else None
 
     def is_available(self, name: str, mode: str) -> bool:
-        return name in self._tools
+        tool = self._tools.get(name)
+        return tool is not None and mode in tool.modes
 
     def list_tool_names(self, mode: str | None = None) -> list[str]:
         if mode is None:
@@ -133,6 +137,11 @@ class ChatCapabilityRegistry:
             return CapabilityResult(
                 success=False,
                 message=f"Unknown tool: {tool_name}",
+            )
+        if mode not in tool.modes:
+            return CapabilityResult(
+                success=False,
+                message=f"Tool '{tool_name}' is not available in {mode!r} mode.",
             )
         t0 = time.monotonic()
         try:

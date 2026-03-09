@@ -126,12 +126,28 @@ class FileHandler:
             path = Path(selected_path)
             if self._should_review_document(msg.text, path):
                 return await self._review_document(msg, context, path)
+                
+            content = self._auto_read_small_file(path)
+            if content is not None:
+                return HandlerResult(
+                    content=f"File content:\n{content}\n\nUser message: {msg.text}",
+                    attachments=[path]
+                )
             return HandlerResult(content=f"Found file: {path}", attachments=[path])
+            
         candidate_dirs, explicit_file = self._candidate_search_dirs(msg, context)
         if explicit_file is not None:
             if self._should_review_document(msg.text, explicit_file):
                 return await self._review_document(msg, context, explicit_file)
+                
+            content = self._auto_read_small_file(explicit_file)
+            if content is not None:
+                return HandlerResult(
+                    content=f"File content:\n{content}\n\nUser message: {msg.text}",
+                    attachments=[explicit_file]
+                )
             return HandlerResult(content=f"Found file: {explicit_file}", attachments=[explicit_file])
+            
         query = classification.param or self._extract_filename_pattern(msg.text) or msg.text
         matches: list[str] = []
         filename_pattern = self._extract_filename_pattern(msg.text)
@@ -154,7 +170,15 @@ class FileHandler:
             path = Path(matches[0])
             if self._should_review_document(msg.text, path):
                 return await self._review_document(msg, context, path)
+                
+            content = self._auto_read_small_file(path)
+            if content is not None:
+                return HandlerResult(
+                    content=f"File content:\n{content}\n\nUser message: {msg.text}",
+                    attachments=[path]
+                )
             return HandlerResult(content=f"Found file: {path}", attachments=[path])
+            
         numbered = "\n".join(f"{idx}. {path}" for idx, path in enumerate(matches[:10], 1))
         return HandlerResult(
             clarification=ClarificationRequest(
@@ -162,6 +186,17 @@ class FileHandler:
                 options=matches[:10],
             )
         )
+
+    def _auto_read_small_file(self, path: Path) -> str | None:
+        """Read small non-PDF files (<100KB) as text for auto-context."""
+        try:
+            if not path.is_file() or path.suffix.lower() == ".pdf":
+                return None
+            if path.stat().st_size >= 102400:  # 100KB
+                return None
+            return path.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            return None
 
     def _candidate_search_dirs(self, msg: SurfaceMessage, context: ResolvedContext) -> tuple[list[Path], Path | None]:
         texts = [msg.text] + [

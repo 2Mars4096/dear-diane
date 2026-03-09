@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import re
 from difflib import SequenceMatcher
 from enum import Enum
@@ -10,8 +9,6 @@ from typing import Any, Protocol
 from pydantic import BaseModel
 
 from .context_resolver import ResolvedContext
-
-logger = logging.getLogger(__name__)
 
 
 class LLMProvider(Protocol):
@@ -295,72 +292,3 @@ def classify_intent(text: str, context: ResolvedContext) -> ClassificationResult
 
     return ClassificationResult(intent=IntentCategory.CONVERSATION, confidence=0.5, raw_text=text)
 
-
-_INTENT_DESCRIPTIONS = {
-    IntentCategory.FILE_REQUEST: "Find or send a file/document",
-    IntentCategory.DIRECT_TASK: "Simple one-shot task (draft email, look up a fact)",
-    IntentCategory.RUN_CONTROL: "Control a running workflow (cancel, pause, resume)",
-    IntentCategory.WORKFLOW_BUILD: "Edit or build a multi-step workflow graph",
-    IntentCategory.WORKFLOW_QUERY: "Ask about an existing workflow",
-    IntentCategory.EXPERIENCE_QUERY: "Ask about past work or experiences",
-    IntentCategory.PUBLISH_SHARE: "Publish, share, or export results",
-    IntentCategory.STATUS_CHECK: "Check progress or status of running tasks",
-    IntentCategory.META_GOAL: "Define a high-level goal requiring a full pipeline",
-    IntentCategory.CONVERSATION: "General conversation or greeting",
-}
-
-_LLM_CLASSIFY_PROMPT = (
-    "Classify the user message into exactly one intent category.\n\n"
-    "Categories:\n"
-    + "\n".join(f"- {cat.value}: {desc}" for cat, desc in _INTENT_DESCRIPTIONS.items())
-    + "\n\nReply with ONLY the category value (e.g. direct_task). Nothing else."
-)
-
-_WORKFLOW_BUILD_DOWNGRADE = frozenset({IntentCategory.DIRECT_TASK, IntentCategory.FILE_REQUEST})
-
-
-def _parse_llm_intent(response: str) -> IntentCategory | None:
-    cleaned = response.strip().strip("'\"`.").lower()
-    for cat in IntentCategory:
-        if cat.value == cleaned:
-            return cat
-    for cat in IntentCategory:
-        if cat.value in cleaned:
-            return cat
-    return None
-
-
-async def classify_intent_with_llm_fallback(
-    text: str,
-    context: ResolvedContext,
-    *,
-    llm_provider: LLMProvider | None = None,
-) -> ClassificationResult:
-    heuristic = classify_intent(text, context)
-    if heuristic.confidence >= 0.6 or llm_provider is None:
-        return heuristic
-
-    try:
-        messages = [
-            {"role": "system", "content": _LLM_CLASSIFY_PROMPT},
-            {"role": "user", "content": text},
-        ]
-        raw = await llm_provider.complete(messages, model="")
-        llm_intent = _parse_llm_intent(raw)
-        if llm_intent is None:
-            return heuristic
-
-        if llm_intent == IntentCategory.WORKFLOW_BUILD:
-            alt = classify_intent(text, context)
-            if alt.intent in _WORKFLOW_BUILD_DOWNGRADE and alt.confidence >= 0.4:
-                llm_intent = alt.intent
-
-        return ClassificationResult(
-            intent=llm_intent,
-            confidence=0.75,
-            param=heuristic.param,
-            raw_text=text,
-        )
-    except Exception:
-        logger.debug("LLM classification failed, using heuristic fallback", exc_info=True)
-        return heuristic

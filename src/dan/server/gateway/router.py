@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
 from dan.server.run_manager import RunManager
+from dan.server.run_relay import relay_run_events_to_bus
 
 from .activity import ActivityTracker
 from .events import GlobalEventBus
@@ -215,7 +216,7 @@ async def _dispatch_text(
     bus.broadcast(run_event)
 
     relay_task = asyncio.create_task(
-        _relay_run_events_to_bus(rm, run_id, workflow_name, surface_id, bus)
+        relay_run_events_to_bus(rm, run_id, workflow_name, surface_id, bus)
     )
     _relay_tasks.add(relay_task)
     relay_task.add_done_callback(_relay_tasks.discard)
@@ -295,7 +296,7 @@ async def dispatch_workflow(req: DispatchRequest) -> DispatchResult:
     bus.broadcast(run_event)
 
     task = asyncio.create_task(
-        _relay_run_events_to_bus(rm, record.run_id, workflow_name, req.surface_id, bus)
+        relay_run_events_to_bus(rm, record.run_id, workflow_name, req.surface_id, bus)
     )
     _relay_tasks.add(task)
     task.add_done_callback(_relay_tasks.discard)
@@ -308,26 +309,6 @@ async def dispatch_workflow(req: DispatchRequest) -> DispatchResult:
     )
 
 
-async def _relay_run_events_to_bus(
-    rm: RunManager,
-    run_id: str,
-    workflow_name: str,
-    surface_id: str | None,
-    bus: GlobalEventBus,
-) -> None:
-    """Subscribe to a run's events and relay them to the global bus."""
-    queue = rm.subscribe(run_id)
-    try:
-        while True:
-            event = await queue.get()
-            enriched = {**event, "surface_id": surface_id, "workflow_name": workflow_name}
-            bus.broadcast(enriched)
-            if event.get("event_type") in ("run_completed", "run_failed", "run_cancelled"):
-                break
-    except asyncio.CancelledError:
-        pass
-    finally:
-        rm.unsubscribe(run_id, queue)
 
 
 # ── Cancel ────────────────────────────────────────────────────────────

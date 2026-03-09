@@ -4,7 +4,6 @@ from .classifier import (
     IntentCategory,
     ClassificationResult,
     classify_intent,
-    classify_intent_with_llm_fallback,
     extract_search_query_from_send_request,
     search_local_files,
 )
@@ -85,7 +84,6 @@ __all__ = [
     "build_concierge",
     "classify_intent",
     "classify_priority",
-    "classify_intent_with_llm_fallback",
     "extract_search_query_from_send_request",
     "format_terminal_message",
     "resolve_policy",

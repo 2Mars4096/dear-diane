@@ -33,6 +33,12 @@ These apply across all commands:
 | `DAN_WHISPER_API_KEY` | Whisper transcription API key | `$DAN_OPENAI_API_KEY` → `$DAN_LLM_API_KEY` |
 | `DAN_WHISPER_BASE_URL` | Whisper endpoint base URL | `https://api.openai.com/v1` → `$DAN_LLM_BASE_URL` |
 | `DAN_WHISPER_MODEL` | Whisper model name | `whisper-1` |
+| `DAN_ENABLE_TIER_POLICY` | Enable auto-assigning models by difficulty | `0` (off) |
+| `DAN_TIER_MAP` | JSON map of tier levels to models | — |
+| `DAN_LEARNING_MODE` | Enable all safe learning features | `0` (off) |
+| `DAN_FULL_TOOLS` | Expose all 32+ tools in chat | `0` (off) |
+| `DAN_SHOW_COST` | Show cost metrics in the UI and terminal | `0` (off) |
+| `DAN_CONCIERGE_PREP_TIMEOUT` | Timeout for parallel capability prep | `10.0` |
 
 Place these in a `.env` file at the project root; all commands auto-load it.
 
@@ -141,6 +147,10 @@ Loading an existing workflow (`--workflow-id`) fetches the graph on startup and 
 | `--server URL` | Server URL | `$DAN_SERVER_URL` or `http://127.0.0.1:8000` |
 | `--mode MODE` | Chat mode | `build` (scratch) / `mutate` (existing) |
 | `--confirm` | Require explicit `Apply? [Y/n]` before each mutation | Off (auto-apply) |
+| `--ask` | Send a single question, print the response, and exit | — |
+| `--pipe` | Read question from stdin, print response to stdout, and exit | — |
+| `--output FILE` | Write response text to a file in addition to stdout | — |
+| `--model NAME` | Override the model for this session | — |
 
 `DAN_MUTATION_CONFIRM=1` is equivalent to `--confirm`.
 
@@ -176,6 +186,14 @@ Loading an existing workflow (`--workflow-id`) fetches the graph on startup and 
 | `/new [id]` | Create a new empty workflow (auto-names if omitted) |
 | `/rename <name>` | Rename current workflow's display name |
 | `/undo` | Revert the last applied mutation (client-side snapshot stack, max 10) |
+| `/model [name]` | View or change the model for this chat session |
+| `/cost` | Display cumulative cost for the current session |
+| `/status` | View active MCP servers, channels, and session info |
+| `/retry` | Retry the last user prompt |
+| `/memory-delete <id>` | Delete a specific memory item by ID |
+| `/memory-forget <query>` | Remove memory items matching the query |
+| `/memory-confirm` | View and confirm pending memory extractions |
+| `/memory-reject` | Reject all pending memory extractions |
 | `/help` | Show available commands |
 | `/exit` | Exit the REPL |
 
@@ -271,6 +289,30 @@ Saved as 'url-scraper'.
 Enter accepts the suggestion, `n` skips saving, or type a custom name.
 
 **Server mode** (default): connects to `dan-serve` for full capabilities. **Local mode** (`--local`): runs in-process without a server — useful for quick sessions. `dan-up` handles this automatically.
+
+---
+
+## `dan-ask`
+
+A fast, single-turn CLI wrapper around `dan-chat`. Use it to send a single question or task, stream the response to the terminal, and exit immediately. Ideal for quick questions, shell pipelines, and CI/CD scripts.
+
+```bash
+dan-ask "summarize this file"                # ask a question
+echo "question" | dan-ask --pipe             # read from stdin
+cat file.txt | dan-ask --pipe "summarize"    # pipe content + context
+dan-ask "write test" --model claude-3-opus   # override model
+dan-ask "draft email" -o out.txt             # save response to file
+```
+
+**Options:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `prompt` | The question or task (positional) | — |
+| `--pipe` | Read additional context from stdin | Auto-detected if stdin is piped |
+| `--output FILE`, `-o` | Write the raw response to a file | — |
+| `--model NAME` | Override the model for this query | `$DAN_CHAT_MODEL` |
+| `--local` | Run in local mode (no server needed) | Auto |
 
 ---
 

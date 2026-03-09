@@ -612,6 +612,21 @@ async def _run_repl(
     def _status() -> None:
         _print(f"dan-chat — workflow: {workflow_id} (mode: {mode})")
 
+    def _banner() -> None:
+        model_name = os.environ.get("DAN_CHAT_MODEL") or os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
+        tier_policy = "on" if os.environ.get("DAN_ENABLE_TIER_POLICY") == "1" else "off"
+        learning = "on" if os.environ.get("DAN_LEARNING_MODE") == "1" else "off"
+        mcp_names = []
+        try:
+            mcp_conf = Path.home() / ".dan" / "mcp.json"
+            if mcp_conf.exists():
+                data = json.loads(mcp_conf.read_text())
+                mcp_names = [k for k, v in data.get("mcpServers", {}).items() if v.get("autoConnect", True) is not False]
+        except Exception:
+            pass
+        mcp_str = ",".join(mcp_names) if mcp_names else "none"
+        _print(f"Model: {model_name} | Tier: {tier_policy} | Learning: {learning} | MCP: {mcp_str}")
+
     def _help() -> None:
         _print("Commands:")
         _print("  /run         Run the workflow (full)")
@@ -645,6 +660,7 @@ async def _run_repl(
             _print(f"Error loading workflow: {e}", style="red" if console else None)
             return
 
+    _banner()
     _status()
     _print("Type /help for commands, /exit to quit.")
     _print("(You can type while the assistant is responding — messages will be queued.)")
@@ -1303,7 +1319,109 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Require explicit approval for mutations",
     )
+    p.add_argument(
+        "--ask",
+        help="Send a single question, print the response, and exit",
+    )
+    p.add_argument(
+        "--pipe",
+        action="store_true",
+        help="Read question from stdin, print response to stdout, and exit",
+    )
+    p.add_argument(
+        "--output",
+        help="Write the response text to a file in addition to stdout",
+    )
+    p.add_argument(
+        "--model",
+        help="Override the model for this session",
+    )
     return p
+
+
+async def _run_one_shot(
+    client: ChatClient,
+    workflow_id: str,
+    mode: str,
+    question: str,
+    model: str | None,
+    output_path: str | None,
+) -> None:
+    """Run a single question and exit."""
+    history: list[dict[str, str]] = []
+    
+    if model:
+        # Send /model <name> first
+        try:
+            resp = await client.send_chat_message(
+                workflow_id,
+                f"/model {model}",
+                history=history,
+                thread_id=workflow_id,
+                mode=mode,
+            )
+            channel = resp.get("stream_channel_id")
+            if channel:
+                async for event in client.stream_chat_events(channel):
+                    if event and event.get("type") == "chat_complete":
+                        content = event.get("content", "")
+                        if content:
+                            history.append({"role": "user", "content": f"/model {model}"})
+                            history.append({"role": "assistant", "content": content})
+        except Exception as e:
+            print(f"Error setting model: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    try:
+        resp = await client.send_chat_message(
+            workflow_id,
+            question,
+            history=history,
+            thread_id=workflow_id,
+            mode=mode,
+        )
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    channel = resp.get("stream_channel_id")
+    if not channel:
+        print("No stream channel returned.", file=sys.stderr)
+        sys.exit(1)
+
+    full_response = ""
+    try:
+        async for event in client.stream_chat_events(channel):
+            if event is None:
+                break
+            ev_type = event.get("type", "")
+            if ev_type == "chat_token":
+                delta = event.get("delta", "")
+                if delta:
+                    print(delta, end="", flush=True)
+                    full_response += delta
+            elif ev_type == "chat_complete":
+                content = event.get("content", "")
+                if not full_response and content:
+                    print(content)
+                    full_response = content
+                else:
+                    print()
+                break
+            elif ev_type == "chat_error":
+                err = event.get("error", "Unknown error")
+                print(f"\nError: {err}", file=sys.stderr)
+                sys.exit(1)
+    except Exception as e:
+        print(f"\nStream error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    if output_path and full_response:
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(full_response)
+        except Exception as e:
+            print(f"Failed to write output to {output_path}: {e}", file=sys.stderr)
 
 
 def main() -> None:
@@ -1382,6 +1500,45 @@ def main() -> None:
             if active_workflow_id != "_scratch" and active_mode == "build":
                 active_mode = "mutate"
 
+            if args.ask or args.pipe:
+                if args.pipe:
+                    question = sys.stdin.read().strip()
+                else:
+                    question = args.ask.strip()
+                
+                if not question:
+                    print("No input provided.", file=sys.stderr)
+                    sys.exit(1)
+                
+                await _run_one_shot(
+                    client,
+                    active_workflow_id,
+                    active_mode,
+                    question,
+                    args.model,
+                    args.output,
+                )
+                return
+
+            # Apply model override if provided for REPL session
+            if args.model:
+                try:
+                    resp = await client.send_chat_message(
+                        active_workflow_id,
+                        f"/model {args.model}",
+                        history=[],
+                        thread_id=active_workflow_id,
+                        mode=active_mode,
+                    )
+                    channel = resp.get("stream_channel_id")
+                    if channel:
+                        async for event in client.stream_chat_events(channel):
+                            if event and event.get("type") == "chat_complete":
+                                print(f"Model set to {args.model}")
+                                break
+                except Exception as e:
+                    print(f"Error setting model: {e}", file=sys.stderr)
+
             await _run_repl(
                 client,
                 active_workflow_id,
@@ -1396,6 +1553,33 @@ def main() -> None:
 
     asyncio.run(_main())
 
+
+def main_ask() -> None:
+    """Entry point for dan-ask."""
+    # If stdin is piped, use --pipe, else use --ask with the first positional arg
+    args = sys.argv[1:]
+    new_args = ["dan-chat"]
+    
+    # Check if we have piped input
+    if not sys.stdin.isatty():
+        new_args.append("--pipe")
+        new_args.extend(args)
+    else:
+        # We need a positional argument for the question
+        question = None
+        other_args = []
+        for arg in args:
+            if not arg.startswith("-") and question is None:
+                question = arg
+            else:
+                other_args.append(arg)
+        
+        if question:
+            new_args.extend(["--ask", question])
+        new_args.extend(other_args)
+        
+    sys.argv = new_args
+    main()
 
 if __name__ == "__main__":
     main()

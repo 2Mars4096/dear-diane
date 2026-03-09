@@ -44,7 +44,6 @@ from .build_session import BuildSessionManager, BuildSessionStatus
 from .reuse_decision import ReuseCandidate, reuse_first_decision
 from .executor import ExecutionResult, ExecutionSelector
 from .memory_bridge import WorkflowMemoryIndex, enrich_planning_context
-from .queue import ProjectMessageQueue
 from .solver import GoalResolver, PlanBuilder, SolverDecision
 
 _NUMERIC_CLAIM_RE_LEGACY = re.compile(
@@ -80,7 +79,7 @@ _AUTONOMY_OVERRIDE_PHRASES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("show me every step", "step by step", "walk me through"), AutonomyLevel.INTERACTIVE.value),
 )
 
-_FAST_COMMAND_PREFIXES = ("/save", "/build-", "/memory-", "/mcp")
+_FAST_COMMAND_PREFIXES = ("/save", "/build-", "/memory-", "/mcp", "/model", "/cost", "/retry", "/status")
 _PREF_CONFIRM_WORDS = frozenset({"confirm all", "yes", "confirm"})
 
 
@@ -94,7 +93,7 @@ class Concierge:
         capability_context: Any,
         user_profile: Any = None,
         conversation_memory: Any = None,
-        queue: ProjectMessageQueue | None = None,
+        queue: Any = None,
         progress_reporter: ProgressReporter | None = None,
         promoter: WorkflowPromoter | None = None,
         meta_controller: Any = None,
@@ -115,7 +114,8 @@ class Concierge:
         self.capability_context = capability_context
         self.user_profile = user_profile
         self.conversation_memory = conversation_memory
-        self.queue = queue or ProjectMessageQueue()
+        # Deprecated compatibility kwarg: runtime queueing now belongs to ConcurrentDispatcher.
+        _ = queue
         self.progress_reporter = progress_reporter
         self.promoter = promoter
         self.meta_controller = meta_controller
@@ -200,6 +200,143 @@ class Concierge:
             return True
         return False
 
+    async def _handle_model_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
+        """Handle /model fast command for in-chat model switching."""
+        text = msg.text.strip()
+        if not text.startswith("/model"):
+            return None
+        
+        parts = text.split()
+        if len(parts) == 1:
+            current = getattr(self.chat_manager, "_chat_model", "unknown")
+            return self._complete_event(content=f"{format_prefix()} Current model: {current}")
+            
+        # Parse args
+        args = parts[1:]
+        save = False
+        if "--save" in args:
+            save = True
+            args.remove("--save")
+            
+        if not args:
+            current = getattr(self.chat_manager, "_chat_model", "unknown")
+            return self._complete_event(content=f"{format_prefix()} Current model: {current}")
+            
+        model_name = args[0]
+        
+        # Validate via ProviderRegistry
+        try:
+            registry = getattr(self.chat_manager, "_providers", None)
+            if not registry and hasattr(self.capability_context, "chat_manager"):
+                registry = getattr(self.capability_context.chat_manager, "_providers", None)
+            
+            if registry:
+                registry.resolve(model_name)
+            else:
+                logger.warning("ProviderRegistry not found; skipping model validation")
+        except KeyError:
+            # Try to get list of registered providers
+            providers = []
+            if registry and hasattr(registry, "_providers"):
+                providers = list(registry._providers.keys())
+            
+            err_msg = f"{format_prefix()} Unknown model: {model_name}."
+            if providers:
+                err_msg += f" Registered providers: {', '.join(providers)}"
+            return self._complete_event(content=err_msg)
+            
+        # Update in-memory
+        self.chat_manager._chat_model = model_name
+        
+        # Persist if requested
+        if save:
+            try:
+                from dan.utils.env import update_env_file
+                update_env_file("DAN_CHAT_MODEL", model_name)
+                return self._complete_event(content=f"{format_prefix()} Model changed to {model_name} and saved to .env")
+            except Exception as e:
+                logger.error("Failed to save model to .env", exc_info=True)
+                return self._complete_event(content=f"{format_prefix()} Model changed to {model_name} for this session, but failed to save to .env: {e}")
+                
+        return self._complete_event(content=f"{format_prefix()} Model changed to {model_name} for this session.")
+
+    async def _handle_cost_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
+        """Handle /cost command to show total cost for current thread."""
+        text = msg.text.strip().lower()
+        if not text.startswith("/cost"):
+            return None
+        
+        ctx = self.context_resolver.resolve(msg)
+        workflow_id = ctx.project.project_id
+        thread_id = ctx.project.thread_id
+        
+        try:
+            chat_store = self.chat_manager._mention_resolver._chat_resolver._store
+        except AttributeError:
+            return self._complete_event(content=f"{format_prefix(ctx.project.label)} Chat store not available.")
+            
+        total_cost = 0.0
+        thread = chat_store.get_thread(workflow_id, thread_id)
+        if thread:
+            for m in thread.messages:
+                if m.estimated_cost:
+                    total_cost += m.estimated_cost
+                
+        return self._complete_event(content=f"{format_prefix(ctx.project.label)} Total estimated cost for this thread: ${total_cost:.4f}")
+
+    async def _handle_retry_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
+        """Handle /retry command to re-process the last user message."""
+        text = msg.text.strip().lower()
+        if not text.startswith("/retry"):
+            return None
+            
+        ctx = self.context_resolver.resolve(msg)
+        workflow_id = ctx.project.project_id
+        thread_id = ctx.project.thread_id
+        
+        try:
+            chat_store = self.chat_manager._mention_resolver._chat_resolver._store
+        except AttributeError:
+            return self._complete_event(content=f"{format_prefix(ctx.project.label)} Chat store not available.")
+            
+        thread = chat_store.get_thread(workflow_id, thread_id)
+        last_user_msg = None
+        if thread:
+            for m in reversed(thread.messages):
+                if m.role == "user":
+                    last_user_msg = m.content
+                    break
+                
+        if not last_user_msg:
+            return self._complete_event(content=f"{format_prefix(ctx.project.label)} No previous user message found to retry.")
+            
+        # We can't easily yield the stream from here since we return a single event,
+        # but wait, fast commands return ChatCompleteEvent. 
+        # To actually re-process, we should probably return None and let the caller handle it,
+        # or we just mutate the message text and let the normal flow handle it.
+        # Let's mutate the message text.
+        msg.text = last_user_msg
+        return None  # Return None so it falls through to normal processing with the new text
+
+    async def _handle_status_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
+        """Handle /status command to show system status."""
+        text = msg.text.strip().lower()
+        if not text.startswith("/status"):
+            return None
+            
+        ctx = self.context_resolver.resolve(msg)
+        
+        from dan.server.capability_handlers import handle_get_activity
+        res = await handle_get_activity({}, self.capability_context)
+        
+        current_model = getattr(self.chat_manager, "_chat_model", "unknown")
+        status_text = f"{format_prefix(ctx.project.label)} System Status\n"
+        status_text += f"Model: {current_model}\n"
+        status_text += f"Cost Tracking: {'Enabled' if os.environ.get('DAN_SHOW_COST') == '1' else 'Disabled'}\n\n"
+        status_text += res.message
+        
+        return self._complete_event(content=status_text)
+
     async def _try_fast_command(
         self, msg: SurfaceMessage,
     ) -> ChatCompleteEvent | None:
@@ -215,10 +352,25 @@ class Concierge:
         memory_result = self._handle_memory_command(msg)
         if memory_result is not None:
             return memory_result
+        model_result = await self._handle_model_command(msg)
+        if model_result is not None:
+            return model_result
         if msg.text.strip().lower().startswith("/mcp"):
             mcp_result = await self._handle_mcp_command(msg)
             if mcp_result is not None:
                 return mcp_result
+        if msg.text.strip().lower().startswith("/cost"):
+            cost_result = await self._handle_cost_command(msg)
+            if cost_result is not None:
+                return cost_result
+        if msg.text.strip().lower().startswith("/retry"):
+            retry_result = await self._handle_retry_command(msg)
+            if retry_result is not None:
+                return retry_result
+        if msg.text.strip().lower().startswith("/status"):
+            status_result = await self._handle_status_command(msg)
+            if status_result is not None:
+                return status_result
         pref_confirmation = self.handle_preference_confirmation(
             msg.external_id, msg.text,
         )
@@ -271,6 +423,7 @@ class Concierge:
         drain_task = asyncio.create_task(_drain_inner())
         first_event_received = False
         reassurance_count = 0
+        start_time = time.monotonic()
 
         try:
             while True:
@@ -295,6 +448,16 @@ class Concierge:
                     raise item
                 first_event_received = True
                 yield item
+                
+            elapsed = time.monotonic() - start_time
+            if elapsed > 30.0 and hasattr(self.capability_context, "event_bus") and self.capability_context.event_bus:
+                self.capability_context.event_bus.broadcast({
+                    "event_type": "notification",
+                    "title": "Response Ready",
+                    "message": f"Your long-running request ({int(elapsed)}s) has completed.",
+                    "level": "info",
+                    "surface_id": msg.surface_id,
+                })
         finally:
             if not drain_task.done():
                 drain_task.cancel()
@@ -341,7 +504,10 @@ class Concierge:
                 prep_tasks["reuse"] = lambda: asyncio.to_thread(
                     reuse_first_decision, self.memory_kernel, msg.text,
                 )
-            prep = await fan_out_dict(prep_tasks)
+            
+            prep_timeout = float(os.environ.get("DAN_CONCIERGE_PREP_TIMEOUT", "5.0"))
+            prep = await fan_out_dict(prep_tasks, timeout_per=prep_timeout)
+            
             self._memory_context = prep.get("memory", "")
             if isinstance(self._memory_context, Exception):
                 logger.debug("Parallel memory retrieval failed", exc_info=self._memory_context)
@@ -447,8 +613,6 @@ class Concierge:
                 self._record_assistant_turn(context, msg, pause_msg)
                 self._finalize_task(context, msg, classification.intent, True, task_status_override="paused")
                 yield self._complete_event(content=pause_msg)
-                async for queued_event in self._drain_queued_messages(context, msg):
-                    yield queued_event
                 return
             if action == "new":
                 self._pause_active_goals(msg.external_id)
@@ -552,8 +716,6 @@ class Concierge:
                     proposal = f"I found a similar workflow. Want me to reuse it, adapt it, or start fresh? Reply 1, 2, or 3."
                     self._record_assistant_turn(context, msg, proposal)
                     yield self._complete_event(content=f"{format_prefix(context.project.label)} {proposal}")
-                    async for queued_event in self._drain_queued_messages(context, msg):
-                        yield queued_event
                     return
             if reuse_choice:
                 logger.info(
@@ -594,8 +756,6 @@ class Concierge:
                         True,
                         task_status_override=self._task_status_for_goal(goal),
                     )
-                    async for queued_event in self._drain_queued_messages(context, msg):
-                        yield queued_event
                     return
             if goal.context.get("build_run_test") and goal.context.get("build_session_id"):
                 last_content = await self._handle_build_run_test(goal, msg, context)
@@ -611,8 +771,6 @@ class Concierge:
                         True,
                         task_status_override=self._task_status_for_goal(goal),
                     )
-                    async for queued_event in self._drain_queued_messages(context, msg):
-                        yield queued_event
                     return
             async for event in self._execute_goal(goal, msg, context):
                 if getattr(event, "type", "") == "chat_complete":
@@ -637,8 +795,6 @@ class Concierge:
                 True,
                 task_status_override=self._task_status_for_goal(goal),
             )
-            async for queued_event in self._drain_queued_messages(context, msg):
-                yield queued_event
             return
 
         handler = self.handlers.get(classification.intent)
@@ -720,8 +876,6 @@ class Concierge:
             )
             if stream_channel_id and stream_channel_id.startswith("run-"):
                 self.project_store.link_run(context.project.project_id, stream_channel_id[4:], msg.external_id)
-            async for queued_event in self._drain_queued_messages(context, msg):
-                yield queued_event
             return
 
         content = result.content
@@ -751,8 +905,6 @@ class Concierge:
             task_status_override=(result.task_update or {}).get("status"),
         )
         yield self._complete_event(content=content, stream_channel_id=result.stream_channel_id)
-        async for queued_event in self._drain_queued_messages(context, msg):
-            yield queued_event
 
     async def _solver_path(
         self,
@@ -859,8 +1011,6 @@ class Concierge:
             )
             if stream_channel_id and stream_channel_id.startswith("run-"):
                 self.project_store.link_run(context.project.project_id, stream_channel_id[4:], msg.external_id)
-            async for queued_event in self._drain_queued_messages(context, msg):
-                yield queued_event
             return
 
         auto_note = str(msg.metadata.get("clarification_auto_note") or "").strip()
@@ -891,8 +1041,6 @@ class Concierge:
             context, msg, classification.intent, bool(content),
         )
         yield self._complete_event(content=content)
-        async for queued_event in self._drain_queued_messages(context, msg):
-            yield queued_event
 
     def _resolve_pending_follow_up(
         self,
@@ -1162,11 +1310,6 @@ class Concierge:
             raw_text=pending.original_text,
         ), replay_msg
 
-    async def _drain_queued_messages(self, context, msg: SurfaceMessage) -> AsyncIterator[ChatStreamEvent]:
-        """No-op — queueing is now handled entirely by ConcurrentDispatcher."""
-        return
-        yield  # pragma: no cover — makes this a valid async generator
-
     def _finalize_task(
         self,
         context,
@@ -1330,7 +1473,7 @@ class Concierge:
         return None
 
     def _handle_memory_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
-        """Handle /memory-stats and /memory-search <query> (29-6 §11-1, §11-2)."""
+        """Handle /memory-stats, /memory-search, /memory-delete, /memory-forget, /memory-confirm, /memory-reject."""
         text = msg.text.strip()
         lower = text.lower()
 
@@ -1341,7 +1484,91 @@ class Concierge:
             if not query:
                 return self._complete_event(content="Usage: /memory-search <query>")
             return self._memory_search_response(query)
+            
+        if lower.startswith("/memory-delete"):
+            parts = text.split()
+            if len(parts) < 2:
+                return self._complete_event(content="Usage: /memory-delete <id> [--force]")
+            item_id = parts[1]
+            force = "--force" in parts
+            return self._memory_delete_response(item_id, force)
+            
+        if lower.startswith("/memory-forget"):
+            query = text[len("/memory-forget"):].strip()
+            if not query:
+                return self._complete_event(content="Usage: /memory-forget <query>")
+            return self._memory_forget_response(query)
+            
+        if lower.startswith("/memory-confirm"):
+            return self._memory_confirm_response(msg.surface_id)
+            
+        if lower.startswith("/memory-reject"):
+            parts = text.split()
+            indices = [int(p) for p in parts[1:] if p.isdigit()]
+            return self._memory_reject_response(msg.surface_id, indices)
+            
         return None
+
+    def _memory_delete_response(self, item_id: str, force: bool) -> ChatCompleteEvent:
+        if not self.memory_kernel:
+            return self._complete_event(content="Memory kernel not available.")
+        
+        from dan.engine.memory_kernel import MemoryLifecycle
+        
+        item = self.memory_kernel.get(item_id)
+        if not item:
+            return self._complete_event(content=f"Item {item_id} not found.")
+            
+        if item.lifecycle == MemoryLifecycle.DURABLE and not force:
+            return self._complete_event(
+                content=f"Item {item_id} is DURABLE. Use `/memory-delete {item_id} --force` to delete it."
+            )
+            
+        success = self.memory_kernel.delete(item_id, hard=True)
+        if success:
+            return self._complete_event(content=f"Deleted item {item_id}.")
+        return self._complete_event(content=f"Failed to delete item {item_id}.")
+
+    def _memory_forget_response(self, query: str) -> ChatCompleteEvent:
+        if not self.memory_kernel:
+            return self._complete_event(content="Memory kernel not available.")
+            
+        from dan.engine.memory_kernel import MemoryLifecycle
+        
+        scored = self.memory_kernel.retrieve(query, limit=10)
+        if not scored:
+            return self._complete_event(content="No matching memories found.")
+            
+        deleted_count = 0
+        lines = [f'**Forgot memories matching "{query}":**']
+        for si in scored:
+            if si.item.lifecycle == MemoryLifecycle.DURABLE:
+                continue
+            success = self.memory_kernel.delete(si.item.id, hard=True)
+            if success:
+                deleted_count += 1
+                snippet = si.item.content[:80].replace("\n", " ")
+                lines.append(f"  - Deleted [{si.item.memory_type.value.upper()}] {snippet}")
+                
+        if deleted_count == 0:
+            return self._complete_event(
+                content="No matching ACTIVE/INFERRED memories found. (DURABLE items require explicit `/memory-delete <id> --force`)"
+            )
+            
+        return self._complete_event(content="\n".join(lines))
+
+    def _memory_confirm_response(self, surface_id: str) -> ChatCompleteEvent:
+        result = self.handle_preference_confirmation(surface_id, "confirm")
+        if not result:
+            result = "No pending preferences to confirm."
+        return self._complete_event(content=result)
+
+    def _memory_reject_response(self, surface_id: str, indices: list[int]) -> ChatCompleteEvent:
+        msg = "reject " + " ".join(str(i) for i in indices) if indices else "reject"
+        result = self.handle_preference_confirmation(surface_id, msg)
+        if not result:
+            result = "No pending preferences to reject."
+        return self._complete_event(content=result)
 
     def _memory_stats_response(self) -> ChatCompleteEvent:
         if not self.memory_kernel:
@@ -2704,7 +2931,6 @@ def build_concierge(
         capability_context=capability_context,
         user_profile=user_profile,
         conversation_memory=conversation_memory,
-        queue=ProjectMessageQueue(),
         progress_reporter=progress_reporter,
         promoter=promoter,
         meta_controller=meta_controller,

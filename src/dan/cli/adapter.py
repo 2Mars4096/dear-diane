@@ -41,6 +41,8 @@ def _strip_dan_prefix(text: str) -> str:
 
 
 def _surface_name_for_adapter_type(adapter_type: str) -> str:
+    if adapter_type.startswith("telegram:"):
+        return adapter_type
     known = {"email", "telegram", "whatsapp", "whatsapp-web"}
     return adapter_type if adapter_type in known else "server"
 
@@ -79,6 +81,23 @@ def _translate_slash_command(text: str) -> str | None:
         "/help": None,
     }
     return translations.get(cmd, None)
+
+
+def _strip_reply_prefix_lines(text: str) -> str:
+    lines = text.splitlines()
+    while lines and lines[0].startswith('[Replying to: "'):
+        lines.pop(0)
+    return "\n".join(lines).strip()
+
+
+def _split_reply_prefix_lines(text: str) -> tuple[str, str]:
+    lines = text.splitlines()
+    prefix_lines: list[str] = []
+    while lines and lines[0].startswith('[Replying to: "'):
+        prefix_lines.append(lines.pop(0))
+    prefix = "\n".join(prefix_lines).strip()
+    body = "\n".join(lines).strip()
+    return prefix, body
 
 
 def _consume_chat_stream_events(
@@ -186,11 +205,23 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
     shared_http = httpx.AsyncClient(base_url=server_url, timeout=120.0)
     _adapter_bg_tasks: set[asyncio.Task[None]] = set()
 
-    _bot = get_bot_name()
-    _bare = format_bare_prefix()
-    _ADAPTER_CONTEXT = f"""\
-You are {_bot}, a messaging AI assistant. Short replies (1-3 sentences). \
-Answer directly — no commands, no numbered options, no {_bare} prefix."""
+    configured_bot_name = getattr(config, "bot_name", "") or None
+    configured_personality = getattr(config, "personality", "") or ""
+    configured_projects = getattr(config, "projects", []) or []
+
+    _bot = get_bot_name(configured_bot_name)
+    _bare = format_bare_prefix(bot_name=configured_bot_name)
+    _ADAPTER_CONTEXT = (
+        f"You are {_bot}, a messaging AI assistant. Short replies (1-3 sentences). "
+        f"Answer directly — no commands, no numbered options, no {_bare} prefix."
+    )
+    if configured_personality:
+        _ADAPTER_CONTEXT += f" Personality: {configured_personality}."
+    if configured_projects:
+        _ADAPTER_CONTEXT += (
+            f" You focus especially on these projects: "
+            f"{', '.join(configured_projects)}."
+        )
 
     def _server_unavailable_message() -> str:
         return (
@@ -365,19 +396,24 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
             key = int(external_id) if external_id.isdigit() else external_id
             adapter.register_session(external_id, key)
 
+        reply_prefix, media_text = _split_reply_prefix_lines(text)
         attachment_path = None
-        if text.startswith("[Attachment: "):
-            end = text.find("]\n")
+        if media_text.startswith("[Attachment: "):
+            end = media_text.find("]\n")
             if end > 0:
-                attachment_path = text[len("[Attachment: "):end].strip()
-                text = text[end + 2:].strip()
-            elif text.endswith("]"):
-                attachment_path = text[len("[Attachment: "):-1].strip()
-                text = ""
+                attachment_path = media_text[len("[Attachment: "):end].strip()
+                remaining_text = media_text[end + 2:].strip()
+            elif media_text.endswith("]"):
+                attachment_path = media_text[len("[Attachment: "):-1].strip()
+                remaining_text = ""
+            else:
+                remaining_text = media_text
+            text = "\n".join(part for part in (reply_prefix, remaining_text) if part).strip()
 
-        if text.startswith("[Voice note: "):
-            end = text.find("]", len("[Voice note: "))
-            voice_path = text[len("[Voice note: "):end].strip() if end > 0 else text[len("[Voice note: "):].strip()
+        if media_text.startswith("[Voice note: "):
+            end = media_text.find("]", len("[Voice note: "))
+            voice_path = media_text[len("[Voice note: "):end].strip() if end > 0 else media_text[len("[Voice note: "):].strip()
+            remaining_text = media_text[end + 1:].strip() if end > 0 else ""
             try:
                 from dan.adapters.whatsapp_web_adapter import transcribe_audio
                 transcription = await transcribe_audio(voice_path)
@@ -393,6 +429,11 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
                     None,
                 )
                 return
+            text = "\n".join(
+                part
+                for part in (reply_prefix, transcription, remaining_text)
+                if part
+            ).strip()
 
         stripped = text.strip()
 
@@ -401,7 +442,7 @@ Answer directly — no commands, no numbered options, no {_bare} prefix."""
             if cmd == "/help":
                 await adapter.send_prompt(
                     external_id,
-                    "Available commands: /find <query>, /send <path>, /status, /cancel, /show, /list, /mcp\n"
+                    "Available commands: /find <query>, /send <path>, /status, /cancel, /show, /list, /mcp, /model [name]\n"
                     "Or just type naturally — I can do anything!",
                     None,
                 )
@@ -439,7 +480,8 @@ def _print_status_chat(config: Any, server_url: str) -> None:
         console.print(Panel(
             f"[bold green]Adapter running (chat mode)[/]\n"
             f"Server: {server_url}\n"
-            f"Send any message to start chatting with {get_bot_name()}.",
+            f"Send any message to start chatting with "
+            f"{get_bot_name(getattr(config, 'bot_name', None) or None)}.",
             title="dan-adapter",
         ))
     except ImportError:
@@ -581,7 +623,10 @@ def _build_email_parser(sub: Any) -> None:
 def _build_telegram_parser(sub: Any) -> None:
     p = sub.add_parser("telegram", help="Start Telegram bot adapter")
     _add_common_args(p)
-    p.add_argument("--bot-token", required=True)
+    p.add_argument(
+        "--bot-token", default=None,
+        help="Bot token from BotFather (or set DAN_TELEGRAM_BOT_TOKEN env var)",
+    )
     p.add_argument("--allowed-chat-ids", nargs="*", type=int, default=[])
     p.add_argument("--webhook-url", default=None)
     p.set_defaults(adapter_type="telegram")
@@ -670,9 +715,16 @@ def _build_config_from_args(args: argparse.Namespace) -> tuple[str, Any]:
         )
     elif adapter_type == "telegram":
         from dan.adapters.telegram_adapter import TelegramAdapterConfig
+        token = args.bot_token or os.environ.get("DAN_TELEGRAM_BOT_TOKEN", "")
+        if not token:
+            print(
+                "Error: bot token required. Pass --bot-token or set DAN_TELEGRAM_BOT_TOKEN.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         return adapter_type, TelegramAdapterConfig(
             **common,
-            bot_token=args.bot_token,
+            bot_token=token,
             allowed_chat_ids=args.allowed_chat_ids or [],
             webhook_url=args.webhook_url,
         )

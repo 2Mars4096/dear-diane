@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 _BYPASS_PREFIXES = (
     "/status", "/build-status", "/cancel", "/build-stop",
-    "/save", "/build-", "/memory-", "/mcp",
+    "/save", "/build-", "/memory-", "/mcp", "/model", "/cost", "/retry"
 )
 _BYPASS_EXACT = frozenset({
     "status", "cancel", "what's happening", "what's going on",
