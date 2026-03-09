@@ -15,6 +15,7 @@ import json
 import logging
 import math
 import os
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -24,6 +25,10 @@ from typing import Any, Sequence
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+evolvement_logger = logging.getLogger("dan.evolvement")
+_evolvement_level = os.environ.get("DAN_EVOLVEMENT_LOG_LEVEL", "INFO").upper()
+evolvement_logger.setLevel(getattr(logging, _evolvement_level, logging.INFO))
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +279,28 @@ def _recency_bonus(last_accessed: float, half_life_days: float) -> float:
     return math.exp(-0.693 * age_days / max(half_life_days, 1))
 
 
+def _preference_key(content: str) -> str:
+    """Extract a canonical key from preference content for conflict detection.
+
+    Preferences follow patterns like ``"models: drafting -> claude"`` or
+    ``"output_format: latex"``.  The key is the category (plus sub-key when
+    using ``->``), stripping the final value.
+
+    Examples::
+
+        "models: drafting -> claude"  →  "models: drafting"
+        "output_format: latex"        →  "output_format"
+        "domains: supply chain"       →  "domains"
+    """
+    if not content:
+        return ""
+    if "->" in content:
+        return content.split("->", 1)[0].strip().lower()
+    if ":" in content:
+        return content.split(":", 1)[0].strip().lower()
+    return content.strip().lower()
+
+
 def _keyword_overlap(query: str, content: str) -> float:
     if not query or not content:
         return 0.0
@@ -310,15 +337,64 @@ def classify_task_type(message: str, has_active_build: bool = False) -> str:
 # Memory Kernel
 # ---------------------------------------------------------------------------
 
+class DualWriteAdapter:
+    """Thin adapter that writes new memory items to legacy stores (29-1 §5-7).
+
+    Enabled via ``DAN_MEMORY_DUAL_WRITE=1`` (default off). Maps kernel
+    MemoryType to the appropriate legacy store write call.
+    """
+
+    def __init__(
+        self,
+        conversation_memory: Any = None,
+        user_profile: Any = None,
+        experience_store: Any = None,
+    ) -> None:
+        self._conversation_memory = conversation_memory
+        self._user_profile = user_profile
+        self._experience_store = experience_store
+
+    def write(self, item: MemoryItem) -> None:
+        """Best-effort write to legacy stores. Never raises."""
+        try:
+            self._do_write(item)
+        except Exception:
+            logger.debug("Dual-write to legacy store failed for %s", item.id, exc_info=True)
+
+    def _do_write(self, item: MemoryItem) -> None:
+        if item.memory_type == MemoryType.EPISODE and self._conversation_memory:
+            self._conversation_memory.add(item.content)
+        elif item.memory_type == MemoryType.PREFERENCE and self._user_profile:
+            if hasattr(self._user_profile, "set"):
+                self._user_profile.set(f"pref_{item.id}", item.content)
+        elif item.memory_type == MemoryType.FACT and self._user_profile:
+            if hasattr(self._user_profile, "set"):
+                self._user_profile.set(f"fact_{item.id}", item.content)
+        elif item.memory_type == MemoryType.WORKFLOW_ASSET and self._experience_store:
+            wf_id = item.metadata.get("workflow_id", item.id)
+            if hasattr(self._experience_store, "record"):
+                self._experience_store.record(
+                    workflow_id=wf_id,
+                    name=item.content[:80],
+                    summary=item.content[:200],
+                )
+
+
 class MemoryKernel:
     """Unified typed memory store with per-type ranking and policy-based retrieval."""
 
-    def __init__(self, base_dir: str | None = None) -> None:
+    def __init__(
+        self,
+        base_dir: str | None = None,
+        dual_write_adapter: DualWriteAdapter | None = None,
+    ) -> None:
         self._base_dir = Path(base_dir or os.path.expanduser("~/.dan/memory_kernel"))
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._index: dict[str, MemoryItem] = {}
         self._dirty = False
         self._save_counter = 0
+        self._write_lock = threading.RLock()
+        self._dual_write = dual_write_adapter if os.environ.get("DAN_MEMORY_DUAL_WRITE", "0") == "1" else None
         self._load_index()
 
     # -- Persistence --------------------------------------------------------
@@ -327,68 +403,84 @@ class MemoryKernel:
         return self._base_dir / "_index.json"
 
     def _load_index(self) -> None:
-        path = self._index_path()
-        if path.exists():
-            try:
-                data = json.loads(path.read_text())
-                for item_dict in data:
-                    item = MemoryItem.model_validate(item_dict)
-                    self._index[item.id] = item
-                logger.debug("Loaded %d memory items from index", len(self._index))
-            except Exception:
-                logger.warning("Failed to load memory index, starting fresh", exc_info=True)
-                self._index = {}
+        with self._write_lock:
+            path = self._index_path()
+            if path.exists():
+                try:
+                    data = json.loads(path.read_text())
+                    for item_dict in data:
+                        item = MemoryItem.model_validate(item_dict)
+                        self._index[item.id] = item
+                    logger.debug("Loaded %d memory items from index", len(self._index))
+                except Exception:
+                    logger.warning("Failed to load memory index, starting fresh", exc_info=True)
+                    self._index = {}
 
     def _save_index(self) -> None:
-        path = self._index_path()
-        tmp = path.with_suffix(".tmp")
-        data = [item.model_dump(mode="json") for item in self._index.values()]
-        tmp.write_text(json.dumps(data, indent=2, default=str))
-        tmp.replace(path)
+        with self._write_lock:
+            path = self._index_path()
+            tmp = path.with_suffix(".tmp")
+            data = [item.model_dump(mode="json") for item in self._index.values()]
+            tmp.write_text(json.dumps(data, indent=2, default=str))
+            tmp.replace(path)
 
     # -- CRUD ---------------------------------------------------------------
 
     def store(self, item: MemoryItem) -> MemoryItem:
-        item.updated_at = time.time()
-        self._index[item.id] = item
-        self._save_index()
+        with self._write_lock:
+            item.updated_at = time.time()
+            self._index[item.id] = item
+            self._save_index()
+        evolvement_logger.debug(
+            "Memory stored: type=%s scope=%s id=%s",
+            item.memory_type.value, item.scope.value, item.id,
+        )
+        if self._dual_write:
+            self._dual_write.write(item)
         return item
 
     def store_many(self, items: Sequence[MemoryItem]) -> list[MemoryItem]:
-        now = time.time()
-        for item in items:
-            item.updated_at = now
-            self._index[item.id] = item
-        self._save_index()
+        with self._write_lock:
+            now = time.time()
+            for item in items:
+                item.updated_at = now
+                self._index[item.id] = item
+            self._save_index()
+        if self._dual_write:
+            for item in items:
+                self._dual_write.write(item)
         return list(items)
 
     def get(self, item_id: str) -> MemoryItem | None:
-        return self._index.get(item_id)
+        with self._write_lock:
+            return self._index.get(item_id)
 
     def update(self, item_id: str, **changes: Any) -> MemoryItem | None:
-        item = self._index.get(item_id)
-        if item is None:
-            return None
-        for k, v in changes.items():
-            if hasattr(item, k):
-                setattr(item, k, v)
-        item.updated_at = time.time()
-        self._save_index()
-        return item
-
-    def delete(self, item_id: str, hard: bool = False) -> bool:
-        if hard:
-            removed = self._index.pop(item_id, None)
-        else:
+        with self._write_lock:
             item = self._index.get(item_id)
             if item is None:
-                return False
-            item.lifecycle = MemoryLifecycle.ARCHIVE
+                return None
+            for k, v in changes.items():
+                if hasattr(item, k):
+                    setattr(item, k, v)
             item.updated_at = time.time()
-            removed = item
-        if removed:
             self._save_index()
-        return removed is not None
+            return item
+
+    def delete(self, item_id: str, hard: bool = False) -> bool:
+        with self._write_lock:
+            if hard:
+                removed = self._index.pop(item_id, None)
+            else:
+                item = self._index.get(item_id)
+                if item is None:
+                    return False
+                item.lifecycle = MemoryLifecycle.ARCHIVE
+                item.updated_at = time.time()
+                removed = item
+            if removed:
+                self._save_index()
+            return removed is not None
 
     def list_by_type(
         self,
@@ -397,20 +489,21 @@ class MemoryKernel:
         lifecycle: MemoryLifecycle | None = None,
         limit: int = 50,
     ) -> list[MemoryItem]:
-        results = []
-        for item in self._index.values():
-            if item.memory_type != memory_type:
-                continue
-            if scope and item.scope != scope:
-                continue
-            if lifecycle is not None:
-                if item.lifecycle != lifecycle:
+        with self._write_lock:
+            results = []
+            for item in self._index.values():
+                if item.memory_type != memory_type:
                     continue
-            elif item.lifecycle == MemoryLifecycle.ARCHIVE:
-                continue
-            results.append(item)
-        results.sort(key=lambda x: x.updated_at, reverse=True)
-        return results[:limit]
+                if scope and item.scope != scope:
+                    continue
+                if lifecycle is not None:
+                    if item.lifecycle != lifecycle:
+                        continue
+                elif item.lifecycle == MemoryLifecycle.ARCHIVE:
+                    continue
+                results.append(item)
+            results.sort(key=lambda x: x.updated_at, reverse=True)
+            return results[:limit]
 
     # -- Retrieval ----------------------------------------------------------
 
@@ -429,42 +522,43 @@ class MemoryKernel:
         all_scored: list[ScoredMemoryItem] = []
         n_sections = len(policy.sections) or 1
 
-        for mem_type in policy.sections:
-            ranker = _TYPE_RANKERS.get(mem_type, _rank_episode)
-            weight = policy.budget_allocation.get(mem_type.value, 1.0 / n_sections)
-            section_limit = max(1, int(max_total * weight))
+        with self._write_lock:
+            for mem_type in policy.sections:
+                ranker = _TYPE_RANKERS.get(mem_type, _rank_episode)
+                weight = policy.budget_allocation.get(mem_type.value, 1.0 / n_sections)
+                section_limit = max(1, int(max_total * weight))
 
-            candidates = [
-                item for item in self._index.values()
-                if item.memory_type == mem_type
-                and item.lifecycle != MemoryLifecycle.ARCHIVE
-            ]
+                candidates = [
+                    item for item in self._index.values()
+                    if item.memory_type == mem_type
+                    and item.lifecycle != MemoryLifecycle.ARCHIVE
+                ]
 
-            scored = []
-            for item in candidates:
-                score = ranker(item, query)
-                scored.append(ScoredMemoryItem(
-                    item=item,
-                    score=score,
-                    match_reason=mem_type.value,
-                ))
+                scored = []
+                for item in candidates:
+                    score = ranker(item, query)
+                    scored.append(ScoredMemoryItem(
+                        item=item,
+                        score=score,
+                        match_reason=mem_type.value,
+                    ))
 
-            scored.sort(key=lambda x: x.score, reverse=True)
-            all_scored.extend(scored[:section_limit])
+                scored.sort(key=lambda x: x.score, reverse=True)
+                all_scored.extend(scored[:section_limit])
 
-        all_scored.sort(key=lambda x: x.score, reverse=True)
+            all_scored.sort(key=lambda x: x.score, reverse=True)
 
-        now = time.time()
-        for si in all_scored[:max_total]:
-            si.item.last_accessed = now
-            si.item.access_count += 1
+            now = time.time()
+            for si in all_scored[:max_total]:
+                si.item.last_accessed = now
+                si.item.access_count += 1
 
-        self._dirty = True
-        self._save_counter += 1
-        if self._save_counter % 5 == 0:
-            self._save_index()
-            self._dirty = False
-        return all_scored[:max_total]
+            self._dirty = True
+            self._save_counter += 1
+            if self._save_counter % 5 == 0:
+                self._save_index()
+                self._dirty = False
+            return all_scored[:max_total]
 
     def retrieve_by_task(self, query: str, task_type: str | None = None, limit: int = 20) -> list[ScoredMemoryItem]:
         policy_key = task_type or classify_task_type(query)
@@ -476,7 +570,10 @@ class MemoryKernel:
     def store_fact(self, content: str, scope: MemoryScope = MemoryScope.USER, **kw: Any) -> MemoryItem:
         return self.store(MemoryItem(content=content, memory_type=MemoryType.FACT, scope=scope, **kw))
 
-    def store_preference(self, content: str, confirmed: bool = False, **kw: Any) -> MemoryItem:
+    def store_preference(self, content: str, confirmed: bool = False, **kw: Any) -> MemoryItem | None:
+        skip = self._resolve_preference_conflicts(content, confirmed)
+        if skip:
+            return None
         return self.store(MemoryItem(
             content=content,
             memory_type=MemoryType.PREFERENCE,
@@ -514,62 +611,262 @@ class MemoryKernel:
             **kw,
         ))
 
+    def increment_workflow_asset_usage(self, workflow_id: str, success: bool) -> bool:
+        """Record a real reuse/adapt attempt on a workflow asset.
+
+        Retrieval already bumps ``access_count`` when an item is surfaced. Keep a
+        separate reuse counter here so ``success_rate`` reflects actual reuse
+        outcomes instead of search exposure volume.
+        """
+        with self._write_lock:
+            for item in self._index.values():
+                if (
+                    item.memory_type == MemoryType.WORKFLOW_ASSET
+                    and item.lifecycle != MemoryLifecycle.ARCHIVE
+                    and item.metadata.get("workflow_id") == workflow_id
+                ):
+                    item.access_count += 1
+                    reuse_count = int(item.metadata.get("reuse_count", 0) or 0)
+                    success_count = int(item.metadata.get("reuse_success_count", 0) or 0)
+                    reuse_count += 1
+                    if success:
+                        success_count += 1
+                    item.metadata["reuse_count"] = reuse_count
+                    item.metadata["reuse_success_count"] = success_count
+                    item.metadata["success_count"] = success_count
+                    item.metadata["success_rate"] = min(success_count / max(reuse_count, 1), 1.0)
+                    item.last_accessed = time.time()
+                    item.updated_at = time.time()
+                    self._save_index()
+                    return True
+            return False
+
+    # -- Preference evolution (29-6 §6) ------------------------------------
+
+    def _resolve_preference_conflicts(self, new_content: str, new_confirmed: bool) -> bool:
+        """Demote/archive existing preferences that conflict with *new_content*.
+
+        Priority: explicit user statement (confirmed) > inferred from behavior > default.
+        A "conflict" is detected when both preferences share the same tag-set prefix
+        (e.g. both are "models: drafting -> ...") but differ in value.
+
+        Returns True if the new preference should be **skipped** (not stored).
+        """
+        with self._write_lock:
+            prefix = _preference_key(new_content)
+            if not prefix:
+                return False
+            for item in list(self._index.values()):
+                if item.memory_type != MemoryType.PREFERENCE:
+                    continue
+                if item.lifecycle == MemoryLifecycle.ARCHIVE:
+                    continue
+                existing_prefix = _preference_key(item.content)
+                if existing_prefix != prefix:
+                    continue
+                if item.content == new_content:
+                    continue
+                if new_confirmed:
+                    item.lifecycle = MemoryLifecycle.ARCHIVE
+                    item.metadata["superseded_by"] = new_content
+                    item.updated_at = time.time()
+                elif item.provenance.confirmed_by_user:
+                    return True
+                else:
+                    item.importance = max(0.0, item.importance * 0.5)
+                    item.metadata["conflict_demoted"] = True
+                    item.updated_at = time.time()
+            return False
+
+    def maybe_surface_preferences(self, session_count: int | None = None) -> list[MemoryItem]:
+        """Return accumulated preferences that should be surfaced for user confirmation.
+
+        Surfaces after every ``DAN_PREFERENCE_SURFACE_INTERVAL`` interactions
+        (default 10). Only returns non-confirmed, non-archived preferences with
+        importance >= 0.3.
+        """
+        with self._write_lock:
+            interval = int(os.environ.get("DAN_PREFERENCE_SURFACE_INTERVAL", "10"))
+            if session_count is not None and (session_count % interval != 0 or session_count == 0):
+                return []
+            candidates = [
+                item for item in self._index.values()
+                if item.memory_type == MemoryType.PREFERENCE
+                and item.lifecycle != MemoryLifecycle.ARCHIVE
+                and not item.provenance.confirmed_by_user
+                and item.importance >= 0.3
+            ]
+            candidates.sort(key=lambda x: x.access_count, reverse=True)
+            return candidates[:5]
+
+    def confirm_preference(self, item_id: str) -> MemoryItem | None:
+        """Boost a preference to maximum importance upon user confirmation."""
+        with self._write_lock:
+            item = self._index.get(item_id)
+            if item is None or item.memory_type != MemoryType.PREFERENCE:
+                return None
+            item.provenance.confirmed_by_user = True
+            item.importance = 1.0
+            item.lifecycle = MemoryLifecycle.DURABLE
+            item.updated_at = time.time()
+            self._save_index()
+            return item
+
+    def reject_preference(self, item_id: str) -> MemoryItem | None:
+        """Archive a preference that the user explicitly rejects."""
+        with self._write_lock:
+            item = self._index.get(item_id)
+            if item is None or item.memory_type != MemoryType.PREFERENCE:
+                return None
+            item.lifecycle = MemoryLifecycle.ARCHIVE
+            item.metadata["rejected_by_user"] = True
+            item.updated_at = time.time()
+            self._save_index()
+            return item
+
+    # -- Utility ------------------------------------------------------------
+
     def flush(self) -> None:
         """Force-save pending access-time updates to disk."""
-        if self._dirty:
-            self._save_index()
-            self._dirty = False
+        with self._write_lock:
+            if self._dirty:
+                self._save_index()
+                self._dirty = False
 
     @property
     def count(self) -> int:
-        return len(self._index)
+        with self._write_lock:
+            return len(self._index)
 
     def stats(self) -> dict[str, Any]:
-        by_type: dict[str, int] = {}
-        by_lifecycle: dict[str, int] = {}
-        for item in self._index.values():
-            by_type[item.memory_type.value] = by_type.get(item.memory_type.value, 0) + 1
-            by_lifecycle[item.lifecycle.value] = by_lifecycle.get(item.lifecycle.value, 0) + 1
-        return {
-            "total": len(self._index),
-            "by_type": by_type,
-            "by_lifecycle": by_lifecycle,
-            "storage_path": str(self._base_dir),
-        }
+        with self._write_lock:
+            by_type: dict[str, int] = {}
+            by_lifecycle: dict[str, int] = {}
+            for item in self._index.values():
+                by_type[item.memory_type.value] = by_type.get(item.memory_type.value, 0) + 1
+                by_lifecycle[item.lifecycle.value] = by_lifecycle.get(item.lifecycle.value, 0) + 1
+            return {
+                "total": len(self._index),
+                "by_type": by_type,
+                "by_lifecycle": by_lifecycle,
+                "storage_path": str(self._base_dir),
+            }
 
     # -- Consolidation (basic) ----------------------------------------------
+    # Internal no-save variants — mutate _index in place without disk I/O.
+    # Used by run_consolidation_async to fan out and save once.
+
+    def _apply_decay_nosave(self, decay_days: int = 60, decay_factor: float = 0.9) -> int:
+        with self._write_lock:
+            threshold = time.time() - decay_days * 86400
+            decayed = 0
+            for item in self._index.values():
+                if item.lifecycle == MemoryLifecycle.ARCHIVE:
+                    continue
+                if item.last_accessed < threshold and item.importance > 0.05:
+                    item.importance *= decay_factor
+                    decayed += 1
+            return decayed
+
+    def _promote_to_durable_nosave(self, age_hours: float = 24.0) -> int:
+        with self._write_lock:
+            threshold = time.time() - age_hours * 3600
+            promoted = 0
+            for item in self._index.values():
+                if item.lifecycle == MemoryLifecycle.ACTIVE and item.created_at < threshold:
+                    item.lifecycle = MemoryLifecycle.DURABLE
+                    promoted += 1
+            return promoted
+
+    def _archive_stale_nosave(self, stale_days: int = 30) -> int:
+        with self._write_lock:
+            threshold = time.time() - stale_days * 86400
+            archived = 0
+            for item in self._index.values():
+                if item.lifecycle == MemoryLifecycle.DURABLE and item.last_accessed < threshold:
+                    item.lifecycle = MemoryLifecycle.ARCHIVE
+                    archived += 1
+            return archived
 
     def apply_decay(self, decay_days: int = 60, decay_factor: float = 0.9) -> int:
-        threshold = time.time() - decay_days * 86400
-        decayed = 0
-        for item in self._index.values():
-            if item.lifecycle == MemoryLifecycle.ARCHIVE:
-                continue
-            if item.last_accessed < threshold and item.importance > 0.05:
-                item.importance *= decay_factor
-                decayed += 1
+        decayed = self._apply_decay_nosave(decay_days, decay_factor)
         if decayed:
             self._save_index()
         return decayed
 
     def promote_to_durable(self, age_hours: float = 24.0) -> int:
-        threshold = time.time() - age_hours * 3600
-        promoted = 0
-        for item in self._index.values():
-            if item.lifecycle == MemoryLifecycle.ACTIVE and item.created_at < threshold:
-                item.lifecycle = MemoryLifecycle.DURABLE
-                promoted += 1
+        promoted = self._promote_to_durable_nosave(age_hours)
         if promoted:
             self._save_index()
         return promoted
 
     def archive_stale(self, stale_days: int = 30) -> int:
-        threshold = time.time() - stale_days * 86400
-        archived = 0
-        for item in self._index.values():
-            if item.lifecycle == MemoryLifecycle.DURABLE and item.last_accessed < threshold:
-                item.lifecycle = MemoryLifecycle.ARCHIVE
-                archived += 1
+        archived = self._archive_stale_nosave(stale_days)
         if archived:
             self._save_index()
         return archived
+
+    def run_consolidation(self, graph_store: Any = None) -> dict[str, int]:
+        """Run all consolidation steps sequentially. Returns counts of items affected.
+
+        When *graph_store* is provided, also runs ``PatternExtractor`` to
+        discover recurring workflow sub-structures (29-6 §4).
+        Prefer :meth:`run_consolidation_async` when an event loop is available.
+        """
+        promoted = self.promote_to_durable()
+        archived = self.archive_stale()
+        decayed = self.apply_decay()
+        evolvement_logger.info(
+            "Consolidation: promoted=%d archived=%d decayed=%d",
+            promoted, archived, decayed,
+        )
+        patterns_extracted = self._run_pattern_extraction(graph_store)
+        return {
+            "promoted": promoted,
+            "archived": archived,
+            "decayed": decayed,
+            "patterns_extracted": patterns_extracted,
+        }
+
+    async def run_consolidation_async(self, graph_store: Any = None) -> dict[str, int]:
+        """Fan out independent consolidation sections (29-5 §5-3).
+
+        Promote and decay are independent and run concurrently.
+        Archive depends on promote (ACTIVE->DURABLE->ARCHIVE ordering) so runs after.
+        Single disk save at the end to avoid redundant writes.
+        """
+        import asyncio
+
+        promoted_fut = asyncio.to_thread(self._promote_to_durable_nosave)
+        decayed_fut = asyncio.to_thread(self._apply_decay_nosave)
+        promoted, decayed = await asyncio.gather(promoted_fut, decayed_fut)
+
+        archived = self._archive_stale_nosave()
+
+        if promoted or archived or decayed:
+            self._save_index()
+
+        evolvement_logger.info(
+            "Consolidation (async): promoted=%d archived=%d decayed=%d",
+            promoted, archived, decayed,
+        )
+        patterns_extracted = self._run_pattern_extraction(graph_store)
+        return {
+            "promoted": promoted,
+            "archived": archived,
+            "decayed": decayed,
+            "patterns_extracted": patterns_extracted,
+        }
+
+    def _run_pattern_extraction(self, graph_store: Any) -> int:
+        if graph_store is None:
+            return 0
+        try:
+            from dan.engine.pattern_extractor import PatternExtractor
+
+            extractor = PatternExtractor(self, graph_store)
+            if extractor.should_run():
+                return len(extractor.extract_patterns())
+        except Exception:
+            logger.debug("Pattern extraction failed during consolidation", exc_info=True)
+        return 0

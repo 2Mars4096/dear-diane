@@ -199,6 +199,8 @@ class EngineConfig:
     meta_max_iterations: int = 5
     meta_timeout_seconds: float | None = None
     meta_pause_on_redesign: bool = True
+    # -- 29-6: Memory-backed adaptive trackers ----------------------------------
+    memory_kernel: Any | None = None
     # -- 21-5: Block resolution at runtime -------------------------------------
     block_registry: BlockRegistry | None = None
 
