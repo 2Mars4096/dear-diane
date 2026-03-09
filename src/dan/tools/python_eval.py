@@ -64,7 +64,7 @@ async def python_eval(code: str, timeout: int = 30, **_kwargs) -> dict:
         "    _orig_print(*a, **kw)\n"
         "result = None\n"
         f"{code}\n"
-        "_orig_print(_json.dumps({{'result': result, 'stdout': _buf.getvalue()}}), file=_sys.stdout)\n"
+        "_orig_print(_json.dumps({'result': result, 'stdout': _buf.getvalue()}), file=_sys.stdout)\n"
     )
 
     sandbox_result: SandboxResult

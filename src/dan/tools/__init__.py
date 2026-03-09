@@ -44,8 +44,10 @@ _TOOL_MODULES = [
     "regex_match",
     "send_email",
     "shell_command",
+    "spreadsheet_read",
     "text_chunk",
     "text_diff",
+    "text_translate",
     "web_fetch",
     "web_search",
 ]

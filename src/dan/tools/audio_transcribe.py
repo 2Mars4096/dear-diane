@@ -88,4 +88,5 @@ async def audio_transcribe(
     return {
         "text": response.text,
         "language_detected": getattr(response, "language", language or "unknown"),
+        "duration_seconds": getattr(response, "duration", None),
     }
