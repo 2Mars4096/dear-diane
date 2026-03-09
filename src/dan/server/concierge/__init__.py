@@ -10,26 +10,36 @@ from .classifier import (
 )
 from .context_resolver import ProjectContextResolver, ResolvedContext
 from .executor import ExecutionResult, ExecutionSelector
+from .fan_out import fan_out, fan_out_dict
 from .dispatcher import ConcurrentDispatcher
 from .handlers import HandlerRegistry, HandlerResult
 from .identity import format_bare_prefix, format_prefix, get_bot_name, starts_with_prefix, strip_prefix
 from .memory_bridge import ExperienceContext, ReuseRecommendation, WorkflowCandidate, WorkflowMemoryIndex
-from .models import Project, SurfaceMessage, Task, TaskTurn
+from .models import ConciergeGoal, ConciergeState, Project, SurfaceMessage, Task, TaskTurn
 from .policy import ActionPolicy, BehaviorPolicy, ClarificationRequest, ClarificationResponse, ExecutionPolicy, FALLBACK_LADDER, format_terminal_message, resolve_policy, suggest_fallback_strategy, validate_terminal_content
 from .solver import ExecutionMode, FallbackStep, GoalResolver, PlanBuilder, PlanStep, SolverDecision, TerminalOutcome
 from .progress import ProgressReporter
 from .project_store import ProjectStore
 from .promotion import PromotionProposal, WorkflowPromoter
 from .queue import ProjectMessageQueue, QueueDecision
-from .runtime import Concierge, build_concierge
+from .resources import MessagePriority, PriorityQueue, ResourceBudget, ResourceTracker, classify_priority
+from .runtime import AutonomyLevel, Concierge, build_concierge
+from .build_session import BuildIteration, BuildSession, BuildSessionManager, BuildSessionStatus
 
 __all__ = [
     "ActionPolicy",
+    "AutonomyLevel",
+    "BuildIteration",
+    "BuildSession",
+    "BuildSessionManager",
+    "BuildSessionStatus",
     "BehaviorPolicy",
     "ClassificationResult",
     "ClarificationRequest",
     "ClarificationResponse",
     "Concierge",
+    "ConciergeGoal",
+    "ConciergeState",
     "ConcurrentDispatcher",
     "ExecutionMode",
     "ExecutionPolicy",
@@ -38,10 +48,14 @@ __all__ = [
     "ExperienceContext",
     "FALLBACK_LADDER",
     "FallbackStep",
+    "fan_out",
+    "fan_out_dict",
     "GoalResolver",
     "HandlerRegistry",
     "HandlerResult",
     "IntentCategory",
+    "MessagePriority",
+    "PriorityQueue",
     "format_bare_prefix",
     "format_prefix",
     "get_bot_name",
@@ -56,6 +70,8 @@ __all__ = [
     "ProgressReporter",
     "PromotionProposal",
     "QueueDecision",
+    "ResourceBudget",
+    "ResourceTracker",
     "ResolvedContext",
     "ReuseRecommendation",
     "SolverDecision",
@@ -68,6 +84,7 @@ __all__ = [
     "WorkflowPromoter",
     "build_concierge",
     "classify_intent",
+    "classify_priority",
     "classify_intent_with_llm_fallback",
     "extract_search_query_from_send_request",
     "format_terminal_message",

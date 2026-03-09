@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -59,3 +60,36 @@ class Project(BaseModel):
     tasks: list[Task] = Field(default_factory=list)
     current_task_id: str | None = None
     pending_action: PendingAction | None = None
+
+
+# ---------------------------------------------------------------------------
+# Concierge orchestrator state (plan 29-2)
+# ---------------------------------------------------------------------------
+
+class ConciergeGoal(BaseModel):
+    """Single goal tracked by the concierge orchestrator."""
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16])
+    description: str = ""
+    status: Literal["active", "paused", "completed", "failed"] = "active"
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+    plan_steps: list[dict[str, Any]] = Field(default_factory=list)
+    current_step_index: int = 0
+    context: dict[str, Any] = Field(default_factory=dict)
+    workflow_id: str | None = None
+    run_history: list[str] = Field(default_factory=list)
+    error_history: list[str] = Field(default_factory=list)
+    user_interventions: list[dict[str, Any]] = Field(default_factory=list)
+    plan_result: dict[str, Any] | None = None
+    iteration: int = 0
+    max_iterations: int = 5
+    paused_at_stage: str | None = None
+
+
+class ConciergeState(BaseModel):
+    """Working state for the concierge (persisted as WORKING_STATE in memory kernel)."""
+
+    active_goals: list[ConciergeGoal] = Field(default_factory=list)
+    pending_clarifications: list[dict[str, Any]] = Field(default_factory=list)
+    last_interaction_at: float = Field(default_factory=time.time)

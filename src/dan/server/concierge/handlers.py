@@ -34,6 +34,13 @@ _FILE_REF_ACTIONS = frozenset({"review", "read", "summarize", "proofread", "anal
 _FILE_REF_NOUNS = frozenset(
     {"paper", "file", "document", "report", "article", "thesis", "manuscript"},
 )
+_INLINE_DOCUMENT_CHAR_LIMIT = 12000
+_INLINE_DOCUMENT_SYSTEM_INSTRUCTIONS = (
+    "Inline document text provided in the user message counts as already read source material. "
+    "Do not call pdf_read or file_read when the source text is already included inline. "
+    "Summarize or answer directly from the provided text, and if the excerpt is marked truncated, "
+    "be explicit that the answer is based only on the provided excerpt."
+)
 
 
 @dataclass
@@ -251,6 +258,22 @@ class FileHandler:
         reader = PdfReader(str(path))
         return "\n".join(page.extract_text() or "" for page in reader.pages)
 
+    @staticmethod
+    def _extract_user_intent(text: str) -> str:
+        """Strip adapter-generated path/file prefixes to recover the user's actual request."""
+        clean: list[str] = []
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if (
+                stripped.startswith("Please review this PDF:")
+                or stripped.startswith("[User sent file:")
+                or stripped.startswith("[Attachment:")
+            ):
+                continue
+            if stripped:
+                clean.append(stripped)
+        return " ".join(clean).strip() or "Please summarize this document."
+
     async def _review_document(self, msg: SurfaceMessage, context: ResolvedContext, path: Path) -> HandlerResult:
         if self.chat_manager is None:
             return HandlerResult(content=f"Found file: {path}", attachments=[path])
@@ -258,11 +281,30 @@ class FileHandler:
             text = await self._extract_pdf_text(path)
         except Exception as exc:
             return HandlerResult(content=f"Found file: {path}\n\nI couldn't read the PDF yet: {exc}")
+        user_intent = self._extract_user_intent(msg.text)
+        excerpt = text[:_INLINE_DOCUMENT_CHAR_LIMIT]
+        truncated = len(text) > _INLINE_DOCUMENT_CHAR_LIMIT
+        if truncated:
+            document_intro = (
+                "The following is an extracted excerpt from a PDF document.\n"
+                f"The excerpt is truncated to the first {_INLINE_DOCUMENT_CHAR_LIMIT} characters.\n"
+            )
+            excerpt_note = (
+                "If the requested summary depends on content outside the excerpt, say that you only "
+                "reviewed the provided excerpt.\n\n"
+            )
+        else:
+            document_intro = "The following is the full extracted text from a PDF document.\n"
+            excerpt_note = ""
         review_message = (
-            f"{msg.text}\n\n"
-            f"Use this PDF as the source material. Do not ask for filesystem access.\n"
+            f"{document_intro}"
+            f"User request: {user_intent}\n\n"
+            f"IMPORTANT: The document text is already provided below — do NOT call pdf_read. "
+            f"Respond directly to the user's request based on the text. "
+            f"Do NOT reproduce or quote the raw document text verbatim — produce a clear, structured response.\n\n"
+            f"{excerpt_note}"
             f"Source file: {path}\n\n"
-            f"{text[:12000]}"
+            f"--- DOCUMENT TEXT ---\n{excerpt}\n--- END DOCUMENT TEXT ---"
         )
         events = self.chat_manager.send_message(
             workflow_id=_workflow_id_from(msg, context),
@@ -276,6 +318,7 @@ class FileHandler:
             prompt_context=_project_prompt_context(context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
+            extra_system_instructions=_INLINE_DOCUMENT_SYSTEM_INSTRUCTIONS,
         )
         return HandlerResult(events=events)
 
@@ -297,13 +340,18 @@ class DirectTaskHandler:
             if verified:
                 return HandlerResult(content=self._format_web_results(verified))
             if not self._requires_live_verification(msg.text):
-                return await self._fallback_to_chat(msg, context)
+                return await self._fallback_to_chat(msg, context, classification)
             return HandlerResult(
                 content="I couldn't verify live web data for that right now. Please try again in a moment or provide a source link."
             )
-        return await self._fallback_to_chat(msg, context)
+        return await self._fallback_to_chat(msg, context, classification)
 
-    async def _fallback_to_chat(self, msg: SurfaceMessage, context: ResolvedContext) -> HandlerResult:
+    async def _fallback_to_chat(
+        self,
+        msg: SurfaceMessage,
+        context: ResolvedContext,
+        classification: ClassificationResult,
+    ) -> HandlerResult:
         events = self.chat_manager.send_message_with_tools(
             workflow_id=_workflow_id_from(msg, context),
             message=msg.text,
@@ -316,6 +364,12 @@ class DirectTaskHandler:
             prompt_context=_project_prompt_context(context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
+            audit_metadata={
+                "project_id": context.project.project_id,
+                "task_id": context.task.task_id,
+                "intent": classification.intent.value,
+                "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
+            },
         )
         return HandlerResult(events=events)
 
@@ -408,8 +462,9 @@ class DirectTaskHandler:
 
 
 class RunHandler:
-    def __init__(self, capability_context: Any) -> None:
+    def __init__(self, capability_context: Any, chat_manager: Any = None) -> None:
         self.capability_context = capability_context
+        self.chat_manager = chat_manager
 
     async def handle(self, msg: SurfaceMessage, context: ResolvedContext, classification: ClassificationResult) -> HandlerResult:
         workflow_id = _workflow_id_from(msg, context)
@@ -441,6 +496,9 @@ class RunHandler:
             result = await handle_resume_run({"run_id": run_id, "workflow_id": workflow_id}, ctx)
             return HandlerResult(content=result.message, stream_channel_id=result.stream_channel_id)
         result = await handle_start_run({"workflow_id": workflow_id}, ctx)
+        if not result.success and self.chat_manager is not None:
+            fallback = DirectTaskHandler(self.chat_manager)
+            return await fallback._fallback_to_chat(msg, context, classification)
         project_update = {}
         if result.success and result.data and result.data.get("run_id"):
             project_update["linked_run_id"] = result.data["run_id"]
@@ -537,6 +595,12 @@ class ConversationHandler:
             prompt_context=_project_prompt_context(context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
+            audit_metadata={
+                "project_id": context.project.project_id,
+                "task_id": context.task.task_id,
+                "intent": classification.intent.value,
+                "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
+            },
         )
         return HandlerResult(events=events)
 
@@ -574,6 +638,12 @@ class WorkflowBuildHandler:
             prompt_context=_project_prompt_context(context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
+            audit_metadata={
+                "project_id": context.project.project_id,
+                "task_id": context.task.task_id,
+                "intent": classification.intent.value,
+                "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
+            },
         )
         return HandlerResult(
             events=events,
@@ -587,6 +657,10 @@ class WorkflowBuildHandler:
 
 
 class MetaGoalHandler:
+    """Handles META_GOAL when concierge has no memory_kernel (legacy path).
+    Creates a ConciergeGoal, runs via MetaController.run_session for execution.
+    """
+
     def __init__(self, meta_controller: Any, capability_context: Any = None) -> None:
         self.meta_controller = meta_controller
         self.capability_context = capability_context
@@ -594,9 +668,13 @@ class MetaGoalHandler:
     async def handle(self, msg: SurfaceMessage, context: ResolvedContext, classification: ClassificationResult) -> HandlerResult:
         if self.meta_controller is None:
             return HandlerResult(content="Meta controller not available.")
-        enriched_goal = self._enrich_with_experience(msg.text)
-        session = await self.meta_controller.create_session(enriched_goal)
-        asyncio.create_task(self.meta_controller.run_session(session))
+        enriched_goal_text = self._enrich_with_experience(msg.text)
+        from dan.server.concierge.models import ConciergeGoal
+        from dan.meta.controller import MetaControllerConfig
+
+        goal = ConciergeGoal(description=enriched_goal_text.strip(), status="active")
+        session = await self.meta_controller.create_session_for_goal(goal)
+        asyncio.create_task(self.meta_controller.run_session(session, MetaControllerConfig(max_iterations=goal.max_iterations)))
         await asyncio.sleep(0)
         return HandlerResult(
             content=f"{format_prefix(context.project.label)} Meta session started: {session.session_id}",
