@@ -200,7 +200,10 @@ class RAGExecutor:
             "Example: [{\"index\": 0, \"score\": 0.9}, {\"index\": 1, \"score\": 0.2}]\n\n"
         )
         for i, c in enumerate(chunks):
-            prompt += f"Chunk {i}:\n{c.get('text', '')}\n\n"
+            chunk_text = c.get('text', '')
+            if len(chunk_text) > 1000:
+                chunk_text = chunk_text[:1000] + "... [truncated]"
+            prompt += f"Chunk {i}:\n{chunk_text}\n\n"
 
         try:
             result = await provider.complete(
@@ -209,11 +212,15 @@ class RAGExecutor:
                 temperature=0.0,
             )
             
+            import re
             text = result.text.strip()
-            if text.startswith("```"):
-                lines = text.split("\n")
-                if len(lines) >= 2:
-                    text = "\n".join(lines[1:-1])
+            match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
+            if match:
+                text = match.group(1)
+            else:
+                start, end = text.find("["), text.rfind("]")
+                if start != -1 and end != -1:
+                    text = text[start:end+1]
             
             scores_data = json.loads(text)
             if isinstance(scores_data, dict) and "scores" in scores_data:
@@ -223,9 +230,12 @@ class RAGExecutor:
                 
             if isinstance(scores_data, list):
                 for item in scores_data:
-                    idx = item.get("index")
-                    if isinstance(idx, int) and 0 <= idx < len(chunks):
-                        chunks[idx]["score"] = float(item.get("score", chunks[idx].get("score", 0.0)))
+                    try:
+                        idx = int(item.get("index"))
+                        if 0 <= idx < len(chunks):
+                            chunks[idx]["score"] = float(item.get("score", chunks[idx].get("score", 0.0)))
+                    except (TypeError, ValueError):
+                        continue
                         
             chunks.sort(key=lambda x: x.get("score", 0.0), reverse=True)
         except Exception as exc:

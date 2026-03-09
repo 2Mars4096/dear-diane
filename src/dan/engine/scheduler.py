@@ -1608,11 +1608,19 @@ class Engine:
         # -- 18-1: Encode-to-memory pattern ------------------------------------
         encode_threshold = getattr(context.config, "encode_to_memory_threshold_tokens", None)
         if encode_threshold is not None and context.short_term_memory is not None:
+            import json
             for port_name, value in result.outputs.items():
-                if isinstance(value, str):
-                    token_count = estimate_tokens(value)
+                check_val = value
+                if isinstance(value, (dict, list)):
+                    try:
+                        check_val = json.dumps(value)
+                    except TypeError:
+                        continue
+                
+                if isinstance(check_val, str):
+                    token_count = estimate_tokens(check_val)
                     if token_count > encode_threshold:
-                        preview = value[:500] + f"... [truncated, total {token_count} tokens]"
+                        preview = check_val[:500] + f"... [truncated, total {token_count} tokens]"
                         context.remember(
                             content=f"Large artifact on port '{port_name}': {preview}",
                             source_node_id=node_id,
