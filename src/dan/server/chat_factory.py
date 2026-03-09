@@ -30,6 +30,7 @@ class ChatServices:
         memory_kernel: Any | None = None,
         concierge: Any | None = None,
         dispatcher: Any | None = None,
+        mcp_bridge: Any | None = None,
     ) -> None:
         self.graph_store = graph_store
         self.chat_store = chat_store
@@ -43,6 +44,7 @@ class ChatServices:
         self.memory_kernel = memory_kernel
         self.concierge = concierge
         self.dispatcher = dispatcher
+        self.mcp_bridge = mcp_bridge
 
 
 def _build_engine_config() -> Any:
@@ -171,6 +173,7 @@ def build_chat_services(
         register_experience_capabilities,
         register_publish_capabilities,
         register_run_lifecycle_capabilities,
+        register_workflow_catalog_capabilities,
     )
     from dan.server.concierge import build_concierge
 
@@ -208,6 +211,8 @@ def build_chat_services(
     register_base_capabilities(capability_registry)
     register_experience_capabilities(capability_registry)
     register_run_lifecycle_capabilities(capability_registry)
+    register_workflow_catalog_capabilities(capability_registry)
+
     capability_context = CapabilityContext(
         workflow_id="",
         graph_store=graph_store,
@@ -236,9 +241,15 @@ def build_chat_services(
     memory_kernel = None
     try:
         from dan.engine.memory_kernel import MemoryKernel
+        from dan.engine.memory_kernel import DualWriteAdapter
         from dan.engine.memory_adapters import ProfileAdapter, ConversationAdapter
 
-        memory_kernel = MemoryKernel()
+        memory_kernel = MemoryKernel(
+            dual_write_adapter=DualWriteAdapter(
+                conversation_memory=conversation_memory,
+                user_profile=user_profile,
+            )
+        )
         if user_profile:
             imported = ProfileAdapter.import_profile(user_profile, memory_kernel)
             if imported:
@@ -249,6 +260,33 @@ def build_chat_services(
                 logger.debug("Imported %d conversation summaries into memory kernel", imported)
     except Exception:
         logger.debug("MemoryKernel not available", exc_info=True)
+    if memory_kernel is not None:
+        run_manager._memory_kernel = memory_kernel
+        run_manager._config.memory_kernel = memory_kernel
+
+    mcp_bridge = None
+    try:
+        from dan.mcp_bridge import MCPBridge, load_mcp_config, register_mcp_tools
+        mcp_bridge = MCPBridge()
+        mcp_config = load_mcp_config()
+        for name, server_cfg in mcp_config.servers.items():
+            if server_cfg.auto_connect:
+                try:
+                    import asyncio
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        logger.debug("Skipping MCP auto-connect in async context — use /mcp install or restart in sync mode")
+                    else:
+                        loop.run_until_complete(mcp_bridge.connect(name, server_cfg))
+                        register_mcp_tools(capability_registry, tool_registry, mcp_bridge, name)
+                except Exception:
+                    logger.warning("Failed to auto-connect MCP server %r", name, exc_info=True)
+    except Exception:
+        logger.debug("MCP bridge not available", exc_info=True)
+
+    if mcp_bridge is not None:
+        from dataclasses import replace
+        capability_context = replace(capability_context, mcp_bridge=mcp_bridge)
 
     chat_manager = ChatManager(
         provider_registry=provider_registry,
@@ -266,7 +304,11 @@ def build_chat_services(
         capability_context=capability_context,
         user_profile=user_profile,
         conversation_memory=conversation_memory,
+        memory_kernel=memory_kernel,
         enable_dispatcher=True,
+        mcp_bridge=mcp_bridge,
+        capability_registry=capability_registry,
+        tool_registry=tool_registry,
     )
     if isinstance(result, tuple):
         concierge, dispatcher = result
@@ -286,4 +328,5 @@ def build_chat_services(
         memory_kernel=memory_kernel,
         concierge=concierge,
         dispatcher=dispatcher,
+        mcp_bridge=mcp_bridge,
     )

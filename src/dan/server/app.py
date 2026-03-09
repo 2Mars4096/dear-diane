@@ -104,6 +104,7 @@ _active_adapters: dict[str, tuple[MessagingAdapter, asyncio.Task[Any]]] = {}
 _adapter_session_stores: dict[str, AdapterSessionStore] = {}
 _adapter_start_times: dict[str, float] = {}
 _adapter_renderers: dict[str, tuple[MessagingHumanRenderer, Graph | None]] = {}
+_adapter_surface_types: dict[str, str] = {}
 _self_knowledge_index: Any | None = None
 _notification_manager: Any | None = None
 _concierge: Any | None = None
@@ -1218,6 +1219,20 @@ def _auto_register_published_workflows(registry: PublishRegistry) -> None:
             logger.warning("Failed to auto-register %s", pub_file, exc_info=True)
 
 
+async def _consolidation_loop(kernel: Any, interval_hours: float) -> None:
+    """Periodically run memory consolidation in the background."""
+    try:
+        while True:
+            await asyncio.sleep(interval_hours * 3600)
+            try:
+                result = await kernel.run_consolidation_async(graph_store=_graph_store)
+                logger.info("Memory consolidation: %s", result)
+            except Exception:
+                logger.debug("Memory consolidation failed", exc_info=True)
+    except asyncio.CancelledError:
+        return
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _run_manager, _chat_manager, _mention_resolver, _notification_manager
@@ -1249,12 +1264,14 @@ async def lifespan(app: FastAPI):
         register_experience_capabilities,
         register_publish_capabilities,
         register_run_lifecycle_capabilities,
+        register_workflow_catalog_capabilities,
     )
 
     _capability_registry = ChatCapabilityRegistry()
     register_base_capabilities(_capability_registry)
     register_experience_capabilities(_capability_registry)
     register_run_lifecycle_capabilities(_capability_registry)
+    register_workflow_catalog_capabilities(_capability_registry)
 
     _capability_context = CapabilityContext(
         workflow_id="",
@@ -1280,6 +1297,31 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("Conversation memory load skipped", exc_info=True)
 
+    memory_kernel = None
+    try:
+        from dan.engine.memory_adapters import ConversationAdapter, ProfileAdapter
+        from dan.engine.memory_kernel import DualWriteAdapter, MemoryKernel
+
+        memory_kernel = MemoryKernel(
+            dual_write_adapter=DualWriteAdapter(
+                conversation_memory=conversation_memory,
+                user_profile=user_profile,
+            )
+        )
+        if user_profile:
+            imported = ProfileAdapter.import_profile(user_profile, memory_kernel)
+            if imported:
+                logger.debug("Imported %d profile items into memory kernel", imported)
+        if conversation_memory:
+            imported = ConversationAdapter.import_all(conversation_memory, memory_kernel)
+            if imported:
+                logger.debug("Imported %d conversation items into memory kernel", imported)
+    except Exception:
+        logger.debug("Memory kernel load skipped", exc_info=True)
+    if memory_kernel is not None:
+        _run_manager._memory_kernel = memory_kernel
+        _run_manager._config.memory_kernel = memory_kernel
+
     _chat_manager = ChatManager(
         provider_registry=_build_chat_provider_registry(),
         graph_store=_graph_store,
@@ -1288,6 +1330,7 @@ async def lifespan(app: FastAPI):
         capability_context=_capability_context,
         user_profile=user_profile,
         conversation_memory=conversation_memory,
+        memory_kernel=memory_kernel,
     )
 
     _publish_registry = PublishRegistry(engine_config)
@@ -1378,6 +1421,17 @@ async def lifespan(app: FastAPI):
     except HTTPException:
         _exp_index = None
     _exp_store = _get_experience_store(with_index=_exp_index is not None)
+    if memory_kernel is not None:
+        try:
+            from dan.engine.memory_adapters import ExperienceAdapter
+
+            imported = await ExperienceAdapter.import_all(_exp_store, memory_kernel)
+            if imported:
+                logger.debug("Imported %d workflow experiences into memory kernel", imported)
+            if getattr(memory_kernel, "_dual_write", None) is not None:
+                memory_kernel._dual_write._experience_store = _exp_store
+        except Exception:
+            logger.debug("Experience import into memory kernel skipped", exc_info=True)
     from dan.meta.discovery import DiscoveryService
     _capability_context.experience_store = _exp_store
     _capability_context.experience_index = _exp_index
@@ -1387,6 +1441,7 @@ async def lifespan(app: FastAPI):
         graph_store=_graph_store,
         tool_registry=_run_manager.tool_registry if _run_manager else None,
         self_knowledge=_self_knowledge_index,
+        memory_kernel=memory_kernel,
     )
     _capability_context.principle_store = (
         _run_manager._get_principle_store() if _run_manager else None
@@ -1401,6 +1456,7 @@ async def lifespan(app: FastAPI):
             user_profile=user_profile,
             conversation_memory=conversation_memory,
             meta_controller=meta_controller,
+            memory_kernel=memory_kernel,
             enable_dispatcher=True,
         )
         if isinstance(result, tuple):
@@ -1430,7 +1486,28 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.debug("Custom skill discovery failed", exc_info=True)
 
+    _consolidation_task = None
+    if memory_kernel is not None:
+        _consolidation_interval_hours = float(
+            os.environ.get("DAN_MEMORY_CONSOLIDATION_INTERVAL", "6")
+        )
+        if _consolidation_interval_hours > 0:
+            _consolidation_task = asyncio.create_task(
+                _consolidation_loop(memory_kernel, _consolidation_interval_hours)
+            )
+            logger.info(
+                "Memory consolidation scheduled every %.1f hours",
+                _consolidation_interval_hours,
+            )
+
     yield
+
+    if _consolidation_task is not None and not _consolidation_task.done():
+        _consolidation_task.cancel()
+        try:
+            await _consolidation_task
+        except asyncio.CancelledError:
+            pass
 
     if _notification_manager is not None:
         try:
@@ -3216,9 +3293,9 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                 recent_run_failed = False
                 if _run_manager is not None:
                     runs = _run_manager.list_runs()
-                    wf_runs = [r for r in runs if r.graph_id == req.workflow_id]
+                    wf_runs = [r for r in runs if r.get("graph_id") == req.workflow_id]
                     if wf_runs:
-                        recent_run_failed = wf_runs[0].status.value == "failed"
+                        recent_run_failed = wf_runs[0].get("status") == "failed"
                 detected_mode = detect_chat_mode(
                     req.message, graph_dict, recent_run_failed,
                 )
@@ -3365,6 +3442,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                     asyncio.create_task(_pipe_tool_run_events())
                 await queue.put(payload)
         except Exception as exc:
+            logger.exception("Chat _produce() error for channel %s", stream_channel_id)
             await queue.put({"type": "chat_error", "error": str(exc)})
         finally:
             _chat_manager.unregister_stream(stream_channel_id)
@@ -4226,77 +4304,181 @@ def _run_adapter_message_handler(
     external_id: str,
     message_text: str,
 ) -> None:
-    """Handle incoming message: create session, run engine, wire renderer.
+    """Handle incoming message via concierge dispatcher (preferred) or direct Engine.run().
 
-    Each invocation creates its own ``MessagingHumanRenderer`` so that
-    concurrent conversations on the same adapter do not race on
-    ``active_session_id``.
+    When the concierge dispatcher is available, messages are routed through the
+    full concierge path (intent classification, reuse-first checks, goal
+    orchestration).  This gives adapter users the same experience as CLI/server
+    users.  Falls back to direct ``Engine.run()`` when no dispatcher is wired.
     """
+    adapter_entry = _active_adapters.get(adapter_id)
+    if adapter_entry is None:
+        logger.warning("Adapter %s: not found, ignoring message", adapter_id)
+        return
+
+    adapter, _ = adapter_entry
+    surface = _adapter_surface_types.get(adapter_id, "adapter")
+
+    async def _handle_workflows_command() -> None:
+        """Respond to ``/workflows`` with a formatted list of saved workflows."""
+        try:
+            graphs = _graph_store.list_graphs()
+        except Exception:
+            graphs = []
+        if not graphs:
+            await _send_adapter_text(adapter, external_id, "No saved workflows found.")
+            return
+        lines = ["*Saved Workflows*\n"]
+        for i, g in enumerate(graphs[:20], 1):
+            name = g.get("name", g.get("graph_id", "?"))
+            desc = g.get("description", "")
+            line = f"{i}. *{name}*"
+            if desc:
+                line += f" — {desc[:80]}"
+            lines.append(line)
+        if len(graphs) > 20:
+            lines.append(f"\n…and {len(graphs) - 20} more.")
+        await _send_adapter_text(adapter, external_id, "\n".join(lines))
+
+    if message_text.strip().lower() == "/workflows":
+        asyncio.create_task(
+            _handle_workflows_command(),
+            name=f"adapter-{adapter_id}-workflows",
+        )
+        return
+
+    if _dispatcher is not None:
+        asyncio.create_task(
+            _run_adapter_concierge(adapter_id, adapter, surface, external_id, message_text),
+            name=f"adapter-{adapter_id}-dispatch",
+        )
+        return
+
     entry = _adapter_renderers.get(adapter_id)
     if entry is None:
         logger.warning("Adapter %s: no renderer/graph, ignoring message", adapter_id)
         return
-
     _base_renderer, graph = entry
     if graph is None:
-        logger.warning("Adapter %s: no workflow graph loaded, ignoring message", adapter_id)
+        logger.warning("Adapter %s: no workflow graph loaded and no dispatcher, ignoring", adapter_id)
         return
+    asyncio.create_task(
+        _run_adapter_engine(adapter_id, adapter, _base_renderer, graph, external_id, message_text),
+        name=f"adapter-{adapter_id}-engine",
+    )
 
+
+async def _run_adapter_concierge(
+    adapter_id: str,
+    adapter: MessagingAdapter,
+    surface: str,
+    external_id: str,
+    message_text: str,
+) -> None:
+    """Route an adapter message through the concierge dispatcher."""
+    from dan.server.concierge.models import SurfaceMessage
+
+    msg = SurfaceMessage(
+        surface=surface,
+        external_id=external_id,
+        text=message_text,
+        metadata={"adapter_id": adapter_id},
+    )
+    try:
+        async for event in _dispatcher.dispatch(msg):
+            evt_type = getattr(event, "type", "")
+            if evt_type == "chat_complete":
+                content = getattr(event, "content", "")
+                if content:
+                    await _send_adapter_text(adapter, external_id, content)
+            elif evt_type == "chat_stream":
+                pass
+    except Exception:
+        logger.exception("Adapter %s concierge dispatch failed", adapter_id)
+        try:
+            await _send_adapter_text(
+                adapter, external_id, "Something went wrong. Please try again.",
+            )
+        except Exception:
+            pass
+
+
+async def _run_adapter_engine(
+    adapter_id: str,
+    adapter: MessagingAdapter,
+    base_renderer: MessagingHumanRenderer,
+    graph: Graph,
+    external_id: str,
+    message_text: str,
+) -> None:
+    """Legacy path: run a pre-loaded workflow graph directly via Engine.run()."""
     session_store = _adapter_session_stores.get(adapter_id)
     if session_store is None:
         logger.warning("Adapter %s: no session store, ignoring message", adapter_id)
         return
 
-    async def _run() -> None:
-        session = await session_store.create(external_id)
-        session_id = session.session_id
+    session = await session_store.create(external_id)
+    session_id = session.session_id
 
-        adapter = None
-        for aid, (a, _) in _active_adapters.items():
-            if aid == adapter_id:
-                adapter = a
-                break
-        if adapter is not None and hasattr(adapter, "register_session"):
-            try:
-                chat_id = int(external_id) if external_id.isdigit() else external_id
-                adapter.register_session(session_id, chat_id)
-            except (ValueError, TypeError):
-                adapter.register_session(session_id, external_id)
-
-        session_renderer = MessagingHumanRenderer(
-            _base_renderer._adapter, session_store,
-        )
-        session_renderer.active_session_id = session_id
-        await session_store.update_state(session_id, SessionState.RUNNING)
-
-        from dan.engine import Engine, EngineConfig
-
-        cfg = _get_engine_config()
-        engine_config = EngineConfig(
-            llm_api_key=cfg.llm_api_key or os.environ.get("DAN_LLM_API_KEY", os.environ.get("LLM_API_KEY", "")),
-            llm_base_url=cfg.llm_base_url or "https://api.vectorengine.ai/v1",
-            llm_default_model=cfg.llm_default_model or "claude-sonnet-4-6",
-            block_registry=_get_block_registry(),
-        )
-
-        engine = Engine(
-            config=engine_config,
-            human_renderer=session_renderer,
-        )
-
-        inputs = {"message": message_text, "user_input": message_text, "input": message_text}
+    if hasattr(adapter, "register_session"):
         try:
-            result = await engine.run(graph, inputs=inputs)
-            if not result.success and result.errors:
-                logger.warning("Adapter %s run failed: %s", adapter_id, result.errors)
-        except Exception:
-            logger.exception("Adapter %s engine run failed", adapter_id)
-        finally:
-            await session_store.remove(session_id)
-            if adapter is not None and hasattr(adapter, "unregister_session"):
-                adapter.unregister_session(session_id)
+            chat_id = int(external_id) if external_id.isdigit() else external_id
+            adapter.register_session(session_id, chat_id)
+        except (ValueError, TypeError):
+            adapter.register_session(session_id, external_id)
 
-    asyncio.create_task(_run(), name=f"adapter-{adapter_id}-run")
+    session_renderer = MessagingHumanRenderer(adapter, session_store)
+    session_renderer.active_session_id = session_id
+    await session_store.update_state(session_id, SessionState.RUNNING)
+
+    from dan.engine import Engine, EngineConfig
+
+    cfg = _get_engine_config()
+    engine_config = EngineConfig(
+        llm_api_key=cfg.llm_api_key or os.environ.get("DAN_LLM_API_KEY", os.environ.get("LLM_API_KEY", "")),
+        llm_base_url=cfg.llm_base_url or "https://api.vectorengine.ai/v1",
+        llm_default_model=cfg.llm_default_model or "claude-sonnet-4-6",
+        block_registry=_get_block_registry(),
+    )
+    engine = Engine(config=engine_config, human_renderer=session_renderer)
+
+    inputs = {"message": message_text, "user_input": message_text, "input": message_text}
+    try:
+        result = await engine.run(graph, inputs=inputs)
+        if not result.success and result.errors:
+            logger.warning("Adapter %s run failed: %s", adapter_id, result.errors)
+    except Exception:
+        logger.exception("Adapter %s engine run failed", adapter_id)
+    finally:
+        await session_store.remove(session_id)
+        if hasattr(adapter, "unregister_session"):
+            adapter.unregister_session(session_id)
+
+
+async def _send_adapter_text(adapter: MessagingAdapter, external_id: str, text: str) -> None:
+    """Send text back through an adapter, handling different send APIs."""
+    if hasattr(adapter, "_send_text"):
+        if hasattr(adapter, "_jid_map"):
+            await adapter._send_text(external_id, text)
+        else:
+            try:
+                chat_id = int(external_id)
+            except (ValueError, TypeError):
+                chat_id = external_id  # type: ignore[assignment]
+            await adapter._send_text(chat_id, text)
+    elif hasattr(adapter, "send_prompt"):
+        sid = None
+        if hasattr(adapter, "_session_map"):
+            sid = adapter._session_map.get(external_id)
+            if sid is None:
+                try:
+                    sid = adapter._session_map.get(int(external_id))
+                except (ValueError, TypeError):
+                    pass
+        if sid is not None:
+            await adapter.send_prompt(sid, text)
+        else:
+            logger.debug("No session for external_id %s, trying direct send", external_id)
 
 
 class AdapterStartRequest(BaseModel):
@@ -4342,11 +4524,10 @@ async def start_adapter(req: AdapterStartRequest):
 
     renderer = MessagingHumanRenderer(adapter, session_store)
 
-    if graph is not None:
-        async def _on_msg(ext_id: str, text: str) -> None:
-            _run_adapter_message_handler(adapter_id, ext_id, text)
+    async def _on_msg(ext_id: str, text: str) -> None:
+        _run_adapter_message_handler(adapter_id, ext_id, text)
 
-        adapter.set_message_callback(_on_msg)
+    adapter.set_message_callback(_on_msg)
 
     async def _run_adapter() -> None:
         try:
@@ -4360,6 +4541,7 @@ async def start_adapter(req: AdapterStartRequest):
     _active_adapters[adapter_id] = (adapter, task)
     _adapter_start_times[adapter_id] = time.time()
     _adapter_renderers[adapter_id] = (renderer, graph)
+    _adapter_surface_types[adapter_id] = adapter_type
 
     return {
         "status": "started",
@@ -4386,6 +4568,7 @@ async def stop_adapter(req: AdapterStopRequest):
     _adapter_session_stores.pop(req.adapter_id, None)
     _adapter_start_times.pop(req.adapter_id, None)
     _adapter_renderers.pop(req.adapter_id, None)
+    _adapter_surface_types.pop(req.adapter_id, None)
 
     return {"status": "stopped", "adapter_id": req.adapter_id}
 

@@ -24,6 +24,7 @@ except ImportError:
 from dan.models.graph import Graph
 from dan.providers import CompletionResult, StreamChunk
 from dan.providers.registry import ProviderRegistry
+from dan.server.capability_registry import CapabilityResult
 from dan.server.graph_mutator import (
     GraphMutator,
     MutationPlan,
@@ -422,14 +423,17 @@ Call these when the user's intent matches:
 
 file_read, pdf_read, list_directory accept absolute paths (~/Dropbox/...).
 Read-only modes (ask/plan): lookup + browse + file read + web read only.
-"""
+{mcp_block}"""
 
 SURFACE_HINTS = {
     "whatsapp": (
         "## Surface: WhatsApp\n"
         "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
         "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
+        "- ABSOLUTELY NO HTML tags (<div>, <p>, <h2>, <span>, <ul>, <li>, etc.) \u2014 WhatsApp renders these as raw text\n"
         "- No code blocks, no markdown tables \u2014 plain text only\n"
+        "- Never include raw HTML from web_fetch results in your response \u2014 always summarize in plain text\n"
+        "- Never reproduce raw extracted text from pdf_read or file_read \u2014 always produce a structured summary or answer\n"
         "- URLs on their own line (auto-linkified)\n"
         "- For long reports, organize into clearly separated sections"
     ),
@@ -437,7 +441,10 @@ SURFACE_HINTS = {
         "## Surface: WhatsApp\n"
         "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
         "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
+        "- ABSOLUTELY NO HTML tags (<div>, <p>, <h2>, <span>, <ul>, <li>, etc.) \u2014 WhatsApp renders these as raw text\n"
         "- No code blocks, no markdown tables \u2014 plain text only\n"
+        "- Never include raw HTML from web_fetch results in your response \u2014 always summarize in plain text\n"
+        "- Never reproduce raw extracted text from pdf_read or file_read \u2014 always produce a structured summary or answer\n"
         "- URLs on their own line (auto-linkified)\n"
         "- For long reports, organize into clearly separated sections"
     ),
@@ -488,6 +495,19 @@ get_learned_principles, discover_capabilities, submit_human_input
 5. If a tool fails, tell the user what happened. Don't silently make something up.
 6. If you can't do something, say so. Suggest what the user can do instead.
 
+## Research & Report Behavior
+
+When asked for research reports, literature reviews, equity analysis, or deep-dive topics:
+1. ALWAYS call current_datetime first to anchor "recent" correctly.
+2. Search MULTIPLE angles — at least 3-5 distinct web_search queries per research task. One search is never enough.
+3. For promising results, call web_fetch to read the full article/page — don't rely on search snippets alone.
+4. Every factual claim (prices, dates, statistics, company data) MUST come from a tool call. If you can't source it, say so.
+5. For academic topics, check if the user has local papers: call list_directory on likely paths, then pdf_read on found PDFs.
+6. When you find important papers you CAN'T access in full (paywalled, gated), explicitly tell the user: \
+"I found these papers but could only see the abstract: [list with author, title, journal]. If you have PDFs, share the path and I'll incorporate them."
+7. Structure reports with clear sections and bold headers. Include a Sources section at the end.
+8. NEVER fabricate citations, author names, journal names, or publication years. Every citation must come from a tool result.
+
 {surface_hints}
 
 {context_block}
@@ -499,6 +519,71 @@ get_learned_principles, discover_capabilities, submit_human_input
 EMPTY_GRAPH_SUMMARY_PLACEHOLDER = (
     "Workflow is empty (0 nodes, 0 edges). Create from scratch using plan_graph_mutations."
 )
+
+# ---------------------------------------------------------------------------
+# Source extraction helper
+# ---------------------------------------------------------------------------
+
+_URL_RE = re.compile(r"https?://[^\s\"'<>\]\)]+")
+
+
+def _extract_cited_sources(tool_calls: list[dict[str, Any]]) -> list[str]:
+    """Pull URLs from web_search/web_fetch and file paths from pdf_read/file_read results.
+
+    *tool_calls* is a list of dicts with at least ``tool_name`` and
+    ``output_preview`` (or ``args_preview``).  Returns a deduplicated list of
+    source strings (URLs or file paths) in the order first seen.
+    """
+    seen: set[str] = set()
+    sources: list[str] = []
+
+    def _add(s: str) -> None:
+        if s and s not in seen:
+            seen.add(s)
+            sources.append(s)
+
+    for tc in tool_calls:
+        name = tc.get("tool_name", "")
+        raw_args = tc.get("args")
+        args = raw_args if isinstance(raw_args, dict) else tc.get("args_preview", "")
+        output = tc.get("output_preview", "")
+        result_data = tc.get("result_data")
+
+        if name in ("web_search", "web_fetch"):
+            for url in _URL_RE.findall(output):
+                _add(url)
+            args_text = json.dumps(args, default=str) if isinstance(args, dict) else str(args)
+            for url in _URL_RE.findall(args_text):
+                _add(url)
+            if isinstance(result_data, dict):
+                for url in _URL_RE.findall(json.dumps(result_data, default=str)):
+                    _add(url)
+
+        elif name in ("pdf_read", "file_read"):
+            if isinstance(args, dict):
+                for field in ("path", "file_path", "filepath"):
+                    value = args.get(field)
+                    if isinstance(value, str):
+                        _add(value)
+            else:
+                for field in ("path", "file_path", "filepath"):
+                    if field in args:
+                        try:
+                            parsed = json.loads(args)
+                            if isinstance(parsed, dict) and field in parsed:
+                                _add(parsed[field])
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+            args_text = json.dumps(args, default=str) if isinstance(args, dict) else str(args)
+            path_match = re.search(r'["\']?(/[^\s"\']+\.\w+)', args_text)
+            if path_match:
+                _add(path_match.group(1))
+            path_match2 = re.search(r'["\']?(~/[^\s"\']+\.\w+)', args_text)
+            if path_match2:
+                _add(path_match2.group(1))
+
+    return sources
+
 
 # ---------------------------------------------------------------------------
 # Mode-specific prompt templates
@@ -580,20 +665,46 @@ You are DAN's graph assistant. Read-only — explain the workflow, never modify 
 """
 
 CONVERSATION_PROMPT = """\
-You are DAN, a personal AI assistant. Be concise (1-3 sentences).
+You are DAN, a personal AI assistant with full tool access. You help with anything: \
+research, writing, file operations, web search, data analysis, communication.
 
-## Tools
-- Call web_search for ANY live data: prices, rates, weather, scores, news, dates.
-- Call pdf_read to read a PDF when asked to summarize, review, or analyze a paper/document.
-- Call file_read to read any text file the user references by path.
-- NEVER fabricate content — read the actual file or search the web first.
+## Tools — always use tools instead of guessing
+
+**Files:** file_read (text files), pdf_read (PDFs — use for summarize/review/analyze), \
+list_directory (browse folders). All accept absolute paths like ~/Dropbox/...
+**Web:** web_search (current data: prices, weather, news, papers — NEVER guess live data), \
+web_fetch (read a URL's content)
+**System:** shell_command (run terminal commands), \
+current_datetime (today's date/time — ALWAYS call, never guess), \
+screenshot (capture screen), clipboard (read/write clipboard)
+**Communication:** send_email (send via SMTP), file_write (create/save files)
+**Text:** text_chunk, json_extract, regex_match
+**Workflow:** list_graphs, start_run, get_run_status, cancel_run, resume_run, \
+publish_workflow, search_workflow_history, get_learned_principles
+
+## Rules — non-negotiable
+
+1. NEVER fabricate live data (prices, dates, weather, scores). Call web_search.
+2. NEVER summarize a file you haven't read. Call pdf_read or file_read first.
+3. NEVER guess the current date/time. Call current_datetime.
+4. If a tool fails, tell the user honestly. Don't silently invent an answer.
+5. Answer directly — no "Would you like me to…?", no numbered options unless asked.
+
+## Research & reports
+
+When asked for research, literature reviews, equity analysis, or deep-dive topics:
+1. Call current_datetime first to anchor "recent" correctly.
+2. Run at least 3–5 distinct web_search queries — one search is never enough.
+3. Fetch full pages with web_fetch for promising results; don't rely on snippets alone.
+4. Every factual claim must come from a tool result. If you can't source it, say so.
+5. For academic topics, check local papers: list_directory on likely paths, then pdf_read.
+6. Inaccessible papers (paywalled/gated): tell the user — "I found these but couldn't access \
+the full text: [list]. Share the PDF path and I'll incorporate them."
+7. Structure reports with clear sections. Include a Sources section at the end.
+8. NEVER fabricate citations, author names, or publication years.
 
 ## Context
 {graph_summary}
-
-## Rules
-- Answer directly. No commands, no numbered options, no "would you like me to…?"
-- Current data → web_search. Files/papers → pdf_read or file_read. General knowledge → answer directly.
 """
 
 PLAN_PROMPT = """\
@@ -1089,6 +1200,7 @@ class ChatQueuedEvent(BaseModel):
     type: str = "chat_queued"
     stream_channel_id: str
     correlation_id: str
+    queue_position: int = 0
 
 
 class ChatFileAttachmentEvent(BaseModel):
@@ -1351,6 +1463,12 @@ def _normalize_generated_mutation_ops(
             continue
         op_norm = dict(op)
         if op_norm.get("op") == "add_edge":
+            cfg = op_norm.get("config")
+            if isinstance(cfg, dict):
+                for key in ("source_id", "source_port", "target_id", "target_port"):
+                    if key not in op_norm and key in cfg:
+                        op_norm[key] = cfg[key]
+                op_norm.pop("config", None)
             normalized.append(op_norm)
             continue
 
@@ -1455,6 +1573,82 @@ def _build_dry_run_preview(dry_result: Any) -> tuple[str, str]:
     return "error", f"Dry run failed: {errors[0]}"
 
 
+# ---------------------------------------------------------------------------
+# Audit persistence (fire-and-forget)
+# ---------------------------------------------------------------------------
+
+def _try_persist_audit(
+    *,
+    workflow_id: str,
+    message_id: str,
+    user_message: str,
+    assistant_message: str,
+    mode: str,
+    model: str,
+    audit_tool_records: list[dict[str, Any]],
+    prompt_messages: list[dict[str, Any]] | None = None,
+    surface: str | None = None,
+    error: str | None = None,
+    audit_metadata: dict[str, Any] | None = None,
+) -> None:
+    """Best-effort audit record persistence — never raises."""
+    try:
+        from dan.server.audit import ChatAuditRecord, ChatAuditStore, ToolCallRecord
+    except ImportError:
+        return
+
+    try:
+        audit_metadata = audit_metadata or {}
+        prompt_messages = prompt_messages or []
+        tc_records = [
+            ToolCallRecord(
+                tool_name=r.get("tool_name", ""),
+                args=r.get("args") or {"preview": r.get("args_preview", "")},
+                result_summary=r.get("output_preview", "")[:500],
+                status=r.get("status", "success"),
+                duration_ms=r.get("duration_ms", 0),
+                source_urls=list(r.get("source_urls") or []),
+                source_files=list(r.get("source_files") or []),
+            )
+            for r in audit_tool_records
+        ]
+        cited = _extract_cited_sources(audit_tool_records)
+        run_id = str(audit_metadata.get("run_id") or "").strip()
+        if not run_id:
+            for record in audit_tool_records:
+                result_data = record.get("result_data")
+                if isinstance(result_data, dict) and result_data.get("run_id"):
+                    run_id = str(result_data["run_id"])
+                    break
+        record = ChatAuditRecord(
+            turn_id=message_id,
+            surface_id=surface or "server",
+            project_id=str(audit_metadata.get("project_id") or ""),
+            task_id=str(audit_metadata.get("task_id") or ""),
+            workflow_id=workflow_id,
+            run_id=run_id,
+            user_message=user_message,
+            assistant_message=assistant_message or error or "",
+            intent=str(audit_metadata.get("intent") or ""),
+            mode=mode,
+            reuse_decision=str(audit_metadata.get("reuse_decision") or ""),
+            prompt_messages=[
+                {
+                    "role": str(msg.get("role", "")),
+                    "content": str(msg.get("content", "")),
+                }
+                for msg in prompt_messages
+            ],
+            model=model,
+            tool_calls=tc_records,
+            cited_sources=cited,
+            memory_item_ids=list(audit_metadata.get("memory_item_ids") or []),
+        )
+        ChatAuditStore().append(record)
+    except Exception:
+        logger.warning("Audit record persistence failed", exc_info=True)
+
+
 class ChatManager:
     def __init__(
         self,
@@ -1531,6 +1725,25 @@ class ChatManager:
         if len(block) > 700:
             return block[:697].rstrip() + "..."
         return block
+
+    def _compose_mcp_tools_block(self) -> str:
+        """Build a prompt hint listing connected MCP server tools.
+
+        Returns an empty string when no MCP servers are connected so the
+        block is silently omitted and doesn't bloat the system prompt.
+        """
+        try:
+            ctx = self._capability_context
+            bridge = getattr(ctx, "mcp_bridge", None) if ctx is not None else None
+            if bridge is None:
+                return ""
+            from dan.mcp_bridge import get_mcp_tool_hint
+            hint = get_mcp_tool_hint(bridge)
+            if not hint:
+                return ""
+            return f"\n**Domain tools (MCP):**\n{hint}"
+        except Exception:
+            return ""
 
     def _compose_recent_context_message(self) -> str:
         """Build non-authoritative historical context as assistant message."""
@@ -1668,6 +1881,7 @@ class ChatManager:
         prompt_context: str = "",
         mentions: list[Any] | None = None,
         surface: str | None = None,
+        extra_system_instructions: str = "",
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream a text-only LLM response (no function calling)."""
         try:
@@ -1696,6 +1910,7 @@ class ChatManager:
                 prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
                 surface=surface,
+                extra_system_instructions=extra_system_instructions,
             )
 
             provider = self._providers.resolve(self._chat_model)
@@ -1768,6 +1983,8 @@ class ChatManager:
         mentions: list[Any] | None = None,
         max_tool_turns: int = 10,
         surface: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
+        extra_system_instructions: str = "",
     ) -> AsyncIterator[ChatStreamEvent]:
         """Process a user message using LLM function calling for graph mutations.
 
@@ -1777,6 +1994,19 @@ class ChatManager:
         try:
             graph_dict = self._graph_store.get_graph(workflow_id)
             if graph_dict is None:
+                _try_persist_audit(
+                    workflow_id=workflow_id,
+                    message_id=uuid.uuid4().hex[:12],
+                    user_message=message,
+                    assistant_message="",
+                    mode=mode,
+                    model=self._chat_model,
+                    audit_tool_records=[],
+                    prompt_messages=[],
+                    surface=surface,
+                    error=f"Workflow '{workflow_id}' not found",
+                    audit_metadata=audit_metadata,
+                )
                 yield ChatErrorEvent(error=f"Workflow '{workflow_id}' not found")
                 return
 
@@ -1856,6 +2086,7 @@ class ChatManager:
                 prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
                 surface=surface,
+                extra_system_instructions=extra_system_instructions,
             )
             provider = self._providers.resolve(self._chat_model)
             message_id = uuid.uuid4().hex[:12]
@@ -1919,6 +2150,7 @@ class ChatManager:
             # -- Multi-turn tool loop ------------------------------------
             combined_text_parts: list[str] = []
             last_stream_channel_id: str | None = None
+            audit_tool_records: list[dict[str, Any]] = []
             for _turn in range(max_tool_turns):
                 if cancel_event and cancel_event.is_set():
                     yield ChatInterruptedEvent(
@@ -1940,6 +2172,18 @@ class ChatManager:
                         workflow_id=workflow_id,
                         user_message=message,
                         assistant_message=content,
+                    )
+                    _try_persist_audit(
+                        workflow_id=workflow_id,
+                        message_id=message_id,
+                        user_message=message,
+                        assistant_message=content,
+                        mode=mode,
+                        model=self._chat_model,
+                        audit_tool_records=audit_tool_records,
+                        prompt_messages=messages,
+                        surface=surface,
+                        audit_metadata=audit_metadata,
                     )
                     yield ChatCompleteEvent(
                         message_id=message_id,
@@ -2149,53 +2393,113 @@ class ChatManager:
 
                 # Capability tools → execute, build tool result messages, loop
                 tool_result_messages: list[dict[str, Any]] = []
-                for cap_name, cap_args in cap_calls:
-                    cap_call_id = f"tc_{uuid.uuid4().hex[:10]}"
-                    cap_start = time.monotonic()
-                    yield ChatToolCallStartEvent(
-                        tool_call_id=cap_call_id,
-                        tool_name=cap_name,
-                        args_preview=json.dumps(cap_args)[:200] if cap_args else "",
-                    )
-                    ctx = self._capability_context
-                    if ctx is not None:
-                        ctx = dataclasses.replace(ctx, workflow_id=workflow_id)
-                        cap_result = await self._capability_registry.execute(
-                            cap_name, cap_args, ctx, mode=mode,
-                        )
-                    else:
-                        from dan.server.capability_registry import CapabilityResult
-                        cap_result = CapabilityResult(
-                            success=False, message="Capability context not configured.",
-                        )
-                    cap_elapsed = int((time.monotonic() - cap_start) * 1000)
-                    yield ChatToolCallResultEvent(
-                        tool_call_id=cap_call_id,
-                        tool_name=cap_name,
-                        status="success" if cap_result.success else "error",
-                        output_preview=cap_result.output_preview or cap_result.message[:500],
-                        duration_ms=cap_elapsed,
-                    )
-                    combined_text_parts.append(cap_result.message)
-                    if cap_result.stream_channel_id:
-                        last_stream_channel_id = cap_result.stream_channel_id
-
-                    tc_id = cap_call_id
-                    for tc in (result.tool_calls or []):
-                        if tc.get("function", {}).get("name") == cap_name:
-                            tc_id = tc.get("id", cap_call_id)
-                            break
-                    tool_result_messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": cap_result.message[:4000],
-                    })
-
                 raw_tool_calls = []
                 for tc in (result.tool_calls or []):
                     func = tc.get("function", {})
-                    if func.get("name") != "plan_graph_mutations":
+                    name = func.get("name", "")
+                    if (
+                        name != "plan_graph_mutations"
+                        and self._capability_registry is not None
+                        and self._capability_registry.is_available(name, mode)
+                    ):
                         raw_tool_calls.append(tc)
+
+                pending_capabilities: list[dict[str, Any]] = []
+                for idx, (cap_name, cap_args) in enumerate(cap_calls):
+                    cap_call_id = f"tc_{uuid.uuid4().hex[:10]}"
+                    args_preview = json.dumps(cap_args)[:200] if cap_args else ""
+                    yield ChatToolCallStartEvent(
+                        tool_call_id=cap_call_id,
+                        tool_name=cap_name,
+                        args_preview=args_preview,
+                    )
+                    pending_capabilities.append({
+                        "tool_name": cap_name,
+                        "args": cap_args,
+                        "args_preview": args_preview,
+                        "event_tool_call_id": cap_call_id,
+                        "raw_tool_call_id": raw_tool_calls[idx].get("id", cap_call_id)
+                        if idx < len(raw_tool_calls) else cap_call_id,
+                    })
+
+                async def _execute_capability_call(
+                    pending: dict[str, Any],
+                ) -> dict[str, Any]:
+                    cap_start = time.monotonic()
+                    ctx = self._capability_context
+                    try:
+                        if ctx is not None and self._capability_registry is not None:
+                            ctx = dataclasses.replace(ctx, workflow_id=workflow_id)
+                            cap_result = await self._capability_registry.execute(
+                                pending["tool_name"],
+                                pending["args"],
+                                ctx,
+                                mode=mode,
+                            )
+                        else:
+                            cap_result = CapabilityResult(
+                                success=False,
+                                message="Capability context not configured.",
+                            )
+                    except Exception as exc:
+                        logger.exception(
+                            "Capability handler %s failed during parallel execution",
+                            pending["tool_name"],
+                        )
+                        cap_result = CapabilityResult(
+                            success=False,
+                            message=f"Tool error: {exc}",
+                        )
+                    cap_elapsed = int((time.monotonic() - cap_start) * 1000)
+                    cap_status = "success" if cap_result.success else "error"
+                    cap_preview = cap_result.output_preview or cap_result.message[:500]
+                    return {
+                        **pending,
+                        "cap_result": cap_result,
+                        "duration_ms": cap_elapsed,
+                        "status": cap_status,
+                        "output_preview": cap_preview,
+                    }
+
+                capability_results = await asyncio.gather(*[
+                    _execute_capability_call(pending)
+                    for pending in pending_capabilities
+                ])
+
+                for pending in capability_results:
+                    cap_result = pending["cap_result"]
+                    cap_name = pending["tool_name"]
+                    cap_args = pending["args"]
+                    yield ChatToolCallResultEvent(
+                        tool_call_id=pending["event_tool_call_id"],
+                        tool_name=cap_name,
+                        status=pending["status"],
+                        output_preview=pending["output_preview"],
+                        duration_ms=pending["duration_ms"],
+                    )
+                    audit_tool_records.append({
+                        "tool_name": cap_name,
+                        "args": cap_args,
+                        "args_preview": pending["args_preview"],
+                        "output_preview": pending["output_preview"],
+                        "status": pending["status"],
+                        "duration_ms": pending["duration_ms"],
+                        "result_data": cap_result.data,
+                        "source_urls": [
+                            u for u in _URL_RE.findall(json.dumps(cap_result.data, default=str))
+                        ] if cap_name in ("web_search", "web_fetch") and cap_result.data else [],
+                        "source_files": [
+                            str(cap_args.get("path") or cap_args.get("file_path") or cap_args.get("filepath") or "")
+                        ] if cap_name in ("pdf_read", "file_read") and isinstance(cap_args, dict) else [],
+                    })
+                    combined_text_parts.append(cap_result.message)
+                    if cap_result.stream_channel_id:
+                        last_stream_channel_id = cap_result.stream_channel_id
+                    tool_result_messages.append({
+                        "role": "tool",
+                        "tool_call_id": pending["raw_tool_call_id"],
+                        "content": cap_result.message[:4000],
+                    })
 
                 messages.append({
                     "role": "assistant",
@@ -2220,6 +2524,18 @@ class ChatManager:
                         user_message=message,
                         assistant_message=combined_content,
                     )
+                    _try_persist_audit(
+                        workflow_id=workflow_id,
+                        message_id=message_id,
+                        user_message=message,
+                        assistant_message=combined_content,
+                        mode=mode,
+                        model=self._chat_model,
+                        audit_tool_records=audit_tool_records,
+                        prompt_messages=messages,
+                        surface=surface,
+                        audit_metadata=audit_metadata,
+                    )
                     yield ChatCompleteEvent(
                         message_id=message_id,
                         content=combined_content,
@@ -2238,6 +2554,18 @@ class ChatManager:
                 user_message=message,
                 assistant_message=final_content,
             )
+            _try_persist_audit(
+                workflow_id=workflow_id,
+                message_id=message_id,
+                user_message=message,
+                assistant_message=final_content,
+                mode=mode,
+                model=self._chat_model,
+                audit_tool_records=audit_tool_records,
+                prompt_messages=messages,
+                surface=surface,
+                audit_metadata=audit_metadata,
+            )
             yield ChatCompleteEvent(
                 message_id=message_id,
                 content=final_content,
@@ -2249,9 +2577,35 @@ class ChatManager:
 
         except KeyError as exc:
             logger.error("Provider resolution failed: %s", exc)
+            _try_persist_audit(
+                workflow_id=workflow_id,
+                message_id=locals().get("message_id", uuid.uuid4().hex[:12]),
+                user_message=message,
+                assistant_message="",
+                mode=mode,
+                model=self._chat_model,
+                audit_tool_records=locals().get("audit_tool_records", []),
+                prompt_messages=locals().get("messages", []),
+                surface=surface,
+                error=f"LLM provider error: {exc}",
+                audit_metadata=audit_metadata,
+            )
             yield ChatErrorEvent(error=f"LLM provider error: {exc}")
         except Exception as exc:
             logger.exception("Chat error for workflow %s", workflow_id)
+            _try_persist_audit(
+                workflow_id=workflow_id,
+                message_id=locals().get("message_id", uuid.uuid4().hex[:12]),
+                user_message=message,
+                assistant_message="",
+                mode=mode,
+                model=self._chat_model,
+                audit_tool_records=locals().get("audit_tool_records", []),
+                prompt_messages=locals().get("messages", []),
+                surface=surface,
+                error=str(exc),
+                audit_metadata=audit_metadata,
+            )
             yield ChatErrorEvent(error=str(exc))
 
     # ------------------------------------------------------------------
@@ -2431,6 +2785,7 @@ class ChatManager:
         workflow_id: str = "",
         graph_dict: dict[str, Any] | None = None,
         surface: str = "server",
+        extra_system_instructions: str = "",
     ) -> list[dict[str, str]]:
         # LLM-first path: unified prompt
         if _LLM_FIRST:
@@ -2450,9 +2805,17 @@ class ChatManager:
             if user_context_block:
                 system_content = f"{system_content.rstrip()}\n\n{user_context_block}"
 
-            memory_context = self._compose_memory_kernel_context(message)
+            mcp_block = self._compose_mcp_tools_block()
+            if mcp_block:
+                system_content = f"{system_content.rstrip()}\n\n## Connected MCP servers{mcp_block}"
+
+            memory_context = self._compose_memory_kernel_context(user_message)
             if memory_context:
                 system_content = f"{system_content.rstrip()}\n\n{memory_context}"
+            if extra_system_instructions:
+                system_content = (
+                    f"{system_content.rstrip()}\n\n{extra_system_instructions.strip()}"
+                )
 
             recent_context_message = self._compose_recent_context_message()
             history_with_context = history
@@ -2529,15 +2892,20 @@ class ChatManager:
                 graph_summary=graph_text,
             )
         if self._capability_registry is not None:
-            system_content += "\n" + CAPABILITY_TOOLS_REFERENCE
+            mcp_block = self._compose_mcp_tools_block()
+            system_content += "\n" + CAPABILITY_TOOLS_REFERENCE.format(mcp_block=mcp_block)
         if prompt_context:
             system_content = f"{system_content.rstrip()}\n\n{prompt_context.strip()}"
         user_context_block = self._compose_user_context_block()
         if user_context_block:
             system_content = f"{system_content.rstrip()}\n\n{user_context_block}"
-        memory_context = self._compose_memory_kernel_context(message)
+        memory_context = self._compose_memory_kernel_context(user_message)
         if memory_context:
             system_content = f"{system_content.rstrip()}\n\n{memory_context}"
+        if extra_system_instructions:
+            system_content = (
+                f"{system_content.rstrip()}\n\n{extra_system_instructions.strip()}"
+            )
         recent_context_message = self._compose_recent_context_message()
         history_with_context = history
         if recent_context_message:
@@ -2718,7 +3086,14 @@ class ChatManager:
                         errors=[e.message for e in validation.errors[:5]],
                     ))
                     if validation.success and validation.graph is not None:
+                        self._record_gen_outcome("intent_compiler", success=True, pattern=workflow_id)
                         return graph_dict, events
+                    self._record_gen_outcome(
+                        "intent_compiler", success=False,
+                        error_type=validation.errors[0].error_type if validation.errors else "validation",
+                        fix_needed=True,
+                        pattern=workflow_id,
+                    )
                     logger.info(
                         "Intent-compiled graph failed validation (%d errors), "
                         "falling back to codegen",
@@ -2728,12 +3103,14 @@ class ChatManager:
                 logger.debug("Intent compilation failed: %s", exc)
 
         # -- Step 3: builder codegen fallback -----------------------------
+        gen_stats_hint = self._get_generation_stats_hint()
         codegen_builder = CodegenPromptBuilder()
+        error_ctx = f"Intent extraction produced: {intent.goal}" if intent else None
+        if gen_stats_hint:
+            error_ctx = f"{error_ctx}\n\n{gen_stats_hint}" if error_ctx else gen_stats_hint
         system_prompt, user_prompt = codegen_builder.build_full_prompt(
             goal=user_message,
-            error_context=(
-                f"Intent extraction produced: {intent.goal}" if intent else None
-            ),
+            error_context=error_ctx,
         )
         try:
             codegen_result: CompletionResult = await provider.complete(
@@ -2761,10 +3138,18 @@ class ChatManager:
                     errors=[e.message for e in validation.errors[:5]],
                 ))
                 if validation.success and validation.graph is not None:
+                    self._record_gen_outcome("codegen", success=True, pattern=workflow_id)
                     return graph_dict, events
+                self._record_gen_outcome(
+                    "codegen", success=False,
+                    error_type=validation.errors[0].error_type if validation.errors else "validation",
+                    fix_needed=True,
+                    pattern=workflow_id,
+                )
                 codegen_errors = validation.errors
             else:
                 codegen_errors = []
+                self._record_gen_outcome("codegen", success=False, error_type="no_output", pattern=workflow_id)
                 events.append(ChatValidationResultEvent(
                     success=False,
                     error_count=1,
@@ -2773,6 +3158,7 @@ class ChatManager:
 
         except Exception as exc:
             logger.debug("Codegen LLM call failed: %s", exc)
+            self._record_gen_outcome("codegen", success=False, error_type="llm_error", pattern=workflow_id)
             codegen_errors = []
             builder_code = ""
 
@@ -2811,15 +3197,54 @@ class ChatManager:
                     llm_complete=_llm_complete,
                 )
                 if diag_result.success and diag_result.final_graph:
+                    self._record_gen_outcome("diagnosis", success=True, fix_needed=True, pattern=workflow_id)
                     events.append(ChatValidationResultEvent(
                         success=True,
                         error_count=0,
                     ))
                     return diag_result.final_graph, events
+                self._record_gen_outcome("diagnosis", success=False, error_type="repair_failed", fix_needed=True, pattern=workflow_id)
             except Exception as exc:
                 logger.debug("Diagnosis loop failed: %s", exc)
 
         return None, events
+
+    # ------------------------------------------------------------------
+    # Generation stats (29-6 §5)
+    # ------------------------------------------------------------------
+
+    def _record_gen_outcome(
+        self,
+        method: str,
+        success: bool = True,
+        error_type: str = "",
+        fix_needed: bool = False,
+        pattern: str = "",
+    ) -> None:
+        """Fire-and-forget: record a generation outcome into memory kernel."""
+        mk = getattr(self, "_memory_kernel", None) or getattr(self, "memory_kernel", None)
+        if mk is None:
+            return
+        try:
+            from dan.engine.generation_stats import record_generation_outcome
+            record_generation_outcome(
+                mk, method=method, pattern=pattern,
+                success=success, error_type=error_type, fix_needed=fix_needed,
+            )
+        except Exception:
+            logger.debug("Failed to record generation outcome", exc_info=True)
+
+    def _get_generation_stats_hint(self) -> str:
+        """Return a prompt hint derived from historical generation stats."""
+        mk = getattr(self, "_memory_kernel", None) or getattr(self, "memory_kernel", None)
+        if mk is None:
+            return ""
+        try:
+            from dan.engine.generation_stats import load_generation_stats
+            stats = load_generation_stats(mk)
+            return stats.format_for_prompt()
+        except Exception:
+            return ""
 
     # ------------------------------------------------------------------
     # Codegen helpers

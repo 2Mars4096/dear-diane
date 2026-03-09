@@ -172,9 +172,10 @@ async def handle_file_read(
 PDF_READ_CAPABILITY_SCHEMA = build_tool_schema(
     name="pdf_read",
     description=(
-        "Extract text from a PDF file. Accepts absolute paths "
+        "Read a PDF file. Accepts absolute paths "
         "(~/Dropbox/..., /Users/...) or workspace-relative paths. "
-        "Use when the user asks to read, summarize, review, or analyze a PDF document."
+        "Supports mode='text' for extraction or mode='vision' for page-by-page "
+        "vision descriptions that preserve figures and tables."
     ),
     parameters={
         "type": "object",
@@ -182,6 +183,29 @@ PDF_READ_CAPABILITY_SCHEMA = build_tool_schema(
             "path": {
                 "type": "string",
                 "description": "Path to the PDF file (absolute or relative to workspace).",
+            },
+            "mode": {
+                "type": "string",
+                "enum": ["text", "vision"],
+                "description": "text: extract text; vision: describe each page with a vision model.",
+                "default": "text",
+            },
+            "start_page": {
+                "type": "integer",
+                "description": "First page to read (0-indexed).",
+            },
+            "end_page": {
+                "type": "integer",
+                "description": "Exclusive end page (0-indexed).",
+            },
+            "vision_model": {
+                "type": "string",
+                "description": "Vision model to use when mode='vision'.",
+                "default": "gpt-4o",
+            },
+            "vision_prompt": {
+                "type": "string",
+                "description": "Optional custom prompt for vision mode.",
             },
         },
         "required": ["path"],
@@ -199,38 +223,49 @@ async def handle_pdf_read(
     if not raw_path:
         return CapabilityResult(success=False, message="No PDF path provided.")
     try:
-        from pypdf import PdfReader
-    except ImportError:
-        return CapabilityResult(
-            success=False,
-            message="PDF reading is not available (pypdf package not installed).",
-        )
-    try:
+        from dan.tools.pdf_read import read_pdf_file
+
         resolved = _resolve_user_path(raw_path)
         if not resolved.is_file():
             return CapabilityResult(success=False, message=f"PDF not found: {raw_path}")
-        reader = PdfReader(str(resolved))
-        pages_text = [page.extract_text() or "" for page in reader.pages]
-        full_text = "\n".join(pages_text)
-        if len(full_text) > _PDF_READ_MAX:
-            full_text = full_text[:_PDF_READ_MAX] + f"\n\n[truncated — {len(reader.pages)} pages, showing first {_PDF_READ_MAX:,} chars]"
-        metadata = {}
-        if reader.metadata:
-            for key in ("title", "author", "subject"):
-                val = getattr(reader.metadata, key, None)
-                if val:
-                    metadata[key] = str(val)
+        result = await read_pdf_file(
+            resolved_path=str(resolved),
+            mode=str(args.get("mode") or "text"),
+            start_page=args.get("start_page"),
+            end_page=args.get("end_page"),
+            vision_model=str(args.get("vision_model") or "gpt-4o"),
+            vision_prompt=args.get("vision_prompt"),
+        )
+        full_text = str(result.get("text") or "")
+        body_truncated = len(full_text) > _PDF_READ_MAX
+        if body_truncated:
+            full_text = full_text[:_PDF_READ_MAX] + (
+                f"\n\n[truncated — {result.get('num_pages', '?')} pages, "
+                f"showing first {_PDF_READ_MAX:,} chars]"
+            )
+        metadata = dict(result.get("metadata") or {})
         header = ""
         if metadata.get("title"):
             header = f"Title: {metadata['title']}\n"
         if metadata.get("author"):
             header += f"Author: {metadata['author']}\n"
+        warning = str(result.get("warning") or "").strip()
+        if warning:
+            header += f"Warning: {warning}\n"
         if header:
             header += "\n"
         return CapabilityResult(
             success=True,
             message=f"{header}{full_text}",
-            data={"path": str(resolved), "num_pages": len(reader.pages), "metadata": metadata},
+            data={
+                "path": str(resolved),
+                "num_pages": result.get("num_pages"),
+                "metadata": metadata,
+                "mode": result.get("mode", args.get("mode") or "text"),
+                "pages_requested": result.get("pages_requested"),
+                "pages_returned": result.get("pages_returned"),
+                "truncated": bool(result.get("truncated", False) or body_truncated),
+            },
         )
     except Exception as exc:
         return CapabilityResult(success=False, message=f"Failed to read PDF: {exc}")
@@ -536,6 +571,177 @@ LIST_DIRECTORY_CAPABILITY_SCHEMA = build_tool_schema(
         "required": ["path"],
     },
 )
+
+
+SPREADSHEET_READ_CAPABILITY_SCHEMA = build_tool_schema(
+    name="spreadsheet_read",
+    description=(
+        "Read an Excel spreadsheet (.xlsx, .xlsm, .xltx, .xltm) into structured rows. "
+        "Use when the user asks to inspect or analyze spreadsheet files."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Spreadsheet path (absolute or relative)."},
+            "sheet": {"type": "string", "description": "Optional sheet name to read."},
+            "max_rows": {"type": "integer", "description": "Maximum data rows to return."},
+        },
+        "required": ["path"],
+    },
+)
+
+
+async def handle_spreadsheet_read(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    raw_path = args.get("path", "").strip()
+    if not raw_path:
+        return CapabilityResult(success=False, message="No spreadsheet path provided.")
+    try:
+        from dan.tools.spreadsheet_read import spreadsheet_read
+
+        resolved = _resolve_user_path(raw_path)
+        if not resolved.is_file():
+            return CapabilityResult(success=False, message=f"Spreadsheet not found: {raw_path}")
+        result = await spreadsheet_read(
+            path=str(resolved),
+            sheet=args.get("sheet"),
+            max_rows=int(args.get("max_rows") or 1000),
+        )
+        rows = result.get("rows", [])
+        preview = json.dumps(rows[:10], indent=2, default=str)
+        if len(preview) > _FILE_READ_MAX:
+            preview = preview[:_FILE_READ_MAX] + "\n\n[truncated]"
+        message = (
+            f"Headers: {result.get('headers', [])}\n"
+            f"Rows returned: {result.get('row_count', 0)}"
+        )
+        if result.get("truncated"):
+            message += f" of {result.get('total_rows', result.get('row_count', 0))}"
+        message += f"\n\n{preview}"
+        return CapabilityResult(success=True, message=message, data={"path": str(resolved), **result})
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Failed to read spreadsheet: {exc}")
+
+
+TEXT_TRANSLATE_CAPABILITY_SCHEMA = build_tool_schema(
+    name="text_translate",
+    description=(
+        "Translate text between languages using an LLM. "
+        "Use when the user asks to translate text or cross-language content."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "text": {"type": "string", "description": "Text to translate."},
+            "target_language": {"type": "string", "description": "Target language."},
+            "source_language": {"type": "string", "description": "Optional source language."},
+            "model": {"type": "string", "description": "Optional model override."},
+        },
+        "required": ["text", "target_language"],
+    },
+)
+
+
+async def handle_text_translate(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    text = str(args.get("text", "")).strip()
+    target_language = str(args.get("target_language", "")).strip()
+    if not text or not target_language:
+        return CapabilityResult(success=False, message="'text' and 'target_language' are required.")
+    try:
+        from dan.tools.text_translate import text_translate
+
+        result = await text_translate(
+            text=text,
+            target_language=target_language,
+            source_language=args.get("source_language"),
+            model=str(args.get("model") or "gpt-4o-mini"),
+        )
+        return CapabilityResult(success=True, message=result.get("translated", ""), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Translation failed: {exc}")
+
+
+IMAGE_DESCRIBE_CAPABILITY_SCHEMA = build_tool_schema(
+    name="image_describe",
+    description=(
+        "Describe or analyze an image using a vision-capable model. "
+        "Use for screenshots, charts, figures, and photos."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Image path (absolute or relative)."},
+            "question": {"type": "string", "description": "Optional question about the image."},
+            "model": {"type": "string", "description": "Optional model override."},
+        },
+        "required": ["path"],
+    },
+)
+
+
+async def handle_image_describe(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    raw_path = args.get("path", "").strip()
+    if not raw_path:
+        return CapabilityResult(success=False, message="No image path provided.")
+    try:
+        from dan.tools.image_describe import image_describe
+
+        resolved = _resolve_user_path(raw_path)
+        if not resolved.is_file():
+            return CapabilityResult(success=False, message=f"Image not found: {raw_path}")
+        result = await image_describe(
+            path=str(resolved),
+            question=str(args.get("question") or "Describe this image in detail."),
+            model=str(args.get("model") or "gpt-4o"),
+        )
+        return CapabilityResult(
+            success=True,
+            message=str(result.get("description") or ""),
+            data={"path": str(resolved), **result},
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Failed to describe image: {exc}")
+
+
+AUDIO_TRANSCRIBE_CAPABILITY_SCHEMA = build_tool_schema(
+    name="audio_transcribe",
+    description=(
+        "Transcribe an audio or voice file to text. "
+        "Use for voice notes, interviews, and spoken instructions."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "Audio path (absolute or relative)."},
+            "language": {"type": "string", "description": "Optional ISO language code."},
+            "model": {"type": "string", "description": "Optional Whisper model override."},
+        },
+        "required": ["path"],
+    },
+)
+
+
+async def handle_audio_transcribe(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    raw_path = args.get("path", "").strip()
+    if not raw_path:
+        return CapabilityResult(success=False, message="No audio path provided.")
+    try:
+        from dan.tools.audio_transcribe import audio_transcribe
+
+        resolved = _resolve_user_path(raw_path)
+        if not resolved.is_file():
+            return CapabilityResult(success=False, message=f"Audio file not found: {raw_path}")
+        result = await audio_transcribe(
+            path=str(resolved),
+            language=args.get("language"),
+            model=str(args.get("model") or "whisper-1"),
+        )
+        return CapabilityResult(
+            success=True,
+            message=str(result.get("text") or ""),
+            data={"path": str(resolved), **result},
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Failed to transcribe audio: {exc}")
 
 
 async def handle_list_directory(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
@@ -2133,6 +2339,8 @@ async def handle_start_run(
     graph_dict = ctx.graph_store.get_graph(graph_id)
     if graph_dict is None:
         return CapabilityResult(success=False, message=f"Workflow '{graph_id}' not found.")
+    if not graph_dict.get("nodes"):
+        return CapabilityResult(success=False, message="Workflow has no nodes — nothing to run. Try asking me directly instead.")
     from dan.models.graph import Graph
     try:
         graph = Graph.model_validate(graph_dict)
@@ -2538,6 +2746,225 @@ def register_run_lifecycle_capabilities(registry: ChatCapabilityRegistry) -> Non
     )
 
 
+# ── Workflow catalog tools (29-4) ────────────────────────────────────
+
+LIST_MY_WORKFLOWS_SCHEMA = build_tool_schema(
+    name="list_my_workflows",
+    description="List all saved workflows with names, descriptions, and sizes.",
+    parameters={"type": "object", "properties": {}, "required": []},
+)
+
+SEARCH_WORKFLOWS_SCHEMA = build_tool_schema(
+    name="search_workflows",
+    description="Search saved workflows by keyword.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "Search keywords"},
+        },
+        "required": ["query"],
+    },
+)
+
+SHOW_WORKFLOW_SCHEMA = build_tool_schema(
+    name="show_workflow",
+    description="Show the structure of a specific workflow as an ASCII diagram.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "The workflow ID to display"},
+        },
+        "required": ["workflow_id"],
+    },
+)
+
+
+async def handle_list_my_workflows(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    if ctx.graph_store is None:
+        return CapabilityResult(success=False, message="Graph store not available.")
+    graphs = ctx.graph_store.list_graphs()
+    if not graphs:
+        return CapabilityResult(
+            success=True,
+            message="No saved workflows yet. Use the build tools to create one!",
+        )
+    lines: list[str] = []
+    for i, g in enumerate(graphs, 1):
+        name = g.get("name", g.get("graph_id", "?"))
+        desc = g.get("description", "")
+        gid = g.get("graph_id", "?")
+        data = ctx.graph_store.get_graph(gid)
+        node_count = len(data.get("nodes", [])) if data else 0
+        edge_count = len(data.get("edges", [])) if data else 0
+        desc_part = f" — {_truncate(desc, 120)}" if desc else ""
+        lines.append(f"{i}. **{name}** (id: `{gid}`, {node_count} nodes, {edge_count} edges){desc_part}")
+    text = f"Found {len(graphs)} workflow(s):\n" + "\n".join(lines)
+    return CapabilityResult(success=True, message=text, output_preview=_truncate(text))
+
+
+async def handle_search_workflows(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    query = str(args.get("query", "")).strip()
+    if not query:
+        return CapabilityResult(success=False, message="query is required.")
+    if ctx.graph_store is None:
+        return CapabilityResult(success=False, message="Graph store not available.")
+    graphs = ctx.graph_store.list_graphs()
+    if not graphs:
+        return CapabilityResult(success=True, message="No saved workflows to search.")
+    q_lower = query.lower()
+    matches: list[dict[str, Any]] = []
+    for g in graphs:
+        name = g.get("name", "")
+        desc = g.get("description", "")
+        searchable = f"{name} {desc} {g.get('graph_id', '')}".lower()
+        if q_lower in searchable:
+            matches.append(g)
+    if not matches:
+        return CapabilityResult(
+            success=True,
+            message=f"No workflows matched '{query}'.",
+        )
+    lines: list[str] = []
+    for i, g in enumerate(matches, 1):
+        name = g.get("name", g.get("graph_id", "?"))
+        desc = g.get("description", "")
+        gid = g.get("graph_id", "?")
+        desc_part = f" — {_truncate(desc, 120)}" if desc else ""
+        lines.append(f"{i}. **{name}** (id: `{gid}`){desc_part}")
+    text = f"Found {len(matches)} workflow(s) matching '{query}':\n" + "\n".join(lines)
+    return CapabilityResult(success=True, message=text, output_preview=_truncate(text))
+
+
+async def handle_show_workflow(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    workflow_id = str(args.get("workflow_id", "")).strip()
+    if not workflow_id:
+        return CapabilityResult(success=False, message="workflow_id is required.")
+    if ctx.graph_store is None:
+        return CapabilityResult(success=False, message="Graph store not available.")
+    data = ctx.graph_store.get_graph(workflow_id)
+    if data is None:
+        return CapabilityResult(
+            success=False,
+            message=f"Workflow '{workflow_id}' not found.",
+        )
+    meta = data.get("metadata", {})
+    name = meta.get("name", workflow_id)
+    desc = meta.get("description", "")
+    nodes = data.get("nodes", [])
+    edges = data.get("edges", [])
+
+    parts = [f"**{name}** (id: `{workflow_id}`)"]
+    if desc:
+        parts.append(f"Description: {desc}")
+    parts.append(f"Nodes: {len(nodes)} | Edges: {len(edges)}")
+
+    try:
+        from dan.cli.dag_display import render_dag
+        dag = render_dag(data)
+        parts.append(f"\nStructure:\n{dag}")
+    except Exception:
+        if nodes:
+            node_names = [n.get("name") or n.get("id", "?") for n in nodes[:20]]
+            parts.append("Nodes: " + ", ".join(node_names))
+
+    text = "\n".join(parts)
+    return CapabilityResult(success=True, message=text, data=data, output_preview=_truncate(text))
+
+
+FORK_WORKFLOW_SCHEMA = build_tool_schema(
+    name="fork_workflow",
+    description="Duplicate an existing workflow with a new name as a starting point for adaptation.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "workflow_id": {"type": "string", "description": "ID of the workflow to fork"},
+            "new_name": {"type": "string", "description": "Name for the forked copy"},
+        },
+        "required": ["workflow_id"],
+    },
+)
+
+
+async def handle_fork_workflow(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    graph_store = ctx.graph_store
+    if graph_store is None:
+        return CapabilityResult(success=False, message="Graph store not available.")
+
+    workflow_id = args.get("workflow_id", "").strip()
+    if not workflow_id:
+        return CapabilityResult(success=False, message="workflow_id is required.")
+
+    graph_dict = graph_store.get_graph(workflow_id)
+    if graph_dict is None:
+        return CapabilityResult(success=False, message=f"Workflow '{workflow_id}' not found.")
+
+    new_name = args.get("new_name", "").strip() or f"{workflow_id}_fork"
+
+    import uuid as _uuid
+
+    new_id = _uuid.uuid4().hex[:12]
+    forked = dict(graph_dict)
+    if "metadata" in forked:
+        forked["metadata"] = dict(forked["metadata"])
+        forked["metadata"]["name"] = new_name
+        forked["metadata"]["forked_from"] = workflow_id
+    else:
+        forked["metadata"] = {"name": new_name, "forked_from": workflow_id}
+
+    graph_store.save_graph(new_id, forked)
+
+    msg = f"Forked '{workflow_id}' as '{new_name}' (ID: {new_id})."
+    return CapabilityResult(
+        success=True,
+        message=msg,
+        data={"workflow_id": new_id, "name": new_name, "forked_from": workflow_id},
+    )
+
+
+def register_workflow_catalog_capabilities(registry: ChatCapabilityRegistry) -> None:
+    """Register workflow catalog browsing tools (29-4)."""
+    registry.register(
+        "list_my_workflows",
+        LIST_MY_WORKFLOWS_SCHEMA,
+        handle_list_my_workflows,
+        modes=list(ALL_MODES),
+        category="catalog",
+    )
+    registry.register(
+        "search_workflows",
+        SEARCH_WORKFLOWS_SCHEMA,
+        handle_search_workflows,
+        modes=list(ALL_MODES),
+        category="catalog",
+    )
+    registry.register(
+        "show_workflow",
+        SHOW_WORKFLOW_SCHEMA,
+        handle_show_workflow,
+        modes=list(ALL_MODES),
+        category="catalog",
+    )
+    registry.register(
+        "fork_workflow",
+        FORK_WORKFLOW_SCHEMA,
+        handle_fork_workflow,
+        modes=list(ALL_MODES),
+        category="catalog",
+    )
+
+
 # ── Registry setup ─────────────────────────────────────────────────
 
 def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
@@ -2620,6 +3047,13 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         category="file",
     )
     registry.register(
+        "spreadsheet_read",
+        SPREADSHEET_READ_CAPABILITY_SCHEMA,
+        handle_spreadsheet_read,
+        modes=list(ALL_MODES),
+        category="data",
+    )
+    registry.register(
         "web_fetch",
         WEB_FETCH_CAPABILITY_SCHEMA,
         handle_web_fetch,
@@ -2653,6 +3087,27 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_text_chunk,
         modes=list(ALL_MODES),
         category="text",
+    )
+    registry.register(
+        "text_translate",
+        TEXT_TRANSLATE_CAPABILITY_SCHEMA,
+        handle_text_translate,
+        modes=list(ALL_MODES),
+        category="text",
+    )
+    registry.register(
+        "image_describe",
+        IMAGE_DESCRIBE_CAPABILITY_SCHEMA,
+        handle_image_describe,
+        modes=list(ALL_MODES),
+        category="media",
+    )
+    registry.register(
+        "audio_transcribe",
+        AUDIO_TRANSCRIBE_CAPABILITY_SCHEMA,
+        handle_audio_transcribe,
+        modes=list(ALL_MODES),
+        category="media",
     )
     registry.register(
         "json_extract",

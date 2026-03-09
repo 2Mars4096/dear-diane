@@ -41,6 +41,7 @@ class CapabilityContext:
     publish_registry: Any = None
     block_registry: Any = None
     graphs_dir: str = ""
+    mcp_bridge: Any = None
 
 
 @dataclass
@@ -92,6 +93,17 @@ class ChatCapabilityRegistry:
             modes=mode_set,
             category=category,
         )
+
+    def unregister(self, name: str) -> bool:
+        """Remove a tool from the registry. Returns True if it existed."""
+        return self._tools.pop(name, None) is not None
+
+    def unregister_by_category(self, category: str) -> int:
+        """Remove all tools with the given category. Returns count removed."""
+        to_remove = [n for n, t in self._tools.items() if t.category == category]
+        for name in to_remove:
+            del self._tools[name]
+        return len(to_remove)
 
     def get_tools(self, mode: str) -> list[dict[str, Any]]:
         """Return tool schemas available for the given chat mode."""

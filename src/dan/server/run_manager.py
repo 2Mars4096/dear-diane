@@ -52,6 +52,7 @@ class RunRecord:
     node_usage: dict[str, dict[str, Any]] = field(default_factory=dict)
     model: str | None = None
     error: str | None = None
+    goal_context: dict[str, Any] | None = None
 
     def snapshot(self) -> dict[str, Any]:
         return {
@@ -111,10 +112,12 @@ class RunManager:
         engine_config: EngineConfig | None = None,
         tool_registry: ToolRegistry | None = None,
         run_store: RunStore | None = None,
+        memory_kernel: Any | None = None,
     ) -> None:
         self._config = engine_config or EngineConfig()
         self._tool_registry = tool_registry or ToolRegistry()
         self._run_store = run_store
+        self._memory_kernel = memory_kernel
         self._runs: dict[str, RunRecord] = {}
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -523,12 +526,14 @@ class RunManager:
         inputs: dict[str, Any] | None = None,
         run_id: str | None = None,
         session_id: str | None = None,
+        goal_context: dict[str, Any] | None = None,
     ) -> RunRecord:
         existing = self._runs.get(run_id) if run_id else None
         record = RunRecord(
             run_id=run_id or f"run-{int(time.time() * 1000)}",
             graph_id=graph_id,
             status=RunStatus.PENDING,
+            goal_context=dict(goal_context or {}) if goal_context else None,
         )
         if existing is not None:
             record.events = list(existing.events)
@@ -860,6 +865,79 @@ class RunManager:
 
         # -- 19-1: Incremental experience consolidation -----------------------
         await self._maybe_consolidate_experience(record, graph)
+
+        # -- 29-6: Post-run learning via fan-out (29-5 §5-2) ----------------
+        if self._memory_kernel is not None:
+            try:
+                from dan.engine.run_learner import RunLearner
+
+                learner = RunLearner(self._memory_kernel)
+                await learner.extract_run_learnings_async(
+                    run_result=record.snapshot(),
+                    workflow=graph.model_dump() if graph else None,
+                    goal_context=getattr(record, "goal_context", None),
+                )
+            except Exception:
+                logger.debug("Post-run learning failed", exc_info=True)
+
+        # -- 29-6 §8: Model outcome tracking -----------------------------------
+        if os.environ.get("DAN_MODEL_LEARNING", "0") == "1" and self._memory_kernel:
+            try:
+                from dan.engine.outcome_trackers import ModelOutcomeTracker
+
+                tracker = ModelOutcomeTracker(self._memory_kernel)
+                for node_id, usage in record.node_usage.items():
+                    node_meta = (record.result.metadata or {}).get(node_id, {}) if record.result else {}
+                    node_model = node_meta.get("model") or self._config.default_model
+                    node_type = node_meta.get("node_type", "llm")
+                    quality = 1.0 if (record.result and record.result.success) else 0.0
+                    node_cost = estimate_cost(
+                        node_model,
+                        usage.get("prompt_tokens", 0),
+                        usage.get("completion_tokens", 0),
+                    ) or 0.0
+                    latency = float(usage.get("latency_ms", 0))
+                    tracker.record(
+                        node_id=node_id,
+                        node_type=node_type,
+                        task_description=node_meta.get("task_description", ""),
+                        model=node_model,
+                        quality_score=quality,
+                        cost=node_cost,
+                        latency_ms=latency,
+                    )
+            except Exception:
+                logger.debug("Model outcome tracking failed", exc_info=True)
+
+        # -- 29-6 §10: Topology outcome tracking --------------------------------
+        if os.environ.get("DAN_TOPOLOGY_LEARNING", "0") == "1" and self._memory_kernel and graph:
+            try:
+                from dan.engine.outcome_trackers import TopologyOutcomeTracker
+
+                topo_tracker = TopologyOutcomeTracker(self._memory_kernel)
+                graph_dict = graph.model_dump() if hasattr(graph, "model_dump") else {}
+                sig = TopologyOutcomeTracker.compute_signature(graph_dict)
+                first_failure_node = None
+                first_failure_type = None
+                if record.result and record.result.errors:
+                    for nid, msg in record.result.errors.items():
+                        first_failure_node = nid
+                        lower = str(msg).lower()
+                        if "timeout" in lower:
+                            first_failure_type = "timeout"
+                        elif "validat" in lower or "schema" in lower:
+                            first_failure_type = "validation"
+                        else:
+                            first_failure_type = "error"
+                        break
+                topo_tracker.record(
+                    topology_signature=sig,
+                    outcome=bool(record.result and record.result.success),
+                    failure_node=first_failure_node,
+                    failure_type=first_failure_type,
+                )
+            except Exception:
+                logger.debug("Topology outcome tracking failed", exc_info=True)
 
     def _index_run_errors(self, record: RunRecord) -> None:
         """Extract and index errors from a completed run (17-1)."""
