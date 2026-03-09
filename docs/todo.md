@@ -292,6 +292,7 @@
   - [x] [26-4-notifications](plans/26-4-notifications.md) — D. `NotificationManager` + `MacOSNotifier` + `WebhookNotifier` + `TerminalBellNotifier` + `NotificationConfig`, including `app.py` GlobalEventBus lifecycle wiring.
   - [x] [26-5-rich-cli-display](plans/26-5-rich-cli-display.md) — E. ASCII DAG renderer for `/show` (topological sort, box-drawing). Streaming node-by-node progress during `/run`. Mutation diff display. Rich table for `/list`. `/show --code`/`--json`/`--stats`. Graceful degradation without Rich. (~2 days)
   - [x] [26-6-whatsapp-web-adapter](plans/26-6-whatsapp-web-adapter.md) — F. WhatsApp Web adapter for personal use (QR code pairing, no Business API). `WhatsAppWebAdapter` with neonize, QR pairing, LID→phone resolution, self-message echo suppression, chat-mode wiring, `/find` + `/send` file commands, size checks, force-exit handling, adapter context prompt. 16 tests. *(Mutation-confirmation UX on messaging surfaces deferred to 25-7.)*
+  - [x] [26-7-whatsapp-inbound-media](plans/26-7-whatsapp-inbound-media.md) — G. WhatsApp inbound media & voice input. `_handle_incoming` handles all media types (documents, images, video, audio/voice, stickers, contacts, location). Voice transcription via cascading Whisper provider resolution (`DAN_WHISPER_*` → `DAN_OPENAI_*` → `DAN_LLM_*`). Adapter chat-mode parses `[Attachment:]` and `[Voice note:]` prefixes, routes PDFs to review path, fallback on transcription failure. Media saved to `~/.dan/whatsapp-web/media/` with 1-hour cleanup. 10 tests.
 
 ## Phase 17 — Async Message Dispatch
 > Process independent user messages concurrently across projects while serializing within the same
@@ -302,6 +303,33 @@
   - [x] [27-1-configurable-bot-identity](plans/27-1-configurable-bot-identity.md) — A. Replace hardcoded `[DAN` with `DAN_BOT_NAME` env var, shared `identity.py` module. 26 tests.
   - [x] [27-2-concurrent-project-dispatcher](plans/27-2-concurrent-project-dispatcher.md) — B. `ConcurrentDispatcher` wrapping `Concierge`: per-project asyncio tasks, same-task serial queues, cross-project parallelism. `ChatQueuedEvent` for deferred response delivery. 6 tests.
   - [x] [27-3-surface-async-acceptance](plans/27-3-surface-async-acceptance.md) — C. Server endpoint returns `status: "processing"|"queued"`, pipes queued stream channels. Adapter uses shared `httpx.AsyncClient` + background task dispatch. `LocalChatRuntime` uses dispatcher. `dan-chat` CLI local mode gets queued event handling.
+
+## Phase 18 — LLM-First Chat Architecture
+> Replace the 4-layer routing stack (adapter keywords → concierge classifier → 10 handlers → mode-gated tools) with a single LLM-driven path. The model has all tools and decides what to do. Multi-turn tool loop. Post-LLM safety/UX actions. One unified prompt.
+
+- [ ] [28-llm-first-chat](plans/28-llm-first-chat.md) — LLM-first chat: single path, all tools, multi-turn, response actions
+  - [x] [28-1-strip-adapter-routing](plans/28-1-strip-adapter-routing.md) — A. Adapter is thin pipe: slash→NL translation, everything to server
+  - [x] [28-2-unified-tool-dispatch](plans/28-2-unified-tool-dispatch.md) — B. Multi-turn tool loop (10 turns), mode-agnostic tools, `DAN_LLM_FIRST_CHAT` flag
+  - [x] [28-3-response-actions](plans/28-3-response-actions.md) — C. File delivery events, message splitting, claim validation
+  - [x] [28-4-system-prompt-design](plans/28-4-system-prompt-design.md) — D. Unified prompt with tool catalog, surface hints, anti-fabrication rules
+  - [ ] [28-5-cleanup-dead-code](plans/28-5-cleanup-dead-code.md) — E. Remove dead classifier, handlers, mode-gating code (deferred until verified)
+  - [x] [28-6-real-world-test-scenarios](plans/28-6-real-world-test-scenarios.md) — F. 5 scenarios, 38 tests: lit review, equity report, deep research, computer task, casual utility
+
+## Phase 19 — Concierge-First Architecture: Memory, Reuse & Self-Evolvement
+> Make the concierge the persistent intelligent agent that owns memory, drives iterative workflow
+> building, and learns from every interaction. Workflows become compiled execution artifacts;
+> the concierge is the brain. Unified typed memory kernel replaces 6 siloed stores. Reuse-first
+> workflow selection. Multi-round build/test/diagnose loop. Automatic learning extraction.
+> Concierge-level parallelism for independent sub-tasks.
+
+- [ ] [29-concierge-memory-evolvement](plans/29-concierge-memory-evolvement.md) — concierge-first architecture: memory kernel, workflow reuse, self-evolvement
+  - [ ] [29-1-unified-memory-kernel](plans/29-1-unified-memory-kernel.md) — A. Typed memory store (fact/preference/pattern/failure/principle/episode/working_state), per-type ranking, task-specific retrieval policies, adapter layer over existing stores, temporal consolidation
+  - [ ] [29-2-concierge-as-orchestrator](plans/29-2-concierge-as-orchestrator.md) — B. Fold MetaController into concierge, stateful goals/plans spanning messages, autonomous build→run→diagnose loop, memory-informed decisions, autonomy levels (interactive/supervised/autonomous)
+  - [ ] [29-3-iterative-workflow-building](plans/29-3-iterative-workflow-building.md) — C. Multi-round build session: draft→validate→test→diagnose→modify→re-test state machine, smoke testing, user intervention, post-build memory extraction
+  - [ ] [29-4-experience-driven-reuse](plans/29-4-experience-driven-reuse.md) — D. Wire experience retrieval into primary build path, reuse-first decision (REUSE/ADAPT/GENERATE), workflow catalog in chat, adapter parity, experience feedback loop
+  - [ ] [29-5-concierge-parallelism](plans/29-5-concierge-parallelism.md) — E. Universal fan-out: parallelize all independent sub-tasks (turn prep, tool execution, info gathering, diagnosis, memory extraction, build steps). Resource-based concurrency, priority queuing, immediate-start guarantee
+  - [ ] [29-6-self-evolvement-loop](plans/29-6-self-evolvement-loop.md) — F. Passive learning (memory extraction, pattern filing, cross-section reinforcement) + active adaptation (prompt optimization via A/B testing, per-node model selection learning, skill/hyperedge evolution, topology suggestions)
+  - [ ] [29-7-essential-tools](plans/29-7-essential-tools.md) — G. Fill critical tool gaps: current_datetime, clipboard, python_eval, send_email, notify, file ops (move/copy/delete), csv_read, spreadsheet_read, git tools (status/diff/log/commit/branch/worktree), image_describe, audio_transcribe, compress, translate, diff. Complements [26-7](plans/26-7-whatsapp-inbound-media.md) (inbound media download → these tools process it).
 
 ## Backlog (unphased)
 

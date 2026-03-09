@@ -30,6 +30,9 @@ These apply across all commands:
 | `DAN_SERVER_URL` | Server URL for client commands | `http://127.0.0.1:8000` |
 | `DAN_WORKSPACE_ROOT` | Sandbox root for file tools | Current directory |
 | `DAN_CHAT_MODEL` | Override model for chat/authoring | `$DAN_LLM_MODEL` |
+| `DAN_WHISPER_API_KEY` | Whisper transcription API key | `$DAN_OPENAI_API_KEY` → `$DAN_LLM_API_KEY` |
+| `DAN_WHISPER_BASE_URL` | Whisper endpoint base URL | `https://api.openai.com/v1` → `$DAN_LLM_BASE_URL` |
+| `DAN_WHISPER_MODEL` | Whisper model name | `whisper-1` |
 
 Place these in a `.env` file at the project root; all commands auto-load it.
 

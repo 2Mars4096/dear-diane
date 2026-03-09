@@ -81,6 +81,7 @@ deep-agent-network/
     tools/                       # Phase 4 — built-in tool library (dan.tools)
       __init__.py                # get_all_tools() auto-discovery
       _workspace.py              # Workspace root sandboxing utility
+      _git_helpers.py            # Shared _find_repo, _run_git for git tools
       file_read.py               # Read file with line range, size guard
       file_write.py              # Write/append with parent dir creation
       list_directory.py          # List with glob and recursive mode
