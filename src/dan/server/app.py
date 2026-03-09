@@ -3273,6 +3273,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                     cancel_event=cancel_event,
                     mentions=structured_mentions,
                     debug_context=debug_ctx,
+                    surface=req.surface or "server",
                 )
             async for event in event_stream:
                 payload = event.model_dump()

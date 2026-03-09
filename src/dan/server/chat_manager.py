@@ -42,6 +42,7 @@ except ValueError:
     _MUTATION_AUTO_RETRY_MAX = 2
 _MAX_CONTEXT_RATIO = float(os.environ.get("DAN_CHAT_MAX_CONTEXT_RATIO", "0.8"))
 _RECENT_MESSAGES_COUNT = int(os.environ.get("DAN_CHAT_RECENT_MESSAGES", "10"))
+_LLM_FIRST = os.environ.get("DAN_LLM_FIRST_CHAT", "1") == "1"
 
 __all__ = [
     "NodeSummary",
@@ -421,6 +422,77 @@ Call these when the user's intent matches:
 
 file_read, pdf_read, list_directory accept absolute paths (~/Dropbox/...).
 Read-only modes (ask/plan): lookup + browse + file read + web read only.
+"""
+
+SURFACE_HINTS = {
+    "whatsapp": (
+        "## Surface: WhatsApp\n"
+        "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
+        "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
+        "- No code blocks, no markdown tables \u2014 plain text only\n"
+        "- URLs on their own line (auto-linkified)\n"
+        "- For long reports, organize into clearly separated sections"
+    ),
+    "whatsapp-web": (
+        "## Surface: WhatsApp\n"
+        "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
+        "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
+        "- No code blocks, no markdown tables \u2014 plain text only\n"
+        "- URLs on their own line (auto-linkified)\n"
+        "- For long reports, organize into clearly separated sections"
+    ),
+    "telegram": (
+        "## Surface: Telegram\n"
+        "- Concise replies. Markdown formatting supported.\n"
+        "- Use **bold** and `code` where helpful."
+    ),
+    "server": (
+        "## Surface: Editor\n"
+        "- Detailed responses welcome. Full markdown supported.\n"
+        "- Include code blocks, tables, and structured formatting."
+    ),
+    "cli": (
+        "## Surface: CLI\n"
+        "- Concise but can be detailed when asked.\n"
+        "- Terminal-friendly formatting."
+    ),
+}
+
+UNIFIED_SYSTEM_PROMPT = """\
+You are DAN, a personal AI assistant with full tool access. You help with anything: \
+research, file operations, web search, computation, communication, workflow building.
+
+## Tools — ALWAYS use tools instead of guessing
+
+**Files:** file_read (text files), pdf_read (PDFs — use for summarize/review/analyze), \
+list_directory (browse folders). All accept absolute paths like ~/Dropbox/...
+**Web:** web_search (current data: prices, weather, news, papers — NEVER guess live data), \
+web_fetch (read a URL's content)
+**System:** shell_command (run terminal commands — Python, R, scripts, system ops), \
+current_datetime (today's date/time — ALWAYS call, never guess), \
+screenshot (capture screen), clipboard (read/write clipboard)
+**Communication:** send_email (send via SMTP), file_write (create/save files)
+**Text:** text_chunk, json_extract, regex_match
+**HTTP:** http_request (REST API calls)
+**Config:** set_config (set API keys and credentials at runtime)
+**Workflow:** list_graphs, start_run, get_run_status, cancel_run, resume_run, \
+get_run_logs, publish_workflow, export_workflow, search_workflow_history, \
+get_learned_principles, discover_capabilities, submit_human_input
+
+## Rules — NON-NEGOTIABLE
+
+1. NEVER fabricate live data (prices, dates, weather, scores). Call web_search.
+2. NEVER summarize a file you haven't read. Call pdf_read or file_read first.
+3. NEVER guess the current date/time. Call current_datetime.
+4. NEVER guess file contents or directory listings. Call the tool.
+5. If a tool fails, tell the user what happened. Don't silently make something up.
+6. If you can't do something, say so. Suggest what the user can do instead.
+
+{surface_hints}
+
+{context_block}
+
+{workflow_block}
 """
 
 # Placeholder for build-from-intent mode (no graph context)
@@ -1019,6 +1091,18 @@ class ChatQueuedEvent(BaseModel):
     correlation_id: str
 
 
+class ChatFileAttachmentEvent(BaseModel):
+    type: str = "chat_file_attachment"
+    path: str
+    filename: str
+    size: int
+
+
+class ChatMultiPartEvent(BaseModel):
+    type: str = "chat_multi_part"
+    parts: list[str]
+
+
 ChatStreamEvent = (
     ChatTokenEvent
     | ChatCompleteEvent
@@ -1032,6 +1116,8 @@ ChatStreamEvent = (
     | ChatValidationResultEvent
     | ChatGraphCreatedEvent
     | ChatQueuedEvent
+    | ChatFileAttachmentEvent
+    | ChatMultiPartEvent
 )
 
 
@@ -1379,6 +1465,7 @@ class ChatManager:
         capability_context: Any | None = None,
         user_profile: Any | None = None,
         conversation_memory: Any | None = None,
+        memory_kernel: Any | None = None,
     ) -> None:
         self._providers = provider_registry
         self._graph_store = graph_store
@@ -1387,6 +1474,7 @@ class ChatManager:
         self._capability_context = capability_context
         self._user_profile = user_profile
         self._conversation_memory = conversation_memory
+        self._memory_kernel = memory_kernel
         self._chat_model = os.environ.get(
             "DAN_CHAT_MODEL",
             os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6"),
@@ -1471,6 +1559,56 @@ class ChatManager:
             f"{quoted}"
         )
 
+    def _compose_memory_kernel_context(self, user_message: str) -> str:
+        """Build context block from unified memory kernel (29-1).
+
+        Uses task-type-specific retrieval policy. Falls back gracefully
+        if the kernel is not available.
+        """
+        kernel = self._memory_kernel
+        if kernel is None:
+            return ""
+        try:
+            from dan.engine.memory_kernel import classify_task_type
+            task_type = classify_task_type(user_message)
+            scored_items = kernel.retrieve_by_task(user_message, task_type=task_type, limit=10)
+            if not scored_items:
+                return ""
+
+            lines = ["Relevant context from memory:"]
+            for si in scored_items[:8]:
+                tag = si.item.memory_type.value.upper()
+                lines.append(f"- [{tag}] {si.item.content[:200]}")
+
+            block = "\n".join(lines)
+            if len(block) > 800:
+                block = block[:797].rstrip() + "..."
+            return block
+        except Exception:
+            logger.debug("Memory kernel context composition failed", exc_info=True)
+            return ""
+
+    def _record_to_memory_kernel(
+        self,
+        *,
+        user_message: str,
+        assistant_message: str,
+        workflow_id: str = "",
+    ) -> None:
+        """Store interaction summary as an EPISODE in the memory kernel."""
+        kernel = self._memory_kernel
+        if kernel is None:
+            return
+        try:
+            user_text = " ".join(user_message.split()).strip()[:150]
+            assistant_text = " ".join(assistant_message.split()).strip()[:200]
+            if not user_text:
+                return
+            summary = f"User: {user_text}. Assistant: {assistant_text}"
+            kernel.store_episode(summary, tags=[workflow_id] if workflow_id else [])
+        except Exception:
+            logger.debug("Failed to store to memory kernel", exc_info=True)
+
     def _record_conversation_summary(
         self,
         *,
@@ -1479,6 +1617,11 @@ class ChatManager:
         assistant_message: str,
     ) -> None:
         """Persist a short exchange summary for cross-session recall."""
+        self._record_to_memory_kernel(
+            user_message=user_message,
+            assistant_message=assistant_message,
+            workflow_id=workflow_id,
+        )
         if self._conversation_memory is None:
             return
         user_text = " ".join(user_message.split()).strip()
@@ -1524,6 +1667,7 @@ class ChatManager:
         debug_context: str = "",
         prompt_context: str = "",
         mentions: list[Any] | None = None,
+        surface: str | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream a text-only LLM response (no function calling)."""
         try:
@@ -1551,6 +1695,7 @@ class ChatManager:
                 summary, message, history, mode=mode, debug_context=debug_context,
                 prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
+                surface=surface,
             )
 
             provider = self._providers.resolve(self._chat_model)
@@ -1621,6 +1766,8 @@ class ChatManager:
         debug_context: str = "",
         prompt_context: str = "",
         mentions: list[Any] | None = None,
+        max_tool_turns: int = 10,
+        surface: str | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Process a user message using LLM function calling for graph mutations.
 
@@ -1708,6 +1855,7 @@ class ChatManager:
                 summary, message, history, mode=mode, debug_context=debug_context,
                 prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
+                surface=surface,
             )
             provider = self._providers.resolve(self._chat_model)
             message_id = uuid.uuid4().hex[:12]
@@ -1768,11 +1916,239 @@ class ChatManager:
                     yield event
                 return
 
-            # -- Capability tool dispatch (non-mutation) -------------------
-            cap_calls = self._extract_all_capability_tool_calls(result, mode)
-            if cap_calls:
-                combined_messages: list[str] = []
-                last_stream_channel_id: str | None = None
+            # -- Multi-turn tool loop ------------------------------------
+            combined_text_parts: list[str] = []
+            last_stream_channel_id: str | None = None
+            for _turn in range(max_tool_turns):
+                if cancel_event and cancel_event.is_set():
+                    yield ChatInterruptedEvent(
+                        message_id=message_id,
+                        content="\n\n".join(combined_text_parts) if combined_text_parts else "",
+                        token_usage={},
+                    )
+                    return
+                cap_calls = self._extract_all_capability_tool_calls(result, mode)
+                mutation_data = self._extract_mutation_from_result(result) if not cap_calls else None
+
+                # No tools called → final text response
+                if not cap_calls and mutation_data is None:
+                    content = result.text or ""
+                    normalized_usage = _normalize_usage(result.usage)
+                    if content:
+                        yield ChatTokenEvent(delta=content, accumulated=content)
+                    self._record_conversation_summary(
+                        workflow_id=workflow_id,
+                        user_message=message,
+                        assistant_message=content,
+                    )
+                    yield ChatCompleteEvent(
+                        message_id=message_id,
+                        content=content,
+                        token_usage=normalized_usage,
+                        context_window=_get_context_window(self._chat_model),
+                        graph_revision=revision,
+                        revision_mismatch=revision_mismatch,
+                    )
+                    return
+
+                # Mutation → handle as before, return
+                if mutation_data is not None:
+                    tool_call_id = f"tc_{uuid.uuid4().hex[:10]}"
+                    tool_start_time = time.monotonic()
+
+                    yield ChatToolCallStartEvent(
+                        tool_call_id=tool_call_id,
+                        tool_name="plan_graph_mutations",
+                        args_preview=_build_args_preview(mutation_data),
+                    )
+
+                    ops = _normalize_generated_mutation_ops(
+                        mutation_data.get("operations", []),
+                    )
+                    if is_empty_graph:
+                        ops = _coerce_strict_edges(ops)
+                    plan = MutationPlan.model_validate({
+                        "operations": ops,
+                        "description": mutation_data.get("description", ""),
+                        "reasoning": mutation_data.get("reasoning", ""),
+                        "base_graph_revision": revision,
+                    })
+                    dry_result = GraphMutator().dry_run(
+                        graph_dict, plan, current_revision=revision,
+                    )
+
+                    if (
+                        not dry_result.success
+                        and not dry_result.stale_plan
+                        and _MUTATION_AUTO_RETRY
+                        and _MUTATION_AUTO_RETRY_MAX > 0
+                    ):
+                        retry_assistant = result.text or ""
+                        for attempt in range(_MUTATION_AUTO_RETRY_MAX):
+                            mutation_metrics.record_retry()
+                            error_summary = "; ".join(e.message for e in dry_result.errors)
+                            logger.info(
+                                "Dry-run failed for plan %s, attempting auto-retry %d/%d: %s",
+                                plan.plan_id,
+                                attempt + 1,
+                                _MUTATION_AUTO_RETRY_MAX,
+                                error_summary,
+                            )
+                            retry_messages = messages + [
+                                {"role": "assistant", "content": retry_assistant},
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        f"The mutation plan produced these errors:\n{error_summary}\n\n"
+                                        "Please produce a corrected plan_graph_mutations call "
+                                        "that fixes these issues."
+                                    ),
+                                },
+                            ]
+                            try:
+                                retry_result: CompletionResult = await provider.complete(
+                                    messages=retry_messages,
+                                    model=self._chat_model,
+                                    temperature=0.5,
+                                    tools=[MUTATION_TOOL_SCHEMA],
+                                    tool_choice="auto",
+                                )
+                            except Exception as retry_exc:
+                                logger.debug("Auto-retry LLM call failed: %s", retry_exc)
+                                break
+
+                            retry_assistant = retry_result.text or retry_assistant
+                            retry_mutation = self._extract_mutation_from_result(retry_result)
+                            if retry_mutation is None:
+                                continue
+
+                            retry_ops = _normalize_generated_mutation_ops(
+                                retry_mutation.get("operations", []),
+                            )
+                            if is_empty_graph:
+                                retry_ops = _coerce_strict_edges(retry_ops)
+                            retry_plan = MutationPlan.model_validate({
+                                "operations": retry_ops,
+                                "description": retry_mutation.get("description", ""),
+                                "reasoning": retry_mutation.get("reasoning", ""),
+                                "base_graph_revision": revision,
+                            })
+                            retry_dry = GraphMutator().dry_run(
+                                graph_dict, retry_plan, current_revision=revision,
+                            )
+
+                            plan = retry_plan
+                            dry_result = retry_dry
+                            mutation_data = retry_mutation
+                            result = retry_result
+
+                            if retry_dry.success:
+                                logger.info(
+                                    "Auto-retry succeeded for plan %s on attempt %d",
+                                    plan.plan_id,
+                                    attempt + 1,
+                                )
+                                break
+                            if retry_dry.stale_plan:
+                                break
+
+                    if dry_result.stale_plan:
+                        mutation_metrics.record_stale_plan()
+                        logger.info(
+                            "Stale plan for %s, re-planning against current revision",
+                            plan.plan_id,
+                        )
+                        graph_dict = self._graph_store.get_graph(workflow_id)
+                        if graph_dict is not None:
+                            graph = Graph.model_validate(graph_dict)
+                            summary = build_graph_summary(graph, workflow_id)
+                            revision = summary.revision
+                            replan_messages = self._build_messages(
+                                summary,
+                                message,
+                                history,
+                                mode=mode,
+                                prompt_context=prompt_context,
+                                surface=surface,
+                            )
+                            replan_messages.append({
+                                "role": "user",
+                                "content": (
+                                    "The graph has changed since your last plan. "
+                                    "Please re-plan the requested changes against "
+                                    "the updated workflow."
+                                ),
+                            })
+                            try:
+                                replan_result = await provider.complete(
+                                    messages=replan_messages,
+                                    model=self._chat_model,
+                                    temperature=0.5,
+                                    tools=[MUTATION_TOOL_SCHEMA],
+                                    tool_choice="auto",
+                                )
+                                replan_mutation = self._extract_mutation_from_result(
+                                    replan_result,
+                                )
+                                if replan_mutation is not None:
+                                    replan_ops = _normalize_generated_mutation_ops(
+                                        replan_mutation.get("operations", []),
+                                    )
+                                    if is_empty_graph:
+                                        replan_ops = _coerce_strict_edges(replan_ops)
+                                    replan_plan = MutationPlan.model_validate({
+                                        "operations": replan_ops,
+                                        "description": replan_mutation.get("description", ""),
+                                        "reasoning": replan_mutation.get("reasoning", ""),
+                                        "base_graph_revision": revision,
+                                    })
+                                    replan_dry = GraphMutator().dry_run(
+                                        graph_dict,
+                                        replan_plan,
+                                        current_revision=revision,
+                                    )
+                                    if replan_dry.success:
+                                        plan = replan_plan
+                                        dry_result = replan_dry
+                                        logger.info("Stale-plan re-planning succeeded")
+                            except Exception as replan_exc:
+                                logger.debug(
+                                    "Stale-plan re-planning failed: %s", replan_exc,
+                                )
+
+                    dr_status, dr_preview = _build_dry_run_preview(dry_result)
+                    elapsed = int((time.monotonic() - tool_start_time) * 1000)
+                    yield ChatToolCallResultEvent(
+                        tool_call_id=tool_call_id,
+                        tool_name="plan_graph_mutations",
+                        status=dr_status,
+                        output_preview=dr_preview,
+                        duration_ms=elapsed,
+                    )
+
+                    normalized_usage = _normalize_usage(result.usage)
+                    plan_dump = plan.model_dump()
+                    if mode == "debug":
+                        plan_dump.setdefault("metadata", {})["source"] = "debug-fix"
+                    self._record_conversation_summary(
+                        workflow_id=workflow_id,
+                        user_message=message,
+                        assistant_message=mutation_data.get("reasoning", result.text or ""),
+                    )
+                    yield ChatMutationEvent(
+                        message_id=message_id,
+                        content=mutation_data.get("reasoning", result.text or ""),
+                        mutation_plan=plan_dump,
+                        dry_run_result=dry_result.model_dump(),
+                        token_usage=normalized_usage,
+                        context_window=_get_context_window(self._chat_model),
+                        graph_revision=revision,
+                        revision_mismatch=revision_mismatch,
+                    )
+                    return
+
+                # Capability tools → execute, build tool result messages, loop
+                tool_result_messages: list[dict[str, Any]] = []
                 for cap_name, cap_args in cap_calls:
                     cap_call_id = f"tc_{uuid.uuid4().hex[:10]}"
                     cap_start = time.monotonic()
@@ -1800,238 +2176,72 @@ class ChatManager:
                         output_preview=cap_result.output_preview or cap_result.message[:500],
                         duration_ms=cap_elapsed,
                     )
-                    combined_messages.append(f"**{cap_name}**: {cap_result.message}")
+                    combined_text_parts.append(cap_result.message)
                     if cap_result.stream_channel_id:
                         last_stream_channel_id = cap_result.stream_channel_id
-                normalized_usage = _normalize_usage(result.usage)
-                combined_content = "\n\n".join(combined_messages)
-                self._record_conversation_summary(
-                    workflow_id=workflow_id,
-                    user_message=message,
-                    assistant_message=combined_content,
-                )
-                yield ChatCompleteEvent(
-                    message_id=message_id,
-                    content=combined_content,
-                    token_usage=normalized_usage,
-                    context_window=_get_context_window(self._chat_model),
-                    graph_revision=revision,
-                    revision_mismatch=revision_mismatch,
-                    stream_channel_id=last_stream_channel_id,
-                )
-                return
 
-            # -- Mutation tool dispatch (existing) -------------------------
-            mutation_data = self._extract_mutation_from_result(result)
-            if mutation_data is not None:
-                tool_call_id = f"tc_{uuid.uuid4().hex[:10]}"
-                tool_start_time = time.monotonic()
+                    tc_id = cap_call_id
+                    for tc in (result.tool_calls or []):
+                        if tc.get("function", {}).get("name") == cap_name:
+                            tc_id = tc.get("id", cap_call_id)
+                            break
+                    tool_result_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc_id,
+                        "content": cap_result.message[:4000],
+                    })
 
-                yield ChatToolCallStartEvent(
-                    tool_call_id=tool_call_id,
-                    tool_name="plan_graph_mutations",
-                    args_preview=_build_args_preview(mutation_data),
-                )
+                raw_tool_calls = []
+                for tc in (result.tool_calls or []):
+                    func = tc.get("function", {})
+                    if func.get("name") != "plan_graph_mutations":
+                        raw_tool_calls.append(tc)
 
-                ops = _normalize_generated_mutation_ops(
-                    mutation_data.get("operations", []),
-                )
-                if is_empty_graph:
-                    ops = _coerce_strict_edges(ops)
-                plan = MutationPlan.model_validate({
-                    "operations": ops,
-                    "description": mutation_data.get("description", ""),
-                    "reasoning": mutation_data.get("reasoning", ""),
-                    "base_graph_revision": revision,
+                messages.append({
+                    "role": "assistant",
+                    "content": result.text or "",
+                    "tool_calls": raw_tool_calls,
                 })
-                dry_result = GraphMutator().dry_run(
-                    graph_dict, plan, current_revision=revision,
-                )
+                messages.extend(tool_result_messages)
 
-                if (
-                    not dry_result.success
-                    and not dry_result.stale_plan
-                    and _MUTATION_AUTO_RETRY
-                    and _MUTATION_AUTO_RETRY_MAX > 0
-                ):
-                    retry_assistant = result.text or ""
-                    for attempt in range(_MUTATION_AUTO_RETRY_MAX):
-                        mutation_metrics.record_retry()
-                        error_summary = "; ".join(e.message for e in dry_result.errors)
-                        logger.info(
-                            "Dry-run failed for plan %s, attempting auto-retry %d/%d: %s",
-                            plan.plan_id,
-                            attempt + 1,
-                            _MUTATION_AUTO_RETRY_MAX,
-                            error_summary,
-                        )
-                        retry_messages = messages + [
-                            {"role": "assistant", "content": retry_assistant},
-                            {
-                                "role": "user",
-                                "content": (
-                                    f"The mutation plan produced these errors:\n{error_summary}\n\n"
-                                    "Please produce a corrected plan_graph_mutations call "
-                                    "that fixes these issues."
-                                ),
-                            },
-                        ]
-                        try:
-                            retry_result: CompletionResult = await provider.complete(
-                                messages=retry_messages,
-                                model=self._chat_model,
-                                temperature=0.5,
-                                tools=[MUTATION_TOOL_SCHEMA],
-                                tool_choice="auto",
-                            )
-                        except Exception as retry_exc:
-                            logger.debug("Auto-retry LLM call failed: %s", retry_exc)
-                            break
-
-                        retry_assistant = retry_result.text or retry_assistant
-                        retry_mutation = self._extract_mutation_from_result(retry_result)
-                        if retry_mutation is None:
-                            continue
-
-                        retry_ops = _normalize_generated_mutation_ops(
-                            retry_mutation.get("operations", []),
-                        )
-                        if is_empty_graph:
-                            retry_ops = _coerce_strict_edges(retry_ops)
-                        retry_plan = MutationPlan.model_validate({
-                            "operations": retry_ops,
-                            "description": retry_mutation.get("description", ""),
-                            "reasoning": retry_mutation.get("reasoning", ""),
-                            "base_graph_revision": revision,
-                        })
-                        retry_dry = GraphMutator().dry_run(
-                            graph_dict, retry_plan, current_revision=revision,
-                        )
-
-                        # Keep latest candidate so the user sees the most
-                        # recent attempted fix if retries still fail.
-                        plan = retry_plan
-                        dry_result = retry_dry
-                        mutation_data = retry_mutation
-                        result = retry_result
-
-                        if retry_dry.success:
-                            logger.info(
-                                "Auto-retry succeeded for plan %s on attempt %d",
-                                plan.plan_id,
-                                attempt + 1,
-                            )
-                            break
-                        if retry_dry.stale_plan:
-                            break
-
-                if dry_result.stale_plan:
-                    mutation_metrics.record_stale_plan()
-                    logger.info(
-                        "Stale plan for %s, re-planning against current revision",
-                        plan.plan_id,
+                try:
+                    result = await provider.complete(
+                        messages=messages,
+                        model=self._chat_model,
+                        temperature=0.7,
+                        tools=all_tools,
+                        tool_choice="auto",
                     )
-                    graph_dict = self._graph_store.get_graph(workflow_id)
-                    if graph_dict is not None:
-                        graph = Graph.model_validate(graph_dict)
-                        summary = build_graph_summary(graph, workflow_id)
-                        revision = summary.revision
-                        replan_messages = self._build_messages(
-                            summary,
-                            message,
-                            history,
-                            mode=mode,
-                            prompt_context=prompt_context,
-                        )
-                        replan_messages.append({
-                            "role": "user",
-                            "content": (
-                                "The graph has changed since your last plan. "
-                                "Please re-plan the requested changes against "
-                                "the updated workflow."
-                            ),
-                        })
-                        try:
-                            replan_result = await provider.complete(
-                                messages=replan_messages,
-                                model=self._chat_model,
-                                temperature=0.5,
-                                tools=[MUTATION_TOOL_SCHEMA],
-                                tool_choice="auto",
-                            )
-                            replan_mutation = self._extract_mutation_from_result(
-                                replan_result,
-                            )
-                            if replan_mutation is not None:
-                                replan_ops = _normalize_generated_mutation_ops(
-                                    replan_mutation.get("operations", []),
-                                )
-                                if is_empty_graph:
-                                    replan_ops = _coerce_strict_edges(replan_ops)
-                                replan_plan = MutationPlan.model_validate({
-                                    "operations": replan_ops,
-                                    "description": replan_mutation.get("description", ""),
-                                    "reasoning": replan_mutation.get("reasoning", ""),
-                                    "base_graph_revision": revision,
-                                })
-                                replan_dry = GraphMutator().dry_run(
-                                    graph_dict,
-                                    replan_plan,
-                                    current_revision=revision,
-                                )
-                                if replan_dry.success:
-                                    plan = replan_plan
-                                    dry_result = replan_dry
-                                    logger.info("Stale-plan re-planning succeeded")
-                        except Exception as replan_exc:
-                            logger.debug(
-                                "Stale-plan re-planning failed: %s", replan_exc,
-                            )
+                except Exception as exc:
+                    logger.warning("Multi-turn complete() failed at turn %d: %s", _turn, exc)
+                    combined_content = "\n\n".join(combined_text_parts)
+                    self._record_conversation_summary(
+                        workflow_id=workflow_id,
+                        user_message=message,
+                        assistant_message=combined_content,
+                    )
+                    yield ChatCompleteEvent(
+                        message_id=message_id,
+                        content=combined_content,
+                        token_usage={},
+                        context_window=_get_context_window(self._chat_model),
+                        graph_revision=revision,
+                        revision_mismatch=revision_mismatch,
+                        stream_channel_id=last_stream_channel_id,
+                    )
+                    return
 
-                dr_status, dr_preview = _build_dry_run_preview(dry_result)
-                elapsed = int((time.monotonic() - tool_start_time) * 1000)
-                yield ChatToolCallResultEvent(
-                    tool_call_id=tool_call_id,
-                    tool_name="plan_graph_mutations",
-                    status=dr_status,
-                    output_preview=dr_preview,
-                    duration_ms=elapsed,
-                )
-
-                normalized_usage = _normalize_usage(result.usage)
-                plan_dump = plan.model_dump()
-                if mode == "debug":
-                    plan_dump.setdefault("metadata", {})["source"] = "debug-fix"
-                self._record_conversation_summary(
-                    workflow_id=workflow_id,
-                    user_message=message,
-                    assistant_message=mutation_data.get("reasoning", result.text or ""),
-                )
-                yield ChatMutationEvent(
-                    message_id=message_id,
-                    content=mutation_data.get("reasoning", result.text or ""),
-                    mutation_plan=plan_dump,
-                    dry_run_result=dry_result.model_dump(),
-                    token_usage=normalized_usage,
-                    context_window=_get_context_window(self._chat_model),
-                    graph_revision=revision,
-                    revision_mismatch=revision_mismatch,
-                )
-                return
-
-            content = result.text or ""
-            normalized_usage = _normalize_usage(result.usage)
-            if content:
-                yield ChatTokenEvent(delta=content, accumulated=content)
+            # Turn cap reached — yield combined results
+            final_content = result.text or "\n\n".join(combined_text_parts)
             self._record_conversation_summary(
                 workflow_id=workflow_id,
                 user_message=message,
-                assistant_message=content,
+                assistant_message=final_content,
             )
             yield ChatCompleteEvent(
                 message_id=message_id,
-                content=content,
-                token_usage=normalized_usage,
+                content=final_content,
+                token_usage=_normalize_usage(result.usage),
                 context_window=_get_context_window(self._chat_model),
                 graph_revision=revision,
                 revision_mismatch=revision_mismatch,
@@ -2220,7 +2430,71 @@ class ChatManager:
         mentions: list[Any] | None = None,
         workflow_id: str = "",
         graph_dict: dict[str, Any] | None = None,
+        surface: str = "server",
     ) -> list[dict[str, str]]:
+        # LLM-first path: unified prompt
+        if _LLM_FIRST:
+            context_block = f"## Context\n{prompt_context}" if prompt_context else ""
+            workflow_block = ""
+            if summary.node_count > 0:
+                graph_text = serialize_for_prompt(summary)
+                workflow_block = f"## Current Workflow\n{graph_text}"
+            surface_hints = SURFACE_HINTS.get(surface or "server", SURFACE_HINTS["server"])
+
+            system_content = UNIFIED_SYSTEM_PROMPT.format(
+                surface_hints=surface_hints,
+                context_block=context_block,
+                workflow_block=workflow_block,
+            )
+            user_context_block = self._compose_user_context_block()
+            if user_context_block:
+                system_content = f"{system_content.rstrip()}\n\n{user_context_block}"
+
+            memory_context = self._compose_memory_kernel_context(message)
+            if memory_context:
+                system_content = f"{system_content.rstrip()}\n\n{memory_context}"
+
+            recent_context_message = self._compose_recent_context_message()
+            history_with_context = history
+            if recent_context_message:
+                history_with_context = [
+                    {"role": "assistant", "content": recent_context_message},
+                    *history,
+                ]
+
+            context_window = _get_context_window(self._chat_model)
+
+            resolved_mentions = []
+            if mentions and self._mention_resolver and workflow_id:
+                try:
+                    resolved_mentions = self._mention_resolver.resolve_all(
+                        mentions, workflow_id, graph_dict, model=self._chat_model
+                    )
+                except Exception as exc:
+                    logger.warning("Mention resolution failed: %s", exc)
+
+            if resolved_mentions:
+                from dan.server.mention_resolver import pack_context
+
+                messages = pack_context(
+                    system_content=system_content,
+                    mention_blocks=resolved_mentions,
+                    history=history_with_context,
+                    user_message=user_message,
+                    context_window=context_window,
+                    max_ratio=_MAX_CONTEXT_RATIO,
+                    model=self._chat_model,
+                )
+            else:
+                messages = [{"role": "system", "content": system_content}]
+                messages.extend(history_with_context)
+                messages.append({"role": "user", "content": user_message})
+                max_tokens = int(context_window * _MAX_CONTEXT_RATIO)
+                messages = compact_history(messages, max_tokens, model=self._chat_model)
+
+            return messages
+
+        # Legacy path: mode-specific prompts
         is_empty = summary.node_count == 0 and summary.edge_count == 0
         graph_text = (
             EMPTY_GRAPH_SUMMARY_PLACEHOLDER
@@ -2254,13 +2528,16 @@ class ChatManager:
                 node_type_reference=NODE_TYPE_REFERENCE,
                 graph_summary=graph_text,
             )
-        if self._capability_registry is not None and mode not in ("ask", "plan"):
+        if self._capability_registry is not None:
             system_content += "\n" + CAPABILITY_TOOLS_REFERENCE
         if prompt_context:
             system_content = f"{system_content.rstrip()}\n\n{prompt_context.strip()}"
         user_context_block = self._compose_user_context_block()
         if user_context_block:
             system_content = f"{system_content.rstrip()}\n\n{user_context_block}"
+        memory_context = self._compose_memory_kernel_context(message)
+        if memory_context:
+            system_content = f"{system_content.rstrip()}\n\n{memory_context}"
         recent_context_message = self._compose_recent_context_message()
         history_with_context = history
         if recent_context_message:

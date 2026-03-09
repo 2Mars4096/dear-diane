@@ -27,6 +27,7 @@ class ChatServices:
         capability_context: Any | None = None,
         user_profile: Any | None = None,
         conversation_memory: Any | None = None,
+        memory_kernel: Any | None = None,
         concierge: Any | None = None,
         dispatcher: Any | None = None,
     ) -> None:
@@ -39,6 +40,7 @@ class ChatServices:
         self.capability_context = capability_context
         self.user_profile = user_profile
         self.conversation_memory = conversation_memory
+        self.memory_kernel = memory_kernel
         self.concierge = concierge
         self.dispatcher = dispatcher
 
@@ -231,6 +233,23 @@ def build_chat_services(
     except Exception:
         logger.debug("ConversationMemoryStore not available", exc_info=True)
 
+    memory_kernel = None
+    try:
+        from dan.engine.memory_kernel import MemoryKernel
+        from dan.engine.memory_adapters import ProfileAdapter, ConversationAdapter
+
+        memory_kernel = MemoryKernel()
+        if user_profile:
+            imported = ProfileAdapter.import_profile(user_profile, memory_kernel)
+            if imported:
+                logger.debug("Imported %d items from user profile into memory kernel", imported)
+        if conversation_memory:
+            imported = ConversationAdapter.import_all(conversation_memory, memory_kernel)
+            if imported:
+                logger.debug("Imported %d conversation summaries into memory kernel", imported)
+    except Exception:
+        logger.debug("MemoryKernel not available", exc_info=True)
+
     chat_manager = ChatManager(
         provider_registry=provider_registry,
         graph_store=graph_store,
@@ -239,6 +258,7 @@ def build_chat_services(
         capability_context=capability_context,
         user_profile=user_profile,
         conversation_memory=conversation_memory,
+        memory_kernel=memory_kernel,
     )
     register_publish_capabilities(capability_registry)
     result = build_concierge(
@@ -263,6 +283,7 @@ def build_chat_services(
         capability_context=capability_context,
         user_profile=user_profile,
         conversation_memory=conversation_memory,
+        memory_kernel=memory_kernel,
         concierge=concierge,
         dispatcher=dispatcher,
     )
