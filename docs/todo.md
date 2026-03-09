@@ -409,12 +409,12 @@
 - [x] **Principle compaction** (17-2 task 3-4) — PrincipleStore.compact() merges similar principles at threshold
 - [x] ~~**ReflectionNode authoring surfaces**~~ (17-2 task 7) — builder DSL `wf.reflection()`, markdown `type: reflection`, both decompilers. Editor palette/config deferred (frontend).
 - [x] **Two-tier reference resolution** (18-1 task 4-4) — artifact store + threshold-based ref passing; memory mirroring deferred
-- [ ] **Encode-to-memory pattern** (18-1 task 4-5) — large outputs stored as MemoryItems, downstream retrieves summary
-- [ ] **Hyperedge JIT loading** (18-1 task 7-5) — inject hyperedge summaries, load full rules on demand
+- [x] **Encode-to-memory pattern** (18-1 task 4-5) — large outputs stored as MemoryItems, downstream retrieves summary
+- [x] **Hyperedge JIT loading** (18-1 task 7-5) — inject hyperedge summaries, load full rules on demand
 - [x] ~~**Unified cross-source token budget**~~ (18-3 task 4-4) → completed in [22-deferred-wave-1](plans/22-deferred-wave-1.md) S2
-- [ ] **Checkpoint/resume for parallel subagents** (7-9 task 3) — capture per-branch completion status, resume pending branches
+- [x] **Checkpoint/resume for parallel subagents** (7-9 task 3) — capture per-branch completion status, resume pending branches
 - [x] **Builder DSL for tools** (7-3 task 8-3) — `wf.tool("name", tool_id="file_read", config={...})` with `config` alias
-- [ ] **RAG reranking** (9-1 task 6-4) — LLM-based re-scoring of top_k*3 candidates
+- [x] **RAG reranking** (9-1 task 6-4) — LLM-based re-scoring of top_k*3 candidates
 - [x] **Tier de-escalation telemetry** (18-5 task 4-2) — persist per-node tier success stats across runs, suggest cheaper tiers after repeated success
 - [x] ~~**Tier badge in editor** (18-5 task 7-2)~~ — completed (L0–L3 badges + hover tooltip in DanNode)
 - [x] ~~**Tier analytics panel** (18-5 task 7-3)~~ — completed (distribution, cost comparison, per-node table in TokenAnalyticsPanel)

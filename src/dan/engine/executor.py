@@ -141,6 +141,8 @@ class EngineConfig:
     run_budget: float | None = None
     default_model_policy: Any | None = None
     on_budget_exceeded: str = "warn"  # "switch" | "warn" | "halt"
+    # -- 18-1: Encode-to-memory pattern ---------------------------------------
+    encode_to_memory_threshold_tokens: int | None = None
     # -- 17-1: Error memory (Tier 1) ------------------------------------------
     error_memory_enabled: bool = False
     error_memory_backend: str = "memory"

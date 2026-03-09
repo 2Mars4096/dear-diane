@@ -1605,6 +1605,23 @@ class Engine:
                 if _updates:
                     context.local_state.update_scope(context.active_loop_scope_id, _updates)
 
+        # -- 18-1: Encode-to-memory pattern ------------------------------------
+        encode_threshold = getattr(context.config, "encode_to_memory_threshold_tokens", None)
+        if encode_threshold is not None and context.short_term_memory is not None:
+            for port_name, value in result.outputs.items():
+                if isinstance(value, str):
+                    token_count = estimate_tokens(value)
+                    if token_count > encode_threshold:
+                        context.remember(
+                            content=value,
+                            source_node_id=node_id,
+                            metadata={
+                                "entry_type": "artifact_summary",
+                                "port": port_name,
+                                "token_count": token_count,
+                            }
+                        )
+
         self._write_context_edges(node_id, graph, context, result.outputs)
 
         if result.status == NodeStatus.FAILED:

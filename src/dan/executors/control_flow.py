@@ -477,8 +477,13 @@ class ParallelSubagentsExecutor:
             return inner
 
         semaphore = asyncio.Semaphore(node.parallelism)
+        scope = context.local_state.get_scope(node.id)
+        completed_branches = scope.setdefault("completed_branches", {})
 
         async def run_branch(branch_key: str) -> dict[str, Any]:
+            if branch_key in completed_branches:
+                return completed_branches[branch_key]
+                
             async with semaphore:
                 await context.emit_event(
                     event_type="parallel_branch_started",
@@ -489,6 +494,7 @@ class ParallelSubagentsExecutor:
                 result = await context.run_subgraph(
                     branch_key, _branch_inputs(branch_key), parent_node_id=node.id
                 )
+                completed_branches[branch_key] = result
                 await context.emit_event(
                     event_type="parallel_branch_completed",
                     node_id=node.id,

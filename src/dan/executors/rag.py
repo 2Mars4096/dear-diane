@@ -131,10 +131,11 @@ class RAGExecutor:
         store = _get_or_create_store(node.vector_store_config, node.collection)
 
         try:
+            fetch_k = node.top_k * 3 if node.rerank else node.top_k
             result: QueryResult = await store.query(
                 collection=node.collection,
                 vector=query_vector,
-                top_k=node.top_k,
+                top_k=fetch_k,
             )
         except Exception as exc:
             return NodeResult(
@@ -148,6 +149,9 @@ class RAGExecutor:
             chunks = [
                 c for c in chunks if c.get("score", 0) >= node.similarity_threshold
             ]
+
+        if node.rerank and len(chunks) > 0:
+            chunks = await self._rerank_chunks(query, chunks, node.top_k, context)
 
         if not node.include_metadata:
             for c in chunks:
@@ -176,5 +180,49 @@ class RAGExecutor:
                 "chunk_count": len(chunks),
                 "latency_ms": latency_ms,
                 "embedding_model": model,
+                "reranked": node.rerank,
             },
         )
+
+    async def _rerank_chunks(self, query: str, chunks: list[dict], top_k: int, context: ExecutionContext) -> list[dict]:
+        if not context.provider_registry:
+            return chunks[:top_k]
+            
+        try:
+            provider = context.provider_registry.resolve(context.config.llm_default_model)
+        except KeyError:
+            return chunks[:top_k]
+
+        import json
+        prompt = (
+            f"Given the query: '{query}', score the following chunks based on their relevance to the query.\n"
+            "Return a JSON array of objects with 'index' (0-based) and 'score' (0.0 to 1.0).\n"
+            "Example: [{\"index\": 0, \"score\": 0.9}, {\"index\": 1, \"score\": 0.2}]\n\n"
+        )
+        for i, c in enumerate(chunks):
+            prompt += f"Chunk {i}:\n{c.get('text', '')}\n\n"
+
+        try:
+            result = await provider.complete(
+                messages=[{"role": "user", "content": prompt}],
+                model=context.config.llm_default_model,
+                temperature=0.0,
+                response_format={"type": "json_object"},
+            )
+            scores_data = json.loads(result.content)
+            if isinstance(scores_data, dict) and "scores" in scores_data:
+                scores_data = scores_data["scores"]
+            elif isinstance(scores_data, dict) and "results" in scores_data:
+                scores_data = scores_data["results"]
+                
+            if isinstance(scores_data, list):
+                for item in scores_data:
+                    idx = item.get("index")
+                    if isinstance(idx, int) and 0 <= idx < len(chunks):
+                        chunks[idx]["score"] = float(item.get("score", chunks[idx].get("score", 0.0)))
+                        
+            chunks.sort(key=lambda x: x.get("score", 0.0), reverse=True)
+        except Exception as exc:
+            logger.warning("Reranking failed: %s", exc)
+            
+        return chunks[:top_k]

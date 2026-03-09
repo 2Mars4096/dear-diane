@@ -48,7 +48,7 @@
   - [x] 6-1. `RAGExecutor` class in `src/dan/executors/rag.py`
   - [x] 6-2. Core flow: render query_template with inputs -> embed query via EmbeddingRegistry -> vector search via VectorStore -> format chunks -> return
   - [x] 6-3. Similarity threshold filtering: drop results below threshold after retrieval
-  - [ ] 6-4. Optional reranking step: if `rerank=True`, use LLM (via ProviderRegistry) to re-score top_k * 3 candidates, return top_k *(deferred — stretch feature; field exists on model but implementation is low priority)*
+  - [x] 6-4. Optional reranking step: if `rerank=True`, use LLM (via ProviderRegistry) to re-score top_k * 3 candidates, return top_k
   - [x] 6-5. Event emission: `RETRIEVAL_STARTED` (collection, query preview, top_k), `RETRIEVAL_COMPLETED` (chunk_count, latency_ms, top_score)
   - [x] 6-6. Register new event types in `src/dan/engine/events.py` (done in shared foundation)
   - [x] 6-7. Register executor in scheduler `_register_defaults` (done in shared foundation)
