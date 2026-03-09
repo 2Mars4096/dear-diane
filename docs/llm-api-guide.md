@@ -920,17 +920,25 @@ Emits a `tier_escalation` event with `from_tier`, `to_tier`, `from_model`, `to_m
 
 ## 7e. Built-in Tools (`dan.tools`)
 
-DAN ships 11 batteries-included tools, auto-registered during server startup. Each tool module exports a `TOOL_METADATA` dict and an async callable.
+DAN ships 32 batteries-included tools, auto-registered during server startup. Each tool module exports a `TOOL_METADATA` dict and an async callable.
 
 ### Tool Categories
 
 | Category | Tools | Description |
 |---|---|---|
-| **File I/O** | `file_read`, `file_write`, `list_directory` | Workspace-sandboxed file operations |
-| **Web** | `web_search`, `web_fetch`, `http_request` | DuckDuckGo search, URL fetch, general HTTP |
+| **System** | `current_datetime`, `clipboard`, `python_eval`, `notify` | Time, clipboard, sandboxed code eval, notifications |
+| **File I/O** | `file_read`, `file_write`, `list_directory`, `file_move`, `file_copy`, `file_delete` | Workspace-sandboxed file operations |
+| **Data** | `csv_read`, `spreadsheet_read` | CSV/TSV parsing, Excel (.xlsx) reading |
+| **Web** | `web_search`, `web_fetch`, `http_request` | Tavily/Brave/DuckDuckGo search, URL fetch, general HTTP |
 | **Shell** | `shell_command` | Subprocess with timeout and allowlist |
-| **Document** | `pdf_read` | PDF text extraction |
-| **Text Processing** | `text_chunk`, `json_extract`, `regex_match` | Chunking, dot-notation extraction, regex |
+| **Document** | `pdf_read` | PDF: `mode=text` (extract text) or `mode=vision` (vision LLM per page — figures, tables) |
+| **Text Processing** | `text_chunk`, `json_extract`, `regex_match`, `text_diff`, `text_translate` | Chunking, dot-notation extraction, regex, unified diff, LLM translation |
+| **Git** | `git_status`, `git_diff`, `git_log`, `git_commit`, `git_branch`, `git_worktree` | Safe git operations (no force-push/hard-reset) |
+| **Media** | `image_describe`, `audio_transcribe` | Vision LLM image description, Whisper transcription |
+| **Communication** | `send_email` | SMTP email via aiosmtplib |
+| **Archive** | `compress` | Create zip/tar.gz archives |
+
+`pdf_read` parameters: `path` (required), optional `mode`, `start_page`, `end_page`, `vision_model`, and `vision_prompt`. In `mode="vision"`, the tool reports `pages_requested`, `pages_returned`, `truncated`, and `warning` so callers can tell when a long PDF was capped to the first 25 pages.
 
 ### Using Tools in Workflows
 
@@ -957,7 +965,7 @@ extract = wf.tool("extract", tool_id="json_extract",
 from dan.executors.tool import ToolRegistry
 
 registry = ToolRegistry()
-registry.register_builtin_tools()  # registers all 11 built-in tools
+registry.register_builtin_tools()  # registers all 32 built-in tools
 
 # Add custom tools (override built-in IDs or add new ones)
 async def my_tool(query: str) -> dict:
@@ -972,11 +980,24 @@ Each tool module follows the same pattern — export `TOOL_METADATA` dict with k
 
 ### Workspace Sandboxing
 
-File tools (`file_read`, `file_write`, `list_directory`) enforce `DAN_WORKSPACE_ROOT` boundary — paths outside the workspace are rejected. Defaults to the current working directory.
+File tools (`file_read`, `file_write`, `list_directory`, `file_move`, `file_copy`, `file_delete`) enforce `DAN_WORKSPACE_ROOT` boundary — paths outside the workspace are rejected. Defaults to the current working directory.
 
 ### Graceful Degradation
 
-Optional-dependency tools (`web_search` requires `duckduckgo-search`, `pdf_read` requires `pypdf`) skip with a warning if the SDK is not installed. The remaining tools continue to work.
+Optional-dependency tools raise clear errors when their SDK/config is missing (`web_search` needs `duckduckgo-search`; `pdf_read` text mode needs `pypdf`; `pdf_read` vision mode also needs `pymupdf`, `openai`, and an API key; `spreadsheet_read` needs `openpyxl`; `audio_transcribe`/`image_describe` need `openai`). Missing optional deps do not break unrelated tools.
+
+### Workflow Catalog Tools (Capability-Level)
+
+These are chat-mode capability tools (not workflow `ToolNode` tools) for browsing and managing saved workflows:
+
+| Tool | Description |
+|---|---|
+| `list_my_workflows` | List all saved workflows with names, descriptions, and sizes |
+| `search_workflows(query)` | Keyword search over saved workflow names and descriptions |
+| `show_workflow(workflow_id)` | Display workflow structure as ASCII DAG diagram |
+| `fork_workflow(workflow_id, new_name?)` | Duplicate a workflow as a starting point for adaptation |
+
+Available in all chat modes. Registered via `register_workflow_catalog_capabilities()`.
 
 ---
 

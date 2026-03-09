@@ -17,7 +17,8 @@
 - `classifier.py` + `handlers.py` keep deterministic routing above `ChatManager`; conversation/build flows delegate back into the existing LLM chat paths instead of every message going through the full capability-tool decision loop. One-shot utility requests now have a dedicated `direct_task` lane so simple fact/drafting asks can bypass workflow build; external fact/stock queries first try direct web lookup and return a safe failure if live data cannot be verified. `classify_intent_with_llm_fallback()` calls the LLM when heuristic confidence < 0.6, with bias toward simpler categories over `workflow_build`.
 - `policy.py`, `queue.py`, `progress.py`, and `promotion.py` are the shared behavior-policy modules so server/local/adapters can converge on one decision model. `estimate_action_cost()` provides heuristic cost estimates; `DAN_COST_CONFIRM_THRESHOLD` (default $1) forces confirmation for expensive actions. `ProjectMessageQueue` enforces bounded parallelism (max 3 active projects per surface). `ProgressReporter.start_push()` emits periodic progress via async callback.
 - `identity.py` is the single source of truth for bot name and prefix formatting. `get_bot_name()` reads `DAN_BOT_NAME` env var (default `"DAN"`). All prefix formatting (`format_prefix()`, `format_bare_prefix()`, `starts_with_prefix()`, `strip_prefix()`) reads from this module.
-- `dispatcher.py` provides `ConcurrentDispatcher` — a concurrency layer wrapping `Concierge`. Different projects process in parallel (per-project asyncio tasks); same-project messages queue and drain serially so follow-ups see prior results. `ChatQueuedEvent` signals deferred response delivery with a pre-allocated `stream_channel_id`. `build_concierge()` returns `(Concierge, ConcurrentDispatcher)` when `enable_dispatcher=True`.
+- `dispatcher.py` provides `ConcurrentDispatcher` — a concurrency layer wrapping `Concierge`. Different projects process in parallel (per-project asyncio tasks); same-project messages queue and drain serially so follow-ups see prior results. `ChatQueuedEvent` signals deferred response delivery with a pre-allocated `stream_channel_id`. `build_concierge()` returns `(Concierge, ConcurrentDispatcher)` when `enable_dispatcher=True`. When constructed with a `ResourceTracker`, capacity decisions are resource-based (LLM calls, active runs) instead of a hard project cap. Project-level and global overflow queues are priority-ordered (heapq-backed `PriorityQueue`); higher-priority messages dequeue first, same-priority preserves FIFO.
+- `resources.py` provides `ResourceBudget` (configurable limits read from `DAN_MAX_CONCURRENT_LLM`/`DAN_MAX_CONCURRENT_RUNS`/`DAN_MAX_MEMORY_MB` env vars), `ResourceTracker` (asyncio.Lock-protected acquire/release accounting), `MessagePriority` enum (CRITICAL/HIGH/NORMAL/LOW), `classify_priority()` (infers priority from message content and active goal state), and `PriorityQueue` (heapq-backed bounded queue with monotonic tiebreaker for FIFO within priority level).
 - `ChatManager` accepts `prompt_context` so concierge-scoped project/task summaries can be injected at the system-message layer without replacing the existing prompt builder.
 - Reply labels follow citation rules: `[DAN - <Project>]` when multiple projects active, `[DAN - <Project> / <Task>]` for multi-task projects, quiet for single-project. Auto-summarization triggers every 10 turns or on task completion.
 - `/save <name>` command renames scratch workflows, writes experience, and updates project state. Handler-specific clarification: `DirectTaskHandler` asks for missing file context, `RunHandler` disambiguates multiple runs, `WorkflowBuildHandler` asks modify-vs-create. `MetaGoalHandler` enriches goals with similar workflows and principles before delegation.
@@ -78,6 +79,7 @@ deep-agent-network/
       costs.py                   # Static COST_PER_1K_TOKENS table + estimate_cost()
       tier_defaults.py             # DEFAULT_TIER_MAPS, DEFAULT_TIER_PARAMS, resolve_tier_map/resolve_tier_params
       tier_scorer.py               # DifficultyScorer, ImpactScorer, RecoverabilityScorer, TierScorer, TierResult
+    mcp_bridge.py                # Phase 19 (29-9) — MCP client bridge: consume external MCP servers as tools
     tools/                       # Phase 4 — built-in tool library (dan.tools)
       __init__.py                # get_all_tools() auto-discovery
       _workspace.py              # Workspace root sandboxing utility
@@ -117,6 +119,9 @@ deep-agent-network/
       cache.py                   # Phase 10 (18-2) — NodeResultCache (LRU+TTL+disk) and SemanticCache (EmbeddingRegistry + VectorStore)
       user_profile.py            # Phase 16 (26-3) — UserProfile Pydantic model, RecentWorkflow, load/save to ~/.dan/profile.json, format_recent_workflows()
       preference_extractor.py    # Phase 16 (26-3) — PreferenceExtractor heuristic extraction (model preferences, domains, output format) from conversation history
+      memory_extractor.py        # Phase 29-6 — MemoryExtractor heuristic extraction (facts, preferences, episodes) from user/assistant interactions; complements PreferenceExtractor
+      pattern_extractor.py       # Phase 29-6 §4 — PatternExtractor: structural pattern extraction from workflow graphs; runs inside run_consolidation() to discover recurring sub-structures as WORKFLOW_PATTERN items
+      outcome_trackers.py        # Phase 29-6 §7/§8/§10 — PromptTracker (prompt/outcome pairs), ModelOutcomeTracker + ModelRecommender (per-node model selection learning), TopologyOutcomeTracker + TopologyAdvisor (structural pattern correlation); all opt-in via env vars
       conversation_memory.py     # Phase 16 (26-3) — ConversationMemoryStore, ConversationSummary, cross-session keyword search, context block formatting
       scheduler.py               # Topological sort (DAG fast-path + cycle-aware for gate loops), parallel dispatch, Engine.run()/resume(), event emission
     rag/                         # Phase 6 — RAG / knowledge retrieval subsystem
@@ -148,6 +153,7 @@ deep-agent-network/
       planner.py                 # WorkflowPlanner — LLM-driven reuse-first planning (PlanningPromptBuilder, ReusePlan, AdaptPlan, GeneratePlan, PlanResult, PlanReview, PlannerOutput)
       repair.py                  # Structural Repair Engine — RepairLevel, RepairClassifier, ParameterRepairGenerator, StructuralRepairPlanner, RedesignTrigger, RepairEscalator, RepairActionStore/Record
       controller.py              # Autonomous Execution Controller — MetaSession, MetaSessionStore, MetaController, MetaControllerConfig, HumanOverride
+      utils.py                   # Shared utilities extracted from MetaController (29-2 §5-1) — plan_from_dict, topo_sort_workflows, create_meta_session, goal_to_session_fields, validate_session_resumable, session_is_terminal
       self_knowledge.py          # Phase 11 (19-5) — SelfKnowledgeIndex, RetrievedChunk; indexes DAN's own docs for planner grounding
       authoring.py               # Phase 11 (19-6) — RuntimeAuthor, ToolSpec, SkillSpec; dynamic tool/skill generation, sandbox testing, registration, persistence
       architect.py               # Phase 11 (19-7) — SystemArchitect, SystemPlan, WorkflowSpec, RoutingConfig, SystemManifest; multi-workflow system decomposition
@@ -635,17 +641,35 @@ result = await engine.resume(graph, run_id="abc123")
 
 ### Built-in Tools (`dan.tools`)
 
-- 11 batteries-included tools organized by category:
-  - **File I/O** — `file_read`, `file_write`, `list_directory` (sandboxed to `DAN_WORKSPACE_ROOT`)
+- 32 batteries-included tools organized by category:
+  - **System** — `current_datetime`, `clipboard`, `python_eval`, `notify`
+  - **File I/O** — `file_read`, `file_write`, `list_directory`, `file_move`, `file_copy`, `file_delete` (sandboxed to `DAN_WORKSPACE_ROOT`)
+  - **Data** — `csv_read`, `spreadsheet_read` (openpyxl, optional dep)
   - **Web** — `web_search` (Tavily → Brave → DuckDuckGo cascade), `web_fetch` (URL content), `http_request` (general HTTP)
   - **Shell** — `shell_command` (subprocess with timeout and allowlist)
-  - **Document** — `pdf_read` (PDF text extraction)
-  - **Text Processing** — `text_chunk` (chunking with overlap), `json_extract` (dot-notation), `regex_match` (match/replace)
+  - **Document** — `pdf_read` (PDF text extraction + optional vision mode)
+  - **Text Processing** — `text_chunk` (chunking with overlap), `json_extract` (dot-notation), `regex_match` (match/replace), `text_diff` (unified diff), `text_translate` (LLM-powered)
+  - **Git** — `git_status`, `git_diff`, `git_log`, `git_commit`, `git_branch`, `git_worktree` (no force-push/hard-reset; safe 90% of git usage)
+  - **Media** — `image_describe` (vision LLM), `audio_transcribe` (Whisper API)
+  - **Communication** — `send_email` (SMTP via aiosmtplib)
+  - **Archive** — `compress` (zip/tar.gz)
 - **Auto-discovery:** Each module exports `TOOL_METADATA` dict (keys: `tool_id`, `description`, `parameters`, `examples`, `category`, `returns`) and an async callable with the same name as `tool_id`. `get_all_tools()` scans all modules and returns `{tool_id: (function, metadata)}`.
 - Auto-registered during server lifespan via `ToolRegistry.register_builtin_tools()` — custom tools can override built-in IDs
-- Graceful degradation: optional SDK tools (`pypdf` for `pdf_read`, `duckduckgo-search` for `web_search` fallback) skip with warning if SDK not installed
+- Graceful degradation: optional SDK tools (`pypdf` for `pdf_read`, `duckduckgo-search` for `web_search` fallback, `openpyxl` for `spreadsheet_read`, `openai` for `audio_transcribe`/`image_describe`) skip with warning if SDK not installed
 - **Web search provider cascade:** `web_search` checks `DAN_TAVILY_API_KEY` → Tavily (recommended, built for LLM agents); then `DAN_BRAVE_API_KEY` → Brave Search; then DuckDuckGo scraping (zero-config). Each provider auto-falls back to the next on failure.
 - Workspace root sandboxing: all file tools enforce `DAN_WORKSPACE_ROOT` boundary
+- **Workflow catalog tools** (capability-level): `list_my_workflows`, `search_workflows`, `show_workflow`, `fork_workflow` — browse and duplicate saved workflows from any chat mode
+
+### MCP Tool Bridge (`dan.mcp_bridge`)
+
+- **Consume external MCP servers** as first-class tools alongside the 32 built-ins. Any MCP-compliant server (Stata, R, databases, custom APIs) can be connected and its tools registered into both `ChatCapabilityRegistry` (chat) and `ToolRegistry` (workflow execution).
+- **`MCPBridge`** — manages multiple `ClientSession` connections over stdio transport. Per-server `AsyncExitStack` for independent connect/disconnect. Reconnect-on-failure with single retry. `call_tool()` parses `TextContent`/`ImageContent`/`EmbeddedResource` results.
+- **Config at `~/.dan/mcp.json`** — Cursor/Claude Desktop compatible format (`mcpServers` key). `DAN_MCP_CONFIG` env var overrides path.
+- **Chat commands:** `/mcp install <name>` (pip install + connect + register), `/mcp list`, `/mcp remove <name>`, `/mcp tools [name]`. Dispatched in `Concierge.process()`.
+- **Known-server registry:** `KNOWN_MCP_SERVERS` maps short names (e.g., `stata`) to pip packages and commands for one-step install.
+- **Tool naming:** `mcp_{server}_{tool}` (e.g., `mcp_stata_run_command`). Category `mcp:{server}` for bulk operations.
+- **Startup auto-connect:** servers with `autoConnect: true` in config connect on startup. Failures logged without blocking.
+- **Optional dep:** requires `mcp` package (`pip install dan[mcp]`). Module importable without it; `connect()` raises `ImportError` if missing.
 
 ### Tool design (Plan 7-5)
 
