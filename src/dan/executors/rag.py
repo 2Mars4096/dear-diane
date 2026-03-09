@@ -207,9 +207,15 @@ class RAGExecutor:
                 messages=[{"role": "user", "content": prompt}],
                 model=context.config.llm_default_model,
                 temperature=0.0,
-                response_format={"type": "json_object"},
             )
-            scores_data = json.loads(result.content)
+            
+            text = result.text.strip()
+            if text.startswith("```"):
+                lines = text.split("\n")
+                if len(lines) >= 2:
+                    text = "\n".join(lines[1:-1])
+            
+            scores_data = json.loads(text)
             if isinstance(scores_data, dict) and "scores" in scores_data:
                 scores_data = scores_data["scores"]
             elif isinstance(scores_data, dict) and "results" in scores_data:

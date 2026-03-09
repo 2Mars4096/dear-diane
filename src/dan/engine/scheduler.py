@@ -1612,8 +1612,9 @@ class Engine:
                 if isinstance(value, str):
                     token_count = estimate_tokens(value)
                     if token_count > encode_threshold:
+                        preview = value[:500] + f"... [truncated, total {token_count} tokens]"
                         context.remember(
-                            content=value,
+                            content=f"Large artifact on port '{port_name}': {preview}",
                             source_node_id=node_id,
                             metadata={
                                 "entry_type": "artifact_summary",
