@@ -24,6 +24,7 @@ import logging
 import mimetypes
 import os
 import sys
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -38,6 +39,8 @@ logger = logging.getLogger(__name__)
 _MAX_MESSAGE_LENGTH = 4096
 _PROGRESS_THROTTLE_SECONDS = 5.0
 _DEFAULT_DB_DIR = Path.home() / ".dan" / "whatsapp-web"
+_DEFAULT_MEDIA_DIR = Path.home() / ".dan" / "whatsapp-web" / "media"
+_MEDIA_CLEANUP_SECONDS = 3600.0
 _OUTBOUND_ECHO_WINDOW_SECONDS = 30.0
 
 
@@ -47,6 +50,7 @@ class WhatsAppWebAdapterConfig(AdapterConfig):
     db_path: str = ""
     allowed_jids: list[str] = Field(default_factory=list)
     progress_throttle: float = _PROGRESS_THROTTLE_SECONDS
+    max_inbound_media_mb: float = 50.0
 
 
 class WhatsAppWebAdapter:
@@ -351,6 +355,68 @@ class WhatsAppWebAdapter:
         server = getattr(jid, "Server", "") or "s.whatsapp.net"
         return f"{user}@{server}" if user else str(jid)
 
+    async def _download_media(self, msg: Any) -> tuple[bytes, str, str] | None:
+        """Download media from a message. Returns (data, filename, mime_type) or None."""
+        if self._client is None:
+            return None
+        loop = asyncio.get_running_loop()
+        try:
+            data = await loop.run_in_executor(None, self._client.download_any, msg)
+        except Exception:
+            logger.debug("Media download failed", exc_info=True)
+            return None
+        if not data:
+            return None
+        max_bytes = int(self.config.max_inbound_media_mb * 1024 * 1024)
+        if len(data) > max_bytes:
+            logger.warning("Downloaded media exceeds size limit: %d bytes", len(data))
+            return None
+
+        if hasattr(msg, "documentMessage") and msg.documentMessage:
+            filename = getattr(msg.documentMessage, "fileName", "") or ""
+            mime = getattr(msg.documentMessage, "mimetype", "") or "application/octet-stream"
+        elif hasattr(msg, "imageMessage") and msg.imageMessage:
+            filename = ""
+            mime = getattr(msg.imageMessage, "mimetype", "") or "image/jpeg"
+        elif hasattr(msg, "videoMessage") and msg.videoMessage:
+            filename = ""
+            mime = getattr(msg.videoMessage, "mimetype", "") or "video/mp4"
+        elif hasattr(msg, "audioMessage") and msg.audioMessage:
+            filename = ""
+            mime = getattr(msg.audioMessage, "mimetype", "") or "audio/ogg"
+        elif hasattr(msg, "stickerMessage") and msg.stickerMessage:
+            filename = ""
+            mime = getattr(msg.stickerMessage, "mimetype", "") or "image/webp"
+        else:
+            filename = ""
+            mime = "application/octet-stream"
+
+        if not filename:
+            ext = mimetypes.guess_extension(mime) or ""
+            filename = f"media_{id(msg) % 100000:05d}{ext}"
+
+        return data, filename, mime
+
+    def _save_media_temp(self, data: bytes, filename: str) -> Path:
+        """Save media to temp directory and schedule cleanup."""
+        _DEFAULT_MEDIA_DIR.mkdir(parents=True, exist_ok=True)
+        safe_name = f"{int(time.time())}_{filename}"
+        path = _DEFAULT_MEDIA_DIR / safe_name
+        path.write_bytes(data)
+        self._schedule_media_cleanup(path)
+        return path
+
+    def _schedule_media_cleanup(self, path: Path) -> None:
+        """Delete a temp media file after _MEDIA_CLEANUP_SECONDS."""
+        def _cleanup() -> None:
+            try:
+                path.unlink(missing_ok=True)
+            except Exception:
+                pass
+        timer = threading.Timer(_MEDIA_CLEANUP_SECONDS, _cleanup)
+        timer.daemon = True
+        timer.start()
+
     async def _handle_incoming(self, event: Any) -> None:
         try:
             info = event.Info
@@ -358,15 +424,107 @@ class WhatsAppWebAdapter:
             sender_jid = self._jid_to_str(source.Sender)
             chat_jid = self._jid_to_str(source.Chat)
 
-            text = ""
             msg = event.Message
+            text = ""
+            attachment_path: str | None = None
+            is_voice_note = False
+
             if hasattr(msg, "conversation") and msg.conversation:
                 text = msg.conversation
             elif hasattr(msg, "extendedTextMessage") and msg.extendedTextMessage:
                 text = msg.extendedTextMessage.text or ""
 
-            if not text:
+            elif hasattr(msg, "imageMessage") and msg.imageMessage:
+                caption = getattr(msg.imageMessage, "caption", "") or ""
+                file_len = getattr(msg.imageMessage, "fileLength", 0) or 0
+                if file_len > self.config.max_inbound_media_mb * 1024 * 1024:
+                    await self._send_text(
+                        chat_jid,
+                        f"That image is too large ({file_len / (1024*1024):.1f} MB). "
+                        f"Max is {self.config.max_inbound_media_mb:.0f} MB.",
+                    )
+                    return
+                result = await self._download_media(msg)
+                if result:
+                    data, filename, _mime = result
+                    path = self._save_media_temp(data, filename)
+                    attachment_path = str(path)
+                text = f"[User sent image]\n{caption}".strip()
+
+            elif hasattr(msg, "documentMessage") and msg.documentMessage:
+                doc = msg.documentMessage
+                caption = getattr(doc, "caption", "") or ""
+                doc_filename = getattr(doc, "fileName", "") or "document"
+                file_len = getattr(doc, "fileLength", 0) or 0
+                if file_len > self.config.max_inbound_media_mb * 1024 * 1024:
+                    await self._send_text(
+                        chat_jid,
+                        f"That file is too large ({file_len / (1024*1024):.1f} MB). "
+                        f"Max is {self.config.max_inbound_media_mb:.0f} MB.",
+                    )
+                    return
+                result = await self._download_media(msg)
+                if result:
+                    data, dl_filename, _mime = result
+                    path = self._save_media_temp(data, dl_filename)
+                    attachment_path = str(path)
+                text = f"[User sent file: {doc_filename}]\n{caption}".strip()
+
+            elif hasattr(msg, "audioMessage") and msg.audioMessage:
+                file_len = getattr(msg.audioMessage, "fileLength", 0) or 0
+                if file_len > self.config.max_inbound_media_mb * 1024 * 1024:
+                    await self._send_text(
+                        chat_jid,
+                        f"That audio is too large ({file_len / (1024*1024):.1f} MB). "
+                        f"Max is {self.config.max_inbound_media_mb:.0f} MB.",
+                    )
+                    return
+                is_voice_note = bool(getattr(msg.audioMessage, "ptt", False))
+                result = await self._download_media(msg)
+                if result:
+                    data, filename, _mime = result
+                    path = self._save_media_temp(data, filename)
+                    attachment_path = str(path)
+                if is_voice_note and attachment_path:
+                    text = f"[Voice note: {attachment_path}]"
+                elif attachment_path:
+                    text = "[User sent audio]"
+
+            elif hasattr(msg, "videoMessage") and msg.videoMessage:
+                caption = getattr(msg.videoMessage, "caption", "") or ""
+                file_len = getattr(msg.videoMessage, "fileLength", 0) or 0
+                if file_len > self.config.max_inbound_media_mb * 1024 * 1024:
+                    await self._send_text(
+                        chat_jid,
+                        f"That video is too large ({file_len / (1024*1024):.1f} MB). "
+                        f"Max is {self.config.max_inbound_media_mb:.0f} MB.",
+                    )
+                    return
+                result = await self._download_media(msg)
+                if result:
+                    data, filename, _mime = result
+                    path = self._save_media_temp(data, filename)
+                    attachment_path = str(path)
+                text = f"[User sent video]\n{caption}".strip()
+
+            elif hasattr(msg, "stickerMessage") and msg.stickerMessage:
+                text = "[User sent a sticker]"
+
+            elif hasattr(msg, "contactMessage") and msg.contactMessage:
+                name = getattr(msg.contactMessage, "displayName", "") or "Unknown"
+                text = f"[User shared contact: {name}]"
+
+            elif hasattr(msg, "locationMessage") and msg.locationMessage:
+                loc = msg.locationMessage
+                lat = getattr(loc, "degreesLatitude", 0.0)
+                lon = getattr(loc, "degreesLongitude", 0.0)
+                text = f"[User shared location: {lat}, {lon}]"
+
+            if not text and not attachment_path:
                 return
+
+            if attachment_path and not is_voice_note:
+                text = f"[Attachment: {attachment_path}]\n{text}"
 
             # Neonize marks messages sent by our account as IsFromMe, which includes
             # commands typed from the user's phone to their own chat. Allow those
@@ -510,3 +668,59 @@ def _split_message(text: str, max_len: int = _MAX_MESSAGE_LENGTH) -> list[str]:
         chunks.append(text[:split_at])
         text = text[split_at:].lstrip("\n")
     return chunks
+
+
+async def transcribe_audio(audio_path: str) -> str | None:
+    """Transcribe audio using an OpenAI-compatible Whisper API.
+
+    Provider resolution:
+    1. DAN_WHISPER_API_KEY + DAN_WHISPER_BASE_URL + DAN_WHISPER_MODEL
+    2. DAN_OPENAI_API_KEY + https://api.openai.com/v1 + whisper-1
+    3. DAN_LLM_API_KEY + DAN_LLM_BASE_URL + whisper-1
+    4. None → return None
+    """
+    import httpx
+
+    if os.environ.get("DAN_WHISPER_API_KEY"):
+        api_key = os.environ["DAN_WHISPER_API_KEY"]
+        base_url = os.environ.get("DAN_WHISPER_BASE_URL", "https://api.openai.com/v1")
+        model = os.environ.get("DAN_WHISPER_MODEL", "whisper-1")
+    elif os.environ.get("DAN_OPENAI_API_KEY"):
+        api_key = os.environ["DAN_OPENAI_API_KEY"]
+        base_url = "https://api.openai.com/v1"
+        model = "whisper-1"
+    elif os.environ.get("DAN_LLM_API_KEY") or os.environ.get("LLM_API_KEY"):
+        api_key = os.environ.get("DAN_LLM_API_KEY") or os.environ["LLM_API_KEY"]
+        base_url = os.environ.get("DAN_LLM_BASE_URL", "https://api.openai.com/v1")
+        model = "whisper-1"
+    else:
+        return None
+
+    base_url = base_url.rstrip("/")
+
+    path = Path(audio_path)
+    if not path.exists():
+        logger.warning("Audio file not found: %s", audio_path)
+        return None
+
+    mime = mimetypes.guess_type(str(path))[0] or "audio/ogg"
+    url = f"{base_url}/audio/transcriptions"
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                url,
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": (path.name, path.read_bytes(), mime)},
+                data={"model": model},
+            )
+        if response.status_code != 200:
+            logger.warning(
+                "Whisper API error %d: %s", response.status_code, response.text[:200],
+            )
+            return None
+        result = response.json()
+        return result.get("text", "").strip() or None
+    except Exception:
+        logger.debug("Audio transcription failed", exc_info=True)
+        return None
