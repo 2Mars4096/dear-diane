@@ -2,7 +2,7 @@
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
 **Status:** not-started
-**Goal:** Make DAN's learning system practically effective — upgrade signal quality, close the user-correction loop, make learning observable, unify adaptation governance, and prepare storage for scale — so active learning becomes trustworthy enough to run by default.
+**Goal:** Make DAN's learning system practically effective — upgrade signal quality, close the user-correction loop, make learning observable, unify adaptation governance, and prepare storage for scale — so active learning becomes trustworthy enough for a staged default rollout.
 
 ## Problem
 
@@ -29,21 +29,21 @@ All other learning (prompt tracking, model tracking, topology tracking, RunLearn
 - [ ] 1. **Tiered learning activation**
   - [ ] 1-1. Define three tiers: `baseline` (always on: memory, post-run learning, reuse scoring, preference evolution), `advisory` (topology suggestions, model recommendations, prompt variant proposals — observe and recommend), `active` (A/B prompt promotion, skill refinement promotion, auto-adaptation — actually change behavior)
   - [ ] 1-2. Replace `DAN_LEARNING_MODE` with `DAN_LEARNING_TIER`: `0` = baseline only (current default), `1` = baseline + advisory, `2` = baseline + advisory + active. Backward compat: `DAN_LEARNING_MODE=1` maps to tier `1`.
-  - [ ] 1-3. Make tier `1` (advisory) safe enough to be the recommended default for new users. This means advisory outputs appear in logs / `/status` but do not auto-apply changes.
+  - [ ] 1-3. Staged rollout rule: preserve tier `0` for existing installs / current envs. Promote tier `1` as default for fresh installs only after **concrete gates** are met: (a) health counters (task 4) show `succeeded / attempted >= 0.95` across all learning paths over 100+ events, (b) model recommender precision > 0.7 on held-out runs (at least 15 recorded outcomes), (c) no tier-1 feature has auto-generated a false-positive adaptation in integration tests. These gates are checked manually before updating `.env.example` — not automated promotion.
   - [ ] 1-4. Individual env var overrides still work (e.g., `DAN_PROMPT_OPTIMIZATION=1` forces prompt optimization on regardless of tier)
   - [ ] 1-5. Update `app.py` lifespan to implement tiered activation logic
   - [ ] 1-6. Update `.env.example` and docs with tier descriptions
 
 - [ ] 2. **Upgrade quality signals**
   - [ ] 2-1. **Node-level outcome tracking**: record success/failure per node, not just per run. Each node in `record.node_usage` gets its own quality score based on whether that specific node's output was valid (schema-valid, no error, no retry needed).
-  - [ ] 2-2. **Retry/repair count signal**: nodes that succeed after self-repair should score lower than nodes that succeed on first try. Encode as `quality = 1.0 - (retry_count * 0.15)` (clamped to [0.1, 1.0]).
+  - [ ] 2-2. **Retry/repair count signal**: nodes that succeed after self-repair should score lower than nodes that succeed on first try. Encode as `quality = 1.0 / (1.0 + retry_count * 0.3)` (clamped to [0.1, 1.0]) — diminishing penalty so the first retry (common, benign) is treated differently from the 5th retry (real problem).
   - [ ] 2-3. **Schema-valid-first-try flag**: binary signal — did the node produce structurally valid output on the first attempt? Valuable for model comparison.
   - [ ] 2-4. **Partial success**: for long workflows, encode a gradient (e.g., 7 of 10 nodes succeeded → 0.7) instead of all-or-nothing.
   - [ ] 2-5. Wire upgraded signals into `PromptTracker`, `ModelOutcomeTracker`, `TopologyOutcomeTracker` in `run_manager.py` and `llm.py`
   - [ ] 2-6. Preserve backward compat: old records with binary quality still work
 
 - [ ] 3. **Correction memory loop**
-  - [ ] 3-1. **Correction detector**: identify when the user is correcting DAN's behavior vs. continuing the conversation. Signals: negation ("no, don't..."), override ("use X instead"), style correction ("shorter", "summarize first"), explicit redo ("try again with..."). Heuristic-first (keyword + pattern matching), with optional LLM classifier for ambiguous cases.
+  - [ ] 3-1. **Correction detector**: identify when the user is correcting DAN's behavior vs. continuing the conversation. Signals: negation ("no, don't..."), override ("use X instead"), style correction ("shorter", "summarize first"), explicit redo ("try again with..."). Heuristic-first (keyword + pattern matching), with optional LLM classifier for ambiguous cases. **False-positive mitigation:** assign a `confidence: float` to each detection. At tier 1 (advisory), corrections with confidence < 0.7 are logged but not applied. At tier 2 (active), only confidence >= 0.8 triggers automatic quality score adjustments. Low-confidence candidates surface in `/corrections` for manual review.
   - [ ] 3-2. **Correction→learning routing**: corrections produce:
     - `PREFERENCE` when it's stable user taste ("always use Stata", "I prefer concise responses")
     - `PRINCIPLE` when it's a general rule ("summarize results before showing raw tables")
@@ -64,7 +64,7 @@ All other learning (prompt tracking, model tracking, topology tracking, RunLearn
   - [ ] 5-2. `AdaptationRegistry`: central store for all pending/applied/rejected adaptations. Each adaptation type registers its candidates here instead of managing lifecycle independently.
   - [ ] 5-3. Governance rules: `auto_apply` only allowed at tier `2` (active); tier `1` stores candidates for inspection; tier `0` doesn't generate candidates at all.
   - [ ] 5-4. `/adaptations` command: list pending adaptations with confidence, sample size, and approval status. User can approve/reject from chat.
-  - [ ] 5-5. Rollback: if an applied adaptation causes quality regression (measured over next N runs), auto-revert and flag.
+  - [ ] 5-5. Rollback: if an applied adaptation causes quality regression, auto-revert and flag. Concrete parameters: measure over the next **N=10 runs** in the same scope. Regression threshold: **>15% drop in quality score** vs. the pre-adaptation baseline. To avoid attribution ambiguity, limit to **one active adaptation per scope** (node_type, workflow, or global) at a time. If multiple candidates are pending, queue them and evaluate serially.
 
 - [ ] 6. **Memory storage backend abstraction**
   - [ ] 6-1. `MemoryBackend` protocol: `load() -> dict[str, MemoryItem]`, `save(index: dict[str, MemoryItem])`, `upsert(item: MemoryItem)`, `delete(item_id: str)`, `query(filter: MemoryFilter) -> list[MemoryItem]`
@@ -78,7 +78,7 @@ All other learning (prompt tracking, model tracking, topology tracking, RunLearn
   - [ ] 7-1. `DurationEstimator`: given a task description + node type, query `ExperienceStore` for similar past tasks and return median duration + confidence interval. Fallback to heuristic classification (quick ~2min, medium ~15min, complex ~30min) when no experience data exists.
   - [ ] 7-2. `FailureHotspotPredictor`: given a workflow topology, query `ErrorMemoryIndex` + `PrincipleStore` for failure patterns at similar nodes. Surface "this node type fails ~30% of the time — consider adding a validator" as planning advice.
   - [ ] 7-3. `ModelPreference`: given a node type + task pattern, query `ModelOutcomeTracker` for best empirical model. Feed into 31-8 RCPSP scheduler as a model-assignment prior.
-  - [ ] 7-4. Wire all three into `WorkflowPlanner` and 31-8's `PlanScheduler` — these become planning inputs, not just post-run learnings.
+  - [ ] 7-4. Wire all three into `WorkflowPlanner` immediately; treat 31-8 `PlanScheduler` integration as a blocked follow-on slice once that module exists
   - [ ] 7-5. This is the bridge between "learning from the past" and "planning for the future" — the most important upgrade for making learning operationally useful.
 
 - [ ] 8. **Tests and docs**
@@ -90,6 +90,7 @@ All other learning (prompt tracking, model tracking, topology tracking, RunLearn
 ## Decisions
 
 - **Tiers over binary flags** — graduated activation is safer than all-or-nothing. Users can start at tier 1 (observe) before committing to tier 2 (act).
+- **Staged default rollout.** Existing installs keep tier 0 unless the user opts in. Fresh-install default only moves to tier 1 after health counters and precision signals show advisory mode is trustworthy.
 - **Correction memory is the #1 priority** — user corrections are the highest-fidelity learning signal and are currently completely unused. This alone would improve DAN's practical evolution more than all other changes combined.
 - **Storage abstraction now, migration later** — formalize the backend seam so future scale-up is a config change, not a refactor. Don't over-invest in storage engine until scale demands it.
 - **Node-level signals before algorithm upgrades** — upgrading the quality of data feeding the learners is more impactful than making the learners themselves more sophisticated. Garbage in, garbage out.
@@ -127,4 +128,5 @@ All other learning (prompt tracking, model tracking, topology tracking, RunLearn
 - This plan directly addresses the four findings from the [Learning evolution review](7a3db302-7cd6-4856-97c7-2bf68cc2acee): (1) active learning is dormant, (2) signals are too coarse, (3) no correction feedback, (4) learning fails silently. It also adds the two structural improvements: unified governance and storage abstraction.
 - The cost profile of learning remains near-zero extra LLM calls. All new features (tiering, quality signals, correction detection, health counters, adaptation governance, storage backend, planning calibration) are local computation, not additional LLM calls. The only LLM-consuming paths remain reflection and LLM memory extraction, both still gated.
 - Task 7 (planning-time calibration) bridges this plan to 31-8 (plan dependency optimization). The duration estimator feeds directly into RCPSP time estimates; the model preference feeds into model-tier assignment by slack. This connection turns "learning from the past" into "planning for the future."
+- Tasks 1-6 are independent hardening work and can ship before 31-8. Task 7's `PlanScheduler` integration is intentionally a blocked follow-on slice once 31-8 lands.
 - Correction memory (task 3) is flagged as highest impact. Even without the other upgrades, capturing user corrections as first-class learning signals would measurably improve DAN's behavior on repeated interactions.

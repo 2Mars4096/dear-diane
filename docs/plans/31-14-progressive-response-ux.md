@@ -84,29 +84,30 @@ Three messages total. Three notifications. Within each message, edits are silent
 
 - [ ] 3. **Concierge/executor wiring**
   - [ ] 3-1. Create `ProgressSession` when concierge starts processing a non-trivial message (skip for fast commands, simple greetings)
-  - [ ] 3-2. **Instant acknowledgment** (<100ms, deterministic): emit plan block with "Got it. Working on {task_summary}." before any LLM call
+  - [ ] 3-2. **Instant acknowledgment** (<100ms, deterministic): emit plan block with "Got it. Working on {task_summary}." before any LLM call. This requires the concierge to synchronously create and send the first progress block before entering the async solver/planner pipeline — a pipeline restructuring, not just wiring.
   - [ ] 3-3. **Plan disclosure** (<2s, LLM): after solver/planner runs, emit plan block with step list and ETA. Offer review checkpoint for complex plans (>3 steps).
   - [ ] 3-4. **Phase transitions** (deterministic): wire tool execution start/complete, workflow run events, and capability handler events to `phase_update` / `phase_complete` calls
   - [ ] 3-5. **Result checkpoint** (LLM): on large outputs (>1000 tokens), generate a summary + options instead of dumping raw output. Respect user's stated focus from the original question.
   - [ ] 3-6. **Heartbeat** (deterministic): for operations >5s, emit heartbeat with elapsed time. Max frequency: 1 per 30s on messaging surfaces, 1 per 5s on CLI/editor.
 
 - [ ] 4. **Pre-flight clarification**
-  - [ ] 4-1. Cost/time threshold: if the planned task will take >10s or >$0.10 (estimated), emit 1-2 targeted clarifying questions before committing
-  - [ ] 4-2. Question generation: LLM examines the user message + available context (dataset columns, file contents) and generates specific questions (not generic "what do you want?")
-  - [ ] 4-3. Quick-confirm mode: if the questions have obvious defaults, present them as "I'll use X and Y — ok?" instead of blocking
-  - [ ] 4-4. Configurable: `DAN_PREFLIGHT_CLARIFY=1` (default on), `DAN_PREFLIGHT_THRESHOLD_SECONDS=10`
+  - [ ] 4-1. `InteractionRequest` kinds: `required_clarification` (blocks execution) vs `advisory_checkpoint` (optional steering)
+  - [ ] 4-2. Cost/time threshold: if the planned task will take >10s or >$0.10 (estimated), emit 1-2 targeted clarifying questions before committing
+  - [ ] 4-3. Question generation: LLM examines the user message + available context (dataset columns, file contents) and generates specific questions (not generic "what do you want?")
+  - [ ] 4-4. Quick-confirm mode: if the questions have obvious defaults, present them as "I'll use X and Y — ok?" instead of blocking
+  - [ ] 4-5. Configurable: `DAN_PREFLIGHT_CLARIFY=1` (default on), `DAN_PREFLIGHT_THRESHOLD_SECONDS=10`
 
 - [ ] 5. **Interactive checkpoints**
-  - [ ] 5-1. `CheckpointOptions` model: `summary: str`, `options: list[CheckpointOption]` where each option has `label: str`, `value: str`, `is_default: bool`
+  - [ ] 5-1. `CheckpointOptions` model: `summary: str`, `options: list[CheckpointOption]` where each option has `label: str`, `value: str`, `is_default: bool`, `is_safe_default: bool = False` (at most one option; used as fallback on clarification timeout)
   - [ ] 5-2. Surface-specific rendering: inline keyboard (Telegram), expandable sections (editor), text prompt (CLI/WhatsApp)
-  - [ ] 5-3. Auto-proceed: if in autonomous mode or no response within timeout (configurable, default 60s), proceed with default option
+  - [ ] 5-3. Auto-proceed applies **only** to `advisory_checkpoint`. `required_clarification` blocks until the user responds or an explicitly stated safe default is confirmed. **Edge cases:** (a) Timeout: `required_clarification` times out after `DAN_CLARIFICATION_TIMEOUT_SECONDS` (default 300s on messaging surfaces, infinite on CLI/editor). On timeout, use `CheckpointOption.is_safe_default` if one exists; otherwise pause the task and notify the user. (b) Surface disconnect: if the user's surface drops, the clarification transfers to their next active surface (31-13) or pauses the task. (c) App close: paused tasks with pending clarifications are resumable via `/resume` (31-11).
   - [ ] 5-4. Result filtering: when user selects a detail level, LLM formats the output accordingly ("show me only log(asset)" → extract and present that coefficient with context)
 
 - [ ] 6. **Surface-adaptive verbosity**
   - [ ] 6-1. Verbosity levels: `full` (editor/CLI — stream everything), `compact` (Telegram — edit-in-place), `minimal` (WhatsApp — bookend only)
-  - [ ] 6-2. Auto-detect from surface type in `CapabilityContext.surface_hint`
+  - [ ] 6-2. Auto-detect from surface type: pass `surface_type: str` (e.g., "editor", "cli", "telegram", "whatsapp") into the `ProgressSession` constructor. The concierge resolves this from the incoming `SurfaceMessage.surface` field — not from `CapabilityContext` (which lacks a surface-type enum).
   - [ ] 6-3. User override: `DAN_PROGRESS_VERBOSITY` env var or `/progress full|compact|minimal` command
-  - [ ] 6-4. Anti-noise rules: max 1 heartbeat per 30s on messaging surfaces; quiet hours from 31-12 respected; no progress messages for tasks completing in <3s
+  - [ ] 6-4. Anti-noise rules: max 1 heartbeat per 30s on messaging surfaces; no progress messages for tasks completing in <3s (delay first progress block by ~500ms; if task completes before then, skip progress entirely). Note: 31-12's quiet hours suppress DAN-*initiated* contact, not progress on user-*requested* tasks — don't apply quiet hours to in-flight progress updates.
 
 - [ ] 7. **Tests and docs**
   - [ ] 7-1. Unit tests: ProgressSession lifecycle, block creation/finalization, throttling, heartbeat timing, verbosity level selection
@@ -137,7 +138,7 @@ Three messages total. Three notifications. Within each message, edits are silent
 ## Primary Files
 
 - `src/dan/server/concierge/progress.py` — `ProgressRenderer` protocol, `ProgressSession`, `ProgressPhase`, `CheckpointOptions`
-- `src/dan/adapters/telegram_adapter.py` — `TelegramProgressRenderer` (extends existing edit-in-place)
+- `src/dan/adapters/telegram_fleet.py` — `TelegramProgressRenderer` (extends existing `_stream_with_edits` in fleet, not adapter)
 - `src/dan/adapters/whatsapp_adapter.py` — `WhatsAppProgressRenderer` (bookend pattern)
 - `src/dan/cli/chat.py` — `CLIProgressRenderer` (Rich Live panels)
 - `src/dan/server/concierge/runtime.py` — wiring into concierge processing pipeline
@@ -153,3 +154,4 @@ Three messages total. Three notifications. Within each message, edits are silent
 - Blocks are permanent records. After completion, each block's final state remains visible in the conversation as a log of what happened. This doubles as an audit trail.
 - The "verbosity inversely proportional to notification cost" principle ensures WhatsApp users aren't bombarded while editor users get full visibility.
 - Pre-flight clarification (task 4) reuses the existing `ClarificationRequest` model from 25-7-2. The new piece is making it proactive (DAN asks before starting expensive work) rather than reactive (DAN asks when stuck).
+- Required clarification and advisory checkpoints are separate interaction types. Only advisory checkpoints can auto-proceed on silence; required clarifications must block or use an explicitly confirmed safe default.
