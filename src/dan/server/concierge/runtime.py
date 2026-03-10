@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -16,7 +17,8 @@ if TYPE_CHECKING:
 
 from dan.server.chat_manager import ChatCompleteEvent, ChatErrorEvent, ChatStreamEvent
 
-from .classifier import ClassificationResult, IntentCategory, classify_intent
+from .classifier import ClassificationResult, IntentCategory, classify_intent, classify_intent_llm
+from .command_registry import CommandDescriptor, CommandRegistry, get_default_registry
 from .context_resolver import ProjectContextResolver, ResolvedContext
 from .identity import format_bare_prefix, format_prefix, starts_with_prefix
 from .models import ConciergeGoal, ConciergeState, SurfaceMessage
@@ -153,7 +155,7 @@ class Concierge:
         self.handlers.register(IntentCategory.DIRECT_TASK, DirectTaskHandler(chat_manager))
         self.handlers.register(IntentCategory.RUN_CONTROL, RunHandler(capability_context, chat_manager=chat_manager))
         self.handlers.register(IntentCategory.STATUS_CHECK, StatusHandler(capability_context, progress_reporter))
-        self.handlers.register(IntentCategory.EXPERIENCE_QUERY, ExperienceHandler(capability_context))
+        self.handlers.register(IntentCategory.EXPERIENCE_QUERY, ExperienceHandler(capability_context, chat_manager=chat_manager))
         self.handlers.register(IntentCategory.PUBLISH_SHARE, PublishHandler(capability_context))
         self.handlers.register(IntentCategory.WORKFLOW_QUERY, WorkflowQueryHandler(capability_context))
         build_handler = WorkflowBuildHandler(chat_manager)
@@ -161,6 +163,66 @@ class Concierge:
         self.handlers.register(IntentCategory.META_GOAL, MetaGoalHandler(meta_controller, capability_context=capability_context))
         self.handlers.register(IntentCategory.CONVERSATION, ConversationHandler(chat_manager))
         self.execution_selector = execution_selector or ExecutionSelector(self.handlers)
+        self._progress_sessions: dict[str, Any] = {}
+        self._goal_loop_states: dict[str, dict[str, Any]] = {}
+        self._presence_tracker: Any = None
+        self._schedule_store: Any = None
+        self._schedule_history_store: Any = None
+        self._task_scheduler: Any = None
+        self._follow_up_config: Any = None
+        self._follow_up_queue: Any = None
+        self._follow_up_engine: Any = None
+        self._correction_store: Any = None
+        self._adaptation_registry: Any = None
+        self._computer_config: Any = None
+        self._computer_lease: Any = None
+        self._computer_audit: Any = None
+        self._learning_tier: Any = None
+        self._classifier_model: str = os.environ.get(
+            "DAN_CLASSIFIER_MODEL", ""
+        )
+
+    def _resolve_classifier_model(self) -> str:
+        """Return the model name used for intent classification (micro tier)."""
+        if self._classifier_model:
+            return self._classifier_model
+        configured_model = (
+            str(getattr(self.chat_manager, "_chat_model", "") or "").strip()
+            or os.environ.get("DAN_CHAT_MODEL", "").strip()
+            or os.environ.get("DAN_LLM_MODEL", "").strip()
+        )
+        try:
+            providers = getattr(self.chat_manager, "_providers", None)
+            if providers is not None:
+                provider_names = (
+                    providers.provider_names()
+                    if hasattr(providers, "provider_names")
+                    else list(getattr(providers, "_providers", {}).keys())
+                )
+                if set(provider_names) == {"default"} and configured_model:
+                    return configured_model
+                from dan.providers.tier_defaults import resolve_tier_map
+                tier_map = resolve_tier_map(provider_names)
+                micro_model = str(tier_map.get("micro", "") or "").strip()
+                if micro_model:
+                    return micro_model
+        except Exception:
+            pass
+        if configured_model:
+            return configured_model
+        return "gpt-4o-mini"
+
+    async def _classify_llm_complete(self, messages: list[dict[str, str]]) -> str:
+        """Thin wrapper that calls the provider registry with the micro-tier model."""
+        providers = getattr(self.chat_manager, "_providers", None)
+        if providers is None:
+            raise RuntimeError("No provider registry available")
+        model = self._resolve_classifier_model()
+        provider = providers.resolve(model)
+        result = await provider.complete(
+            messages=messages, model=model, temperature=0.0, max_tokens=60,
+        )
+        return result.text
 
     @property
     def _current_surface_id(self) -> str | None:
@@ -191,8 +253,15 @@ class Concierge:
         self._memory_context_var.set(value)
 
     def _is_fast_command(self, text: str) -> bool:
-        """Check if text is a known command that can skip LLM/memory prep."""
+        """Check if text is a known command that can skip LLM/memory prep.
+
+        Uses the command registry for registered chat commands and falls back
+        to the legacy prefix tuple for backward compatibility.
+        """
         lower = text.strip().lower()
+        registry = get_default_registry()
+        if registry.is_fast_command(lower):
+            return True
         if any(lower.startswith(p) for p in _FAST_COMMAND_PREFIXES):
             return True
         pending = self._pending_preference_surface.get(self._current_surface_id)
@@ -337,40 +406,184 @@ class Concierge:
         
         return self._complete_event(content=status_text)
 
+    async def _coerce_fast_command_result(self, result: Any) -> ChatCompleteEvent | None:
+        if inspect.isawaitable(result):
+            result = await result
+        if isinstance(result, ChatCompleteEvent):
+            return result
+        if result is None:
+            return None
+        return self._complete_event(content=str(result))
+
+    async def _dispatch_registry_fast_command(
+        self,
+        msg: SurfaceMessage,
+        descriptor: CommandDescriptor,
+        registry: CommandRegistry,
+    ) -> ChatCompleteEvent | None:
+        handler_name = (descriptor.handler or "").rsplit(".", 1)[-1]
+        if descriptor.handler and ".Concierge." in descriptor.handler:
+            bound_handler = getattr(self, handler_name, None)
+            if bound_handler is None:
+                return None
+            return await self._coerce_fast_command_result(bound_handler(msg))
+
+        handler = registry.resolve_handler(descriptor.name)
+        if handler is None:
+            return None
+
+        if descriptor.name == "/goal":
+            goal_context = self._goal_loop_states.setdefault(msg.external_id, {})
+            return await self._coerce_fast_command_result(
+                handler(msg.text, context=goal_context),
+            )
+        if descriptor.name == "/goal-status":
+            goal_state = self._goal_loop_states.get(msg.external_id, {}).get("goal_state")
+            return await self._coerce_fast_command_result(
+                handler(msg.text, context=goal_state),
+            )
+        if descriptor.name == "/goal-stop":
+            goal_state = self._goal_loop_states.get(msg.external_id, {}).get("goal_state")
+            result = await self._coerce_fast_command_result(
+                handler(msg.text, context=goal_state),
+            )
+            if goal_state is not None:
+                self._goal_loop_states.pop(msg.external_id, None)
+            return result
+        if descriptor.name == "/follow-ups":
+            from .follow_up import FollowUpQueue, load_follow_up_config
+
+            config = self._follow_up_config or load_follow_up_config()
+            queue = self._follow_up_queue or FollowUpQueue()
+            return await self._coerce_fast_command_result(handler(msg.text, config, queue))
+        if descriptor.name == "/schedule":
+            from .scheduler import DeliveryTarget, ScheduleStore, TriggerContext
+
+            store = self._schedule_store or ScheduleStore()
+            if hasattr(store, "load"):
+                store.load()
+            default_trigger_context = None
+            default_delivery_target = None
+            lower_text = msg.text.strip().lower()
+            if lower_text.startswith("/schedule add"):
+                default_trigger_context = TriggerContext(
+                    source_surface=msg.surface or "cli",
+                    user_id=msg.external_id,
+                    thread_key=str(msg.metadata.get("thread_id") or "") or None,
+                )
+                default_delivery_target = DeliveryTarget(
+                    surface=msg.surface or "cli",
+                    conversation_key=msg.external_id,
+                    user_id=msg.external_id,
+                    thread_key=str(msg.metadata.get("thread_id") or "") or None,
+                )
+                active_projects = self.project_store.list_active(msg.external_id)
+                if active_projects:
+                    schedule_project = active_projects[0]
+                    schedule_task = self.project_store.get_current_task(
+                        schedule_project.project_id,
+                        msg.external_id,
+                    )
+                    if schedule_task is not None:
+                        default_trigger_context = default_trigger_context.model_copy(
+                            update={
+                                "project_id": schedule_project.project_id,
+                                "task_id": schedule_task.task_id,
+                            }
+                        )
+                        default_delivery_target = default_delivery_target.model_copy(
+                            update={"project_id": schedule_project.project_id},
+                        )
+            return await self._coerce_fast_command_result(
+                handler(
+                    msg.text,
+                    store,
+                    self._schedule_history_store,
+                    default_trigger_context=default_trigger_context,
+                    default_delivery_target=default_delivery_target,
+                )
+            )
+        if descriptor.name == "/completion":
+            return await self._coerce_fast_command_result(
+                handler(msg.text, self.capability_context),
+            )
+        if descriptor.name == "/pii":
+            from .pii_tokenizer import SensitiveWordRegistry
+
+            pii_session_key = str(
+                msg.metadata.get("thread_id")
+                or msg.metadata.get("workflow_id")
+                or msg.external_id
+            )
+            return await self._coerce_fast_command_result(
+                handler(
+                    msg.text,
+                    SensitiveWordRegistry.load(),
+                    session_key=pii_session_key,
+                )
+            )
+        if descriptor.name == "/resume":
+            return await self._coerce_fast_command_result(
+                handler(msg.text, self.project_store),
+            )
+        if descriptor.name == "/sync":
+            from .continuity import PresenceTracker
+
+            tracker = self._presence_tracker or PresenceTracker()
+            return await self._coerce_fast_command_result(
+                handler(msg.text, self.project_store, tracker),
+            )
+        if descriptor.name == "/corrections":
+            from dan.engine.correction_memory import CorrectionStore
+
+            return await self._coerce_fast_command_result(
+                handler(msg.text, self._correction_store or CorrectionStore()),
+            )
+        if descriptor.name == "/adaptations":
+            from dan.engine.adaptation_registry import AdaptationRegistry
+
+            return await self._coerce_fast_command_result(
+                handler(msg.text, self._adaptation_registry or AdaptationRegistry()),
+            )
+        if descriptor.name == "/computer":
+            from .computer_policy import AuditLog, ComputerControlConfig
+            from .computer_use import ComputerUseLeaseManager
+
+            config = self._computer_config or ComputerControlConfig.load()
+            return await self._coerce_fast_command_result(
+                handler(
+                    msg.text,
+                    config,
+                    self._computer_lease or ComputerUseLeaseManager(),
+                    self._computer_audit or AuditLog(),
+                )
+            )
+
+        params = list(inspect.signature(handler).parameters.values())
+        if len(params) == 0:
+            return await self._coerce_fast_command_result(handler())
+        if len(params) == 1:
+            if params[0].name in {"msg", "message", "surface_message"}:
+                return await self._coerce_fast_command_result(handler(msg))
+            return await self._coerce_fast_command_result(handler(msg.text))
+        return None
+
     async def _try_fast_command(
         self, msg: SurfaceMessage,
     ) -> ChatCompleteEvent | None:
         """Dispatch known commands instantly, skipping expensive prep."""
         if not self._is_fast_command(msg.text):
             return None
-        save_result = self._handle_save_command(msg)
-        if save_result is not None:
-            return save_result
-        build_result = self._handle_build_command(msg)
-        if build_result is not None:
-            return build_result
-        memory_result = self._handle_memory_command(msg)
-        if memory_result is not None:
-            return memory_result
-        model_result = await self._handle_model_command(msg)
-        if model_result is not None:
-            return model_result
-        if msg.text.strip().lower().startswith("/mcp"):
-            mcp_result = await self._handle_mcp_command(msg)
-            if mcp_result is not None:
-                return mcp_result
-        if msg.text.strip().lower().startswith("/cost"):
-            cost_result = await self._handle_cost_command(msg)
-            if cost_result is not None:
-                return cost_result
-        if msg.text.strip().lower().startswith("/retry"):
-            retry_result = await self._handle_retry_command(msg)
-            if retry_result is not None:
-                return retry_result
-        if msg.text.strip().lower().startswith("/status"):
-            status_result = await self._handle_status_command(msg)
-            if status_result is not None:
-                return status_result
+        registry = get_default_registry()
+        descriptor = registry.match(msg.text)
+        if descriptor is not None and descriptor.kind == "chat":
+            dispatch_result = await self._dispatch_registry_fast_command(
+                msg,
+                descriptor,
+                registry,
+            )
+            if dispatch_result is not None:
+                return dispatch_result
         pref_confirmation = self.handle_preference_confirmation(
             msg.external_id, msg.text,
         )
@@ -436,6 +649,14 @@ class Concierge:
                     item = await asyncio.wait_for(queue.get(), timeout=timeout)
                 except asyncio.TimeoutError:
                     idx = min(reassurance_count, len(self._REASSURANCE_MESSAGES) - 1)
+                    progress_session = self._progress_sessions.get(msg.external_id)
+                    if (
+                        progress_session is not None
+                        and getattr(progress_session, "verbosity", "compact") == "minimal"
+                        and reassurance_count > 0
+                    ):
+                        reassurance_count += 1
+                        continue
                     yield self._complete_event(
                         content=self._REASSURANCE_MESSAGES[idx],
                     )
@@ -459,6 +680,7 @@ class Concierge:
                     "surface_id": msg.surface_id,
                 })
         finally:
+            self._progress_sessions.pop(msg.external_id, None)
             if not drain_task.done():
                 drain_task.cancel()
                 try:
@@ -477,6 +699,55 @@ class Concierge:
             self._save_concierge_state(msg.external_id, self._concierge_state)
             yield fast_event
             return
+
+        # 31-11: Check for resumable tasks on session start
+        try:
+            from .resume import ResumeProtocol
+            _resume_proto = ResumeProtocol()
+            _resumable = _resume_proto.check_resumable_tasks(self.project_store)
+            if _resumable:
+                _auto_match = _resume_proto.auto_resume_match(msg.text, _resumable)
+                if _auto_match is not None:
+                    _resume_ctx = _resume_proto.generate_resume_prompt(_auto_match)
+                    msg = msg.model_copy(update={
+                        "metadata": {**msg.metadata, "resume_context": _resume_ctx, "resume_task_id": _auto_match.task_id},
+                    })
+        except Exception:
+            logger.debug("Resume check failed", exc_info=True)
+
+        # 31-13: Detect surface switch for cross-surface continuity
+        try:
+            from .continuity import detect_surface_switch, generate_handoff_context
+            _switch_project_id = detect_surface_switch(
+                msg.external_id, msg.text, self.project_store,
+            )
+            if _switch_project_id:
+                _handoff_ctx = generate_handoff_context(
+                    _switch_project_id, self.project_store,
+                )
+                if _handoff_ctx:
+                    msg = msg.model_copy(update={
+                        "metadata": {**msg.metadata, "handoff_context": _handoff_ctx},
+                    })
+        except Exception:
+            logger.debug("Surface switch detection failed", exc_info=True)
+
+        # 31-14: Initialize progress session for this request
+        try:
+            from .progress_ux import (
+                ProgressSession,
+                get_user_verbosity_override,
+                resolve_verbosity,
+            )
+            _surface = msg.surface or "cli"
+            _verbosity = get_user_verbosity_override() or resolve_verbosity(_surface)
+            _progress_session = ProgressSession(
+                surface=_surface,
+                verbosity=_verbosity,
+            )
+            self._progress_sessions[msg.external_id] = _progress_session
+        except Exception:
+            logger.debug("Progress session init failed", exc_info=True)
 
         has_active_build = any(
             goal.status in ("active", "paused") and goal.context.get("build_session_id")
@@ -540,7 +811,68 @@ class Concierge:
                 if _precomputed_context is not None
                 else self.context_resolver.resolve(msg)
             )
-            classification = classify_intent(msg.text, context)
+            classification = await classify_intent_llm(
+                msg.text, context, self._classify_llm_complete,
+            )
+
+        try:
+            if self._presence_tracker is not None:
+                self._presence_tracker.update(
+                    surface_id=msg.external_id,
+                    surface_type=msg.surface or "cli",
+                    project_id=context.project.project_id,
+                )
+        except Exception:
+            logger.debug("Presence tracking update failed", exc_info=True)
+
+        try:
+            correction_store = self._correction_store
+            if correction_store is not None:
+                previous_assistant_turn = next(
+                    (
+                        turn.content
+                        for turn in reversed(context.task.turns)
+                        if turn.role == "assistant"
+                    ),
+                    "",
+                )
+                if previous_assistant_turn:
+                    from dan.engine.correction_memory import (
+                        CorrectionRecord,
+                        detect_correction,
+                        route_correction,
+                    )
+
+                    signal = detect_correction(msg.text, previous_assistant_turn)
+                    if signal is not None:
+                        actions = route_correction(signal)
+                        if actions:
+                            correction_store.add(
+                                CorrectionRecord(signal=signal, actions=actions),
+                            )
+                        if actions and self._adaptation_registry is not None:
+                            from dan.engine.adaptation_registry import AdaptationCandidate
+
+                            for action in actions:
+                                if action.get("type") not in {"preference", "principle"}:
+                                    continue
+                                value = str(
+                                    action.get("value")
+                                    or signal.correction_text
+                                    or signal.original_output
+                                ).strip()
+                                self._adaptation_registry.add(
+                                    AdaptationCandidate(
+                                        source="principle",
+                                        evidence=[signal.correction_text],
+                                        confidence=signal.confidence,
+                                        sample_size=1,
+                                        scope="conversation",
+                                        description=value[:200],
+                                    )
+                                )
+        except Exception:
+            logger.debug("Correction detection failed", exc_info=True)
 
         action_policy, _execution_policy = resolve_policy(
             intent=classification.intent,
@@ -857,16 +1189,19 @@ class Concierge:
             saw_tool_call = False
             async for event in result.events:
                 evt_type = getattr(event, "type", "")
-                if evt_type == "chat_complete":
-                    final_content = getattr(event, "content", "") or ""
-                    stream_channel_id = getattr(event, "stream_channel_id", None)
-                elif evt_type == "chat_tool_call_start":
+                if evt_type == "chat_tool_call_start":
                     saw_tool_call = True
+                if evt_type == "chat_complete":
+                    raw_content = getattr(event, "content", "") or ""
+                    final_content = self._check_unsourced_claims(raw_content, saw_tool_call)
+                    final_content = await self._post_process_response(final_content, msg.text)
+                    stream_channel_id = getattr(event, "stream_channel_id", None)
+                    if hasattr(event, "model_copy"):
+                        event = event.model_copy(update={"content": final_content})
                 yield event
             if final_content:
-                checked = self._check_unsourced_claims(final_content, saw_tool_call)
-                self._record_assistant_turn(context, msg, checked)
-                self._store_memory_candidates(msg.text, checked, None)
+                self._record_assistant_turn(context, msg, final_content)
+                self._store_memory_candidates(msg.text, final_content, None)
             self._finalize_task(
                 context,
                 msg,
@@ -889,6 +1224,7 @@ class Concierge:
             IntentCategory.CONVERSATION, IntentCategory.DIRECT_TASK,
         )
         content = self._check_unsourced_claims(content, had_tool_call)
+        content = await self._post_process_response(content, msg.text)
         if self.promoter and self.promoter.should_propose(context.project, context.task):
             proposal = self.promoter.build_proposal(context.project, context.task)
             content = f"{content}\n\nSave as reusable workflow? -> {proposal.save_command}"
@@ -995,16 +1331,19 @@ class Concierge:
             saw_tool_call = False
             async for event in handler_result.events:
                 evt_type = getattr(event, "type", "")
-                if evt_type == "chat_complete":
-                    final_content = getattr(event, "content", "") or ""
-                    stream_channel_id = getattr(event, "stream_channel_id", None)
-                elif evt_type == "chat_tool_call_start":
+                if evt_type == "chat_tool_call_start":
                     saw_tool_call = True
+                if evt_type == "chat_complete":
+                    raw_content = getattr(event, "content", "") or ""
+                    final_content = self._check_unsourced_claims(raw_content, saw_tool_call)
+                    final_content = await self._post_process_response(final_content, msg.text)
+                    stream_channel_id = getattr(event, "stream_channel_id", None)
+                    if hasattr(event, "model_copy"):
+                        event = event.model_copy(update={"content": final_content})
                 yield event
             if final_content:
-                checked = self._check_unsourced_claims(final_content, saw_tool_call)
-                self._record_assistant_turn(context, msg, checked)
-                self._store_memory_candidates(msg.text, checked, None)
+                self._record_assistant_turn(context, msg, final_content)
+                self._store_memory_candidates(msg.text, final_content, None)
             self._finalize_task(
                 context, msg, classification.intent, bool(final_content),
                 task_status_override=(handler_result.task_update or {}).get("status"),
@@ -1029,6 +1368,7 @@ class Concierge:
             and handler_result.content != content
         )
         content = self._check_unsourced_claims(content, had_tool_call)
+        content = await self._post_process_response(content, msg.text)
 
         if self.promoter and decision.save_candidate:
             if self.promoter.should_propose(context.project, context.task):
@@ -1798,6 +2138,29 @@ class Concierge:
             )
         except Exception:
             logger.debug("Auto-summarize failed for project %s", context.project.project_id, exc_info=True)
+
+    async def _post_process_response(
+        self,
+        content: str,
+        user_text: str,
+        *,
+        skip_completion_check: bool = False,
+    ) -> str:
+        """Apply response-level safety post-processing."""
+        if not content:
+            return content
+
+        # 31-9: Completion guard — check if user requirements were fully addressed
+        if not skip_completion_check:
+            try:
+                from .completion_guard import run_completion_check
+                augmented, _follow_up, report = await run_completion_check(user_text, content)
+                if report and not report.all_met:
+                    content = augmented
+            except Exception:
+                logger.debug("Completion guard check failed", exc_info=True)
+
+        return content
 
     def _complete_event(self, *, content: str, stream_channel_id: str | None = None) -> ChatCompleteEvent:
         return ChatCompleteEvent(
@@ -2942,6 +3305,43 @@ def build_concierge(
         capability_registry=capability_registry,
         tool_registry=tool_registry,
     )
+    try:
+        from .scheduler import ScheduleHistoryStore, ScheduleStore
+
+        concierge._schedule_store = ScheduleStore()
+        concierge._schedule_history_store = ScheduleHistoryStore()
+    except Exception:
+        logger.debug("Schedule stores unavailable during concierge build", exc_info=True)
+    try:
+        from .follow_up import FollowUpQueue, load_follow_up_config
+
+        concierge._follow_up_queue = FollowUpQueue()
+        concierge._follow_up_config = load_follow_up_config()
+    except Exception:
+        logger.debug("Follow-up services unavailable during concierge build", exc_info=True)
+    try:
+        from .continuity import PresenceTracker
+
+        concierge._presence_tracker = PresenceTracker()
+    except Exception:
+        logger.debug("Presence tracker unavailable during concierge build", exc_info=True)
+    try:
+        from dan.engine.correction_memory import CorrectionStore
+        from dan.engine.adaptation_registry import AdaptationRegistry
+
+        concierge._correction_store = CorrectionStore()
+        concierge._adaptation_registry = AdaptationRegistry()
+    except Exception:
+        logger.debug("Learning stores unavailable during concierge build", exc_info=True)
+    try:
+        from .computer_policy import AuditLog, ComputerControlConfig
+        from .computer_use import ComputerUseLeaseManager
+
+        concierge._computer_config = ComputerControlConfig.load()
+        concierge._computer_lease = ComputerUseLeaseManager()
+        concierge._computer_audit = AuditLog()
+    except Exception:
+        logger.debug("Computer-control services unavailable during concierge build", exc_info=True)
     if not enable_dispatcher:
         return concierge
     from .dispatcher import ConcurrentDispatcher

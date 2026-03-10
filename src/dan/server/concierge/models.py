@@ -31,10 +31,15 @@ class TaskTurn(BaseModel):
 class Task(BaseModel):
     task_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     label: str
-    status: Literal["active", "paused", "completed"] = "active"
+    status: Literal["active", "paused", "blocked", "completed"] = "active"
     turns: list[TaskTurn] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=_utc_now)
     updated_at: datetime = Field(default_factory=_utc_now)
+    completed_steps: list[str] = Field(default_factory=list)
+    pending_steps: list[str] = Field(default_factory=list)
+    current_blocker: str | None = None
+    artifacts: dict[str, str] = Field(default_factory=dict)
+    last_activity: datetime | None = None
 
 
 class PendingAction(BaseModel):

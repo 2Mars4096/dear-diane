@@ -60,6 +60,7 @@ class SolverDecision(BaseModel):
     handler_hint: IntentCategory | None = None
     workflow_candidates: list[dict[str, Any]] = Field(default_factory=list)
     confidence: float = 0.8
+    plan_dag: Any | None = None
 
 
 _INTENT_TO_MODE: dict[IntentCategory, ExecutionMode] = {
@@ -360,6 +361,28 @@ class PlanBuilder:
         save = decision.execution_mode in (
             ExecutionMode.WORKFLOW_BUILD, ExecutionMode.WORKFLOW_ADAPT,
         )
-        return decision.model_copy(update={
+
+        # 31-8: Build dependency DAG for parallel scheduling
+        plan_dag = None
+        if len(steps) > 1:
+            try:
+                from dan.engine.plan_scheduler import PlanTask, PlanDAG, infer_dependencies
+                dag_tasks = [
+                    PlanTask(
+                        id=f"step-{i}",
+                        name=step.description or f"Step {i}",
+                        estimated_duration_minutes=30.0,
+                    )
+                    for i, step in enumerate(steps)
+                ]
+                plan_dag = PlanDAG(tasks=dag_tasks)
+                plan_dag = infer_dependencies(plan_dag)
+            except Exception:
+                pass
+
+        updates: dict = {
             "plan_steps": steps, "fallback_chain": fallback, "save_candidate": save,
-        })
+        }
+        if plan_dag is not None:
+            updates["plan_dag"] = plan_dag
+        return decision.model_copy(update=updates)

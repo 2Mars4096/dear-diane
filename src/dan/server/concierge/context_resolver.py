@@ -87,6 +87,31 @@ class ProjectContextResolver:
         self.conversation_memory = conversation_memory
 
     def resolve(self, msg: SurfaceMessage) -> ResolvedContext:
+        trigger_context = msg.metadata.get("trigger_context")
+        if isinstance(trigger_context, dict):
+            project_id = str(trigger_context.get("project_id") or "").strip()
+            task_id = str(trigger_context.get("task_id") or "").strip()
+            if project_id:
+                project = self.project_store.get_project(project_id, msg.external_id)
+                task = (
+                    self.project_store.get_current_task(project_id, msg.external_id)
+                    if not task_id
+                    else None
+                )
+                if project is not None and task_id:
+                    for candidate in project.tasks:
+                        if candidate.task_id == task_id:
+                            task = candidate
+                            break
+                if project is not None and task is not None:
+                    return ResolvedContext(
+                        project=project,
+                        task=task,
+                        is_new_project=False,
+                        is_new_task=False,
+                        confidence=1.0,
+                    )
+
         active_projects = self.project_store.list_active(msg.external_id)
         text = msg.text.strip()
 

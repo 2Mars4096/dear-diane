@@ -113,6 +113,52 @@ def _project_prompt_context(context: ResolvedContext) -> str:
     )
 
 
+def _augmented_prompt_context(msg: SurfaceMessage, context: ResolvedContext) -> str:
+    """Include resume/handoff hints in the prompt context when available."""
+    parts = [_project_prompt_context(context)]
+
+    resume_context = str(msg.metadata.get("resume_context") or "").strip()
+    if resume_context:
+        parts.append(f"Resume context: {resume_context}")
+
+    handoff = msg.metadata.get("handoff_context")
+    if handoff:
+        task_snapshot = getattr(handoff, "task_snapshot", None)
+        if task_snapshot is None and isinstance(handoff, dict):
+            task_snapshot = handoff.get("task_snapshot")
+
+        project_summary = getattr(handoff, "project_summary", "")
+        if not project_summary and isinstance(handoff, dict):
+            project_summary = str(handoff.get("project_summary") or "")
+
+        handoff_lines: list[str] = ["Cross-surface handoff context:"]
+        if task_snapshot is not None:
+            task_name = getattr(task_snapshot, "task_name", None)
+            task_status = getattr(task_snapshot, "status", None)
+            pending_count = getattr(task_snapshot, "pending_count", None)
+            if isinstance(task_snapshot, dict):
+                task_name = task_name or task_snapshot.get("task_name")
+                task_status = task_status or task_snapshot.get("status")
+                pending_count = (
+                    pending_count
+                    if pending_count is not None
+                    else task_snapshot.get("pending_count")
+                )
+            if task_name:
+                status_str = f" [{task_status}]" if task_status else ""
+                pending_str = (
+                    f", {pending_count} pending"
+                    if isinstance(pending_count, int)
+                    else ""
+                )
+                handoff_lines.append(f"- Task: {task_name}{status_str}{pending_str}")
+        if project_summary:
+            handoff_lines.append(f"- Prior project summary: {project_summary}")
+        parts.append("\n".join(handoff_lines))
+
+    return "\n\n".join(part for part in parts if part)
+
+
 class FileHandler:
     def __init__(self, user_profile: Any = None, chat_manager: Any = None) -> None:
         default_dirs = [Path.home() / "Dropbox", Path.home() / "Documents", Path.home() / "Desktop"]
@@ -350,7 +396,7 @@ class FileHandler:
             mode=str(msg.metadata.get("mode") or "ask"),
             cancel_event=msg.metadata.get("cancel_event"),
             debug_context=str(msg.metadata.get("debug_context") or ""),
-            prompt_context=_project_prompt_context(context),
+            prompt_context=_augmented_prompt_context(msg, context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
             extra_system_instructions=_INLINE_DOCUMENT_SYSTEM_INSTRUCTIONS,
@@ -396,7 +442,7 @@ class DirectTaskHandler:
             mode="conversation",
             cancel_event=msg.metadata.get("cancel_event"),
             debug_context=str(msg.metadata.get("debug_context") or ""),
-            prompt_context=_project_prompt_context(context),
+            prompt_context=_augmented_prompt_context(msg, context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
             audit_metadata={
@@ -572,13 +618,40 @@ class StatusHandler:
 
 
 class ExperienceHandler:
-    def __init__(self, capability_context: Any) -> None:
+    def __init__(self, capability_context: Any, chat_manager: Any = None) -> None:
         self.capability_context = capability_context
+        self.chat_manager = chat_manager
 
     async def handle(self, msg: SurfaceMessage, context: ResolvedContext, classification: ClassificationResult) -> HandlerResult:
         workflow_id = _workflow_id_from(msg, context)
         ctx = replace(self.capability_context, workflow_id=workflow_id)
         result = await handle_search_workflow_history({"query": msg.text, "top_k": 5}, ctx)
+        no_results = not bool(getattr(result, "data", None)) or "No similar workflows found." in str(result.message)
+        if no_results and self.chat_manager is not None:
+            events = self.chat_manager.send_message_with_tools(
+                workflow_id=workflow_id,
+                message=(
+                    "No similar workflows were found in saved workflow history.\n"
+                    f"User request: {msg.text}\n\n"
+                    "Tell the user there are no matching saved workflows yet, then answer helpfully with the best next step."
+                ),
+                history=_message_history(msg, context),
+                thread_id=str(msg.metadata.get("thread_id") or "") or None,
+                client_graph_revision=msg.metadata.get("client_graph_revision"),
+                mode="conversation",
+                cancel_event=msg.metadata.get("cancel_event"),
+                debug_context=str(msg.metadata.get("debug_context") or ""),
+                prompt_context=_augmented_prompt_context(msg, context),
+                mentions=msg.metadata.get("mentions") or [],
+                surface=msg.surface,
+                audit_metadata={
+                    "project_id": context.project.project_id,
+                    "task_id": context.task.task_id,
+                    "intent": classification.intent.value,
+                    "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
+                },
+            )
+            return HandlerResult(events=events)
         return HandlerResult(content=result.message)
 
 
@@ -627,7 +700,7 @@ class ConversationHandler:
             mode=mode,
             cancel_event=msg.metadata.get("cancel_event"),
             debug_context=str(msg.metadata.get("debug_context") or ""),
-            prompt_context=_project_prompt_context(context),
+            prompt_context=_augmented_prompt_context(msg, context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
             audit_metadata={
@@ -670,7 +743,7 @@ class WorkflowBuildHandler:
             mode=mode,
             cancel_event=msg.metadata.get("cancel_event"),
             debug_context=str(msg.metadata.get("debug_context") or ""),
-            prompt_context=_project_prompt_context(context),
+            prompt_context=_augmented_prompt_context(msg, context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
             audit_metadata={

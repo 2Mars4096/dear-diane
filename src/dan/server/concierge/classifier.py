@@ -1,14 +1,20 @@
 from __future__ import annotations
 
+import json as _json
+import logging
 import re
 from difflib import SequenceMatcher
 from enum import Enum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from pydantic import BaseModel
 
 from .context_resolver import ResolvedContext
+
+logger = logging.getLogger(__name__)
+
+LLMCompleteFunc = Callable[[list[dict[str, str]]], Any]
 
 
 class LLMProvider(Protocol):
@@ -189,6 +195,49 @@ def search_local_files(query: str, search_dirs: list[Path], *, limit: int = 10) 
     return [path for path, _meta in ranked[:limit]]
 
 
+def _has_filesystem_path(text: str) -> bool:
+    """Return True if the text contains something that looks like a filesystem path."""
+    return bool(re.search(
+        r"(?:~|/)[A-Za-z0-9._~/-]+/[A-Za-z0-9._~-]+"
+        r"|[A-Za-z][A-Za-z0-9._-]*/[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+",
+        text,
+    ))
+
+
+_STATUS_PHRASES = (
+    "what's running", "whats running",
+    "what's the status", "whats the status", "what is the status",
+    "status update", "status check", "check the status", "check status",
+    "show me the status", "give me the status", "give me status",
+    "how's it going", "how is it going",
+    "how's the run", "how is the run",
+    "what's the progress", "whats the progress", "what is the progress",
+    "progress update", "progress check",
+)
+
+_INTERNAL_STATUS_OBJECTS = (
+    "run", "runs", "workflow", "workflows", "task", "tasks",
+    "job", "jobs", "session", "sessions", "build", "builds",
+    "goal", "goals",
+)
+
+
+def _looks_like_topical_status_request(clean: str) -> bool:
+    """Detect status/progress about an external topic, not DAN runtime state."""
+    topical_markers = (
+        "status of ",
+        "progress of ",
+        "track the progress of ",
+        "updates on ",
+    )
+    if not any(marker in clean for marker in topical_markers):
+        return False
+    return not any(
+        re.search(rf"\b{re.escape(noun)}\b", clean)
+        for noun in _INTERNAL_STATUS_OBJECTS
+    )
+
+
 def classify_intent(text: str, context: ResolvedContext) -> ClassificationResult:
     lower = text.lower().strip()
     clean = lower.rstrip(".!?,")
@@ -203,6 +252,8 @@ def classify_intent(text: str, context: ResolvedContext) -> ClassificationResult
         for turn in context.task.turns[-6:]
     )
 
+    has_path = _has_filesystem_path(text)
+
     polite_send_query = extract_search_query_from_send_request(text)
     if polite_send_query:
         return ClassificationResult(
@@ -212,10 +263,21 @@ def classify_intent(text: str, context: ResolvedContext) -> ClassificationResult
             raw_text=text,
         )
 
-    if any(
-        phrase in clean
-        for phrase in ("what's running", "whats running", "status", "progress", "how's it going", "how is it going")
-    ):
+    if has_path:
+        return ClassificationResult(
+            intent=IntentCategory.FILE_REQUEST,
+            confidence=0.9,
+            raw_text=text,
+        )
+
+    if _looks_like_topical_status_request(clean):
+        return ClassificationResult(
+            intent=IntentCategory.CONVERSATION,
+            confidence=0.85,
+            raw_text=text,
+        )
+
+    if any(phrase in clean for phrase in _STATUS_PHRASES):
         return ClassificationResult(intent=IntentCategory.STATUS_CHECK, confidence=0.95, raw_text=text)
 
     if any(phrase in clean for phrase in ("cancel", "resume", "stop the run", "run it", "pause")):
@@ -291,4 +353,99 @@ def classify_intent(text: str, context: ResolvedContext) -> ClassificationResult
         return ClassificationResult(intent=IntentCategory.FILE_REQUEST, confidence=0.75, raw_text=text)
 
     return ClassificationResult(intent=IntentCategory.CONVERSATION, confidence=0.5, raw_text=text)
+
+
+# ---------------------------------------------------------------------------
+# LLM-based intent classifier (micro-tier model, ~200ms)
+# ---------------------------------------------------------------------------
+
+_CLASSIFICATION_SYSTEM_PROMPT = """\
+Classify the user's message into exactly one intent. Respond with ONLY: {"intent":"<name>"}
+
+Intents:
+- file_request: Find/open/read/review/summarize a local file or document. Mentions a filesystem path or filename.
+- direct_task: Quick factual lookup, web search, drafting a short email or message.
+- run_control: Start, stop, cancel, resume, or pause a workflow run.
+- status_check: Check status/progress of active system runs (NOT about external topics or research project status).
+- workflow_build: Create, modify, or edit a workflow or pipeline.
+- workflow_query: List or inspect existing workflows.
+- experience_query: Ask about past work, similar projects, or lessons learned.
+- publish_share: Publish, share, or export a workflow.
+- meta_goal: Build a complex end-to-end automation system or pipeline from scratch.
+- conversation: General chat, research questions, brainstorming, or anything else."""
+
+_VALID_INTENTS = frozenset(e.value for e in IntentCategory)
+
+
+def _build_classification_messages(
+    text: str,
+    context: ResolvedContext,
+) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = [
+        {"role": "system", "content": _CLASSIFICATION_SYSTEM_PROMPT},
+    ]
+    recent = context.task.turns[-4:]
+    if recent:
+        for turn in recent:
+            if turn.role in ("user", "assistant") and turn.content:
+                snippet = turn.content[:200]
+                messages.append({"role": turn.role, "content": snippet})
+    messages.append({"role": "user", "content": text})
+    return messages
+
+
+def _parse_llm_intent(raw: str) -> str | None:
+    """Extract an intent name from the LLM response (JSON or bare text)."""
+    raw = raw.strip()
+    for start_char in ("{",):
+        idx = raw.find(start_char)
+        if idx >= 0:
+            end = raw.find("}", idx)
+            if end >= 0:
+                try:
+                    obj = _json.loads(raw[idx : end + 1])
+                    intent = obj.get("intent", "")
+                    if intent in _VALID_INTENTS:
+                        return intent
+                except (ValueError, TypeError):
+                    pass
+    lower = raw.lower()
+    for intent_val in _VALID_INTENTS:
+        if intent_val in lower:
+            return intent_val
+    return None
+
+
+async def classify_intent_llm(
+    text: str,
+    context: ResolvedContext,
+    llm_complete: LLMCompleteFunc,
+) -> ClassificationResult:
+    """Primary classifier: uses a micro-tier LLM call with keyword fallback.
+
+    Fast-path rules (filesystem paths, slash commands) are checked first.
+    If the LLM call fails or returns garbage, falls back to keyword rules.
+    """
+    heuristic = classify_intent(text, context)
+    if heuristic.confidence >= 0.85 or (
+        heuristic.intent != IntentCategory.CONVERSATION and heuristic.confidence >= 0.8
+    ):
+        return heuristic
+
+    try:
+        messages = _build_classification_messages(text, context)
+        result = await llm_complete(messages)
+        raw_text = result if isinstance(result, str) else getattr(result, "text", str(result))
+        intent_value = _parse_llm_intent(raw_text)
+        if intent_value:
+            return ClassificationResult(
+                intent=IntentCategory(intent_value),
+                confidence=0.85,
+                raw_text=text,
+            )
+        logger.warning("LLM classifier returned unparseable response: %s", raw_text[:200])
+    except Exception:
+        logger.debug("LLM classifier failed, falling back to keyword rules", exc_info=True)
+
+    return classify_intent(text, context)
 
