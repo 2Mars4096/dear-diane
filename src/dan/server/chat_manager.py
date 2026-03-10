@@ -44,7 +44,6 @@ except ValueError:
     _MUTATION_AUTO_RETRY_MAX = 2
 _MAX_CONTEXT_RATIO = float(os.environ.get("DAN_CHAT_MAX_CONTEXT_RATIO", "0.8"))
 _RECENT_MESSAGES_COUNT = int(os.environ.get("DAN_CHAT_RECENT_MESSAGES", "10"))
-_LLM_FIRST = os.environ.get("DAN_LLM_FIRST_CHAT", "1") == "1"
 
 __all__ = [
     "NodeSummary",
@@ -68,13 +67,10 @@ __all__ = [
     "serialize_for_prompt",
     "compute_graph_revision",
     "BUILD_FROM_INTENT_PROMPT",
-    "ASK_PROMPT",
-    "CONVERSATION_PROMPT",
-    "PLAN_PROMPT",
-    "DEBUG_PROMPT",
     "EMPTY_GRAPH_SUMMARY_PLACEHOLDER",
     "WORKFLOW_TEMPLATES",
     "normalize_chat_mode",
+    "recent_run_failed_for_workflow",
     "build_debug_context",
     "_coerce_strict_edges",
     "_normalize_generated_mutation_ops",
@@ -634,9 +630,28 @@ def normalize_chat_mode(mode: str) -> str:
     return CHAT_MODE_ALIASES.get(mode, mode)
 
 
+def recent_run_failed_for_workflow(runs: list[Any], workflow_id: str) -> bool:
+    """Return whether the newest run for this workflow failed.
+
+    Accepts either dict snapshots or older object-like run records.
+    """
+
+    def _field(run: Any, key: str, default: Any = None) -> Any:
+        if isinstance(run, dict):
+            return run.get(key, default)
+        return getattr(run, key, default)
+
+    matching = [run for run in runs if _field(run, "graph_id") == workflow_id]
+    if not matching:
+        return False
+
+    latest = max(matching, key=lambda run: float(_field(run, "started_at", 0.0) or 0.0))
+    status = _field(latest, "status")
+    return str(getattr(status, "value", status)).lower() == "failed"
+
+
 def detect_chat_mode(
     message: str,
-    graph_state: dict | None = None,
     recent_run_failed: bool = False,
 ) -> str:
     """Heuristic mode detection from message content.
@@ -677,104 +692,6 @@ def detect_chat_mode(
     return "agent"
 
 
-ASK_PROMPT = """\
-You are DAN's graph assistant. Read-only — explain the workflow, never modify it.
-
-## Node types
-{node_type_reference}
-
-## Edge types: data (structured), control (routing), context (shared state)
-
-## Workflow
-{graph_summary}
-
-## Rules
-- Use node IDs and port names. Be concise.
-- Empty workflow → suggest switching to Agent mode.
-- Plain text only, no tools.
-- NEVER fabricate live data (prices, rates, scores, weather). Say "I'd need to search the web for that" instead.
-"""
-
-CONVERSATION_PROMPT = """\
-You are DAN, a personal AI assistant with full tool access. You help with anything: \
-research, writing, file operations, web search, data analysis, communication.
-
-## Tools — always use tools instead of guessing
-
-**Files:** file_read (text files), pdf_read (PDFs — use for summarize/review/analyze), \
-list_directory (browse folders). All accept absolute paths like ~/Dropbox/...
-**Web:** web_search (current data: prices, weather, news, papers — NEVER guess live data), \
-web_fetch (read a URL's content)
-**System:** shell_command (run terminal commands), \
-current_datetime (today's date/time — ALWAYS call, never guess), \
-screenshot (capture screen), clipboard (read/write clipboard)
-**Communication:** send_email (send via SMTP), file_write (create/save files)
-**Text:** text_chunk, json_extract, regex_match
-**Workflow:** list_graphs, start_run, get_run_status, cancel_run, resume_run, \
-publish_workflow, search_workflow_history, get_learned_principles
-
-## Rules — non-negotiable
-
-1. NEVER fabricate live data (prices, dates, weather, scores). Call web_search.
-2. NEVER summarize a file you haven't read. Call pdf_read or file_read first.
-3. NEVER guess the current date/time. Call current_datetime.
-4. If a tool fails, tell the user honestly. Don't silently invent an answer.
-5. Answer directly — no "Would you like me to…?", no numbered options unless asked.
-
-## Research & reports
-
-When asked for research, literature reviews, equity analysis, or deep-dive topics:
-1. Call current_datetime first to anchor "recent" correctly.
-2. Run at least 3–5 distinct web_search queries — one search is never enough.
-3. Fetch full pages with web_fetch for promising results; don't rely on snippets alone.
-4. Every factual claim must come from a tool result. If you can't source it, say so.
-5. For academic topics, check local papers: list_directory on likely paths, then pdf_read.
-6. Inaccessible papers (paywalled/gated): tell the user — "I found these but couldn't access \
-the full text: [list]. Share the PDF path and I'll incorporate them."
-7. Structure reports with clear sections. Include a Sources section at the end.
-8. NEVER fabricate citations, author names, or publication years.
-
-## Context
-{graph_summary}
-"""
-
-PLAN_PROMPT = """\
-You are DAN's planning assistant. Two-step flow:
-
-**Step 1 (now):** Propose changes in natural language. Name nodes, ports, edge types. No tool calls yet. End with "Proceed with this plan?"
-**Step 2 (after approval):** Generate mutations via plan_graph_mutations.
-
-## Node types
-{node_type_reference}
-
-## Edge types: data, control, context
-## Patterns: chain, review_loop, fan_out, rag_qa, data_ingest, data_analysis
-
-## Workflow
-{graph_summary}
-"""
-
-DEBUG_PROMPT = """\
-You are DAN's debug assistant. Diagnose first, then fix.
-
-## Node types
-{node_type_reference}
-
-## Edge types: data, control, context
-
-## Workflow
-{graph_summary}
-
-## Recent failures
-{debug_context}
-
-## Rules
-- Identify root cause before proposing changes.
-- No failures → ask user to describe the issue or run the workflow.
-- Prefer minimal targeted fixes. Use plan_graph_mutations for concrete fixes.
-"""
-
-
 def build_debug_context(runs: list[dict[str, Any]], workflow_id: str) -> str:
     """Build debug context string from run records for a workflow."""
     failed = [
@@ -784,7 +701,7 @@ def build_debug_context(runs: list[dict[str, Any]], workflow_id: str) -> str:
     if not failed:
         return "No recent run failures found for this workflow."
 
-    latest = failed[-1]
+    latest = max(failed, key=lambda run: float(run.get("started_at", 0.0) or 0.0))
     parts = [f"Last failed run: {latest.get('run_id', 'unknown')}"]
 
     errors = latest.get("errors", {})
@@ -1242,6 +1159,14 @@ class ChatFileAttachmentEvent(BaseModel):
     size: int
 
 
+class ChatPollRequestEvent(BaseModel):
+    type: str = "chat_poll_request"
+    question: str
+    options: list[str] = Field(default_factory=list)
+    is_anonymous: bool = False
+    allows_multiple: bool = False
+
+
 class ChatMultiPartEvent(BaseModel):
     type: str = "chat_multi_part"
     parts: list[str]
@@ -1261,6 +1186,7 @@ ChatStreamEvent = (
     | ChatGraphCreatedEvent
     | ChatQueuedEvent
     | ChatFileAttachmentEvent
+    | ChatPollRequestEvent
     | ChatMultiPartEvent
 )
 
@@ -1943,6 +1869,7 @@ class ChatManager:
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
                 surface=surface,
                 extra_system_instructions=extra_system_instructions,
+                tools_available=False,
             )
 
             provider = self._providers.resolve(self._chat_model)
@@ -2548,6 +2475,14 @@ class ChatManager:
                             except Exception as e:
                                 logger.debug("Failed to emit file attachment event for %s: %s", file_path, e)
 
+                        if cap_result.data.get("poll_request"):
+                            yield ChatPollRequestEvent(
+                                question=cap_result.data.get("question", ""),
+                                options=cap_result.data.get("options", []),
+                                is_anonymous=cap_result.data.get("is_anonymous", False),
+                                allows_multiple=cap_result.data.get("allows_multiple", False),
+                            )
+
                     audit_tool_records.append({
                         "tool_name": cap_name,
                         "args": cap_args,
@@ -2869,123 +2804,45 @@ class ChatManager:
         graph_dict: dict[str, Any] | None = None,
         surface: str = "server",
         extra_system_instructions: str = "",
+        tools_available: bool = True,
     ) -> list[dict[str, str]]:
-        # LLM-first path: unified prompt
-        if _LLM_FIRST:
-            context_block = f"## Context\n{prompt_context}" if prompt_context else ""
-            workflow_block = ""
-            if summary.node_count > 0:
-                graph_text = serialize_for_prompt(summary)
-                workflow_block = f"## Current Workflow\n{graph_text}"
-            surface_hints = _resolve_surface_hints(surface, self._chat_model)
-
-            system_content = UNIFIED_SYSTEM_PROMPT.format(
-                surface_hints=surface_hints,
-                context_block=context_block,
-                workflow_block=workflow_block,
+        context_sections: list[str] = []
+        if prompt_context:
+            context_sections.append(f"## Context\n{prompt_context}")
+        if mode == "debug":
+            debug_details = (
+                debug_context
+                or "No recent run failures found. Ask the user to describe the issue or run the workflow."
             )
-            user_context_block = self._compose_user_context_block()
-            if user_context_block:
-                system_content = f"{system_content.rstrip()}\n\n{user_context_block}"
-
-            mcp_block = self._compose_mcp_tools_block()
-            if mcp_block:
-                system_content = f"{system_content.rstrip()}\n\n## Connected MCP servers{mcp_block}"
-
-            memory_context = self._compose_memory_kernel_context(user_message)
-            if memory_context:
-                system_content = f"{system_content.rstrip()}\n\n{memory_context}"
-            if extra_system_instructions:
-                system_content = (
-                    f"{system_content.rstrip()}\n\n{extra_system_instructions.strip()}"
-                )
-
-            recent_context_message = self._compose_recent_context_message()
-            history_with_context = history
-            if recent_context_message:
-                history_with_context = [
-                    {"role": "assistant", "content": recent_context_message},
-                    *history,
-                ]
-
-            context_window = _get_context_window(self._chat_model)
-
-            resolved_mentions = []
-            if mentions and self._mention_resolver and workflow_id:
-                try:
-                    resolved_mentions = self._mention_resolver.resolve_all(
-                        mentions, workflow_id, graph_dict, model=self._chat_model
-                    )
-                except Exception as exc:
-                    logger.warning("Mention resolution failed: %s", exc)
-
-            if resolved_mentions:
-                from dan.server.mention_resolver import pack_context
-
-                messages = pack_context(
-                    system_content=system_content,
-                    mention_blocks=resolved_mentions,
-                    history=history_with_context,
-                    user_message=user_message,
-                    context_window=context_window,
-                    max_ratio=_MAX_CONTEXT_RATIO,
-                    model=self._chat_model,
-                )
-            else:
-                messages = [{"role": "system", "content": system_content}]
-                messages.extend(history_with_context)
-                messages.append({"role": "user", "content": user_message})
-                max_tokens = int(context_window * _MAX_CONTEXT_RATIO)
-                messages = compact_history(messages, max_tokens, model=self._chat_model)
-
-            return messages
-
-        # Legacy path: mode-specific prompts
-        surface_hints = _resolve_surface_hints(surface, self._chat_model)
-            
-        is_empty = summary.node_count == 0 and summary.edge_count == 0
+            context_sections.append(f"## Recent failures\n{debug_details}")
+        context_block = "\n\n".join(context_sections)
         graph_text = (
             EMPTY_GRAPH_SUMMARY_PLACEHOLDER
-            if is_empty
+            if summary.node_count == 0 and summary.edge_count == 0
             else serialize_for_prompt(summary)
         )
+        workflow_block = f"## Current Workflow\n{graph_text}"
+        surface_hints = _resolve_surface_hints(surface, self._chat_model)
 
-        if mode == "ask":
-            system_content = ASK_PROMPT.format(
-                node_type_reference=NODE_TYPE_REFERENCE,
-                graph_summary=graph_text,
+        system_content = UNIFIED_SYSTEM_PROMPT.format(
+            surface_hints=surface_hints,
+            context_block=context_block,
+            workflow_block=workflow_block,
+        )
+        if not tools_available:
+            system_content = (
+                f"{system_content.rstrip()}\n\n"
+                "## Tool access for this response\n"
+                "Tool calling is disabled for this response. "
+                "Do not mention or attempt to use tools. "
+                "Respond in plain text only and explain any information limits honestly."
             )
-        elif mode == "plan":
-            system_content = PLAN_PROMPT.format(
-                node_type_reference=NODE_TYPE_REFERENCE,
-                graph_summary=graph_text,
-            )
-        elif mode == "conversation":
-            system_content = CONVERSATION_PROMPT.format(
-                graph_summary=graph_text,
-            )
-        elif mode == "debug":
-            system_content = DEBUG_PROMPT.format(
-                node_type_reference=NODE_TYPE_REFERENCE,
-                graph_summary=graph_text,
-                debug_context=debug_context or "No recent run failures found. Ask the user to describe the issue.",
-            )
-        else:
-            template = BUILD_FROM_INTENT_PROMPT if is_empty else SYSTEM_PROMPT_TEMPLATE
-            system_content = template.format(
-                node_type_reference=NODE_TYPE_REFERENCE,
-                graph_summary=graph_text,
-            )
-        if self._capability_registry is not None:
-            mcp_block = self._compose_mcp_tools_block()
-            system_content += "\n" + CAPABILITY_TOOLS_REFERENCE.format(mcp_block=mcp_block)
-        if surface_hints:
-            system_content += f"\n\n{surface_hints}"
-        if prompt_context:
-            system_content = f"{system_content.rstrip()}\n\n{prompt_context.strip()}"
         user_context_block = self._compose_user_context_block()
         if user_context_block:
             system_content = f"{system_content.rstrip()}\n\n{user_context_block}"
+        mcp_block = self._compose_mcp_tools_block()
+        if mcp_block:
+            system_content = f"{system_content.rstrip()}\n\n## Connected MCP servers{mcp_block}"
         memory_context = self._compose_memory_kernel_context(user_message)
         if memory_context:
             system_content = f"{system_content.rstrip()}\n\n{memory_context}"
