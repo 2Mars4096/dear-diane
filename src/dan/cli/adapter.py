@@ -102,8 +102,8 @@ def _split_reply_prefix_lines(text: str) -> tuple[str, str]:
 
 def _consume_chat_stream_events(
     events: list[dict[str, Any]],
-) -> tuple[str, dict[str, Any] | None, list[str]]:
-    """Merge chat stream events into (reply, mutation_plan, file_paths).
+) -> tuple[str, dict[str, Any] | None, list[str], list[dict[str, Any]]]:
+    """Merge chat stream events into (reply, mutation_plan, file_paths, poll_requests).
 
     Some chat flows stream incremental ``chat_token`` events, while others
     return the full assistant text only on ``chat_complete.content``.  The
@@ -112,6 +112,7 @@ def _consume_chat_stream_events(
     collected: list[str] = []
     mutation_plan: dict[str, Any] | None = None
     file_paths: list[str] = []
+    poll_requests: list[dict[str, Any]] = []
     complete_content = ""
     error_message = ""
     last_tool_name = ""
@@ -129,6 +130,8 @@ def _consume_chat_stream_events(
             path = event.get("path", "")
             if path:
                 file_paths.append(path)
+        elif evt_type == "chat_poll_request":
+            poll_requests.append(event)
         elif evt_type == "chat_mutation":
             mutation_plan = event.get("mutation_plan")
             desc = ""
@@ -161,7 +164,7 @@ def _consume_chat_stream_events(
             full_reply = f"{full_reply}\n\n{prefix}: {error_message}".strip()
         else:
             full_reply = f"{prefix}: {error_message}"
-    return full_reply, mutation_plan, file_paths
+    return full_reply, mutation_plan, file_paths, poll_requests
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +337,7 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
                     pass
                 return
 
-            full_reply, mutation_plan, attachment_paths = _consume_chat_stream_events(stream_events)
+            full_reply, mutation_plan, attachment_paths, poll_requests = _consume_chat_stream_events(stream_events)
 
             if mutation_plan and config.auto_approve:
                 try:
@@ -371,6 +374,19 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
                         await adapter.send_file(ext_id, fp)
                     except Exception as exc:
                         logger.warning("Failed to send file %s: %s", fp, exc)
+
+            for pr in poll_requests:
+                if hasattr(adapter, "send_poll_for_session"):
+                    try:
+                        await adapter.send_poll_for_session(
+                            ext_id,
+                            pr.get("question", ""),
+                            pr.get("options", []),
+                            is_anonymous=pr.get("is_anonymous", False),
+                            allows_multiple=pr.get("allows_multiple", False),
+                        )
+                    except Exception as exc:
+                        logger.warning("Failed to send poll: %s", exc)
 
         except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
             logger.warning("Chat-mode server unavailable for %s: %s", ext_id, exc)

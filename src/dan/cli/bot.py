@@ -248,10 +248,16 @@ def _cmd_start_all(args: argparse.Namespace) -> None:
 
 def _cmd_stop(args: argparse.Namespace) -> None:
     if args.name:
-        print(
-            "Per-bot stop is not supported yet because the fleet runs as one process. "
-            "Use 'dan-bot stop' to stop the whole fleet.",
-        )
+        if not _fleet_daemon_running():
+            print(
+                "No fleet daemon running. Per-bot stop requires a running fleet daemon.\n"
+                "Use 'dan-bot start-all --daemon' to start the fleet first.",
+            )
+            return
+        ctl_file = _TELEGRAM_DIR / "fleet.ctl"
+        ctl_file.parent.mkdir(parents=True, exist_ok=True)
+        ctl_file.write_text(f"stop:{args.name}")
+        print(f"Sent stop signal for '{args.name}' to fleet daemon.")
         return
     if not _FLEET_PID_FILE.exists():
         print("No fleet daemon running.")
