@@ -1552,6 +1552,174 @@ async def lifespan(app: FastAPI):
         _concierge = None
         _dispatcher = None
 
+    async def _collect_concierge_terminal_content(surface_msg: Any) -> str:
+        if _dispatcher is not None:
+            event_stream = _dispatcher.dispatch(surface_msg)
+        elif _concierge is not None:
+            event_stream = _concierge.process(surface_msg)
+        else:
+            return ""
+
+        final_content = ""
+        reassurance_messages = set(getattr(_concierge, "_REASSURANCE_MESSAGES", [])) if _concierge is not None else set()
+        async for event in event_stream:
+            evt_type = getattr(event, "type", "")
+            if evt_type == "chat_error":
+                raise RuntimeError(getattr(event, "error", "Unknown concierge error"))
+            if evt_type == "chat_interrupted":
+                raise RuntimeError("Scheduled action was interrupted")
+            if evt_type == "chat_complete":
+                content = getattr(event, "content", "") or ""
+                if content in reassurance_messages:
+                    continue
+                final_content = content
+        if not final_content:
+            raise RuntimeError("No terminal response produced")
+        return final_content
+
+    async def _dispatch_scheduled_action(action: str, trigger_context: Any, delivery_target: Any) -> str:
+        from dan.server.concierge.models import SurfaceMessage
+
+        surface_msg = SurfaceMessage(
+            surface=delivery_target.surface or trigger_context.source_surface or "schedule",
+            external_id=str(
+                delivery_target.conversation_key
+                or delivery_target.user_id
+                or trigger_context.user_id
+                or trigger_context.task_id
+                or delivery_target.project_id
+                or "scheduled-task"
+            ),
+            text=action,
+            metadata={
+                "thread_id": delivery_target.thread_key or trigger_context.thread_key,
+                "scheduled_trigger": True,
+                "trigger_context": trigger_context.model_dump(mode="json"),
+                "delivery_target": delivery_target.model_dump(mode="json"),
+            },
+        )
+        return await _collect_concierge_terminal_content(surface_msg)
+
+    async def _dispatch_follow_up(trigger: Any) -> None:
+        target_surface = str(trigger.target_surface or "").strip()
+        external_id = str(trigger.conversation_key or trigger.user_id or "").strip()
+
+        if not external_id and trigger.project_id and _concierge is not None:
+            tracker = getattr(_concierge, "_presence_tracker", None)
+            if tracker is not None:
+                preferred = tracker.get_preferred_surface(trigger.project_id)
+                if preferred is None:
+                    preferred = tracker.get_active_surface()
+                if preferred is not None:
+                    target_surface = target_surface or preferred.surface_type
+                    external_id = preferred.surface_id
+
+        if target_surface and external_id:
+            for aid, (adapter, _task) in _active_adapters.items():
+                if _adapter_surface_types.get(aid) != target_surface:
+                    continue
+                await _send_adapter_text(adapter, external_id, trigger.message)
+                return
+
+        event_bus = getattr(_capability_context, "event_bus", None)
+        if event_bus is not None:
+            event_bus.broadcast({
+                "event_type": "notification",
+                "title": "DAN Follow-Up",
+                "message": trigger.message,
+                "level": "info",
+                "surface_id": external_id or "follow-up",
+            })
+            return
+
+        logger.info("Undeliverable follow-up retained in queue: %s", trigger.message)
+
+    # 31-7: Scheduled task background loop
+    _task_scheduler = None
+    try:
+        from dan.server.concierge.scheduler import TaskScheduler
+
+        _schedule_store = getattr(_concierge, "_schedule_store", None)
+        _schedule_history_store = getattr(_concierge, "_schedule_history_store", None)
+        if _schedule_store is not None:
+            _task_scheduler = TaskScheduler(
+                store=_schedule_store,
+                dispatch_fn=_dispatch_scheduled_action,
+                history_store=_schedule_history_store,
+            )
+            if _concierge is not None:
+                _concierge._task_scheduler = _task_scheduler
+            await _task_scheduler.start()
+            app.state.task_scheduler = _task_scheduler
+            logger.info("Task scheduler started")
+    except Exception:
+        logger.debug("Task scheduler startup skipped", exc_info=True)
+
+    # 31-12: Proactive follow-up delivery loop
+    _follow_up_engine = None
+    try:
+        from dan.server.concierge.follow_up import (
+            FollowUpDeliveryEngine,
+            scan_stale_tasks,
+        )
+
+        _follow_up_config = getattr(_concierge, "_follow_up_config", None)
+        _follow_up_queue = getattr(_concierge, "_follow_up_queue", None)
+        if _follow_up_config is not None and _follow_up_queue is not None:
+            if _concierge is not None:
+                for trigger in scan_stale_tasks(
+                    _concierge.project_store,
+                    stale_hours=_follow_up_config.stale_task_hours,
+                ):
+                    _follow_up_queue.enqueue(trigger)
+            _follow_up_engine = FollowUpDeliveryEngine(
+                queue=_follow_up_queue,
+                config=_follow_up_config,
+                dispatch_fn=_dispatch_follow_up,
+            )
+            if _concierge is not None:
+                _concierge._follow_up_engine = _follow_up_engine
+            await _follow_up_engine.start()
+            app.state.follow_up_engine = _follow_up_engine
+            logger.info("Follow-up delivery engine started")
+    except Exception:
+        logger.debug("Follow-up engine startup skipped", exc_info=True)
+
+    # 31-15: Learning tier activation
+    try:
+        from dan.engine.learning_tiers import resolve_learning_tier, is_feature_enabled
+        _learning_tier = resolve_learning_tier()
+        if _concierge is not None:
+            _concierge._learning_tier = _learning_tier
+        logger.info(
+            "Learning tier: %s (correction_detection=%s, adaptation_registry=%s)",
+            _learning_tier.value,
+            is_feature_enabled(_learning_tier, "correction_detection"),
+            is_feature_enabled(_learning_tier, "adaptation_registry"),
+        )
+    except Exception:
+        logger.debug("Learning tier resolution skipped", exc_info=True)
+
+    # 31-13: Surface presence tracker
+    try:
+        _presence_tracker = getattr(_concierge, "_presence_tracker", None)
+        logger.info("Presence tracker initialized")
+    except Exception:
+        logger.debug("Presence tracker initialization skipped", exc_info=True)
+
+    # 31-17: Computer control config
+    try:
+        from dan.server.concierge.computer_policy import ComputerControlConfig
+        _computer_config = getattr(_concierge, "_computer_config", None) or ComputerControlConfig.load()
+        if _concierge is not None:
+            _concierge._computer_config = _computer_config
+        logger.info("Computer control config loaded (browser=%s, desktop=%s)",
+            _computer_config.chunk_policies.browser.enabled if hasattr(_computer_config, 'chunk_policies') else 'N/A',
+            _computer_config.chunk_policies.window.enabled if hasattr(_computer_config, 'chunk_policies') else 'N/A',
+        )
+    except Exception:
+        logger.debug("Computer control config load skipped", exc_info=True)
+
     # Custom skills discovery (19-6)
     custom_skills_dir = Path(os.environ.get("DAN_CUSTOM_SKILLS_DIR", "custom_skills"))
     if custom_skills_dir.is_dir():
@@ -1590,13 +1758,28 @@ async def lifespan(app: FastAPI):
     mcp_count = len(_mcp_bridge._clients) if _mcp_bridge and hasattr(_mcp_bridge, "_clients") else 0
     notif_count = len(_notification_manager.channels) if _notification_manager else 0
     autonomy = os.environ.get("DAN_CONCIERGE_AUTONOMY", "auto")
-    
+    scheduler_status = "on" if _task_scheduler is not None else "off"
+    follow_up_status = "on" if _follow_up_engine is not None else "off"
+
     logger.info(
-        "DAN Server started | Model: %s | Tier: %s | Learning: %s | MCP: %d server(s) | Notifications: %d channel(s) | Autonomy: %s",
-        model_name, tier_policy, learning, mcp_count, notif_count, autonomy
+        "DAN Server started | Model: %s | Tier: %s | Learning: %s | MCP: %d server(s) | Notifications: %d channel(s) | Autonomy: %s | Scheduler: %s | Follow-up: %s",
+        model_name, tier_policy, learning, mcp_count, notif_count, autonomy, scheduler_status, follow_up_status
     )
 
     yield
+
+    # Shutdown Phase 21 background tasks
+    if _task_scheduler is not None:
+        try:
+            await _task_scheduler.stop()
+        except Exception:
+            logger.debug("Task scheduler shutdown failed", exc_info=True)
+
+    if _follow_up_engine is not None:
+        try:
+            await _follow_up_engine.stop()
+        except Exception:
+            logger.debug("Follow-up engine shutdown failed", exc_info=True)
 
     if _consolidation_task is not None and not _consolidation_task.done():
         _consolidation_task.cancel()
