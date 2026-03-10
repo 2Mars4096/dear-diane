@@ -125,18 +125,6 @@ def resolve_policy(
     return action, execution
 
 
-# ---------------------------------------------------------------------------
-# Fallback & completion policy (plan 25-11)
-# ---------------------------------------------------------------------------
-
-FALLBACK_LADDER: tuple[str, ...] = (
-    "alternate_path",
-    "useful_subset",
-    "build_capability",
-    "scaffold_human_action",
-    "ask_smallest_unblock",
-)
-
 _APOLOGY_ONLY_PATTERNS: tuple[str, ...] = (
     r"^I(?:'m| am) (?:sorry|unable|not able)",
     r"^Unfortunately,? I",
@@ -167,49 +155,3 @@ def validate_terminal_content(content: str) -> tuple[bool, str]:
         return False, "apology_only"
 
     return True, ""
-
-
-def suggest_fallback_strategy(
-    failed_mode: str,
-    error_context: str = "",
-    attempted_strategies: list[str] | None = None,
-) -> str | None:
-    """Given a failed execution mode and error context, suggest the next
-    fallback strategy from FALLBACK_LADDER that hasn't been tried yet."""
-    tried = set(attempted_strategies or [])
-    for strategy in FALLBACK_LADDER:
-        if strategy not in tried:
-            return strategy
-    return None
-
-
-def format_terminal_message(
-    content: str,
-    assumptions: list[str] | None = None,
-    remaining_steps: list[str] | None = None,
-    outcome_type: str = "done",
-) -> str:
-    """Format a terminal response that states what DAN did, assumptions
-    made, and what remains for the user."""
-    if outcome_type == "done":
-        return content
-
-    parts: list[str] = []
-
-    if outcome_type == "waiting_on_single_user_action" and remaining_steps:
-        parts.append(f"Waiting on you: {remaining_steps[0]}\n")
-
-    parts.append(content)
-
-    if assumptions and outcome_type in (
-        "done_with_assumptions",
-        "partial_done_with_next_unlock",
-    ):
-        parts.append("\nAssumptions:\n" + "\n".join(f"- {a}" for a in assumptions))
-
-    if remaining_steps and outcome_type == "partial_done_with_next_unlock":
-        parts.append(
-            "\nRemaining steps:\n" + "\n".join(f"- {s}" for s in remaining_steps)
-        )
-
-    return "\n".join(parts)

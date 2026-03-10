@@ -234,17 +234,6 @@ def format_partial_result(
     return "\n".join(parts)
 
 
-def format_completion_metadata(result: ExecutionResult) -> dict[str, Any]:
-    """Extract metadata for reflection and workflow-promotion logic."""
-    return {
-        "outcome": result.outcome.value,
-        "fallback_used": result.fallback_used,
-        "assumptions_count": len(result.assumptions_used),
-        "remaining_count": len(result.remaining_steps),
-        "has_handler_result": result.handler_result is not None,
-    }
-
-
 def _execution_metadata(
     decision: SolverDecision,
     fallback_used: str | None,

@@ -15,7 +15,7 @@ from .handlers import HandlerRegistry, HandlerResult
 from .identity import format_bare_prefix, format_prefix, get_bot_name, starts_with_prefix, strip_prefix
 from .memory_bridge import ExperienceContext, ReuseRecommendation, WorkflowCandidate, WorkflowMemoryIndex
 from .models import ConciergeGoal, ConciergeState, Project, SurfaceMessage, Task, TaskTurn
-from .policy import ActionPolicy, BehaviorPolicy, ClarificationRequest, ClarificationResponse, ExecutionPolicy, FALLBACK_LADDER, format_terminal_message, resolve_policy, suggest_fallback_strategy, validate_terminal_content
+from .policy import ActionPolicy, BehaviorPolicy, ClarificationRequest, ClarificationResponse, ExecutionPolicy, resolve_policy, validate_terminal_content
 from .solver import ExecutionMode, FallbackStep, GoalResolver, PlanBuilder, PlanStep, SolverDecision, TerminalOutcome
 from .progress import ProgressReporter
 from .project_store import ProjectStore
@@ -45,7 +45,6 @@ __all__ = [
     "ExecutionResult",
     "ExecutionSelector",
     "ExperienceContext",
-    "FALLBACK_LADDER",
     "FallbackStep",
     "fan_out",
     "fan_out_dict",
@@ -85,9 +84,7 @@ __all__ = [
     "classify_intent",
     "classify_priority",
     "extract_search_query_from_send_request",
-    "format_terminal_message",
     "resolve_policy",
     "search_local_files",
-    "suggest_fallback_strategy",
     "validate_terminal_content",
 ]
