@@ -63,7 +63,11 @@ def _strip_function_call_xml(text: str) -> str:
 
 
 def _translate_slash_command(text: str) -> str | None:
-    """Translate /slash commands to natural language for server dispatch."""
+    """Translate truly adapter-local slash commands for server dispatch.
+
+    Server-owned chat commands should stay as raw slash commands so the
+    registry-driven fast-command path remains available on every surface.
+    """
     text = text.strip()
     if not text.startswith("/"):
         return None
@@ -74,13 +78,20 @@ def _translate_slash_command(text: str) -> str | None:
     translations = {
         "/find": f"Find the file matching '{arg}' on my computer" if arg else None,
         "/send": f"Send me the file at {arg}" if arg else None,
-        "/status": "What's the status of my current runs?",
-        "/cancel": "Cancel the current run",
         "/show": "Show me the current workflow",
         "/list": "List my saved workflows",
         "/help": None,
     }
     return translations.get(cmd, None)
+
+
+def _format_adapter_help(adapter_type: str) -> str:
+    """Return help text filtered to the current adapter surface."""
+    from dan.server.concierge.command_registry import get_default_registry
+
+    registry = get_default_registry()
+    surface = _surface_name_for_adapter_type(adapter_type)
+    return registry.format_help(surface)
 
 
 def _strip_reply_prefix_lines(text: str) -> str:
@@ -456,9 +467,7 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
         if stripped.startswith("/"):
             cmd = stripped.split()[0].lower()
             if cmd == "/help":
-                from dan.server.concierge.command_registry import get_default_registry
-                _registry = get_default_registry()
-                _help_text = _registry.format_help("cli")
+                _help_text = _format_adapter_help(adapter_type)
                 await adapter.send_prompt(
                     external_id,
                     f"{_help_text}\nOr just type naturally — I can do anything!",
