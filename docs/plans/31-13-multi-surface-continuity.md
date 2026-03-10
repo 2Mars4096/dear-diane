@@ -1,7 +1,7 @@
 # 31-13: Multi-Surface Continuity
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Enable seamless task continuity across surfaces — start a task on desktop (dan-chat), continue on Telegram from your phone, come back to desktop and see the full thread. The Project scope is the continuity anchor, not the surface.
 
 ## Problem
@@ -10,27 +10,27 @@ DAN has a multi-surface gateway (Phase 13) that allows any surface to dispatch w
 
 ## Tasks
 
-- [ ] 1. **Unified conversation view**
-  - [ ] 1-1. `ProjectConversationStore` — aggregate conversation history across all surfaces for a project/task, ordered by timestamp
-  - [ ] 1-2. When a surface connects and the user is in an active task, inject a **task-first handoff payload** into the system prompt: `TaskSnapshot` from 31-11 first, recent task turns second, project summary last
-  - [ ] 1-3. Compact cross-surface history: include full messages from last 5 turns (any surface), summaries for older
-  - [ ] 1-4. `SurfaceRoutingPolicy`: `visibility: Literal["private", "shared"]`, `allow_project_context: bool`, `allow_follow_ups: bool`. Shared/group surfaces default to **no continuity injection** unless the project explicitly opts in.
+- [x] 1. **Unified conversation view**
+  - [x] 1-1. `ProjectConversationStore` — aggregate conversation history across all surfaces for a project/task, ordered by timestamp
+  - [x] 1-2. When a surface connects and the user is in an active task, inject a **task-first handoff payload** into the system prompt: `TaskSnapshot` from 31-11 first, recent task turns second, project summary last
+  - [x] 1-3. Compact cross-surface history: include full messages from last 5 turns (any surface), summaries for older
+  - [x] 1-4. `SurfaceRoutingPolicy`: `visibility: Literal["private", "shared"]`, `allow_project_context: bool`, `allow_follow_ups: bool`. Shared/group surfaces default to **no continuity injection** unless the project explicitly opts in.
 
-- [ ] 2. **Surface handoff**
-  - [ ] 2-1. Detect surface switch: when a user message on surface B relates to work started on surface A (same project/task), auto-link
-  - [ ] 2-2. Handoff context: include the current `TaskSnapshot` and the last response from surface A so the user doesn't need to repeat themselves
-  - [ ] 2-3. `/sync` command: explicitly pull latest context from all surfaces for the current project
+- [x] 2. **Surface handoff**
+  - [x] 2-1. Detect surface switch: when a user message on surface B relates to work started on surface A (same project/task), auto-link
+  - [x] 2-2. Handoff context: include the current `TaskSnapshot` and the last response from surface A so the user doesn't need to repeat themselves
+  - [x] 2-3. `/sync` command: explicitly pull latest context from all surfaces for the current project
 
-- [ ] 3. **Presence and routing**
-  - [ ] 3-1. Track user's active surface (most recent message timestamp per surface)
-  - [ ] 3-2. Route DAN-initiated messages (follow-ups, notifications, schedule results) to the active **private** surface by default; require explicit project-level opt-in before routing task context into shared/group chats
-  - [ ] 3-3. Surface priority: if multiple surfaces are active, prefer the one where the current project was most recently discussed
+- [x] 3. **Presence and routing**
+  - [x] 3-1. Track user's active surface (most recent message timestamp per surface)
+  - [x] 3-2. Route DAN-initiated messages (follow-ups, notifications, schedule results) to the active **private** surface by default; require explicit project-level opt-in before routing task context into shared/group chats
+  - [x] 3-3. Surface priority: if multiple surfaces are active, prefer the one where the current project was most recently discussed
 
-- [ ] 4. **Tests and docs**
-  - [ ] 4-1. Unit tests: cross-surface history aggregation, handoff detection, presence tracking
-  - [ ] 4-2. Integration test: message on surface A, continue on surface B, verify context carries over
-  - [ ] 4-3. Privacy test: private-chat to shared-chat handoff does not leak project/task context without explicit opt-in
-  - [ ] 4-4. Update architecture, changelog
+- [x] 4. **Tests and docs**
+  - [x] 4-1. Unit tests: cross-surface history aggregation, handoff detection, presence tracking
+  - [x] 4-2. Integration test: message on surface A, continue on surface B, verify context carries over
+  - [x] 4-3. Privacy test: private-chat to shared-chat handoff does not leak project/task context without explicit opt-in
+  - [x] 4-4. Update architecture, changelog
 
 ## Dependencies
 

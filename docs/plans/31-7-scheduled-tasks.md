@@ -1,7 +1,7 @@
 # 31-7: Scheduled Tasks
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Enable cron-style and interval-based task scheduling so DAN can run workflows, checks, and reports on a recurring basis — "run my equity report every morning at 9am."
 
 ## Problem
@@ -10,40 +10,40 @@ DAN runs as a daemon (26-2) and can process messages from any surface. But every
 
 ## Tasks
 
-- [ ] 1. **Schedule model and store**
-  - [ ] 1-1. `ScheduleEntry` Pydantic model: `id: str`, `name: str`, `trigger: str` (cron expression or interval like `every 6h`), `action: str` (natural language intent or workflow ID), `enabled: bool = True`, `last_run: datetime | None`, `next_run: datetime | None`, `created_at: datetime`, `timezone: str = "UTC"` (IANA timezone, e.g. "America/New_York" — v1 is UTC-only for cron evaluation; human-readable shortcuts like "daily at 9am" interpret in this timezone), `trigger_context: TriggerContext`, `delivery_target: DeliveryTarget`
-  - [ ] 1-2. `TriggerContext` and `DeliveryTarget` are fields on `ScheduleEntry` (not standalone objects). Split routing metadata cleanly:
+- [x] 1. **Schedule model and store**
+  - [x] 1-1. `ScheduleEntry` Pydantic model: `id: str`, `name: str`, `trigger: str` (cron expression or interval like `every 6h`), `action: str` (natural language intent or workflow ID), `enabled: bool = True`, `last_run: datetime | None`, `next_run: datetime | None`, `created_at: datetime`, `timezone: str = "UTC"` (IANA timezone, e.g. "America/New_York" — v1 is UTC-only for cron evaluation; human-readable shortcuts like "daily at 9am" interpret in this timezone), `trigger_context: TriggerContext`, `delivery_target: DeliveryTarget`
+  - [x] 1-2. `TriggerContext` and `DeliveryTarget` are fields on `ScheduleEntry` (not standalone objects). Split routing metadata cleanly:
     - `trigger_context`: `source_surface: Literal["schedule"]`, `project_id: str | None`, `task_id: str | None`, `user_id: str | None`, `thread_key: str | None`
     - `delivery_target`: `surface: str`, `conversation_key: str | None`, `user_id: str | None`, `project_id: str | None`, `thread_key: str | None`, `fallback_policy: Literal["store_and_notify", "private_surface", "drop"] = "store_and_notify"`
-  - [ ] 1-3. `ScheduleStore` — filesystem-backed CRUD at `~/.dan/schedules.json`; load on startup, atomic save
-  - [ ] 1-4. Cron expression parser: support standard 5-field cron (`*/5 * * * *`) plus human-readable shortcuts (`every 6h`, `daily at 9am`, `weekdays at 8:30am`)
+  - [x] 1-3. `ScheduleStore` — filesystem-backed CRUD at `~/.dan/schedules.json`; load on startup, atomic save
+  - [x] 1-4. Cron expression parser: support standard 5-field cron (`*/5 * * * *`) plus human-readable shortcuts (`every 6h`, `daily at 9am`, `weekdays at 8:30am`)
 
-- [ ] 2. **Scheduler runtime**
-  - [ ] 2-1. `TaskScheduler` — asyncio background task that checks `next_run` every 30 seconds; on trigger, dispatches action as a concierge message (reuses entire existing pipeline)
+- [x] 2. **Scheduler runtime** (core done; lease/lock and daemon wiring deferred)
+  - [x] 2-1. `TaskScheduler` — asyncio background task that checks `next_run` every 30 seconds; on trigger, dispatches action as a concierge message (reuses entire existing pipeline)
   - [ ] 2-2. Define **single scheduler authority**: `dan-service` owns schedule firing when present; `dan-serve` only runs the scheduler in single-process setups or when it successfully acquires the schedule lease
   - [ ] 2-3. Lease/lock rule: persisted schedule-owner lease prevents duplicate firing when both server and daemon are running; add takeover on stale lease for failover
   - [ ] 2-4. Wire into `dan-service` daemon (primary owner; schedules survive restarts via persisted store)
   - [ ] 2-5. Wire fallback mode into `dan-serve` lifespan (only when service absent / lease acquired)
-  - [ ] 2-6. Missed-run detection: if owner was down when a trigger fired, optionally run on next startup (configurable per schedule via `on_missed: Literal["run_once", "skip"] = "run_once"`). If multiple runs were missed, execute **once** with a `missed_since: datetime` context field — do not replay all missed invocations (side-effectful tasks like reports should not generate duplicates).
-  - [ ] 2-7. Concurrent schedule execution: each triggered task runs in its own concierge dispatch (uses existing `ConcurrentDispatcher`)
+  - [x] 2-6. Missed-run detection: if owner was down when a trigger fired, optionally run on next startup (configurable per schedule via `on_missed: Literal["run_once", "skip"] = "run_once"`). If multiple runs were missed, execute **once** with a `missed_since: datetime` context field — do not replay all missed invocations (side-effectful tasks like reports should not generate duplicates).
+  - [x] 2-7. Concurrent schedule execution: each triggered task runs in its own concierge dispatch (fire-and-forget via `asyncio.create_task`)
 
-- [ ] 3. **Chat commands**
-  - [ ] 3-1. `/schedule add "run equity report" every day at 9am` — creates schedule, confirms
-  - [ ] 3-2. `/schedule list` — show all schedules with next run time, last run status
-  - [ ] 3-3. `/schedule remove <id|name>` — delete a schedule
-  - [ ] 3-4. `/schedule pause <id|name>` / `/schedule resume <id|name>` — toggle enabled
+- [x] 3. **Chat commands**
+  - [x] 3-1. `/schedule add "run equity report" every day at 9am` — creates schedule, confirms
+  - [x] 3-2. `/schedule list` — show all schedules with next run time, last run status
+  - [x] 3-3. `/schedule remove <id|name>` — delete a schedule
+  - [x] 3-4. `/schedule pause <id|name>` / `/schedule resume <id|name>` — toggle enabled
   - [ ] 3-5. Natural language: "remind me to check the portfolio every Monday" → auto-creates schedule
 
-- [ ] 4. **Result delivery**
+- [x] 4. **Result delivery** (history done; surface routing deferred)
   - [ ] 4-1. Route results to the `delivery_target` in `ScheduleEntry` (Telegram, WhatsApp, CLI notification, editor thread)
   - [ ] 4-2. Fallback: if target surface is unreachable, apply `fallback_policy`; default is store result and notify via `NotificationManager`
-  - [ ] 4-3. Schedule run history: persist last N results per schedule for review (`/schedule history <name>`)
+  - [x] 4-3. Schedule run history: persist last N results per schedule for review (`/schedule history <name>`)
 
-- [ ] 5. **Tests and docs**
-  - [ ] 5-1. Unit tests: cron parsing, next-run computation, store CRUD, missed-run detection, delivery target parsing
-  - [ ] 5-2. Integration test: mock clock, verify trigger fires once and dispatches to concierge with `source_surface="schedule"`
+- [x] 5. **Tests and docs**
+  - [x] 5-1. Unit tests: cron parsing, next-run computation, store CRUD, missed-run detection, delivery target parsing
+  - [x] 5-2. Integration test: mock clock, verify trigger fires once and dispatches to concierge with `source_surface="schedule"`
   - [ ] 5-3. Integration test: when both `dan-service` and `dan-serve` are present, lease/lock guarantees a schedule fires exactly once
-  - [ ] 5-4. Update CLI docs, architecture, changelog
+  - [x] 5-4. Update CLI docs, architecture, changelog
 
 ## Dependencies
 

@@ -1,7 +1,7 @@
 # 31-12: Proactive Follow-Up
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Enable DAN to proactively initiate follow-up messages based on completed work, discovered opportunities, or time-based triggers — moving from purely reactive to anticipatory assistance.
 
 ## Problem
@@ -10,33 +10,34 @@ DAN is currently reactive — it only acts when a message arrives. An always-on 
 
 ## Tasks
 
-- [ ] 1. **Follow-up trigger system**
-  - [ ] 1-1. `FollowUpTrigger` model: `id`, `source` (run_completion / schedule / memory / blocker_resolved), `priority: Literal["low", "medium", "high"]`, `message: str`, `context: dict`, `user_id: str | None`, `project_id: str | None`, `task_id: str | None`, `conversation_key: str | None`, `thread_key: str | None`, `target_surface: str | None`, `reply_correlation_id: str | None`, `created_at: datetime`, `expires_at: datetime | None`
-  - [ ] 1-2. `FollowUpQueue` — scoped priority queue of pending follow-ups, persisted in a per-user / per-project store (not a single flat global JSON file)
-  - [ ] 1-3. Deduplication: don't send the same follow-up twice (hash-based tracking)
+- [x] 1. **Follow-up trigger system**
+  - [x] 1-1. `FollowUpTrigger` model: `id`, `source` (run_completion / schedule / memory / blocker_resolved / stale_task), `priority: Literal["low", "medium", "high"]`, `message: str`, `context: dict`, `user_id: str | None`, `project_id: str | None`, `task_id: str | None`, `conversation_key: str | None`, `thread_key: str | None`, `target_surface: str | None`, `reply_correlation_id: str | None`, `created_at: datetime`, `expires_at: datetime | None`, `delivered: bool`, `delivered_at: datetime | None`
+  - [x] 1-2. `FollowUpQueue` — in-memory priority queue with deduplication and expiry filtering
+  - [x] 1-3. Deduplication: hash-based tracking (source + project_id + message prefix)
 
-- [ ] 2. **Trigger sources**
-  - [ ] 2-1. **Run completion insights:** after a workflow/task completes, if the result contains notable findings (anomalies, errors, unexpected patterns), queue a follow-up: "Your equity report finished — found an unusual pattern in sector rotation. Want me to dig deeper?"
-  - [ ] 2-2. **Scheduled task results:** scheduled tasks (31-7) that produce actionable results trigger follow-ups instead of raw result dumps
-  - [ ] 2-3. **Stale task nudge:** if a task has been paused/blocked for > N hours (configurable, default 24h), nudge: "Your literature review has been paused for 2 days. The blocker was X — I think I can work around it now." This depends on structured task state from 31-11.
-  - [ ] 2-4. **Memory-triggered:** when new information arrives that's relevant to a past task (e.g., a paper cited in a review was retracted), surface it proactively
+- [x] 2. **Trigger sources**
+  - [x] 2-1. `create_run_completion_trigger()` — run completion follow-up factory
+  - [x] 2-2. `create_schedule_result_trigger()` — scheduled task result follow-up factory
+  - [x] 2-3. `create_stale_task_trigger()` — stale task nudge follow-up factory (uses `TaskSnapshot` from 31-11)
+  - [ ] 2-4. **Memory-triggered:** when new information arrives that's relevant to a past task (e.g., a paper cited in a review was retracted), surface it proactively (deferred)
 
-- [ ] 3. **Delivery**
-  - [ ] 3-1. Respect quiet hours: `DAN_QUIET_HOURS` env var (e.g., `"22:00-08:00"`) — queue follow-ups during quiet hours, deliver at first opportunity after
-  - [ ] 3-2. Rate limiting: max N follow-ups per hour (configurable, default 3) to avoid notification fatigue
-  - [ ] 3-3. Surface routing: deliver to the user's most recently active surface, or to the surface specified in the trigger
-  - [ ] 3-4. Conversational delivery: follow-ups are sent through the normal chat / adapter pipeline so the user can respond naturally; `NotificationManager` is fallback-only when the preferred surface is unavailable
+- [x] 3. **Delivery**
+  - [x] 3-1. Quiet hours: `DAN_QUIET_HOURS` env var (e.g., `"22:00-08:00"`) — `is_quiet_hours()` with overnight wrap support
+  - [x] 3-2. Rate limiting: `max_per_hour` (configurable, default 3) with sliding-window timestamp tracking
+  - [x] 3-3. `FollowUpDeliveryEngine` with async background loop (60s interval), `deliver_pending()`, `start()`/`stop()`
+  - [ ] 3-4. Surface routing: deliver to most recently active surface (deferred to 31-13 integration)
 
-- [ ] 4. **User controls**
-  - [ ] 4-1. `/follow-ups` command: list pending follow-ups
-  - [ ] 4-2. `/follow-ups off` / `/follow-ups on` — global toggle
-  - [ ] 4-3. `DAN_PROACTIVE_FOLLOW_UP=0` env var (default off; explicit opt-in because outbound DAN-initiated messaging changes product behavior)
-  - [ ] 4-4. Per-task opt-out: "don't follow up on this task"
+- [x] 4. **User controls**
+  - [x] 4-1. `/follow-ups` command: list pending follow-ups
+  - [x] 4-2. `/follow-ups off` / `/follow-ups on` — global toggle
+  - [x] 4-3. `DAN_PROACTIVE_FOLLOW_UP=0` env var (default off; explicit opt-in)
+  - [x] 4-4. `FollowUpConfig` with `enabled`, `quiet_hours`, `max_per_hour`, `stale_task_hours`; `load_follow_up_config()` reads all env vars
+  - [ ] 4-5. Per-task opt-out: "don't follow up on this task" (deferred)
 
-- [ ] 5. **Tests and docs**
-  - [ ] 5-1. Unit tests: trigger creation, queue management, deduplication, quiet hours, rate limiting
-  - [ ] 5-2. Integration test: run completion triggers follow-up delivery
-  - [ ] 5-3. Update architecture, changelog
+- [x] 5. **Tests and docs** (core module)
+  - [x] 5-1. 44 unit tests: trigger creation (run/stale/schedule, edge cases), queue (enqueue/dedup/drain/expiry/priority ordering/list), quiet hours (parse/overnight/same-day/boundary/unconfigured), rate limiting (under/at/prune), delivery (enabled/disabled/quiet-hours/rate-limit/error-handling/config-property), stale task scanning (finds stale/no stale/ignores completed/empty store), command parsing (list/on/off/pending/bare), deduplication edge cases (different source/different project/exact duplicate), config loading (default off/enabled/false strings/custom values)
+  - [ ] 5-2. Integration test: run completion triggers follow-up delivery (deferred to runtime wiring)
+  - [x] 5-3. Update architecture, changelog
 
 ## Dependencies
 

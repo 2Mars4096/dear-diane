@@ -1,7 +1,7 @@
 # 31-15: Learning & Evolution Optimization
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Make DAN's learning system practically effective — upgrade signal quality, close the user-correction loop, make learning observable, unify adaptation governance, and prepare storage for scale — so active learning becomes trustworthy enough for a staged default rollout.
 
 ## Problem
@@ -26,9 +26,9 @@ All other learning (prompt tracking, model tracking, topology tracking, RunLearn
 
 ## Tasks
 
-- [ ] 1. **Tiered learning activation**
-  - [ ] 1-1. Define three tiers: `baseline` (always on: memory, post-run learning, reuse scoring, preference evolution), `advisory` (topology suggestions, model recommendations, prompt variant proposals — observe and recommend), `active` (A/B prompt promotion, skill refinement promotion, auto-adaptation — actually change behavior)
-  - [ ] 1-2. Replace `DAN_LEARNING_MODE` with `DAN_LEARNING_TIER`: `0` = baseline only (current default), `1` = baseline + advisory, `2` = baseline + advisory + active. Backward compat: `DAN_LEARNING_MODE=1` maps to tier `1`.
+- [x] 1. **Tiered learning activation** (core module done; app.py lifespan wiring, .env.example/docs deferred)
+  - [x] 1-1. Define three tiers: `baseline` (always on: memory, post-run learning, reuse scoring, preference evolution), `advisory` (topology suggestions, model recommendations, prompt variant proposals — observe and recommend), `active` (A/B prompt promotion, skill refinement promotion, auto-adaptation — actually change behavior)
+  - [x] 1-2. Replace `DAN_LEARNING_MODE` with `DAN_LEARNING_TIER`: `0` = baseline only (current default), `1` = baseline + advisory, `2` = baseline + advisory + active. Backward compat: `DAN_LEARNING_MODE=1` maps to tier `1`.
   - [ ] 1-3. Staged rollout rule: preserve tier `0` for existing installs / current envs. Promote tier `1` as default for fresh installs only after **concrete gates** are met: (a) health counters (task 4) show `succeeded / attempted >= 0.95` across all learning paths over 100+ events, (b) model recommender precision > 0.7 on held-out runs (at least 15 recorded outcomes), (c) no tier-1 feature has auto-generated a false-positive adaptation in integration tests. These gates are checked manually before updating `.env.example` — not automated promotion.
   - [ ] 1-4. Individual env var overrides still work (e.g., `DAN_PROMPT_OPTIMIZATION=1` forces prompt optimization on regardless of tier)
   - [ ] 1-5. Update `app.py` lifespan to implement tiered activation logic
@@ -42,47 +42,47 @@ All other learning (prompt tracking, model tracking, topology tracking, RunLearn
   - [ ] 2-5. Wire upgraded signals into `PromptTracker`, `ModelOutcomeTracker`, `TopologyOutcomeTracker` in `run_manager.py` and `llm.py`
   - [ ] 2-6. Preserve backward compat: old records with binary quality still work
 
-- [ ] 3. **Correction memory loop**
-  - [ ] 3-1. **Correction detector**: identify when the user is correcting DAN's behavior vs. continuing the conversation. Signals: negation ("no, don't..."), override ("use X instead"), style correction ("shorter", "summarize first"), explicit redo ("try again with..."). Heuristic-first (keyword + pattern matching), with optional LLM classifier for ambiguous cases. **False-positive mitigation:** assign a `confidence: float` to each detection. At tier 1 (advisory), corrections with confidence < 0.7 are logged but not applied. At tier 2 (active), only confidence >= 0.8 triggers automatic quality score adjustments. Low-confidence candidates surface in `/corrections` for manual review.
-  - [ ] 3-2. **Correction→learning routing**: corrections produce:
+- [x] 3. **Correction memory loop** (core module done; concierge runtime wiring deferred)
+  - [x] 3-1. **Correction detector**: identify when the user is correcting DAN's behavior vs. continuing the conversation. Signals: negation ("no, don't..."), override ("use X instead"), style correction ("shorter", "summarize first"), explicit redo ("try again with..."). Heuristic-first (keyword + pattern matching), with optional LLM classifier for ambiguous cases. **False-positive mitigation:** assign a `confidence: float` to each detection. At tier 1 (advisory), corrections with confidence < 0.7 are logged but not applied. At tier 2 (active), only confidence >= 0.8 triggers automatic quality score adjustments. Low-confidence candidates surface in `/corrections` for manual review.
+  - [x] 3-2. **Correction→learning routing**: corrections produce:
     - `PREFERENCE` when it's stable user taste ("always use Stata", "I prefer concise responses")
     - `PRINCIPLE` when it's a general rule ("summarize results before showing raw tables")
     - Negative evidence against the specific prompt/model/topology that produced the corrected output (decrement quality score retroactively)
-  - [ ] 3-3. **Correction context capture**: store what DAN did (the output that was corrected), what the user wanted (the correction), and the link to the prompt/model/node that produced it. This creates a ground-truth dataset for future calibration.
+  - [x] 3-3. **Correction context capture**: store what DAN did (the output that was corrected), what the user wanted (the correction), and the link to the prompt/model/node that produced it. This creates a ground-truth dataset for future calibration.
   - [ ] 3-4. Wire into `Concierge._process_message()` — after each user message, check if it's a correction of the previous assistant turn
-  - [ ] 3-5. `/corrections` command to list recent correction-driven learning events
+  - [x] 3-5. `/corrections` command to list recent correction-driven learning events
 
-- [ ] 4. **Learning health visibility**
-  - [ ] 4-1. **Learning event counters**: track `attempted / succeeded / skipped / failed` for each learning path (memory extraction, run learning, prompt tracking, model tracking, topology tracking, skill tracking). Counters reset on server restart, persisted per session.
+- [x] 4. **Learning health visibility** (core module done; /status integration, startup banner deferred)
+  - [x] 4-1. **Learning event counters**: track `attempted / succeeded / skipped / failed` for each learning path (memory extraction, run learning, prompt tracking, model tracking, topology tracking, skill tracking). Counters reset on server restart, persisted per session.
   - [ ] 4-2. **Surface in `/status`**: add a "Learning" section to the existing `/status` command showing: active tier, enabled features, event counts since startup, last learning event timestamp, any features below minimum sample size.
   - [ ] 4-3. **Minimum-sample warnings**: if a learning feature is enabled but hasn't accumulated enough data to be meaningful (e.g., model recommender needs ~15 runs), surface a warning: "Model learning enabled but only 3/15 samples collected — recommendations not yet active."
   - [ ] 4-4. **Startup banner enhancement**: when `DAN_LEARNING_TIER >= 1`, show which advisory/active features are running in the existing startup feature banner (31-5).
   - [ ] 4-5. Replace bare `logger.debug(...)` exception swallowing in learning paths with counter increment + `logger.warning(...)` on first failure + `logger.debug(...)` on subsequent (rate-limited warning)
 
-- [ ] 5. **Unified adaptation governance**
-  - [ ] 5-1. `AdaptationCandidate` model: `source: str` (prompt_opt | model_rec | topology_adv | skill_ref | principle), `evidence: list[str]`, `confidence: float`, `sample_size: int`, `scope: str` (node_type | workflow | global), `auto_apply: bool`, `rollback_path: str | None`, `created_at: datetime`, `last_outcome: str | None`
-  - [ ] 5-2. `AdaptationRegistry`: central store for all pending/applied/rejected adaptations. Each adaptation type registers its candidates here instead of managing lifecycle independently.
-  - [ ] 5-3. Governance rules: `auto_apply` only allowed at tier `2` (active); tier `1` stores candidates for inspection; tier `0` doesn't generate candidates at all.
-  - [ ] 5-4. `/adaptations` command: list pending adaptations with confidence, sample size, and approval status. User can approve/reject from chat.
-  - [ ] 5-5. Rollback: if an applied adaptation causes quality regression, auto-revert and flag. Concrete parameters: measure over the next **N=10 runs** in the same scope. Regression threshold: **>15% drop in quality score** vs. the pre-adaptation baseline. To avoid attribution ambiguity, limit to **one active adaptation per scope** (node_type, workflow, or global) at a time. If multiple candidates are pending, queue them and evaluate serially.
+- [x] 5. **Unified adaptation governance** (core module done; wiring into learning subsystems deferred)
+  - [x] 5-1. `AdaptationCandidate` model: `source: str` (prompt_opt | model_rec | topology_adv | skill_ref | principle), `evidence: list[str]`, `confidence: float`, `sample_size: int`, `scope: str` (node_type | workflow | global), `auto_apply: bool`, `rollback_path: str | None`, `created_at: datetime`, `last_outcome: str | None`
+  - [x] 5-2. `AdaptationRegistry`: central store for all pending/applied/rejected adaptations. Each adaptation type registers its candidates here instead of managing lifecycle independently.
+  - [x] 5-3. Governance rules: `auto_apply` only allowed at tier `2` (active); tier `1` stores candidates for inspection; tier `0` doesn't generate candidates at all.
+  - [x] 5-4. `/adaptations` command: list pending adaptations with confidence, sample size, and approval status. User can approve/reject from chat.
+  - [x] 5-5. Rollback: if an applied adaptation causes quality regression, auto-revert and flag. Concrete parameters: measure over the next **N=10 runs** in the same scope. Regression threshold: **>15% drop in quality score** vs. the pre-adaptation baseline. To avoid attribution ambiguity, limit to **one active adaptation per scope** (node_type, workflow, or global) at a time. If multiple candidates are pending, queue them and evaluate serially.
 
-- [ ] 6. **Memory storage backend abstraction**
-  - [ ] 6-1. `MemoryBackend` protocol: `load() -> dict[str, MemoryItem]`, `save(index: dict[str, MemoryItem])`, `upsert(item: MemoryItem)`, `delete(item_id: str)`, `query(filter: MemoryFilter) -> list[MemoryItem]`
-  - [ ] 6-2. `JsonFileBackend` — current behavior, extracted into protocol implementation. Default for local/dev.
-  - [ ] 6-3. `SqliteBackend` — optional, for users who want indexed queries and concurrent access without a full database server. Stores MemoryItems in a single SQLite table with JSON content column + indexed metadata columns (type, lifecycle, importance, created_at).
-  - [ ] 6-4. `DAN_MEMORY_BACKEND` env var: `json` (default) | `sqlite`. Future: `postgres`, `vector`.
+- [x] 6. **Memory storage backend abstraction** (core module done; MemoryKernel migration deferred)
+  - [x] 6-1. `MemoryBackend` protocol: `load() -> dict[str, MemoryItem]`, `save(index: dict[str, MemoryItem])`, `upsert(item: MemoryItem)`, `delete(item_id: str)`, `query(filter: MemoryFilter) -> list[MemoryItem]`
+  - [x] 6-2. `JsonFileBackend` — current behavior, extracted into protocol implementation. Default for local/dev.
+  - [x] 6-3. `SqliteBackend` — optional, for users who want indexed queries and concurrent access without a full database server. Stores MemoryItems in a single SQLite table with JSON content column + indexed metadata columns (type, lifecycle, importance, created_at).
+  - [x] 6-4. `DAN_MEMORY_BACKEND` env var: `json` (default) | `sqlite`. Future: `postgres`, `vector`.
   - [ ] 6-5. Migrate `MemoryKernel` to use `MemoryBackend` protocol internally — no API changes to callers.
   - [ ] 6-6. Eliminate linear scans in `retrieve_by_task` hot path: add lightweight in-memory type index (dict keyed by memory_type) even for JSON backend.
 
-- [ ] 7. **Planning-time calibration from experience**
-  - [ ] 7-1. `DurationEstimator`: given a task description + node type, query `ExperienceStore` for similar past tasks and return median duration + confidence interval. Fallback to heuristic classification (quick ~2min, medium ~15min, complex ~30min) when no experience data exists.
-  - [ ] 7-2. `FailureHotspotPredictor`: given a workflow topology, query `ErrorMemoryIndex` + `PrincipleStore` for failure patterns at similar nodes. Surface "this node type fails ~30% of the time — consider adding a validator" as planning advice.
-  - [ ] 7-3. `ModelPreference`: given a node type + task pattern, query `ModelOutcomeTracker` for best empirical model. Feed into 31-8 RCPSP scheduler as a model-assignment prior.
+- [x] 7. **Planning-time calibration from experience** (core module done; WorkflowPlanner/PlanScheduler wiring deferred)
+  - [x] 7-1. `DurationEstimator`: given a task description + node type, query `ExperienceStore` for similar past tasks and return median duration + confidence interval. Fallback to heuristic classification (quick ~2min, medium ~15min, complex ~30min) when no experience data exists.
+  - [x] 7-2. `FailureHotspotPredictor`: given a workflow topology, query `ErrorMemoryIndex` + `PrincipleStore` for failure patterns at similar nodes. Surface "this node type fails ~30% of the time — consider adding a validator" as planning advice.
+  - [x] 7-3. `ModelPreference`: given a node type + task pattern, query `ModelOutcomeTracker` for best empirical model. Feed into 31-8 RCPSP scheduler as a model-assignment prior.
   - [ ] 7-4. Wire all three into `WorkflowPlanner` immediately; treat 31-8 `PlanScheduler` integration as a blocked follow-on slice once that module exists
   - [ ] 7-5. This is the bridge between "learning from the past" and "planning for the future" — the most important upgrade for making learning operationally useful.
 
-- [ ] 8. **Tests and docs**
-  - [ ] 8-1. Unit tests: tiered activation, quality signal computation, correction detection, adaptation governance lifecycle, backend protocol conformance
+- [x] 8. **Tests and docs** (core tests done; integration tests deferred)
+  - [x] 8-1. Unit tests: tiered activation, quality signal computation, correction detection, adaptation governance lifecycle, backend protocol conformance
   - [ ] 8-2. Integration test: correction → PREFERENCE/PRINCIPLE storage → retrieval on similar future task → behavior change verified
   - [ ] 8-3. Integration test: quality signals → model recommender → planning-time model assignment
   - [ ] 8-4. Update architecture.md, changelog, .env.example

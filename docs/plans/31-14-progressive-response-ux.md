@@ -1,7 +1,7 @@
 # 31-14: Progressive Response UX
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Replace the "silence → big dump" response pattern with phase-chunked progressive disclosure. Each logical phase of work gets its own chat block that evolves in-place with sub-step progress. The user sees continuous, compact status and can steer at checkpoints — no dead air.
 
 ## Problem
@@ -71,49 +71,49 @@ Three messages total. Three notifications. Within each message, edits are silent
 
 ## Tasks
 
-- [ ] 1. **ProgressRenderer protocol**
-  - [ ] 1-1. `ProgressRenderer` protocol: `announce_plan(steps, estimated_time)`, `phase_update(label)`, `phase_complete(summary)`, `checkpoint(summary, options) -> str`, `deliver_result(content)`, `heartbeat(elapsed, message)`
-  - [ ] 1-2. `ProgressPhase` model: `id: str`, `name: str`, `status: Literal["pending", "active", "completed", "failed"]`, `started_at: datetime | None`, `elapsed_seconds: float`, `summary: str | None`
-  - [ ] 1-3. `ProgressSession` — manages the block lifecycle: creates new blocks on phase transition, routes sub-step updates to the current block, enforces throttling (max 1 edit per 0.5s)
+- [x] 1. **ProgressRenderer protocol**
+  - [x] 1-1. `ProgressRenderer` protocol: `announce_plan(steps, estimated_time)`, `phase_update(label)`, `phase_complete(summary)`, `checkpoint(summary, options) -> str`, `deliver_result(content)`, `heartbeat(elapsed, message)`
+  - [x] 1-2. `ProgressPhase` model: `id: str`, `name: str`, `status: Literal["pending", "active", "completed", "failed"]`, `started_at: datetime | None`, `elapsed_seconds: float`, `summary: str | None`
+  - [x] 1-3. `ProgressSession` — manages the block lifecycle: creates new blocks on phase transition, routes sub-step updates to the current block, enforces throttling (max 1 edit per 0.5s)
 
-- [ ] 2. **Surface-specific renderers**
-  - [ ] 2-1. `EditorProgressRenderer` — streaming sections in ChatPanel. Each block is a collapsible section with live timer, progress bar, and expandable sub-steps. Checkpoints render as inline buttons.
-  - [ ] 2-2. `CLIProgressRenderer` — Rich `Live` panel per phase. Spinner + status line + elapsed time within each block. Checkpoints as text prompts.
-  - [ ] 2-3. `TelegramProgressRenderer` — new message per phase, `edit_message_text` for sub-step updates (reuse existing `_stream_with_edits` throttle at 0.5s). Checkpoints as inline keyboard buttons. Respects 4096-char Telegram limit (finalize and start new message if exceeded).
-  - [ ] 2-4. `WhatsAppProgressRenderer` — bookend pattern: one message at start (plan summary + ETA), silence during execution, one message with result. Checkpoints as text questions ("reply 'full' or ask about specific variables"). Max one mid-point heartbeat for tasks >5 minutes.
+- [x] 2. **Surface-specific renderers**
+  - [x] 2-1. `EditorProgressRenderer` — streaming sections in ChatPanel. Each block is a collapsible section with live timer, progress bar, and expandable sub-steps. Checkpoints render as inline buttons.
+  - [x] 2-2. `CLIProgressRenderer` — Rich `Live` panel per phase. Spinner + status line + elapsed time within each block. Checkpoints as text prompts.
+  - [x] 2-3. `TelegramProgressRenderer` — new message per phase, `edit_message_text` for sub-step updates (reuse existing `_stream_with_edits` throttle at 0.5s). Checkpoints as inline keyboard buttons. Respects 4096-char Telegram limit (finalize and start new message if exceeded).
+  - [x] 2-4. `WhatsAppProgressRenderer` — bookend pattern: one message at start (plan summary + ETA), silence during execution, one message with result. Checkpoints as text questions ("reply 'full' or ask about specific variables"). Max one mid-point heartbeat for tasks >5 minutes.
 
 - [ ] 3. **Concierge/executor wiring**
-  - [ ] 3-1. Create `ProgressSession` when concierge starts processing a non-trivial message (skip for fast commands, simple greetings)
+  - [x] 3-1. Create `ProgressSession` when concierge starts processing a non-trivial message (skip for fast commands, simple greetings)
   - [ ] 3-2. **Instant acknowledgment** (<100ms, deterministic): emit plan block with "Got it. Working on {task_summary}." before any LLM call. This requires the concierge to synchronously create and send the first progress block before entering the async solver/planner pipeline — a pipeline restructuring, not just wiring.
   - [ ] 3-3. **Plan disclosure** (<2s, LLM): after solver/planner runs, emit plan block with step list and ETA. Offer review checkpoint for complex plans (>3 steps).
   - [ ] 3-4. **Phase transitions** (deterministic): wire tool execution start/complete, workflow run events, and capability handler events to `phase_update` / `phase_complete` calls
   - [ ] 3-5. **Result checkpoint** (LLM): on large outputs (>1000 tokens), generate a summary + options instead of dumping raw output. Respect user's stated focus from the original question.
   - [ ] 3-6. **Heartbeat** (deterministic): for operations >5s, emit heartbeat with elapsed time. Max frequency: 1 per 30s on messaging surfaces, 1 per 5s on CLI/editor.
 
-- [ ] 4. **Pre-flight clarification**
-  - [ ] 4-1. `InteractionRequest` kinds: `required_clarification` (blocks execution) vs `advisory_checkpoint` (optional steering)
+- [x] 4. **Pre-flight clarification** *(core module; LLM question generation deferred to wiring)*
+  - [x] 4-1. `InteractionRequest` kinds: `required_clarification` (blocks execution) vs `advisory_checkpoint` (optional steering)
   - [ ] 4-2. Cost/time threshold: if the planned task will take >10s or >$0.10 (estimated), emit 1-2 targeted clarifying questions before committing
   - [ ] 4-3. Question generation: LLM examines the user message + available context (dataset columns, file contents) and generates specific questions (not generic "what do you want?")
   - [ ] 4-4. Quick-confirm mode: if the questions have obvious defaults, present them as "I'll use X and Y — ok?" instead of blocking
-  - [ ] 4-5. Configurable: `DAN_PREFLIGHT_CLARIFY=1` (default on), `DAN_PREFLIGHT_THRESHOLD_SECONDS=10`
+  - [x] 4-5. Configurable: `DAN_PREFLIGHT_CLARIFY=1` (default on), `DAN_PREFLIGHT_THRESHOLD_SECONDS=10`
 
-- [ ] 5. **Interactive checkpoints**
-  - [ ] 5-1. `CheckpointOptions` model: `summary: str`, `options: list[CheckpointOption]` where each option has `label: str`, `value: str`, `is_default: bool`, `is_safe_default: bool = False` (at most one option; used as fallback on clarification timeout)
-  - [ ] 5-2. Surface-specific rendering: inline keyboard (Telegram), expandable sections (editor), text prompt (CLI/WhatsApp)
+- [x] 5. **Interactive checkpoints** *(core models and rendering; runtime timeout/disconnect deferred to wiring)*
+  - [x] 5-1. `CheckpointOptions` model: `summary: str`, `options: list[CheckpointOption]` where each option has `label: str`, `value: str`, `is_default: bool`, `is_safe_default: bool = False` (at most one option; used as fallback on clarification timeout)
+  - [x] 5-2. Surface-specific rendering: inline keyboard (Telegram), expandable sections (editor), text prompt (CLI/WhatsApp)
   - [ ] 5-3. Auto-proceed applies **only** to `advisory_checkpoint`. `required_clarification` blocks until the user responds or an explicitly stated safe default is confirmed. **Edge cases:** (a) Timeout: `required_clarification` times out after `DAN_CLARIFICATION_TIMEOUT_SECONDS` (default 300s on messaging surfaces, infinite on CLI/editor). On timeout, use `CheckpointOption.is_safe_default` if one exists; otherwise pause the task and notify the user. (b) Surface disconnect: if the user's surface drops, the clarification transfers to their next active surface (31-13) or pauses the task. (c) App close: paused tasks with pending clarifications are resumable via `/resume` (31-11).
   - [ ] 5-4. Result filtering: when user selects a detail level, LLM formats the output accordingly ("show me only log(asset)" → extract and present that coefficient with context)
 
-- [ ] 6. **Surface-adaptive verbosity**
-  - [ ] 6-1. Verbosity levels: `full` (editor/CLI — stream everything), `compact` (Telegram — edit-in-place), `minimal` (WhatsApp — bookend only)
-  - [ ] 6-2. Auto-detect from surface type: pass `surface_type: str` (e.g., "editor", "cli", "telegram", "whatsapp") into the `ProgressSession` constructor. The concierge resolves this from the incoming `SurfaceMessage.surface` field — not from `CapabilityContext` (which lacks a surface-type enum).
-  - [ ] 6-3. User override: `DAN_PROGRESS_VERBOSITY` env var or `/progress full|compact|minimal` command
-  - [ ] 6-4. Anti-noise rules: max 1 heartbeat per 30s on messaging surfaces; no progress messages for tasks completing in <3s (delay first progress block by ~500ms; if task completes before then, skip progress entirely). Note: 31-12's quiet hours suppress DAN-*initiated* contact, not progress on user-*requested* tasks — don't apply quiet hours to in-flight progress updates.
+- [x] 6. **Surface-adaptive verbosity**
+  - [x] 6-1. Verbosity levels: `full` (editor/CLI — stream everything), `compact` (Telegram — edit-in-place), `minimal` (WhatsApp — bookend only)
+  - [x] 6-2. Auto-detect from surface type: pass `surface_type: str` (e.g., "editor", "cli", "telegram", "whatsapp") into the `ProgressSession` constructor. The concierge resolves this from the incoming `SurfaceMessage.surface` field — not from `CapabilityContext` (which lacks a surface-type enum).
+  - [x] 6-3. User override: `DAN_PROGRESS_VERBOSITY` env var or `/progress full|compact|minimal` command
+  - [x] 6-4. Anti-noise rules: max 1 heartbeat per 30s on messaging surfaces; no progress messages for tasks completing in <3s (delay first progress block by ~500ms; if task completes before then, skip progress entirely). Note: 31-12's quiet hours suppress DAN-*initiated* contact, not progress on user-*requested* tasks — don't apply quiet hours to in-flight progress updates.
 
-- [ ] 7. **Tests and docs**
-  - [ ] 7-1. Unit tests: ProgressSession lifecycle, block creation/finalization, throttling, heartbeat timing, verbosity level selection
-  - [ ] 7-2. Renderer tests: verify each surface renderer produces expected output format (Telegram edits, WhatsApp bookends, CLI Rich panels)
-  - [ ] 7-3. Integration test: mock concierge task with 3 phases → verify block sequence and checkpoint interaction
-  - [ ] 7-4. Update architecture, changelog
+- [x] 7. **Tests and docs**
+  - [x] 7-1. Unit tests: ProgressSession lifecycle, block creation/finalization, throttling, heartbeat timing, verbosity level selection
+  - [x] 7-2. Renderer tests: verify each surface renderer produces expected output format (Telegram edits, WhatsApp bookends, CLI Rich panels)
+  - [x] 7-3. Integration test: mock concierge task with 3 phases → verify block sequence and checkpoint interaction
+  - [x] 7-4. Update architecture, changelog
 
 ## Surface Capabilities Reference
 

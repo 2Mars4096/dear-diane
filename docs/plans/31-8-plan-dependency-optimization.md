@@ -1,7 +1,7 @@
 # 31-8: Plan Dependency Optimization
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Replace linear plan execution with dependency-aware parallel scheduling. Decompose goals into a task DAG with time estimates, solve for the optimal execution path (minimizing makespan under resource constraints), and dynamically reschedule as tasks complete.
 
 ## Problem
@@ -24,32 +24,32 @@ The scheduler's job isn't to be right once — it's to be cheap enough to re-run
 
 ## Tasks
 
-- [ ] 1. **Standalone scheduler module (`src/dan/engine/plan_scheduler.py`)**
-  - [ ] 1-1. `PlanTask` Pydantic model: `id: str`, `name: str`, `description: str`, `estimated_duration_minutes: float`, `dependencies: list[str]` (predecessor task IDs), `required_inputs: list[InputRequirement]`, `expected_outputs: list[OutputArtifact]`, `model_tier: str | None` (override), `priority: int = 0`
-  - [ ] 1-2. `InputRequirement` / `OutputArtifact` models: structured artifact contracts (`name`, `artifact_type`, `schema_hint`, `producer_task_id | None`) so dependency repair is mechanical instead of text-only
-  - [ ] 1-3. `PlanDAG` model: `tasks: list[PlanTask]`, `goal: str`, `constraints: PlanConstraints` — validates acyclicity on construction, computes topological order. For workflow-engine callers, the solver operates on an **acyclic planning graph** (native DAG or SCC-condensed graph), not arbitrary raw cyclic graphs.
-  - [ ] 1-4. `PlanConstraints` model: `max_parallel: int` (from `DAN_MAX_CONCURRENT_LLM`), `budget_dollars: float | None`, `deadline_minutes: float | None`, `quality_floor: Literal["micro", "routine", "reasoning", "critical"] = "routine"`
-  - [ ] 1-5. `PlanSchedule` model: `assignments: list[ScheduleAssignment]` — each assignment: `task_id`, `start_time`, `end_time`, `assigned_tier`, `is_critical_path: bool`, `slack: float`
-  - [ ] 1-6. **This module is the single solver — both concierge-driven tasks and workflow engine call it.** No duplication. Concierge builds a `PlanDAG` from user intent; workflow engine builds one from an acyclic execution view of graph topology. Both call `schedule_tasks()`.
+- [x] 1. **Standalone scheduler module (`src/dan/engine/plan_scheduler.py`)**
+  - [x] 1-1. `PlanTask` Pydantic model: `id: str`, `name: str`, `description: str`, `estimated_duration_minutes: float`, `dependencies: list[str]` (predecessor task IDs), `required_inputs: list[InputRequirement]`, `expected_outputs: list[OutputArtifact]`, `model_tier: str | None` (override), `priority: int = 0`
+  - [x] 1-2. `InputRequirement` / `OutputArtifact` models: structured artifact contracts (`name`, `artifact_type`, `schema_hint`, `producer_task_id | None`) so dependency repair is mechanical instead of text-only
+  - [x] 1-3. `PlanDAG` model: `tasks: list[PlanTask]`, `goal: str`, `constraints: PlanConstraints` — validates acyclicity on construction, computes topological order. For workflow-engine callers, the solver operates on an **acyclic planning graph** (native DAG or SCC-condensed graph), not arbitrary raw cyclic graphs.
+  - [x] 1-4. `PlanConstraints` model: `max_parallel: int` (from `DAN_MAX_CONCURRENT_LLM`), `budget_dollars: float | None`, `deadline_minutes: float | None`, `quality_floor: Literal["micro", "routine", "reasoning", "critical"] = "routine"`
+  - [x] 1-5. `PlanSchedule` model: `assignments: list[ScheduleAssignment]` — each assignment: `task_id`, `start_time`, `end_time`, `assigned_tier`, `is_critical_path: bool`, `slack: float`
+  - [x] 1-6. **This module is the single solver — both concierge-driven tasks and workflow engine call it.** No duplication. Concierge builds a `PlanDAG` from user intent; workflow engine builds one from an acyclic execution view of graph topology. Both call `schedule_tasks()`.
 
-- [ ] 2. **Critical path solver**
-  - [ ] 2-1. Forward pass: compute earliest start/finish for each task
-  - [ ] 2-2. Backward pass: compute latest start/finish, identify slack
-  - [ ] 2-3. Critical path extraction: tasks with zero slack
-  - [ ] 2-4. `compute_critical_path(dag: PlanDAG) -> PlanSchedule` — returns schedule with unlimited parallelism (lower bound on makespan)
+- [x] 2. **Critical path solver**
+  - [x] 2-1. Forward pass: compute earliest start/finish for each task
+  - [x] 2-2. Backward pass: compute latest start/finish, identify slack
+  - [x] 2-3. Critical path extraction: tasks with zero slack
+  - [x] 2-4. `compute_critical_path(dag: PlanDAG) -> PlanSchedule` — returns schedule with unlimited parallelism (lower bound on makespan)
 
-- [ ] 3. **Resource-constrained scheduler (RCPSP)**
-  - [ ] 3-1. **Exact solver (default for n ≤ 50):** OR-Tools CP-SAT solver — provably optimal schedule. For typical plan sizes (5-50 tasks), CP-SAT solves in milliseconds. `ortools` as optional dep with `try: from ortools... except ImportError` guard; graceful fallback to heuristic if not installed. Add a test that verifies LRP fallback fires when `ortools` is mocked as unavailable.
-  - [ ] 3-2. **LRP heuristic (fallback, or n > 50):** Longest-Remaining-Path-First list scheduling: O(n log n + e), ~50 lines. Used when `ortools` unavailable or task count exceeds threshold (`DAN_SCHEDULER_EXACT_THRESHOLD`, default 50).
-  - [ ] 3-3. `schedule_tasks(dag: PlanDAG, constraints: PlanConstraints) -> PlanSchedule` — auto-selects exact vs heuristic based on task count and `ortools` availability. Returns feasible schedule respecting `max_parallel`.
-  - [ ] 3-4. Model-tier assignment: critical-path tasks get higher tier (reasoning/critical), high-slack tasks get lower tier (micro/routine) — integrates with existing `TierPolicy`
+- [x] 3. **Resource-constrained scheduler (RCPSP)**
+  - [x] 3-1. **Exact solver (default for n ≤ 50):** OR-Tools CP-SAT solver — provably optimal schedule. For typical plan sizes (5-50 tasks), CP-SAT solves in milliseconds. `ortools` as optional dep with `try: from ortools... except Exception` guard (broad catch handles protobuf version mismatches); graceful fallback to heuristic if not installed. Add a test that verifies LRP fallback fires when `ortools` is mocked as unavailable.
+  - [x] 3-2. **LRP heuristic (fallback, or n > 50):** Longest-Remaining-Path-First list scheduling: O(n log n + e), ~50 lines. Used when `ortools` unavailable or task count exceeds threshold (`DAN_SCHEDULER_EXACT_THRESHOLD`, default 50).
+  - [x] 3-3. `schedule_tasks(dag: PlanDAG, constraints: PlanConstraints) -> PlanSchedule` — auto-selects exact vs heuristic based on task count and `ortools` availability. Returns feasible schedule respecting `max_parallel`.
+  - [x] 3-4. Model-tier assignment: critical-path tasks get higher tier (reasoning/critical), high-slack tasks get lower tier (micro/routine) — integrates with existing `TierPolicy`
 
-- [ ] 4. **Dynamic rescheduling**
-  - [ ] 4-1. `on_task_complete(task_id, actual_duration)` — remove completed task, re-run scheduler on remaining DAG. Re-run is microseconds (exact) or sub-microseconds (heuristic) — call after every single event.
-  - [ ] 4-2. Duration calibration: compute `calibration_factor = mean(actual/estimated)` for completed tasks, scale remaining estimates. Recalibrate on every completion.
+- [x] 4. **Dynamic rescheduling**
+  - [x] 4-1. `on_task_complete(task_id, actual_duration)` — remove completed task, re-run scheduler on remaining DAG. Re-run is microseconds (exact) or sub-microseconds (heuristic) — call after every single event.
+  - [x] 4-2. Duration calibration: compute `calibration_factor = mean(actual/estimated)` for completed tasks, scale remaining estimates. Recalibrate on every completion.
   - [ ] 4-3. **Pre-flight input validation** (the "validate mechanically" step): before starting each task, check that structured `required_inputs` are satisfied by `expected_outputs` of completed predecessors. If not: find the producer task by artifact contract → add the dependency edge → reschedule. This is DAN's typed-port advantage — purely text-based systems can't do this.
   - [ ] 4-4. Mid-execution dependency: if a running task discovers it needs output from an unfinished task, **cancel the running task** (not pause — suspending a live LLM/tool call mid-stream is impractical), add the dependency edge, reschedule, and **re-run** the cancelled task after the dependency completes. v2 follow-up: true pause/resume via coroutine checkpointing for long tool executions.
-  - [ ] 4-5. New task insertion: if execution discovers an unplanned subtask is needed, insert into DAG and reschedule. DAG mutation is O(1); rescheduling is the same O(n log n) or CP-SAT call.
+  - [x] 4-5. New task insertion: if execution discovers an unplanned subtask is needed, insert into DAG and reschedule. DAG mutation is O(1); rescheduling is the same O(n log n) or CP-SAT call.
 
 - [ ] 5. **LLM planning prompt (the "plan optimistically" step)**
   - [ ] 5-1. Decomposition prompt: given a goal, emit `PlanTask` list with dependencies and time estimates. **Bias toward independence** — only mark dependencies when causally required. The pre-flight check (4-3) catches missed ones.
@@ -57,16 +57,16 @@ The scheduler's job isn't to be right once — it's to be cheap enough to re-run
   - [ ] 5-3. Validation prompt: "here is a task DAG — are there missing dependencies or redundant edges?" — one extra LLM call at planning time, catches most semantic gaps
   - [ ] 5-4. Time estimation calibration: use experience memory (19-1) to look up similar past tasks and their actual durations; fall back to LLM heuristic estimate for novel tasks
 
-- [ ] 5B. **Deterministic dependency inference (the "infer before you run" step)**
-  - [ ] 5B-1. `infer_dependencies(dag: PlanDAG) -> PlanDAG` — runs **after** LLM decomposition (task 5), **before** scheduling. Adds edges the LLM missed and removes redundant ones.
-  - [ ] 5B-2. **Artifact-contract matching:** For every `InputRequirement` on task B, find all tasks whose `expected_outputs` produce a matching `OutputArtifact` (match by `name` exact or alias, then by `artifact_type`). If a producer exists and no edge producer→B exists, add the dependency edge (producer must complete before B starts) and set `producer_task_id` on the `InputRequirement`. Handles many-to-one (multiple consumers of one artifact) and ambiguous producers (multiple tasks produce same name → pick by topological order or flag for LLM disambiguation).
-  - [ ] 5B-3. **Transitive reduction:** After artifact-matching adds edges, run transitive reduction to prune redundant edges (A→C is redundant if A→B→C exists). Keeps the DAG minimal for cleaner schedule display and prevents over-serialization.
+- [x] 5B. **Deterministic dependency inference (the "infer before you run" step)**
+  - [x] 5B-1. `infer_dependencies(dag: PlanDAG) -> PlanDAG` — runs **after** LLM decomposition (task 5), **before** scheduling. Adds edges the LLM missed and removes redundant ones.
+  - [x] 5B-2. **Artifact-contract matching:** For every `InputRequirement` on task B, find all tasks whose `expected_outputs` produce a matching `OutputArtifact` (match by `name` exact or alias, then by `artifact_type`). If a producer exists and no edge producer→B exists, add the dependency edge (producer must complete before B starts) and set `producer_task_id` on the `InputRequirement`. Handles many-to-one (multiple consumers of one artifact) and ambiguous producers (multiple tasks produce same name → pick by topological order or flag for LLM disambiguation).
+  - [x] 5B-3. **Transitive reduction:** After artifact-matching adds edges, run transitive reduction to prune redundant edges (A→C is redundant if A→B→C exists). Keeps the DAG minimal for cleaner schedule display and prevents over-serialization.
   - [ ] 5B-4. **Template-based dependency patterns** (optional, v2): for known task archetypes (e.g., `literature_review` → `methodology`, `data_collection` → `data_cleaning` → `analysis`), encode canonical dependency chains as reusable patterns. When the LLM's decomposition matches a known archetype (by task name or description similarity), overlay the template edges. Useful for domains where the same task structure recurs (research, data science, software development).
   - [ ] 5B-5. **Experience-based dependency prediction** (optional, v2): from `ExperienceStore` (19-1), learn which task-type pairs frequently co-occur with a dependency edge in historical successful runs. If a pair exceeds a confidence threshold, suggest the edge. This is a lightweight learned prior, not a hard constraint — the pre-flight check (4-3) remains the safety net.
-  - [ ] 5B-6. **Conflict detection:** Flag circular dependencies introduced by artifact matching (e.g., task A produces X consumed by B, and B produces Y consumed by A). Tiebreaker: preserve LLM-declared edges over inferred edges; among inferred edges, remove the one whose producer has the later topological position in the original LLM-declared ordering. Log a warning with the broken edge for diagnosis.
+  - [x] 5B-6. **Conflict detection:** Flag circular dependencies introduced by artifact matching (e.g., task A produces X consumed by B, and B produces Y consumed by A). Tiebreaker: preserve LLM-declared edges over inferred edges; among inferred edges, remove the one whose producer has the later topological position in the original LLM-declared ordering. Log a warning with the broken edge for diagnosis.
 
 - [ ] 6. **Concierge caller path**
-  - [ ] 6-1. When concierge builds a plan (solver plan mode, multi-step tasks), emit a `PlanDAG` instead of a flat task list. Wire through `PlanBuilder` (25-8).
+  - [x] 6-1. When concierge builds a plan (solver plan mode, multi-step tasks), emit a `PlanDAG` instead of a flat task list. Wire through `PlanBuilder` (25-8).
   - [ ] 6-2. For concierge-driven execution: each `PlanTask` maps to a concierge sub-interaction (tool call, LLM call, workflow run). The scheduler determines which sub-interactions run in parallel.
   - [ ] 6-3. User-facing schedule display: show the Gantt-like schedule with critical path highlighted, estimated completion time, and parallelism utilization
   - [ ] 6-4. `/plan` command shows the current schedule; `/plan --replan` forces a full re-decomposition
@@ -84,7 +84,7 @@ The scheduler's job isn't to be right once — it's to be cheap enough to re-run
   - [ ] 8-2. Event payload includes: updated critical path, current makespan estimate, parallelism utilization (active slots / max slots), calibration factor
 
 - [ ] 9. **Tests and docs**
-  - [ ] 9-1. Unit tests: DAG construction, acyclicity validation, critical path computation, exact scheduling (CP-SAT), LRP scheduling, auto-selection, dynamic rescheduling, calibration, pre-flight validation, dependency discovery
+  - [x] 9-1. Unit tests: DAG construction, acyclicity validation, critical path computation, exact scheduling (CP-SAT, skipped if ortools unavailable), LRP scheduling, auto-selection, dynamic rescheduling, calibration, dependency inference, transitive reduction, conflict detection, dual-path test (51 passed, 3 skipped)
   - [ ] 9-2. Integration test: mock tasks with varying durations, verify parallel execution and makespan improvement over serial
   - [ ] 9-3. Benchmark: compare makespan of exact vs LRP vs serial for the golden decomposition examples; measure heuristic gap vs exact on sampled instances instead of requiring exact equality
   - [ ] 9-4. Dual-caller test: same `PlanDAG` scheduled via concierge path and workflow path produces identical schedule
