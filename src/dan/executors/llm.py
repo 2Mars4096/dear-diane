@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import string
 import time
 from typing import Any
@@ -80,19 +81,44 @@ class LLMExecutor:
     def _resolve_provider(self, model: str, context: ExecutionContext):
         """Resolve the LLM provider for a model, with backward compat fallback."""
         if context.provider_registry is not None:
-            return context.provider_registry.resolve(model)
+            provider = context.provider_registry.resolve(model)
+        else:
+            from dan.providers import ProviderConfig
+            from dan.providers.openai_provider import OpenAIProvider
 
-        from dan.providers import ProviderConfig
-        from dan.providers.openai_provider import OpenAIProvider
+            if self._client is not None:
+                provider = OpenAIProvider.from_client(self._client)
+            else:
+                config = ProviderConfig(
+                    api_key=context.config.llm_api_key,
+                    base_url=context.config.llm_base_url,
+                )
+                provider = OpenAIProvider(config)
 
-        if self._client is not None:
-            return OpenAIProvider.from_client(self._client)
+        pii_required = os.environ.get("DAN_PII_PROTECTION") == "1"
+        try:
+            from dan.server.concierge.pii_tokenizer import (
+                SensitiveWordRegistry,
+                TokenizingProviderWrapper,
+                get_pii_session,
+                is_pii_enabled,
+            )
 
-        config = ProviderConfig(
-            api_key=context.config.llm_api_key,
-            base_url=context.config.llm_base_url,
-        )
-        return OpenAIProvider(config)
+            pii_required = is_pii_enabled()
+            if pii_required:
+                session_key = context.pii_session_key(model)
+                return TokenizingProviderWrapper(
+                    provider=provider,
+                    session=get_pii_session(str(session_key)),
+                    registry=SensitiveWordRegistry.load(),
+                )
+        except Exception as exc:
+            if pii_required:
+                raise RuntimeError(
+                    "PII protection is enabled but provider wrapping failed.",
+                ) from exc
+            logger.debug("LLM executor PII wrapping unavailable", exc_info=True)
+        return provider
 
     @staticmethod
     async def _get_error_memory_context(

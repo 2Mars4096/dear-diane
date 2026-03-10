@@ -1651,6 +1651,27 @@ class ChatManager:
         """Clean up a finished stream's cancellation event."""
         self._cancel_events.pop(channel_id, None)
 
+    def _resolve_provider(self, *, pii_session_key: str | None = None) -> Any:
+        """Resolve the active provider and wrap it for PII protection when enabled."""
+        provider = self._providers.resolve(self._chat_model)
+        try:
+            from dan.server.concierge.pii_tokenizer import (
+                SensitiveWordRegistry,
+                TokenizingProviderWrapper,
+                get_pii_session,
+                is_pii_enabled,
+            )
+
+            if is_pii_enabled():
+                return TokenizingProviderWrapper(
+                    provider=provider,
+                    session=get_pii_session(pii_session_key),
+                    registry=SensitiveWordRegistry.load(),
+                )
+        except Exception:
+            logger.debug("PII provider wrapping unavailable", exc_info=True)
+        return provider
+
     def _compose_user_context_block(self) -> str:
         """Build a concise profile block for system prompt injection."""
         lines: list[str] = []
@@ -1872,7 +1893,9 @@ class ChatManager:
                 tools_available=False,
             )
 
-            provider = self._providers.resolve(self._chat_model)
+            provider = self._resolve_provider(
+                pii_session_key=thread_id or workflow_id,
+            )
             message_id = uuid.uuid4().hex[:12]
             final_content = ""
             token_usage: dict[str, int] = {}
@@ -2053,7 +2076,9 @@ class ChatManager:
                 surface=surface,
                 extra_system_instructions=extra_system_instructions,
             )
-            provider = self._providers.resolve(self._chat_model)
+            provider = self._resolve_provider(
+                pii_session_key=thread_id or workflow_id,
+            )
             message_id = uuid.uuid4().hex[:12]
 
             from dan.server.capability_registry import READ_ONLY_MODES
@@ -2917,7 +2942,7 @@ class ChatManager:
         messages.append({"role": "user", "content": message})
 
         try:
-            provider = self._providers.resolve(self._chat_model)
+            provider = self._resolve_provider()
             stream = provider.stream(
                 messages=messages,
                 model=self._chat_model,
@@ -2984,7 +3009,7 @@ class ChatManager:
         from dan.meta.planner import CodegenPromptBuilder, validate_codegen_output
 
         events: list[ChatStreamEvent] = []
-        provider = self._providers.resolve(self._chat_model)
+        provider = self._resolve_provider(pii_session_key=workflow_id)
 
         # -- Step 1: intent extraction ------------------------------------
         intent: WorkflowIntent | None = None
