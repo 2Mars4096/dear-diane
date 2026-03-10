@@ -129,6 +129,9 @@ _PREF_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     ),
 ]
 
+_LLM_DISABLE_VALUES = {"", "0", "false", "no", "off"}
+_LLM_ENABLE_DEFAULT_VALUES = {"1", "true", "yes", "on"}
+
 
 # ---------------------------------------------------------------------------
 # Extractor
@@ -170,6 +173,8 @@ class MemoryExtractor:
         user_message: str,
         assistant_message: str,
         *,
+        tool_calls: list[dict[str, Any]] | None = None,
+        goal_context: dict[str, Any] | None = None,
         model: str = "gpt-4o-mini",
         api_key: str | None = None,
         base_url: str | None = None,
@@ -177,16 +182,28 @@ class MemoryExtractor:
         """Enhanced extraction using an LLM for nuanced fact/preference/episode detection.
 
         Falls back to heuristic extraction if LLM is unavailable or disabled.
-        Gated by ``DAN_MEMORY_EXTRACTION_LLM=1`` env var (default ``0``).
+        ``DAN_MEMORY_EXTRACTION_LLM`` accepts either an enable flag (``1``/``true``)
+        or a concrete model name. When enabled with a flag, ``model`` is used.
         """
-        if os.environ.get("DAN_MEMORY_EXTRACTION_LLM", "0") != "1":
-            return self.extract(user_message, assistant_message)
+        resolved_model = self.resolve_llm_model(default_model=model)
+        if resolved_model is None:
+            return self.extract(
+                user_message,
+                assistant_message,
+                tool_calls=tool_calls,
+                goal_context=goal_context,
+            )
 
         try:
             from openai import AsyncOpenAI
         except ImportError:
             logger.debug("openai package not installed; falling back to heuristic extraction")
-            return self.extract(user_message, assistant_message)
+            return self.extract(
+                user_message,
+                assistant_message,
+                tool_calls=tool_calls,
+                goal_context=goal_context,
+            )
 
         api_key = (
             api_key
@@ -201,7 +218,12 @@ class MemoryExtractor:
 
         if not api_key:
             logger.debug("No API key for LLM extraction; falling back to heuristic")
-            return self.extract(user_message, assistant_message)
+            return self.extract(
+                user_message,
+                assistant_message,
+                tool_calls=tool_calls,
+                goal_context=goal_context,
+            )
 
         try:
             client = AsyncOpenAI(api_key=api_key, base_url=base_url)
@@ -217,7 +239,7 @@ class MemoryExtractor:
             )
 
             response = await client.chat.completions.create(
-                model=model,
+                model=resolved_model,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=500,
                 temperature=0.1,
@@ -227,7 +249,23 @@ class MemoryExtractor:
             return self._parse_llm_response(raw)
         except Exception:
             logger.debug("LLM extraction failed; falling back to heuristic", exc_info=True)
-            return self.extract(user_message, assistant_message)
+            return self.extract(
+                user_message,
+                assistant_message,
+                tool_calls=tool_calls,
+                goal_context=goal_context,
+            )
+
+    @staticmethod
+    def resolve_llm_model(default_model: str = "gpt-4o-mini") -> str | None:
+        raw = os.environ.get("DAN_MEMORY_EXTRACTION_LLM", "")
+        value = str(raw or "").strip()
+        lower = value.lower()
+        if lower in _LLM_DISABLE_VALUES:
+            return None
+        if lower in _LLM_ENABLE_DEFAULT_VALUES:
+            return default_model
+        return value
 
     @staticmethod
     def _parse_llm_response(raw: str) -> list[ExtractedMemory]:
