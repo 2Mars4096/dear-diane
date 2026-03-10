@@ -32,9 +32,9 @@ Every LLM API call sends the full prompt — including any user data — to an e
   - [ ] 3-4. Context-aware restoration: if the LLM generates new text around a placeholder, ensure the restored text fits grammatically (heuristic — insert the original value in place of the placeholder token)
 
 - [ ] 4. **Integration hooks**
-  - [ ] 4-1. Hook into `LLMExecutor` — tokenize before `provider.complete()`, detokenize after
-  - [ ] 4-2. Hook into `ChatManager.send_message()` — tokenize user message before LLM call, detokenize response before displaying
-  - [ ] 4-3. Hook into tool calls: if a tool call argument contains PII, tokenize; if a tool result contains PII, don't tokenize (tool results are local data, not sent to LLM unless in a follow-up)
+  - [ ] 4-1. **Canonical owner:** tokenization lives at the **provider boundary** via a `TokenizingProviderWrapper` decorator that wraps any `LLMProvider`. This ensures both `LLMExecutor` (workflow) and `ChatManager` (chat) paths are covered, since `ChatManager` calls `provider.complete()` directly in ~8 places without going through `LLMExecutor`. The wrapper tokenizes all outbound message content and detokenizes inbound response text, using the `PIISession` attached to the call context.
+  - [ ] 4-2. `ChatManager` passes the `PIISession` through the provider context (e.g., via a `pii_session` kwarg or context var). `LLMExecutor` does the same. Neither rewrites payloads directly — the wrapper handles it transparently.
+  - [ ] 4-3. Do **not** rewrite local tool-call arguments (file paths, IDs, URLs, search terms, code snippets). Tool inputs remain exact so local execution stays correct. If tool output is later assembled into an outbound LLM prompt, tokenize at that later outbound boundary.
   - [ ] 4-4. Scope: only applies to external API calls — local processing, file I/O, and on-device operations are unaffected
 
 - [ ] 5. **Session management**
@@ -51,7 +51,7 @@ Every LLM API call sends the full prompt — including any user data — to an e
 ## Dependencies
 
 - `LLMExecutor` for outbound hook
-- `ChatManager` for chat-path hook
+- `ChatManager` for PIISession lookup / conversation scoping only
 - `ProviderRegistry` — tokenization happens at the provider boundary
 - `Concierge` for `/pii` command dispatch
 
@@ -64,5 +64,6 @@ Every LLM API call sends the full prompt — including any user data — to an e
 - **Semantic placeholders, not hashes.** `[PERSON_1]` works because LLMs understand it as a variable substitution. Random hashes like `a3f8b2c1` confuse the model and degrade response quality.
 - **Opt-in by default.** PII protection adds latency (regex scanning) and may occasionally cause issues with code that contains matched patterns. Users who need it enable it explicitly.
 - **Never persist the mapping to disk.** The `PIISession` mapping table exists only in memory. If someone compromises the disk, they can't recover the PII↔placeholder mappings.
+- **Single ownership via wrapper.** `TokenizingProviderWrapper` decorates the provider so every outbound call is tokenized regardless of whether `LLMExecutor` or `ChatManager` initiated it. No caller rewrites content directly. Crash recovery: if the process crashes mid-conversation, the in-memory `PIISession` is lost. On restart, deterministic mapping from `SensitiveWordRegistry` can reconstruct the session for known words — but previously-seen LLM responses containing placeholders can't be retroactively detokenized. Document this limitation.
 - **This is not a full DLP solution.** It's a pragmatic first step for personal use. Enterprise-grade DLP would require tokenization at the network layer, audit logging, and compliance features.
 - **Code blocks:** By default, PII inside fenced code blocks is still tokenized (code often contains hardcoded credentials). Users can opt out with `DAN_PII_SKIP_CODE_BLOCKS=1` if tokenization breaks their code generation workflows.

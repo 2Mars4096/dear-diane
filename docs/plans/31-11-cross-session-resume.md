@@ -19,7 +19,8 @@ DAN has engine-level checkpoints for workflow runs and conversation memory (26-3
   - [ ] 2-1. On session start (any surface), check for active/paused tasks in `ProjectStore`
   - [ ] 2-2. Quick-resume prompt: "You have an active task: '{task_name}' (started {time_ago}). {completed_count} steps done, {pending_count} remaining. Current state: {snapshot}. Continue?"
   - [ ] 2-3. `/resume` command: explicitly resume the most recent task; `/resume <task_name>` for specific task
-  - [ ] 2-4. Auto-resume: if user's message clearly relates to an existing task (semantic similarity > threshold), auto-attach to that task without asking
+  - [ ] 2-4. Auto-resume: only auto-attach when there is exactly one high-confidence candidate **and** the user message has resume-like intent (semantic similarity > threshold plus continuation cues such as "continue", "pick up", "where were we")
+  - [ ] 2-5. Ambiguity handling: if multiple plausible tasks exist, show the quick-resume prompt instead of auto-attaching; if the user says "start new" or dismisses the prompt, suppress auto-attach for that session
 
 - [ ] 3. **State persistence**
   - [ ] 3-1. Persist task state to `ProjectStore` on every significant state change (step completion, artifact creation, blocker detection)
@@ -42,7 +43,18 @@ DAN has engine-level checkpoints for workflow runs and conversation memory (26-3
 
 1.5 days
 
+## Primary Files
+
+- `src/dan/server/concierge/models.py` — `Task` model extension with resume fields (modify)
+- `src/dan/server/concierge/resume.py` — `ResumeProtocol`, auto-resume matching, quick-resume prompt generation (new)
+- `src/dan/server/concierge/project_store.py` — state persistence hooks (modify)
+- `src/dan/server/concierge/runtime.py` — session-start resume check wiring (modify)
+- `src/dan/server/capability_handlers.py` — `/resume` command handler (modify)
+
 ## Notes
 
 - The key insight is that resume needs structured state (completed steps, pending steps, blockers), not just conversation history. Raw chat history is too verbose and loses structure.
 - Auto-resume (2-4) is the premium UX: user just starts talking about their task, and DAN seamlessly picks up where it left off without requiring explicit commands.
+- Auto-resume must be conservative. False positives are worse than missed resumes, so ambiguous matches fall back to prompt-first behavior.
+- **State extraction cost:** Task 1-2 (auto-populate structured state) likely requires an LLM call per task completion/pause to extract `completed_steps`, `pending_steps`, and `current_blocker` from conversation context. Cost is ~1 LLM call per task lifecycle event (not per message). Document this as a known cost.
+- **Registry note (31-16):** Register `/resume` via `CommandDescriptor` if 31-16 has landed. Otherwise, add to `_FAST_COMMAND_PREFIXES` with a TODO for registry migration.
