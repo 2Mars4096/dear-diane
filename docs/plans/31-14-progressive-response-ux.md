@@ -155,3 +155,4 @@ Three messages total. Three notifications. Within each message, edits are silent
 - The "verbosity inversely proportional to notification cost" principle ensures WhatsApp users aren't bombarded while editor users get full visibility.
 - Pre-flight clarification (task 4) reuses the existing `ClarificationRequest` model from 25-7-2. The new piece is making it proactive (DAN asks before starting expensive work) rather than reactive (DAN asks when stuck).
 - Required clarification and advisory checkpoints are separate interaction types. Only advisory checkpoints can auto-proceed on silence; required clarifications must block or use an explicitly confirmed safe default.
+- Post-review cleanup scoped `/progress` verbosity overrides to the requesting `external_id` instead of a single process-global variable, so one active conversation can no longer silently change progress verbosity for every other surface/session.

@@ -1,7 +1,7 @@
 # 31-16: Command Surface Unification
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Create one canonical command model for DAN across CLI binaries, REPL, chat, and messaging surfaces — a single registry that drives dispatch, help text, availability checks, and docs. Eliminate the current fragmentation where command metadata is scattered across runtime code, adapter translation tables, Telegram menus, and docs/cli.md.
 
 ## Problem
@@ -115,3 +115,4 @@ The result: users can't discover which commands work on their current surface, a
 - The registry does **not** replace the `ChatCapabilityRegistry` (25-7). Capabilities are LLM-invocable tools with schemas; commands are user-typed slash directives with direct handlers. They share the concierge entry point but have different semantics.
 - The generation script (6-5) should be treated as the default path — run it in CI to verify `docs/commands.md` is up to date. Without it, the single-source-of-truth goal is undermined by the same drift the plan is trying to eliminate.
 - Post-review cleanup finished the runtime side of task 3 by routing `_try_fast_command()` through registry-matched descriptors and by teaching `CommandRegistry.resolve_handler()` to follow dotted class-method paths like `Concierge._handle_model_command`.
+- Follow-up review hardening also aligned adapter/server behavior a bit further: adapter `/help` now respects the active surface, adapter forwarding keeps server-owned `/status` and `/cancel` commands as raw slash commands, the dispatcher treats all registry chat commands as bypass/immediate commands, and `/cancel` now has a real registry-backed fast handler. Centered docs generation is still pending.
