@@ -36,6 +36,7 @@ class TelegramSettings(BaseModel):
     auto_pin_deliverables: bool = False
     progress_throttle: float = 5.0
     max_inbound_media_mb: float = 20.0
+    mini_app_url: str = ""
 
 
 class TelegramFleetConfig(BaseModel):

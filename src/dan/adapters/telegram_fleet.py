@@ -142,8 +142,22 @@ class BotFleet:
                 name, bot.bot_username, bot.projects, bot.is_default,
             )
 
+        if self._config.settings.mini_app_url:
+            for bot in self._bots.values():
+                if bot.adapter:
+                    try:
+                        await bot.adapter.set_menu_button(
+                            self._config.settings.mini_app_url,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "Mini App menu button setup skipped for %s",
+                            bot.name,
+                        )
+
         await self._ensure_topics()
         self._start_cleanup_task()
+        self._start_control_watcher()
 
     async def stop(self) -> None:
         self._stop_event.set()
@@ -158,6 +172,20 @@ class BotFleet:
 
         if self._http:
             await self._http.aclose()
+
+    async def stop_bot(self, name: str) -> bool:
+        """Gracefully stop a single bot within the fleet."""
+        bot = self._bots.get(name)
+        if bot is None:
+            return False
+        if bot.adapter:
+            await bot.adapter.stop()
+        del self._bots[name]
+        self._refresh_router()
+        logger.info("Fleet: stopped individual bot %s", name)
+        if not self._bots:
+            self._stop_event.set()
+        return True
 
     # -- dedup --------------------------------------------------------------
 
@@ -183,6 +211,33 @@ class BotFleet:
                 self._evict_seen()
 
         task = asyncio.create_task(_cleanup_loop())
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
+    def _start_control_watcher(self) -> None:
+        ctl_file = Path.home() / ".dan" / "telegram" / "fleet.ctl"
+
+        async def _watch_loop() -> None:
+            while not self._stop_event.is_set():
+                await asyncio.sleep(2)
+                if not ctl_file.exists():
+                    continue
+                try:
+                    cmd = ctl_file.read_text().strip()
+                    ctl_file.unlink(missing_ok=True)
+                    if cmd.startswith("stop:"):
+                        bot_name = cmd[5:].strip()
+                        stopped = await self.stop_bot(bot_name)
+                        if stopped:
+                            logger.info("Control: stopped bot %s", bot_name)
+                        else:
+                            logger.warning(
+                                "Control: bot '%s' not found", bot_name,
+                            )
+                except Exception as exc:
+                    logger.warning("Control file error: %s", exc)
+
+        task = asyncio.create_task(_watch_loop())
         self._bg_tasks.add(task)
         task.add_done_callback(self._bg_tasks.discard)
 
@@ -455,6 +510,17 @@ class BotFleet:
                         if path:
                             file_paths.append(path)
 
+                    elif evt_type == "chat_poll_request":
+                        q = event.get("question", "")
+                        opts = event.get("options", [])
+                        if q and opts:
+                            await bot.adapter.send_poll(
+                                ctx.chat_id, q, opts,
+                                is_anonymous=event.get("is_anonymous", False),
+                                allows_multiple=event.get("allows_multiple", False),
+                                reply_to=ctx.message_id,
+                            )
+
                     elif evt_type in (
                         "chat_complete",
                         "chat_interrupted",
@@ -552,7 +618,7 @@ class BotFleet:
 
         from dan.cli.adapter import _consume_chat_stream_events
 
-        full_reply, _mutation, file_paths = _consume_chat_stream_events(
+        full_reply, _mutation, file_paths, poll_requests = _consume_chat_stream_events(
             stream_events,
         )
 
@@ -570,6 +636,20 @@ class BotFleet:
                             await bot.adapter.pin_message(ctx.chat_id, last_id)
                 except Exception as exc:
                     logger.warning("Failed to send file %s: %s", fp, exc)
+
+        for pr in poll_requests:
+            if bot.adapter:
+                try:
+                    await bot.adapter.send_poll(
+                        ctx.chat_id,
+                        pr.get("question", ""),
+                        pr.get("options", []),
+                        is_anonymous=pr.get("is_anonymous", False),
+                        allows_multiple=pr.get("allows_multiple", False),
+                        reply_to=ctx.message_id,
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to send poll: %s", exc)
 
         return full_reply
 
