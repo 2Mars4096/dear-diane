@@ -22,7 +22,7 @@ class TelegramBotConfig(BaseModel):
     personality: str = ""
     projects: list[str] = Field(default_factory=list)
     default: bool = False
-    allowed_users: list[int] = Field(default_factory=list)
+    allowed_users: list[int | str] = Field(default_factory=list)
 
 
 class TelegramGroupConfig(BaseModel):

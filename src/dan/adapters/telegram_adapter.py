@@ -366,7 +366,10 @@ class TelegramAdapter:
                 msg = await self._application.bot.send_message(**kwargs)
                 return msg.message_id
         except Exception as exc:
+            exc_str = str(exc).lower()
             if message_id is not None:
+                if "message is not modified" in exc_str:
+                    return message_id
                 logger.debug("Edit failed (%s), sending new message", exc)
                 try:
                     msg = await self._application.bot.send_message(

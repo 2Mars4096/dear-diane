@@ -51,7 +51,7 @@ class BotInstance:
     is_default: bool = False
     adapter: TelegramAdapter | None = None
     bot_username: str = ""
-    allowed_users: list[int] = field(default_factory=list)
+    allowed_users: list[int | str] = field(default_factory=list)
 
 
 class BotFleet:
@@ -272,7 +272,9 @@ class BotFleet:
             selected = self._bots.get(winner.name)
             if selected is None:
                 return
-            if selected.allowed_users and ctx.from_user_id not in selected.allowed_users:
+            if selected.allowed_users and not _user_allowed(
+                selected.allowed_users, ctx.from_user_id, ctx.from_user_username,
+            ):
                 return
 
             task = asyncio.create_task(
@@ -538,37 +540,54 @@ class BotFleet:
             logger.error("WS stream error: %s", exc)
             error_message = str(exc)
 
-        full = "".join(collected_tokens).strip()
+        streamed_full = "".join(collected_tokens).strip()
         from dan.cli.adapter import _strip_function_call_xml
 
-        full = _strip_function_call_xml(full)
+        streamed_full = _strip_function_call_xml(streamed_full)
+        used_complete = False
         if complete_content:
             complete_content = _strip_function_call_xml(complete_content)
-            if not full:
+            if not streamed_full:
                 full = complete_content
-            elif complete_content not in full:
-                full = f"{full}\n\n{complete_content}".strip()
+                used_complete = True
+            elif complete_content and len(complete_content) > 20:
+                full = complete_content
+                used_complete = True
+            else:
+                full = streamed_full
         elif error_message:
             full = (
-                f"{full}\n\nI hit an error: {error_message}".strip()
-                if full
+                f"{streamed_full}\n\nI hit an error: {error_message}".strip()
+                if streamed_full
                 else f"I hit an error: {error_message}"
             )
+        else:
+            full = streamed_full
 
         if full:
             clean = _strip_prefix_and_html(full)
-            remaining = clean[sent_prefix_len:]
-            if current_msg_id is not None and remaining:
+            if used_complete and current_msg_id is not None:
                 await bot.adapter.send_or_edit(
-                    ctx.chat_id, remaining[:4096], current_msg_id,
+                    ctx.chat_id, clean[:4096], current_msg_id,
                 )
-                sent_prefix_len += min(len(remaining), 4096)
-                remaining = clean[sent_prefix_len:]
-            if remaining:
+                remaining = clean[4096:]
                 for chunk in _split_message(remaining):
                     await bot.adapter.send_or_edit(ctx.chat_id, chunk)
-            elif current_msg_id is None:
+            elif used_complete:
                 await self._send_reply(bot, ctx, clean)
+            else:
+                remaining = clean[sent_prefix_len:]
+                if current_msg_id is not None and remaining:
+                    await bot.adapter.send_or_edit(
+                        ctx.chat_id, remaining[:4096], current_msg_id,
+                    )
+                    sent_prefix_len += min(len(remaining), 4096)
+                    remaining = clean[sent_prefix_len:]
+                if remaining:
+                    for chunk in _split_message(remaining):
+                        await bot.adapter.send_or_edit(ctx.chat_id, chunk)
+                elif current_msg_id is None:
+                    await self._send_reply(bot, ctx, clean)
 
         for fp in file_paths:
             if bot.adapter:
@@ -875,6 +894,22 @@ def _merge_voice_context(text: str, transcription: str) -> str:
 def _conversation_thread_key(ctx: MessageContext, bot_name: str) -> str:
     thread_part = str(ctx.thread_id) if ctx.thread_id is not None else "main"
     return f"{ctx.chat_id}:{thread_part}:{bot_name}"
+
+
+def _user_allowed(
+    allowed: list[int | str],
+    user_id: int | None,
+    username: str | None,
+) -> bool:
+    """Check if a user matches the allowed list (int IDs or str usernames)."""
+    for entry in allowed:
+        if isinstance(entry, int) and user_id is not None and entry == user_id:
+            return True
+        if isinstance(entry, str) and username is not None:
+            clean = entry.lstrip("@")
+            if clean.lower() == username.lower():
+                return True
+    return False
 
 
 def _strip_prefix_and_html(text: str) -> str:
