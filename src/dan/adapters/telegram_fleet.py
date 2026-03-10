@@ -38,6 +38,11 @@ from dan.adapters.telegram_router import MessageRouter, RoutableBot
 from dan.server.concierge.identity import format_bare_prefix, get_bot_name
 
 logger = logging.getLogger(__name__)
+_FLEET_LOCK_FILE = Path.home() / ".dan" / "telegram" / "fleet.lock"
+
+
+class FleetAlreadyRunningError(RuntimeError):
+    """Raised when another Telegram fleet process already owns the poller."""
 
 
 @dataclass
@@ -50,6 +55,7 @@ class BotInstance:
     personality: str = ""
     is_default: bool = False
     adapter: TelegramAdapter | None = None
+    bot_id: int | None = None
     bot_username: str = ""
     allowed_users: list[int | str] = field(default_factory=list)
 
@@ -78,6 +84,7 @@ class BotFleet:
         self._bots: dict[str, BotInstance] = {}
         self._router = MessageRouter()
         self._seen: dict[tuple[int, int], float] = {}
+        self._seen_ingress: dict[str, float] = {}
         self._seen_ttl = 60.0
         self._http: Any = None
         self._stop_event = asyncio.Event()
@@ -129,6 +136,7 @@ class BotFleet:
                 ),
             )
             await adapter.start()
+            bot.bot_id = adapter.bot_user_id
             bot.bot_username = adapter.bot_username
             await adapter.register_custom_commands(
                 self._infer_project_commands(bot),
@@ -189,13 +197,22 @@ class BotFleet:
 
     # -- dedup --------------------------------------------------------------
 
-    def _check_dedup(self, chat_id: int, message_id: int) -> bool:
+    def _check_dedup(
+        self,
+        chat_id: int,
+        message_id: int,
+        ingress_dedup_key: str | None = None,
+    ) -> bool:
         """Return True if this message was already seen (skip it)."""
         key = (chat_id, message_id)
         now = time.monotonic()
         if key in self._seen:
             return True
+        if ingress_dedup_key and ingress_dedup_key in self._seen_ingress:
+            return True
         self._seen[key] = now
+        if ingress_dedup_key:
+            self._seen_ingress[ingress_dedup_key] = now
         return False
 
     def _evict_seen(self) -> None:
@@ -203,6 +220,17 @@ class BotFleet:
         expired = [k for k, t in self._seen.items() if t < cutoff]
         for k in expired:
             del self._seen[k]
+        expired_ingress = [
+            k for k, t in self._seen_ingress.items() if t < cutoff
+        ]
+        for k in expired_ingress:
+            del self._seen_ingress[k]
+
+    def _remember_outbound_message(self, chat_id: int, message_id: int | None) -> None:
+        """Pre-seed dedup for bot messages that will later arrive via getUpdates."""
+        if message_id is None:
+            return
+        self._seen[(chat_id, message_id)] = time.monotonic()
 
     def _start_cleanup_task(self) -> None:
         async def _cleanup_loop() -> None:
@@ -247,10 +275,12 @@ class BotFleet:
         async def _on_message(
             ext_id: str, text: str, ctx: MessageContext,
         ) -> None:
-            if self._check_dedup(ctx.chat_id, ctx.message_id):
+            if self._check_dedup(
+                ctx.chat_id, ctx.message_id, ctx.ingress_dedup_key,
+            ):
                 return
 
-            if ctx.from_user_is_bot:
+            if _is_bot_authored_message(ctx, self._bots):
                 return
 
             routable_bots = self._routable_bots()
@@ -331,12 +361,13 @@ class BotFleet:
                     if transcribed:
                         msg_text = _merge_voice_context(text, transcribed)
                     else:
-                        await bot.adapter._send_text(
+                        sent_message_id = await bot.adapter._send_text(
                             ctx.chat_id,
                             "I received your voice message but couldn't transcribe it. "
                             "Please send as text.",
                             reply_to=ctx.message_id,
                         )
+                        self._remember_outbound_message(ctx.chat_id, sent_message_id)
                         if settings.use_reactions:
                             await bot.adapter.set_reaction(
                                 ctx.chat_id,
@@ -505,6 +536,9 @@ class BotFleet:
                                             else None
                                         ),
                                     )
+                                    self._remember_outbound_message(
+                                        ctx.chat_id, current_msg_id,
+                                    )
                                 last_edit_time = now
 
                     elif evt_type == "chat_file_attachment":
@@ -567,32 +601,37 @@ class BotFleet:
         if full:
             clean = _strip_prefix_and_html(full)
             if used_complete and current_msg_id is not None:
-                await bot.adapter.send_or_edit(
+                current_msg_id = await bot.adapter.send_or_edit(
                     ctx.chat_id, clean[:4096], current_msg_id,
                 )
+                self._remember_outbound_message(ctx.chat_id, current_msg_id)
                 remaining = clean[4096:]
                 for chunk in _split_message(remaining):
-                    await bot.adapter.send_or_edit(ctx.chat_id, chunk)
+                    sent_message_id = await bot.adapter.send_or_edit(ctx.chat_id, chunk)
+                    self._remember_outbound_message(ctx.chat_id, sent_message_id)
             elif used_complete:
                 await self._send_reply(bot, ctx, clean)
             else:
                 remaining = clean[sent_prefix_len:]
                 if current_msg_id is not None and remaining:
-                    await bot.adapter.send_or_edit(
+                    current_msg_id = await bot.adapter.send_or_edit(
                         ctx.chat_id, remaining[:4096], current_msg_id,
                     )
+                    self._remember_outbound_message(ctx.chat_id, current_msg_id)
                     sent_prefix_len += min(len(remaining), 4096)
                     remaining = clean[sent_prefix_len:]
                 if remaining:
                     for chunk in _split_message(remaining):
-                        await bot.adapter.send_or_edit(ctx.chat_id, chunk)
+                        sent_message_id = await bot.adapter.send_or_edit(ctx.chat_id, chunk)
+                        self._remember_outbound_message(ctx.chat_id, sent_message_id)
                 elif current_msg_id is None:
                     await self._send_reply(bot, ctx, clean)
 
         for fp in file_paths:
             if bot.adapter:
                 try:
-                    await bot.adapter._send_file_to_chat(ctx.chat_id, fp)
+                    sent_message_id = await bot.adapter._send_file_to_chat(ctx.chat_id, fp)
+                    self._remember_outbound_message(ctx.chat_id, sent_message_id)
                     if self._config.settings.auto_pin_deliverables:
                         last_id = bot.adapter._last_bot_message_id.get(ctx.chat_id)
                         if last_id:
@@ -648,7 +687,8 @@ class BotFleet:
         for fp in file_paths:
             if bot.adapter:
                 try:
-                    await bot.adapter._send_file_to_chat(ctx.chat_id, fp)
+                    sent_message_id = await bot.adapter._send_file_to_chat(ctx.chat_id, fp)
+                    self._remember_outbound_message(ctx.chat_id, sent_message_id)
                     if self._config.settings.auto_pin_deliverables:
                         last_id = bot.adapter._last_bot_message_id.get(ctx.chat_id)
                         if last_id:
@@ -685,7 +725,10 @@ class BotFleet:
         parts = split_message_for_surface(clean, "telegram")
         for i, part in enumerate(parts):
             reply_to = ctx.message_id if i == 0 else None
-            await bot.adapter._send_text(ctx.chat_id, part, reply_to=reply_to)
+            sent_message_id = await bot.adapter._send_text(
+                ctx.chat_id, part, reply_to=reply_to,
+            )
+            self._remember_outbound_message(ctx.chat_id, sent_message_id)
             if len(parts) > 1:
                 await asyncio.sleep(0.3)
 
@@ -912,6 +955,26 @@ def _user_allowed(
     return False
 
 
+def _is_bot_authored_message(
+    ctx: MessageContext,
+    bots: dict[str, BotInstance],
+) -> bool:
+    if ctx.from_user_is_bot:
+        return True
+    bot_ids = {bot.bot_id for bot in bots.values() if bot.bot_id is not None}
+    if ctx.from_user_id is not None and ctx.from_user_id in bot_ids:
+        return True
+    bot_usernames = {
+        bot.bot_username.lstrip("@").lower()
+        for bot in bots.values()
+        if bot.bot_username
+    }
+    for username in (ctx.from_user_username, ctx.sender_chat_username):
+        if username and username.lstrip("@").lower() in bot_usernames:
+            return True
+    return False
+
+
 def _strip_prefix_and_html(text: str) -> str:
     from dan.server.concierge.identity import strip_prefix
     from dan.server.concierge.actions import strip_html_for_messaging
@@ -919,6 +982,79 @@ def _strip_prefix_and_html(text: str) -> str:
     text = strip_prefix(text)
     text = strip_html_for_messaging(text)
     return text
+
+
+def _pid_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+_FLEET_LOCK_ACQUIRE_MAX_ATTEMPTS = 5
+_FLEET_LOCK_PENDING_GRACE_SECONDS = 0.2
+
+
+def _acquire_fleet_lock(lock_path: Path | None = None) -> None:
+    lock_path = lock_path or _FLEET_LOCK_FILE
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    attempts = 0
+
+    while attempts < _FLEET_LOCK_ACQUIRE_MAX_ATTEMPTS:
+        attempts += 1
+        try:
+            fd = os.open(
+                str(lock_path),
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o644,
+            )
+        except FileExistsError:
+            try:
+                existing_pid = int(lock_path.read_text().strip())
+            except (OSError, ValueError):
+                existing_pid = None
+
+            if existing_pid is not None and _pid_is_running(existing_pid):
+                raise FleetAlreadyRunningError(
+                    f"Telegram fleet already running (PID {existing_pid}).",
+                )
+
+            if existing_pid is None:
+                try:
+                    age_seconds = max(0.0, time.time() - lock_path.stat().st_mtime)
+                except OSError:
+                    age_seconds = _FLEET_LOCK_PENDING_GRACE_SECONDS
+                if age_seconds < _FLEET_LOCK_PENDING_GRACE_SECONDS:
+                    time.sleep(min(0.05, _FLEET_LOCK_PENDING_GRACE_SECONDS))
+                    continue
+
+            lock_path.unlink(missing_ok=True)
+            continue
+
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+        return
+
+    raise FleetAlreadyRunningError(
+        "Failed to acquire fleet lock after "
+        f"{_FLEET_LOCK_ACQUIRE_MAX_ATTEMPTS} attempts.",
+    )
+
+
+def _release_fleet_lock(lock_path: Path | None = None) -> None:
+    lock_path = lock_path or _FLEET_LOCK_FILE
+    try:
+        owner_pid = int(lock_path.read_text().strip())
+    except (OSError, ValueError):
+        owner_pid = None
+
+    if owner_pid is not None and owner_pid != os.getpid():
+        return
+
+    lock_path.unlink(missing_ok=True)
 
 
 # -- standalone runner ------------------------------------------------------
@@ -929,26 +1065,36 @@ async def run_fleet(
     server_url: str | None = None,
 ) -> None:
     """Start the fleet and block until SIGINT/SIGTERM."""
-    fleet = BotFleet.from_config(config_path, server_url)
-    await fleet.start()
+    _acquire_fleet_lock()
+    fleet: BotFleet | None = None
+    started = False
+    try:
+        fleet = BotFleet.from_config(config_path, server_url)
+        await fleet.start()
+        started = True
 
-    loop = asyncio.get_running_loop()
-    _force = False
+        loop = asyncio.get_running_loop()
+        _force = False
 
-    def _handle_signal() -> None:
-        nonlocal _force
-        if _force:
-            print("\nForce exit.", file=sys.stderr)
-            os._exit(1)
-        _force = True
-        fleet._stop_event.set()
+        def _handle_signal() -> None:
+            nonlocal _force
+            if _force:
+                print("\nForce exit.", file=sys.stderr)
+                os._exit(1)
+            _force = True
+            fleet._stop_event.set()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _handle_signal)
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _handle_signal)
 
-    _print_fleet_status(fleet)
-    await fleet._stop_event.wait()
-    await fleet.stop()
+        _print_fleet_status(fleet)
+        await fleet._stop_event.wait()
+    finally:
+        try:
+            if fleet is not None and started:
+                await fleet.stop()
+        finally:
+            _release_fleet_lock()
 
 
 def _print_fleet_status(fleet: BotFleet) -> None:

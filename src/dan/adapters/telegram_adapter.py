@@ -47,6 +47,9 @@ class MessageContext:
     reply_to_text: str | None = None
     reply_to_message_id: int | None = None
     chat_type: str = "private"
+    sender_chat_id: int | None = None
+    sender_chat_username: str | None = None
+    ingress_dedup_key: str | None = None
 
 
 class TelegramAdapterConfig(AdapterConfig):
@@ -84,6 +87,8 @@ class TelegramAdapter:
         self._poll_futures: dict[str, asyncio.Future[list[int]]] = {}
         self._poll_sessions: dict[str, str] = {}
         self.bot_username: str = ""
+        self.bot_user_id: int | None = None
+        self._reaction_disabled_chats: set[int] = set()
         self._last_media_cleanup: float = 0.0
         self._last_bot_message_id: dict[int, int] = {}
         self._bg_tasks: set[asyncio.Task[Any]] = set()
@@ -157,6 +162,7 @@ class TelegramAdapter:
         await app.initialize()
 
         me = await app.bot.get_me()
+        self.bot_user_id = me.id
         self.bot_username = me.username or ""
 
         await self._register_default_commands()
@@ -319,6 +325,8 @@ class TelegramAdapter:
     async def set_reaction(
         self, chat_id: int, message_id: int, emoji: str,
     ) -> None:
+        if chat_id in self._reaction_disabled_chats:
+            return
         try:
             from telegram import ReactionTypeEmoji
 
@@ -327,15 +335,21 @@ class TelegramAdapter:
                 message_id=message_id,
                 reaction=[ReactionTypeEmoji(emoji=emoji)],
             )
-        except Exception:
+        except Exception as exc:
+            if exc.__class__.__name__ == "BadRequest":
+                self._reaction_disabled_chats.add(chat_id)
             pass
 
     async def remove_reaction(self, chat_id: int, message_id: int) -> None:
+        if chat_id in self._reaction_disabled_chats:
+            return
         try:
             await self._application.bot.set_message_reaction(
                 chat_id=chat_id, message_id=message_id, reaction=[],
             )
-        except Exception:
+        except Exception as exc:
+            if exc.__class__.__name__ == "BadRequest":
+                self._reaction_disabled_chats.add(chat_id)
             pass
 
     # -- streaming edits ----------------------------------------------------
@@ -363,7 +377,7 @@ class TelegramAdapter:
                 kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
                 if reply_to:
                     kwargs["reply_to_message_id"] = reply_to
-                msg = await self._application.bot.send_message(**kwargs)
+                msg = await self._send_message_with_reply_fallback(**kwargs)
                 return msg.message_id
         except Exception as exc:
             exc_str = str(exc).lower()
@@ -608,20 +622,18 @@ class TelegramAdapter:
     async def _cmd_help(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update.effective_chat.id):
             return
-        await update.message.reply_text(
-            "Available commands:\n"
-            "/help — Show this help\n"
-            "/find <query> — Find a file\n"
-            "/send <path> — Send a file\n"
-            "/status — Check task status\n"
-            "/cancel — Cancel current task\n"
-            "/show — Show current workflow\n"
-            "/list — List workflows\n"
-            "/mcp — List MCP tools\n"
-            "/pin — Pin last bot message\n"
-            "/topic create <name> — Create a topic\n\n"
-            "Or just type naturally!",
-        )
+        try:
+            from dan.server.concierge.command_registry import get_default_registry
+
+            help_text = get_default_registry().format_help("telegram")
+        except Exception:
+            help_text = (
+                "Available commands:\n"
+                "/help — Show this help\n"
+                "/status — Check task status\n"
+                "/cancel — Cancel current task\n"
+            )
+        await update.message.reply_text(f"{help_text}\n\nOr just type naturally!")
 
     async def _on_command_message(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update.effective_chat.id):
@@ -917,15 +929,29 @@ class TelegramAdapter:
         if self.config.try_markdown and "```" in text:
             try:
                 formatted = _escape_markdown_v2(text)
-                msg = await self._application.bot.send_message(
+                msg = await self._send_message_with_reply_fallback(
                     **kwargs, text=formatted, parse_mode="MarkdownV2",
                 )
                 return msg.message_id
             except Exception:
                 pass
 
-        msg = await self._application.bot.send_message(**kwargs, text=text)
+        msg = await self._send_message_with_reply_fallback(**kwargs, text=text)
         return msg.message_id
+
+    async def _send_message_with_reply_fallback(self, **kwargs: Any) -> Any:
+        """Retry without reply target if Telegram rejects the replied message."""
+        try:
+            return await self._application.bot.send_message(**kwargs)
+        except Exception as exc:
+            if (
+                "reply_to_message_id" in kwargs
+                and _is_missing_reply_target_error(exc)
+            ):
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("reply_to_message_id", None)
+                return await self._application.bot.send_message(**retry_kwargs)
+            raise
 
     def _build_context(self, msg: Any) -> MessageContext:
         mentions: list[str] = []
@@ -952,6 +978,7 @@ class TelegramAdapter:
                 or ""
             )
             reply_msg_id = msg.reply_to_message.message_id
+        sender_chat = getattr(msg, "sender_chat", None)
 
         return MessageContext(
             chat_id=msg.chat_id,
@@ -966,7 +993,104 @@ class TelegramAdapter:
             reply_to_text=reply_text,
             reply_to_message_id=reply_msg_id,
             chat_type=msg.chat.type if msg.chat else "private",
+            sender_chat_id=getattr(sender_chat, "id", None),
+            sender_chat_username=getattr(sender_chat, "username", None),
+            ingress_dedup_key=self._build_ingress_dedup_key(msg),
         )
+
+    def _build_ingress_dedup_key(self, msg: Any) -> str | None:
+        if getattr(getattr(msg, "chat", None), "type", "private") == "private":
+            return None
+
+        date = getattr(msg, "date", None)
+        if date is None:
+            return None
+        try:
+            timestamp = int(date.timestamp())
+        except Exception:
+            return None
+
+        sender = self._sender_identity_for_dedup(msg)
+        parts = [
+            str(msg.chat_id),
+            str(getattr(msg, "message_thread_id", None) or "main"),
+            sender,
+            str(timestamp),
+            (msg.text or "").strip(),
+            (msg.caption or "").strip(),
+        ]
+
+        reply_msg = getattr(msg, "reply_to_message", None)
+        if reply_msg is not None:
+            reply_text = (reply_msg.text or reply_msg.caption or "").strip()
+            if reply_text:
+                parts.append(reply_text)
+
+        photo = getattr(msg, "photo", None)
+        if photo:
+            last_photo = photo[-1]
+            file_id = getattr(last_photo, "file_unique_id", None) or getattr(
+                last_photo, "file_id", None,
+            )
+            if file_id:
+                parts.append(f"photo:{file_id}")
+
+        for attr_name in (
+            "document",
+            "voice",
+            "audio",
+            "video",
+            "video_note",
+            "sticker",
+        ):
+            media = getattr(msg, attr_name, None)
+            if media is None:
+                continue
+            file_id = getattr(media, "file_unique_id", None) or getattr(
+                media, "file_id", None,
+            )
+            if file_id:
+                parts.append(f"{attr_name}:{file_id}")
+
+        contact = getattr(msg, "contact", None)
+        if contact is not None:
+            contact_identity = getattr(contact, "user_id", None) or getattr(
+                contact, "phone_number", None,
+            )
+            if contact_identity:
+                parts.append(f"contact:{contact_identity}")
+
+        location = getattr(msg, "location", None)
+        if location is not None:
+            latitude = getattr(location, "latitude", None)
+            longitude = getattr(location, "longitude", None)
+            parts.append(f"location:{latitude}:{longitude}")
+
+        payload = "\n".join(part for part in parts if part)
+        if not payload:
+            return None
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()
+
+    def _sender_identity_for_dedup(self, msg: Any) -> str:
+        from_user = getattr(msg, "from_user", None)
+        if from_user is not None:
+            user_id = getattr(from_user, "id", None)
+            if user_id is not None:
+                return f"user:{user_id}"
+            username = getattr(from_user, "username", None)
+            if username:
+                return f"user:{username.lower()}"
+
+        sender_chat = getattr(msg, "sender_chat", None)
+        if sender_chat is not None:
+            chat_id = getattr(sender_chat, "id", None)
+            if chat_id is not None:
+                return f"sender_chat:{chat_id}"
+            username = getattr(sender_chat, "username", None)
+            if username:
+                return f"sender_chat:{username.lower()}"
+
+        return "unknown"
 
     def _build_reply_prefix(self, msg: Any) -> str:
         chain: list[str] = []
@@ -1024,16 +1148,21 @@ class TelegramAdapter:
                 pass
 
     def _default_dm_commands(self) -> list[tuple[str, str]]:
-        return [
-            ("help", "Show available commands"),
-            ("status", "Check current task status"),
-            ("cancel", "Cancel current task"),
-            ("find", "Find a file on your computer"),
-            ("send", "Send you a file"),
-            ("list", "List saved workflows"),
-            ("show", "Show current workflow"),
-            ("mcp", "List available MCP tools"),
-        ]
+        try:
+            from dan.server.concierge.command_registry import get_default_registry
+            registry = get_default_registry()
+            return registry.telegram_commands()
+        except Exception:
+            return [
+                ("help", "Show available commands"),
+                ("status", "Check current task status"),
+                ("cancel", "Cancel current task"),
+                ("find", "Find a file on your computer"),
+                ("send", "Send you a file"),
+                ("list", "List saved workflows"),
+                ("show", "Show current workflow"),
+                ("mcp", "List available MCP tools"),
+            ]
 
     def _default_group_commands(self) -> list[tuple[str, str]]:
         return self._default_dm_commands() + [
@@ -1144,3 +1273,7 @@ def _merge_command_pairs(
     for cmd, desc in extra:
         merged[cmd] = desc
     return list(merged.items())
+
+
+def _is_missing_reply_target_error(exc: Exception) -> bool:
+    return "message to be replied not found" in str(exc).lower()

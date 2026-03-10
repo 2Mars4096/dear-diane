@@ -233,7 +233,7 @@ def _cmd_start(args: argparse.Namespace) -> None:
 
 
 def _cmd_start_all(args: argparse.Namespace) -> None:
-    from dan.adapters.telegram_fleet import run_fleet
+    from dan.adapters.telegram_fleet import FleetAlreadyRunningError, run_fleet
 
     if args.daemon:
         _start_daemon(args)
@@ -242,6 +242,9 @@ def _cmd_start_all(args: argparse.Namespace) -> None:
     _warn_privacy_for_fleet(args.config or None)
     try:
         asyncio.run(run_fleet(args.config or None, args.server))
+    except FleetAlreadyRunningError as exc:
+        print(str(exc))
+        sys.exit(1)
     except KeyboardInterrupt:
         print("\nFleet stopped.")
 

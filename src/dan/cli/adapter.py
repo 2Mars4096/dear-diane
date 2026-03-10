@@ -456,10 +456,12 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
         if stripped.startswith("/"):
             cmd = stripped.split()[0].lower()
             if cmd == "/help":
+                from dan.server.concierge.command_registry import get_default_registry
+                _registry = get_default_registry()
+                _help_text = _registry.format_help("cli")
                 await adapter.send_prompt(
                     external_id,
-                    "Available commands: /find <query>, /send <path>, /status, /cancel, /show, /list, /mcp, /model [name]\n"
-                    "Or just type naturally — I can do anything!",
+                    f"{_help_text}\nOr just type naturally — I can do anything!",
                     None,
                 )
                 return

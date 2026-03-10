@@ -628,23 +628,10 @@ async def _run_repl(
         _print(f"Model: {model_name} | Tier: {tier_policy} | Learning: {learning} | MCP: {mcp_str}")
 
     def _help() -> None:
-        _print("Commands:")
-        _print("  /run         Run the workflow (full)")
-        _print("  /run-node @[Name](node:id)  Run a single node")
-        _print("  /run-subgraph @[Name](subgraph:key)  Run a subgraph")
-        _print("  /show        Show current graph as ASCII DAG")
-        _print("  /show --code Show graph as Python builder DSL")
-        _print("  /show --json Show raw graph JSON")
-        _print("  /show --stats Show graph statistics")
-        _print("  /save [name] Save workflow (prompts for name if on _scratch)")
-        _print("  /list        List all saved workflows")
-        _print("  /open <id>   Open an existing workflow")
-        _print("  /saveas <id> Copy workflow to a new ID and switch")
-        _print("  /new [id]    Create a new empty workflow")
-        _print("  /rename <n>  Rename current workflow's display name")
-        _print("  /undo        Undo last mutation")
-        _print("  /exit        Exit the chat")
-        _print("  /help        Show this help")
+        from dan.server.concierge.command_registry import get_default_registry
+        _registry = get_default_registry()
+        _help_text = _registry.format_help("cli")
+        _print(_help_text)
 
     # Fetch graph on startup for non-scratch workflows
     if workflow_id != "_scratch":
