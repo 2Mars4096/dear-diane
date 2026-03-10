@@ -299,6 +299,91 @@ async def handle_current_datetime(args: dict[str, Any], ctx: CapabilityContext) 
     )
 
 
+# ── Telegram poll tool ────────────────────────────────────────────
+
+TELEGRAM_POLL_CAPABILITY_SCHEMA = build_tool_schema(
+    name="telegram_poll",
+    description=(
+        "Create a native Telegram poll in the current chat. Use for "
+        "decision-making when there are 2-10 discrete options. On non-Telegram "
+        "surfaces the options are rendered as numbered text instead."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "The poll question (1-300 characters).",
+            },
+            "options": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Answer options (2-10 items, each 1-100 characters).",
+            },
+            "is_anonymous": {
+                "type": "boolean",
+                "description": "Whether votes are anonymous. Default: false.",
+            },
+            "allows_multiple": {
+                "type": "boolean",
+                "description": "Whether users can select multiple options. Default: false.",
+            },
+        },
+        "required": ["question", "options"],
+    },
+)
+
+
+async def handle_telegram_poll(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    question = args.get("question", "").strip()
+    options = args.get("options", [])
+    is_anonymous = args.get("is_anonymous", False)
+    allows_multiple = args.get("allows_multiple", False)
+
+    if not question:
+        return CapabilityResult(success=False, message="Poll question is required.")
+    if len(question) > 300:
+        return CapabilityResult(
+            success=False, message="Poll question must be 300 characters or less.",
+        )
+    if not isinstance(options, list) or len(options) < 2:
+        return CapabilityResult(
+            success=False, message="At least 2 poll options are required.",
+        )
+    if len(options) > 10:
+        return CapabilityResult(
+            success=False, message="Maximum 10 poll options allowed.",
+        )
+
+    cleaned: list[str] = []
+    for i, opt in enumerate(options):
+        if not isinstance(opt, str) or not opt.strip():
+            return CapabilityResult(
+                success=False, message=f"Option {i + 1} is empty.",
+            )
+        if len(opt) > 100:
+            return CapabilityResult(
+                success=False,
+                message=f"Option {i + 1} exceeds 100 character limit.",
+            )
+        cleaned.append(opt.strip())
+
+    return CapabilityResult(
+        success=True,
+        message=f'Poll created: "{question}" with {len(cleaned)} options.',
+        data={
+            "poll_request": True,
+            "question": question,
+            "options": cleaned,
+            "is_anonymous": is_anonymous,
+            "allows_multiple": allows_multiple,
+        },
+    )
+
+
 # ── Send email tool ───────────────────────────────────────────────
 
 SEND_EMAIL_CAPABILITY_SCHEMA = build_tool_schema(
@@ -3086,6 +3171,13 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         SEND_EMAIL_CAPABILITY_SCHEMA,
         handle_send_email,
         modes=WRITE_MODES,
+        category="communication",
+    )
+    registry.register(
+        "telegram_poll",
+        TELEGRAM_POLL_CAPABILITY_SCHEMA,
+        handle_telegram_poll,
+        modes=["agent", "conversation"],
         category="communication",
     )
     registry.register(
