@@ -539,31 +539,35 @@ def generate_preflight_questions(
 # Chat command handler
 # ---------------------------------------------------------------------------
 
-_user_verbosity_override: VerbosityLevel | None = None
+_DEFAULT_OVERRIDE_SCOPE = "__default__"
+_user_verbosity_overrides: dict[str, VerbosityLevel] = {}
 
 
-def handle_progress_command(text: str) -> str:
+def handle_progress_command(text: str, surface_id: str | None = None) -> str:
     """Handle ``/progress [full|compact|minimal]`` to show or set verbosity."""
-    global _user_verbosity_override
+    scope = surface_id or _DEFAULT_OVERRIDE_SCOPE
 
     parts = text.strip().split()
     if len(parts) >= 2:
         level = parts[1].lower()
         if level in ("full", "compact", "minimal"):
-            _user_verbosity_override = level  # type: ignore[assignment]
+            _user_verbosity_overrides[scope] = level  # type: ignore[assignment]
             return f"Progress verbosity set to **{level}**."
         return f"Unknown verbosity level '{level}'. Choose: full, compact, minimal."
 
-    current = _user_verbosity_override or "(auto per surface)"
+    current = get_user_verbosity_override(surface_id) or "(auto per surface)"
     return f"Current progress verbosity: **{current}**."
 
 
-def get_user_verbosity_override() -> VerbosityLevel | None:
+def get_user_verbosity_override(surface_id: str | None = None) -> VerbosityLevel | None:
     """Return the user-set verbosity override, if any."""
-    return _user_verbosity_override
+    scope = surface_id or _DEFAULT_OVERRIDE_SCOPE
+    return _user_verbosity_overrides.get(scope)
 
 
-def reset_user_verbosity_override() -> None:
+def reset_user_verbosity_override(surface_id: str | None = None) -> None:
     """Clear the user verbosity override (for testing)."""
-    global _user_verbosity_override
-    _user_verbosity_override = None
+    if surface_id is None:
+        _user_verbosity_overrides.clear()
+        return
+    _user_verbosity_overrides.pop(surface_id, None)
