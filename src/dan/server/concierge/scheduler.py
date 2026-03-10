@@ -1,0 +1,769 @@
+"""Scheduled tasks — cron-style and interval-based task scheduling.
+
+Implements plan 31-7: enables DAN to run workflows, checks, and reports on
+a recurring basis.  ``/schedule add "run equity report" every day at 9am``
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import re
+import tempfile
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any, Awaitable, Callable, Literal
+
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# croniter availability
+# ---------------------------------------------------------------------------
+
+try:
+    from croniter import croniter as _croniter  # type: ignore[import-untyped]
+
+    HAS_CRONITER = True
+except ImportError:
+    HAS_CRONITER = False
+    _croniter = None  # type: ignore[assignment]
+
+# ---------------------------------------------------------------------------
+# Models
+# ---------------------------------------------------------------------------
+
+
+class TriggerContext(BaseModel):
+    """Metadata about the scheduling origin — injected into the concierge
+    dispatch so the LLM knows this is an autonomous (scheduled) invocation."""
+
+    source_surface: str = "schedule"
+    project_id: str | None = None
+    task_id: str | None = None
+    user_id: str | None = None
+    thread_key: str | None = None
+
+
+class DeliveryTarget(BaseModel):
+    """Where the results of a scheduled run should be sent."""
+
+    surface: str = "cli"
+    conversation_key: str | None = None
+    user_id: str | None = None
+    project_id: str | None = None
+    thread_key: str | None = None
+    fallback_policy: Literal["store_and_notify", "private_surface", "drop"] = (
+        "store_and_notify"
+    )
+
+
+class ScheduleEntry(BaseModel):
+    """A single scheduled task."""
+
+    id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    name: str
+    trigger: str
+    action: str
+    enabled: bool = True
+    last_run: datetime | None = None
+    next_run: datetime | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timezone: str = "UTC"
+    trigger_context: TriggerContext = Field(default_factory=TriggerContext)
+    delivery_target: DeliveryTarget = Field(default_factory=DeliveryTarget)
+    on_missed: Literal["run_once", "skip"] = "run_once"
+
+
+class ScheduleRunRecord(BaseModel):
+    """Result of a single schedule execution."""
+
+    schedule_id: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    status: Literal["success", "error", "running"] = "running"
+    result_summary: str = ""
+    error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Cron / interval parsing
+# ---------------------------------------------------------------------------
+
+_INTERVAL_RE = re.compile(
+    r"^every\s+(\d+)\s*(m|min|mins|minutes?|h|hr|hrs|hours?|d|days?|s|sec|secs|seconds?)$",
+    re.IGNORECASE,
+)
+
+_DAILY_AT_RE = re.compile(
+    r"^daily\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$",
+    re.IGNORECASE,
+)
+
+_WEEKDAYS_AT_RE = re.compile(
+    r"^weekdays?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$",
+    re.IGNORECASE,
+)
+
+_EVERY_DAY_AT_RE = re.compile(
+    r"^every\s+day\s+at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?$",
+    re.IGNORECASE,
+)
+
+_CRON_RE = re.compile(
+    r"^[*\d/,\-]+\s+[*\d/,\-]+\s+[*\d/,\-]+\s+[*\d/,\-]+\s+[*\d/,\-]+$"
+)
+
+
+def _parse_time_fields(
+    hour_s: str,
+    minute_s: str | None,
+    ampm: str | None,
+) -> tuple[int, int]:
+    """Return (hour_24, minute) from parsed regex groups."""
+    hour = int(hour_s)
+    minute = int(minute_s) if minute_s else 0
+    if ampm:
+        if ampm.lower() == "pm" and hour != 12:
+            hour += 12
+        elif ampm.lower() == "am" and hour == 12:
+            hour = 0
+    return hour, minute
+
+
+def parse_trigger(trigger: str) -> str:
+    """Convert a human-readable trigger to a standard 5-field cron expression.
+
+    Supports:
+      - ``every 6h`` → ``0 */6 * * *``
+      - ``daily at 9am`` → ``0 9 * * *``
+      - ``every day at 9am`` → ``0 9 * * *``
+      - ``weekdays at 8:30am`` → ``30 8 * * 1-5``
+      - ``every 30m`` → ``*/30 * * * *``
+      - Standard 5-field cron expressions pass through unchanged.
+    """
+    cleaned = trigger.strip()
+
+    if _CRON_RE.match(cleaned):
+        return cleaned
+
+    m = _INTERVAL_RE.match(cleaned)
+    if m:
+        value = int(m.group(1))
+        unit = m.group(2).lower()
+        if unit.startswith("m"):
+            return f"*/{value} * * * *"
+        if unit.startswith("h"):
+            return f"0 */{value} * * *"
+        if unit.startswith("d"):
+            return f"0 0 */{value} * *"
+        if unit.startswith("s"):
+            return f"*/{max(1, value // 60)} * * * *"
+
+    m = _DAILY_AT_RE.match(cleaned)
+    if m:
+        hour, minute = _parse_time_fields(m.group(1), m.group(2), m.group(3))
+        return f"{minute} {hour} * * *"
+
+    m = _EVERY_DAY_AT_RE.match(cleaned)
+    if m:
+        hour, minute = _parse_time_fields(m.group(1), m.group(2), m.group(3))
+        return f"{minute} {hour} * * *"
+
+    m = _WEEKDAYS_AT_RE.match(cleaned)
+    if m:
+        hour, minute = _parse_time_fields(m.group(1), m.group(2), m.group(3))
+        return f"{minute} {hour} * * 1-5"
+
+    return cleaned
+
+
+def compute_next_run(cron_expr: str, after: datetime) -> datetime:
+    """Compute the next run time after *after* using *cron_expr*.
+
+    Uses ``croniter`` if available; otherwise provides a simple interval-only
+    fallback for ``*/N`` minute/hour patterns.
+    """
+    if HAS_CRONITER:
+        utc_after = after.astimezone(timezone.utc) if after.tzinfo else after.replace(tzinfo=timezone.utc)
+        cron = _croniter(cron_expr, utc_after)
+        next_dt: datetime = cron.get_next(datetime)
+        if next_dt.tzinfo is None:
+            next_dt = next_dt.replace(tzinfo=timezone.utc)
+        return next_dt
+
+    return _fallback_next_run(cron_expr, after)
+
+
+def _fallback_next_run(cron_expr: str, after: datetime) -> datetime:
+    """Best-effort next-run for common cron patterns without croniter."""
+    parts = cron_expr.strip().split()
+    if len(parts) != 5:
+        raise ValueError(
+            f"Cannot parse cron expression '{cron_expr}' without croniter. "
+            "Install croniter: pip install croniter"
+        )
+
+    minute_f, hour_f, dom_f, _mon_f, _dow_f = parts
+
+    if after.tzinfo is None:
+        after = after.replace(tzinfo=timezone.utc)
+
+    # */N minute intervals
+    m = re.match(r"^\*/(\d+)$", minute_f)
+    if m and hour_f == "*" and dom_f == "*":
+        interval = int(m.group(1))
+        delta = timedelta(minutes=interval)
+        candidate = after + delta
+        candidate = candidate.replace(second=0, microsecond=0)
+        return candidate
+
+    # 0 */N hour intervals
+    m_h = re.match(r"^\*/(\d+)$", hour_f)
+    if minute_f == "0" and m_h and dom_f == "*":
+        interval = int(m_h.group(1))
+        delta = timedelta(hours=interval)
+        candidate = after + delta
+        candidate = candidate.replace(minute=0, second=0, microsecond=0)
+        return candidate
+
+    # Fixed time daily: M H * * *
+    if minute_f.isdigit() and hour_f.isdigit() and dom_f == "*":
+        target_min = int(minute_f)
+        target_hour = int(hour_f)
+        candidate = after.replace(
+            hour=target_hour, minute=target_min, second=0, microsecond=0
+        )
+        if candidate <= after:
+            candidate += timedelta(days=1)
+        return candidate
+
+    raise ValueError(
+        f"Cannot parse cron expression '{cron_expr}' without croniter. "
+        "Install croniter: pip install croniter"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Schedule Store
+# ---------------------------------------------------------------------------
+
+_DEFAULT_SCHEDULES_PATH = os.path.expanduser("~/.dan/schedules.json")
+
+
+class ScheduleStore:
+    """Filesystem-backed CRUD for ``ScheduleEntry`` objects."""
+
+    def __init__(self, path: str | None = None) -> None:
+        self._path = path or _DEFAULT_SCHEDULES_PATH
+        self._entries: dict[str, ScheduleEntry] = {}
+        self._loaded = False
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+    def load(self) -> None:
+        self._entries = {}
+        if os.path.exists(self._path):
+            try:
+                with open(self._path) as f:
+                    data = json.load(f)
+                for item in data:
+                    entry = ScheduleEntry.model_validate(item)
+                    self._entries[entry.id] = entry
+            except Exception:
+                logger.warning("Failed to load schedules from %s", self._path)
+        self._loaded = True
+
+    def save(self) -> None:
+        """Atomic save: write to temp file then rename."""
+        Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        data = [e.model_dump(mode="json") for e in self._entries.values()]
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(Path(self._path).parent), suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(data, f, indent=2, default=str)
+            os.replace(tmp_path, self._path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _ensure_loaded(self) -> None:
+        if not self._loaded:
+            self.load()
+
+    def add(self, entry: ScheduleEntry) -> None:
+        self._ensure_loaded()
+        self._entries[entry.id] = entry
+        self.save()
+
+    def remove(self, id_or_name: str) -> ScheduleEntry | None:
+        self._ensure_loaded()
+        entry = self.get(id_or_name)
+        if entry:
+            del self._entries[entry.id]
+            self.save()
+        return entry
+
+    def get(self, id_or_name: str) -> ScheduleEntry | None:
+        self._ensure_loaded()
+        if id_or_name in self._entries:
+            return self._entries[id_or_name]
+        for e in self._entries.values():
+            if e.name.lower() == id_or_name.lower():
+                return e
+        return None
+
+    def list_all(self) -> list[ScheduleEntry]:
+        self._ensure_loaded()
+        return list(self._entries.values())
+
+    def update(self, entry: ScheduleEntry) -> None:
+        self._ensure_loaded()
+        self._entries[entry.id] = entry
+        self.save()
+
+
+# ---------------------------------------------------------------------------
+# Schedule History Store
+# ---------------------------------------------------------------------------
+
+_DEFAULT_HISTORY_PATH = os.path.expanduser("~/.dan/schedule_history.json")
+_MAX_RECORDS_PER_SCHEDULE = 20
+
+
+class ScheduleHistoryStore:
+    """Filesystem-backed run history, keeping the last N records per schedule."""
+
+    def __init__(self, path: str | None = None) -> None:
+        self._path = path or _DEFAULT_HISTORY_PATH
+        self._records: dict[str, list[dict[str, Any]]] = {}
+        self._loaded = False
+
+    def load(self) -> None:
+        self._records = {}
+        if os.path.exists(self._path):
+            try:
+                with open(self._path) as f:
+                    self._records = json.load(f)
+            except Exception:
+                logger.warning("Failed to load schedule history from %s", self._path)
+        self._loaded = True
+
+    def save(self) -> None:
+        Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(Path(self._path).parent), suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(self._records, f, indent=2, default=str)
+            os.replace(tmp_path, self._path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def _ensure_loaded(self) -> None:
+        if not self._loaded:
+            self.load()
+
+    def add_record(self, record: ScheduleRunRecord) -> None:
+        self._ensure_loaded()
+        key = record.schedule_id
+        if key not in self._records:
+            self._records[key] = []
+        payload = record.model_dump(mode="json")
+        if (
+            self._records[key]
+            and self._records[key][-1].get("started_at") == payload.get("started_at")
+        ):
+            self._records[key][-1] = payload
+        else:
+            self._records[key].append(payload)
+        self._records[key] = self._records[key][-_MAX_RECORDS_PER_SCHEDULE:]
+        self.save()
+
+    def get_history(
+        self, schedule_id: str, limit: int = 10
+    ) -> list[ScheduleRunRecord]:
+        self._ensure_loaded()
+        raw = self._records.get(schedule_id, [])
+        records = [ScheduleRunRecord.model_validate(r) for r in raw[-limit:]]
+        return records
+
+
+# ---------------------------------------------------------------------------
+# TaskScheduler runtime
+# ---------------------------------------------------------------------------
+
+
+class TaskScheduler:
+    """Asyncio background task that fires scheduled actions.
+
+    Parameters
+    ----------
+    store : ScheduleStore
+        The schedule store to poll.
+    dispatch_fn : Callable
+        ``async dispatch_fn(action, trigger_context, delivery_target)``
+        — dispatches the scheduled action through the concierge pipeline.
+    history_store : ScheduleHistoryStore | None
+        Optional history store for recording run results.
+    poll_interval : float
+        Seconds between schedule checks (default 30).
+    """
+
+    def __init__(
+        self,
+        store: ScheduleStore,
+        dispatch_fn: Callable[
+            [str, TriggerContext, DeliveryTarget], Awaitable[str]
+        ],
+        history_store: ScheduleHistoryStore | None = None,
+        poll_interval: float = 30.0,
+    ) -> None:
+        self._store = store
+        self._dispatch_fn = dispatch_fn
+        self._history = history_store
+        self._poll_interval = poll_interval
+        self._task: asyncio.Task[None] | None = None
+        self._stop_event = asyncio.Event()
+        self._inflight_schedule_ids: set[str] = set()
+
+    async def start(self) -> None:
+        """Start the scheduler background loop."""
+        self._stop_event.clear()
+        self._store.load()
+        await self._handle_missed_runs()
+        self._task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        """Signal the loop to stop and wait for it to finish."""
+        self._stop_event.set()
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
+
+    async def _loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                await self._check_schedules()
+            except Exception:
+                logger.exception("Scheduler tick error")
+            try:
+                await asyncio.wait_for(
+                    self._stop_event.wait(), timeout=self._poll_interval
+                )
+                break
+            except asyncio.TimeoutError:
+                pass
+
+    async def _check_schedules(self) -> None:
+        now = datetime.now(timezone.utc)
+        for entry in self._store.list_all():
+            if not entry.enabled:
+                continue
+            if entry.next_run is None:
+                try:
+                    cron_expr = parse_trigger(entry.trigger)
+                    entry.next_run = compute_next_run(cron_expr, now)
+                    self._store.update(entry)
+                except Exception:
+                    logger.warning("Cannot compute next_run for %s", entry.name)
+                continue
+            if entry.next_run <= now and entry.id not in self._inflight_schedule_ids:
+                self._inflight_schedule_ids.add(entry.id)
+                asyncio.create_task(self._fire(entry))
+
+    async def _fire(self, entry: ScheduleEntry) -> None:
+        """Fire a single schedule entry."""
+        now = datetime.now(timezone.utc)
+        record = ScheduleRunRecord(
+            schedule_id=entry.id,
+            started_at=now,
+        )
+        if self._history:
+            self._history.add_record(record)
+
+        try:
+            dispatch_context = entry.trigger_context
+            result = await self._dispatch_fn(
+                entry.action,
+                dispatch_context,
+                entry.delivery_target,
+            )
+            record.status = "success"
+            record.result_summary = str(result)[:500] if result else ""
+        except Exception as exc:
+            record.status = "error"
+            record.error = str(exc)[:500]
+            logger.exception("Schedule %s (%s) failed", entry.name, entry.id)
+        finally:
+            record.completed_at = datetime.now(timezone.utc)
+            if self._history:
+                self._history.add_record(record)
+
+            entry.last_run = now
+            try:
+                cron_expr = parse_trigger(entry.trigger)
+                entry.next_run = compute_next_run(cron_expr, now)
+            except Exception:
+                entry.next_run = None
+            self._store.update(entry)
+            self._inflight_schedule_ids.discard(entry.id)
+
+    async def _handle_missed_runs(self) -> None:
+        """On startup, fire once for any overdue schedules with on_missed='run_once'."""
+        now = datetime.now(timezone.utc)
+        for entry in self._store.list_all():
+            if not entry.enabled:
+                continue
+            if entry.next_run is not None and entry.next_run < now:
+                if entry.on_missed == "run_once":
+                    if entry.id in self._inflight_schedule_ids:
+                        continue
+                    self._inflight_schedule_ids.add(entry.id)
+                    logger.info(
+                        "Missed run for schedule %s (due %s), firing once",
+                        entry.name,
+                        entry.next_run.isoformat(),
+                    )
+                    asyncio.create_task(self._fire(entry))
+                else:
+                    try:
+                        cron_expr = parse_trigger(entry.trigger)
+                        entry.next_run = compute_next_run(cron_expr, now)
+                        self._store.update(entry)
+                    except Exception:
+                        pass
+
+
+# ---------------------------------------------------------------------------
+# Chat command handler
+# ---------------------------------------------------------------------------
+
+
+def parse_schedule_add(text: str) -> tuple[str, str]:
+    """Extract ``(action, trigger)`` from an add command.
+
+    Expects: ``"<action>" <trigger>`` — action in quotes, trigger is the rest.
+    Falls back to splitting on ``every`` / ``daily`` / ``weekdays`` / cron.
+    """
+    text = text.strip()
+
+    # Quoted action
+    m = re.match(r'^"(.+?)"\s+(.+)$', text)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+
+    m = re.match(r"^'(.+?)'\s+(.+)$", text)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+
+    # Unquoted: split on known trigger keywords
+    for keyword in ("every ", "daily ", "weekday"):
+        idx = text.lower().find(keyword)
+        if idx > 0:
+            return text[:idx].strip(), text[idx:].strip()
+
+    parts = text.split(None, 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+
+    return text, ""
+
+
+def handle_schedule_command(
+    text: str,
+    store: ScheduleStore,
+    history_store: ScheduleHistoryStore | None = None,
+    *,
+    default_trigger_context: TriggerContext | None = None,
+    default_delivery_target: DeliveryTarget | None = None,
+) -> str:
+    """Dispatch ``/schedule`` subcommands.
+
+    Returns a human-readable response string.
+    """
+    text = text.strip()
+    if text.lower().startswith("/schedule"):
+        text = text[len("/schedule"):].strip()
+
+    parts = text.split(None, 1)
+    sub = parts[0].lower() if parts else ""
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if sub == "add":
+        return _cmd_add(
+            rest,
+            store,
+            trigger_context=default_trigger_context,
+            delivery_target=default_delivery_target,
+        )
+    if sub == "list":
+        return _cmd_list(store)
+    if sub == "remove":
+        return _cmd_remove(rest, store)
+    if sub == "pause":
+        return _cmd_pause(rest, store)
+    if sub == "resume":
+        return _cmd_resume(rest, store)
+    if sub == "history":
+        return _cmd_history(rest, store, history_store)
+
+    return (
+        "Usage: /schedule <add|list|remove|pause|resume|history> [args]\n"
+        "  add \"<action>\" <trigger>\n"
+        "  list\n"
+        "  remove <id|name>\n"
+        "  pause <id|name>\n"
+        "  resume <id|name>\n"
+        "  history <id|name>"
+    )
+
+
+def _cmd_add(
+    text: str,
+    store: ScheduleStore,
+    *,
+    trigger_context: TriggerContext | None = None,
+    delivery_target: DeliveryTarget | None = None,
+) -> str:
+    if not text:
+        return 'Usage: /schedule add "<action>" <trigger>'
+
+    action, trigger = parse_schedule_add(text)
+    if not action or not trigger:
+        return 'Usage: /schedule add "<action>" <trigger>'
+
+    try:
+        cron_expr = parse_trigger(trigger)
+    except Exception as exc:
+        return f"Invalid trigger: {exc}"
+
+    now = datetime.now(timezone.utc)
+    try:
+        next_run = compute_next_run(cron_expr, now)
+    except Exception:
+        next_run = None
+
+    entry = ScheduleEntry(
+        name=action,
+        trigger=trigger,
+        action=action,
+        next_run=next_run,
+        trigger_context=trigger_context or TriggerContext(),
+        delivery_target=delivery_target or DeliveryTarget(),
+    )
+    store.add(entry)
+    next_str = next_run.strftime("%Y-%m-%d %H:%M UTC") if next_run else "unknown"
+    return (
+        f"Scheduled: **{action}**\n"
+        f"Trigger: `{trigger}` → `{cron_expr}`\n"
+        f"Next run: {next_str}\n"
+        f"ID: `{entry.id}`"
+    )
+
+
+def _cmd_list(store: ScheduleStore) -> str:
+    entries = store.list_all()
+    if not entries:
+        return "No scheduled tasks."
+
+    lines = ["**Scheduled Tasks**\n"]
+    lines.append(f"{'Name':<25} {'Trigger':<20} {'Next Run':<22} {'Status'}")
+    lines.append("-" * 80)
+    for e in entries:
+        next_str = e.next_run.strftime("%Y-%m-%d %H:%M UTC") if e.next_run else "—"
+        status = "enabled" if e.enabled else "paused"
+        lines.append(f"{e.name:<25} {e.trigger:<20} {next_str:<22} {status}")
+    return "\n".join(lines)
+
+
+def _cmd_remove(id_or_name: str, store: ScheduleStore) -> str:
+    if not id_or_name:
+        return "Usage: /schedule remove <id|name>"
+    entry = store.remove(id_or_name.strip())
+    if entry:
+        return f"Removed schedule: **{entry.name}** (`{entry.id}`)"
+    return f"Schedule not found: `{id_or_name}`"
+
+
+def _cmd_pause(id_or_name: str, store: ScheduleStore) -> str:
+    if not id_or_name:
+        return "Usage: /schedule pause <id|name>"
+    entry = store.get(id_or_name.strip())
+    if not entry:
+        return f"Schedule not found: `{id_or_name}`"
+    entry.enabled = False
+    store.update(entry)
+    return f"Paused: **{entry.name}**"
+
+
+def _cmd_resume(id_or_name: str, store: ScheduleStore) -> str:
+    if not id_or_name:
+        return "Usage: /schedule resume <id|name>"
+    entry = store.get(id_or_name.strip())
+    if not entry:
+        return f"Schedule not found: `{id_or_name}`"
+    entry.enabled = True
+    now = datetime.now(timezone.utc)
+    try:
+        cron_expr = parse_trigger(entry.trigger)
+        entry.next_run = compute_next_run(cron_expr, now)
+    except Exception:
+        pass
+    store.update(entry)
+    next_str = entry.next_run.strftime("%Y-%m-%d %H:%M UTC") if entry.next_run else "unknown"
+    return f"Resumed: **{entry.name}** — next run: {next_str}"
+
+
+def _cmd_history(
+    id_or_name: str,
+    store: ScheduleStore,
+    history_store: ScheduleHistoryStore | None,
+) -> str:
+    if not id_or_name:
+        return "Usage: /schedule history <id|name>"
+    entry = store.get(id_or_name.strip())
+    if not entry:
+        return f"Schedule not found: `{id_or_name}`"
+    if not history_store:
+        return "No history store configured."
+
+    records = history_store.get_history(entry.id)
+    if not records:
+        return f"No run history for **{entry.name}**."
+
+    lines = [f"**Run History: {entry.name}**\n"]
+    for r in reversed(records):
+        started = r.started_at.strftime("%Y-%m-%d %H:%M")
+        dur = ""
+        if r.completed_at:
+            elapsed = (r.completed_at - r.started_at).total_seconds()
+            dur = f" ({elapsed:.1f}s)"
+        status_icon = {"success": "OK", "error": "ERR", "running": "..."}
+        lines.append(
+            f"  {started} [{status_icon.get(r.status, r.status)}]{dur}"
+            f" {r.result_summary[:60] if r.result_summary else ''}"
+        )
+        if r.error:
+            lines.append(f"    Error: {r.error[:80]}")
+    return "\n".join(lines)
