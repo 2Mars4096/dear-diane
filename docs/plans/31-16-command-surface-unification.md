@@ -12,7 +12,7 @@ DAN's command surface is fragmented across four layers that drift independently:
 - **Adapter slash-command translation** is a separate handwritten dict in `cli/adapter.py` that maps a subset of commands to natural-language equivalents. It has its own `/help` response with a different command list than the concierge.
 - **Telegram bot commands** are set via `set_my_commands()` in the adapter with yet another subset of available commands.
 - **User-facing docs** (`docs/cli.md`) mix binary commands (`dan-serve`), REPL commands (`/run`, `/show`), and chat fast commands (`/model`, `/cost`) in one table without distinguishing their kind, surface availability, or state requirements.
-- **Planned commands** from 31-6 through 31-15 will add ~12 more commands (`/goal`, `/goal-status`, `/goal-stop`, `/schedule`, `/resume`, `/follow-ups`, `/pii`, `/sync`, `/progress`, `/completion`, `/corrections`, `/adaptations`). Without a registry, each will repeat the same manual wiring in 3-4 places.
+- **Planned commands** from 31-6 through 31-17 will add ~13 more command families (`/goal`, `/goal-status`, `/goal-stop`, `/schedule`, `/resume`, `/follow-ups`, `/pii`, `/sync`, `/progress`, `/completion`, `/corrections`, `/adaptations`, `/computer`). Without a registry, each will repeat the same manual wiring in 3-4 places.
 
 The result: users can't discover which commands work on their current surface, and contributors can't be sure a new command is wired everywhere it should be.
 
@@ -57,6 +57,7 @@ The result: users can't discover which commands work on their current surface, a
     - **Continuity** (`/resume`, `/sync`, `/follow-ups`)
     - **Progress** (`/progress`, `/completion`)
     - **Learning** (`/corrections`, `/adaptations`)
+    - **Computer Use** (`/computer` with subcommands `status|allow|deny|doctor|approve <request-id>`)
     - **Integration** (`/mcp` with subcommands `install|list|remove|tools`, `/build-status`, `/build-stop`, `/build-logs`)
     - **File & Navigation** (`/find`, `/send`, `/cancel`) — adapter-local commands
     - **Session** (`/help`, `/exit`) — cross-surface or REPL-only
@@ -64,7 +65,7 @@ The result: users can't discover which commands work on their current surface, a
   - [ ] 6-2. Each command entry: name, aliases, surfaces where available (icons or badges), arguments, description, example, related commands
   - [ ] 6-3. Surface availability matrix at the top: which command groups work on which surfaces
   - [ ] 6-4. `docs/cli.md` stays as the binary reference (dan-serve, dan-chat, dan-run, etc.) but links to `docs/commands.md` for slash/REPL commands instead of duplicating them
-  - [ ] 6-5. Generation script (optional): `scripts/generate_command_docs.py` that reads the registry and produces `docs/commands.md` so docs can never drift from the registry. Manual editing of generated sections is discouraged.
+  - [ ] 6-5. Generation script: `scripts/generate_command_docs.py` reads the registry and produces `docs/commands.md` so docs can never drift from the registry. Run it in CI; manual editing of generated sections is discouraged.
 
 - [ ] 7. **Future command registration contract**
   - [ ] 7-1. Document the "how to add a new command" contract: create a `CommandDescriptor`, register it in the module's `__init__` or a dedicated `commands.py`, and the registry auto-discovers it at startup
@@ -83,6 +84,7 @@ The result: users can't discover which commands work on their current surface, a
 - **Backward compatible.** The dispatch change is internal. All existing commands work identically from the user's perspective. The only visible change is richer `/help` output.
 - **Docs follow from registry.** `docs/commands.md` is either generated from or closely mirrors the registry. This is the single source of truth for command docs.
 - **Adapter translation shrinks, not grows.** The `_translate_slash_command()` pattern only stays for the small set of truly `adapter_local` commands. Everything else forwards to the server where the registry handles it.
+- **Policy commands over imperative commands.** Slash commands like `/computer ...` are best used for policy, diagnostics, and approvals. Imperative browser/desktop actions remain capability tools and controller logic, not dozens of imperative slash commands.
 
 ## Primary Files
 

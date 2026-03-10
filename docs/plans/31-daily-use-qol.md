@@ -50,15 +50,17 @@ After 20 phases of infrastructure, the platform is deep but rough around the edg
 | 31-14 | [Progressive Response UX](31-14-progressive-response-ux.md) | Phase-chunked progressive disclosure: instant ack, plan disclosure, phase transitions, result checkpoints, surface-adaptive verbosity | 2-3d |
 | 31-15 | [Learning & Evolution Optimization](31-15-learning-evolution-optimization.md) | Tiered learning activation, upgraded quality signals, correction memory loop, learning health visibility, unified adaptation governance, storage backend abstraction, planning-time calibration | 3-4d |
 | 31-16 | [Command Surface Unification](31-16-command-surface-unification.md) | Canonical command registry, unified dispatch, surface-aware `/help`, centered `docs/commands.md`, adapter/REPL integration | 2-3d |
+| 31-17 | [Computer Control & Browser Automation](31-17-computer-control-and-browser-automation.md) | Narrow v1: Playwright-first browser automation, browser-owned native-dialog handoff, minimal macOS desktop fallback, and safety-first policy | 5-7d |
 
-Order: 31-1 through 31-5 completed. For 31-6 through 31-16:
+Order: 31-1 through 31-5 completed. For 31-6 through 31-17:
 - **Foundation (land first):** 31-16 (command registry) — **must** land before any plan introducing new commands. If that's not practical, those plans include fallback wiring instructions with an explicit TODO for registry migration.
-- **Independent (can run in parallel after 31-16):** 31-6, 31-8, 31-9, 31-10, 31-14, core 31-15 tasks (1-6)
+- **Independent (can run in parallel after 31-16):** 31-6, 31-8, 31-9, 31-10, 31-14, core 31-15 tasks (1-6), 31-17 v1 core runtime
 - **Sequential:** 31-7 before 31-12 (scheduled tasks enable scheduled follow-up sources; 31-12 degrades gracefully if 31-7 absent)
 - **Sequential:** 31-11 before 31-12 and 31-13 (structured task snapshots enable stale/blocker follow-ups and task-first cross-surface continuity)
 - **31-8** is the largest and most independent — can start in parallel with 31-16
 - **31-14** is mostly independent — builds on existing streaming/edit infrastructure; quiet-hours from 31-12 do NOT apply to in-flight user-requested progress updates
 - **31-15** core hardening is independent; task 7's planning-time calibration integrates with 31-8 when both are implemented
+- **31-17** v1 core is mostly independent; only its minimal `/computer status|doctor|approve` surface wants 31-16. Richer `/computer allow|deny` policy editing is an explicit follow-on slice after the core runtime proves reliable
 - **31-12 → 31-13 routing integration:** 31-12 ships with simple surface routing; 31-13 provides the richer routing policy that 31-12 should upgrade to once available
 - **31-9 + 31-10 + 25-12 response pipeline:** all three hook into the concierge response path — should be formalized as a `ResponsePostProcessor` middleware chain rather than three ad-hoc insertion points
 
@@ -70,8 +72,9 @@ Order: 31-1 through 31-5 completed. For 31-6 through 31-16:
 - **Continuity (31-11 through 31-13).** Cross-session and cross-surface context sharing via the existing Project/Task model, with task-first handoff and private-surface defaults.
 - **Progressive UX (31-14).** Phase-chunked progress disclosure with surface-adaptive rendering. Deterministic for structure/timing, LLM for content/framing.
 - **Learning optimization (31-15).** Make the existing 5-layer learning architecture practically effective: tiered activation, precision signals, user-correction feedback, observable health, unified governance, storage abstraction, planning-time calibration.
+- **Computer use (31-17).** Add a layered control stack: Playwright-first browser automation, browser-owned native-dialog handoff, minimal macOS desktop fallback, observe→act→verify execution loop, and chunked allowlists/approval gates. Note: execution is host-local on a GUI-capable machine, even if the request originated from any chat surface.
 - **Backward compatible.** All new features are opt-in or additive. Existing `.env` files, workflows, and chat sessions work unchanged.
-- **Chat-first.** Every control surface works from chat (WhatsApp, Telegram, CLI, editor). No server-only or editor-only features.
+- **Chat-first request surface.** Every feature should be invokable from chat (WhatsApp, Telegram, CLI, editor), but some features may execute only where the right host capabilities exist. `31-17` computer use is the main example: request from any surface, execute only on a GUI-capable local host with the required OS permissions.
 
 ## Dependencies
 
@@ -79,7 +82,8 @@ Order: 31-1 through 31-5 completed. For 31-6 through 31-16:
 - 31-6 through 31-8: `WhileLoop`, `ParallelSubagentsExecutor`, `ResourceBudget`, `RepairClassifier`, `PlanBuilder`, `ExperienceStore`
 - 31-9 through 31-10: `LLMExecutor`, `ProviderRegistry`, `Concierge`
 - 31-11 through 31-13: `ProjectStore`, `ConversationMemoryStore`, `ActivityTracker`, `GlobalEventBus`
-- Optional external: `ortools` (31-8, for exact RCPSP solver), `croniter` (31-7, for cron expression parsing)
+- 31-17: existing `screenshot` / `clipboard` capabilities, OS accessibility APIs, computer-use lease/approval policy
+- Optional external: `ortools` (31-8, for exact RCPSP solver), `croniter` (31-7, for cron expression parsing), `playwright` (31-17, browser automation backend)
 
 ## Cross-References Between Subplans
 
@@ -90,7 +94,7 @@ Order: 31-1 through 31-5 completed. For 31-6 through 31-16:
 - **31-1 → 31-5**: All new env vars from 31-1 (`DAN_ENABLE_TIER_POLICY`, `DAN_TIER_MAP`) are documented in 31-5's `.env.example`.
 - **31-2 → 31-5**: All new env vars from 31-2 (`DAN_SHOW_COST`) and commands (`/cost`, `/status`, `/retry`) are documented in 31-5.
 
-## Cross-References Between Subplans (31-6 through 31-15)
+## Cross-References Between Subplans (31-6 through 31-17)
 
 - **31-7 → 31-12**: Scheduled tasks enable proactive follow-ups (scheduled task results trigger follow-up messages)
 - **31-11 → 31-12**: Structured task snapshots from cross-session resume are required for stale-task / blocker-resolved follow-ups
@@ -103,7 +107,10 @@ Order: 31-1 through 31-5 completed. For 31-6 through 31-16:
 - **31-15 → 31-8**: Planning-time calibration (31-15 task 7) feeds duration estimates and model priors into 31-8's RCPSP scheduler once both exist
 - **31-15 → 31-3**: Supersedes binary `DAN_LEARNING_MODE` bundle (31-3) with tiered `DAN_LEARNING_TIER`
 - **31-15 → 31-2**: Learning health section added to `/status` command from 31-2
-- **31-16 → all plans with new commands**: Registry eliminates manual wiring for `/goal`, `/schedule`, `/resume`, `/follow-ups`, `/pii`, `/sync`, `/progress`, `/completion`, `/corrections`, `/adaptations`
+- **31-16 → all plans with new commands**: Registry eliminates manual wiring for `/goal`, `/schedule`, `/resume`, `/follow-ups`, `/pii`, `/sync`, `/progress`, `/completion`, `/corrections`, `/adaptations`, `/computer`
+- **31-17 → 31-14**: Computer-use tasks are long-running, multi-phase operations that should emit progressive response updates ("opening browser", "waiting for download", "switching to file dialog")
+- **31-17 → 31-10**: Screenshot/OCR content sent to external LLMs must pass through provider-boundary PII tokenization
+- **31-17 → 31-16**: Minimal `/computer status|doctor|approve` commands should register through the command registry when available; broader policy-edit commands are intentionally deferred
 
 ## Non-Goals (this phase)
 

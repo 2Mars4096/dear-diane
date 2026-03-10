@@ -368,6 +368,7 @@
   - [ ] [31-14-progressive-response-ux](plans/31-14-progressive-response-ux.md) — N. Phase-chunked progressive disclosure: instant ack, plan disclosure, phase transitions, result checkpoints, surface-adaptive verbosity
   - [ ] [31-15-learning-evolution-optimization](plans/31-15-learning-evolution-optimization.md) — O. Tiered learning activation, upgraded quality signals, correction memory loop, learning health visibility, unified adaptation governance, storage backend abstraction, planning-time calibration
   - [ ] [31-16-command-surface-unification](plans/31-16-command-surface-unification.md) — P. Canonical command registry, unified dispatch, surface-aware `/help`, centered `docs/commands.md`, adapter/REPL integration
+  - [ ] [31-17-computer-control-and-browser-automation](plans/31-17-computer-control-and-browser-automation.md) — Q. Playwright-first browser automation, desktop control fallback, observe-act-verify execution, chunked allowlists, and safety-first approvals
 
 ## Backlog (unphased)
 
