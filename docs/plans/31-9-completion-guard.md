@@ -23,22 +23,24 @@ The #1 frustration with LLM agents is partial completion: the user asks for 5 th
 
 - [ ] 3. **Response augmentation**
   - [ ] 3-1. If all requirements met → send response as-is
-  - [ ] 3-2. If requirements missing → two modes:
-    - `auto_fix`: re-invoke LLM with "you missed these requirements: {list}" appended, get revised response
+  - [ ] 3-2. If requirements missing → split handling by requirement type:
+    - `auto_fix_text`: only for `question` / explanatory omissions — re-invoke LLM with "you missed these requirements: {list}" appended, get revised response
+    - `re-enter_execution`: for missed `action` / `deliverable` requirements — construct a synthetic follow-up message containing only the missed requirements and feed it back through the solver pipeline (same path as a new user message, but auto-generated). This re-enters planning/execution instead of pretending the work was done. Max 1 re-entry per response cycle to avoid loops.
     - `flag`: append a notice: "Note: I addressed X/Y items. I wasn't able to cover: {missing}. Would you like me to address those?"
-  - [ ] 3-3. Mode selection: `auto_fix` for ≤ 2 missing items, `flag` for more (configurable)
-  - [ ] 3-4. Anti-loop: max 1 auto-fix attempt; if still incomplete after retry, fall back to `flag` mode
+  - [ ] 3-3. Mode selection: `auto_fix_text` only when all missing items are text-only and ≤ 2; otherwise `re-enter_execution` or `flag` (configurable)
+  - [ ] 3-4. Anti-loop: max 1 auto-fix attempt; if still incomplete after retry, fall back to `flag` mode. **Verify all original requirements are still covered after auto-fix** — an auto-fix can inadvertently drop a previously-covered requirement while adding the missing one.
 
 - [ ] 4. **Concierge wiring**
-  - [ ] 4-1. Hook into `Concierge._process_inner()` — after LLM response is generated but before sending to user
+  - [ ] 4-1. Hook into `Concierge._process_inner()` — after all tool calls and execution steps complete but before yielding the final text event. Since `_process_inner` is an async generator that yields events progressively, the completion guard runs after the response text is assembled but before the final `ChatCompleteEvent`. For streaming responses, this means buffering the final response text, checking completeness, and either passing through or augmenting. Note: this should be part of a `ResponsePostProcessor` pipeline alongside PII detokenization (31-10) and unsourced claims checking (25-12) — formalize the chain rather than inserting 3 ad-hoc hooks.
   - [ ] 4-2. Skip for fast commands, simple greetings, and follow-up messages (only check on initial substantive responses)
   - [ ] 4-3. Persist `CompletionReport` for analytics: track completion rate over time
   - [ ] 4-4. `/completion` command: show completion stats (total checks, pass rate, common miss patterns)
 
 - [ ] 5. **Tests and docs**
   - [ ] 5-1. Unit tests: requirement extraction (numbered lists, bullets, prose), completion checking (keyword, LLM), response augmentation (auto-fix, flag)
-  - [ ] 5-2. Golden test cases: 10 multi-requirement messages with expected extraction results
-  - [ ] 5-3. Update architecture, changelog
+  - [ ] 5-2. Negative test: missed tool/action requirement cannot be "fixed" by answer rewriting alone
+  - [ ] 5-3. Golden test cases: 10 multi-requirement messages with expected extraction results
+  - [ ] 5-4. Update architecture, changelog
 
 ## Dependencies
 
