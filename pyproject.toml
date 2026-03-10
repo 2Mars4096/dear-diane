@@ -36,6 +36,7 @@ Changelog = "https://github.com/dan-project/dan/blob/main/docs/changelog.md"
 Issues = "https://github.com/dan-project/dan/issues"
 
 [project.scripts]
+dan = "dan.cli.main:main"
 dan-serve = "dan.server.__main__:main"
 dan-run = "dan.cli.run:main"
 dan-status = "dan.cli.status:main"
