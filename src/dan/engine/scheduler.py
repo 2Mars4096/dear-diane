@@ -849,7 +849,7 @@ class Engine:
 
         # 17-1: Attach error context provider so LLMExecutor can inject
         # past-failure context into prompts.
-        context._workflow_id = workflow_id or ""
+        context.workflow_id = workflow_id or ""
         ecp = getattr(self, "error_context_provider", None)
         if ecp is not None:
             context._error_context_provider = ecp

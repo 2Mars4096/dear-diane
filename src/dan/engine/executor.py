@@ -290,6 +290,29 @@ class ExecutionContext:
             self.human_renderer = LegacyCallbackRenderer(human_input_callback)
         else:
             self.human_renderer = None
+        self._workflow_id = ""
+
+    @property
+    def run_id(self) -> str:
+        """Public run identifier for executors and integrations."""
+        return self._run_id
+
+    @run_id.setter
+    def run_id(self, value: str) -> None:
+        self._run_id = value
+
+    @property
+    def workflow_id(self) -> str:
+        """Public workflow identifier attached by the engine scheduler."""
+        return self._workflow_id
+
+    @workflow_id.setter
+    def workflow_id(self, value: str) -> None:
+        self._workflow_id = value
+
+    def pii_session_key(self, fallback: str = "") -> str:
+        """Return the stable public session key used for PII tokenization."""
+        return self.run_id or self.workflow_id or fallback
 
     # -- 5-3: Rich logging -----------------------------------------------------
     async def emit_event(
