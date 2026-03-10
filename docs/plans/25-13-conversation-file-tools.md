@@ -19,7 +19,7 @@
   - [x] 1-7. `handle_http_request` — REST API calls, agent mode only
   - [x] 1-8. `handle_text_chunk`, `handle_json_extract`, `handle_regex_match` — text processing, all modes
   - [x] 1-9. Read-only tools in all modes; write tools (file_write, shell_command, http_request) in agent/build/mutate only
-- [x] 2. Add all tools to `CAPABILITY_TOOLS_REFERENCE` and `CONVERSATION_PROMPT`
+- [x] 2. Add all tools to `CAPABILITY_TOOLS_REFERENCE` and the then-live conversation prompt path (later superseded by the unified prompt cleanup in `28-5`)
 - [x] 3. Web search provider cascade: Tavily → Brave → DuckDuckGo
   - [x] 3-1. `_tavily_search()` via httpx POST to `api.tavily.com` (DAN_TAVILY_API_KEY)
   - [x] 3-2. `_brave_search()` via httpx GET to `api.search.brave.com` (DAN_BRAVE_API_KEY)

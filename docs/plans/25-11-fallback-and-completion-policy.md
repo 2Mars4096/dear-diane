@@ -37,10 +37,10 @@
 
 | File | Action |
 |---|---|
-| `src/dan/server/concierge/policy.py` | Modify — add fallback-ladder constants and terminal-outcome validation |
+| `src/dan/server/concierge/policy.py` | Modify — terminal-outcome validation lives here; 28-5 later removed the unused fallback-helper trio while keeping the active validation guardrail |
 | `src/dan/server/concierge/solver.py` | Modify — ensure `SolverDecision` always populates `fallback_chain` |
 | `src/dan/server/concierge/executor.py` | Modify — add fallback advancement logic when backends report direct failure |
-| `tests/test_concierge/test_fallback_policy.py` | Create — fallback ladder and terminal outcome enforcement tests |
+| `tests/test_concierge/test_fallback_policy.py` | Create — originally planned fallback/terminal-outcome tests; current focused regressions live under `tests/test_server/` after later cleanup |
 
 ## Dependencies
 
@@ -60,3 +60,4 @@
 - This plan complements `25-7` rather than replacing it: `25-7` covers safety/queue/progress/promotion; this plan covers productive failure handling and completion semantics.
 - The final runtime should always move the task forward, even under tool or access limitations.
 - Fallback success paths should be recorded so future planning can prefer them.
+- 2026-03-10 note: `28-5` later removed the unused `FALLBACK_LADDER`, `suggest_fallback_strategy()`, and `format_terminal_message()` helpers from `policy.py`. The live runtime still keeps fallback behavior in `solver.py`/`executor.py` plus the active `validate_terminal_content()` guardrail.

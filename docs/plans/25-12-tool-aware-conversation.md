@@ -53,13 +53,13 @@ These compound: narrow classifier → wrong handler → LLM without tools → ha
 - `ask` mode stays tool-less for graph-specific questions (its original purpose)
 - A new `conversation` execution mode gets read-only external tools (web search, etc.)
 - The solver runtime is the long-term replacement for keyword classification — classification survives only as a fast-path optimization
-- The honesty guard in `ASK_PROMPT` is a stop-gap that prevents the worst harm while the tool-aware path is built
+- The original ask-mode honesty guard was a temporary stop-gap; the current runtime now uses the unified prompt plus a text-only override when tool calling is unavailable
 
 ## Files
 
 | File | Action |
 |---|---|
-| `src/dan/server/chat_manager.py` | Modify — add conversation-with-tools mode, honesty guard (done for ASK_PROMPT) |
+| `src/dan/server/chat_manager.py` | Modify — add conversation-with-tools mode and honest text-only fallback messaging when tool calling is unavailable |
 | `src/dan/server/concierge/handlers.py` | Modify — give ConversationHandler and DirectTaskHandler tool-aware fallback |
 | `src/dan/server/concierge/solver.py` | Modify — add live-data detection to GoalResolver planning prompt |
 | `src/dan/server/concierge/executor.py` | Modify — wire conversation-with-tools execution mode |
@@ -80,6 +80,6 @@ These compound: narrow classifier → wrong handler → LLM without tools → ha
 
 ## Notes
 
-- The short-term honesty guard (ASK_PROMPT modification) is already deployed — this plan covers the structural fix
+- The historical ask-mode honesty guard has since been subsumed by the unified prompt + text-only override path; this plan still covers the structural fix
 - This plan does NOT add code execution capability — web search is the primary live-data tool
 - The solver LLM prompt should explicitly list categories of queries that need live data: prices, weather, scores, exchange rates, event dates, news

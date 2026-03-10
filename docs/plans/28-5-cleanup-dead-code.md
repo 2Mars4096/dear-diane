@@ -28,7 +28,7 @@ This plan cleans up after the migration is complete and verified.
   - [ ] 2-3. Delete `IntentCategory` enum if no longer referenced
 - [ ] 3. Remove mode-specific code
   - [ ] 3-1. Delete `detect_chat_mode()`, `CHAT_MODE_ALIASES`
-  - [ ] 3-2. Delete `ASK_PROMPT`, `CONVERSATION_PROMPT`, `PLAN_PROMPT`, `DEBUG_PROMPT` (already replaced in 28-4)
+  - [x] 3-2. Delete `ASK_PROMPT`, `CONVERSATION_PROMPT`, `PLAN_PROMPT`, `DEBUG_PROMPT` (already replaced in 28-4)
   - [ ] 3-3. Remove `mode` parameter from `ChatManager.send_message_with_tools()` (or make it no-op)
 - [ ] 4. Remove solver routing layer
   - [ ] 4-1. Evaluate whether `GoalResolver`, `PlanBuilder`, `SolverDecision`, `ExecutionSelector` are still needed
@@ -58,7 +58,11 @@ This plan cleans up after the migration is complete and verified.
 ## Notes
 
 - This plan ONLY runs after 28-2 has been live and stable for a reasonable period
-- Feature flag `DAN_LLM_FIRST_CHAT=1` should be the default before cleanup begins
+- The temporary `DAN_LLM_FIRST_CHAT` rollback is gone; the unified prompt path is now the only supported message-building route
 - Keep git history accessible — don't squash the removal commit
 - 2026-03-10 safe first slice: removed the unused `classify_intent_with_llm_fallback()` branch and stale package re-export from the concierge classifier surface. Kept `classify_intent()`, handler classes, solver/runtime pieces, and mode plumbing intact because they are still active dependencies in the current runtime.
 - 2026-03-10 safe second slice: removed dead `ProjectMessageQueue` plumbing from `runtime.py` and test helpers. Kept `queue.py` itself as an importable compatibility shim and preserved a deprecated-but-ignored `Concierge(..., queue=...)` kwarg for direct callers during the transition. Left solver/handler/mode code untouched because those paths are still exercised in the current runtime.
+- 2026-03-10 safe third slice: removed the unused `graph_state` parameter from `detect_chat_mode()` and updated the server/CLI auto-mode call sites plus auto-mode docs/tests. Kept the actual mode system (`detect_chat_mode()` itself, `CHAT_MODE_ALIASES`, prompt branches, and `mode` plumbing) because those paths are still active in `app.py`, `chat_local.py`, `handlers.py`, and `ChatManager`.
+- 2026-03-10 safe fourth slice: removed the unused `context` parameter from `PlanBuilder.build_plan()`, deleted the dead `format_completion_metadata()` helper from `executor.py`, and added a focused solver regression test. Kept the solver path itself (`GoalResolver`, `PlanBuilder`, `ExecutionSelector`, `_solver_path`) intact because it is still part of the live concierge runtime.
+- 2026-03-10 safe fifth slice: removed the unused fallback-policy helper trio (`FALLBACK_LADDER`, `suggest_fallback_strategy()`, `format_terminal_message()`) from `policy.py` and concierge package re-exports, kept `validate_terminal_content()` as the still-live solver guardrail, and added a focused policy regression test. Left the live handler, solver, and mode stacks intact because runtime audit still shows them on active paths.
+- 2026-03-10 safe sixth slice: removed the legacy `_build_messages()` prompt fallback and the obsolete `ASK_PROMPT` / `CONVERSATION_PROMPT` / `PLAN_PROMPT` / `DEBUG_PROMPT` constants, leaving the unified prompt path as the only supported message-building route. Follow-up polish kept the empty-workflow placeholder in the unified prompt, added an explicit text-only no-tools override for `send_message()`, and fixed `build_debug_context()` to use the newest failed run by `started_at`. Kept the broader mode system (`mode`, `detect_chat_mode()`, alias normalization, and mode-based tool gating) intact because those still affect routing and tool exposure outside prompt selection.

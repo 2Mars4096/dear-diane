@@ -305,14 +305,14 @@
   - [x] [27-3-surface-async-acceptance](plans/27-3-surface-async-acceptance.md) — C. Server endpoint returns `status: "processing"|"queued"`, pipes queued stream channels. Adapter uses shared `httpx.AsyncClient` + background task dispatch. `LocalChatRuntime` uses dispatcher. `dan-chat` CLI local mode gets queued event handling.
 
 ## Phase 18 — LLM-First Chat Architecture
-> Replace the 4-layer routing stack (adapter keywords → concierge classifier → 10 handlers → mode-gated tools) with a single LLM-driven path. The model has all tools and decides what to do. Multi-turn tool loop. Post-LLM safety/UX actions. One unified prompt.
+> Move chat toward an LLM-first architecture with a unified prompt, multi-turn tool loop, and post-LLM safety/UX actions. Some mode-gated and text-only fallback behavior still remains while `28-5` decides what can be removed safely.
 
 - [ ] [28-llm-first-chat](plans/28-llm-first-chat.md) — LLM-first chat: single path, all tools, multi-turn, response actions
   - [x] [28-1-strip-adapter-routing](plans/28-1-strip-adapter-routing.md) — A. Adapter is thin pipe: slash→NL translation, everything to server
-  - [x] [28-2-unified-tool-dispatch](plans/28-2-unified-tool-dispatch.md) — B. Multi-turn tool loop (10 turns), mode-agnostic tools, `DAN_LLM_FIRST_CHAT` flag
+  - [x] [28-2-unified-tool-dispatch](plans/28-2-unified-tool-dispatch.md) — B. Multi-turn tool loop (10 turns), broader tool visibility, initial `DAN_LLM_FIRST_CHAT` rollout
   - [x] [28-3-response-actions](plans/28-3-response-actions.md) — C. File delivery events, message splitting, claim validation
   - [x] [28-4-system-prompt-design](plans/28-4-system-prompt-design.md) — D. Unified prompt with tool catalog, surface hints, anti-fabrication rules
-- [ ] [28-5-cleanup-dead-code](plans/28-5-cleanup-dead-code.md) — E. Remove dead classifier, handlers, mode-gating code *(in progress: removed unused classifier fallback/re-export and deprecated runtime queue plumbing; solver, handlers, and mode plumbing still require broader cleanup decisions)*
+- [ ] [28-5-cleanup-dead-code](plans/28-5-cleanup-dead-code.md) — E. Remove dead classifier, handlers, mode-gating code *(in progress: removed unused classifier fallback/re-export, deprecated runtime queue plumbing, an unused `detect_chat_mode()` parameter, a tiny unused solver/executor interface, dead fallback-policy helpers, and the legacy prompt fallback/constants; handler, solver, and broader mode reductions now require runtime decisions)*
   - [x] [28-6-real-world-test-scenarios](plans/28-6-real-world-test-scenarios.md) — F. 5 scenarios, 38 tests: lit review, equity report, deep research, computer task, casual utility
 
 ## Phase 19 — Concierge-First Architecture: Memory, Reuse & Self-Evolvement
@@ -339,25 +339,37 @@
 > management. Telegram natively supports multiple bots in one group — the only messaging platform
 > that does. Each bot focuses on its assigned projects. Friends in the group get responses too.
 
-- [ ] [30-telegram-platform](plans/30-telegram-platform.md) — Telegram multi-bot platform: adapter upgrade, multi-bot group chat, native features, bot management
+- [x] [30-telegram-platform](plans/30-telegram-platform.md) — Telegram multi-bot platform: adapter upgrade, multi-bot group chat, native features, bot management
   - [x] [30-1-adapter-upgrade](plans/30-1-adapter-upgrade.md) — A. Feature-parity single bot: chat-mode routing via concierge, media handling, voice transcription, file commands, surface hints, `dan-adapter telegram` chat-mode
   - [x] [30-2-multi-bot-group-chat](plans/30-2-multi-bot-group-chat.md) — B. BotFleet coordinator, MessageRouter (@mention / topic / keyword / default routing), per-bot project assignment, friend interactions, cross-bot awareness, shared concierge
-  - [ ] [30-3-telegram-native-features](plans/30-3-telegram-native-features.md) — C. Forum topics for projects, message editing for streaming, reactions for status, polls for decisions, large file support (2GB), reply-to threading, bot commands menu, inline keyboards, pinned messages, Mini Apps (stretch)
-  - [ ] [30-4-bot-management](plans/30-4-bot-management.md) — D. `dan-bot create/list/start/stop/start-all/remove/edit/assign` CLI, `~/.dan/telegram/config.json`, BotFather setup guide, privacy mode detection, fleet daemon mode
+  - [x] [30-3-telegram-native-features](plans/30-3-telegram-native-features.md) — C. Forum topics, streaming edits, reactions, polls (`telegram_poll` capability), file support, reply-to, bot commands, inline keyboards, pinned messages. Mini App WebApp frontend (10-3, 10-5) deferred — needs HTTPS deployment.
+  - [x] [30-4-bot-management](plans/30-4-bot-management.md) — D. `dan-bot` CLI (create/list/start/stop/start-all/remove/edit/assign), `dan bot` unified CLI, `~/.dan/telegram/config.json`, BotFather guide, privacy mode, fleet daemon, per-bot stop via control file
 
 ## Phase 21 — Daily-Use Quality-of-Life & Power-Ups
 > Activate dormant features, add missing control surfaces, improve visibility, expose hidden
 > capabilities, and polish rough edges. No new architecture — purely wiring, env vars, commands,
 > and docs to make everything that's built work smoothly for daily use.
 
-- [x] [31-daily-use-qol](plans/31-daily-use-qol.md) — daily-use QoL: model control, visibility, capability exposure, power-user speed, defaults & docs
+- [ ] [31-daily-use-qol](plans/31-daily-use-qol.md) — daily-use QoL: model control, visibility, capability exposure, power-user speed, defaults & docs, execution intelligence, safety, continuity
   - [x] [31-1-model-control](plans/31-1-model-control.md) — A. `/model` command, TierPolicy activation (`DAN_ENABLE_TIER_POLICY`), `get_config` tool, `set_config` expansion for `DAN_LLM_*`, model name in surface hints
   - [x] [31-2-visibility-feedback](plans/31-2-visibility-feedback.md) — B. Chat cost tracking (`/cost`), notification wiring for chat-initiated runs, error retry UX (`/retry`), `/status` fast command
   - [x] [31-3-capability-exposure](plans/31-3-capability-exposure.md) — C. Expose 13 built-in tools (python_eval, csv_read, git tools, etc.) as chat capabilities, workflow introspection tools, `DAN_LEARNING_MODE` bundle
   - [x] [31-4-power-user-speed](plans/31-4-power-user-speed.md) — D. CLI pipe/one-shot mode (`dan ask`), memory management commands (`/memory-delete`, `/memory-forget`, `/memory-confirm`), prep timeout, file auto-read
   - [x] [31-5-defaults-and-docs](plans/31-5-defaults-and-docs.md) — E. `.env.example` overhaul (30+ vars), startup feature banner, feature bundles, `docs/cli.md` update (`dan-ask`, new flags, 8+ slash commands), `docs/llm-api-guide.md` (13 new capability tools), `docs/architecture.md`, `docs/development-plan.md`, README
+  - [ ] [31-6-goal-oriented-loop](plans/31-6-goal-oriented-loop.md) — F. Autonomous iteration until target metric met or deadline expires (Kaggle-style improvement loops), strategy escalation, `/goal` command
+  - [ ] [31-7-scheduled-tasks](plans/31-7-scheduled-tasks.md) — G. Cron/interval task scheduling, `TaskScheduler` runtime, `/schedule` commands, result delivery to surfaces
+  - [ ] [31-8-plan-dependency-optimization](plans/31-8-plan-dependency-optimization.md) — H. RCPSP scheduler: task DAG with time estimates, critical path, LRP parallel scheduling, dynamic rescheduling, model-tier assignment by slack
+  - [ ] [31-9-completion-guard](plans/31-9-completion-guard.md) — I. Pre-delivery requirement extraction and completeness validation, auto-fix or flag missing items
+  - [ ] [31-10-pii-tokenization](plans/31-10-pii-tokenization.md) — J. Sensitive data masking with semantic placeholders (`[PERSON_1]`) before LLM API calls, `/pii` commands
+  - [ ] [31-11-cross-session-resume](plans/31-11-cross-session-resume.md) — K. Structured task state persistence, `/resume` command, auto-resume by semantic matching
+  - [ ] [31-12-proactive-follow-up](plans/31-12-proactive-follow-up.md) — L. DAN-initiated follow-ups on completions, stale tasks, discoveries; quiet hours and rate limiting
+  - [ ] [31-13-multi-surface-continuity](plans/31-13-multi-surface-continuity.md) — M. Cross-surface conversation context sharing anchored on Project scope, `/sync` command
+  - [ ] [31-14-progressive-response-ux](plans/31-14-progressive-response-ux.md) — N. Phase-chunked progressive disclosure: instant ack, plan disclosure, phase transitions, result checkpoints, surface-adaptive verbosity
+  - [ ] [31-15-learning-evolution-optimization](plans/31-15-learning-evolution-optimization.md) — O. Tiered learning activation, upgraded quality signals, correction memory loop, learning health visibility, unified adaptation governance, storage backend abstraction, planning-time calibration
 
 ## Backlog (unphased)
+
+### strengthen workflow to make it more powerful and easier to use
 
 ### Infrastructure / CI
 - [ ] **Playwright E2E browser tests** (12-6 tasks 5-6) — mode transitions, mention autocomplete, stop generation, export. Requires Playwright setup + CI pipeline.
@@ -459,7 +471,32 @@
   - [x] Persist generated custom strategy scripts before execution (`output/scripts/{strategy}.py`) and pass script paths through department outputs
   - [x] Capture generated `build_factor` stdout/stderr and fail fast on empty factor outputs to avoid silent “factor-only/no-plot” runs
 
+### Execution intelligence
+- [ ] **Goal-oriented loop** — set a target metric (score, test pass, quality threshold) and loop until met or wall-clock/cost ceiling reached. Pluggable evaluation (LLM-as-judge, test suite, numeric threshold). Compose with RepairEscalator for graduated diagnosis per iteration. Checkpoint after each attempt.
+- [ ] **Timed / scheduled tasks** — `TaskScheduler` with cron-style or interval triggers stored in `~/.dan/schedules.json`. `/schedule` chat command. Each trigger fires a concierge message reusing the full pipeline. Pairs with notifications.
+- [ ] **Plan dependency-graph optimization** — decompose goals into subtask DAG with time estimates, solve resource-constrained project scheduling (critical path + list scheduling heuristic) to minimize makespan under `DAN_MAX_CONCURRENT_LLM` constraint. Wire RCPSP schedule into ParallelSubagents/topological scheduler. Time estimation: heuristic classification + historical experience memory + LLM estimate with calibration.
+
+### Safety & guardrails
+- [ ] **Completion guard** — pre-delivery validation: extract requirements from user message, structured check that all asks were addressed before sending final response. `RequirementTracker` persists parsed requirements and checks them off. Flag missed items — auto-fix or report "addressed 4/5, item 5 requires X."
+- [ ] **PII / sensitive data tokenization** — user-defined sensitive word list (`~/.dan/sensitive_words.json`) + auto-detected patterns (phone, SSN, email). Replace with semantic placeholders (`[USER_NAME_1]`, `[ADDRESS_1]`) before LLM API calls, restore on response. Word-boundary-aware matching. Bidirectional scan (also check LLM responses for leaks). Only applies to external API calls, not local processing.
+- [ ] **Cost hard limits** — `max_cost` per workflow run and per concierge session. Budget enforcer intervenes before each LLM call: downgrade model / skip optional step / checkpoint and ask user. Composes with TierPolicy and model_policy cascade.
+
+### Workflow engine robustness (long-tail tasks)
+- [ ] **Node-level checkpointing** — checkpoint after every node completion (not just topological level). Critical for multi-hour workflows.
+- [ ] **Long-running workflow profile** — aggressive retry defaults for long-running mode: `max_retries=5`, `backoff=30s`, `backoff_max=1800s`, fallback model, `on_failure="skip"` (complete remaining branches, report partial results).
+- [ ] **Wall-clock and cost ceilings on workflow runs** — `max_duration` and `max_cost` on workflow run config. When hit: checkpoint, report partial results, explain what remains.
+- [ ] **Self-healing node execution** — on node failure, auto-diagnose via RepairClassifier and adjust (API timeout → retry with backoff, invalid JSON → re-prompt with stricter format, tool error → try alternative approach) before escalating.
+- [ ] **Mid-execution adaptation** — modify pending nodes' prompts/config in a running workflow without restarting completed stages. Concierge translates NL change requests into targeted node modifications.
+- [ ] **Human-readable workflow progress** — map engine events to natural language stage names and progress fractions. Concierge surfaces: "Completed literature review (3/7 stages). Writing methodology. ~2 hours remaining."
+- [ ] **Dynamic topology** — workflow can spawn new branches at runtime based on intermediate results (e.g. "found 4 clusters in data, creating 4 parallel analysis branches").
+- [ ] **Cross-workflow coordination** — output of one workflow becomes input of another, concierge as coordinator. "Run data pipeline, then start report workflow with its outputs."
+
+### Continuity & polish
+- [ ] **Resumable cross-session work** — structured task-level resume across sessions via Project/Task scope. "Continue where I left off" with persistent what's-done/what's-pending/current-blocker state.
+- [ ] **Proactive follow-up** — initiative layer on top of scheduled tasks + experience memory. DAN proactively reports: "The report I ran yesterday found an anomaly — want me to dig deeper?"
+- [ ] **Multi-surface task continuity** — start a task on desktop, continue on Telegram from phone, return to desktop with full context. Project scope as continuity anchor, not surface.
+
 ### Future vision
-- [ ] ~~**Multi-agent group chat**~~ → promoted to [Phase 20](#phase-20--telegram-multi-bot-platform) (Plan 30, Telegram-first). Discord adapter deferred to future phase.
+- [x] ~~**Multi-agent group chat**~~ → promoted and completed in [Phase 20](#phase-20--telegram-multi-bot-platform) (Plan 30, Telegram-first). Discord adapter deferred to future phase.
 - [x] ~~**In-chat model switching**~~ → promoted to [31-1-model-control](plans/31-1-model-control.md) under Phase 21
 - [ ] **Project retrospective distillation** — auto-review completed projects and distill reusable artifacts: generate workflow templates from successful run patterns, extract skills/rules/hyperedges from repeated working patterns, and codify domain-specific conventions. Periodic or on-demand; feeds back into experience memory and planner few-shot examples.

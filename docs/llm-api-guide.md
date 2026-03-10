@@ -935,7 +935,7 @@ DAN ships 32 batteries-included tools, auto-registered during server startup. Ea
 | **Text Processing** | `text_chunk`, `json_extract`, `regex_match`, `text_diff`, `text_translate` | Chunking, dot-notation extraction, regex, unified diff, LLM translation |
 | **Git** | `git_status`, `git_diff`, `git_log`, `git_commit`, `git_branch`, `git_worktree` | Safe git operations (no force-push/hard-reset) |
 | **Media** | `image_describe`, `audio_transcribe` | Vision LLM image description, Whisper transcription |
-| **Communication** | `send_email` | SMTP email via aiosmtplib |
+| **Communication** | `send_email`, `telegram_poll` | SMTP email via aiosmtplib; native Telegram polls (2-10 options, anonymous/multiple toggles) |
 | **Archive** | `compress` | Create zip/tar.gz archives |
 
 `pdf_read` parameters: `path` (required), optional `mode`, `start_page`, `end_page`, `vision_model`, and `vision_prompt`. In `mode="vision"`, the tool reports `pages_requested`, `pages_returned`, `truncated`, and `warning` so callers can tell when a long PDF was capped to the first 25 pages.

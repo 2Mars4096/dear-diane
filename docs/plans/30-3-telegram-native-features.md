@@ -1,7 +1,7 @@
 # 30-3: Telegram-Native Features
 
 **Parent:** [30-telegram-platform](30-telegram-platform.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Leverage Telegram-specific capabilities that other messaging platforms lack — forum topics, message editing for streaming, reactions, polls, large file support, reply threading, bot commands, and Mini Apps.
 
 ## Why This Matters
@@ -60,9 +60,9 @@ Telegram's Bot API offers features that make it a superior agent surface compare
 - [x] 4-4. In group chats: always reply-to the triggering message so it's clear which message the bot is responding to
 
 ### 5. Telegram-native polls
-- [ ] 5-1. New capability tool: `telegram_poll` — creates a Telegram poll in the chat
+- [x] 5-1. New capability tool: `telegram_poll` — creates a Telegram poll in the chat
 - [x] 5-2. Parameters: `question: str`, `options: list[str]`, `is_anonymous: bool = False`, `allows_multiple: bool = False`
-- [ ] 5-3. Wire poll results back to the concierge when the poll closes or has enough votes
+- [x] 5-3. Wire poll results back to the concierge when the poll closes or has enough votes
 - [x] 5-4. Use for HumanNode selection render mode: if options <= 10, create a poll instead of inline keyboard
 - [x] 5-5. `PollAnswerHandler` collects votes and resolves pending HumanNode futures
 
@@ -93,8 +93,8 @@ Telegram's Bot API offers features that make it a superior agent surface compare
 - [x] 9-4. Requires admin rights — graceful failure if bot isn't admin
 
 ### 10. Mini Apps (stretch goal)
-- [ ] 10-1. Register a Mini App URL that opens the DAN visual editor in a Telegram WebApp panel
-- [ ] 10-2. Use `MenuButtonWebApp` to add "Open Editor" button to bot menu
+- [x] 10-1. Register a Mini App URL that opens the DAN visual editor in a Telegram WebApp panel
+- [x] 10-2. Use `MenuButtonWebApp` to add "Open Editor" button to bot menu
 - [ ] 10-3. The WebApp communicates with the DAN server via the same API the editor uses
 - [x] 10-4. Authentication: use Telegram's `initData` to verify the user
 - [ ] 10-5. Scope: read-only workflow viewer first, full editor later
@@ -121,4 +121,5 @@ Telegram's Bot API offers features that make it a superior agent surface compare
 - Telegram Bot API rate limits: ~30 msg/sec globally, ~20 msg/min per chat, ~30 edits/min per message. The streaming edit batching (task 2-4) stays well within these limits.
 - `python-telegram-bot` v21 exposes all these features natively. No custom HTTP calls needed.
 - Forum topics are a supergroup-only feature (the group must be converted to a supergroup, which Telegram does automatically when certain thresholds are hit, or manually via settings).
-- Remaining closeout after the review/patch cycles: expose a true `telegram_poll` capability tool through the chat capability layer, and wire Mini App menu-button usage into a real configured Telegram surface rather than helper methods only.
+- `telegram_poll` capability tool is now fully wired: LLM calls `telegram_poll` -> ChatManager emits `ChatPollRequestEvent` -> adapter/fleet sends native Telegram poll. Poll answers flow back via `PollAnswerHandler`.
+- Mini App menu button is now configurable via `settings.mini_app_url` in fleet config. When set, fleet startup calls `set_menu_button()` for each bot. The actual WebApp frontend (10-3, 10-5) is deferred until the DAN editor is deployed to a public HTTPS URL.

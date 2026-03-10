@@ -44,7 +44,7 @@
 ### Auto-Mode Detection (from 12-2 task 7)
 
 - [x] 3. Heuristic mode detection from message content
-  - [x] 3-1. `chat_manager.py`: add `detect_chat_mode(message, graph_state, recent_run_failed)` function
+  - [x] 3-1. `chat_manager.py`: add `detect_chat_mode(message, recent_run_failed)` function
   - [x] 3-2. Detection heuristics implemented (debug > ask > plan > agent priority)
   - [x] 3-3. `ChatMessageRequest.mode`: extended literal to include `"auto"`. `normalize_chat_mode("auto")` passes through; `_produce()` resolves via `detect_chat_mode`.
   - [x] 3-4. Stream payloads: `ChatCompleteEvent` and `ChatMutationEvent` gain `detected_mode: str | None` field; `_produce()` injects it into `chat_complete`/`chat_mutation` payloads when auto was used.
@@ -54,7 +54,7 @@
 ### Validation
 
 - [x] 4. Focused verification for checkpoint + auto-mode flows
-  - [x] 4-1. Backend tests: 28 pytest cases in `tests/test_server/test_auto_mode.py` — `detect_chat_mode` fixtures for debug/ask/plan/agent intents, priority ordering, `normalize_chat_mode` pass-through/alias tests. All pass.
+  - [x] 4-1. Backend tests: 32 pytest cases in `tests/test_server/test_auto_mode.py` — `detect_chat_mode` fixtures for debug/ask/plan/agent intents, priority ordering, `normalize_chat_mode` pass-through/alias tests. All pass.
   - [ ] 4-2. Backend tests: checkpoint rerun API *(deferred — requires live RunManager integration test)*
   - [ ] 4-3. Frontend tests: RunHistoryPanel *(deferred — requires component test setup)*
   - [ ] 4-4. Frontend tests: Auto selector *(deferred — requires component test setup)*

@@ -1,7 +1,7 @@
 # 30-4: Bot Management
 
 **Parent:** [30-telegram-platform](30-telegram-platform.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Make it trivially easy to create, configure, and manage multiple Telegram bots — from initial BotFather setup through fleet operation.
 
 ## User Experience
@@ -135,7 +135,7 @@ Convention: `dan-bot` with hyphen, matching `dan-run`, `dan-chat`, `dan-serve`, 
 - [x] 2-2. `dan-bot list` — Rich table showing name, @username, projects, status (running/stopped), default flag
 - [x] 2-3. `dan-bot start <name>` — start a single bot in chat-mode (foreground, Ctrl+C to stop). Reuses `_run_adapter_chat_mode()` from `adapter.py`.
 - [x] 2-4. `dan-bot start-all` — start all configured bots as a fleet (foreground). Creates `BotFleet` from 30-2.
-- [ ] 2-5. `dan-bot stop <name>` — stop a running bot (when running as daemon/background)
+- [x] 2-5. `dan-bot stop <name>` — stop a running bot (when running as daemon/background)
 - [x] 2-6. `dan-bot remove <name>` — remove bot from config (with confirmation prompt)
 - [x] 2-7. `dan-bot edit <name>` — modify personality, projects, default flag interactively
 - [x] 2-8. `dan-bot assign <name> <project1,project2,...>` — shortcut for project assignment
@@ -174,7 +174,7 @@ Convention: `dan-bot` with hyphen, matching `dan-run`, `dan-chat`, `dan-serve`, 
 
 ### 6. Entry point wiring
 - [x] 6-1. Register `dan-bot = "dan.cli.bot:main"` in `pyproject.toml` `[project.scripts]`
-- [ ] 6-2. Also make `dan bot` work as a subcommand of a unified `dan` CLI (if it exists)
+- [x] 6-2. Also make `dan bot` work as a subcommand of a unified `dan` CLI (if it exists)
 - [x] 6-3. `--config` flag on all subcommands to override default config path
 
 ### 7. Tests
@@ -197,4 +197,5 @@ Convention: `dan-bot` with hyphen, matching `dan-run`, `dan-chat`, `dan-serve`, 
 - The config file intentionally stores tokens in plain text (same as `.env` files and MCP config at `~/.dan/mcp.json`). Users who want encryption can use filesystem-level encryption or a secrets manager. Future: optional keyring integration.
 - `dan-bot start <name>` in single-bot mode reuses the existing `_run_adapter_chat_mode()` infrastructure. The fleet mode (`start-all`) uses the new `BotFleet` coordinator from 30-2.
 - `dan-adapter telegram --bot-token TOKEN` continues to work for backward compatibility. `dan-bot start <name>` is the recommended path for configured bots (reads token from config, no CLI flags needed).
-- Current limitation after review patch: `dan-bot stop <name>` intentionally refuses per-bot stop because the fleet runs as a single process. The only shipped stop path today is `dan-bot stop` for the whole fleet daemon.
+- Per-bot stop is now implemented: `dan-bot stop <name>` writes a control command to `~/.dan/telegram/fleet.ctl`, which the fleet daemon watches every 2 seconds. `BotFleet.stop_bot(name)` gracefully stops a single bot's polling and removes it from the active set.
+- Unified `dan` CLI entry point added at `src/dan/cli/main.py`, registered as `dan = "dan.cli.main:main"` in pyproject.toml. `dan bot ...` dispatches to `dan-bot`.

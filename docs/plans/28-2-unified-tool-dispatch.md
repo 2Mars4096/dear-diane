@@ -2,7 +2,7 @@
 
 **Parent:** [28-llm-first-chat](28-llm-first-chat.md)
 **Status:** completed
-**Goal:** Replace classifier→handler dispatch with a single LLM call that has all tools and a multi-turn tool loop.
+**Goal:** Move chat toward an LLM-first path with a multi-turn tool loop, while later cleanup decides how much mode gating and text-only fallback remains.
 
 ## Problem
 
@@ -18,10 +18,10 @@ Target: every message goes to the LLM with all tools. The LLM decides what to do
   - [x] 1-2. Loop until the LLM returns a text response (no tool calls) or hits the turn cap (default 10, configurable via `max_tool_turns` parameter)
   - [x] 1-3. Stream `ChatToolCallStartEvent` / `ChatToolCallResultEvent` for each tool call so the adapter/editor can show progress
   - [x] 1-4. Respect `cancel_event` at each loop iteration
-- [x] 2. Remove mode-based tool filtering
-  - [x] 2-1. `_build_messages()` always includes `CAPABILITY_TOOLS_REFERENCE`
-  - [x] 2-2. `get_tools(mode)` returns all tools regardless of mode
-  - [x] 2-3. `is_available()` and `execute()` skip mode checks
+- [x] 2. Expand tool visibility in the LLM-first path
+  - [x] 2-1. `_build_messages()` moved toward a unified prompt/tool description path
+  - [x] 2-2. Multi-turn tool calling shipped for the active tool-enabled path
+  - [ ] 2-3. Fully remove runtime mode-based tool filtering only if later cleanup confirms the hybrid ask/plan text-only path can be retired safely
   - [ ] 2-4. Safety filtering moves to Response Actions (28-3) — the LLM can request any tool, but destructive tools get confirmed before execution
 
 ### New dispatch path in concierge
@@ -33,12 +33,12 @@ Target: every message goes to the LLM with all tools. The LLM decides what to do
 - [x] 4. Wire the new path into `Concierge.process()`
   - [x] 4-1. Default: `_llm_first_path()` for all messages
   - [ ] 4-2. Optional fast-path: if classifier confidence > 0.95 AND intent is unambiguous (cancel, status), use existing handler directly (skip LLM call for cost)
-  - [x] 4-3. Feature flag: `DAN_LLM_FIRST_CHAT=1` (default on) — set to 0 to revert to old classifier path
+  - [x] 4-3. Feature flag shipped initially as `DAN_LLM_FIRST_CHAT=1` (default on); the temporary revert path was removed later during `28-5` cleanup once the unified prompt path was kept as the only supported route
 
 ### Server endpoint simplification
 - [x] 5. Simplify `/api/chat/message` in `app.py`
   - [x] 5-1. Skip `detect_chat_mode()` when concierge is active and mode="auto" — use "agent" directly
-  - [x] 5-2. Remove the `use_tools` branch — non-concierge fallback always uses `send_message_with_tools`
+  - [ ] 5-2. Remove the `use_tools` branch — deferred; non-concierge fallback still keeps a text-only path for `ask`/`plan`
   - [ ] 5-3. Always route through concierge when available — deferred to 28-5
 
 ### Tests
@@ -58,18 +58,18 @@ Target: every message goes to the LLM with all tools. The LLM decides what to do
 - First-turn provider failures fall back to streaming text; later-turn failures yield ChatErrorEvent
 - Mutation tool calls exit the loop (handled as before, not looped)
 - Tool result messages use OpenAI format: `{"role": "tool", "tool_call_id": "...", "content": "..."}`
-- Existing capability registry tests updated to reflect mode-agnostic behavior
+- The long-term direction is broader tool access, but the current runtime still keeps some mode/text-only behavior for UX and safety reasons
 
 ## Files
 
 | File | Action |
 |---|---|
-| `src/dan/server/chat_manager.py` | Major — multi-turn tool loop, remove mode gating |
+| `src/dan/server/chat_manager.py` | Major — multi-turn tool loop, unified prompt/tool description work, later cleanup decision on remaining mode gating |
 | `src/dan/server/concierge/runtime.py` | Major — `_llm_first_path()`, feature flag |
 | `src/dan/server/app.py` | Simplify chat_message endpoint |
-| `src/dan/server/capability_registry.py` | `get_tools()` / `is_available()` / `execute()` ignore mode |
+| `src/dan/server/capability_registry.py` | May be revisited later if remaining mode gating is retired; current runtime still enforces mode availability |
 | `tests/test_server/test_multi_turn_tools.py` | New — 8 tests for multi-turn loop |
-| `tests/test_server/test_capability_registry.py` | Updated — mode-agnostic assertions |
+| `tests/test_server/test_capability_registry.py` | Updated over time to match the current mode-aware runtime contract |
 
 ## Notes
 

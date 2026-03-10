@@ -71,7 +71,7 @@ Each sub-plan is independently shippable. The old path stays as fallback until t
 - The concierge `ProjectContextResolver` is kept — it enriches context, not routes
 - `UserProfile` + `ConversationMemory` are kept — they inform the LLM
 - The concierge classifier MAY be kept as a cheap fast-path for unambiguous commands (cancel, status) — but it is never a gatekeeper
-- All tools are always available — no mode-based filtering
+- Broader tool access is the direction, but the runtime may keep some mode-based filtering and text-only fallback behavior until later cleanup proves those paths can be removed safely
 - Safety (confirm destructive actions, cost thresholds) moves to the Response Actions layer
 - Multi-turn tool loop has a cap (default 10 rounds) to prevent runaway
 
@@ -81,7 +81,7 @@ Each sub-plan is independently shippable. The old path stays as fallback until t
 |---|---|
 | `src/dan/cli/adapter.py` | Major — strip `_classify_adapter_intent`, `/find`, `/send`, pending state |
 | `src/dan/server/concierge/runtime.py` | Major — new `process()` path: context → LLM → tool loop → actions |
-| `src/dan/server/chat_manager.py` | Major — multi-turn tool loop, remove mode-based tool gating |
+| `src/dan/server/chat_manager.py` | Major — multi-turn tool loop, unified prompt work, and later cleanup evaluation for remaining mode-based gating |
 | `src/dan/server/concierge/classifier.py` | Reduce to optional fast-path |
 | `src/dan/server/concierge/handlers.py` | Most handlers become dead code |
 | `src/dan/server/capability_handlers.py` | May need new action tools (send_file_to_user) |
@@ -113,4 +113,4 @@ Each sub-plan is independently shippable. The old path stays as fallback until t
 
 **Reliability:**
 - All existing adapter/CLI/editor chat paths continue working
-- Feature flag `DAN_LLM_FIRST_CHAT=0` reverts to old behavior
+- The temporary `DAN_LLM_FIRST_CHAT` rollback path was removed later during `28-5` cleanup once the unified prompt path became the only supported message-building route

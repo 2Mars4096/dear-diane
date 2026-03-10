@@ -30,8 +30,8 @@ The solver sits above the concierge foundation and changes the top-level control
 
 - **`solver.py`** — `GoalResolver` (fast-path + LLM + heuristic), `PlanBuilder`, `SolverDecision` model, `ExecutionMode` (10 modes), `TerminalOutcome`
 - **`memory_bridge.py`** — `WorkflowMemoryIndex` wrapping `ExperienceStore`/`ExperienceIndex` for semantic retrieval, reuse scoring, duplicate detection
-- **`executor.py`** — `ExecutionSelector` mapping solver decisions to handler backends, fallback ladder execution, apology detection, partial-result formatting
-- **`policy.py` additions** — `FALLBACK_LADDER`, `validate_terminal_content()`, `suggest_fallback_strategy()`, `format_terminal_message()`
+- **`executor.py`** — `ExecutionSelector` mapping solver decisions to handler backends, fallback execution, apology detection, partial-result formatting
+- **`policy.py` additions** — `validate_terminal_content()` for the solver's terminal-content guardrails
 
 Flow: `classify_intent()` → fast-path check → `GoalResolver.resolve()` → `PlanBuilder.build_plan()` → `ExecutionSelector.execute()` → handler backend → terminal outcome validation. The solver path is optional; when `goal_resolver` is `None`, the old handler-dispatch path runs unchanged.
 
@@ -227,6 +227,8 @@ deep-agent-network/
       down.py                    # dan-down entry point: stop background server via PID file (26-1)
       service.py                 # dan-service entry point: OS-level service management (install/uninstall/start/stop/status/health/logs) — macOS launchd + Linux systemd (26-2)
       service_runner.py          # Shared service runner: log rotation + PID bookkeeping + uvicorn launch, used by launchd/systemd/manual starts (26-2)
+      main.py                    # Unified `dan` CLI entry point: dispatches `dan bot/serve/run/chat/ask/...` to submodules (Phase 20)
+      bot.py                     # dan-bot: create/list/start/stop/start-all/remove/edit/assign/group Telegram bots; fleet daemon management (Phase 20)
     server/                      # Phase 2 — FastAPI backend for visual editor
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
@@ -237,7 +239,7 @@ deep-agent-network/
       graph_mutator.py           # GraphMutator: applies MutationPlan (add/remove/edit nodes+edges) to graph dicts with transactional semantics + dry-run; TOOL_PORT_MANIFESTS for tool-specific port declarations; ApplySkill mutation op
       skill_library.py           # SKILL_LIBRARY: domain-specific prompt-injection skills (management_science_writing, informs_latex_style) targeted by node tags
       capability_registry.py     # Phase 15 (25-1) — ChatCapabilityRegistry, CapabilityContext, CapabilityResult, build_tool_schema(); mode-aware multi-tool dispatch for chat-as-control-plane
-      capability_handlers.py     # Phase 15 (25-1–25-4, 25-13) — 35 capability tool handlers (experience, run lifecycle, publish/share/export, graph, all 11 built-in tools); register_*_capabilities() functions
+      capability_handlers.py     # Phase 15 (25-1–25-4, 25-13) — 36 capability tool handlers (experience, run lifecycle, publish/share/export, graph, all 11 built-in tools, telegram_poll); register_*_capabilities() functions
       chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA) + capability tools (ChatCapabilityRegistry), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history), profile/memory prompt injection, and conversation-summary persistence (26-3 integration)
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
       concierge/                # Phase 15 (25-6/25-7) — deterministic routing/runtime layer: project/task store, classifier, handlers, policy, queue, progress, promotion

@@ -1,6 +1,6 @@
 # 30: Telegram Multi-Bot Platform
 
-**Status:** in-progress
+**Status:** completed
 **Goal:** Make Telegram a first-class DAN surface with multi-bot group chats, per-bot project focus, Telegram-native UX, and zero-friction bot management.
 
 ## Problem

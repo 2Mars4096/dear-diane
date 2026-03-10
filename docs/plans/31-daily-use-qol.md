@@ -1,7 +1,7 @@
 # 31: Daily-Use Quality-of-Life & Power-Ups
 
-**Status:** completed
-**Goal:** Make everything that's built actually work smoothly for daily use. Activate dormant features, add missing control surfaces, improve visibility, expose hidden capabilities, and polish the rough edges that create friction every session.
+**Status:** in-progress
+**Goal:** Make everything that's built actually work smoothly for daily use. Activate dormant features, add missing control surfaces, improve visibility, expose hidden capabilities, polish rough edges, and add execution intelligence, safety, and continuity features.
 
 ## Problem
 
@@ -19,6 +19,16 @@ After 20 phases of infrastructure, the platform is deep but rough around the edg
 - **Memory is read-only from chat.** `/memory-stats` and `/memory-search` exist, but no delete/edit/confirm.
 - **`set_config` can't change the model.** `DAN_LLM_*` prefixes are blocked.
 - **No `get_config`.** Users can't ask "what model am I using?"
+- **No goal-oriented execution.** Can't say "iterate until score >= X or after 24h."
+- **No scheduled tasks.** Every task requires human initiation.
+- **Plans execute linearly.** No dependency-aware parallel scheduling.
+- **No completeness validation.** DAN may silently drop requirements from multi-part requests.
+- **PII sent to external APIs.** No way to mask sensitive data before LLM calls.
+- **No cross-session resume.** Returning users must re-explain context.
+- **No proactive follow-up.** DAN never initiates conversation.
+- **No multi-surface continuity.** Switching surfaces loses context.
+- **No progressive response feedback.** Users wait in silence during complex tasks — no plan disclosure, no phase progress, no interactive checkpoints.
+- **Learning is architecturally complete but practically dormant.** Active self-evolvement features default to off, quality signals are too coarse, user corrections aren't captured, and learning can fail silently.
 
 ## Sub-Plans
 
@@ -29,20 +39,43 @@ After 20 phases of infrastructure, the platform is deep but rough around the edg
 | 31-3 | [Capability Exposure](31-3-capability-exposure.md) | Expose 13 built-in tools as chat capabilities, workflow introspection tools, learning feature activation | 1.5d |
 | 31-4 | [Power-User Speed](31-4-power-user-speed.md) | CLI pipe/one-shot mode, memory management commands, file handling UX, prep timeout controls | 1d |
 | 31-5 | [Defaults & Docs](31-5-defaults-and-docs.md) | `.env.example` overhaul, startup profiles, feature bundles, CLI ref, LLM API guide, architecture, README, dev plan | 1d |
+| 31-6 | [Goal-Oriented Loop](31-6-goal-oriented-loop.md) | Autonomous iteration until target metric met or deadline expires (Kaggle-style improvement loops) | 2-3d |
+| 31-7 | [Scheduled Tasks](31-7-scheduled-tasks.md) | Cron-style and interval-based task scheduling, `/schedule` commands, result delivery | 1.5d |
+| 31-8 | [Plan Dependency Optimization](31-8-plan-dependency-optimization.md) | Standalone RCPSP solver: exact (n≤50) / heuristic (n>50), dual-caller (concierge + workflow engine), dynamic rescheduling | 3-4d |
+| 31-9 | [Completion Guard](31-9-completion-guard.md) | Pre-delivery requirement extraction and completeness validation | 1.5-2d |
+| 31-10 | [PII Tokenization](31-10-pii-tokenization.md) | Sensitive data masking with semantic placeholders before LLM API calls | 2d |
+| 31-11 | [Cross-Session Resume](31-11-cross-session-resume.md) | Structured task state persistence and one-command resume across sessions | 1.5d |
+| 31-12 | [Proactive Follow-Up](31-12-proactive-follow-up.md) | DAN-initiated follow-up messages on completions, stale tasks, and discoveries | 1.5-2d |
+| 31-13 | [Multi-Surface Continuity](31-13-multi-surface-continuity.md) | Cross-surface conversation context sharing anchored on Project scope | 1-1.5d |
+| 31-14 | [Progressive Response UX](31-14-progressive-response-ux.md) | Phase-chunked progressive disclosure: instant ack, plan disclosure, phase transitions, result checkpoints, surface-adaptive verbosity | 2-3d |
+| 31-15 | [Learning & Evolution Optimization](31-15-learning-evolution-optimization.md) | Tiered learning activation, upgraded quality signals, correction memory loop, learning health visibility, unified adaptation governance, storage backend abstraction, planning-time calibration | 3-4d |
 
-Order: 31-1 → 31-2 (model control first, then visibility relies on it) → 31-3 and 31-4 (independent, can run in parallel) → 31-5 (docs sweep last, covers everything added).
+Order: 31-1 through 31-5 completed. For 31-6 through 31-15:
+- **Independent (can run in parallel):** 31-6, 31-9, 31-10, 31-14, 31-15
+- **Sequential:** 31-7 before 31-12 (scheduled tasks enable proactive follow-ups)
+- **Sequential:** 31-11 before 31-13 (cross-session resume state enables multi-surface continuity)
+- **31-8** is the largest and most independent — can start anytime
+- **31-14** is independent — builds on existing streaming/edit infrastructure, no dependency on 31-6 through 31-13
+- **31-15** is independent — patches existing learning infrastructure. Task 7 (planning-time calibration) bridges to 31-8 when both are implemented.
 
 ## Key Design Decisions
 
-- **No new architecture.** Every item plugs into existing patterns (`ChatCapabilityRegistry`, fast commands, `CapabilityContext`, env vars, `ChatManager` fields).
+- **No new architecture (31-1 through 31-5).** Every item plugs into existing patterns (`ChatCapabilityRegistry`, fast commands, `CapabilityContext`, env vars, `ChatManager` fields).
+- **Execution intelligence (31-6 through 31-8).** New execution modes (goal loop, scheduled tasks, RCPSP scheduler) that compose with existing engine primitives. 31-8 is a **standalone solver** — one module called by both concierge (chat tasks) and workflow engine (graph execution). Philosophy: plan optimistically, validate mechanically, fix dynamically.
+- **Safety and completeness (31-9 through 31-10).** Pre-delivery validation and PII protection — hooks into existing LLM/chat call paths.
+- **Continuity (31-11 through 31-13).** Cross-session and cross-surface context sharing via the existing Project/Task model.
+- **Progressive UX (31-14).** Phase-chunked progress disclosure with surface-adaptive rendering. Deterministic for structure/timing, LLM for content/framing.
+- **Learning optimization (31-15).** Make the existing 5-layer learning architecture practically effective: tiered activation, precision signals, user-correction feedback, observable health, unified governance, storage abstraction, planning-time calibration.
 - **Backward compatible.** All new features are opt-in or additive. Existing `.env` files, workflows, and chat sessions work unchanged.
 - **Chat-first.** Every control surface works from chat (WhatsApp, Telegram, CLI, editor). No server-only or editor-only features.
-- **Activate, don't rebuild.** For dormant features (tier scoring, learning loops), the work is wiring + env vars + docs — not reimplementation.
 
 ## Dependencies
 
 - Existing: `ChatCapabilityRegistry`, `ModelSelector`, `TierPolicy`, `CostTracker`, `NotificationManager`, `MemoryKernel`, `ConcurrentDispatcher`, adapter framework, `identity.py`
-- No new external dependencies.
+- 31-6 through 31-8: `WhileLoop`, `ParallelSubagentsExecutor`, `ResourceBudget`, `RepairClassifier`, `PlanBuilder`, `ExperienceStore`
+- 31-9 through 31-10: `LLMExecutor`, `ProviderRegistry`, `Concierge`
+- 31-11 through 31-13: `ProjectStore`, `ConversationMemoryStore`, `ActivityTracker`, `GlobalEventBus`
+- Optional external: `ortools` (31-8, for exact RCPSP solver), `croniter` (31-7, for cron expression parsing)
 
 ## Cross-References Between Subplans
 
@@ -53,9 +86,22 @@ Order: 31-1 → 31-2 (model control first, then visibility relies on it) → 31-
 - **31-1 → 31-5**: All new env vars from 31-1 (`DAN_ENABLE_TIER_POLICY`, `DAN_TIER_MAP`) are documented in 31-5's `.env.example`.
 - **31-2 → 31-5**: All new env vars from 31-2 (`DAN_SHOW_COST`) and commands (`/cost`, `/status`, `/retry`) are documented in 31-5.
 
+## Cross-References Between Subplans (31-6 through 31-13)
+
+- **31-7 → 31-12**: Scheduled tasks enable proactive follow-ups (scheduled task results trigger follow-up messages)
+- **31-11 → 31-13**: Cross-session resume state is required for multi-surface continuity (structured task state is the handoff payload)
+- **31-6 → 31-8**: Goal loops can use the RCPSP scheduler for internal iteration planning (each attempt could be a sub-plan)
+- **31-9 → 31-12**: Completion guard flags missed requirements; proactive follow-up can offer to address them later
+- **31-8 → 31-6**: Plan dependency optimization can schedule goal loop attempts alongside other work
+- **31-14 → all execution plans**: Progressive response applies to any long-running execution — goal loops (31-6), scheduled tasks (31-7), RCPSP-scheduled work (31-8)
+- **31-14 → 31-2**: Supersedes generic reassurance messages from 29-2; builds on streaming/notification infrastructure from 31-2
+- **31-15 → 31-8**: Planning-time calibration (31-15 task 7) feeds duration estimates and model priors into 31-8's RCPSP scheduler
+- **31-15 → 31-3**: Supersedes binary `DAN_LEARNING_MODE` bundle (31-3) with tiered `DAN_LEARNING_TIER`
+- **31-15 → 31-2**: Learning health section added to `/status` command from 31-2
+
 ## Non-Goals (this phase)
 
 - User system / multi-user auth
-- New node types or engine features
-- Frontend editor changes (this phase is backend + chat + CLI only)
+- Frontend editor changes (31-1 through 31-5 were backend + chat + CLI only; 31-6+ may include light editor additions)
 - Discord adapter
+- Enterprise-grade DLP (31-10 is pragmatic PII protection, not compliance-grade)

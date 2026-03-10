@@ -23,7 +23,7 @@ Today there are 5 separate prompts: `ASK_PROMPT`, `CONVERSATION_PROMPT`, `PLAN_P
   - [x] 1-6. **Workflow context**: if a workflow is linked, include graph summary (existing `build_graph_summary`)
 - [x] 2. Replace the 5 mode-specific prompts with the unified prompt
   - [x] 2-1. `_build_messages()` uses one template, parameterized by surface + context
-  - [ ] 2-2. Remove `ASK_PROMPT`, `CONVERSATION_PROMPT`, `PLAN_PROMPT`, `DEBUG_PROMPT` constants (deferred to 28-5)
+  - [x] 2-2. Remove `ASK_PROMPT`, `CONVERSATION_PROMPT`, `PLAN_PROMPT`, `DEBUG_PROMPT` constants *(completed later in 28-5)*
   - [ ] 2-3. `BUILD_FROM_INTENT_PROMPT` merges into the unified prompt's workflow section (deferred to 28-5)
 - [x] 3. Tool catalog optimization
   - [x] 3-1. Group tools by category with clear "use this, not that" guidance
@@ -43,8 +43,7 @@ Today there are 5 separate prompts: `ASK_PROMPT`, `CONVERSATION_PROMPT`, `PLAN_P
 
 ## Decisions
 
-- Feature-gated behind `DAN_LLM_FIRST_CHAT` env var (default `1`). When `0`, old mode-specific prompts are used for backward compat.
-- Old prompt constants (`ASK_PROMPT`, `CONVERSATION_PROMPT`, etc.) kept in place — 28-5 removes them.
+- The temporary `DAN_LLM_FIRST_CHAT` fallback and old mode-specific prompt constants were removed later in `28-5`, leaving the unified prompt path as the only supported `_build_messages()` route.
 - `surface` parameter threaded through `send_message()` → `send_message_with_tools()` → `_build_messages()` → handlers → `app.py`.
 - 4 existing tests assert old-prompt content and fail under unified prompt (expected); 28-6 updates them.
 - Prompt is 1719 characters (well under 2000-token target).
