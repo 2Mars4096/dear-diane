@@ -41,6 +41,7 @@ from dan.server.chat_manager import (
     compute_graph_revision,
     detect_chat_mode,
     normalize_chat_mode,
+    recent_run_failed_for_workflow,
 )
 from dan.server.mention_resolver import MentionRef, MentionResolver, CodeResolver
 from dan.server.chat_store import ChatMessage as StoreChatMessage, ChatStore
@@ -3404,11 +3405,9 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                 recent_run_failed = False
                 if _run_manager is not None:
                     runs = _run_manager.list_runs()
-                    wf_runs = [r for r in runs if r.get("graph_id") == req.workflow_id]
-                    if wf_runs:
-                        recent_run_failed = wf_runs[0].get("status") == "failed"
+                    recent_run_failed = recent_run_failed_for_workflow(runs, req.workflow_id)
                 detected_mode = detect_chat_mode(
-                    req.message, graph_dict, recent_run_failed,
+                    req.message, recent_run_failed,
                 )
                 normalized_mode = detected_mode
 

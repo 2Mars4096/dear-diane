@@ -931,7 +931,7 @@ class Concierge:
             experience_context=experience_context_str,
         )
 
-        decision = self.plan_builder.build_plan(decision, context)
+        decision = self.plan_builder.build_plan(decision)
 
         if decision.clarification_question:
             self.project_store.set_pending_action(

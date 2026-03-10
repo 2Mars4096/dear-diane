@@ -108,7 +108,12 @@ class LocalChatRuntime:
     ) -> dict[str, Any]:
         await self._ensure_init()
         s = self._services
-        from dan.server.chat_manager import build_debug_context, detect_chat_mode, normalize_chat_mode
+        from dan.server.chat_manager import (
+            build_debug_context,
+            detect_chat_mode,
+            normalize_chat_mode,
+            recent_run_failed_for_workflow,
+        )
 
         from dan.server.scoped_run import parse_run_command
         run_cmd = parse_run_command(message)
@@ -124,11 +129,8 @@ class LocalChatRuntime:
             recent_run_failed = False
             if getattr(s, "run_manager", None) is not None:
                 runs = s.run_manager.list_runs()
-                wf_runs = [r for r in runs if getattr(r, "graph_id", None) == workflow_id]
-                if wf_runs:
-                    status = getattr(wf_runs[0], "status", None)
-                    recent_run_failed = str(getattr(status, "value", status)).lower() == "failed"
-            normalized_mode = detect_chat_mode(message, graph_dict, recent_run_failed)
+                recent_run_failed = recent_run_failed_for_workflow(runs, workflow_id)
+            normalized_mode = detect_chat_mode(message, recent_run_failed)
         debug_context = ""
         if normalized_mode == "debug" and getattr(s, "run_manager", None) is not None:
             debug_context = build_debug_context(s.run_manager.list_runs(), workflow_id)

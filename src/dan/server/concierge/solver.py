@@ -353,7 +353,7 @@ _FALLBACK_CHAINS: dict[ExecutionMode, list[FallbackStep]] = {
 
 class PlanBuilder:
     def build_plan(
-        self, decision: SolverDecision, context: ResolvedContext,
+        self, decision: SolverDecision,
     ) -> SolverDecision:
         steps = _build_steps(decision)
         fallback = _FALLBACK_CHAINS.get(decision.execution_mode, [])
