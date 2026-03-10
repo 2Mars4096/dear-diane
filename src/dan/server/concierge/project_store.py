@@ -50,13 +50,22 @@ class ProjectStore:
 
     def get_project(self, project_id: str, surface_id: str) -> Project | None:
         path = self._project_path(project_id, surface_id)
-        if not path.exists():
-            return None
-        try:
-            return Project.model_validate_json(path.read_text(encoding="utf-8"))
-        except Exception:
-            logger.warning("Failed to load project %s", project_id, exc_info=True)
-            return None
+        if path.exists():
+            try:
+                return Project.model_validate_json(path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning("Failed to load project %s", project_id, exc_info=True)
+                return None
+        return self.get_project_any_surface(project_id)
+
+    def get_project_any_surface(self, project_id: str) -> Project | None:
+        safe_id = _safe_segment(project_id)
+        for path in sorted(self.base_dir.glob(f"*/{safe_id}.json")):
+            try:
+                return Project.model_validate_json(path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.warning("Failed to load project %s from %s", project_id, path, exc_info=True)
+        return None
 
     def list_projects(self, surface_id: str) -> list[Project]:
         projects: list[Project] = []
@@ -88,6 +97,16 @@ class ProjectStore:
 
     def get_current_task(self, project_id: str, surface_id: str) -> Task | None:
         project = self.get_project(project_id, surface_id)
+        if project is None or not project.tasks:
+            return None
+        if project.current_task_id:
+            for task in project.tasks:
+                if task.task_id == project.current_task_id:
+                    return task
+        return max(project.tasks, key=lambda task: task.updated_at)
+
+    def get_current_task_any_surface(self, project_id: str) -> Task | None:
+        project = self.get_project_any_surface(project_id)
         if project is None or not project.tasks:
             return None
         if project.current_task_id:

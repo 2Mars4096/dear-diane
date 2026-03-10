@@ -93,11 +93,15 @@ class ProjectContextResolver:
             task_id = str(trigger_context.get("task_id") or "").strip()
             if project_id:
                 project = self.project_store.get_project(project_id, msg.external_id)
+                if project is None:
+                    project = self.project_store.get_project_any_surface(project_id)
                 task = (
                     self.project_store.get_current_task(project_id, msg.external_id)
                     if not task_id
                     else None
                 )
+                if task is None and not task_id:
+                    task = self.project_store.get_current_task_any_surface(project_id)
                 if project is not None and task_id:
                     for candidate in project.tasks:
                         if candidate.task_id == task_id:
