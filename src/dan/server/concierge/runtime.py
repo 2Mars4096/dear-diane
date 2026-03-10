@@ -406,6 +406,23 @@ class Concierge:
         
         return self._complete_event(content=status_text)
 
+    async def _handle_cancel_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
+        """Handle /cancel command by cancelling the requested run reference."""
+        text = msg.text.strip()
+        if not text.startswith("/cancel"):
+            return None
+
+        parts = text.split(maxsplit=1)
+        run_ref = parts[1].strip() if len(parts) > 1 else "latest"
+
+        from dan.server.capability_handlers import handle_cancel_run
+
+        result = await handle_cancel_run({"run_id": run_ref}, self.capability_context)
+        ctx = self.context_resolver.resolve(msg)
+        return self._complete_event(
+            content=f"{format_prefix(ctx.project.label)} {result.message}"
+        )
+
     async def _coerce_fast_command_result(self, result: Any) -> ChatCompleteEvent | None:
         if inspect.isawaitable(result):
             result = await result
@@ -532,6 +549,10 @@ class Concierge:
             tracker = self._presence_tracker or PresenceTracker()
             return await self._coerce_fast_command_result(
                 handler(msg.text, self.project_store, tracker),
+            )
+        if descriptor.name == "/progress":
+            return await self._coerce_fast_command_result(
+                handler(msg.text, surface_id=msg.external_id),
             )
         if descriptor.name == "/corrections":
             from dan.engine.correction_memory import CorrectionStore
@@ -740,7 +761,7 @@ class Concierge:
                 resolve_verbosity,
             )
             _surface = msg.surface or "cli"
-            _verbosity = get_user_verbosity_override() or resolve_verbosity(_surface)
+            _verbosity = get_user_verbosity_override(msg.external_id) or resolve_verbosity(_surface)
             _progress_session = ProgressSession(
                 surface=_surface,
                 verbosity=_verbosity,
@@ -2154,9 +2175,11 @@ class Concierge:
         if not skip_completion_check:
             try:
                 from .completion_guard import run_completion_check
-                augmented, _follow_up, report = await run_completion_check(user_text, content)
+                augmented, follow_up, report = await run_completion_check(user_text, content)
                 if report and not report.all_met:
                     content = augmented
+                    if follow_up:
+                        content = f"{content.rstrip()}\n\n{follow_up}"
             except Exception:
                 logger.debug("Completion guard check failed", exc_info=True)
 
@@ -2301,7 +2324,7 @@ class Concierge:
         """Fallback synchronous path when no event loop is running."""
         self._store_episode_candidates(message, response, goal_context)
         self._try_extract_preferences(message, response)
-        self._try_heuristic_extraction(message, response, goal_context)
+        self._try_memory_extraction(message, response, goal_context)
 
     async def _store_memory_candidates_async(
         self,
@@ -2309,7 +2332,7 @@ class Concierge:
         response: str,
         goal_context: dict[str, Any] | None = None,
     ) -> None:
-        """Fan out episode, preference, and heuristic extraction concurrently."""
+        """Fan out episode, preference, and LLM-backed memory extraction concurrently."""
         from .fan_out import fan_out_dict
 
         tasks = {
@@ -2319,8 +2342,8 @@ class Concierge:
             "preferences": lambda: asyncio.to_thread(
                 self._try_extract_preferences, message, response,
             ),
-            "heuristic": lambda: asyncio.to_thread(
-                self._try_heuristic_extraction, message, response, goal_context,
+            "memory_extraction": lambda: asyncio.to_thread(
+                self._try_memory_extraction, message, response, goal_context,
             ),
         }
         results = await fan_out_dict(tasks)
@@ -2453,13 +2476,13 @@ class Concierge:
             return ""
         return ""
 
-    def _try_heuristic_extraction(
+    def _try_memory_extraction(
         self,
         user_message: str,
         assistant_message: str,
         goal_context: dict[str, Any] | None = None,
     ) -> None:
-        """Run MemoryExtractor heuristics to capture facts and preferences the other extractors miss."""
+        """Run LLM-backed memory extraction with heuristic fallback."""
         if self.memory_kernel is None:
             return
         if os.environ.get("DAN_MEMORY_EXTRACTION", "1").strip() != "1":
@@ -2469,12 +2492,12 @@ class Concierge:
 
             extractor = MemoryExtractor()
             tool_activity = (goal_context or {}).get("metadata", {}).get("tool_calls")
-            candidates = extractor.extract(
+            candidates = asyncio.run(extractor.extract_with_llm(
                 user_message=user_message,
                 assistant_message=assistant_message,
                 tool_calls=tool_activity if isinstance(tool_activity, list) else None,
                 goal_context=goal_context,
-            )
+            ))
             for candidate in candidates:
                 if candidate.memory_type == "fact":
                     self.memory_kernel.store_fact(
@@ -2486,7 +2509,7 @@ class Concierge:
                     )
                 # episodes already stored by _extract_memory_candidates
         except Exception:
-            logger.debug("Heuristic memory extraction failed", exc_info=True)
+            logger.debug("Memory extraction failed", exc_info=True)
 
     def _is_workflow_build_goal(self, goal: ConciergeGoal) -> bool:
         """True if goal involves building a workflow (29-3 §3-1)."""

@@ -10,6 +10,7 @@ from typing import Any, AsyncIterator
 
 from dan.server.chat_manager import ChatCompleteEvent, ChatQueuedEvent, ChatStreamEvent
 
+from .command_registry import get_default_registry
 from .context_resolver import ResolvedContext
 from .identity import format_prefix
 from .models import SurfaceMessage
@@ -28,6 +29,8 @@ _BYPASS_EXACT = frozenset({
 def _is_bypass_command(msg: SurfaceMessage) -> bool:
     """Status and cancel commands bypass queueing entirely (29-5 §10-4)."""
     text = msg.text.strip().lower()
+    if get_default_registry().is_fast_command(text):
+        return True
     if any(text.startswith(p) for p in _BYPASS_PREFIXES):
         return True
     return text in _BYPASS_EXACT

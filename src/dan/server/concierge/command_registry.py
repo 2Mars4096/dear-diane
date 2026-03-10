@@ -495,8 +495,10 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         name="/cancel",
         kind="chat",
         surfaces=["all"],
+        args_schema="[run_id|latest|last_failed|paused]",
         help_text="Cancel the current run or task",
         group="session",
+        handler="dan.server.concierge.runtime.Concierge._handle_cancel_command",
     ))
 
     # -- Session commands --------------------------------------------------
