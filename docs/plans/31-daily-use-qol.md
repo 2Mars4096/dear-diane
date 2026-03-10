@@ -1,6 +1,6 @@
 # 31: Daily-Use Quality-of-Life & Power-Ups
 
-**Status:** in-progress
+**Status:** completed
 **Goal:** Make everything that's built actually work smoothly for daily use. Activate dormant features, add missing control surfaces, improve visibility, expose hidden capabilities, polish rough edges, and add execution intelligence, safety, and continuity features.
 
 ## Problem
@@ -118,3 +118,11 @@ Order: 31-1 through 31-5 completed. For 31-6 through 31-17:
 - Frontend editor changes (31-1 through 31-5 were backend + chat + CLI only; 31-6+ may include light editor additions)
 - Discord adapter
 - Enterprise-grade DLP (31-10 is pragmatic PII protection, not compliance-grade)
+
+## Post-Review Hardening
+
+- Follow-up review fixes tightened the Phase 21 runtime after the main wiring landed.
+- Safety/correctness patches included AppleScript quoting for desktop control, including OCR screenshot-path quoting, trigger-callback downloads for browser automation, broader `TriggerContext.source_surface` support, and stateful `/goal` fast commands.
+- Scheduler/continuity/learning hardening also removed synthetic schedule task IDs, restored project-only trigger-context resolution, set `~/.dan/sensitive_words.json` to `0600`, rejected unsafe SQLite JSON keys, and ignored weak correction signals.
+- Final cleanup also made concierge fast-command dispatch honor registry-resolved handlers (including registry-only chat commands), exposed public `ExecutionContext` session keys for PII wrapping, made executor-side PII wrapping fail closed when protection is enabled, lazy-loaded learning command dependencies, preserved fresh pending fleet locks during PID-write races while still capping retry loops, and stopped Telegram menus from advertising CLI-only REPL commands like `/show` and `/list`.
+- Live routing cleanup also hardened concierge intent handling for real chat traces: the classifier now uses a hybrid heuristic-first/LLM-second flow, topical `status/progress of X` requests stay on the normal conversation path instead of falling into run/activity status handlers, generic-default-provider deployments reuse the configured chat model for classification instead of unsupported provider-tier aliases, and empty experience-history lookups fall back to a helpful chat answer instead of ending with `"No similar workflows found."`

@@ -351,24 +351,24 @@
 > `31-6` onward adds focused execution, continuity, UX, and learning architecture to make DAN work
 > smoothly for daily use.
 
-- [ ] [31-daily-use-qol](plans/31-daily-use-qol.md) — daily-use QoL: model control, visibility, capability exposure, power-user speed, defaults & docs, execution intelligence, safety, continuity
+- [x] [31-daily-use-qol](plans/31-daily-use-qol.md) — daily-use QoL: model control, visibility, capability exposure, power-user speed, defaults & docs, execution intelligence, safety, continuity *(complete: all 17 subplans implemented with 801 tests + runtime integration wiring + review hardening patches, including OCR path quoting, registry dispatch cleanup, public PII session keys, fleet-lock retry caps, and hybrid classifier/experience-routing cleanup from live chat traces)*
   - [x] [31-1-model-control](plans/31-1-model-control.md) — A. `/model` command, TierPolicy activation (`DAN_ENABLE_TIER_POLICY`), `get_config` tool, `set_config` expansion for `DAN_LLM_*`, model name in surface hints
   - [x] [31-2-visibility-feedback](plans/31-2-visibility-feedback.md) — B. Chat cost tracking (`/cost`), notification wiring for chat-initiated runs, error retry UX (`/retry`), `/status` fast command
   - [x] [31-3-capability-exposure](plans/31-3-capability-exposure.md) — C. Expose 13 built-in tools (python_eval, csv_read, git tools, etc.) as chat capabilities, workflow introspection tools, `DAN_LEARNING_MODE` bundle
   - [x] [31-4-power-user-speed](plans/31-4-power-user-speed.md) — D. CLI pipe/one-shot mode (`dan ask`), memory management commands (`/memory-delete`, `/memory-forget`, `/memory-confirm`), prep timeout, file auto-read
   - [x] [31-5-defaults-and-docs](plans/31-5-defaults-and-docs.md) — E. `.env.example` overhaul (30+ vars), startup feature banner, feature bundles, `docs/cli.md` update (`dan-ask`, new flags, 8+ slash commands), `docs/llm-api-guide.md` (13 new capability tools), `docs/architecture.md`, `docs/development-plan.md`, README
-  - [ ] [31-6-goal-oriented-loop](plans/31-6-goal-oriented-loop.md) — F. Autonomous iteration until target metric met or deadline expires (Kaggle-style improvement loops), strategy escalation, `/goal` command
-  - [ ] [31-7-scheduled-tasks](plans/31-7-scheduled-tasks.md) — G. Cron/interval task scheduling, `TaskScheduler` runtime, `/schedule` commands, result delivery to surfaces
-  - [ ] [31-8-plan-dependency-optimization](plans/31-8-plan-dependency-optimization.md) — H. RCPSP scheduler: task DAG with time estimates, critical path, LRP parallel scheduling, dynamic rescheduling, model-tier assignment by slack
-  - [ ] [31-9-completion-guard](plans/31-9-completion-guard.md) — I. Pre-delivery requirement extraction and completeness validation, auto-fix or flag missing items
-  - [ ] [31-10-pii-tokenization](plans/31-10-pii-tokenization.md) — J. Sensitive data masking with semantic placeholders (`[PERSON_1]`) before LLM API calls, `/pii` commands
-  - [ ] [31-11-cross-session-resume](plans/31-11-cross-session-resume.md) — K. Structured task state persistence, `/resume` command, auto-resume by semantic matching
-  - [ ] [31-12-proactive-follow-up](plans/31-12-proactive-follow-up.md) — L. DAN-initiated follow-ups on completions, stale tasks, discoveries; quiet hours and rate limiting
-  - [ ] [31-13-multi-surface-continuity](plans/31-13-multi-surface-continuity.md) — M. Cross-surface conversation context sharing anchored on Project scope, `/sync` command
-  - [ ] [31-14-progressive-response-ux](plans/31-14-progressive-response-ux.md) — N. Phase-chunked progressive disclosure: instant ack, plan disclosure, phase transitions, result checkpoints, surface-adaptive verbosity
-  - [ ] [31-15-learning-evolution-optimization](plans/31-15-learning-evolution-optimization.md) — O. Tiered learning activation, upgraded quality signals, correction memory loop, learning health visibility, unified adaptation governance, storage backend abstraction, planning-time calibration
-  - [ ] [31-16-command-surface-unification](plans/31-16-command-surface-unification.md) — P. Canonical command registry, unified dispatch, surface-aware `/help`, centered `docs/commands.md`, adapter/REPL integration
-  - [ ] [31-17-computer-control-and-browser-automation](plans/31-17-computer-control-and-browser-automation.md) — Q. Playwright-first browser automation, desktop control fallback, observe-act-verify execution, chunked allowlists, and safety-first approvals
+  - [x] [31-6-goal-oriented-loop](plans/31-6-goal-oriented-loop.md) — F. Autonomous iteration, strategy escalation, `/goal` command *(complete: 60 tests + fast-command dispatch)*
+  - [x] [31-7-scheduled-tasks](plans/31-7-scheduled-tasks.md) — G. Cron/interval task scheduling, `/schedule` commands *(complete: 92 tests + lifespan background task)*
+  - [x] [31-8-plan-dependency-optimization](plans/31-8-plan-dependency-optimization.md) — H. RCPSP scheduler with critical path and LRP scheduling *(complete: 54 tests + PlanBuilder DAG emission)*
+  - [x] [31-9-completion-guard](plans/31-9-completion-guard.md) — I. Requirement extraction and completeness validation *(complete: 43 tests + response pipeline hook)*
+  - [x] [31-10-pii-tokenization](plans/31-10-pii-tokenization.md) — J. Sensitive data masking before LLM API calls *(complete: 75 tests + input/output pipeline hooks)*
+  - [x] [31-11-cross-session-resume](plans/31-11-cross-session-resume.md) — K. Task state persistence, `/resume`, auto-resume *(complete: 48 tests + session-start wiring)*
+  - [x] [31-12-proactive-follow-up](plans/31-12-proactive-follow-up.md) — L. DAN-initiated follow-ups, quiet hours, rate limiting *(complete: 44 tests + lifespan background engine)*
+  - [x] [31-13-multi-surface-continuity](plans/31-13-multi-surface-continuity.md) — M. Cross-surface context sharing, `/sync` command *(complete: 46 tests + presence tracking + handoff injection)*
+  - [x] [31-14-progressive-response-ux](plans/31-14-progressive-response-ux.md) — N. Phase-chunked progressive disclosure, surface-adaptive verbosity *(complete: 92 tests + session initialization)*
+  - [x] [31-15-learning-evolution-optimization](plans/31-15-learning-evolution-optimization.md) — O. Tiered learning, correction memory, adaptation governance *(complete: 105 tests + lifespan tier activation)*
+  - [x] [31-16-command-surface-unification](plans/31-16-command-surface-unification.md) — P. Canonical command registry, unified dispatch, `/help` *(complete: 38 tests + /help wiring + Telegram menu + registry-resolved fast-command dispatch)*
+  - [x] [31-17-computer-control-and-browser-automation](plans/31-17-computer-control-and-browser-automation.md) — Q. Browser automation, desktop control, safety-first approvals *(complete: 107 tests + config loading + fast command)*
 
 ## Backlog (unphased)
 

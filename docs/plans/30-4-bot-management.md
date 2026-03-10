@@ -164,6 +164,7 @@ Convention: `dan-bot` with hyphen, matching `dan-run`, `dan-chat`, `dan-serve`, 
 - [x] 4-4. On startup: print fleet status panel (Rich formatted)
 - [x] 4-5. On Ctrl+C: graceful shutdown of all bots with status messages
 - [x] 4-6. Signal handling: first Ctrl+C → graceful stop, second → force exit
+- [x] 4-7. Single-instance startup lock: `run_fleet()` claims `~/.dan/telegram/fleet.lock`, rejects a second live fleet with a clean message, and recovers stale lock files automatically
 
 ### 5. Daemon mode integration
 - [x] 5-1. `dan-bot start-all --daemon` — start fleet as a background daemon (uses `dan-service` infrastructure from 26-2)
@@ -199,3 +200,4 @@ Convention: `dan-bot` with hyphen, matching `dan-run`, `dan-chat`, `dan-serve`, 
 - `dan-adapter telegram --bot-token TOKEN` continues to work for backward compatibility. `dan-bot start <name>` is the recommended path for configured bots (reads token from config, no CLI flags needed).
 - Per-bot stop is now implemented: `dan-bot stop <name>` writes a control command to `~/.dan/telegram/fleet.ctl`, which the fleet daemon watches every 2 seconds. `BotFleet.stop_bot(name)` gracefully stops a single bot's polling and removes it from the active set.
 - Unified `dan` CLI entry point added at `src/dan/cli/main.py`, registered as `dan = "dan.cli.main:main"` in pyproject.toml. `dan bot ...` dispatches to `dan-bot`.
+- Post-ship hardening (2026-03-10): fleet startup is now single-instance guarded with `~/.dan/telegram/fleet.lock`. If a previous fleet died without cleaning up, the next start replaces the stale lock automatically; if another fleet is still alive, `dan-bot start-all` exits cleanly instead of racing on `getUpdates` and producing duplicate replies.

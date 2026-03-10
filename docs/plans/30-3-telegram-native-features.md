@@ -52,6 +52,7 @@ Telegram's Bot API offers features that make it a superior agent surface compare
 - [x] 3-4. For long-running tasks: add 🔄 reaction during processing
 - [x] 3-5. Config: `use_reactions: bool = True` — disable to skip reactions
 - [x] 3-6. Graceful degradation: if bot lacks reaction permissions, silently skip
+- [x] 3-7. Per-chat reaction backoff: after the first Telegram `BadRequest` for reactions in a chat, stop retrying reactions in that chat to avoid repeated Bot API 400 noise
 
 ### 4. Reply-to threading
 - [x] 4-1. When responding to a user message: use `reply_to_message_id` to quote the original
@@ -78,6 +79,7 @@ Telegram's Bot API offers features that make it a superior agent surface compare
 - [x] 7-3. Per-bot custom commands based on project focus (e.g., ResearchBot gets `/search`, DataBot gets `/analyze`)
 - [x] 7-4. Bot command scopes: set different command lists for group chats vs DMs (`BotCommandScope`)
 - [x] 7-5. Command descriptions for autocomplete: clear one-line descriptions
+- [x] 7-6. Telegram-safe command publishing: command menus now skip command names that are invalid for Telegram `set_my_commands()` (for example hyphenated names), avoiding startup `400 Bad Request` errors while keeping richer DAN command names on other surfaces
 
 ### 8. Inline keyboards (enhanced)
 - [x] 8-1. Already have approval/selection keyboards — extend with quick-action buttons on responses

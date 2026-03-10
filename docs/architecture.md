@@ -14,7 +14,8 @@
 - `src/dan/server/concierge/` is the shared Phase 15 control-plane package.
 - `ProjectStore` + `ProjectContextResolver` add a durable `Project` scope plus lightweight `Task` scope above raw chat threads.
 - `Project` records now also persist pending follow-up state (`confirm` / `clarify`) and linked meta-session IDs so a later `"yes"` / `"2"` reply or a status check can resume the right concierge-managed workstream.
-- `classifier.py` + `handlers.py` keep deterministic routing above `ChatManager`; conversation/build flows delegate back into the existing LLM chat paths instead of every message going through the full capability-tool decision loop. Fast commands (`/model`, `/cost`, `/status`, `/retry`, `/memory-delete`, `/memory-forget`, `/memory-confirm`, `/memory-reject`) provide zero-latency local execution before hitting the LLM. One-shot utility requests now have a dedicated `direct_task` lane so simple fact/drafting asks can bypass workflow build.
+- `classifier.py` + `handlers.py` route messages above `ChatManager`. Concierge now uses a hybrid classifier: `classify_intent()` is the deterministic keyword/context layer, and `classify_intent_llm()` only escalates to an LLM when heuristics are not already strong enough. Strong heuristic matches (filesystem paths, direct drafting/live-price prompts, run control, explicit experience queries, and topical `status/progress of X` requests) bypass the LLM entirely; lower-confidence cases use a semantic classifier call. `DAN_CLASSIFIER_MODEL` can pin the classifier model, but when the runtime only has a generic `default` provider the classifier falls back to the configured chat/default model instead of inventing a provider-specific micro-tier alias the endpoint may not support. Conversation/build flows still delegate back into the existing LLM chat paths instead of every message going through the full capability-tool decision loop. Fast commands (`/model`, `/cost`, `/status`, `/retry`, `/memory-delete`, `/memory-forget`, `/memory-confirm`, `/memory-reject`) provide zero-latency local execution before hitting the LLM. One-shot utility requests now have a dedicated `direct_task` lane so simple fact/drafting asks can bypass workflow build.
+- `command_registry.py` is the canonical slash-command inventory. Concierge fast-command detection still keeps a backward-compatible prefix fallback, but `_try_fast_command()` now resolves registered chat handlers through registry metadata so newly registered chat commands can use the fast path without another hardcoded `if/elif` branch.
 - `policy.py`, `queue.py`, `progress.py`, and `promotion.py` are the shared behavior-policy modules. `estimate_action_cost()` provides heuristic cost estimates; `DAN_COST_CONFIRM_THRESHOLD` forces confirmation for expensive actions. `DAN_SHOW_COST=1` logs cumulative session cost.
 - `identity.py` is the single source of truth for bot name and prefix formatting. `get_bot_name()` reads `DAN_BOT_NAME` env var (default `"DAN"`).
 - `dispatcher.py` provides `ConcurrentDispatcher` — a concurrency layer wrapping `Concierge`. Different projects process in parallel (per-project asyncio tasks); same-project messages queue and drain serially. `DAN_CONCIERGE_PREP_TIMEOUT` limits parallel capability prep time.
@@ -23,6 +24,26 @@
 - Error retry UX: the `/retry` command resets transient errors and re-evaluates the last prompt.
 - Tier policy: governed by `DAN_ENABLE_TIER_POLICY` and `DAN_TIER_MAP` to auto-assign models to tasks based on difficulty.
 - Learning features: governed by `DAN_LEARNING_MODE`, which enables prompt optimization, model learning, and topology learning simultaneously.
+
+### Learning & Evolution Optimization (31-15)
+
+- **`learning_tiers.py`** — `resolve_learning_tier()` reads `DAN_LEARNING_TIER` (default 0, backward compat with `DAN_LEARNING_MODE=1`→tier 1). Three cumulative tiers: tier 0 (baseline: memory, post-run learning, reuse scoring, preference evolution), tier 1 (advisory: + topology suggestions, model recommendations, prompt variant proposals), tier 2 (active: + A/B prompt promotion, skill refinement, auto-adaptation). `is_feature_enabled(feature, tier)` checks tier-cumulative feature sets. `LearningHealthCounters` tracks attempted/succeeded/skipped/failed per learning path with `format_status()` for `/status`. `MemoryBackend` protocol with `JsonFileBackend` (default) and `SqliteBackend` (optional, `DAN_MEMORY_BACKEND=sqlite`).
+- **`correction_memory.py`** — `detect_correction()` heuristic detector (negation/override/style/redo/preference patterns, 3 confidence tiers), `route_correction()` producing preference/principle/negative_evidence actions, `CorrectionStore` in-memory record store. `/corrections` command lists recent correction events.
+- **`adaptation_registry.py`** — `AdaptationCandidate` model with lifecycle (pending→applied→rejected/rolled_back), `AdaptationRegistry` with approve/reject/rollback/`check_regression()` (>15% quality drop auto-rollback). `/adaptations` command shows pending and applied adaptations.
+- **`planning_calibration.py`** — `DurationEstimator` (keyword-based quick/medium/complex classification), `FailureHotspotPredictor` (node-type failure rates), `ModelPreference` (node-type and task-pattern → model tier recommendation).
+- **`learning.py`** — lightweight `/corrections` and `/adaptations` handlers; imports engine stores only for type checking so command registry/help wiring does not eagerly pull in heavy learning dependencies.
+
+### Goal-Oriented Loop (31-6)
+
+- **`goal_loop.py`** — `GoalSpec`, `EvaluationResult`, `AttemptRecord`, `GoalLoopState` models; `ComparisonOp` type alias; `is_target_met()` / `is_better()` comparison helpers; `Evaluator` protocol with `ScriptEvaluator`, `LLMJudgeEvaluator`, `TestSuiteEvaluator`, `CustomEvaluator`; `GoalLoopExecutor` (attempt→evaluate→best-so-far→escalate loop with wall-clock deadline); `/goal`, `/goal-status`, `/goal-stop` command handlers; JSON state serialization.
+
+### Scheduled Tasks (31-7)
+
+- **`scheduler.py`** — `TriggerContext`, `DeliveryTarget`, `ScheduleEntry`, `ScheduleRunRecord` models; `parse_trigger()` (human-readable → cron: `every 6h`, `daily at 9am`, `weekdays at 8:30am`, pass-through standard cron); `compute_next_run()` via `croniter` (optional dep with fallback); `ScheduleStore` (filesystem CRUD at `~/.dan/schedules.json`, atomic save, case-insensitive name lookup); `ScheduleHistoryStore` (`~/.dan/schedule_history.json`, 20-record cap per schedule); `TaskScheduler` (asyncio background loop, 30s poll, fire-and-forget dispatch, missed-run detection with `on_missed`); `/schedule add|list|remove|pause|resume|history` command handler.
+
+### Progressive Response UX (31-14)
+
+- **`progress_ux.py`** — `ProgressPhase`, `CheckpointOption`, `CheckpointOptions`, `InteractionRequest` Pydantic v2 models; `VerbosityLevel` type alias (`full`/`compact`/`minimal`); `ProgressRenderer` protocol (6 methods: `announce_plan`, `phase_update`, `phase_complete`, `checkpoint`, `deliver_result`, `heartbeat`); `ProgressSession` (phase lifecycle, configurable throttling, elapsed tracking); four surface renderers — `CLIProgressRenderer` (text), `TelegramProgressRenderer` (edit-in-place, 4096-char limit), `WhatsAppProgressRenderer` (bookend: 1 start + 1 end), `EditorProgressRenderer` (streaming sections); `resolve_verbosity()` (auto per surface + `DAN_PROGRESS_VERBOSITY` env override); `generate_preflight_questions()` (`DAN_PREFLIGHT_CLARIFY`, `DAN_PREFLIGHT_THRESHOLD_SECONDS`); `/progress` command handler.
 
 ### Solver Runtime Layer (25-8 through 25-11)
 
@@ -42,6 +63,17 @@ Flow: `classify_intent()` → fast-path check → `GoalResolver.resolve()` → `
 - `DirectTaskHandler` fallback uses `conversation` mode for tool access
 - Solver `_SOLVER_SYSTEM_PROMPT` routes live-data queries to `direct_action`
 - `_check_unsourced_claims()` appends training-data disclaimer on unsourced numeric patterns
+- `completion_guard.py` provides pre-delivery requirement-level completeness validation: `RequirementExtractor` (heuristic-first with LLM fallback) parses user messages into structured `Requirement` items, `CompletionChecker` validates response coverage via keyword matching (with suffix normalization) and optional LLM verification for `must`-priority misses, `augment_response()` appends notes or returns follow-up messages for missed items with anti-loop protection. Configurable via `DAN_COMPLETION_CHECK` (default on) and `DAN_COMPLETION_CHECK_THRESHOLD` (default 2). `/completion` command shows persistent stats.
+- `resume.py` provides cross-session task resume (31-11): `TaskSnapshot` model for lightweight resume summaries; `snapshot_from_task()` builder; `ResumeProtocol` with `check_resumable_tasks()` (scans all surfaces for active/paused/blocked tasks within 7 days), `generate_resume_prompt()`, `auto_resume_match()` (intent detection + task-name keyword overlap with ambiguity guard), `update_task_state()`; `persist_task_state()` for cross-surface task persistence; `extract_structured_state()` for heuristic step extraction from conversation text; `/resume [task_name]` command handler. `Task` model extended with `completed_steps`, `pending_steps`, `current_blocker`, `artifacts`, `last_activity` fields (backward-compatible defaults).
+- `follow_up.py` provides proactive follow-up (31-12): `FollowUpTrigger` and `FollowUpConfig` Pydantic v2 models; `FollowUpQueue` — in-memory priority queue with hash-based deduplication (source + project_id + message prefix), priority ordering, expiry filtering; trigger factories `create_run_completion_trigger()`, `create_stale_task_trigger()` (uses `TaskSnapshot` from 31-11), `create_schedule_result_trigger()`; `FollowUpDeliveryEngine` — async delivery with quiet-hours gating (`DAN_QUIET_HOURS`), sliding-window rate limiting (`DAN_FOLLOW_UP_MAX_PER_HOUR`, default 3), background loop (60s); `scan_stale_tasks()` for finding paused/blocked tasks beyond `DAN_STALE_TASK_HOURS` (default 24); `load_follow_up_config()` reads `DAN_PROACTIVE_FOLLOW_UP` (default 0, opt-in); `/follow-ups [on|off]` command handler.
+- `continuity.py` provides multi-surface continuity (31-13): `SurfaceRoutingPolicy` (per-project visibility/context/follow-up policy), `SurfacePresence`, `ConversationTurn`, `CrossSurfaceContext` models; `ProjectConversationStore` view over `ProjectStore` aggregating task turns across surfaces into a unified timeline; `detect_surface_switch()` heuristic handoff detection via keyword overlap with projects on other surfaces; `generate_handoff_context()` builds `CrossSurfaceContext` payload (TaskSnapshot + recent turns + summary); `PresenceTracker` in-memory surface activity tracker; `route_message_to_surface()` for DAN-initiated message delivery routing (private-preferred, group blocked without opt-in); `/sync [--allow-group]` command handler.
+
+### Computer Control & Browser Automation (31-17)
+
+- **`computer_policy.py`** — `ComputerControlConfig` (load from `~/.dan/computer_control.json` + `DAN_COMPUTER_CONTROL` env override), `ChunkPolicies` (6 capability chunks: observe/browser/input/window/files/system each with `ChunkPolicy`), `BrowserDomainRule` (pattern + subdomain + redirect + download flags), `SessionOverride` (temporary per-session approvals with expiry), `ActionType` classification (5 levels: read_only/benign_input/sensitive_input/destructive/system_level), `classify_action()` with destructive-target escalation regex, `requires_approval()` with session override support, `is_domain_allowed()` (subdomain-aware URL matching), `is_app_allowed()` (case-insensitive app matching), `AuditEntry` + `AuditLog` (in-memory audit with `add`/`recent`/`format_summary`).
+- **`computer_use.py`** — `ObservedElement` and `UIObservation` Pydantic v2 perception models (browser/desktop surface type, screenshot path, OCR text, elements list), `ComputerUseLeaseManager` (async single-session guard: acquire/release/reentrant, read-only observation always allowed), `ComputerUseController` (high-level observe→act→verify runtime, browser/desktop dispatch, policy enforcement, lease acquisition, audit logging, `act()` normalizes non-dict returns), `handle_computer_command()` for `/computer status|doctor|approve`.
+- **`browser_control.py`** (in `dan.tools`) — `BrowserController` protocol (12 methods: open, click, type_text, fill, select, wait_for, extract_text, screenshot, download, list_tabs, switch_tab, close), `PlaywrightBrowserController` (lazy browser launch, domain allowlist enforcement via `_check_domain`, `BrowserSessionContext` per-task state, screenshot dir with cleanup), `MockBrowserController` (action recording with configurable responses).
+- **`desktop_control.py`** (in `dan.tools`) — `DesktopController` protocol (9 methods: screenshot, ocr, list_windows, focus_window, click, type_text, hotkey, clipboard_read, clipboard_write), `MacOSDesktopController` (screencapture, pbcopy/pbpaste, AppleScript window/keyboard control, platform guard), `MockDesktopController` (action recording), `PermissionStatus` model, `check_macos_permissions()` (screen recording + accessibility + apple events detection).
 
 ## Directory Structure
 
@@ -90,6 +122,8 @@ deep-agent-network/
       list_directory.py          # List with glob and recursive mode
       web_search.py              # DuckDuckGo search (optional dep)
       web_fetch.py               # URL content fetch via httpx
+      browser_control.py         # Phase 21 (31-17) — BrowserController protocol, PlaywrightBrowserController (lazy launch, domain allowlist, session context, screenshot cleanup), MockBrowserController
+      desktop_control.py         # Phase 21 (31-17) — DesktopController protocol, MacOSDesktopController (screencapture, pbcopy/pbpaste, AppleScript), MockDesktopController, check_macos_permissions()
       http_request.py            # General HTTP client
       shell_command.py            # Subprocess with timeout and allowlist
       pdf_read.py                # PDF text extraction (optional dep)
@@ -125,6 +159,11 @@ deep-agent-network/
       outcome_trackers.py        # Phase 29-6 §7/§8/§10 — PromptTracker (prompt/outcome pairs), ModelOutcomeTracker + ModelRecommender (per-node model selection learning), TopologyOutcomeTracker + TopologyAdvisor (structural pattern correlation); all opt-in via env vars
       conversation_memory.py     # Phase 16 (26-3) — ConversationMemoryStore, ConversationSummary, cross-session keyword search, context block formatting
       scheduler.py               # Topological sort (DAG fast-path + cycle-aware for gate loops), parallel dispatch, Engine.run()/resume(), event emission
+      plan_scheduler.py          # Phase 21 (31-8) — RCPSP plan scheduler: PlanTask/PlanDAG/PlanSchedule models, compute_critical_path(), schedule_tasks() (OR-Tools exact + LRP heuristic), on_task_complete() dynamic rescheduling with calibration, infer_dependencies() artifact-contract matching + transitive reduction, detect_conflicts()
+      correction_memory.py       # Phase 21 (31-15) — CorrectionSignal, detect_correction() heuristic detector, route_correction(), CorrectionStore
+      adaptation_registry.py     # Phase 21 (31-15) — AdaptationCandidate lifecycle model, AdaptationRegistry (add/approve/reject/rollback/regression check)
+      planning_calibration.py    # Phase 21 (31-15) — DurationEstimator, FailureHotspotPredictor, ModelPreference (planning-time calibration from experience)
+      learning_tiers.py          # Phase 21 (31-15) — resolve_learning_tier(), is_feature_enabled(), LearningHealthCounters, MemoryBackend protocol, JsonFileBackend, SqliteBackend
     rag/                         # Phase 6 — RAG / knowledge retrieval subsystem
       __init__.py                # EmbeddingProvider protocol, EmbeddingResult, OpenAI/Local providers, EmbeddingRegistry
       indexer.py                 # Indexer — create/populate/manage vector store indexes with chunking + batch embedding
@@ -228,7 +267,7 @@ deep-agent-network/
       service.py                 # dan-service entry point: OS-level service management (install/uninstall/start/stop/status/health/logs) — macOS launchd + Linux systemd (26-2)
       service_runner.py          # Shared service runner: log rotation + PID bookkeeping + uvicorn launch, used by launchd/systemd/manual starts (26-2)
       main.py                    # Unified `dan` CLI entry point: dispatches `dan bot/serve/run/chat/ask/...` to submodules (Phase 20)
-      bot.py                     # dan-bot: create/list/start/stop/start-all/remove/edit/assign/group Telegram bots; fleet daemon management (Phase 20)
+      bot.py                     # dan-bot: create/list/start/stop/start-all/remove/edit/assign/group Telegram bots; fleet daemon management with `~/.dan/telegram/fleet.lock`, `fleet.pid`, and `fleet.ctl` coordination files (Phase 20)
     server/                      # Phase 2 — FastAPI backend for visual editor
       __init__.py
       __main__.py                # CLI entry point: `dan-serve` / `python -m dan.server`
@@ -242,7 +281,17 @@ deep-agent-network/
       capability_handlers.py     # Phase 15 (25-1–25-4, 25-13) — 36 capability tool handlers (experience, run lifecycle, publish/share/export, graph, all 11 built-in tools, telegram_poll); register_*_capabilities() functions
       chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA) + capability tools (ChatCapabilityRegistry), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history), profile/memory prompt injection, and conversation-summary persistence (26-3 integration)
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
-      concierge/                # Phase 15 (25-6/25-7) — deterministic routing/runtime layer: project/task store, classifier, handlers, policy, queue, progress, promotion
+      concierge/                # Phase 15 (25-6/25-7) — deterministic routing/runtime layer: project/task store, classifier, handlers, policy, queue, progress, promotion, goal loop (31-6)
+        completion_guard.py      # Phase 21 (31-9) — Completion guard: RequirementExtractor (heuristic+LLM), CompletionChecker (keyword+LLM), augment_response(), run_completion_check(), /completion command, CompletionStats
+        pii_tokenizer.py         # Phase 21 (31-10) — PII tokenization: SensitiveWordRegistry, PIISession, tokenize/detokenize, TokenizingProviderWrapper, /pii commands, auto-detection (email/phone/SSN/CC/IP)
+        computer_policy.py       # Phase 21 (31-17) — Computer control policy: ComputerControlConfig, ChunkPolicies (6 chunks), BrowserDomainRule, SessionOverride, action classification, domain/app allowlists, AuditLog
+        computer_use.py          # Phase 21 (31-17) — Computer use controller: UIObservation, ObservedElement, ComputerUseLeaseManager, ComputerUseController (observe/act/verify), /computer commands
+        learning.py              # Phase 21 (31-15) — /corrections and /adaptations command handlers
+        progress_ux.py           # Phase 21 (31-14) — Progressive response UX: ProgressRenderer protocol, ProgressSession, 4 surface renderers (CLI/Telegram/WhatsApp/Editor), verbosity control, pre-flight clarification, /progress command
+        scheduler.py             # Phase 21 (31-7) — Scheduled tasks: TriggerContext, DeliveryTarget, ScheduleEntry, ScheduleRunRecord, parse_trigger(), compute_next_run(), ScheduleStore, ScheduleHistoryStore, TaskScheduler, /schedule commands
+        resume.py                # Phase 21 (31-11) — Cross-session resume: TaskSnapshot, ResumeProtocol (check_resumable_tasks, generate_resume_prompt, auto_resume_match, update_task_state), persist_task_state, extract_structured_state, /resume command
+        follow_up.py             # Phase 21 (31-12) — Proactive follow-up: FollowUpTrigger, FollowUpConfig, FollowUpQueue, FollowUpDeliveryEngine, trigger factories, scan_stale_tasks, /follow-ups command
+        continuity.py            # Phase 21 (31-13) — Multi-surface continuity: SurfaceRoutingPolicy, ProjectConversationStore, detect_surface_switch(), generate_handoff_context(), PresenceTracker, route_message_to_surface(), /sync command
       run_manager.py             # Background run execution + event pubsub + catch-up + ToolRegistry injection + human-input registry + streaming coalescing + RunStore integration + metric enrichment + learning event emissions (dual origin/reflection routing) + incremental experience consolidation/indexing + emit_rule_lifecycle_event() for API-driven rule management
       run_store.py               # Filesystem-backed persistence for run summaries (JSON) and event logs (JSONL). Layout: runs/{workflow_id}/{run_id}.json + .events.jsonl
       scoped_run.py              # Scoped execution: full/node/subgraph run builder
@@ -774,6 +823,7 @@ Local full-stack: FastAPI backend + React Flow frontend. Runs locally like Jupyt
 - 14 typed events: `run_started`, `run_completed`, `run_failed`, `node_started`, `node_completed`, `node_failed`, `node_skipped`, `node_output`, `log`, `llm_thinking`, `tool_call_started`, `tool_call_result`, `code_output`, `intermediate_text`
 - Opt-in `event_callback` parameter on `Engine` constructor — no events emitted if not set (backward compatible)
 - `ExecutionContext.emit_event()` — executors emit rich events (LLM thinking, tool calls, code output) during execution. The engine automatically tags every emitted event with the active `node_id`.
+- `ExecutionContext` also exposes public `run_id`, `workflow_id`, and `pii_session_key()` accessors so executors and cross-cutting wrappers can identify a stable session without reaching into private engine fields.
 - **Per-Node Log Aggregation:**
   - **Storage:** `RunStore` persists all raw events sequentially to `{run_id}.events.jsonl`, inherently preserving the `node_id` association for every token, tool call, and state change.
   - **Editor Log Panel:** `LogPanel.tsx` groups the event stream by `node_id` (falling back to `"__run__"`). This creates a collapsible, node-centric timeline where all interleaved execution outputs (e.g. parallel branches) are cleanly segregated by their source node.
