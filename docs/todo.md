@@ -347,8 +347,9 @@
 
 ## Phase 21 — Daily-Use Quality-of-Life & Power-Ups
 > Activate dormant features, add missing control surfaces, improve visibility, expose hidden
-> capabilities, and polish rough edges. No new architecture — purely wiring, env vars, commands,
-> and docs to make everything that's built work smoothly for daily use.
+> capabilities, and polish rough edges. `31-1` through `31-5` are mostly wiring/docs closeout;
+> `31-6` onward adds focused execution, continuity, UX, and learning architecture to make DAN work
+> smoothly for daily use.
 
 - [ ] [31-daily-use-qol](plans/31-daily-use-qol.md) — daily-use QoL: model control, visibility, capability exposure, power-user speed, defaults & docs, execution intelligence, safety, continuity
   - [x] [31-1-model-control](plans/31-1-model-control.md) — A. `/model` command, TierPolicy activation (`DAN_ENABLE_TIER_POLICY`), `get_config` tool, `set_config` expansion for `DAN_LLM_*`, model name in surface hints
@@ -366,6 +367,7 @@
   - [ ] [31-13-multi-surface-continuity](plans/31-13-multi-surface-continuity.md) — M. Cross-surface conversation context sharing anchored on Project scope, `/sync` command
   - [ ] [31-14-progressive-response-ux](plans/31-14-progressive-response-ux.md) — N. Phase-chunked progressive disclosure: instant ack, plan disclosure, phase transitions, result checkpoints, surface-adaptive verbosity
   - [ ] [31-15-learning-evolution-optimization](plans/31-15-learning-evolution-optimization.md) — O. Tiered learning activation, upgraded quality signals, correction memory loop, learning health visibility, unified adaptation governance, storage backend abstraction, planning-time calibration
+  - [ ] [31-16-command-surface-unification](plans/31-16-command-surface-unification.md) — P. Canonical command registry, unified dispatch, surface-aware `/help`, centered `docs/commands.md`, adapter/REPL integration
 
 ## Backlog (unphased)
 
