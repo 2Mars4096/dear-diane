@@ -49,21 +49,25 @@ After 20 phases of infrastructure, the platform is deep but rough around the edg
 | 31-13 | [Multi-Surface Continuity](31-13-multi-surface-continuity.md) | Cross-surface conversation context sharing anchored on Project scope | 1-1.5d |
 | 31-14 | [Progressive Response UX](31-14-progressive-response-ux.md) | Phase-chunked progressive disclosure: instant ack, plan disclosure, phase transitions, result checkpoints, surface-adaptive verbosity | 2-3d |
 | 31-15 | [Learning & Evolution Optimization](31-15-learning-evolution-optimization.md) | Tiered learning activation, upgraded quality signals, correction memory loop, learning health visibility, unified adaptation governance, storage backend abstraction, planning-time calibration | 3-4d |
+| 31-16 | [Command Surface Unification](31-16-command-surface-unification.md) | Canonical command registry, unified dispatch, surface-aware `/help`, centered `docs/commands.md`, adapter/REPL integration | 2-3d |
 
-Order: 31-1 through 31-5 completed. For 31-6 through 31-15:
-- **Independent (can run in parallel):** 31-6, 31-9, 31-10, 31-14, 31-15
-- **Sequential:** 31-7 before 31-12 (scheduled tasks enable proactive follow-ups)
-- **Sequential:** 31-11 before 31-13 (cross-session resume state enables multi-surface continuity)
-- **31-8** is the largest and most independent — can start anytime
-- **31-14** is independent — builds on existing streaming/edit infrastructure, no dependency on 31-6 through 31-13
-- **31-15** is independent — patches existing learning infrastructure. Task 7 (planning-time calibration) bridges to 31-8 when both are implemented.
+Order: 31-1 through 31-5 completed. For 31-6 through 31-16:
+- **Foundation (land first):** 31-16 (command registry) — **must** land before any plan introducing new commands. If that's not practical, those plans include fallback wiring instructions with an explicit TODO for registry migration.
+- **Independent (can run in parallel after 31-16):** 31-6, 31-8, 31-9, 31-10, 31-14, core 31-15 tasks (1-6)
+- **Sequential:** 31-7 before 31-12 (scheduled tasks enable scheduled follow-up sources; 31-12 degrades gracefully if 31-7 absent)
+- **Sequential:** 31-11 before 31-12 and 31-13 (structured task snapshots enable stale/blocker follow-ups and task-first cross-surface continuity)
+- **31-8** is the largest and most independent — can start in parallel with 31-16
+- **31-14** is mostly independent — builds on existing streaming/edit infrastructure; quiet-hours from 31-12 do NOT apply to in-flight user-requested progress updates
+- **31-15** core hardening is independent; task 7's planning-time calibration integrates with 31-8 when both are implemented
+- **31-12 → 31-13 routing integration:** 31-12 ships with simple surface routing; 31-13 provides the richer routing policy that 31-12 should upgrade to once available
+- **31-9 + 31-10 + 25-12 response pipeline:** all three hook into the concierge response path — should be formalized as a `ResponsePostProcessor` middleware chain rather than three ad-hoc insertion points
 
 ## Key Design Decisions
 
 - **No new architecture (31-1 through 31-5).** Every item plugs into existing patterns (`ChatCapabilityRegistry`, fast commands, `CapabilityContext`, env vars, `ChatManager` fields).
 - **Execution intelligence (31-6 through 31-8).** New execution modes (goal loop, scheduled tasks, RCPSP scheduler) that compose with existing engine primitives. 31-8 is a **standalone solver** — one module called by both concierge (chat tasks) and workflow engine (graph execution). Philosophy: plan optimistically, validate mechanically, fix dynamically.
 - **Safety and completeness (31-9 through 31-10).** Pre-delivery validation and PII protection — hooks into existing LLM/chat call paths.
-- **Continuity (31-11 through 31-13).** Cross-session and cross-surface context sharing via the existing Project/Task model.
+- **Continuity (31-11 through 31-13).** Cross-session and cross-surface context sharing via the existing Project/Task model, with task-first handoff and private-surface defaults.
 - **Progressive UX (31-14).** Phase-chunked progress disclosure with surface-adaptive rendering. Deterministic for structure/timing, LLM for content/framing.
 - **Learning optimization (31-15).** Make the existing 5-layer learning architecture practically effective: tiered activation, precision signals, user-correction feedback, observable health, unified governance, storage abstraction, planning-time calibration.
 - **Backward compatible.** All new features are opt-in or additive. Existing `.env` files, workflows, and chat sessions work unchanged.
@@ -86,18 +90,20 @@ Order: 31-1 through 31-5 completed. For 31-6 through 31-15:
 - **31-1 → 31-5**: All new env vars from 31-1 (`DAN_ENABLE_TIER_POLICY`, `DAN_TIER_MAP`) are documented in 31-5's `.env.example`.
 - **31-2 → 31-5**: All new env vars from 31-2 (`DAN_SHOW_COST`) and commands (`/cost`, `/status`, `/retry`) are documented in 31-5.
 
-## Cross-References Between Subplans (31-6 through 31-13)
+## Cross-References Between Subplans (31-6 through 31-15)
 
 - **31-7 → 31-12**: Scheduled tasks enable proactive follow-ups (scheduled task results trigger follow-up messages)
+- **31-11 → 31-12**: Structured task snapshots from cross-session resume are required for stale-task / blocker-resolved follow-ups
 - **31-11 → 31-13**: Cross-session resume state is required for multi-surface continuity (structured task state is the handoff payload)
 - **31-6 → 31-8**: Goal loops can use the RCPSP scheduler for internal iteration planning (each attempt could be a sub-plan)
 - **31-9 → 31-12**: Completion guard flags missed requirements; proactive follow-up can offer to address them later
 - **31-8 → 31-6**: Plan dependency optimization can schedule goal loop attempts alongside other work
 - **31-14 → all execution plans**: Progressive response applies to any long-running execution — goal loops (31-6), scheduled tasks (31-7), RCPSP-scheduled work (31-8)
 - **31-14 → 31-2**: Supersedes generic reassurance messages from 29-2; builds on streaming/notification infrastructure from 31-2
-- **31-15 → 31-8**: Planning-time calibration (31-15 task 7) feeds duration estimates and model priors into 31-8's RCPSP scheduler
+- **31-15 → 31-8**: Planning-time calibration (31-15 task 7) feeds duration estimates and model priors into 31-8's RCPSP scheduler once both exist
 - **31-15 → 31-3**: Supersedes binary `DAN_LEARNING_MODE` bundle (31-3) with tiered `DAN_LEARNING_TIER`
 - **31-15 → 31-2**: Learning health section added to `/status` command from 31-2
+- **31-16 → all plans with new commands**: Registry eliminates manual wiring for `/goal`, `/schedule`, `/resume`, `/follow-ups`, `/pii`, `/sync`, `/progress`, `/completion`, `/corrections`, `/adaptations`
 
 ## Non-Goals (this phase)
 
