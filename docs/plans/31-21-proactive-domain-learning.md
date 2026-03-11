@@ -100,14 +100,28 @@ A **domain** is a labeled category of work, stored as a tag on the `Project` mod
 - [ ] 8-3. Wire generalized patterns into the `reuse_first_decision()` path: when a new task matches a domain with generalized patterns, those patterns influence the REUSE/ADAPT/GENERATE decision.
 - [ ] 8-4. Gate: `DAN_LEARNING_TIER >= 1`. Heuristic frequency counting (no LLM cost).
 
-### 9. Tests and docs
-- [ ] 9-1. Unit tests: `detect_domain()` classifier, `DomainReflector` extraction, `DomainTemplate` CRUD, `DomainValidator` rule matching, `DomainTemplateConsolidator` merge/gap logic.
-- [ ] 9-2. Integration test: complete a paper-rendering task → domain reflection extracts 3+ items → next paper task retrieves domain expertise block → expertise block contains previous items.
-- [ ] 9-3. Integration test: correction in equity_research domain → domain knowledge item created → available in domain expertise block on next equity research task.
-- [ ] 9-4. Integration test: 10+ domain items → consolidation runs → template updated → next reflection uses updated template checklist.
-- [ ] 9-5. Updated `.env.example` with `DAN_DOMAIN_LEARNING`, `DAN_DOMAIN_VALIDATION` descriptions.
-- [ ] 9-6. Updated `docs/architecture.md` with domain learning section.
-- [ ] 9-7. Changelog entry.
+### 9. Active context assembly and sufficiency check
+- [ ] 9-1. `ContextPackage` model: structured pre-execution context assembled from all available sources. Fields: `domain: str | None`, `domain_expertise: str` (task 5 block), `project_summary: str`, `recent_artifacts: list[dict]` (file paths, workflow IDs, data sources from recent tool calls and project-scoped facts), `unresolved_references: list[str]` (phrases like "the paper", "that dataset" that couldn't be matched to known artifacts), `task_state: dict` (from cross-session resume state), `memory_context: str` (existing 800-char block). Assembled in a new `_build_context_package()` method in runtime.py, called during the parallel prep phase alongside memory retrieval and context resolution.
+- [ ] 9-2. **Artifact reference resolution**: scan the user message for implicit references ("the paper", "the report", "that file", "the dataset", "the table"). Resolve against: (a) project-scoped `FACT` items with `file_location` or `data_format` tags, (b) recent `tool_call` telemetry events for file paths, (c) task artifacts (`task.artifacts` dict), (d) recent assistant turns mentioning specific files. Matched references are included in `recent_artifacts`; unmatched go to `unresolved_references`.
+- [ ] 9-3. **Context sufficiency check**: after `ContextPackage` is assembled but before handler dispatch, evaluate whether critical information is missing. Heuristic rules:
+  - If message references a file/document but `recent_artifacts` has no match and no explicit path → mark insufficient, generate clarification: "Which file do you mean? I found these in your project: [list]"
+  - If the task requires data but no data source is known (no `data_format`/`file_location` facts for this project) → ask
+  - If the domain is detected but zero domain expertise items exist and the task is complex (multi-step plan) → proceed but note: "I don't have previous experience with [domain] in this project — I'll do my best but may ask follow-up questions"
+  - At most ONE clarification question per turn (existing policy from 25-7). If multiple gaps exist, ask about the most critical one and note the others.
+- [ ] 9-4. **Auto-read on file reference**: when a file path IS resolved (from artifact resolution or explicit mention), and the file hasn't been read in the current task, automatically invoke `file_read` or `pdf_read` capability tool before the main LLM call. Extends the existing file auto-read (31-4) with project-scoped artifact awareness. Gate: `DAN_AUTO_READ=1` (default on).
+- [ ] 9-5. **Enriched prompt context**: replace `_augmented_prompt_context()` in handlers.py with `_build_prompt_from_package(context_package)` that renders the full `ContextPackage` as structured prompt sections: project state, recent artifacts with summaries, domain expertise, task continuity state. Each handler receives the richer prompt instead of the current 2-line project summary.
+- [ ] 9-6. Wire into `_process_inner()`: `_build_context_package()` runs during the parallel prep fan-out (alongside memory retrieval and context resolution). Sufficiency check runs after all prep completes, before handler dispatch. If check triggers a clarification, short-circuit the handler and yield the clarification event (same pattern as guard pipeline clarifications).
+
+### 10. Tests and docs
+- [ ] 10-1. Unit tests: `detect_domain()` classifier, `DomainReflector` extraction, `DomainTemplate` CRUD, `DomainValidator` rule matching, `DomainTemplateConsolidator` merge/gap logic.
+- [ ] 10-2. Unit tests: `_build_context_package()` assembly, artifact reference resolution, context sufficiency heuristics.
+- [ ] 10-3. Integration test: complete a paper-rendering task → domain reflection extracts 3+ items → next paper task retrieves domain expertise block → expertise block contains previous items.
+- [ ] 10-4. Integration test: correction in equity_research domain → domain knowledge item created → available in domain expertise block on next equity research task.
+- [ ] 10-5. Integration test: 10+ domain items → consolidation runs → template updated → next reflection uses updated template checklist.
+- [ ] 10-6. Integration test: user says "update the report" in a project with one known report file → file is auto-resolved and context package includes it. User says "update the report" with no known files → sufficiency check triggers focused clarification.
+- [ ] 10-7. Updated `.env.example` with `DAN_DOMAIN_LEARNING`, `DAN_DOMAIN_VALIDATION`, `DAN_AUTO_READ` descriptions.
+- [ ] 10-8. Updated `docs/architecture.md` with domain learning + active context sections.
+- [ ] 10-9. Changelog entry.
 
 ## Incremental Delivery
 
@@ -121,7 +135,9 @@ The plan is designed for progressive value — each task group is independently 
 6. **+ Task 7** = templates improve over time. Value: extraction gets better with experience.
 7. **+ Task 8** = success patterns generalized. Value: expertise compounds across projects.
 
-Tasks 1-5 are the core loop. Tasks 6-8 are enhancements that can ship later.
+8. **+ Task 9** = active context assembly with artifact resolution and sufficiency check. Value: the concierge understands full background before acting, asks focused clarifications only when truly needed, auto-reads referenced files. This is the "less user effort" layer — users stop having to re-explain context.
+
+Tasks 1-5 are the core domain loop. Task 9 is the active context layer (can ship in parallel with tasks 1-5 since it touches different code paths — `_process_inner` prep phase vs. `_finalize_task` reflection phase). Tasks 6-8 are domain enhancements that can ship later.
 
 ## Dependencies
 
