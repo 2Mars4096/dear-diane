@@ -1,0 +1,21 @@
+{
+  "domain": "equity_research",
+  "categories": ["data_sources", "analysis_structure", "report_layout", "factor_construction", "visualization"],
+  "extraction_prompts": {
+    "data_sources": "What data sources were used and how were they joined? (CRSP, WRDS, etc.)",
+    "analysis_structure": "What was the overall analysis methodology and structure?",
+    "report_layout": "What was the report section structure and formatting?",
+    "factor_construction": "How were factors or signals constructed?",
+    "visualization": "What chart types and visualization tools were used?"
+  },
+  "checklist": [
+    "What data sources were joined?",
+    "What was the report section structure?",
+    "How were factors constructed?",
+    "What chart types were used?",
+    "What time period and frequency was analyzed?",
+    "What risk adjustments were applied?"
+  ],
+  "version": 1,
+  "item_count": 0
+}

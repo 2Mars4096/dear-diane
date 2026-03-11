@@ -1,0 +1,21 @@
+{
+  "domain": "literature_review",
+  "categories": ["search_strategy", "source_types", "synthesis_structure", "citation_density", "thematic_grouping"],
+  "extraction_prompts": {
+    "search_strategy": "How were papers found and selected?",
+    "source_types": "What types of sources were included? (journals, conferences, preprints)",
+    "synthesis_structure": "How was the review organized and structured?",
+    "citation_density": "What citation density and referencing pattern was used?",
+    "thematic_grouping": "How were papers grouped into themes or categories?"
+  },
+  "checklist": [
+    "How were papers grouped?",
+    "What was the review structure?",
+    "How many citations per theme?",
+    "What databases were searched?",
+    "Were inclusion/exclusion criteria defined?",
+    "How were gaps in literature identified?"
+  ],
+  "version": 1,
+  "item_count": 0
+}
