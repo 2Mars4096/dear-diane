@@ -8,6 +8,7 @@ import os
 import re
 import time
 import uuid
+from pathlib import Path
 from contextvars import ContextVar
 from enum import Enum
 from typing import TYPE_CHECKING, Any, AsyncIterator, Literal
@@ -179,6 +180,10 @@ class Concierge:
             "concierge_memory_context",
             default="",
         )
+        self._domain_warning_context_var: ContextVar[tuple[str, ...]] = ContextVar(
+            "concierge_domain_warnings",
+            default=(),
+        )
         self.auto_summarize_turn_threshold: int = 10
         self._bg_memory_tasks: set[asyncio.Task[None]] = set()
         self._interaction_counter: int = 0
@@ -299,6 +304,16 @@ class Concierge:
     @_memory_context.setter
     def _memory_context(self, value: str) -> None:
         self._memory_context_var.set(value)
+
+    def _domain_warning_context(self) -> ContextVar[tuple[str, ...]]:
+        warning_ctx = getattr(self, "_domain_warning_context_var", None)
+        if warning_ctx is None:
+            warning_ctx = ContextVar(
+                "concierge_domain_warnings",
+                default=(),
+            )
+            self._domain_warning_context_var = warning_ctx
+        return warning_ctx
 
     def _is_fast_command(self, text: str) -> bool:
         """Check if text is a known command that can skip LLM/memory prep.
@@ -1453,6 +1468,9 @@ class Concierge:
 
         _precomputed_context = None
         _speculative_reuse: tuple[str, Any] | None = None
+        _domain_hint: str | None = None
+        _domain_expertise_block = ""
+        _auto_read_explicit: dict[str, str] = {}
         _phase_evt = self._make_phase_event(
             msg.external_id,
             "context",
@@ -1480,7 +1498,39 @@ class Concierge:
                 prep_tasks["reuse"] = lambda: asyncio.to_thread(
                     reuse_first_decision, self.memory_kernel, msg.text,
                 )
-            
+            # 31-21: domain expertise retrieval
+            try:
+                from .domain_learning import detect_domain
+                _domain_hint = detect_domain(msg.text, None)
+            except Exception:
+                _domain_hint = None
+            if _domain_hint and self.memory_kernel:
+                _dh = _domain_hint
+                prep_tasks["domain_expertise"] = lambda: asyncio.to_thread(
+                    self._retrieve_domain_expertise, msg.text, _dh,
+                )
+            # 31-21 §10-2: explicit file path auto-read in phase 1
+            _path_re = re.compile(r"(?:[~/.][\w./\\-]+\.\w{1,8})")
+            _explicit_paths = _path_re.findall(msg.text)
+            if _explicit_paths and os.environ.get("DAN_AUTO_READ", "1") != "0":
+                _paths_copy = list(_explicit_paths[:2])
+                def _read_explicit() -> dict[str, str]:
+                    content: dict[str, str] = {}
+                    for p in _paths_copy:
+                        ep = Path(p).expanduser()
+                        if not ep.is_file():
+                            continue
+                        try:
+                            if ep.stat().st_size > 100_000 or ep.suffix.lower() == ".pdf":
+                                continue
+                            content[str(ep)] = ep.read_text(
+                                encoding="utf-8", errors="replace",
+                            )[:2000]
+                        except Exception:
+                            pass
+                    return content
+                prep_tasks["auto_read_explicit"] = lambda: asyncio.to_thread(_read_explicit)
+
             prep_timeout = float(os.environ.get("DAN_CONCIERGE_PREP_TIMEOUT", "5.0"))
             prep = await fan_out_dict(prep_tasks, timeout_per=prep_timeout)
             
@@ -1497,6 +1547,14 @@ class Concierge:
                 _speculative_reuse = _reuse_raw
             elif isinstance(_reuse_raw, Exception):
                 logger.debug("Speculative reuse search failed", exc_info=_reuse_raw)
+            _domain_expertise_block = prep.get("domain_expertise", "")
+            if isinstance(_domain_expertise_block, Exception):
+                logger.debug("Domain expertise retrieval failed", exc_info=_domain_expertise_block)
+                _domain_expertise_block = ""
+            _auto_read_explicit = prep.get("auto_read_explicit", {})
+            if isinstance(_auto_read_explicit, Exception):
+                logger.debug("Explicit auto-read failed", exc_info=_auto_read_explicit)
+                _auto_read_explicit = {}
         else:
             self._memory_context = self._retrieve_memory_context(
                 msg.text, has_active_build=has_active_build,
@@ -1535,6 +1593,92 @@ class Concierge:
                 else self.context_resolver.resolve(msg)
             )
             self._last_context = context
+        resolved_domain = getattr(context, "domain", None)
+        msg.metadata["resolved_project_id"] = context.project.project_id
+        if resolved_domain:
+            msg.metadata["resolved_domain"] = resolved_domain
+        else:
+            msg.metadata.pop("resolved_domain", None)
+        if self.memory_kernel:
+            self._refresh_memory_context_for_project(
+                msg.text,
+                project_id=context.project.project_id,
+                has_active_build=has_active_build,
+            )
+        if resolved_domain and self.memory_kernel:
+            _domain_expertise_block = self._retrieve_domain_expertise(
+                msg.text,
+                resolved_domain,
+                project_id=context.project.project_id,
+            )
+        if _domain_expertise_block:
+            msg.metadata["domain_expertise"] = _domain_expertise_block
+            existing_context = (self._memory_context or "").strip()
+            if _domain_expertise_block not in existing_context:
+                self._memory_context = (
+                    f"{existing_context}\n{_domain_expertise_block}".strip()
+                    if existing_context
+                    else _domain_expertise_block
+                )
+        else:
+            msg.metadata.pop("domain_expertise", None)
+
+        # ── Phase 2: artifact resolution + auto-read + context package ──
+        _resolved_artifacts: list[dict[str, Any]] = []
+        _unresolved_refs: list[str] = []
+        _all_auto_read: dict[str, str] = dict(_auto_read_explicit) if isinstance(_auto_read_explicit, dict) else {}
+        if os.environ.get("DAN_CONCIERGE_PARALLEL_PREP", "1") == "1":
+            from .fan_out import fan_out_dict as _fan_out_p2
+            from .domain_learning import (
+                resolve_artifact_references, check_context_sufficiency,
+            )
+
+            _project_facts: list[Any] = self._collect_project_artifact_facts(
+                context.project.project_id,
+            )
+            _task_artifacts = dict(getattr(context.task, "artifacts", None) or {})
+            _recent_turns = list(context.task.turns[-10:])
+            _msg_text = msg.text
+
+            p2_tasks: dict[str, Any] = {
+                "artifact_resolution": lambda: asyncio.to_thread(
+                    resolve_artifact_references,
+                    _msg_text, _project_facts, _task_artifacts, _recent_turns,
+                ),
+            }
+            _p2_timeout = float(os.environ.get("DAN_CONCIERGE_PREP_TIMEOUT", "5.0"))
+            _p2 = await _fan_out_p2(p2_tasks, timeout_per=_p2_timeout)
+
+            _art_result = _p2.get("artifact_resolution")
+            if isinstance(_art_result, tuple) and len(_art_result) == 2:
+                _resolved_artifacts, _unresolved_refs = _art_result
+            elif isinstance(_art_result, Exception):
+                logger.debug("Artifact resolution failed", exc_info=_art_result)
+
+            if _resolved_artifacts and os.environ.get("DAN_AUTO_READ", "1") != "0":
+                try:
+                    _implicit_read = await asyncio.to_thread(
+                        self._auto_read_for_artifacts, _resolved_artifacts,
+                    )
+                    _all_auto_read.update(_implicit_read)
+                except Exception:
+                    logger.debug("Implicit auto-read failed", exc_info=True)
+
+            _context_package = self._build_context_package(
+                msg, context,
+                domain_expertise=_domain_expertise_block,
+                memory_context=self._memory_context or "",
+                resolved_artifacts=_resolved_artifacts,
+                unresolved_refs=_unresolved_refs,
+                auto_read_content=_all_auto_read,
+            )
+            msg.metadata["context_package"] = _context_package
+
+            _clarification = check_context_sufficiency(_context_package, msg.text)
+            if _clarification:
+                msg.metadata["context_clarification"] = _clarification
+
+        if pending_resolution is None:
             _cls_start = time.monotonic()
             classification = await classify_intent_llm(
                 msg.text, context, self._classify_llm_complete,
@@ -1660,6 +1804,22 @@ class Concierge:
                             correction_store.add(
                                 CorrectionRecord(signal=signal, actions=actions),
                             )
+                            # 31-21: bridge corrections to domain knowledge
+                            _corr_domain = getattr(context, 'domain', None)
+                            if _corr_domain and self.memory_kernel:
+                                _cat_map = {"style": "formatting", "override": "tooling", "preference": "best_practice"}
+                                for _action in actions:
+                                    _act_type = _action.get("type", "")
+                                    _cat = _cat_map.get(_act_type, "best_practice")
+                                    _corr_content = str(_action.get("value") or signal.correction_text or "").strip()
+                                    if _corr_content:
+                                        self.memory_kernel.store_fact(
+                                            _corr_content,
+                                            importance=0.8,
+                                            tags=["domain_knowledge"],
+                                            project_id=context.project.project_id,
+                                            metadata={"domain": _corr_domain, "category": _cat},
+                                        )
                         if actions and self._adaptation_registry is not None:
                             from dan.engine.adaptation_registry import AdaptationCandidate
 
@@ -1773,6 +1933,18 @@ class Concierge:
                 context.project.project_id,
             )
         )
+        _context_clarification = str(msg.metadata.get("context_clarification") or "").strip()
+        if (
+            _context_clarification
+            and not use_goal_orchestrator
+            and self.goal_resolver is None
+        ):
+            yield self._handle_context_clarification(
+                context,
+                msg,
+                _context_clarification,
+            )
+            return
 
         if self.goal_resolver is not None and not use_goal_orchestrator:
             async for event in self._solver_path(msg, context, classification, entity_ctx=_entity_ctx):
@@ -1863,11 +2035,12 @@ class Concierge:
                 and not reuse_choice
                 and action == "new"
             ):
-                # 29-5 §6-2: use speculative reuse result from parallel prep if available
-                if _speculative_reuse is not None:
-                    decision, candidate = _speculative_reuse
-                else:
-                    decision, candidate = reuse_first_decision(self.memory_kernel, goal.description)
+                decision, candidate = self._resolve_reuse_decision_with_domain_patterns(
+                    goal_description=goal.description,
+                    speculative_reuse=_speculative_reuse,
+                    resolved_domain=resolved_domain,
+                    project_id=context.project.project_id,
+                )
                 logger.info(
                     "Reuse decision: %s for goal '%s'",
                     decision,
@@ -2021,6 +2194,7 @@ class Concierge:
                     "metadata": {"goal_id": goal.id},
                 },
                 project_id=context.project.project_id,
+                domain=getattr(context, "domain", None),
             )
             self._finalize_task(
                 context,
@@ -2108,7 +2282,13 @@ class Concierge:
                 yield event
             if final_content:
                 self._record_assistant_turn(context, msg, final_content)
-                self._store_memory_candidates(msg.text, final_content, None, project_id=context.project.project_id)
+                self._store_memory_candidates(
+                    msg.text,
+                    final_content,
+                    None,
+                    project_id=context.project.project_id,
+                    domain=getattr(context, "domain", None),
+                )
             self._finalize_task(
                 context,
                 msg,
@@ -2139,7 +2319,7 @@ class Concierge:
         if pref_prompt:
             content = f"{content}\n\n{pref_prompt}" if content else pref_prompt
         self._record_assistant_turn(context, msg, content)
-        self._store_memory_candidates(msg.text, content, None, project_id=context.project.project_id)
+        self._store_memory_candidates(msg.text, content, None, project_id=context.project.project_id, domain=getattr(context, 'domain', None))
         self._finalize_task(
             context,
             msg,
@@ -2234,6 +2414,11 @@ class Concierge:
                     )
             except Exception:
                 logger.debug("Plan disclosure failed", exc_info=True)
+
+        if not decision.clarification_question:
+            _context_clarification = str(msg.metadata.get("context_clarification") or "").strip()
+            if _context_clarification:
+                decision.clarification_question = _context_clarification
 
         if decision.clarification_question:
             self.project_store.set_pending_action(
@@ -2338,7 +2523,13 @@ class Concierge:
                     logger.debug("Result checkpoint (events path) failed", exc_info=True)
             if final_content:
                 self._record_assistant_turn(context, msg, final_content)
-                self._store_memory_candidates(msg.text, final_content, None, project_id=context.project.project_id)
+                self._store_memory_candidates(
+                    msg.text,
+                    final_content,
+                    None,
+                    project_id=context.project.project_id,
+                    domain=getattr(context, "domain", None),
+                )
             self._finalize_task(
                 context, msg, classification.intent, bool(final_content),
                 task_status_override=(handler_result.task_update or {}).get("status"),
@@ -2395,7 +2586,7 @@ class Concierge:
             logger.debug("Result checkpoint failed", exc_info=True)
 
         self._record_assistant_turn(context, msg, content)
-        self._store_memory_candidates(msg.text, content, None, project_id=context.project.project_id)
+        self._store_memory_candidates(msg.text, content, None, project_id=context.project.project_id, domain=getattr(context, 'domain', None))
         self._finalize_task(
             context, msg, classification.intent, bool(content),
         )
@@ -2426,8 +2617,10 @@ class Concierge:
             is_new_project=False,
             is_new_task=False,
             confidence=1.0,
+            domain=project.domain,
         )
         pending = project.pending_action
+        context = self._populate_resolved_context_domain(context, pending.original_text or msg.text)
         reply = msg.text.strip().lower()
 
         if pending.kind == "confirm":
@@ -2444,11 +2637,14 @@ class Concierge:
                 replay_msg = msg.model_copy(
                     update={
                         "text": pending.original_text,
-                        "metadata": {
-                            **pending.metadata,
-                            **msg.metadata,
-                            "skip_confirm": True,
-                        },
+                        "metadata": self._with_resolved_context_metadata(
+                            {
+                                **pending.metadata,
+                                **msg.metadata,
+                                "skip_confirm": True,
+                            },
+                            context,
+                        ),
                     }
                 )
                 return None, context, ClassificationResult(
@@ -2465,14 +2661,20 @@ class Concierge:
         if pending.kind == "clarify":
             if pending.metadata.get("solver_decision") and not pending.options:
                 self.project_store.clear_pending_action(project.project_id, msg.external_id)
+                replay_metadata = {
+                    **pending.metadata,
+                    **msg.metadata,
+                    "clarification_answer": msg.text,
+                }
+                replay_metadata.pop("context_clarification", None)
+                replay_metadata.pop("context_clarification_pending", None)
                 replay_msg = msg.model_copy(
                     update={
                         "text": f"{pending.original_text}\n[User clarification: {msg.text}]",
-                        "metadata": {
-                            **pending.metadata,
-                            **msg.metadata,
-                            "clarification_answer": msg.text,
-                        },
+                        "metadata": self._with_resolved_context_metadata(
+                            replay_metadata,
+                            context,
+                        ),
                     }
                 )
                 return None, context, ClassificationResult(
@@ -2540,13 +2742,43 @@ class Concierge:
         task = self.project_store.get_current_task(project.project_id, surface_id)
         if task is None:
             task = self.project_store.add_task(project.project_id, project.label, surface_id)
-        return ResolvedContext(
+        context = ResolvedContext(
             project=project,
             task=task,
             is_new_project=False,
             is_new_task=False,
             confidence=1.0,
+            domain=project.domain,
         )
+        return self._populate_resolved_context_domain(context, project.summary or project.label)
+
+    def _populate_resolved_context_domain(
+        self,
+        context: ResolvedContext,
+        text: str,
+    ) -> ResolvedContext:
+        if context.domain:
+            return context
+        try:
+            from .domain_learning import detect_domain
+
+            detected = detect_domain(text, context.project)
+            if detected:
+                context.domain = detected
+        except Exception:
+            logger.debug("Pending context domain detection failed", exc_info=True)
+        return context
+
+    def _with_resolved_context_metadata(
+        self,
+        metadata: dict[str, Any],
+        context: ResolvedContext,
+    ) -> dict[str, Any]:
+        enriched = dict(metadata)
+        enriched["resolved_project_id"] = context.project.project_id
+        if context.domain:
+            enriched["resolved_domain"] = context.domain
+        return enriched
 
     @staticmethod
     def _check_unsourced_claims(content: str, had_tool_call: bool) -> str:
@@ -2596,6 +2828,39 @@ class Concierge:
         parts = [context.project.summary.strip(), f"Latest task {context.task.label}: {content[:200].strip()}"]
         summary = " ".join(part for part in parts if part).strip()
         return summary[:400]
+
+    def _resolve_reuse_decision_with_domain_patterns(
+        self,
+        *,
+        goal_description: str,
+        speculative_reuse: tuple[str, Any] | None,
+        resolved_domain: str | None,
+        project_id: str | None,
+    ) -> tuple[str, Any]:
+        """Prefer domain-pattern-aware reuse once the domain is resolved."""
+        _domain_patterns: list[Any] = []
+        if resolved_domain and self.memory_kernel:
+            try:
+                from dan.engine.memory_kernel import MemoryType
+
+                _domain_patterns = [
+                    it for it in self.memory_kernel.list_by_type(MemoryType.WORKFLOW_PATTERN)
+                    if "generalized_pattern" in (it.tags or [])
+                    and it.metadata.get("domain") == resolved_domain
+                    and (
+                        it.scope.value != "project"
+                        or it.metadata.get("project_id") == project_id
+                    )
+                ]
+            except Exception:
+                pass
+        if speculative_reuse is not None and not _domain_patterns:
+            return speculative_reuse
+        return reuse_first_decision(
+            self.memory_kernel,
+            goal_description,
+            domain_patterns=_domain_patterns or None,
+        )
 
     def _maybe_add_reuse_choice(
         self,
@@ -2655,12 +2920,15 @@ class Concierge:
         replay_msg = msg.model_copy(
             update={
                 "text": pending.original_text,
-                "metadata": {
-                    **pending.metadata,
-                    **msg.metadata,
-                    "selected_option": idx,
-                    "selected_path": pending.options[idx],
-                }
+                "metadata": self._with_resolved_context_metadata(
+                    {
+                        **pending.metadata,
+                        **msg.metadata,
+                        "selected_option": idx,
+                        "selected_path": pending.options[idx],
+                    },
+                    context,
+                ),
             }
         )
         return None, context, ClassificationResult(
@@ -2668,6 +2936,208 @@ class Concierge:
             confidence=1.0,
             raw_text=pending.original_text,
         ), replay_msg
+
+    # ------------------------------------------------------------------
+    # Phase 2 helpers: context package + auto-read  (31-21 tasks 9-4, 9-6)
+    # ------------------------------------------------------------------
+
+    def _build_context_package(
+        self,
+        msg: SurfaceMessage,
+        context: Any,
+        *,
+        domain_expertise: str = "",
+        memory_context: str = "",
+        resolved_artifacts: list[dict[str, Any]] | None = None,
+        unresolved_refs: list[str] | None = None,
+        auto_read_content: dict[str, str] | None = None,
+    ) -> Any:
+        """Assemble a ContextPackage from phase 1 + phase 2 results."""
+        from .domain_learning import ContextPackage
+
+        task_state: dict[str, Any] = {}
+        try:
+            from .resume import auto_populate_task_state
+            conv_text = "\n".join(
+                t.content for t in context.task.turns if t.content
+            )
+            task_state = auto_populate_task_state(context.task, conv_text)
+        except Exception:
+            pass
+
+        return ContextPackage(
+            domain=getattr(context, "domain", None),
+            domain_expertise=domain_expertise,
+            project_summary=context.project.summary or "",
+            recent_artifacts=resolved_artifacts or [],
+            unresolved_references=unresolved_refs or [],
+            task_state=task_state,
+            memory_context=memory_context,
+            auto_read_content=auto_read_content or {},
+        )
+
+    def _auto_read_for_artifacts(
+        self, artifacts: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        """Read small files referenced by resolved artifacts (task 9-4)."""
+        if os.environ.get("DAN_AUTO_READ", "1") == "0":
+            return {}
+        result: dict[str, str] = {}
+        for art in artifacts[:3]:
+            path_str = (
+                art.get("path")
+                or (art.get("metadata") or {}).get("file_location")
+            )
+            if not path_str:
+                continue
+            path = Path(path_str).expanduser()
+            if not path.is_file():
+                continue
+            try:
+                if path.stat().st_size > 100_000 or path.suffix.lower() == ".pdf":
+                    continue
+                content = path.read_text(encoding="utf-8", errors="replace")[:2000]
+                result[str(path)] = content
+            except Exception:
+                pass
+        return result
+
+    def _collect_project_artifact_facts(self, project_id: str) -> list[Any]:
+        """Return artifact facts visible to the active project only."""
+        if not self.memory_kernel:
+            return []
+        try:
+            from dan.engine.memory_kernel import MemoryScope, MemoryType
+            from .domain_learning import _fact_has_artifact_marker
+
+            facts = []
+            for item in self.memory_kernel.list_by_type(MemoryType.FACT):
+                meta = item.metadata or {}
+                if not _fact_has_artifact_marker(item):
+                    continue
+                if item.scope != MemoryScope.PROJECT:
+                    continue
+                if meta.get("project_id") != project_id:
+                    continue
+                facts.append(item)
+            return facts
+        except Exception:
+            logger.debug("Artifact fact collection failed", exc_info=True)
+            return []
+
+    def _handle_context_clarification(
+        self,
+        context: ResolvedContext,
+        msg: SurfaceMessage,
+        question: str,
+    ) -> ChatCompleteEvent:
+        """Pause the current task and ask a focused clarification question."""
+        inferred_intent = classify_intent(msg.text, context).intent
+        intent_value = (
+            inferred_intent.value
+            if hasattr(inferred_intent, "value")
+            else str(inferred_intent)
+        )
+        if intent_value == IntentCategory.CONVERSATION.value:
+            intent_value = IntentCategory.DIRECT_TASK.value
+        self.project_store.append_turn(
+            context.project.project_id,
+            context.task.task_id,
+            TaskTurn(role="user", content=msg.text, intent=None),
+            msg.external_id,
+        )
+        self.project_store.set_pending_action(
+            context.project.project_id,
+            PendingAction(
+                kind="clarify",
+                intent=intent_value,
+                original_text=msg.text,
+                metadata={"solver_decision": True, "context_clarification_pending": True},
+            ),
+            msg.external_id,
+        )
+        self._record_assistant_turn(context, msg, question)
+        self.project_store.update_task_status(
+            context.project.project_id,
+            context.task.task_id,
+            "paused",
+            msg.external_id,
+        )
+        return self._complete_event(content=question)
+
+    def _refresh_memory_context_for_project(
+        self,
+        message: str,
+        *,
+        project_id: str | None,
+        has_active_build: bool = False,
+    ) -> str:
+        """Recompute memory context once the active project is known."""
+        refreshed = self._retrieve_memory_context(
+            message,
+            has_active_build=has_active_build,
+            project_id=project_id,
+        )
+        self._memory_context = refreshed
+        return refreshed
+
+    def _maybe_run_domain_template_upgrade(self, domain: str, llm: Any) -> None:
+        """Execute pending LLM-assisted template upgrades when flagged by consolidation."""
+        try:
+            from dan.engine.learning_tiers import is_feature_enabled
+            from dan.engine.memory_kernel import MemoryType
+            from .domain_learning import (
+                DomainTemplateUpgrader,
+                get_or_create_template,
+                save_domain_template,
+            )
+
+            if not is_feature_enabled("domain_template_upgrade"):
+                return
+
+            template = get_or_create_template(domain)
+            if not template.metadata.get("needs_llm_upgrade"):
+                return
+
+            items: list[Any] = []
+            for mem_type in (
+                MemoryType.FACT,
+                MemoryType.PREFERENCE,
+                MemoryType.PRINCIPLE,
+                MemoryType.WORKFLOW_PATTERN,
+            ):
+                items.extend(
+                    item
+                    for item in self.memory_kernel.list_by_type(mem_type)
+                    if "domain_knowledge" in (item.tags or [])
+                    and item.metadata.get("domain") == domain
+                )
+
+            upgrader = DomainTemplateUpgrader(llm=llm)
+            updated = upgrader.upgrade(domain, template, items)
+            target = updated or template
+            target.metadata["last_llm_upgrade_item_count"] = len(items)
+            target.metadata.pop("needs_llm_upgrade", None)
+            save_domain_template(target)
+        except Exception:
+            logger.debug("Domain template upgrade failed", exc_info=True)
+
+    def _refresh_context_task_from_store(self, context: Any, surface_id: str) -> None:
+        """Reload the latest persisted project/task snapshot into the live context."""
+        try:
+            fresh_project = self.project_store.get_project(
+                context.project.project_id,
+                surface_id,
+            )
+            if fresh_project is None:
+                return
+            for fresh_task in fresh_project.tasks:
+                if fresh_task.task_id == context.task.task_id:
+                    context.project = fresh_project
+                    context.task = fresh_task
+                    return
+        except Exception:
+            logger.debug("Context refresh from store failed", exc_info=True)
 
     def _finalize_task(
         self,
@@ -2680,7 +3150,14 @@ class Concierge:
         if not has_content:
             return
         status = task_status_override or (
-            "completed" if intent in (IntentCategory.WORKFLOW_BUILD, IntentCategory.META_GOAL) else "paused"
+            "completed"
+            if intent in (
+                IntentCategory.WORKFLOW_BUILD,
+                IntentCategory.META_GOAL,
+                IntentCategory.DIRECT_TASK,
+                IntentCategory.FILE_REQUEST,
+            )
+            else "paused"
         )
         self.project_store.update_task_status(
             context.project.project_id,
@@ -2688,6 +3165,7 @@ class Concierge:
             status,
             msg.external_id,
         )
+        self._refresh_context_task_from_store(context, msg.external_id)
 
         if status in ("completed", "paused"):
             try:
@@ -2719,6 +3197,78 @@ class Concierge:
 
         if status == "completed":
             self._maybe_auto_summarize(context, msg, on_complete=True)
+            self._trigger_domain_reflection(context, msg)
+
+    def _trigger_domain_reflection(self, context: Any, msg: SurfaceMessage) -> None:
+        """Spawn background domain reflection for completed tasks."""
+        domain = getattr(context, 'domain', None)
+        if not domain or not self.memory_kernel:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(self._domain_reflect_async(context, domain))
+        self._bg_memory_tasks.add(task)
+        task.add_done_callback(self._bg_memory_tasks.discard)
+
+    async def _domain_reflect_async(self, context: Any, domain: str) -> None:
+        try:
+            from .domain_learning import DomainReflector
+            from dan.engine.learning_tiers import is_feature_enabled
+
+            if not self.memory_kernel or not is_feature_enabled("domain_learning"):
+                return
+
+            providers = getattr(self.chat_manager, "_providers", None)
+            if providers is None:
+                return
+
+            model = self._resolve_classifier_model()
+
+            class _ThreadedReflectionLLM:
+                def __init__(self, provider_registry: Any, model_name: str) -> None:
+                    self._provider_registry = provider_registry
+                    self._model_name = model_name
+
+                def complete(self, prompt: str, max_tokens: int = 1000) -> str:
+                    async def _call() -> str:
+                        provider = self._provider_registry.resolve(self._model_name)
+                        result = await provider.complete(
+                            messages=[{"role": "user", "content": prompt}],
+                            model=self._model_name,
+                            temperature=0.2,
+                            max_tokens=max_tokens,
+                        )
+                        return result.text
+
+                    return asyncio.run(_call())
+
+            threaded_llm = _ThreadedReflectionLLM(providers, model)
+            reflector = DomainReflector(
+                memory_kernel=self.memory_kernel,
+                llm=threaded_llm,
+            )
+            turns = list(context.task.turns)
+            items = await asyncio.to_thread(reflector.reflect, domain, turns)
+            if items:
+                project_id = getattr(getattr(context, "project", None), "project_id", None)
+                if project_id:
+                    from dan.engine.memory_kernel import MemoryScope
+
+                    for item in items:
+                        item.scope = MemoryScope.PROJECT
+                        item.metadata = dict(item.metadata or {})
+                        item.metadata["project_id"] = project_id
+                self.memory_kernel.store_many(items)
+                logger.info("Domain reflection extracted %d items for %s", len(items), domain)
+            await asyncio.to_thread(
+                self._maybe_run_domain_template_upgrade,
+                domain,
+                threaded_llm,
+            )
+        except Exception:
+            logger.debug("Domain reflection failed", exc_info=True)
 
     def _find_project_with_workflow(self, surface_id: str) -> Project | None:
         for project in self.project_store.list_active(surface_id):
@@ -3449,6 +3999,7 @@ class Concierge:
         PII detokenization is handled at the provider boundary via
         ``TokenizingProviderWrapper`` (31-10), not in this method.
         """
+        self._domain_warning_context().set(())
         if not content:
             return content
 
@@ -3495,6 +4046,48 @@ class Concierge:
                     logger.warning("Completion guard check failed (first occurrence)", exc_info=True)
                 else:
                     logger.debug("Completion guard check failed (occurrence %d)", self._completion_guard_failures)
+
+        # 31-21: domain-aware validation
+        try:
+            from dan.engine.learning_tiers import is_feature_enabled
+            if is_feature_enabled("domain_validation") and self.memory_kernel:
+                domain = None
+                project_id = None
+                if msg is not None:
+                    domain = str(msg.metadata.get("resolved_domain") or "").strip() or None
+                    project_id = str(msg.metadata.get("resolved_project_id") or "").strip() or None
+                if domain is None:
+                    last_context = getattr(self, "_last_context", None)
+                    domain = getattr(last_context, "domain", None)
+                    project = getattr(last_context, "project", None)
+                    project_id = getattr(project, "project_id", None)
+                if domain:
+                    from .domain_learning import DomainValidator
+                    from dan.engine.memory_kernel import MemoryScope, MemoryType
+                    domain_items: list[Any] = []
+                    for mem_type in (
+                        MemoryType.FACT,
+                        MemoryType.PRINCIPLE,
+                        MemoryType.PREFERENCE,
+                    ):
+                        domain_items.extend(
+                            item for item in self.memory_kernel.list_by_type(mem_type)
+                            if "domain_knowledge" in (item.tags or [])
+                            and item.metadata.get("domain") == domain
+                            and (
+                                item.scope != MemoryScope.PROJECT
+                                or item.metadata.get("project_id") == project_id
+                            )
+                        )
+                    if domain_items:
+                        validator = DomainValidator()
+                        warnings = validator.validate(content, domain_items)
+                        if warnings:
+                            self._domain_warning_context().set(tuple(warnings))
+                            warning_block = "\n".join(f"⚠ {w}" for w in warnings[:3])
+                            content = f"{content}\n\n---\n_Domain check:_\n{warning_block}"
+        except Exception:
+            logger.debug("Domain validation failed", exc_info=True)
 
         return content
 
@@ -3575,6 +4168,71 @@ class Concierge:
             logger.debug("Memory retrieval failed in concierge", exc_info=True)
             return ""
 
+    def _retrieve_domain_expertise(
+        self,
+        query: str,
+        domain: str,
+        project_id: str | None = None,
+        *,
+        max_items: int = 8,
+        max_chars: int = 600,
+    ) -> str:
+        """Retrieve domain-specific expertise as a structured prompt block."""
+        if not self.memory_kernel or not domain:
+            return ""
+        try:
+            from dan.engine.memory_kernel import (
+                MemoryScope,
+                MemoryType,
+                _rank_fact,
+                _rank_preference,
+                _rank_principle,
+                _rank_workflow_pattern,
+            )
+
+            type_rankers = {
+                MemoryType.FACT: (_rank_fact, 0.30),
+                MemoryType.PREFERENCE: (_rank_preference, 0.20),
+                MemoryType.PRINCIPLE: (_rank_principle, 0.25),
+                MemoryType.WORKFLOW_PATTERN: (_rank_workflow_pattern, 0.25),
+            }
+            all_scored: list[tuple[float, Any]] = []
+            for mem_type, (ranker, weight) in type_rankers.items():
+                items = self.memory_kernel.list_by_type(mem_type)
+                type_scored: list[tuple[float, Any]] = []
+                for item in items:
+                    if "domain_knowledge" not in (item.tags or []):
+                        continue
+                    if item.metadata.get("domain") != domain:
+                        continue
+                    if (
+                        item.scope == MemoryScope.PROJECT
+                        and item.metadata.get("project_id") != project_id
+                    ):
+                        continue
+                    score = ranker(item, query) + 0.3
+                    type_scored.append((min(score, 1.0), item))
+                type_scored.sort(key=lambda x: x[0], reverse=True)
+                if not type_scored:
+                    continue
+                type_limit = max(1, round(max_items * weight))
+                all_scored.extend(type_scored[:type_limit])
+
+            all_scored.sort(key=lambda x: x[0], reverse=True)
+            if not all_scored:
+                return ""
+
+            lines = [f"[Domain Expertise: {domain}]"]
+            for _score, item in all_scored[:max_items]:
+                cat = (item.metadata.get("category") or "general").upper()
+                lines.append(f"- [{cat}] {item.content[:200]}")
+
+            block = "\n".join(lines)
+            return block[:max_chars].rstrip() + ("..." if len(block) > max_chars else "")
+        except Exception:
+            logger.debug("Domain expertise retrieval failed", exc_info=True)
+            return ""
+
     def _extract_memory_candidates(
         self,
         message: str,
@@ -3619,6 +4277,7 @@ class Concierge:
         response: str,
         goal_context: dict[str, Any] | None = None,
         project_id: str | None = None,
+        domain: str | None = None,
     ) -> None:
         """Schedule concurrent memory extraction as a fire-and-forget background task.
 
@@ -3628,13 +4287,29 @@ class Concierge:
         """
         if not self.memory_kernel:
             return
+        domain_warnings = list(self._domain_warning_context().get())
+        self._domain_warning_context().set(())
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._store_memory_candidates_sync(message, response, goal_context, project_id)
+            self._store_memory_candidates_sync(
+                message,
+                response,
+                goal_context,
+                project_id,
+                domain=domain,
+                domain_warnings=domain_warnings,
+            )
             return
         task = loop.create_task(
-            self._store_memory_candidates_async(message, response, goal_context, project_id),
+            self._store_memory_candidates_async(
+                message,
+                response,
+                goal_context,
+                project_id,
+                domain=domain,
+                domain_warnings=domain_warnings,
+            ),
         )
         self._bg_memory_tasks.add(task)
         task.add_done_callback(self._bg_memory_tasks.discard)
@@ -3645,11 +4320,15 @@ class Concierge:
         response: str,
         goal_context: dict[str, Any] | None = None,
         project_id: str | None = None,
+        domain: str | None = None,
+        domain_warnings: list[str] | None = None,
     ) -> None:
         """Fallback synchronous path when no event loop is running."""
         self._store_episode_candidates(message, response, goal_context)
         self._try_extract_preferences(message, response, project_id=project_id)
-        self._try_memory_extraction(message, response, goal_context, project_id=project_id)
+        self._try_memory_extraction(message, response, goal_context, project_id=project_id, domain=domain)
+        if domain_warnings:
+            self._store_domain_validation_warnings(domain_warnings, domain)
 
     async def _store_memory_candidates_async(
         self,
@@ -3657,6 +4336,8 @@ class Concierge:
         response: str,
         goal_context: dict[str, Any] | None = None,
         project_id: str | None = None,
+        domain: str | None = None,
+        domain_warnings: list[str] | None = None,
     ) -> None:
         """Fan out episode, preference, and LLM-backed memory extraction concurrently."""
         from .fan_out import fan_out_dict
@@ -3669,13 +4350,35 @@ class Concierge:
                 self._try_extract_preferences, message, response, project_id=project_id,
             ),
             "memory_extraction": lambda: asyncio.to_thread(
-                self._try_memory_extraction, message, response, goal_context, project_id=project_id,
+                self._try_memory_extraction, message, response, goal_context, project_id=project_id, domain=domain,
             ),
         }
+        if domain_warnings:
+            warnings_copy = list(domain_warnings)
+            tasks["domain_validation_log"] = lambda: asyncio.to_thread(
+                self._store_domain_validation_warnings, warnings_copy, domain,
+            )
         results = await fan_out_dict(tasks)
         for name, result in results.items():
             if isinstance(result, Exception):
                 logger.debug("Memory extraction step '%s' failed", name, exc_info=result)
+
+    def _store_domain_validation_warnings(
+        self,
+        warnings: list[str],
+        domain: str | None,
+    ) -> None:
+        if not self.memory_kernel or not warnings:
+            return
+        from dan.engine.memory_kernel import MemoryItem, MemoryScope, MemoryType
+        for warning in warnings:
+            self.memory_kernel.store(MemoryItem(
+                content=warning,
+                memory_type=MemoryType.FACT,
+                scope=MemoryScope.USER,
+                tags=["domain_validation_warning"],
+                metadata={"domain": domain or "unknown"},
+            ))
 
     def _store_episode_candidates(
         self,
@@ -3816,6 +4519,7 @@ class Concierge:
         assistant_message: str,
         goal_context: dict[str, Any] | None = None,
         project_id: str | None = None,
+        domain: str | None = None,
     ) -> None:
         """Run LLM-backed memory extraction with heuristic fallback."""
         if self.memory_kernel is None:
@@ -3834,15 +4538,23 @@ class Concierge:
                 goal_context=goal_context,
             ))
             for candidate in candidates:
+                candidate_tags = list(candidate.tags or [])
+                candidate_metadata = dict(candidate.metadata or {})
+                if domain:
+                    if "domain_knowledge" not in candidate_tags:
+                        candidate_tags.append("domain_knowledge")
+                    candidate_metadata.setdefault("domain", domain)
                 if candidate.memory_type == "fact":
                     self.memory_kernel.store_fact(
-                        candidate.content, tags=candidate.tags,
+                        candidate.content, tags=candidate_tags,
                         project_id=project_id,
+                        metadata=candidate_metadata,
                     )
                 elif candidate.memory_type == "preference":
                     self.memory_kernel.store_preference(
-                        candidate.content, tags=candidate.tags,
+                        candidate.content, tags=candidate_tags,
                         project_id=project_id,
+                        metadata=candidate_metadata,
                     )
         except Exception:
             logger.debug("Memory extraction failed", exc_info=True)

@@ -117,6 +117,10 @@ def _augmented_prompt_context(msg: SurfaceMessage, context: ResolvedContext) -> 
     """Include resume/handoff hints in the prompt context when available."""
     parts = [_project_prompt_context(context)]
 
+    domain_expertise = str(msg.metadata.get("domain_expertise") or "").strip()
+    if domain_expertise:
+        parts.append(domain_expertise)
+
     resume_context = str(msg.metadata.get("resume_context") or "").strip()
     if resume_context:
         parts.append(f"Resume context: {resume_context}")
@@ -157,6 +161,95 @@ def _augmented_prompt_context(msg: SurfaceMessage, context: ResolvedContext) -> 
         parts.append("\n".join(handoff_lines))
 
     return "\n\n".join(part for part in parts if part)
+
+
+def _build_prompt_from_package(
+    msg: SurfaceMessage,
+    context: ResolvedContext,
+    *,
+    context_package: Any | None = None,
+) -> str:
+    """Build enriched prompt context from ContextPackage (31-21 task 9-5).
+
+    Falls back to _augmented_prompt_context when no package is available.
+    """
+    if context_package is None:
+        context_package = msg.metadata.get("context_package")
+    if context_package is None:
+        return _augmented_prompt_context(msg, context)
+
+    parts = [_project_prompt_context(context)]
+
+    # Domain expertise block
+    if getattr(context_package, 'domain_expertise', ''):
+        parts.append(context_package.domain_expertise)
+
+    # Recent artifacts
+    artifacts = getattr(context_package, 'recent_artifacts', None) or []
+    if artifacts:
+        artifact_lines = ["Known artifacts in this project:"]
+        for art in artifacts[:5]:
+            name = art.get("name") or art.get("path") or "unknown"
+            art_type = art.get("type", "file")
+            artifact_lines.append(f"- [{art_type}] {name}")
+        parts.append("\n".join(artifact_lines))
+
+    # Auto-read content
+    auto_read = getattr(context_package, 'auto_read_content', None) or {}
+    if auto_read:
+        for path, summary in list(auto_read.items())[:3]:
+            parts.append(f"[Auto-read: {path}]\n{summary[:500]}")
+
+    # Task continuity state
+    task_state = getattr(context_package, 'task_state', None) or {}
+    if task_state:
+        state_parts = []
+        if task_state.get("completed_steps"):
+            state_parts.append(f"Completed: {', '.join(task_state['completed_steps'][:5])}")
+        if task_state.get("pending_steps"):
+            state_parts.append(f"Pending: {', '.join(task_state['pending_steps'][:5])}")
+        if task_state.get("current_blocker"):
+            state_parts.append(f"Blocker: {task_state['current_blocker']}")
+        if state_parts:
+            parts.append("Task state: " + "; ".join(state_parts))
+
+    # Memory context (general)
+    if getattr(context_package, 'memory_context', ''):
+        parts.append(context_package.memory_context)
+
+    # Resume/handoff context (preserve from original)
+    resume_context = str(msg.metadata.get("resume_context") or "").strip()
+    if resume_context:
+        parts.append(f"Resume context: {resume_context}")
+
+    handoff = msg.metadata.get("handoff_context")
+    if handoff:
+        task_snapshot = getattr(handoff, "task_snapshot", None)
+        if task_snapshot is None and isinstance(handoff, dict):
+            task_snapshot = handoff.get("task_snapshot")
+        project_summary = getattr(handoff, "project_summary", "")
+        if not project_summary and isinstance(handoff, dict):
+            project_summary = str(handoff.get("project_summary") or "")
+        handoff_lines: list[str] = ["Cross-surface handoff context:"]
+        if task_snapshot is not None:
+            task_name = getattr(task_snapshot, "task_name", None)
+            task_status = getattr(task_snapshot, "status", None)
+            if isinstance(task_snapshot, dict):
+                task_name = task_name or task_snapshot.get("task_name")
+                task_status = task_status or task_snapshot.get("status")
+            if task_name:
+                status_str = f" [{task_status}]" if task_status else ""
+                handoff_lines.append(f"- Task: {task_name}{status_str}")
+        if project_summary:
+            handoff_lines.append(f"- Prior project summary: {project_summary}")
+        parts.append("\n".join(handoff_lines))
+
+    # Unresolved references warning
+    unresolved = getattr(context_package, 'unresolved_references', None) or []
+    if unresolved:
+        parts.append(f"Note: could not resolve references to: {', '.join(unresolved[:5])}")
+
+    return "\n\n".join(parts)
 
 
 class FileHandler:
@@ -522,7 +615,7 @@ class FileHandler:
             mode=str(msg.metadata.get("mode") or "ask"),
             cancel_event=msg.metadata.get("cancel_event"),
             debug_context=str(msg.metadata.get("debug_context") or ""),
-            prompt_context=_augmented_prompt_context(msg, context),
+            prompt_context=_build_prompt_from_package(msg, context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
             extra_system_instructions=_INLINE_DOCUMENT_SYSTEM_INSTRUCTIONS,
@@ -568,7 +661,7 @@ class DirectTaskHandler:
             mode="conversation",
             cancel_event=msg.metadata.get("cancel_event"),
             debug_context=str(msg.metadata.get("debug_context") or ""),
-            prompt_context=_augmented_prompt_context(msg, context),
+            prompt_context=_build_prompt_from_package(msg, context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
             audit_metadata={
@@ -767,7 +860,7 @@ class ExperienceHandler:
                 mode="conversation",
                 cancel_event=msg.metadata.get("cancel_event"),
                 debug_context=str(msg.metadata.get("debug_context") or ""),
-                prompt_context=_augmented_prompt_context(msg, context),
+                prompt_context=_build_prompt_from_package(msg, context),
                 mentions=msg.metadata.get("mentions") or [],
                 surface=msg.surface,
                 audit_metadata={
@@ -826,7 +919,7 @@ class ConversationHandler:
             mode=mode,
             cancel_event=msg.metadata.get("cancel_event"),
             debug_context=str(msg.metadata.get("debug_context") or ""),
-            prompt_context=_augmented_prompt_context(msg, context),
+            prompt_context=_build_prompt_from_package(msg, context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
             audit_metadata={
@@ -869,7 +962,7 @@ class WorkflowBuildHandler:
             mode=mode,
             cancel_event=msg.metadata.get("cancel_event"),
             debug_context=str(msg.metadata.get("debug_context") or ""),
-            prompt_context=_augmented_prompt_context(msg, context),
+            prompt_context=_build_prompt_from_package(msg, context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
             audit_metadata={
