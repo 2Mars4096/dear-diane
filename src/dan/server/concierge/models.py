@@ -62,6 +62,7 @@ class Project(BaseModel):
     linked_run_ids: list[str] = Field(default_factory=list)
     linked_meta_session_ids: list[str] = Field(default_factory=list)
     summary: str = ""
+    domain: str | None = None
     tasks: list[Task] = Field(default_factory=list)
     current_task_id: str | None = None
     pending_action: PendingAction | None = None
