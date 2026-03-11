@@ -38,6 +38,15 @@ _TIER_FEATURES: dict[int, set[str]] = {
     },
 }
 
+_FEATURE_ENV_OVERRIDES: dict[str, str] = {
+    "prompt_variant_proposals": "DAN_PROMPT_OPTIMIZATION",
+    "ab_prompt_promotion": "DAN_PROMPT_OPTIMIZATION",
+    "model_recommendations": "DAN_MODEL_LEARNING",
+    "topology_suggestions": "DAN_TOPOLOGY_LEARNING",
+    "skill_refinement": "DAN_SKILL_LEARNING",
+    "memory_extraction": "DAN_MEMORY_EXTRACTION",
+}
+
 
 def resolve_learning_tier() -> int:
     """Resolve the active learning tier from environment.
@@ -61,7 +70,20 @@ def resolve_learning_tier() -> int:
 
 
 def is_feature_enabled(feature: str, tier: int | None = None) -> bool:
-    """Check whether *feature* is enabled at the given tier."""
+    """Check whether *feature* is enabled at the given tier.
+
+    After tier-level resolution, individual env var overrides are checked:
+    if the corresponding env var is explicitly ``"1"``, the feature is
+    force-enabled regardless of tier; if ``"0"``, force-disabled.
+    """
+    env_key = _FEATURE_ENV_OVERRIDES.get(feature)
+    if env_key:
+        explicit = os.environ.get(env_key)
+        if explicit == "1":
+            return True
+        if explicit == "0":
+            return False
+
     if tier is None:
         tier = resolve_learning_tier()
 
@@ -69,6 +91,76 @@ def is_feature_enabled(feature: str, tier: int | None = None) -> bool:
     for t in range(tier + 1):
         enabled |= _TIER_FEATURES.get(t, set())
     return feature in enabled
+
+
+def features_enabled_at_tier(tier: int | None = None) -> set[str]:
+    """Return the set of all features enabled at *tier*, including overrides."""
+    if tier is None:
+        tier = resolve_learning_tier()
+    base: set[str] = set()
+    for t in range(tier + 1):
+        base |= _TIER_FEATURES.get(t, set())
+    for feature, env_key in _FEATURE_ENV_OVERRIDES.items():
+        explicit = os.environ.get(env_key)
+        if explicit == "1":
+            base.add(feature)
+        elif explicit == "0":
+            base.discard(feature)
+    return base
+
+
+def check_tier_promotion_gates(
+    health_counters: "LearningHealthCounters",
+    model_recommender_precision: float | None = None,
+    model_recommender_samples: int = 0,
+    false_positive_adaptations: int = 0,
+) -> dict[str, bool | str]:
+    """Check whether gates for promoting tier 0 → 1 are met.
+
+    Returns a dict with each gate's pass/fail status plus a human-readable
+    summary.  This is a manual check function — it does NOT perform
+    automated promotion.
+
+    Gates:
+      (a) health counters >= 95% success over 100+ events
+      (b) model recommender precision > 0.7 on 15+ outcomes
+      (c) no false-positive adaptations in integration tests
+    """
+    summary = health_counters.get_summary()
+    total_attempted = sum(c["attempted"] for c in summary.values())
+    total_succeeded = sum(c["succeeded"] for c in summary.values())
+    success_rate = total_succeeded / max(total_attempted, 1)
+
+    gate_a = total_attempted >= 100 and success_rate >= 0.95
+    gate_b = (
+        model_recommender_precision is not None
+        and model_recommender_samples >= 15
+        and model_recommender_precision > 0.7
+    )
+    gate_c = false_positive_adaptations == 0
+
+    all_pass = gate_a and gate_b and gate_c
+
+    lines = [
+        f"Gate A (health >= 95% on 100+ events): "
+        f"{'PASS' if gate_a else 'FAIL'} "
+        f"({success_rate:.1%} on {total_attempted} events)",
+        f"Gate B (model precision > 0.7 on 15+ samples): "
+        f"{'PASS' if gate_b else 'FAIL'} "
+        f"(precision={model_recommender_precision}, samples={model_recommender_samples})",
+        f"Gate C (no false-positive adaptations): "
+        f"{'PASS' if gate_c else 'FAIL'} "
+        f"({false_positive_adaptations} false positives)",
+        f"Overall: {'READY for tier 1 promotion' if all_pass else 'NOT ready — fix failing gates'}",
+    ]
+
+    return {
+        "gate_a_health": gate_a,
+        "gate_b_precision": gate_b,
+        "gate_c_no_false_positives": gate_c,
+        "all_pass": all_pass,
+        "summary": "\n".join(lines),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +187,8 @@ class LearningHealthCounters:
             path: {"attempted": 0, "succeeded": 0, "skipped": 0, "failed": 0}
             for path in _LEARNING_PATHS
         }
+        self._first_failure_warned: set[str] = set()
+        self._last_event_ts: float = 0.0
 
     def record(self, path: str, outcome: OutcomeKind) -> None:
         if path not in self._counters:
@@ -102,6 +196,7 @@ class LearningHealthCounters:
                 "attempted": 0, "succeeded": 0, "skipped": 0, "failed": 0,
             }
         self._counters[path]["attempted"] += 1
+        self._last_event_ts = __import__("time").time()
         if outcome == "success":
             self._counters[path]["succeeded"] += 1
         elif outcome == "skip":
@@ -109,8 +204,35 @@ class LearningHealthCounters:
         elif outcome == "fail":
             self._counters[path]["failed"] += 1
 
+    def record_failure(self, path: str, exc: Exception | None = None) -> None:
+        """Record a failure with rate-limited warning on first occurrence.
+
+        Replaces bare ``logger.debug(...)`` exception swallowing: emits
+        ``logger.warning`` on first failure per path, ``logger.debug``
+        on subsequent failures.
+        """
+        self.record(path, "fail")
+        if path not in self._first_failure_warned:
+            self._first_failure_warned.add(path)
+            logger.warning(
+                "Learning path '%s' first failure: %s",
+                path,
+                exc or "unknown error",
+                exc_info=exc is not None,
+            )
+        else:
+            logger.debug(
+                "Learning path '%s' failure (repeated): %s",
+                path,
+                exc or "unknown error",
+            )
+
     def get_summary(self) -> dict[str, dict[str, int]]:
         return {k: dict(v) for k, v in self._counters.items()}
+
+    @property
+    def last_event_timestamp(self) -> float:
+        return self._last_event_ts
 
     def format_status(self) -> str:
         """Human-readable status string for ``/status``."""

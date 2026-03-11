@@ -8,6 +8,12 @@ Five tracker/optimizer families:
   - TopologyOutcomeTracker + TopologyAdvisor: learns structural patterns that
     correlate with success
 
+Node-level quality signals (31-15 §2):
+  - NodeOutcome: per-node success/failure with retry count, schema validity,
+    and computed quality score
+  - record_node_outcome(): records a node outcome and returns the quality score
+  - compute_workflow_quality(): partial-success gradient for multi-node workflows
+
 All trackers are opt-in via environment variables (default off) and store
 state in the unified memory kernel.
 """
@@ -22,6 +28,8 @@ import random
 import time
 from collections import Counter, defaultdict
 from typing import Any
+
+from pydantic import BaseModel, Field
 
 from dan.engine.memory_kernel import (
     MemoryItem,
@@ -43,6 +51,70 @@ _ENV_TOPOLOGY_LEARNING = "DAN_TOPOLOGY_LEARNING"
 
 def _is_enabled(env_var: str) -> bool:
     return os.environ.get(env_var, "0") == "1"
+
+
+# ===================================================================
+# 31-15 §2: Node-level outcome tracking and quality signals
+# ===================================================================
+
+
+class NodeOutcome(BaseModel):
+    """Per-node execution outcome with quality signals."""
+
+    node_id: str
+    node_type: str
+    success: bool
+    retry_count: int = 0
+    schema_valid_first_try: bool = True
+    quality_score: float = 1.0
+    recorded_at: float = Field(default_factory=time.time)
+
+
+def compute_retry_quality(retry_count: int) -> float:
+    """Quality score based on retry count: ``1.0 / (1.0 + retries * 0.3)``, clamped to [0.1, 1.0]."""
+    return max(0.1, min(1.0, 1.0 / (1.0 + retry_count * 0.3)))
+
+
+def compute_node_quality(
+    success: bool,
+    retry_count: int = 0,
+    schema_valid_first_try: bool = True,
+) -> float:
+    """Compute composite quality score for a single node execution."""
+    if not success:
+        return 0.0
+    score = compute_retry_quality(retry_count)
+    if not schema_valid_first_try:
+        score *= 0.8
+    return max(0.1, min(1.0, score))
+
+
+def compute_workflow_quality(node_outcomes: list[NodeOutcome]) -> float:
+    """Partial-success gradient: fraction of successful nodes weighted by quality."""
+    if not node_outcomes:
+        return 0.0
+    total = len(node_outcomes)
+    quality_sum = sum(o.quality_score for o in node_outcomes if o.success)
+    return quality_sum / total
+
+
+def record_node_outcome(
+    node_id: str,
+    node_type: str,
+    success: bool,
+    retry_count: int = 0,
+    schema_valid_first_try: bool = True,
+) -> NodeOutcome:
+    """Create a ``NodeOutcome`` with computed quality score."""
+    quality = compute_node_quality(success, retry_count, schema_valid_first_try)
+    return NodeOutcome(
+        node_id=node_id,
+        node_type=node_type,
+        success=success,
+        retry_count=retry_count,
+        schema_valid_first_try=schema_valid_first_try,
+        quality_score=quality,
+    )
 
 
 # ===================================================================
@@ -75,13 +147,20 @@ class PromptTracker:
         outcome: bool,
         tokens_used: int,
         latency_ms: float,
+        quality_score: float | None = None,
+        retry_count: int = 0,
+        schema_valid_first_try: bool = True,
     ) -> MemoryItem | None:
         if not _is_enabled(_ENV_PROMPT_OPT):
             return None
 
+        if quality_score is None:
+            quality_score = compute_node_quality(outcome, retry_count, schema_valid_first_try)
+
         content = (
             f"Prompt execution for node {node_id}: "
             f"outcome={'success' if outcome else 'failure'}, "
+            f"quality={quality_score:.2f}, "
             f"tokens={tokens_used}, latency={latency_ms:.0f}ms"
         )
         return self.memory_kernel.store(MemoryItem(
@@ -97,6 +176,9 @@ class PromptTracker:
                 "input_summary": input_summary[:500],
                 "output_summary": output_summary[:500],
                 "outcome": outcome,
+                "quality_score": quality_score,
+                "retry_count": retry_count,
+                "schema_valid_first_try": schema_valid_first_try,
                 "tokens_used": tokens_used,
                 "latency_ms": latency_ms,
                 "recorded_at": time.time(),
@@ -486,12 +568,18 @@ class ModelOutcomeTracker:
         node_type: str,
         task_description: str,
         model: str,
-        quality_score: float,
-        cost: float,
-        latency_ms: float,
+        quality_score: float | None = None,
+        cost: float = 0.0,
+        latency_ms: float = 0.0,
+        success: bool = True,
+        retry_count: int = 0,
+        schema_valid_first_try: bool = True,
     ) -> MemoryItem | None:
         if not _is_enabled(_ENV_MODEL_LEARNING):
             return None
+
+        if quality_score is None:
+            quality_score = compute_node_quality(success, retry_count, schema_valid_first_try)
 
         content = (
             f"Model outcome for node {node_id} ({node_type}): "
@@ -511,6 +599,8 @@ class ModelOutcomeTracker:
                 "task_description": task_description[:300],
                 "model": model,
                 "quality_score": quality_score,
+                "retry_count": retry_count,
+                "schema_valid_first_try": schema_valid_first_try,
                 "cost": cost,
                 "latency_ms": latency_ms,
                 "recorded_at": time.time(),
@@ -676,13 +766,19 @@ class TopologyOutcomeTracker:
         outcome: bool,
         failure_node: str | None = None,
         failure_type: str | None = None,
+        node_outcomes: list[NodeOutcome] | None = None,
     ) -> MemoryItem | None:
         if not _is_enabled(_ENV_TOPOLOGY_LEARNING):
             return None
 
+        workflow_quality = (
+            compute_workflow_quality(node_outcomes) if node_outcomes else (1.0 if outcome else 0.0)
+        )
+
         content = (
             f"Topology run: sig={topology_signature[:80]}, "
-            f"outcome={'success' if outcome else 'failure'}"
+            f"outcome={'success' if outcome else 'failure'}, "
+            f"quality={workflow_quality:.2f}"
         )
         if failure_node:
             content += f", failure_node={failure_node}"
@@ -697,6 +793,9 @@ class TopologyOutcomeTracker:
                 "tracker": self.TAG_PREFIX,
                 "topology_signature": topology_signature,
                 "outcome": outcome,
+                "workflow_quality": workflow_quality,
+                "completed_nodes": sum(1 for o in (node_outcomes or []) if o.success),
+                "total_nodes": len(node_outcomes or []),
                 "failure_node": failure_node,
                 "failure_type": failure_type,
                 "recorded_at": time.time(),

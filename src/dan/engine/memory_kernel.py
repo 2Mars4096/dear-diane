@@ -381,21 +381,58 @@ class DualWriteAdapter:
 
 
 class MemoryKernel:
-    """Unified typed memory store with per-type ranking and policy-based retrieval."""
+    """Unified typed memory store with per-type ranking and policy-based retrieval.
+
+    Internally delegates persistence to a ``MemoryBackend`` (31-15 §6-5).
+    A lightweight in-memory type index (``_type_index``) eliminates linear
+    scans in ``list_by_type`` and ``retrieve`` (§6-6).
+    """
 
     def __init__(
         self,
         base_dir: str | None = None,
         dual_write_adapter: DualWriteAdapter | None = None,
+        backend: Any | None = None,
     ) -> None:
         self._base_dir = Path(base_dir or os.path.expanduser("~/.dan/memory_kernel"))
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._index: dict[str, MemoryItem] = {}
+        self._type_index: dict[str, list[str]] = {}
         self._dirty = False
         self._save_counter = 0
         self._write_lock = threading.RLock()
         self._dual_write = dual_write_adapter if os.environ.get("DAN_MEMORY_DUAL_WRITE", "0") == "1" else None
+
+        if backend is not None:
+            self._backend = backend
+        else:
+            from dan.engine.learning_tiers import resolve_memory_backend
+            self._backend = resolve_memory_backend(self._base_dir)
+
         self._load_index()
+
+    # -- Type index helpers -------------------------------------------------
+
+    def _type_index_add(self, item: MemoryItem) -> None:
+        key = item.memory_type.value
+        bucket = self._type_index.get(key)
+        if bucket is None:
+            self._type_index[key] = [item.id]
+        elif item.id not in bucket:
+            bucket.append(item.id)
+
+    def _type_index_remove(self, item: MemoryItem) -> None:
+        bucket = self._type_index.get(item.memory_type.value)
+        if bucket is not None:
+            try:
+                bucket.remove(item.id)
+            except ValueError:
+                pass
+
+    def _rebuild_type_index(self) -> None:
+        self._type_index.clear()
+        for item in self._index.values():
+            self._type_index_add(item)
 
     # -- Persistence --------------------------------------------------------
 
@@ -411,10 +448,12 @@ class MemoryKernel:
                     for item_dict in data:
                         item = MemoryItem.model_validate(item_dict)
                         self._index[item.id] = item
+                    self._rebuild_type_index()
                     logger.debug("Loaded %d memory items from index", len(self._index))
                 except Exception:
                     logger.warning("Failed to load memory index, starting fresh", exc_info=True)
                     self._index = {}
+                    self._type_index = {}
 
     def _save_index(self) -> None:
         with self._write_lock:
@@ -430,6 +469,7 @@ class MemoryKernel:
         with self._write_lock:
             item.updated_at = time.time()
             self._index[item.id] = item
+            self._type_index_add(item)
             self._save_index()
         evolvement_logger.debug(
             "Memory stored: type=%s scope=%s id=%s",
@@ -445,6 +485,7 @@ class MemoryKernel:
             for item in items:
                 item.updated_at = now
                 self._index[item.id] = item
+                self._type_index_add(item)
             self._save_index()
         if self._dual_write:
             for item in items:
@@ -471,6 +512,8 @@ class MemoryKernel:
         with self._write_lock:
             if hard:
                 removed = self._index.pop(item_id, None)
+                if removed is not None:
+                    self._type_index_remove(removed)
             else:
                 item = self._index.get(item_id)
                 if item is None:
@@ -490,9 +533,11 @@ class MemoryKernel:
         limit: int = 50,
     ) -> list[MemoryItem]:
         with self._write_lock:
+            ids = self._type_index.get(memory_type.value, [])
             results = []
-            for item in self._index.values():
-                if item.memory_type != memory_type:
+            for item_id in ids:
+                item = self._index.get(item_id)
+                if item is None:
                     continue
                 if scope and item.scope != scope:
                     continue
@@ -528,10 +573,12 @@ class MemoryKernel:
                 weight = policy.budget_allocation.get(mem_type.value, 1.0 / n_sections)
                 section_limit = max(1, int(max_total * weight))
 
+                type_ids = self._type_index.get(mem_type.value, [])
                 candidates = [
-                    item for item in self._index.values()
-                    if item.memory_type == mem_type
-                    and item.lifecycle != MemoryLifecycle.ARCHIVE
+                    self._index[iid]
+                    for iid in type_ids
+                    if iid in self._index
+                    and self._index[iid].lifecycle != MemoryLifecycle.ARCHIVE
                 ]
 
                 scored = []
