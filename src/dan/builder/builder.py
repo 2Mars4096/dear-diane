@@ -22,8 +22,6 @@ from dan.builder.compiler import (
     _PendingNode,
     _PendingSubGraph,
     compile_graph,
-    default_input_port,
-    default_output_port,
 )
 from dan.builder.refs import NodeRef, PortRef
 from dan.models.context import (
@@ -669,32 +667,65 @@ class WorkflowBuilder:
         max_rounds: int | None = None,
         writer_model: str = "",
         reviewer_model: str = "",
+        condition: str | None = None,
+        review_fields: dict[str, dict[str, Any]] | None = None,
+        feedback_key: str | None = None,
     ) -> NodeRef:
         """Create a writer-reviewer loop in one call.
 
         Returns a NodeRef pointing to the while_loop node.
         ``max_rounds`` defaults to 2 for content-oriented prompts, 3 otherwise.
+
+        Optional kwargs for custom review criteria:
+        - ``condition``: loop condition (default: ``"quality_score < 8"``).
+        - ``review_fields``: reviewer output schema fields (default:
+          ``{"quality_score": {"type": "integer"}, "feedback": {"type": "string"}}``).
+        - ``feedback_key``: which review field is injected back into the
+          writer prompt (default: ``"feedback"``).
         """
         if max_rounds is None:
-            from dan.meta.generation_defaults import _CONTENT_KEYWORDS
+            from dan.builder._constants import CONTENT_KEYWORDS
             prompt_lower = writer_prompt.lower()
-            max_rounds = 2 if any(kw in prompt_lower for kw in _CONTENT_KEYWORDS) else 3
+            max_rounds = 2 if any(kw in prompt_lower for kw in CONTENT_KEYWORDS) else 3
+
+        eff_condition = condition or "quality_score < 8"
+        eff_fields: dict[str, dict[str, Any]] = review_fields or {
+            "quality_score": {"type": "integer"},
+            "feedback": {"type": "string"},
+        }
+        eff_feedback_key = feedback_key or "feedback"
+
         writer_id = f"{name}_writer"
         reviewer_id = f"{name}_reviewer"
         loop_id = f"{name}_loop"
 
+        loop_port_names = ["draft"] + list(eff_fields.keys())
+        loop_input_ports = [{"name": p, "required": False} for p in loop_port_names]
+        loop_output_ports = [{"name": p} for p in loop_port_names]
+
+        _type_to_default: dict[str, Any] = {"integer": 0, "number": 0.0, "boolean": False}
+        loop_state_schema = {"draft": {"type": "string"}}
+        loop_state_schema.update(eff_fields)
+        loop_state_defaults = {"draft": ""}
+        for field_name, field_schema in eff_fields.items():
+            loop_state_defaults[field_name] = _type_to_default.get(
+                field_schema.get("type", "string"), ""
+            )
+
         with self.while_loop(
             loop_id,
-            condition="quality_score < 8",
+            condition=eff_condition,
             max_iterations=max_rounds,
-            input_ports=[{"name": "draft"}, {"name": "quality_score"}, {"name": "feedback"}],
-            output_ports=[{"name": "draft"}, {"name": "quality_score"}, {"name": "feedback"}],
+            input_ports=loop_input_ports,
+            output_ports=loop_output_ports,
+            state_schema=loop_state_schema,
+            state_defaults=loop_state_defaults,
         ) as body:
             writer = body.llm(
                 writer_id,
-                prompt=writer_prompt + "\n\nPrevious feedback: {feedback}",
+                prompt=writer_prompt + f"\n\nPrevious {eff_feedback_key}: {{{eff_feedback_key}}}",
                 model=writer_model,
-                input_ports=[{"name": "feedback"}],
+                input_ports=[{"name": eff_feedback_key}],
             )
             reviewer = body.llm(
                 reviewer_id,
@@ -702,17 +733,15 @@ class WorkflowBuilder:
                 model=reviewer_model,
                 output_schema={
                     "type": "object",
-                    "properties": {
-                        "quality_score": {"type": "integer"},
-                        "feedback": {"type": "string"},
-                    },
-                    "required": ["quality_score", "feedback"],
+                    "properties": dict(eff_fields),
+                    "required": list(eff_fields.keys()),
                 },
                 input_ports=[{"name": "text"}],
             )
             body.edge(writer["text"], reviewer["text"])
 
-        return NodeRef(loop_id, "while_loop", self)
+        return NodeRef(loop_id, "while_loop", self,
+                       _default_input="draft", _default_output="draft")
 
     def map_reduce(
         self,
@@ -786,6 +815,40 @@ class WorkflowBuilder:
 
         return refs[-1]
 
+    def branch(
+        self,
+        condition: str,
+        then_prompt: str,
+        else_prompt: str,
+        *,
+        name: str = "branch",
+        then_model: str = "",
+        else_model: str = "",
+    ) -> tuple[NodeRef, NodeRef, NodeRef]:
+        """Create a conditional branch: gate + then-LLM + else-LLM.
+
+        Returns ``(gate_ref, then_ref, else_ref)``.  Wire upstream into
+        ``gate_ref`` and downstream from ``then_ref`` / ``else_ref``.
+        Compiles to a ``gate`` node with ``gate_mode="if_else"`` and
+        two LLM nodes wired from its ``true``/``false`` output ports.
+        """
+        gate_id = f"{name}_gate"
+        then_id = f"{name}_then"
+        else_id = f"{name}_else"
+
+        gate_ref = self.gate(
+            gate_id,
+            condition=condition,
+            gate_mode="if_else",
+        )
+        then_ref = self.llm(then_id, prompt=then_prompt, model=then_model)
+        else_ref = self.llm(else_id, prompt=else_prompt, model=else_model)
+
+        self.edge(gate_ref["true"], then_ref["input"])
+        self.edge(gate_ref["false"], else_ref["input"])
+
+        return gate_ref, then_ref, else_ref
+
     # ── Sub-graph context managers ─────────────────────────────────
 
     @contextmanager
@@ -803,6 +866,8 @@ class WorkflowBuilder:
         write_set: list[ContextDeclaration] | None = None,
         input_ports: list[dict[str, Any]] | None = None,
         output_ports: list[dict[str, Any]] | None = None,
+        state_schema: dict[str, Any] | None = None,
+        state_defaults: dict[str, Any] | None = None,
     ) -> Generator[WorkflowBuilder, None, None]:
         """Context manager for a while-loop sub-graph."""
         from dan.models.ports import InputPort, OutputPort
@@ -832,6 +897,10 @@ class WorkflowBuilder:
             kwargs["read_set"] = read_set
         if write_set is not None:
             kwargs["write_set"] = write_set
+        if state_schema is not None:
+            kwargs["state_schema"] = state_schema
+        if state_defaults is not None:
+            kwargs["state_defaults"] = state_defaults
 
         pn = _PendingNode(
             id=node_id,
@@ -1400,8 +1469,8 @@ class WorkflowBuilder:
 
     def _register_chain(self, src: NodeRef, dst: NodeRef) -> None:
         """Called by NodeRef.__rshift__ to register a >> edge."""
-        src_port = default_output_port(src.node_type, getattr(src, "gate_mode", None))
-        dst_port = default_input_port(dst.node_type)
+        src_port = src.default_output
+        dst_port = dst.default_input
         self._edges.append(_PendingEdge(
             source_node_id=src.node_id,
             source_port=src_port,
@@ -1663,14 +1732,13 @@ class _ValidatedCompositeRef:
 
         if isinstance(other, _ValidatedCompositeRef):
             dst_id = other.node_id
-            dst_type = other.node_type
+            dst_port = default_input_port(other.node_type)
         elif isinstance(other, NodeRef):
             dst_id = other.node_id
-            dst_type = other.node_type
+            dst_port = other.default_input
         else:
             return NotImplemented
 
-        dst_port = default_input_port(dst_type)
         self._builder._edges.append(_PendingEdge(
             source_node_id=src_id,
             source_port=src_port,
@@ -1682,12 +1750,12 @@ class _ValidatedCompositeRef:
 
     def __rrshift__(self, other: NodeRef) -> _ValidatedCompositeRef:
         """Handle ``node_ref >> validated_block``."""
-        from dan.builder.compiler import default_output_port, default_input_port
+        from dan.builder.compiler import default_input_port
 
         if not isinstance(other, NodeRef):
             return NotImplemented
 
-        src_port = default_output_port(other.node_type, getattr(other, "gate_mode", None))
+        src_port = other.default_output
         dst_id = self.node_id
         dst_type = self.node_type
         dst_port = default_input_port(dst_type)

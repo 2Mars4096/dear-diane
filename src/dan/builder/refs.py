@@ -73,7 +73,7 @@ class NodeRef:
         *b*'s default input on the shared builder.
     """
 
-    __slots__ = ("node_id", "node_type", "_builder", "gate_mode")
+    __slots__ = ("node_id", "node_type", "_builder", "gate_mode", "_default_input", "_default_output")
 
     def __init__(
         self,
@@ -82,16 +82,29 @@ class NodeRef:
         builder: WorkflowBuilder | None = None,
         *,
         gate_mode: str | None = None,
+        _default_input: str | None = None,
+        _default_output: str | None = None,
     ) -> None:
         self.node_id = node_id
         self.node_type = node_type
         self._builder = builder
         self.gate_mode = gate_mode
+        self._default_input = _default_input
+        self._default_output = _default_output
 
     @property
     def default_output(self) -> str:
+        if self._default_output is not None:
+            return self._default_output
         from dan.builder.compiler import default_output_port
         return default_output_port(self.node_type, self.gate_mode)
+
+    @property
+    def default_input(self) -> str:
+        if self._default_input is not None:
+            return self._default_input
+        from dan.builder.compiler import default_input_port
+        return default_input_port(self.node_type)
 
     def __getitem__(self, port_name: str) -> PortRef:
         return PortRef(self.node_id, port_name, self._builder)
