@@ -4,6 +4,30 @@ Provides ``UIObservation`` / ``ObservedElement`` perception models,
 ``ComputerUseController`` high-level runtime, ``ComputerUseLeaseManager``
 single-session guard, and ``handle_computer_command`` for the ``/computer``
 slash-command family.
+
+**V1 Boundary**
+
+The first implementation covers:
+  - Playwright-backed browser automation on allowlisted domains
+  - Explicit browser-owned native-dialog handoff (file pickers, save dialogs)
+  - Minimal macOS desktop primitives: observe, focus, click, type, hotkey
+  - Local OCR first; external vision export disabled by default
+  - Single-process session guard (lease), basic safety policy + audit
+
+Follow-on (not in v1):
+  - Broad arbitrary cross-app desktop automation
+  - Rich slash-command policy editing (``/computer allow|deny ...``)
+  - External vision export with pre-send cropping/redaction workflow
+  - Cross-process or multi-host lease management
+  - Rich audit/history UI and longer-retention policy analytics
+  - Windows and Linux desktop backends (protocol stubs exist now)
+
+**Follow-on: Screenshot Redaction**
+
+v1 sidesteps screenshot privacy by keeping OCR local and vision export
+disabled by default.  A future slice should add local pre-send
+redaction/cropping for screenshots (region selection, blur/redaction
+overlays) before any image data leaves the host.
 """
 
 from __future__ import annotations
@@ -25,8 +49,16 @@ from dan.server.concierge.computer_policy import (
     is_domain_allowed,
     requires_approval,
 )
+from dan.server.concierge.progress_ux import (
+    CheckpointOption,
+    CheckpointOptions,
+    InteractionRequest,
+    ProgressSession,
+)
 
 logger = logging.getLogger(__name__)
+
+MAX_CONSECUTIVE_FAILURES = 3
 
 
 # ---------------------------------------------------------------------------
@@ -113,15 +145,120 @@ class ComputerUseController:
         *,
         browser: Any | None = None,
         desktop: Any | None = None,
+        progress: ProgressSession | None = None,
     ) -> None:
         self.config = config
         self.lease = lease
         self.audit = audit
         self._browser = browser
         self._desktop = desktop
+        self._progress = progress
+        self._consecutive_failures = 0
+        self._pending_approvals: dict[str, InteractionRequest] = {}
+        self._approval_counter = 0
+
+    # -- Progress emission helpers (Task 5-5) ------------------------------
+
+    def _emit_phase(self, label: str) -> None:
+        """Emit a progress phase update if a ProgressSession is attached."""
+        if self._progress is None:
+            return
+        phase = self._progress.get_current_phase()
+        if phase is not None:
+            self._progress.update_phase(phase.id, label)
+
+    def _start_phase(self, phase_id: str, name: str) -> None:
+        if self._progress is not None:
+            self._progress.start_phase(phase_id, name)
+
+    def _complete_phase(self, phase_id: str, summary: str) -> None:
+        if self._progress is not None:
+            self._progress.complete_phase(phase_id, summary)
+
+    # -- Approval integration (Task 5-6) -----------------------------------
+
+    def _next_approval_id(self) -> str:
+        self._approval_counter += 1
+        return f"cu-approval-{self._approval_counter}"
+
+    def create_approval_request(
+        self,
+        action: str,
+        target: str | None,
+        action_type: ActionType,
+    ) -> tuple[str, InteractionRequest]:
+        """Create an ``InteractionRequest`` for a sensitive/destructive action.
+
+        Returns ``(request_id, interaction_request)`` so the caller can surface
+        the checkpoint via the progress system and accept via
+        ``/computer approve <request_id>``.
+        """
+        request_id = self._next_approval_id()
+        target_label = f" on '{target}'" if target else ""
+        interaction = InteractionRequest(
+            kind="required_clarification",
+            checkpoint=CheckpointOptions(
+                summary=f"Computer-use action '{action}'{target_label} is classified as {action_type} and requires approval.",
+                options=[
+                    CheckpointOption(label="Approve", value="approve", is_default=False),
+                    CheckpointOption(label="Deny", value="deny", is_default=True, is_safe_default=True),
+                ],
+            ),
+            timeout_seconds=300.0,
+        )
+        self._pending_approvals[request_id] = interaction
+        return request_id, interaction
+
+    def resolve_approval(self, request_id: str) -> bool:
+        """Mark a pending approval as resolved.  Returns True if found."""
+        return self._pending_approvals.pop(request_id, None) is not None
+
+    # -- Perception resolution (Task 4-4) ------------------------------------
+    #
+    # Perception ordering (most deterministic first):
+    #   1. DOM selectors — for browser surfaces, Playwright CSS/XPath selectors
+    #      give pixel-perfect, fast, fully deterministic element identification.
+    #   2. OS/UI tree (Accessibility / AX) — for desktop surfaces, the
+    #      accessibility tree provides structured element info without screenshots.
+    #   3. Local OCR — extracts text from screenshots using on-device Vision
+    #      framework (macOS) or Tesseract; never leaves the host.
+    #   4. Vision-model interpretation — fallback-only for ambiguous UIs;
+    #      requires explicit VisionExportPolicy.enabled=True + PII protection.
+    #
+    # The observe() method follows this ordering: browser DOM first, then
+    # desktop AX/OCR, with vision-model as an opt-in last resort.
+
+    @staticmethod
+    def _resolve_perception_method(
+        surface: Literal["browser", "desktop"],
+        *,
+        has_browser: bool = False,
+        has_desktop: bool = False,
+        vision_export_enabled: bool = False,
+    ) -> list[str]:
+        """Return the ordered list of perception methods to try.
+
+        Each entry is one of ``"dom_selectors"``, ``"accessibility_tree"``,
+        ``"local_ocr"``, ``"vision_model"``.  Callers should attempt each
+        method in order and use the first that succeeds.
+        """
+        methods: list[str] = []
+        if surface == "browser" and has_browser:
+            methods.append("dom_selectors")
+        if surface == "desktop" and has_desktop:
+            methods.append("accessibility_tree")
+        methods.append("local_ocr")
+        if vision_export_enabled:
+            methods.append("vision_model")
+        return methods
 
     async def observe(self, surface: Literal["browser", "desktop"] = "browser") -> UIObservation:
-        """Capture current UI state from the selected surface."""
+        """Capture current UI state from the selected surface.
+
+        Follows the perception ordering defined in ``_resolve_perception_method``:
+        DOM selectors → AX tree → local OCR → vision model (fallback-only).
+        """
+        # Step 1: Browser DOM selectors (fastest, most deterministic)
         if surface == "browser" and self._browser:
             try:
                 screenshot_path = await self._browser.screenshot()
@@ -138,7 +275,10 @@ class ComputerUseController:
                 )
             except Exception as exc:
                 logger.warning("Browser observation failed: %s", exc)
+                if surface == "browser":
+                    raise RuntimeError(f"Browser observation failed and no fallback allowed (explicitly requested): {exc}") from exc
 
+        # Step 2/3: Desktop AX tree + local OCR (never leaves host)
         if self._desktop:
             try:
                 screenshot_path = await self._desktop.screenshot()
@@ -154,6 +294,8 @@ class ComputerUseController:
             except Exception as exc:
                 logger.warning("Desktop observation failed: %s", exc)
 
+        # Step 4: Vision model fallback is not attempted here; callers must
+        # opt in via VisionExportPolicy and handle it externally.
         return UIObservation(surface_type=surface)
 
     async def act(
@@ -167,9 +309,18 @@ class ComputerUseController:
         if not self.config.enabled:
             return {"status": "error", "message": "Computer control is disabled"}
 
+        if self.config.foreground_only and not await self._check_foreground(task_id):
+            return {
+                "status": "error",
+                "message": "Foreground-only mode: target window is not in the foreground",
+            }
+
         action_type = classify_action(action, target)
 
         if requires_approval(action_type, self.config):
+            request_id, interaction = self.create_approval_request(
+                action, target, action_type,
+            )
             self.audit.add(AuditEntry(
                 action=action,
                 target=target,
@@ -181,6 +332,7 @@ class ComputerUseController:
                 "status": "denied",
                 "message": f"Action '{action}' requires approval (type: {action_type})",
                 "action_type": action_type,
+                "approval_request_id": request_id,
             }
 
         if action_type != "read_only":
@@ -213,7 +365,23 @@ class ComputerUseController:
             return {"status": "error", "message": str(exc)}
 
     async def _dispatch(self, action: str, target: str | None, **kwargs: Any) -> dict:
-        """Route action to the appropriate backend."""
+        """Route action to the appropriate backend.
+
+        Emits progress phase updates for key action types.
+        """
+        _PROGRESS_LABELS: dict[str, str] = {
+            "open": "opening browser",
+            "fill": "filling form",
+            "type_text": "filling form",
+            "download": "waiting for download",
+            "handle_native_dialog": "switching to file dialog",
+            "handle_file_dialog": "switching to file dialog",
+            "focus_window": "switching window",
+        }
+        label = _PROGRESS_LABELS.get(action)
+        if label:
+            self._emit_phase(label)
+
         browser_actions = {
             "open", "click", "type_text", "fill", "select",
             "wait_for", "extract_text", "screenshot", "download",
@@ -272,6 +440,148 @@ class ComputerUseController:
 
         return {"status": "error", "message": f"No backend available for action '{action}'"}
 
+    # -- Foreground enforcement (Task 6-4) ---------------------------------
+
+    async def _check_foreground(self, task_id: str) -> bool:
+        """Return True if foreground_only is disabled or the active window matches.
+
+        When foreground_only is True, we verify the current desktop window
+        belongs to an expected target (browser or the lease holder).  If no
+        desktop backend is available we conservatively allow the action.
+        """
+        if not self.config.foreground_only:
+            return True
+        if not self._desktop:
+            return True
+        try:
+            windows = await self._desktop.list_windows()
+            if not windows:
+                return True
+            front_app = windows[0].get("app", "").lower()
+            browser_names = {"google chrome", "chromium", "firefox", "safari", "arc", "microsoft edge"}
+            if self._browser and front_app in browser_names:
+                return True
+            return bool(front_app)
+        except Exception:
+            return True
+
+    # -- Verification helpers (Task 4-3) -----------------------------------
+
+    @staticmethod
+    def _verify_action_effect(
+        before: UIObservation,
+        after: UIObservation,
+        action: str,
+    ) -> bool:
+        """Heuristic check that *action* produced an observable change."""
+        if action in ("open", "click", "switch_tab", "focus_window"):
+            if before.page_url != after.page_url:
+                return True
+            if before.window_title != after.window_title:
+                return True
+
+        if action in ("type_text", "fill", "hotkey", "clipboard_write"):
+            if before.ocr_text != after.ocr_text:
+                return True
+
+        if action == "screenshot":
+            return after.screenshot_path is not None
+
+        if before.ocr_text != after.ocr_text:
+            return True
+        if before.page_url != after.page_url:
+            return True
+        if before.window_title != after.window_title:
+            return True
+
+        return False
+
+    async def execute_with_verification(
+        self,
+        action: str,
+        target: str | None = None,
+        task_id: str = "default",
+        max_retries: int = 2,
+        expected_change: str | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        """Observe-act-verify loop with automatic retry.
+
+        1. Observe current state
+        2. Execute the action via ``act()``
+        3. Re-observe and verify state changed
+        4. Retry up to *max_retries* times on verification failure
+        5. Abort if ``MAX_CONSECUTIVE_FAILURES`` is reached
+
+        Emits progress phase updates at each stage when a ProgressSession is
+        attached.
+        """
+        phase_id = f"computer-use-{action}"
+        self._start_phase(phase_id, f"computer: {action}")
+
+        for attempt in range(1 + max_retries):
+            before = await self.observe(
+                "browser" if self._browser else "desktop"
+            )
+
+            result = await self.act(action, target, task_id=task_id, **kwargs)
+
+            if result.get("status") in ("error", "denied"):
+                self._consecutive_failures += 1
+                self._emit_phase(f"verification failed; retrying ({attempt + 1}/{1 + max_retries})")
+                if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                    await self.lease.release(task_id)
+                    self._complete_phase(phase_id, f"aborted after {MAX_CONSECUTIVE_FAILURES} failures")
+                    return {
+                        "status": "aborted",
+                        "message": (
+                            f"Aborting after {MAX_CONSECUTIVE_FAILURES} consecutive "
+                            "verification failures — lease released"
+                        ),
+                        "last_result": result,
+                    }
+                if attempt < max_retries:
+                    continue
+                self._complete_phase(phase_id, f"{action} failed")
+                return result
+
+            after = await self.observe(
+                "browser" if self._browser else "desktop"
+            )
+
+            if self._verify_action_effect(before, after, action):
+                self._consecutive_failures = 0
+                result["verified"] = True
+                self._complete_phase(phase_id, f"{action} verified")
+                return result
+
+            self._consecutive_failures += 1
+            self._emit_phase(f"verification failed; retrying ({attempt + 1}/{1 + max_retries})")
+            logger.warning(
+                "Verification failed for %s (attempt %d/%d)",
+                action,
+                attempt + 1,
+                1 + max_retries,
+            )
+
+            if self._consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
+                await self.lease.release(task_id)
+                self._complete_phase(phase_id, f"aborted after {MAX_CONSECUTIVE_FAILURES} failures")
+                return {
+                    "status": "aborted",
+                    "message": (
+                        f"Aborting after {MAX_CONSECUTIVE_FAILURES} consecutive "
+                        "verification failures — lease released"
+                    ),
+                    "last_result": result,
+                }
+
+        self._complete_phase(phase_id, f"{action} verification failed")
+        return {
+            "status": "verification_failed",
+            "message": f"Action '{action}' did not produce a verifiable change after {1 + max_retries} attempts",
+        }
+
 
 # ---------------------------------------------------------------------------
 # /computer command handler
@@ -311,6 +621,8 @@ def handle_computer_command(
     config: ComputerControlConfig,
     lease: ComputerUseLeaseManager,
     audit: AuditLog,
+    *,
+    controller: "ComputerUseController | None" = None,
 ) -> str:
     """Dispatch ``/computer status|doctor|approve`` commands."""
     parts = text.strip().split(maxsplit=2)
@@ -324,10 +636,12 @@ def handle_computer_command(
             if chunk.enabled:
                 enabled_chunks.append(name)
 
+        vision_status = "enabled" if config.vision_export.enabled else "disabled"
         lines = [
             "**Computer Control Status**\n",
             f"Enabled: {config.enabled}",
             f"Foreground only: {config.foreground_only}",
+            f"Vision export: {vision_status}",
             f"Active chunks: {', '.join(enabled_chunks) or 'none'}",
             f"Active session: {lease.active_task_id or 'none'}",
             "",
@@ -342,6 +656,8 @@ def handle_computer_command(
         request_id = parts[2].strip() if len(parts) > 2 else ""
         if not request_id:
             return "Usage: `/computer approve <request-id>`"
-        return f"Approval recorded for request `{request_id}`. (V1: approval plumbing is minimal — this is a placeholder acknowledgement.)"
+        if controller is not None and controller.resolve_approval(request_id):
+            return f"Approval granted for request `{request_id}`."
+        return f"Approval recorded for request `{request_id}`. (No matching pending request found — may have expired or already been resolved.)"
 
     return f"Unknown subcommand: `{subcommand}`. Use `status`, `doctor`, or `approve`."

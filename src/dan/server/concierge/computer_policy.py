@@ -110,12 +110,76 @@ class ChunkPolicies(BaseModel):
     system: ChunkPolicy = Field(default_factory=lambda: ChunkPolicy(enabled=False))
 
 
+class VisionExportPolicy(BaseModel):
+    """Controls whether screenshots may be sent to external vision models.
+
+    Disabled by default.  When enabled, PII protection and redaction are
+    required to mitigate data-leak risk.  The ``DAN_PII_PROTECTION``
+    environment variable must be set to ``1`` for export to be allowed.
+    """
+
+    enabled: bool = False
+    require_pii_protection: bool = True
+    require_redaction: bool = True
+
+
+def check_vision_export(config: "ComputerControlConfig") -> bool:
+    """Return True if vision export (sending screenshots to external LLMs) is allowed.
+
+    Blocked when:
+    - ``VisionExportPolicy.enabled`` is False (default), or
+    - ``require_pii_protection`` is True but ``DAN_PII_PROTECTION`` != ``1``, or
+    - ``require_redaction`` is True (v1 always blocks because local redaction
+      is not yet implemented — follow-on slice).
+    """
+    policy = config.vision_export
+    if not policy.enabled:
+        return False
+    if policy.require_pii_protection:
+        if os.environ.get("DAN_PII_PROTECTION", "0").strip() != "1":
+            return False
+    if policy.require_redaction:
+        # v1: local redaction/cropping is not yet implemented, so this
+        # always blocks when require_redaction=True (the default).
+        # Follow-on: once pre-send redaction is implemented, this check
+        # will verify the redaction pipeline is active instead of blocking.
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
+# File safety policy (Task 6-6)
+# ---------------------------------------------------------------------------
+
+
+class FileSafetyPolicy(BaseModel):
+    """File-level safety rules for computer-use downloads and uploads.
+
+    Restricts where files may be saved/read and applies cleanup policies
+    to prevent unbounded disk growth from screenshots and temp files.
+    """
+
+    allowed_download_dirs: list[str] = Field(
+        default_factory=lambda: ["~/Downloads", "~/.dan/downloads"],
+    )
+    allowed_upload_roots: list[str] = Field(
+        default_factory=lambda: ["~/Documents", "~/Desktop"],
+    )
+    require_overwrite_confirmation: bool = True
+    auto_open_downloads: bool = False
+    screenshot_ttl_hours: float = 24.0
+    temp_crop_ttl_hours: float = 1.0
+    download_ttl_hours: float = 0.0  # 0 = no auto-cleanup
+
+
 class ComputerControlConfig(BaseModel):
     """Top-level computer control configuration."""
 
     enabled: bool = False
     foreground_only: bool = True
     chunk_policies: ChunkPolicies = Field(default_factory=ChunkPolicies)
+    vision_export: VisionExportPolicy = Field(default_factory=VisionExportPolicy)
+    file_safety: FileSafetyPolicy = Field(default_factory=FileSafetyPolicy)
 
     @classmethod
     def load(cls) -> ComputerControlConfig:

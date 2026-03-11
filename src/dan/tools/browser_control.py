@@ -60,6 +60,7 @@ class BrowserController(Protocol):
     ) -> str | None: ...
     async def list_tabs(self) -> list[dict]: ...
     async def switch_tab(self, index: int) -> dict: ...
+    async def handle_native_dialog(self, dialog_type: str = "file_picker") -> dict: ...
     async def close(self) -> None: ...
 
 
@@ -243,6 +244,18 @@ class PlaywrightBrowserController:
             return {"status": "ok", "index": index, "url": self._page.url}
         return {"status": "error", "message": f"Tab index {index} out of range"}
 
+    async def handle_native_dialog(self, dialog_type: str = "file_picker") -> dict:
+        """Hand off to desktop layer for browser-triggered native dialogs.
+
+        V1: returns a structured handoff request rather than directly
+        controlling the dialog.
+        """
+        return {
+            "status": "handoff_required",
+            "dialog_type": dialog_type,
+            "session_context": self.session,
+        }
+
     async def close(self) -> None:
         if self._browser:
             await self._browser.close()
@@ -315,6 +328,14 @@ class MockBrowserController:
 
     async def switch_tab(self, index: int) -> dict:
         return self._record("switch_tab", index=index)
+
+    async def handle_native_dialog(self, dialog_type: str = "file_picker") -> dict:
+        self._record("handle_native_dialog", dialog_type=dialog_type)
+        return {
+            "status": "handoff_required",
+            "dialog_type": dialog_type,
+            "session_context": None,
+        }
 
     async def close(self) -> None:
         self._closed = True
