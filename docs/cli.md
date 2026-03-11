@@ -171,31 +171,9 @@ Loading an existing workflow (`--workflow-id`) fetches the graph on startup and 
 | `debug` | Debug mode — includes recent run failures in context, limited write tools |
 | `auto` | Auto-detect mode from message content |
 
-**REPL commands:**
+**REPL & chat commands:**
 
-| Command | Action |
-|---------|--------|
-| `/run` | Run the full workflow |
-| `/run-node @[Name](node:id)` | Run a single node |
-| `/run-subgraph @[Name](subgraph:key)` | Run a subgraph |
-| `/show` | Display current graph (nodes, edges, types) |
-| `/save [name]` | Save workflow — prompts for a name if on `_scratch` |
-| `/list` | List all saved workflows |
-| `/open <id>` | Open an existing workflow (switches session) |
-| `/saveas <id>` | Copy workflow to a new ID and switch |
-| `/new [id]` | Create a new empty workflow (auto-names if omitted) |
-| `/rename <name>` | Rename current workflow's display name |
-| `/undo` | Revert the last applied mutation (client-side snapshot stack, max 10) |
-| `/model [name]` | View or change the model for this chat session |
-| `/cost` | Display cumulative cost for the current session |
-| `/status` | View active MCP servers, channels, and session info |
-| `/retry` | Retry the last user prompt |
-| `/memory-delete <id>` | Delete a specific memory item by ID |
-| `/memory-forget <query>` | Remove memory items matching the query |
-| `/memory-confirm` | View and confirm pending memory extractions |
-| `/memory-reject` | Reject all pending memory extractions |
-| `/help` | Show available commands |
-| `/exit` | Exit the REPL |
+All slash commands (REPL-local and chat commands like `/model`, `/cost`, `/memory-*`, `/mcp`, etc.) are documented in the [Command Reference](commands.md), which is auto-generated from the canonical command registry. Use `/help` inside `dan-chat` to see commands available on the CLI surface.
 
 **Typical session:**
 
