@@ -150,10 +150,13 @@ Tasks 1-5 are the core domain loop. Task 9 is the active context layer (can ship
 - `ProjectStore` / `Project` model — domain field
 - `_post_process_response()` (runtime.py) — domain validation insertion point
 - `DAN_LEARNING_TIER` (31-15 §1) — tier gating for expensive features
+- `_augmented_prompt_context()` (handlers.py) — replaced by enriched context rendering
+- Entity grounding (31-19) — extended with artifact reference resolution
+- File auto-read (31-4) — extended with project-scoped artifact awareness
 
 ## Estimate
 
-3-4 days (tasks 1-5 core: ~2d, tasks 6-8 enhancements: ~1-2d)
+4-5 days (tasks 1-5 domain core: ~2d, task 9 active context: ~1d, tasks 6-8 enhancements: ~1-2d)
 
 ## Decisions
 
@@ -168,6 +171,7 @@ Tasks 1-5 are the core domain loop. Task 9 is the active context layer (can ship
 - `src/dan/server/concierge/context_resolver.py` — `domain` resolution in `resolve()`
 - `src/dan/engine/memory_kernel.py` — `_consolidate_domain_templates()` in `run_consolidation()`
 - `src/dan/engine/learning_tiers.py` — `domain_learning` feature registration
+- `src/dan/server/concierge/handlers.py` — `_build_prompt_from_package()` replaces `_augmented_prompt_context()`
 
 ## Notes
 
