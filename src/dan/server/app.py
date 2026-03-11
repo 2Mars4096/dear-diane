@@ -1439,6 +1439,7 @@ async def lifespan(app: FastAPI):
         user_profile=user_profile,
         conversation_memory=conversation_memory,
         memory_kernel=memory_kernel,
+        telemetry_store=_telemetry_store,
     )
     
     _capability_context.chat_manager = _chat_manager
@@ -3703,6 +3704,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                         "request_history": req.history,
                         "client_graph_revision": req.client_graph_revision,
                         "mode": normalized_mode,
+                        "requested_mode": req.mode,
                         "debug_context": debug_ctx,
                         "mentions": structured_mentions,
                         "cancel_event": cancel_event,

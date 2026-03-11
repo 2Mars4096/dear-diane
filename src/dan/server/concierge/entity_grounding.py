@@ -287,8 +287,8 @@ def guard_understanding(ctx: GuardContext) -> GuardResult:
                 notes=["entity cross-check failed: matched projects not in solver goal"],
             )
 
-    # Check 4 — confidence
-    if ctx.solver_decision.confidence < 0.7:
+    # Check 4 — confidence (only flag genuinely uncertain decisions)
+    if ctx.solver_decision.confidence < 0.4:
         return GuardResult(
             passed=False,
             action="clarify",
@@ -296,7 +296,7 @@ def guard_understanding(ctx: GuardContext) -> GuardResult:
                 "Before I proceed: I'm not fully confident I understood correctly. "
                 "Is that what you meant?"
             ),
-            notes=[f"solver confidence {ctx.solver_decision.confidence:.2f} below 0.7"],
+            notes=[f"solver confidence {ctx.solver_decision.confidence:.2f} below 0.4"],
         )
 
     return GuardResult(passed=True, notes=["all understanding checks passed"])

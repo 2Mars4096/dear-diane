@@ -59,6 +59,22 @@ from .executor import ExecutionResult, ExecutionSelector
 from .memory_bridge import WorkflowMemoryIndex, enrich_planning_context
 from .solver import GoalResolver, PlanBuilder, SolverDecision
 
+_SERIALIZABLE_TYPES = (str, int, float, bool, type(None), list, dict)
+
+
+def _safe_metadata(raw: dict[str, Any]) -> dict[str, Any]:
+    """Strip non-JSON-serializable values (e.g. asyncio.Event) from metadata
+    before persisting to PendingAction / ProjectStore."""
+    return {k: v for k, v in raw.items() if isinstance(v, _SERIALIZABLE_TYPES)}
+
+
+def _requested_mode_forces_solver_path(metadata: dict[str, Any]) -> bool:
+    requested_mode = str(
+        metadata.get("requested_mode") or metadata.get("mode") or ""
+    ).strip().lower()
+    return requested_mode in {"build", "mutate"}
+
+
 _NUMERIC_CLAIM_RE_LEGACY = re.compile(
     r"\$\s?\d[\d,]*(?:\.\d+)?"
     r"|\b\d+(?:\.\d+)?%"
@@ -1294,7 +1310,7 @@ class Concierge:
                 event_type="fast_command" if is_fast_command else "chat_turn",
                 project_id=getattr(getattr(_ctx, "project", None), "project_id", None),
                 task_id=getattr(getattr(_ctx, "task", None), "task_id", None),
-                surface=getattr(msg, "surface_id", None),
+                surface=msg.surface,
                 session_id=msg.external_id,
                 model=model,
                 intent=intent,
@@ -1431,7 +1447,7 @@ class Concierge:
                     "title": "Response Ready",
                     "message": f"Your long-running request ({int(elapsed)}s) has completed.",
                     "level": "info",
-                    "surface_id": msg.surface_id,
+                    "surface_id": msg.external_id,
                 })
         except Exception:
             _telem_success = False
@@ -1755,11 +1771,33 @@ class Concierge:
 
         if pending_resolution is None:
             _cls_start = time.monotonic()
+            async def _on_classifier_fallback(reason: str) -> None:
+                await self._emit_telemetry_event(
+                    "classification",
+                    metadata={
+                        "llm_failed": True,
+                        "fallback": "heuristic",
+                        "reason": reason,
+                    },
+                )
+
             classification = await classify_intent_llm(
                 msg.text, context, self._classify_llm_complete,
                 behavior_store=self._behavior_store,
                 pattern_accumulator=self._pattern_accumulator,
+                on_fallback=_on_classifier_fallback,
             )
+
+            _explicit_mode = msg.metadata.get("requested_mode") or msg.metadata.get("mode")
+            if _explicit_mode in ("build", "mutate") and classification.intent in (
+                IntentCategory.CONVERSATION, IntentCategory.META_GOAL,
+            ):
+                classification = ClassificationResult(
+                    intent=IntentCategory.WORKFLOW_BUILD,
+                    confidence=0.9,
+                    raw_text=classification.raw_text,
+                )
+
             _intent_str = classification.intent.value if hasattr(classification.intent, "value") else str(classification.intent)
             self._telem_intent = _intent_str
             await self._emit_telemetry_event(
@@ -1773,7 +1811,11 @@ class Concierge:
         _guard_ctx = GuardContext(
             message=msg, entity_ctx=_entity_ctx, classification=classification,
         )
-        if guards_enabled():
+        _skip_guards_on_replay = bool(
+            msg.metadata.get("clarification_answer")
+            or msg.metadata.get("clarification_auto_note")
+        )
+        if guards_enabled() and not _skip_guards_on_replay:
             try:
                 _g1_start = time.monotonic()
                 _g1 = guard_classification(_guard_ctx)
@@ -1807,6 +1849,7 @@ class Concierge:
                             msg.text, context, self._classify_llm_complete,
                             behavior_store=self._behavior_store,
                             pattern_accumulator=self._pattern_accumulator,
+                            on_fallback=_on_classifier_fallback,
                         )
                         _guard_ctx.classification = classification
                     if _g1.action == "clarify" and _g1.clarification_question:
@@ -1947,14 +1990,18 @@ class Concierge:
             user_profile=self.user_profile,
             surface=msg.surface,
         )
-        if action_policy == ActionPolicy.CONFIRM and not msg.metadata.get("skip_confirm"):
+        if (
+            action_policy == ActionPolicy.CONFIRM
+            and not msg.metadata.get("skip_confirm")
+            and not _requested_mode_forces_solver_path(msg.metadata)
+        ):
             self.project_store.set_pending_action(
                 context.project.project_id,
                 PendingAction(
                     kind="confirm",
                     intent=classification.intent.value,
                     original_text=msg.text,
-                    metadata=dict(msg.metadata),
+                    metadata=_safe_metadata(msg.metadata),
                 ),
                 msg.external_id,
             )
@@ -2004,12 +2051,16 @@ class Concierge:
         except Exception:
             logger.debug("Preflight clarification failed", exc_info=True)
 
+        force_solver_path = _requested_mode_forces_solver_path(msg.metadata)
         use_goal_orchestrator = (
-            self._should_use_goal_orchestrator(classification)
-            or self._should_resume_goal_follow_up(
-                msg.text,
-                classification,
-                context.project.project_id,
+            not force_solver_path
+            and (
+                self._should_use_goal_orchestrator(classification)
+                or self._should_resume_goal_follow_up(
+                    msg.text,
+                    classification,
+                    context.project.project_id,
+                )
             )
         )
         _context_clarification = str(msg.metadata.get("context_clarification") or "").strip()
@@ -2215,7 +2266,11 @@ class Concierge:
                     )
                     return
             # ── UNDERSTAND phase: Guard 2 on goal orchestrator path ──
-            if guards_enabled() and _entity_ctx is not None:
+            _skip_g2_goal = bool(
+                msg.metadata.get("clarification_answer")
+                or msg.metadata.get("clarification_auto_note")
+            )
+            if guards_enabled() and _entity_ctx is not None and not _skip_g2_goal:
                 try:
                     from .solver import ExecutionMode as _EM, SolverDecision as _SD
                     _intent_mode_map = {
@@ -2300,7 +2355,7 @@ class Concierge:
                     intent=classification.intent.value,
                     original_text=msg.text,
                     options=result.clarification.options or [],
-                    metadata=dict(msg.metadata),
+                    metadata=_safe_metadata(msg.metadata),
                 ),
                 msg.external_id,
             )
@@ -2450,7 +2505,11 @@ class Concierge:
         decision = self.plan_builder.build_plan(decision)
 
         # ── UNDERSTAND phase: Guard 2 — understanding coherence ──
-        if guards_enabled() and entity_ctx is not None:
+        _skip_g2 = bool(
+            msg.metadata.get("clarification_answer")
+            or msg.metadata.get("clarification_auto_note")
+        )
+        if guards_enabled() and entity_ctx is not None and not _skip_g2:
             try:
                 _g2_ctx = GuardContext(
                     message=msg, entity_ctx=entity_ctx,
@@ -2506,7 +2565,7 @@ class Concierge:
                     kind="clarify",
                     intent=classification.intent.value,
                     original_text=msg.text,
-                    metadata={**msg.metadata, "solver_decision": True},
+                    metadata={**_safe_metadata(msg.metadata), "solver_decision": True},
                 ),
                 msg.external_id,
             )
@@ -4225,6 +4284,7 @@ class Concierge:
         *,
         has_active_build: bool = False,
         project_id: str | None = None,
+        max_chars: int = 1500,
     ) -> str:
         """Retrieve relevant memory for this message (task-type-aware). Used for goal detection and planning."""
         if not self.memory_kernel:
@@ -4248,7 +4308,7 @@ class Concierge:
                     scope_hint = " (project)"
                 lines.append(f"- [{tag}{scope_hint}] {si.item.content[:200]}")
             block = "\n".join(lines)
-            return block[:800].rstrip() + ("..." if len(block) > 800 else "")
+            return block[:max_chars].rstrip() + ("..." if len(block) > max_chars else "")
         except Exception:
             logger.debug("Memory retrieval failed in concierge", exc_info=True)
             return ""
@@ -4260,7 +4320,7 @@ class Concierge:
         project_id: str | None = None,
         *,
         max_items: int = 8,
-        max_chars: int = 600,
+        max_chars: int = 1200,
     ) -> str:
         """Retrieve domain-specific expertise as a structured prompt block."""
         if not self.memory_kernel or not domain:

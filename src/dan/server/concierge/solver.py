@@ -226,7 +226,7 @@ class GoalResolver:
             handler_hint=classification.intent,
             workflow_candidates=candidates,
             confidence=max(classification.confidence - 0.1, 0.3),
-            assumptions=["Inferred from classification heuristic without LLM planning"],
+            assumptions=[],
         )
 
     async def _llm_resolve(

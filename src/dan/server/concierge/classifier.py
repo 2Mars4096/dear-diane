@@ -415,11 +415,15 @@ async def classify_intent_llm(
     llm_complete: LLMCompleteFunc,
     behavior_store: Any = None,
     pattern_accumulator: Any = None,
+    on_fallback: Any = None,
 ) -> ClassificationResult:
     """Primary classifier: uses a micro-tier LLM call with keyword fallback.
 
     Fast-path rules (filesystem paths, slash commands) are checked first.
     If the LLM call fails or returns garbage, falls back to keyword rules.
+
+    When falling back, calls on_fallback(reason) if provided. Reason is
+    "unparseable", "empty_content", or "exception".
     """
     fast_path_conf = 0.85
     if behavior_store is not None:
@@ -439,6 +443,14 @@ async def classify_intent_llm(
         messages = _build_classification_messages(text, context)
         result = await llm_complete(messages)
         raw_text = result if isinstance(result, str) else getattr(result, "text", str(result))
+        if not (raw_text or "").strip():
+            logger.warning("LLM classifier returned empty content, falling back to heuristic")
+            if on_fallback:
+                try:
+                    await on_fallback("empty_content")
+                except Exception:
+                    pass
+            return classify_intent(text, context, pattern_accumulator=pattern_accumulator)
         intent_value = _parse_llm_intent(raw_text)
         if intent_value:
             return ClassificationResult(
@@ -447,8 +459,18 @@ async def classify_intent_llm(
                 raw_text=text,
             )
         logger.warning("LLM classifier returned unparseable response: %s", raw_text[:200])
+        if on_fallback:
+            try:
+                await on_fallback("unparseable")
+            except Exception:
+                pass
     except Exception:
-        logger.debug("LLM classifier failed, falling back to keyword rules", exc_info=True)
+        logger.warning("LLM classifier failed, falling back to keyword rules", exc_info=True)
+        if on_fallback:
+            try:
+                await on_fallback("exception")
+            except Exception:
+                pass
 
     return classify_intent(text, context, pattern_accumulator=pattern_accumulator)
 

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import dataclasses
+import datetime as _dt
 import hashlib
 import json
 import logging
@@ -61,6 +63,7 @@ __all__ = [
     "ChatCodeGeneratedEvent",
     "ChatValidationResultEvent",
     "ChatGraphCreatedEvent",
+    "ChatGraphQualityEvent",
     "ChatStreamEvent",
     "MUTATION_TOOL_SCHEMA",
     "ChatManager",
@@ -83,6 +86,24 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 pii_session_var: ContextVar["Any"] = ContextVar("pii_session", default=None)
+
+
+def _is_transient_llm_error(exc: Exception) -> bool:
+    """True if the exception is a transient LLM API error worth retrying."""
+    msg = str(exc).lower()
+    if "429" in msg or "rate" in msg or "rate limit" in msg:
+        return True
+    if "500" in msg or "502" in msg or "503" in msg or "internal server" in msg:
+        return True
+    if "timeout" in msg or "timed out" in msg:
+        return True
+    if "connection" in msg or "connect" in msg or "network" in msg:
+        return True
+    # OpenAI/httpx exception types
+    exc_cls = type(exc).__name__
+    if exc_cls in ("RateLimitError", "APITimeoutError", "TimeoutError", "ConnectError"):
+        return True
+    return False
 
 NODE_TYPES: list[str] = [
     "llm_operator",
@@ -566,6 +587,8 @@ UNIFIED_SYSTEM_PROMPT = """\
 You are DAN, a personal AI assistant with full tool access. You help with anything: \
 research, file operations, web search, computation, communication, workflow building.
 
+**{current_date}**
+
 ## Tools — ALWAYS use tools instead of guessing
 
 **Files:** file_read (text files), pdf_read (PDFs — use for summarize/review/analyze), \
@@ -573,7 +596,7 @@ list_directory (browse folders). All accept absolute paths like ~/Dropbox/...
 **Web:** web_search (current data: prices, weather, news, papers — NEVER guess live data), \
 web_fetch (read a URL's content)
 **System:** shell_command (run terminal commands — Python, R, scripts, system ops), \
-current_datetime (today's date/time — ALWAYS call, never guess), \
+current_datetime (today's date/time — get exact time with timezone if needed), \
 screenshot (capture screen), clipboard (read/write clipboard)
 **Communication:** send_email (send via SMTP), file_write (create/save files)
 **Text:** text_chunk, json_extract, regex_match
@@ -587,7 +610,7 @@ get_learned_principles, discover_capabilities, submit_human_input
 
 1. NEVER fabricate live data (prices, dates, weather, scores). Call web_search.
 2. NEVER summarize a file you haven't read. Call pdf_read or file_read first.
-3. NEVER guess the current date/time. Call current_datetime.
+3. The current date is shown above. Use current_datetime only when you need the exact time or a specific timezone.
 4. NEVER guess file contents or directory listings. Call the tool.
 5. If a tool fails, tell the user what happened. Don't silently make something up.
 6. If you can't do something, say so. Suggest what the user can do instead.
@@ -607,7 +630,7 @@ so the user can correct you before you act.
 ## Research & Report Behavior
 
 When asked for research reports, literature reviews, equity analysis, or deep-dive topics:
-1. ALWAYS call current_datetime first to anchor "recent" correctly.
+1. Use the current date (shown above) to anchor "recent" correctly. Include the year in search queries.
 2. Search MULTIPLE angles — at least 3-5 distinct web_search queries per research task. One search is never enough.
 3. For promising results, call web_fetch to read the full article/page — don't rely on search snippets alone.
 4. Every factual claim (prices, dates, statistics, company data) MUST come from a tool call. If you can't source it, say so.
@@ -738,7 +761,9 @@ def detect_chat_mode(
 ) -> str:
     """Heuristic mode detection from message content.
 
-    Priority order: debug > ask > plan > agent (default).
+    Priority order: debug > live_data (conversation) > ask > plan > agent (default).
+    Live-data phrases (news, recent, milestone, etc.) route to conversation so
+    tools (web_search) are used instead of text-only ask responses.
     """
     msg_lower = message.lower().strip()
     words = set(msg_lower.split())
@@ -762,6 +787,15 @@ def detect_chat_mode(
     debug_via_fix = "fix" in words and not is_question
     if recent_run_failed or debug_via_word or debug_via_stem or debug_via_phrase or debug_via_context or debug_via_fix:
         return "debug"
+
+    # Live factual research: news, recent events, milestones — route to conversation
+    # so tools (web_search) are used; ask mode often yields text-only non-tool responses.
+    live_data_phrases = [
+        "what happened", "recent", "news", "milestone", "latest", "today",
+        "this week", "this month", "current", "updates", "headlines",
+    ]
+    if any(p in msg_lower for p in live_data_phrases):
+        return "conversation"
 
     if is_question:
         return "ask"
@@ -1210,6 +1244,7 @@ class ChatCodeGeneratedEvent(BaseModel):
     type: str = "chat_code_generated"
     code_snippet: str
     source: str = "codegen"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatValidationResultEvent(BaseModel):
@@ -1225,6 +1260,12 @@ class ChatGraphCreatedEvent(BaseModel):
     node_count: int = 0
     edge_count: int = 0
     graph_revision: str = ""
+
+
+class ChatGraphQualityEvent(BaseModel):
+    type: str = "chat_graph_quality"
+    score: int = 0
+    concerns: list[str] = Field(default_factory=list)
 
 
 class ChatQueuedEvent(BaseModel):
@@ -1266,6 +1307,7 @@ ChatStreamEvent = (
     | ChatCodeGeneratedEvent
     | ChatValidationResultEvent
     | ChatGraphCreatedEvent
+    | ChatGraphQualityEvent
     | ChatQueuedEvent
     | ChatFileAttachmentEvent
     | ChatPollRequestEvent
@@ -1700,6 +1742,7 @@ class ChatManager:
         user_profile: Any | None = None,
         conversation_memory: Any | None = None,
         memory_kernel: Any | None = None,
+        telemetry_store: Any | None = None,
     ) -> None:
         self._providers = provider_registry
         self._graph_store = graph_store
@@ -1709,6 +1752,7 @@ class ChatManager:
         self._user_profile = user_profile
         self._conversation_memory = conversation_memory
         self._memory_kernel = memory_kernel
+        self._telemetry_store = telemetry_store
         self._behavior_store: Any | None = None
         self._chat_model = os.environ.get(
             "DAN_CHAT_MODEL",
@@ -1737,6 +1781,103 @@ class ChatManager:
     def set_behavior_store(self, store: Any) -> None:
         """Inject a BehaviorStore for domain detection and parameter resolution."""
         self._behavior_store = store
+
+    def _emit_intent_extraction_telemetry(
+        self,
+        workflow_id: str,
+        extracted: bool,
+        fully_covered: bool,
+        recommendation: str | None,
+        stage_count: int,
+        patterns: list[str] | None,
+    ) -> None:
+        """Fire-and-forget: record intent extraction outcome (33-6)."""
+        store = getattr(self, "_telemetry_store", None)
+        if store is None:
+            return
+        try:
+            from dan.server.telemetry import TelemetryEvent
+
+            ev = TelemetryEvent(
+                event_type="intent_extraction",
+                graph_id=workflow_id,
+                metadata={
+                    "extracted": extracted,
+                    "fully_covered": fully_covered,
+                    "recommendation": recommendation or "",
+                    "stage_count": stage_count,
+                    "patterns": patterns or [],
+                },
+            )
+            asyncio.create_task(store.record(ev))
+        except Exception:
+            logger.debug("Intent extraction telemetry failed", exc_info=True)
+
+    # -- Preflight tool hooks -----------------------------------------------
+
+    _preflight_cache: dict[str, tuple[Any, dict]] | None = None
+
+    @classmethod
+    def _get_preflight_tools(cls) -> dict[str, tuple[Any, dict]]:
+        if cls._preflight_cache is None:
+            try:
+                from dan.tools import get_preflight_tools
+                cls._preflight_cache = get_preflight_tools()
+            except Exception:
+                logger.debug("Preflight tool discovery failed", exc_info=True)
+                cls._preflight_cache = {}
+        return cls._preflight_cache
+
+    async def _run_preflight_hooks(self, user_message: str) -> str:
+        """Execute preflight tool hooks and return formatted context lines.
+
+        Tools declare a ``preflight`` block in their TOOL_METADATA:
+          trigger: "always" — run on every message
+          trigger: "pattern" + patterns: [...] — run when any regex matches
+          format: template string populated from the tool's return dict
+          args: default kwargs passed to the tool function
+
+        Returns a combined string (one line per hook result) suitable for
+        injection into the system prompt.  Empty string if no hooks fire.
+        """
+        hooks = self._get_preflight_tools()
+        if not hooks:
+            return ""
+
+        import re as _re
+
+        lines: list[str] = []
+        for tool_id, (fn, meta) in hooks.items():
+            pf = meta["preflight"]
+            trigger = pf.get("trigger", "pattern")
+
+            should_run = False
+            if trigger == "always":
+                should_run = True
+            elif trigger == "pattern":
+                patterns = pf.get("patterns") or []
+                should_run = any(
+                    _re.search(pat, user_message, _re.IGNORECASE)
+                    for pat in patterns
+                )
+
+            if not should_run:
+                continue
+
+            try:
+                args = dict(pf.get("args") or {})
+                result = await fn(**args)
+                fmt = pf.get("format")
+                if fmt and isinstance(result, dict):
+                    lines.append(fmt.format(**result))
+                elif isinstance(result, dict):
+                    lines.append(f"[{tool_id}] {result}")
+                else:
+                    lines.append(f"[{tool_id}] {result}")
+            except Exception:
+                logger.debug("Preflight hook %s failed", tool_id, exc_info=True)
+
+        return "\n".join(lines)
 
     def _resolve_provider(self, *, pii_session_key: str | None = None) -> Any:
         """Resolve the active provider and wrap it for PII protection when enabled.
@@ -1977,7 +2118,7 @@ class ChatManager:
                     summary.revision,
                 )
 
-            messages = self._build_messages(
+            messages = await self._build_messages(
                 summary, message, history, mode=mode, debug_context=debug_context,
                 prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
@@ -2116,13 +2257,33 @@ class ChatManager:
             )
             if use_codegen:
                 message_id = uuid.uuid4().hex[:12]
-                graph_result, codegen_events = (
-                    await self._generate_workflow_from_intent(
+                # Task 5: heartbeat every 30s during long codegen to avoid WS timeout.
+                # progress_ack is a WebSocket keepalive — clients must not treat it as terminal.
+                codegen_task = asyncio.create_task(
+                    self._generate_workflow_from_intent(
                         user_message=message,
                         workflow_id=workflow_id,
                         channel_id=thread_id or workflow_id,
                     )
                 )
+                while not codegen_task.done():
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.shield(codegen_task),
+                            timeout=30.0,
+                        )
+                        break
+                    except asyncio.TimeoutError:
+                        yield ChatCompleteEvent(
+                            message_id=message_id,
+                            content="",
+                            token_usage={},
+                            context_window=_get_context_window(self._chat_model),
+                            graph_revision=revision,
+                            revision_mismatch=revision_mismatch,
+                            detected_mode="progress_ack",
+                        )
+                graph_result, codegen_events = codegen_task.result()
                 for evt in codegen_events:
                     yield evt
 
@@ -2169,47 +2330,148 @@ class ChatManager:
             ):
                 try:
                     from dan.meta.structural_mutations import (
-                        dispatch_structural_mutation,
+                        dispatch_compound_mutations,
                         summarize_graph as _summarize_graph,
                     )
 
-                    dispatch = dispatch_structural_mutation(graph_dict, message)
-                    if dispatch.matched and dispatch.result and dispatch.result.success:
-                        self._graph_store.save_graph(workflow_id, graph_dict)
-                        updated_graph = Graph.model_validate(graph_dict)
-                        updated_summary = build_graph_summary(updated_graph, workflow_id)
-                        macro_msg = (
-                            f"Applied `{dispatch.macro_name}`: "
-                            f"{dispatch.result.edges_added} edges added, "
-                            f"{len(dispatch.result.nodes_added)} nodes added."
-                        )
-                        message_id = uuid.uuid4().hex[:12]
-                        yield ChatGraphCreatedEvent(
-                            workflow_id=workflow_id,
-                            node_count=updated_summary.node_count,
-                            edge_count=updated_summary.edge_count,
-                            graph_revision=updated_summary.revision,
-                        )
-                        self._record_conversation_summary(
-                            workflow_id=workflow_id,
-                            user_message=message,
-                            assistant_message=macro_msg,
-                        )
-                        yield ChatCompleteEvent(
-                            message_id=message_id,
-                            content=macro_msg,
-                            token_usage={},
-                            context_window=_get_context_window(self._chat_model),
-                            graph_revision=updated_summary.revision,
-                            revision_mismatch=False,
-                            detected_mode=mode,
-                        )
-                        return
+                    dispatch = dispatch_compound_mutations(graph_dict, message)
+                    if dispatch.matched and dispatch.results and all(r.success for r in dispatch.results):
+                        # Task 12: validate mutated graph before save; rollback = don't save
+                        from dan.validation.graph import validate_graph
+                        validation_passed = False
+                        try:
+                            mutated_graph = Graph.model_validate(graph_dict)
+                            raw_errors = validate_graph(mutated_graph)
+                            if raw_errors:
+                                yield ChatValidationResultEvent(
+                                    success=False,
+                                    error_count=len(raw_errors),
+                                    errors=raw_errors[:5],
+                                )
+                            else:
+                                self._graph_store.save_graph(workflow_id, graph_dict)
+                                validation_passed = True
+                        except Exception as val_exc:
+                            yield ChatValidationResultEvent(
+                                success=False,
+                                error_count=1,
+                                errors=[str(val_exc)],
+                            )
+                        if validation_passed:
+                            # 33-7 task 2-5: post-mutation quality check
+                            try:
+                                from dan.meta.graph_quality import compute_quality_report
+                                report = compute_quality_report(graph_dict, message, tier=None)
+                                yield ChatGraphQualityEvent(
+                                    score=report.overall_score,
+                                    concerns=report.concerns,
+                                )
+                            except Exception:
+                                pass
+                            updated_graph = Graph.model_validate(graph_dict)
+                            updated_summary = build_graph_summary(updated_graph, workflow_id)
+                            if len(dispatch.results) == 1:
+                                r = dispatch.results[0]
+                                macro_msg = (
+                                    f"Applied `{dispatch.macro_names[0]}`: "
+                                    f"{r.edges_added} edges added, "
+                                    f"{len(r.nodes_added)} nodes added."
+                                )
+                            else:
+                                parts = []
+                                for name, r in zip(dispatch.macro_names, dispatch.results):
+                                    parts.append(
+                                        f"`{name}` ({len(r.nodes_added)} nodes, {r.edges_added} edges)"
+                                    )
+                                macro_msg = f"Applied {len(dispatch.results)} macros: {', '.join(parts)}."
+                            message_id = uuid.uuid4().hex[:12]
+                            yield ChatGraphCreatedEvent(
+                                workflow_id=workflow_id,
+                                node_count=updated_summary.node_count,
+                                edge_count=updated_summary.edge_count,
+                                graph_revision=updated_summary.revision,
+                            )
+                            self._record_conversation_summary(
+                                workflow_id=workflow_id,
+                                user_message=message,
+                                assistant_message=macro_msg,
+                            )
+                            yield ChatCompleteEvent(
+                                message_id=message_id,
+                                content=macro_msg,
+                                token_usage={},
+                                context_window=_get_context_window(self._chat_model),
+                                graph_revision=updated_summary.revision,
+                                revision_mismatch=False,
+                                detected_mode=mode,
+                            )
+                            return
+                    elif dispatch.matched and dispatch.result and dispatch.result.success:
+                        from dan.validation.graph import validate_graph
+                        single_validation_passed = False
+                        try:
+                            mutated_graph = Graph.model_validate(graph_dict)
+                            raw_errors = validate_graph(mutated_graph)
+                            if not raw_errors:
+                                self._graph_store.save_graph(workflow_id, graph_dict)
+                                single_validation_passed = True
+                            else:
+                                yield ChatValidationResultEvent(
+                                    success=False,
+                                    error_count=len(raw_errors),
+                                    errors=raw_errors[:5],
+                                )
+                        except Exception as val_exc:
+                            yield ChatValidationResultEvent(
+                                success=False,
+                                error_count=1,
+                                errors=[str(val_exc)],
+                            )
+                        if single_validation_passed:
+                            # 33-7 task 2-5: post-mutation quality check
+                            try:
+                                from dan.meta.graph_quality import compute_quality_report
+                                report = compute_quality_report(graph_dict, message, tier=None)
+                                yield ChatGraphQualityEvent(
+                                    score=report.overall_score,
+                                    concerns=report.concerns,
+                                )
+                            except Exception:
+                                pass
+                            updated_graph = Graph.model_validate(graph_dict)
+                            updated_summary = build_graph_summary(updated_graph, workflow_id)
+                            macro_msg = (
+                                f"Applied `{dispatch.macro_name}`: "
+                                f"{dispatch.result.edges_added} edges added, "
+                                f"{len(dispatch.result.nodes_added)} nodes added."
+                            )
+                            message_id = uuid.uuid4().hex[:12]
+                            yield ChatGraphCreatedEvent(
+                                workflow_id=workflow_id,
+                                node_count=updated_summary.node_count,
+                                edge_count=updated_summary.edge_count,
+                                graph_revision=updated_summary.revision,
+                            )
+                            self._record_conversation_summary(
+                                workflow_id=workflow_id,
+                                user_message=message,
+                                assistant_message=macro_msg,
+                            )
+                            yield ChatCompleteEvent(
+                                message_id=message_id,
+                                content=macro_msg,
+                                token_usage={},
+                                context_window=_get_context_window(self._chat_model),
+                                graph_revision=updated_summary.revision,
+                                revision_mismatch=False,
+                                detected_mode=mode,
+                            )
+                            return
                 except Exception:
                     logger.debug("Structural mutation dispatch failed, continuing to mutation path", exc_info=True)
 
             # -- Mutation path (extended with capability tools) -------------
-            messages = self._build_messages(
+            messages = await self._build_messages(
                 summary, message, history, mode=mode, debug_context=debug_context,
                 prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
@@ -2453,7 +2715,7 @@ class ChatManager:
                             graph = Graph.model_validate(graph_dict)
                             summary = build_graph_summary(graph, workflow_id)
                             revision = summary.revision
-                            replan_messages = self._build_messages(
+                            replan_messages = await self._build_messages(
                                 summary,
                                 message,
                                 history,
@@ -2956,7 +3218,7 @@ class ChatManager:
     # Message building
     # ------------------------------------------------------------------
 
-    def _build_messages(
+    async def _build_messages(
         self,
         summary: GraphSummary,
         user_message: str,
@@ -2989,7 +3251,17 @@ class ChatManager:
         workflow_block = f"## Current Workflow\n{graph_text}"
         surface_hints = _resolve_surface_hints(surface, self._chat_model)
 
+        preflight_context = ""
+        try:
+            preflight_context = await self._run_preflight_hooks(user_message)
+        except Exception:
+            logger.debug("Preflight hooks failed, falling back to manual date", exc_info=True)
+        if not preflight_context:
+            _now = _dt.datetime.now(_dt.timezone.utc).astimezone()
+            preflight_context = f"Today is {_now.strftime('%A, %Y-%m-%d')}."
+
         system_content = UNIFIED_SYSTEM_PROMPT.format(
+            current_date=preflight_context,
             surface_hints=surface_hints,
             context_block=context_block,
             workflow_block=workflow_block,
@@ -3146,9 +3418,11 @@ class ChatManager:
             build_intent_tool_schema,
         )
         from dan.meta.intent_schema import WorkflowIntent
+        from dan.meta.graph_quality import compute_quality_report
         from dan.meta.planner import CodegenPromptBuilder, validate_codegen_output
 
         events: list[ChatStreamEvent] = []
+        _quality_threshold = int(os.environ.get("DAN_GRAPH_QUALITY_THRESHOLD", "0") or "0")
         provider = self._resolve_provider(pii_session_key=workflow_id)
 
         detected_domain: str | None = None
@@ -3160,47 +3434,103 @@ class ChatManager:
         except Exception:
             pass
 
-        # -- Step 1: intent extraction ------------------------------------
+        # -- Step 1: intent extraction (retry on transient errors, max 1) ---
         intent: WorkflowIntent | None = None
-        try:
-            intent_tool = build_intent_tool_schema()
-            intent_messages = [
-                {"role": "system", "content": INTENT_EXTRACTION_SYSTEM_PROMPT},
-                {"role": "user", "content": user_message},
-            ]
-            intent_result: CompletionResult = await provider.complete(
-                messages=intent_messages,
-                model=self._chat_model,
-                temperature=0.3,
-                tools=[intent_tool],
-                tool_choice="auto",
-            )
-            intent = self._parse_intent_from_result(intent_result)
-        except Exception as exc:
-            logger.debug("Intent extraction failed: %s", exc)
+        intent_tool = build_intent_tool_schema()
+        intent_messages = [
+            {"role": "system", "content": INTENT_EXTRACTION_SYSTEM_PROMPT},
+            {"role": "user", "content": user_message},
+        ]
+        for attempt in range(2):
+            try:
+                intent_result = await provider.complete(
+                    messages=intent_messages,
+                    model=self._chat_model,
+                    temperature=0.3,
+                    tools=[intent_tool],
+                    tool_choice="auto",
+                )
+                if (not (intent_result.text or "").strip() and
+                        not (intent_result.tool_calls or [])):
+                    if attempt == 0:
+                        logger.warning(
+                            "Intent extraction empty response, retrying (attempt %d)",
+                            attempt + 1,
+                        )
+                        await asyncio.sleep(2)
+                        continue
+                intent = self._parse_intent_from_result(intent_result)
+                logger.info(
+                    "Intent extraction: tool_call_present=%s, parsed=%s",
+                    bool(intent_result.tool_calls), intent is not None,
+                )
+                break
+            except Exception as exc:
+                if attempt == 0 and _is_transient_llm_error(exc):
+                    logger.warning(
+                        "Intent extraction transient error (attempt %d): %s",
+                        attempt + 1, exc,
+                    )
+                    await asyncio.sleep(2)
+                    continue
+                logger.info("Intent extraction failed: %s", exc)
+                break
 
         coverage_fully_covered = False
+        coverage_recommendation = None
+        coverage_patterns: list[str] | None = None
         if intent is not None:
             checker = CoverageChecker()
             coverage = checker.check(intent)
             coverage_fully_covered = coverage.fully_covered
+            coverage_recommendation = coverage.recommendation
+            coverage_patterns = coverage.constituent_patterns
+            logger.info(
+                "Coverage check: fully_covered=%s, recommendation=%s, constituent_patterns=%s",
+                coverage_fully_covered,
+                coverage_recommendation,
+                coverage_patterns,
+            )
             events.append(ChatIntentExtractedEvent(
                 intent_summary=intent.goal[:200],
                 stage_count=len(intent.stages),
                 fully_covered=coverage_fully_covered,
             ))
+            # Telemetry: intent extraction outcome (33-6)
+            self._emit_intent_extraction_telemetry(
+                workflow_id=workflow_id,
+                extracted=True,
+                fully_covered=coverage_fully_covered,
+                recommendation=coverage_recommendation,
+                stage_count=len(intent.stages),
+                patterns=coverage_patterns,
+            )
+        else:
+            self._emit_intent_extraction_telemetry(
+                workflow_id=workflow_id,
+                extracted=False,
+                fully_covered=False,
+                recommendation=None,
+                stage_count=0,
+                patterns=None,
+            )
 
         # -- Step 2: intent-compiler fast path ----------------------------
         if intent is not None and coverage_fully_covered:
             try:
                 compiler = IntentCompiler()
-                builder_code = compiler.compile(intent, domain=detected_domain)
+                if coverage_recommendation == "compose" and coverage_patterns:
+                    builder_code = compiler.compile_composed(
+                        intent, coverage_patterns, domain=detected_domain,
+                    )
+                else:
+                    builder_code = compiler.compile(intent, domain=detected_domain)
                 events.append(ChatCodeGeneratedEvent(
                     code_snippet=builder_code[:500],
                     source="intent_compiler",
                 ))
 
-                graph_dict = await self._sandbox_exec_builder_code(builder_code)
+                graph_dict = self._exec_deterministic_builder_code(builder_code)
                 if graph_dict is not None:
                     validation = validate_codegen_output(graph_dict)
                     events.append(ChatValidationResultEvent(
@@ -3209,8 +3539,20 @@ class ChatManager:
                         errors=[e.message for e in validation.errors[:5]],
                     ))
                     if validation.success and validation.graph is not None:
-                        self._record_gen_outcome("intent_compiler", success=True, pattern=workflow_id)
-                        return graph_dict, events
+                        report = compute_quality_report(graph_dict, user_message, tier=None)
+                        events.append(ChatGraphQualityEvent(
+                            score=report.overall_score,
+                            concerns=report.concerns,
+                        ))
+                        if _quality_threshold > 0 and report.overall_score < _quality_threshold:
+                            logger.warning(
+                                "Graph quality %d below threshold %d, falling back to codegen",
+                                report.overall_score,
+                                _quality_threshold,
+                            )
+                        else:
+                            self._record_gen_outcome("intent_compiler", success=True, pattern=workflow_id)
+                            return graph_dict, events
                     self._record_gen_outcome(
                         "intent_compiler", success=False,
                         error_type=validation.errors[0].error_type if validation.errors else "validation",
@@ -3223,9 +3565,11 @@ class ChatManager:
                         len(validation.errors),
                     )
             except Exception as exc:
-                logger.debug("Intent compilation failed: %s", exc)
+                logger.info("Intent compilation failed: %s", exc)
 
-        # -- Step 3: builder codegen fallback -----------------------------
+        # -- Step 3: builder codegen fallback (retry on transient, max 2) ---
+        from dan.meta.diagnosis import GenerationError, GenerationErrorType, GenerationStage
+
         gen_stats_hint = self._get_generation_stats_hint()
         codegen_builder = CodegenPromptBuilder()
         error_ctx = f"Intent extraction produced: {intent.goal}" if intent else None
@@ -3236,55 +3580,181 @@ class ChatManager:
             error_context=error_ctx,
             domain=detected_domain,
         )
-        try:
-            codegen_result: CompletionResult = await provider.complete(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=self._chat_model,
-                temperature=0.3,
-            )
-            builder_code = self._extract_code_from_response(
-                codegen_result.text or ""
-            )
+        codegen_errors: list[Any] = []
+        builder_code = ""
+        codegen_retries = 0
+        max_codegen_retries = 2
+        backoff = [2.0, 4.0]
+
+        for cg_attempt in range(max_codegen_retries + 1):
+            try:
+                codegen_result = await provider.complete(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    model=self._chat_model,
+                    temperature=0.3,
+                )
+                raw_text = codegen_result.text or ""
+                if not raw_text.strip():
+                    if cg_attempt < max_codegen_retries:
+                        codegen_retries += 1
+                        logger.warning(
+                            "Codegen empty response, retrying (attempt %d, delay %.0fs)",
+                            cg_attempt + 1, backoff[cg_attempt],
+                        )
+                        await asyncio.sleep(backoff[cg_attempt])
+                        continue
+                builder_code = self._extract_code_from_response(raw_text)
+                if not builder_code or not builder_code.strip():
+                    if cg_attempt < max_codegen_retries:
+                        codegen_retries += 1
+                        logger.warning(
+                            "Codegen produced empty/whitespace code, retrying (attempt %d)",
+                            cg_attempt + 1,
+                        )
+                        await asyncio.sleep(backoff[cg_attempt])
+                        continue
+                break
+            except Exception as exc:
+                if cg_attempt < max_codegen_retries and _is_transient_llm_error(exc):
+                    codegen_retries += 1
+                    logger.warning(
+                        "Codegen transient error (attempt %d): %s",
+                        cg_attempt + 1, exc,
+                    )
+                    await asyncio.sleep(backoff[cg_attempt])
+                    continue
+                logger.debug("Codegen LLM call failed: %s", exc)
+                self._record_gen_outcome("codegen", success=False, error_type="llm_error", pattern=workflow_id)
+                break
+
+        if builder_code:
             events.append(ChatCodeGeneratedEvent(
                 code_snippet=builder_code[:500],
                 source="codegen",
+                metadata={"codegen_retries": codegen_retries} if codegen_retries else {},
             ))
 
-            graph_dict = await self._sandbox_exec_builder_code(builder_code)
-            if graph_dict is not None:
-                validation = validate_codegen_output(graph_dict)
-                events.append(ChatValidationResultEvent(
-                    success=validation.success,
-                    error_count=len(validation.errors),
-                    errors=[e.message for e in validation.errors[:5]],
-                ))
-                if validation.success and validation.graph is not None:
-                    self._record_gen_outcome("codegen", success=True, pattern=workflow_id)
-                    return graph_dict, events
-                self._record_gen_outcome(
-                    "codegen", success=False,
-                    error_type=validation.errors[0].error_type if validation.errors else "validation",
-                    fix_needed=True,
-                    pattern=workflow_id,
-                )
-                codegen_errors = validation.errors
-            else:
-                codegen_errors = []
-                self._record_gen_outcome("codegen", success=False, error_type="no_output", pattern=workflow_id)
+            # -- Task 9: pre-sandbox syntax check ---------------------------
+            syntax_error: SyntaxError | None = None
+            try:
+                ast.parse(builder_code)
+            except SyntaxError as se:
+                syntax_error = se
+                codegen_errors = [
+                    GenerationError(
+                        stage=GenerationStage.sandbox,
+                        error_type=GenerationErrorType.syntax_error,
+                        message=f"Syntax error: {se.msg}",
+                        source_line=se.lineno,
+                        recoverable=True,
+                    ),
+                ]
                 events.append(ChatValidationResultEvent(
                     success=False,
                     error_count=1,
-                    errors=["Builder code produced no graph output"],
+                    errors=[f"Syntax error: {se.msg}"],
                 ))
+                self._record_gen_outcome("codegen", success=False, error_type="syntax_error", pattern=workflow_id)
 
-        except Exception as exc:
-            logger.debug("Codegen LLM call failed: %s", exc)
-            self._record_gen_outcome("codegen", success=False, error_type="llm_error", pattern=workflow_id)
-            codegen_errors = []
-            builder_code = ""
+            if syntax_error is None:
+                graph_dict, sandbox_codegen = await self._sandbox_exec_builder_code(builder_code)
+                if graph_dict is not None:
+                    validation = validate_codegen_output(graph_dict)
+                    events.append(ChatValidationResultEvent(
+                        success=validation.success,
+                        error_count=len(validation.errors),
+                        errors=[e.message for e in validation.errors[:5]],
+                    ))
+                    if validation.success and validation.graph is not None:
+                        report = compute_quality_report(graph_dict, user_message, tier=None)
+                        events.append(ChatGraphQualityEvent(
+                            score=report.overall_score,
+                            concerns=report.concerns,
+                        ))
+                        if _quality_threshold > 0 and report.overall_score < _quality_threshold:
+                            logger.warning(
+                                "Graph quality %d below threshold %d, falling back to diagnosis",
+                                report.overall_score,
+                                _quality_threshold,
+                            )
+                            codegen_errors = [
+                                GenerationError(
+                                    stage=GenerationStage.validation,
+                                    error_type=GenerationErrorType.unknown,
+                                    message=f"Quality score {report.overall_score} below threshold {_quality_threshold}",
+                                    recoverable=True,
+                                )
+                            ]
+                        else:
+                            self._record_gen_outcome("codegen", success=True, pattern=workflow_id)
+                            return graph_dict, events
+                    self._record_gen_outcome(
+                        "codegen", success=False,
+                        error_type=validation.errors[0].error_type if validation.errors else "validation",
+                        fix_needed=True,
+                        pattern=workflow_id,
+                    )
+                    if not codegen_errors:
+                        codegen_errors = validation.errors
+                else:
+                    # graph_dict is None — sandbox returned no graph (Task 3-3, 10)
+                    # sandbox_codegen may be None when sandbox raised (e.g. timeout); err_msg empty
+                    err_msg = sandbox_codegen.error_message or "" if sandbox_codegen else ""
+                    is_timeout = "timeout" in err_msg.lower() or "timed out" in err_msg.lower()
+                    if is_timeout:
+                        logger.warning("Sandbox timeout, retrying sandbox once")
+                        await asyncio.sleep(2.0)
+                        graph_dict, sandbox_codegen = await self._sandbox_exec_builder_code(builder_code)
+                        if graph_dict is not None:
+                            validation = validate_codegen_output(graph_dict)
+                            events.append(ChatValidationResultEvent(
+                                success=validation.success,
+                                error_count=len(validation.errors),
+                                errors=[e.message for e in validation.errors[:5]],
+                            ))
+                            if validation.success and validation.graph is not None:
+                                self._record_gen_outcome("codegen", success=True, pattern=workflow_id)
+                                return graph_dict, events
+                            codegen_errors = validation.errors
+                            self._record_gen_outcome(
+                                "codegen", success=False,
+                                error_type=validation.errors[0].error_type if validation.errors else "validation",
+                                fix_needed=True,
+                                pattern=workflow_id,
+                            )
+                        else:
+                            codegen_errors = [
+                                GenerationError(
+                                    stage=GenerationStage.sandbox,
+                                    error_type=GenerationErrorType.no_output,
+                                    message="Builder code produced no graph output",
+                                    recoverable=True,
+                                ),
+                            ]
+                            self._record_gen_outcome("codegen", success=False, error_type="no_output", pattern=workflow_id)
+                            events.append(ChatValidationResultEvent(
+                                success=False,
+                                error_count=1,
+                                errors=["Builder code produced no graph output"],
+                            ))
+                    else:
+                        codegen_errors = [
+                            GenerationError(
+                                stage=GenerationStage.sandbox,
+                                error_type=GenerationErrorType.no_output,
+                                message="Builder code produced no graph output",
+                                recoverable=True,
+                            ),
+                        ]
+                        self._record_gen_outcome("codegen", success=False, error_type="no_output", pattern=workflow_id)
+                        events.append(ChatValidationResultEvent(
+                            success=False,
+                            error_count=1,
+                            errors=["Builder code produced no graph output"],
+                        ))
 
         # -- Step 4: diagnosis loop ----------------------------------------
         if builder_code and codegen_errors:
@@ -3321,12 +3791,27 @@ class ChatManager:
                     llm_complete=_llm_complete,
                 )
                 if diag_result.success and diag_result.final_graph:
-                    self._record_gen_outcome("diagnosis", success=True, fix_needed=True, pattern=workflow_id)
+                    # Task 11: post-diagnosis re-validation (don't hardcode success)
+                    validation = validate_codegen_output(diag_result.final_graph)
                     events.append(ChatValidationResultEvent(
-                        success=True,
-                        error_count=0,
+                        success=validation.success,
+                        error_count=len(validation.errors),
+                        errors=[e.message for e in validation.errors[:5]],
                     ))
-                    return diag_result.final_graph, events
+                    if validation.success and validation.graph is not None:
+                        # 33-7 task 2-6: post-diagnosis quality check
+                        try:
+                            report = compute_quality_report(
+                                diag_result.final_graph, user_message, tier=None
+                            )
+                            events.append(ChatGraphQualityEvent(
+                                score=report.overall_score,
+                                concerns=report.concerns,
+                            ))
+                        except Exception:
+                            pass
+                        self._record_gen_outcome("diagnosis", success=True, fix_needed=True, pattern=workflow_id)
+                        return diag_result.final_graph, events
                 self._record_gen_outcome("diagnosis", success=False, error_type="repair_failed", fix_needed=True, pattern=workflow_id)
             except Exception as exc:
                 logger.debug("Diagnosis loop failed: %s", exc)
@@ -3378,9 +3863,15 @@ class ChatManager:
     def _parse_intent_from_result(
         result: CompletionResult,
     ) -> "WorkflowIntent | None":
-        """Extract a WorkflowIntent from an LLM CompletionResult."""
+        """Extract a WorkflowIntent from an LLM CompletionResult.
+
+        Tries tool_calls first (emit_workflow_intent). If none, falls back to
+        parsing JSON from result.text (for models that put intent in content).
+        Looks for ```json...``` or raw JSON.
+        """
         from dan.meta.intent_schema import WorkflowIntent
 
+        # 1. Tool-call path
         if result.tool_calls:
             for tc in result.tool_calls:
                 func = tc.get("function", {})
@@ -3390,6 +3881,39 @@ class ChatManager:
                         return WorkflowIntent.model_validate(data)
                     except (json.JSONDecodeError, KeyError, Exception):
                         pass
+
+        # 2. JSON-in-content fallback (models that don't support tool calling)
+        text = result.text or ""
+        if not text.strip():
+            return None
+
+        # Try ```json ... ``` block first
+        json_block_re = re.compile(r"```(?:json)?\s*\n(.*?)```", re.DOTALL)
+        match = json_block_re.search(text)
+        candidates: list[str] = []
+        if match:
+            candidates.append(match.group(1).strip())
+        # Also try raw JSON (object at start or anywhere)
+        for raw in (text.strip(),):
+            # Heuristic: find {...} that might be WorkflowIntent
+            brace = raw.find("{")
+            if brace >= 0:
+                depth = 0
+                for i, c in enumerate(raw[brace:], start=brace):
+                    if c == "{":
+                        depth += 1
+                    elif c == "}":
+                        depth -= 1
+                        if depth == 0:
+                            candidates.append(raw[brace : i + 1])
+                            break
+
+        for raw_json in candidates:
+            try:
+                data = json.loads(raw_json)
+                return WorkflowIntent.model_validate(data)
+            except (json.JSONDecodeError, Exception):
+                continue
         return None
 
     @staticmethod
@@ -3413,16 +3937,17 @@ class ChatManager:
             return None
 
     @staticmethod
-    async def _sandbox_exec_builder_code(code: str) -> dict | None:
+    async def _sandbox_exec_builder_code(code: str) -> tuple[dict | None, Any]:
         """Execute LLM-generated builder code in a sandboxed subprocess.
 
         Uses SandboxRunner with the _BUILDER_CODE_HARNESS for isolation.
-        Returns graph dict on success, None on failure.
+        Returns (graph_dict, codegen_result). On success: (graph_dict, None).
+        On failure: (None, codegen_result) so caller can check e.g. timeout.
         """
         try:
             import pathlib
             from dan.meta.planner import CodegenResult, _parse_codegen_result
-            from dan.sandbox import SandboxConfig, SandboxResult
+            from dan.sandbox import SandboxConfig
             from dan.sandbox.runner import SandboxRunner
             from dan.meta.planner import _BUILDER_CODE_HARNESS
 
@@ -3435,13 +3960,13 @@ class ChatManager:
             result, structured = await runner.run(
                 _BUILDER_CODE_HARNESS, config, inputs
             )
-            codegen_result = _parse_codegen_result(result, structured)
+            codegen_result = _parse_codegen_result(result, structured, code)
             if codegen_result.success and codegen_result.graph:
-                return codegen_result.graph
-            return None
+                return codegen_result.graph, None
+            return None, codegen_result
         except Exception as exc:
             logger.debug("Sandbox builder code execution failed: %s", exc)
-            return None
+            return None, None
 
     @staticmethod
     def _extract_code_from_response(text: str) -> str:

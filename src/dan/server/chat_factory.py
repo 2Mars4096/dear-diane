@@ -343,6 +343,7 @@ def build_chat_services(
         user_profile=user_profile,
         conversation_memory=conversation_memory,
         memory_kernel=memory_kernel,
+        telemetry_store=telemetry_store,
     )
     register_publish_capabilities(capability_registry)
     result = build_concierge(

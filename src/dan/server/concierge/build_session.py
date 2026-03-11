@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .boundary_handoff import BuildIterationAssembler
 from .fan_out import fan_out_dict
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,16 @@ class BuildSessionManager:
 
     def __init__(self, memory_kernel: Any = None) -> None:
         self.memory_kernel = memory_kernel
+
+    @staticmethod
+    def _record_handoff(session: BuildSession) -> None:
+        """Record a BoundaryHandoff snapshot on the session context."""
+        try:
+            handoff = BuildIterationAssembler.assemble(session)
+            session.context["last_handoff"] = handoff
+            session.context.setdefault("handoff_chain", []).append(handoff)
+        except Exception:
+            logger.debug("Handoff assembly failed", exc_info=True)
 
     def create(
         self,
@@ -745,6 +756,7 @@ class BuildSessionManager:
             diag = await self.diagnose_for_failure_async(session, "; ".join(errors[:3]))
             session.diagnosis_history.append(diag)
             self.add_iteration(session, action="build", validation_result={"errors": errors}, diagnosis=diag)
+            self._record_handoff(session)
             if session.iteration_count >= session.max_iterations:
                 self.transition_to(session, BuildSessionStatus.FAILED.value)
                 return BuildSessionStatus.FAILED.value, f"Validation failed: {errors[0][:200]}"
@@ -772,12 +784,14 @@ class BuildSessionManager:
 
         if passed:
             self.transition_to(session, BuildSessionStatus.COMPLETED.value)
+            self._record_handoff(session)
             return BuildSessionStatus.COMPLETED.value, "Smoke test passed"
         # Test failed → diagnose
         self.transition_to(session, BuildSessionStatus.DIAGNOSING.value)
         diag = await self.diagnose_for_failure_async(session, err_msg or "Run failed")
         session.diagnosis_history.append(diag)
         it.diagnosis = diag
+        self._record_handoff(session)
         if session.iteration_count >= session.max_iterations:
             self.transition_to(session, BuildSessionStatus.FAILED.value)
             return BuildSessionStatus.FAILED.value, f"Test failed after {session.max_iterations} iterations"

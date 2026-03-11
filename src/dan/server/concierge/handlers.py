@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from dataclasses import dataclass, replace
@@ -30,11 +31,14 @@ from .models import SurfaceMessage
 from .policy import ClarificationRequest
 from .progress import ProgressReporter
 
+logger = logging.getLogger(__name__)
+
 _FILE_REF_ACTIONS = frozenset({"review", "read", "summarize", "proofread", "analyze"})
 _FILE_REF_NOUNS = frozenset(
     {"paper", "file", "document", "report", "article", "thesis", "manuscript"},
 )
 _INLINE_DOCUMENT_CHAR_LIMIT = 12000
+_PROMPT_CONTEXT_BUDGET = int(os.environ.get("DAN_PROMPT_CONTEXT_BUDGET", "6000"))
 _INLINE_DOCUMENT_SYSTEM_INSTRUCTIONS = (
     "Inline document text provided in the user message counts as already read source material. "
     "Do not call pdf_read or file_read when the source text is already included inline. "
@@ -172,35 +176,30 @@ def _build_prompt_from_package(
     """Build enriched prompt context from ContextPackage (31-21 task 9-5).
 
     Falls back to _augmented_prompt_context when no package is available.
+
+    Section precedence (31-23 task 4-3):
+      1. Project context (always included, never truncated)
+      2. Task state / resume context
+      3. Boundary handoff context
+      4. Domain expertise + artifacts
+      5. Memory context
+      6. Auto-read content
+      7. Cross-surface handoff
+      8. Unresolved reference warnings
+    When the total exceeds _PROMPT_CONTEXT_BUDGET, lowest-precedence
+    sections are dropped entirely (not mid-sentence cut).
     """
     if context_package is None:
         context_package = msg.metadata.get("context_package")
     if context_package is None:
         return _augmented_prompt_context(msg, context)
 
-    parts = [_project_prompt_context(context)]
+    ranked: list[tuple[int, str]] = []
 
-    # Domain expertise block
-    if getattr(context_package, 'domain_expertise', ''):
-        parts.append(context_package.domain_expertise)
+    proj = _project_prompt_context(context)
+    if proj:
+        ranked.append((1, proj))
 
-    # Recent artifacts
-    artifacts = getattr(context_package, 'recent_artifacts', None) or []
-    if artifacts:
-        artifact_lines = ["Known artifacts in this project:"]
-        for art in artifacts[:5]:
-            name = art.get("name") or art.get("path") or "unknown"
-            art_type = art.get("type", "file")
-            artifact_lines.append(f"- [{art_type}] {name}")
-        parts.append("\n".join(artifact_lines))
-
-    # Auto-read content
-    auto_read = getattr(context_package, 'auto_read_content', None) or {}
-    if auto_read:
-        for path, summary in list(auto_read.items())[:3]:
-            parts.append(f"[Auto-read: {path}]\n{summary[:500]}")
-
-    # Task continuity state
     task_state = getattr(context_package, 'task_state', None) or {}
     if task_state:
         state_parts = []
@@ -211,16 +210,37 @@ def _build_prompt_from_package(
         if task_state.get("current_blocker"):
             state_parts.append(f"Blocker: {task_state['current_blocker']}")
         if state_parts:
-            parts.append("Task state: " + "; ".join(state_parts))
+            ranked.append((2, "Task state: " + "; ".join(state_parts)))
 
-    # Memory context (general)
-    if getattr(context_package, 'memory_context', ''):
-        parts.append(context_package.memory_context)
-
-    # Resume/handoff context (preserve from original)
     resume_context = str(msg.metadata.get("resume_context") or "").strip()
     if resume_context:
-        parts.append(f"Resume context: {resume_context}")
+        ranked.append((2, f"Resume context: {resume_context}"))
+
+    # TODO(31-23): wire bridge in runtime.py to populate this from
+    # session.context["last_handoff"] / executor.last_handoff
+    boundary_handoff = msg.metadata.get("boundary_handoff_context")
+    if boundary_handoff:
+        ranked.append((3, boundary_handoff))
+
+    if getattr(context_package, 'domain_expertise', ''):
+        ranked.append((4, context_package.domain_expertise))
+
+    artifacts = getattr(context_package, 'recent_artifacts', None) or []
+    if artifacts:
+        artifact_lines = ["Known artifacts in this project:"]
+        for art in artifacts[:5]:
+            name = art.get("name") or art.get("path") or "unknown"
+            art_type = art.get("type", "file")
+            artifact_lines.append(f"- [{art_type}] {name}")
+        ranked.append((4, "\n".join(artifact_lines)))
+
+    if getattr(context_package, 'memory_context', ''):
+        ranked.append((5, context_package.memory_context))
+
+    auto_read = getattr(context_package, 'auto_read_content', None) or {}
+    if auto_read:
+        for path, summary in list(auto_read.items())[:3]:
+            ranked.append((6, f"[Auto-read: {path}]\n{summary[:500]}"))
 
     handoff = msg.metadata.get("handoff_context")
     if handoff:
@@ -242,14 +262,29 @@ def _build_prompt_from_package(
                 handoff_lines.append(f"- Task: {task_name}{status_str}")
         if project_summary:
             handoff_lines.append(f"- Prior project summary: {project_summary}")
-        parts.append("\n".join(handoff_lines))
+        ranked.append((7, "\n".join(handoff_lines)))
 
-    # Unresolved references warning
     unresolved = getattr(context_package, 'unresolved_references', None) or []
     if unresolved:
-        parts.append(f"Note: could not resolve references to: {', '.join(unresolved[:5])}")
+        ranked.append((8, f"Note: could not resolve references to: {', '.join(unresolved[:5])}"))
 
-    return "\n\n".join(parts)
+    ranked.sort(key=lambda x: x[0])
+
+    result_parts: list[str] = []
+    total_len = 0
+    for _rank, content in ranked:
+        section_len = len(content) + 2
+        if total_len + section_len > _PROMPT_CONTEXT_BUDGET and result_parts:
+            logger.warning(
+                "Prompt context budget exceeded (%d > %d), dropping %d lower-priority sections",
+                total_len + section_len, _PROMPT_CONTEXT_BUDGET,
+                len(ranked) - len(result_parts),
+            )
+            break
+        result_parts.append(content)
+        total_len += section_len
+
+    return "\n\n".join(result_parts)
 
 
 class FileHandler:

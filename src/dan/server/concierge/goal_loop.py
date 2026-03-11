@@ -21,6 +21,8 @@ from typing import Any, Awaitable, Callable, Literal, Protocol, runtime_checkabl
 
 from pydantic import BaseModel, Field
 
+from dan.server.concierge.boundary_handoff import GoalAttemptAssembler
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -356,6 +358,8 @@ class GoalLoopExecutor:
         self.evaluator = evaluator
         self.state = state or GoalLoopState(goal=goal)
         self.escalation_window = escalation_window
+        self.handoff_chain: list[Any] = []
+        self.last_handoff: Any | None = None
 
     # -- public API --------------------------------------------------------
 
@@ -427,6 +431,13 @@ class GoalLoopExecutor:
                     logger.debug("_diagnose_attempt failed", exc_info=True)
 
             self._maybe_escalate(state)
+
+            try:
+                _handoff = GoalAttemptAssembler.assemble(record, state)
+                self.last_handoff = _handoff
+                self.handoff_chain.append(_handoff)
+            except Exception:
+                logger.debug("Goal handoff assembly failed", exc_info=True)
 
             if on_progress:
                 try:

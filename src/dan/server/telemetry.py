@@ -38,6 +38,7 @@ EventType = Literal[
     "classification",
     "memory_retrieval",
     "tool_call",
+    "intent_extraction",
 ]
 
 # Filterable columns used by query/aggregate.

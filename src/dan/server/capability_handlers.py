@@ -3165,7 +3165,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         "web_search",
         WEB_SEARCH_CAPABILITY_SCHEMA,
         handle_web_search,
-        modes=["agent", "build", "mutate", "conversation", "debug"],
+        modes=["ask", "agent", "build", "mutate", "conversation", "debug"],
         category="web",
     )
     registry.register(
