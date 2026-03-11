@@ -10,7 +10,7 @@ from typing import Any
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
 from dan.models.nodes import NodeBase, RAGOperator
-from dan.rag import EmbeddingProvider, EmbeddingRegistry
+from dan.rag import DEFAULT_EMBEDDING_MODEL, EmbeddingProvider, EmbeddingRegistry
 from dan.rag.stores import QueryResult, VectorStore, VectorStoreConfig, VectorStoreFactory
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ def _resolve_embedding_provider(
         context, "embedding_registry", None
     )
     default_model = getattr(
-        context.config, "default_embedding_model", "text-embedding-3-small",
+        context.config, "default_embedding_model", DEFAULT_EMBEDDING_MODEL,
     )
     model = node.embedding_model or default_model
 

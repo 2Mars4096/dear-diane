@@ -8,6 +8,7 @@ from typing import Any, Protocol, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small"
 
 # ---------------------------------------------------------------------------
 # Embedding result
@@ -48,7 +49,7 @@ class OpenAIEmbeddingProvider:
     single API call (OpenAI supports up to 2048 inputs per request).
     """
 
-    DEFAULT_MODEL = "text-embedding-3-small"
+    DEFAULT_MODEL = DEFAULT_EMBEDDING_MODEL
 
     def __init__(
         self,
@@ -201,7 +202,7 @@ def _create_embedding_provider(
     pconfig: Any,
     fallback_api_key: str = "",
     fallback_base_url: str = "",
-    fallback_model: str = "text-embedding-3-small",
+    fallback_model: str = DEFAULT_EMBEDDING_MODEL,
 ) -> EmbeddingProvider | None:
     """Instantiate an embedding provider by name + config."""
     if name in {"default", "openai"}:
@@ -247,7 +248,7 @@ def build_embedding_registry(config: Any) -> EmbeddingRegistry:
     registry = EmbeddingRegistry()
     fallback_key = getattr(config, "llm_api_key", "")
     fallback_url = getattr(config, "llm_base_url", "")
-    fallback_model = getattr(config, "default_embedding_model", "text-embedding-3-small")
+    fallback_model = getattr(config, "default_embedding_model", DEFAULT_EMBEDDING_MODEL)
 
     embedding_providers = getattr(config, "embedding_providers", {}) or {}
     if embedding_providers:

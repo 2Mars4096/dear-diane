@@ -105,6 +105,7 @@ class DiscoveryService:
         tool_registry: Any | None = None,
         self_knowledge: Any | None = None,
         memory_kernel: Any | None = None,
+        skill_store: Any | None = None,
     ) -> None:
         self._experience_index = experience_index
         self._experience_store = experience_store
@@ -112,6 +113,7 @@ class DiscoveryService:
         self._tool_registry = tool_registry
         self._self_knowledge = self_knowledge
         self._memory_kernel = memory_kernel
+        self._skill_store = skill_store
 
     def discover_tools(self) -> list[ToolInfo]:
         """Query the tool registry for available tools."""
@@ -121,7 +123,21 @@ class DiscoveryService:
         return [ToolInfo(tool_id=tid) for tid in ids]
 
     def discover_skills(self) -> list[SkillInfo]:
-        """Query SKILL_LIBRARY for available skill descriptors."""
+        """Query SkillStore (preferred) or SKILL_LIBRARY for skill descriptors."""
+        if self._skill_store is not None:
+            try:
+                return [
+                    SkillInfo(
+                        name=s.name,
+                        description=s.description,
+                        tags=s.tags,
+                        inject_as=s.inject_as,
+                    )
+                    for s in self._skill_store.list_skills()
+                ]
+            except Exception:
+                logger.debug("SkillStore discovery failed, falling back", exc_info=True)
+
         from dan.server.skill_library import SKILL_LIBRARY
 
         results: list[SkillInfo] = []
