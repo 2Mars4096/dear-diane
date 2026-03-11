@@ -264,6 +264,86 @@ def extract_structured_state(conversation_text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Auto-populate task state (31-11 §1-2)
+# ---------------------------------------------------------------------------
+
+_BLOCKER_RE = re.compile(
+    r"\b(?:error|fail(?:ed|ure)?|block(?:ed)?|waiting\s+(?:for|on)|"
+    r"cannot|can'?t|unable|timeout|missing|not\s+found)\b[^.!?\n]*",
+    re.IGNORECASE,
+)
+_FILE_PATH_RE = re.compile(r"(?:^|[\s\"'])(/[\w./-]+|[\w./-]+\.\w{1,6})(?=[\"'\s,;)]|$)")
+
+
+def auto_populate_task_state(task: Any, conversation_context: str) -> dict:
+    """Extract structured state from *conversation_context* for a task snapshot.
+
+    Returns a dict with ``completed_steps``, ``pending_steps``,
+    ``current_blocker``, and ``artifacts`` that can be merged into a Task.
+    """
+    base = extract_structured_state(conversation_context)
+    completed: list[str] = base["completed_steps"]
+    pending: list[str] = base["pending_steps"]
+
+    blocker: str | None = None
+    blocker_match = _BLOCKER_RE.search(conversation_context)
+    if blocker_match:
+        blocker = blocker_match.group(0).strip()
+
+    artifacts: dict[str, str] = {}
+    for m in _FILE_PATH_RE.finditer(conversation_context):
+        path = m.group(1)
+        name = path.rsplit("/", 1)[-1] if "/" in path else path
+        if name and name not in artifacts:
+            artifacts[name] = path
+
+    return {
+        "completed_steps": completed,
+        "pending_steps": pending,
+        "current_blocker": blocker,
+        "artifacts": artifacts,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Compact task history (31-11 §3-2)
+# ---------------------------------------------------------------------------
+
+_SENTENCE_END_RE = re.compile(r"[.!?]")
+
+
+def _summarize_step(step: str) -> str:
+    """Return first sentence or first 80 chars, whichever is shorter."""
+    m = _SENTENCE_END_RE.search(step)
+    if m:
+        first_sentence = step[: m.end()].strip()
+        if len(first_sentence) <= 80:
+            return first_sentence
+    if len(step) > 80:
+        return step[:80].rstrip() + "..."
+    return step
+
+
+def compact_task_history(
+    steps: list[str],
+    keep_full: int = 3,
+) -> list[str]:
+    """Summarise older steps to reduce context-window cost of resume prompts.
+
+    The last *keep_full* entries are preserved verbatim.  Earlier entries are
+    replaced with their first sentence or first 80 characters, whichever is
+    shorter.
+    """
+    if len(steps) <= keep_full:
+        return list(steps)
+
+    cutoff = len(steps) - keep_full
+    compacted: list[str] = [_summarize_step(s) for s in steps[:cutoff]]
+    compacted.extend(steps[cutoff:])
+    return compacted
+
+
+# ---------------------------------------------------------------------------
 # /resume command handler
 # ---------------------------------------------------------------------------
 

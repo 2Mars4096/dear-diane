@@ -81,8 +81,24 @@ _AUTONOMY_OVERRIDE_PHRASES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("show me every step", "step by step", "walk me through"), AutonomyLevel.INTERACTIVE.value),
 )
 
-_FAST_COMMAND_PREFIXES = ("/save", "/build-", "/memory-", "/mcp", "/model", "/cost", "/retry", "/status")
+_FAST_COMMAND_PREFIXES = ("/save", "/build-", "/memory-", "/mcp", "/model", "/cost", "/retry", "/status", "/skill")
 _PREF_CONFIRM_WORDS = frozenset({"confirm all", "yes", "confirm"})
+
+_GREETING_TOKENS = frozenset({
+    "hi", "hello", "hey", "yo", "sup", "hola", "howdy",
+    "thanks", "thank", "ty", "thx",
+    "bye", "goodbye", "ok", "okay", "sure",
+    "yes", "no", "yeah", "nah", "nope", "yep",
+    "good", "morning", "afternoon", "evening",
+})
+
+_FOLLOW_UP_PHRASES = frozenset({
+    "confirm", "go ahead", "do it", "proceed", "continue",
+    "sounds good", "let's go", "yes please", "run it",
+    "approved", "looks good", "lgtm", "ship it",
+})
+
+_COMPLETION_GUARD_MIN_RESPONSE_LEN = 50
 
 
 class Concierge:
@@ -174,6 +190,7 @@ class Concierge:
         self._follow_up_engine: Any = None
         self._correction_store: Any = None
         self._adaptation_registry: Any = None
+        self._health_counters: Any = None
         self._computer_config: Any = None
         self._computer_lease: Any = None
         self._computer_audit: Any = None
@@ -274,11 +291,12 @@ class Concierge:
         text = msg.text.strip()
         if not text.startswith("/model"):
             return None
-        
+
+        pfx = format_bare_prefix()
         parts = text.split()
         if len(parts) == 1:
             current = getattr(self.chat_manager, "_chat_model", "unknown")
-            return self._complete_event(content=f"{format_prefix()} Current model: {current}")
+            return self._complete_event(content=f"{pfx} Current model: {current}")
             
         # Parse args
         args = parts[1:]
@@ -289,7 +307,7 @@ class Concierge:
             
         if not args:
             current = getattr(self.chat_manager, "_chat_model", "unknown")
-            return self._complete_event(content=f"{format_prefix()} Current model: {current}")
+            return self._complete_event(content=f"{pfx} Current model: {current}")
             
         model_name = args[0]
         
@@ -309,7 +327,7 @@ class Concierge:
             if registry and hasattr(registry, "_providers"):
                 providers = list(registry._providers.keys())
             
-            err_msg = f"{format_prefix()} Unknown model: {model_name}."
+            err_msg = f"{pfx} Unknown model: {model_name}."
             if providers:
                 err_msg += f" Registered providers: {', '.join(providers)}"
             return self._complete_event(content=err_msg)
@@ -322,12 +340,12 @@ class Concierge:
             try:
                 from dan.utils.env import update_env_file
                 update_env_file("DAN_CHAT_MODEL", model_name)
-                return self._complete_event(content=f"{format_prefix()} Model changed to {model_name} and saved to .env")
+                return self._complete_event(content=f"{pfx} Model changed to {model_name} and saved to .env")
             except Exception as e:
                 logger.error("Failed to save model to .env", exc_info=True)
-                return self._complete_event(content=f"{format_prefix()} Model changed to {model_name} for this session, but failed to save to .env: {e}")
+                return self._complete_event(content=f"{pfx} Model changed to {model_name} for this session, but failed to save to .env: {e}")
                 
-        return self._complete_event(content=f"{format_prefix()} Model changed to {model_name} for this session.")
+        return self._complete_event(content=f"{pfx} Model changed to {model_name} for this session.")
 
     async def _handle_cost_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
         """Handle /cost command to show total cost for current thread."""
@@ -403,8 +421,67 @@ class Concierge:
         status_text += f"Model: {current_model}\n"
         status_text += f"Cost Tracking: {'Enabled' if os.environ.get('DAN_SHOW_COST') == '1' else 'Disabled'}\n\n"
         status_text += res.message
+
+        # 31-15 §4-2: Learning section
+        status_text += self._format_learning_status()
         
         return self._complete_event(content=status_text)
+
+    def _format_learning_status(self) -> str:
+        """Build the Learning section for /status output."""
+        lines: list[str] = ["\n\n**Learning**"]
+        try:
+            from dan.engine.learning_tiers import (
+                resolve_learning_tier,
+                features_enabled_at_tier,
+            )
+
+            tier = self._learning_tier if self._learning_tier is not None else resolve_learning_tier()
+            enabled = features_enabled_at_tier(tier)
+            lines.append(f"Active tier: {tier}")
+            lines.append(f"Enabled features: {', '.join(sorted(enabled)) if enabled else 'none'}")
+        except Exception:
+            lines.append("Tier: unknown")
+
+        if self._health_counters is not None:
+            try:
+                summary = self._health_counters.get_summary()
+                total_events = sum(c["attempted"] for c in summary.values())
+                last_ts = 0.0
+                for path_name, counts in summary.items():
+                    att = counts["attempted"]
+                    if att > 0:
+                        rate = counts["succeeded"] / att
+                        lines.append(
+                            f"  {path_name}: {att} events ({rate:.0%} success)"
+                        )
+                lines.append(f"Total events: {total_events}")
+            except Exception:
+                lines.append("Health counters: error reading")
+        else:
+            lines.append("Health counters: not initialized")
+
+        # §4-3: Minimum-sample warnings
+        try:
+            model_samples = 0
+            if self.memory_kernel is not None:
+                from dan.engine.memory_kernel import MemoryType, MemoryScope
+                items = self.memory_kernel.list_by_type(
+                    MemoryType.EPISODE, scope=MemoryScope.WORKFLOW, limit=500,
+                )
+                model_samples = sum(
+                    1 for item in items
+                    if item.metadata.get("tracker") == "model_outcome"
+                )
+            if model_samples < 15:
+                lines.append(
+                    f"  ⚠ Model learning: {model_samples}/15 samples collected "
+                    f"— recommendations not yet active"
+                )
+        except Exception:
+            pass
+
+        return "\n".join(lines)
 
     async def _handle_cancel_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
         """Handle /cancel command by cancelling the requested run reference."""
@@ -422,6 +499,44 @@ class Concierge:
         return self._complete_event(
             content=f"{format_prefix(ctx.project.label)} {result.message}"
         )
+
+    async def _run_goal_loop(self, external_id: str, state: Any, original_msg: Any) -> None:
+        """Background task running the goal loop executor (31-6)."""
+        from .goal_loop import GoalLoopExecutor, LLMJudgeEvaluator, make_progress_callback, get_tier_prompt
+
+        try:
+            evaluator = LLMJudgeEvaluator(llm_fn=self._goal_llm_evaluate)
+            executor = GoalLoopExecutor(goal=state.goal, evaluator=evaluator, state=state)
+
+            notify_fn = None
+            event_bus = getattr(self, "capability_context", None) and getattr(self.capability_context, "event_bus", None)
+            if event_bus is not None:
+                def _notify(msg_text: str) -> None:
+                    try:
+                        event_bus.broadcast({
+                            "event_type": "notification",
+                            "data": {"title": "Goal Loop", "body": msg_text},
+                        })
+                    except Exception:
+                        pass
+                notify_fn = _notify
+
+            callback = make_progress_callback(notify_fn=notify_fn)
+
+            async def attempt_fn(attempt_number: int, strategy_tier: int, best_result: Any, previous_attempts: list) -> dict:
+                prompt = get_tier_prompt(
+                    strategy_tier, state.goal, best_result,
+                    previous_attempts[-3:] if previous_attempts else [],
+                )
+                return {"approach_summary": f"Attempt {attempt_number} at tier {strategy_tier}", "prompt": prompt}
+
+            await executor.run_loop(attempt_fn=attempt_fn, on_progress=callback)
+        except Exception:
+            logger.exception("Goal loop execution failed for %s", external_id)
+
+    async def _goal_llm_evaluate(self, context: dict) -> float:
+        """Placeholder LLM judge evaluation — returns a score based on context."""
+        return context.get("score", 5.0)
 
     async def _coerce_fast_command_result(self, result: Any) -> ChatCompleteEvent | None:
         if inspect.isawaitable(result):
@@ -451,9 +566,18 @@ class Concierge:
 
         if descriptor.name == "/goal":
             goal_context = self._goal_loop_states.setdefault(msg.external_id, {})
-            return await self._coerce_fast_command_result(
+            result = await self._coerce_fast_command_result(
                 handler(msg.text, context=goal_context),
             )
+            # 31-6: Spawn goal loop execution if state was created
+            goal_state = goal_context.get("goal_state")
+            if goal_state is not None:
+                from .goal_loop import GoalLoopState
+                if isinstance(goal_state, GoalLoopState) and goal_state.status == "running":
+                    asyncio.create_task(
+                        self._run_goal_loop(msg.external_id, goal_state, msg)
+                    )
+            return result
         if descriptor.name == "/goal-status":
             goal_state = self._goal_loop_states.get(msg.external_id, {}).get("goal_state")
             return await self._coerce_fast_command_result(
@@ -579,6 +703,13 @@ class Concierge:
                     self._computer_audit or AuditLog(),
                 )
             )
+        if descriptor.name == "/skill":
+            from dan.server.skill_store import SkillStore, handle_skill_command
+
+            store = getattr(self, "_skill_store", None) or SkillStore()
+            return await self._coerce_fast_command_result(
+                handle_skill_command(msg.text, store),
+            )
 
         params = list(inspect.signature(handler).parameters.values())
         if len(params) == 0:
@@ -621,10 +752,10 @@ class Concierge:
     # ------------------------------------------------------------------
 
     _REASSURANCE_INITIAL_DELAY: float = float(
-        os.environ.get("DAN_CONCIERGE_REASSURANCE_DELAY", "5")
+        os.environ.get("DAN_CONCIERGE_REASSURANCE_DELAY", "10")
     )
     _REASSURANCE_REPEAT_INTERVAL: float = float(
-        os.environ.get("DAN_CONCIERGE_REASSURANCE_INTERVAL", "15")
+        os.environ.get("DAN_CONCIERGE_REASSURANCE_INTERVAL", "20")
     )
 
     _REASSURANCE_MESSAGES = [
@@ -634,10 +765,220 @@ class Concierge:
         "Almost there \u2014 finishing up\u2026",
     ]
 
+    def _summarize_progress_request(self, text: str, *, max_chars: int = 96) -> str:
+        clean = re.sub(r"\s+", " ", text).strip()
+        clean = re.sub(
+            r"^(?:also|and|one more thing|another thing|another question)[,:]?\s+",
+            "",
+            clean,
+            flags=re.IGNORECASE,
+        )
+        if len(clean) > max_chars:
+            clean = clean[: max_chars - 1].rstrip() + "…"
+        return clean
+
+    def _progress_ack_content(self, msg: SurfaceMessage) -> str:
+        surface = str(getattr(msg, "surface", "") or "").split(":", 1)[0]
+        if surface in {"telegram", "whatsapp", "whatsapp-web", "email"}:
+            return "Working on it..."
+        ack_text = self._summarize_progress_request(msg.text) or "Working on your request..."
+        return f"Got it. {ack_text}"
+
+    @staticmethod
+    def _format_elapsed_seconds(elapsed_seconds: float) -> str:
+        seconds = max(1, int(round(elapsed_seconds)))
+        if seconds < 60:
+            return f"{seconds}s elapsed"
+        minutes, seconds = divmod(seconds, 60)
+        if minutes < 60:
+            if seconds == 0:
+                return f"{minutes}m elapsed"
+            return f"{minutes}m {seconds}s elapsed"
+        hours, minutes = divmod(minutes, 60)
+        if minutes == 0 and seconds == 0:
+            return f"{hours}h elapsed"
+        if seconds == 0:
+            return f"{hours}h {minutes}m elapsed"
+        return f"{hours}h {minutes}m {seconds}s elapsed"
+
+    @staticmethod
+    def _is_messaging_surface(msg: SurfaceMessage) -> bool:
+        surface = str(getattr(msg, "surface", "") or "").split(":", 1)[0]
+        return surface in {"telegram", "whatsapp", "whatsapp-web", "email"}
+
+    def _format_progress_status(
+        self,
+        prefix: str,
+        label: str,
+        elapsed_seconds: float,
+    ) -> str:
+        clean_label = label.strip().rstrip(".!?")
+        if elapsed_seconds > 0:
+            return (
+                f"{prefix} — {clean_label} "
+                f"({self._format_elapsed_seconds(elapsed_seconds)})"
+            )
+        return f"{prefix} — {clean_label}"
+
+    _MIN_PHASE_EVENT_INTERVAL: float = 1.0
+
+    def _set_progress_phase(
+        self,
+        external_id: str,
+        phase_id: str,
+        name: str,
+        detail: str | None = None,
+    ) -> None:
+        session = self._progress_sessions.get(external_id)
+        if session is None:
+            return
+        current = session.get_current_phase()
+        created_phase = False
+        if current is None or current.id != phase_id:
+            if current is not None and current.status == "active":
+                summary = current.summary or (
+                    current.sub_steps[-1] if current.sub_steps else current.name
+                )
+                session.complete_phase(current.id, summary)
+            session.start_phase(phase_id, name)
+            created_phase = True
+        if detail:
+            if created_phase:
+                phase = session.get_current_phase()
+                if phase is not None:
+                    phase.sub_steps.append(detail)
+                    return
+            session.update_phase(phase_id, detail)
+
+    def _make_phase_event(
+        self,
+        external_id: str,
+        phase_id: str,
+        name: str,
+        detail: str | None = None,
+    ) -> ChatCompleteEvent | None:
+        """Set the progress phase and return a progress_ack event if appropriate.
+
+        Returns an event only when the surface verbosity is not ``minimal``
+        and at least ``_MIN_PHASE_EVENT_INTERVAL`` seconds have passed since
+        the last emitted phase event (to avoid spamming edits).
+        """
+        self._set_progress_phase(external_id, phase_id, name, detail)
+        session = self._progress_sessions.get(external_id)
+        if session is None:
+            return None
+        if getattr(session, "verbosity", "minimal") == "minimal":
+            return None
+        now = time.monotonic()
+        last_phase_event_time = float(
+            getattr(session, "_last_phase_event_time", 0.0) or 0.0,
+        )
+        if now - last_phase_event_time < self._MIN_PHASE_EVENT_INTERVAL:
+            return None
+        session._last_phase_event_time = now
+        label = detail or name
+        elapsed_seconds = session.elapsed_total()
+        return ChatCompleteEvent(
+            message_id=uuid.uuid4().hex[:12],
+            content=self._format_progress_status(
+                "Working on it",
+                label,
+                elapsed_seconds,
+            ),
+            token_usage={},
+            context_window=0,
+            graph_revision="",
+            detected_mode="progress_ack",
+        )
+
+    def _create_progress_renderer(self, surface: str, msg: Any) -> Any | None:
+        """Return a surface-specific ProgressRenderer, or None for null/unsupported."""
+        try:
+            from .progress_ux import CLIProgressRenderer
+        except ImportError:
+            return None
+        if surface == "cli":
+            return CLIProgressRenderer()
+        return None
+
+    def _progress_label_for_intent(self, intent: IntentCategory) -> str:
+        labels = {
+            IntentCategory.FILE_REQUEST: "Searching files and documents",
+            IntentCategory.DIRECT_TASK: "Working through the request",
+            IntentCategory.RUN_CONTROL: "Preparing the workflow run",
+            IntentCategory.WORKFLOW_BUILD: "Planning the workflow",
+            IntentCategory.WORKFLOW_QUERY: "Inspecting the workflow",
+            IntentCategory.EXPERIENCE_QUERY: "Checking similar past work",
+            IntentCategory.PUBLISH_SHARE: "Preparing sharing and publish steps",
+            IntentCategory.STATUS_CHECK: "Checking current status",
+            IntentCategory.META_GOAL: "Planning the broader goal",
+            IntentCategory.CONVERSATION: "Thinking through the request",
+        }
+        return labels.get(intent, "Working through the request")
+
+    def _build_reassurance_message(
+        self,
+        msg: SurfaceMessage,
+        reassurance_count: int,
+    ) -> str:
+        progress_session = self._progress_sessions.get(msg.external_id)
+        elapsed_seconds = (
+            progress_session.elapsed_total()
+            if progress_session is not None
+            else 0.0
+        )
+        prefix = "Working on it" if reassurance_count == 0 else "Still working"
+        if progress_session is not None:
+            phase = progress_session.get_current_phase()
+            if phase is not None:
+                latest = (
+                    phase.sub_steps[-1]
+                    if phase.sub_steps
+                    else (phase.summary or phase.name)
+                ).strip().rstrip(".!?")
+                if latest:
+                    return self._format_progress_status(
+                        prefix,
+                        latest,
+                        elapsed_seconds,
+                    )
+
+        if self._is_messaging_surface(msg):
+            return self._format_progress_status(
+                prefix,
+                "preparing response",
+                elapsed_seconds,
+            )
+
+        summary = self._summarize_progress_request(msg.text)
+        if summary:
+            return self._format_progress_status(
+                prefix,
+                summary,
+                elapsed_seconds,
+            )
+
+        idx = min(reassurance_count, len(self._REASSURANCE_MESSAGES) - 1)
+        fallback = self._REASSURANCE_MESSAGES[idx].rstrip("…")
+        if elapsed_seconds > 0:
+            return f"{fallback} ({self._format_elapsed_seconds(elapsed_seconds)})"
+        return self._REASSURANCE_MESSAGES[idx]
+
     async def process(self, msg: SurfaceMessage) -> AsyncIterator[ChatStreamEvent]:
-        if self._REASSURANCE_INITIAL_DELAY <= 0:
-            async for event in self._process_inner(msg):
-                yield event
+        # Messaging surfaces own their own progress timer in the adapter layer.
+        # Concierge just streams events without injecting reassurance bubbles.
+        if self._REASSURANCE_INITIAL_DELAY <= 0 or self._is_messaging_surface(msg):
+            try:
+                async for event in self._process_inner(msg):
+                    if (
+                        self._is_messaging_surface(msg)
+                        and isinstance(event, ChatCompleteEvent)
+                        and getattr(event, "detected_mode", None) == "progress_ack"
+                    ):
+                        continue
+                    yield event
+            finally:
+                self._progress_sessions.pop(msg.external_id, None)
             return
 
         _sentinel = object()
@@ -656,6 +997,7 @@ class Concierge:
 
         drain_task = asyncio.create_task(_drain_inner())
         first_event_received = False
+        progress_unlocked = False
         reassurance_count = 0
         start_time = time.monotonic()
 
@@ -669,7 +1011,6 @@ class Concierge:
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=timeout)
                 except asyncio.TimeoutError:
-                    idx = min(reassurance_count, len(self._REASSURANCE_MESSAGES) - 1)
                     progress_session = self._progress_sessions.get(msg.external_id)
                     if (
                         progress_session is not None
@@ -678,17 +1019,30 @@ class Concierge:
                     ):
                         reassurance_count += 1
                         continue
-                    yield self._complete_event(
-                        content=self._REASSURANCE_MESSAGES[idx],
+                    yield ChatCompleteEvent(
+                        message_id=uuid.uuid4().hex[:12],
+                        content=self._build_reassurance_message(msg, reassurance_count),
+                        token_usage={},
+                        context_window=0,
+                        graph_revision="",
+                        detected_mode="progress_ack",
                     )
                     reassurance_count += 1
+                    progress_unlocked = True
                     continue
 
                 if item is _sentinel:
                     break
                 if isinstance(item, Exception):
                     raise item
-                first_event_received = True
+                is_phase_event = (
+                    isinstance(item, ChatCompleteEvent)
+                    and getattr(item, "detected_mode", None) == "progress_ack"
+                )
+                if is_phase_event and not progress_unlocked:
+                    continue
+                if not is_phase_event:
+                    first_event_received = True
                 yield item
                 
             elapsed = time.monotonic() - start_time
@@ -766,7 +1120,16 @@ class Concierge:
                 surface=_surface,
                 verbosity=_verbosity,
             )
+            _renderer = self._create_progress_renderer(_surface, msg)
+            if _renderer is not None:
+                _progress_session.renderer = _renderer
             self._progress_sessions[msg.external_id] = _progress_session
+            self._set_progress_phase(
+                msg.external_id,
+                "intake",
+                "Understanding your request",
+                self._summarize_progress_request(msg.text),
+            )
         except Exception:
             logger.debug("Progress session init failed", exc_info=True)
 
@@ -775,8 +1138,20 @@ class Concierge:
             for goal in self._concierge_state.active_goals
         )
 
+        # 31-14 §3-2: Instant ack removed — the reassurance timer in
+        # process() now handles "Working on it…" after a short delay so
+        # that quick replies (Hi, Hello) never show an interim bubble.
+
         _precomputed_context = None
         _speculative_reuse: tuple[str, Any] | None = None
+        _phase_evt = self._make_phase_event(
+            msg.external_id,
+            "context",
+            "Gathering context",
+            "Gathering relevant context",
+        )
+        if _phase_evt is not None:
+            yield _phase_evt
         if os.environ.get("DAN_CONCIERGE_PARALLEL_PREP", "1") == "1":
             from .fan_out import fan_out_dict
 
@@ -836,6 +1211,15 @@ class Concierge:
                 msg.text, context, self._classify_llm_complete,
             )
 
+        _phase_evt = self._make_phase_event(
+            msg.external_id,
+            "execution",
+            "Working on the request",
+            self._progress_label_for_intent(classification.intent),
+        )
+        if _phase_evt is not None:
+            yield _phase_evt
+
         try:
             if self._presence_tracker is not None:
                 self._presence_tracker.update(
@@ -892,6 +1276,20 @@ class Concierge:
                                         description=value[:200],
                                     )
                                 )
+                        # 31-15 §3-4: Store preferences/principles in MemoryKernel
+                        if actions and self.memory_kernel is not None:
+                            for action in actions:
+                                atype = action.get("type")
+                                avalue = action.get("value", "")
+                                if atype == "preference" and avalue:
+                                    self.memory_kernel.store_preference(
+                                        avalue, confirmed=False,
+                                    )
+                                elif atype == "principle" and avalue:
+                                    self.memory_kernel.store_principle(
+                                        avalue,
+                                        confidence=signal.confidence,
+                                    )
         except Exception:
             logger.debug("Correction detection failed", exc_info=True)
 
@@ -927,6 +1325,37 @@ class Concierge:
             )
             yield self._complete_event(content=f"{format_prefix(context.project.label)} Please confirm before I do that.")
             return
+
+        # 31-14 §4-2/4-3/4-4: Preflight clarification for expensive tasks
+        try:
+            from .progress_ux import (
+                format_quick_confirm,
+                generate_preflight_questions,
+                should_preflight_clarify,
+            )
+            _est_time = float(msg.metadata.get("estimated_time", 0))
+            _est_cost = float(msg.metadata.get("estimated_cost", 0))
+            if should_preflight_clarify(_est_time, _est_cost):
+                _pf_context = {
+                    "estimated_time": _est_time,
+                    "estimated_cost": _est_cost,
+                    **{k: v for k, v in msg.metadata.items()
+                       if k not in ("estimated_time", "estimated_cost")},
+                }
+                _pf_questions = generate_preflight_questions(msg.text, _pf_context)
+                if _pf_questions:
+                    _pf_defaults = [f"(auto)" for _ in _pf_questions]
+                    _pf_confirm = format_quick_confirm(_pf_questions, _pf_defaults)
+                    yield ChatCompleteEvent(
+                        message_id=uuid.uuid4().hex[:12],
+                        content=_pf_confirm.checkpoint.summary,
+                        token_usage={},
+                        context_window=0,
+                        graph_revision="",
+                        detected_mode="preflight_clarify",
+                    )
+        except Exception:
+            logger.debug("Preflight clarification failed", exc_info=True)
 
         use_goal_orchestrator = (
             self._should_use_goal_orchestrator(classification)
@@ -1150,6 +1579,11 @@ class Concierge:
             )
             return
 
+        # 31-14 §3-4: phase transition before handler dispatch
+        _phase_evt = self._make_phase_event(msg.external_id, "execution", "Executing", classification.intent.value)
+        if _phase_evt is not None:
+            yield _phase_evt
+
         handler = self.handlers.get(classification.intent)
         result = await handler.handle(msg, context, classification)
 
@@ -1215,7 +1649,7 @@ class Concierge:
                 if evt_type == "chat_complete":
                     raw_content = getattr(event, "content", "") or ""
                     final_content = self._check_unsourced_claims(raw_content, saw_tool_call)
-                    final_content = await self._post_process_response(final_content, msg.text)
+                    final_content = await self._post_process_response(final_content, msg.text, msg=msg)
                     stream_channel_id = getattr(event, "stream_channel_id", None)
                     if hasattr(event, "model_copy"):
                         event = event.model_copy(update={"content": final_content})
@@ -1235,7 +1669,7 @@ class Concierge:
             return
 
         content = result.content
-        label_prefix = self._format_reply_label(context)
+        label_prefix = self._format_reply_label(context, msg)
         if label_prefix and content and not starts_with_prefix(content):
             content = f"{label_prefix} {content}"
         auto_note = str(msg.metadata.get("clarification_auto_note") or "").strip()
@@ -1245,7 +1679,7 @@ class Concierge:
             IntentCategory.CONVERSATION, IntentCategory.DIRECT_TASK,
         )
         content = self._check_unsourced_claims(content, had_tool_call)
-        content = await self._post_process_response(content, msg.text)
+        content = await self._post_process_response(content, msg.text, msg=msg)
         if self.promoter and self.promoter.should_propose(context.project, context.task):
             proposal = self.promoter.build_proposal(context.project, context.task)
             content = f"{content}\n\nSave as reusable workflow? -> {proposal.save_command}"
@@ -1290,6 +1724,28 @@ class Concierge:
 
         decision = self.plan_builder.build_plan(decision)
 
+        # 31-14 §3-3: Plan disclosure for multi-step plans
+        if len(decision.plan_steps) > 1:
+            try:
+                from .progress_ux import format_plan_disclosure
+                _plan_session = self._progress_sessions.get(msg.external_id)
+                _step_descs = [s.description for s in decision.plan_steps]
+                if _plan_session is not None:
+                    _plan_text = format_plan_disclosure(_step_descs)
+                    _offer_review = len(decision.plan_steps) > 3
+                    if _offer_review:
+                        _plan_text += "\nReview before I start?"
+                    yield ChatCompleteEvent(
+                        message_id=uuid.uuid4().hex[:12],
+                        content=_plan_text,
+                        token_usage={},
+                        context_window=0,
+                        graph_revision="",
+                        detected_mode="progress_ack",
+                    )
+            except Exception:
+                logger.debug("Plan disclosure failed", exc_info=True)
+
         if decision.clarification_question:
             self.project_store.set_pending_action(
                 context.project.project_id,
@@ -1315,6 +1771,12 @@ class Concierge:
             )
             yield self._complete_event(content=decision.clarification_question)
             return
+
+        # 31-14 §3-4: phase transition before capability dispatch
+        _exec_label = getattr(decision, "handler_hint", None) or classification.intent.value
+        _phase_evt = self._make_phase_event(msg.external_id, "execution", "Executing", _exec_label)
+        if _phase_evt is not None:
+            yield _phase_evt
 
         if self.execution_selector is not None:
             exec_result = await self.execution_selector.execute(
@@ -1357,11 +1819,34 @@ class Concierge:
                 if evt_type == "chat_complete":
                     raw_content = getattr(event, "content", "") or ""
                     final_content = self._check_unsourced_claims(raw_content, saw_tool_call)
-                    final_content = await self._post_process_response(final_content, msg.text)
+                    final_content = await self._post_process_response(final_content, msg.text, msg=msg)
                     stream_channel_id = getattr(event, "stream_channel_id", None)
                     if hasattr(event, "model_copy"):
                         event = event.model_copy(update={"content": final_content})
                 yield event
+            # 31-14 §3-5: Result checkpoint for large outputs (events path)
+            if final_content:
+                try:
+                    from .progress_ux import (
+                        format_result_checkpoint,
+                        result_checkpoint_enabled,
+                        should_checkpoint_result,
+                    )
+                    if result_checkpoint_enabled() and should_checkpoint_result(final_content, threshold=4000):
+                        _rc_session = self._progress_sessions.get(msg.external_id)
+                        if _rc_session is not None and getattr(_rc_session, "verbosity", "full") != "minimal":
+                            _rc_opts = format_result_checkpoint(final_content, user_focus=msg.text[:100])
+                            _rc_labels = " ".join(f"[{o.label}]" for o in _rc_opts.options)
+                            yield ChatCompleteEvent(
+                                message_id=uuid.uuid4().hex[:12],
+                                content=f"{_rc_opts.summary}\n{_rc_labels}",
+                                token_usage={},
+                                context_window=0,
+                                graph_revision="",
+                                detected_mode="result_checkpoint",
+                            )
+                except Exception:
+                    logger.debug("Result checkpoint (events path) failed", exc_info=True)
             if final_content:
                 self._record_assistant_turn(context, msg, final_content)
                 self._store_memory_candidates(msg.text, final_content, None)
@@ -1376,7 +1861,7 @@ class Concierge:
         auto_note = str(msg.metadata.get("clarification_auto_note") or "").strip()
         if auto_note and content:
             content = f"{auto_note}\n\n{content}"
-        label_prefix = self._format_reply_label(context)
+        label_prefix = self._format_reply_label(context, msg)
         if label_prefix and content and not starts_with_prefix(content):
             content = f"{label_prefix} {content}"
 
@@ -1389,12 +1874,36 @@ class Concierge:
             and handler_result.content != content
         )
         content = self._check_unsourced_claims(content, had_tool_call)
-        content = await self._post_process_response(content, msg.text)
+        content = await self._post_process_response(content, msg.text, msg=msg)
 
         if self.promoter and decision.save_candidate:
             if self.promoter.should_propose(context.project, context.task):
                 proposal = self.promoter.build_proposal(context.project, context.task)
                 content = f"{content}\n\nSave as reusable workflow? -> {proposal.save_command}"
+
+        # 31-14 §3-5: Result checkpoint for large outputs
+        try:
+            from .progress_ux import (
+                format_result_checkpoint,
+                result_checkpoint_enabled,
+                should_checkpoint_result,
+            )
+            if result_checkpoint_enabled() and content and should_checkpoint_result(content, threshold=4000):
+                _rc_session = self._progress_sessions.get(msg.external_id)
+                if _rc_session is not None and getattr(_rc_session, "verbosity", "full") != "minimal":
+                    _rc_opts = format_result_checkpoint(content, user_focus=msg.text[:100])
+                    _rc_summary = _rc_opts.summary
+                    _rc_labels = " ".join(f"[{o.label}]" for o in _rc_opts.options)
+                    yield ChatCompleteEvent(
+                        message_id=uuid.uuid4().hex[:12],
+                        content=f"{_rc_summary}\n{_rc_labels}",
+                        token_usage={},
+                        context_window=0,
+                        graph_revision="",
+                        detected_mode="result_checkpoint",
+                    )
+        except Exception:
+            logger.debug("Result checkpoint failed", exc_info=True)
 
         self._record_assistant_turn(context, msg, content)
         self._store_memory_candidates(msg.text, content, None)
@@ -1690,6 +2199,35 @@ class Concierge:
             status,
             msg.external_id,
         )
+
+        if status in ("completed", "paused"):
+            try:
+                from .resume import (
+                    ResumeProtocol,
+                    auto_populate_task_state,
+                    compact_task_history,
+                    persist_task_state,
+                )
+                conversation_text = "\n".join(
+                    t.content for t in context.task.turns if t.content
+                )
+                state = auto_populate_task_state(context.task, conversation_text)
+                state["completed_steps"] = compact_task_history(state["completed_steps"])
+                ResumeProtocol().update_task_state(
+                    context.task,
+                    completed_steps=state["completed_steps"],
+                    pending_steps=state["pending_steps"],
+                    blocker=state.get("current_blocker"),
+                    artifacts=state.get("artifacts"),
+                )
+                persist_task_state(
+                    self.project_store,
+                    context.project.project_id,
+                    context.task,
+                )
+            except Exception:
+                logger.debug("Auto-populate task state failed", exc_info=True)
+
         if status == "completed":
             self._maybe_auto_summarize(context, msg, on_complete=True)
 
@@ -1699,16 +2237,22 @@ class Concierge:
                 return project
         return None
 
-    def _format_reply_label(self, context: ResolvedContext) -> str:
+    def _format_reply_label(
+        self,
+        context: ResolvedContext,
+        msg: SurfaceMessage | None = None,
+    ) -> str:
         surface_id = self._current_surface_id
         if surface_id is None:
             return ""
         active_projects = self.project_store.list_active(surface_id)
-        if len(active_projects) > 1:
-            return format_prefix(context.project.label, bot_name=self.bot_name)
         active_tasks = [t for t in context.project.tasks if t.status == "active"]
+        is_messaging = msg is not None and self._is_messaging_surface(msg)
+
         if len(active_tasks) > 1:
             return format_prefix(context.project.label, context.task.label, bot_name=self.bot_name)
+        if len(active_projects) > 1 or is_messaging:
+            return format_prefix(context.project.label, bot_name=self.bot_name)
         return ""
 
     def _handle_save_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
@@ -1861,12 +2405,12 @@ class Concierge:
             return self._memory_forget_response(query)
             
         if lower.startswith("/memory-confirm"):
-            return self._memory_confirm_response(msg.surface_id)
-            
+            return self._memory_confirm_response(msg.external_id)
+
         if lower.startswith("/memory-reject"):
             parts = text.split()
             indices = [int(p) for p in parts[1:] if p.isdigit()]
-            return self._memory_reject_response(msg.surface_id, indices)
+            return self._memory_reject_response(msg.external_id, indices)
             
         return None
 
@@ -2160,19 +2704,65 @@ class Concierge:
         except Exception:
             logger.debug("Auto-summarize failed for project %s", context.project.project_id, exc_info=True)
 
+    @staticmethod
+    def _should_skip_completion_guard(msg: SurfaceMessage) -> bool:
+        """Return True when the completion guard should be bypassed.
+
+        Skips for: slash commands, simple greetings, follow-up answers to DAN's
+        own questions, short confirmations, and numeric option selections.
+        """
+        meta = msg.metadata
+        if meta.get("clarification_answer") or meta.get("clarification_auto_note"):
+            return True
+        if meta.get("resume_context") or meta.get("handoff_context"):
+            return True
+
+        text = msg.text.strip()
+        if not text:
+            return True
+
+        if text.startswith("/"):
+            return True
+
+        if text.isdigit():
+            return True
+
+        cleaned = re.sub(r"[!?.,:;]+$", "", text.lower()).strip()
+
+        if cleaned in _FOLLOW_UP_PHRASES:
+            return True
+
+        words = cleaned.split()
+        if len(words) <= 3:
+            if all(w in _GREETING_TOKENS for w in words):
+                return True
+            if len(cleaned) <= 4:
+                return True
+
+        return False
+
     async def _post_process_response(
         self,
         content: str,
         user_text: str,
         *,
-        skip_completion_check: bool = False,
+        msg: SurfaceMessage | None = None,
     ) -> str:
-        """Apply response-level safety post-processing."""
+        """ResponsePostProcessor pipeline: completion guard.
+
+        PII detokenization is handled at the provider boundary via
+        ``TokenizingProviderWrapper`` (31-10), not in this method.
+        """
         if not content:
             return content
 
-        # 31-9: Completion guard — check if user requirements were fully addressed
-        if not skip_completion_check:
+        if len(content) < _COMPLETION_GUARD_MIN_RESPONSE_LEN:
+            return content
+
+        # 31-9 §4-2: skip completion guard for greetings, follow-ups, confirmations
+        skip_completion = msg is not None and self._should_skip_completion_guard(msg)
+
+        if not skip_completion:
             try:
                 from .completion_guard import run_completion_check
                 augmented, follow_up, report = await run_completion_check(user_text, content)
@@ -2181,7 +2771,11 @@ class Concierge:
                     if follow_up:
                         content = f"{content.rstrip()}\n\n{follow_up}"
             except Exception:
-                logger.debug("Completion guard check failed", exc_info=True)
+                self._completion_guard_failures = getattr(self, "_completion_guard_failures", 0) + 1
+                if self._completion_guard_failures == 1:
+                    logger.warning("Completion guard check failed (first occurrence)", exc_info=True)
+                else:
+                    logger.debug("Completion guard check failed (occurrence %d)", self._completion_guard_failures)
 
         return content
 
@@ -3351,9 +3945,11 @@ def build_concierge(
     try:
         from dan.engine.correction_memory import CorrectionStore
         from dan.engine.adaptation_registry import AdaptationRegistry
+        from dan.engine.learning_tiers import LearningHealthCounters
 
         concierge._correction_store = CorrectionStore()
         concierge._adaptation_registry = AdaptationRegistry()
+        concierge._health_counters = LearningHealthCounters()
     except Exception:
         logger.debug("Learning stores unavailable during concierge build", exc_info=True)
     try:
