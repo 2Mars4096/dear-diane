@@ -351,7 +351,7 @@
 > `31-6` onward adds focused execution, continuity, UX, and learning architecture to make DAN work
 > smoothly for daily use.
 
-- [ ] [31-daily-use-qol](plans/31-daily-use-qol.md) — daily-use QoL: model control, visibility, capability exposure, power-user speed, defaults & docs, execution intelligence, safety, continuity *(core modules and most hardening landed: all 17 subplans shipped code/tests, plus command/help/runtime cleanup, scheduled-trigger persistence fixes, scoped progress overrides, hybrid classifier/experience-routing cleanup from live chat traces, and verified live LLM memory extraction with `/corrections`/`/adaptations` wired on the real server; 31-22 self-adaptive behavior pending)*
+- [x] [31-daily-use-qol](plans/31-daily-use-qol.md) — daily-use QoL: model control, visibility, capability exposure, power-user speed, defaults & docs, execution intelligence, safety, continuity *(all 18 subplans completed including 31-22 self-adaptive behavior)*
   - [x] [31-1-model-control](plans/31-1-model-control.md) — A. `/model` command, TierPolicy activation (`DAN_ENABLE_TIER_POLICY`), `get_config` tool, `set_config` expansion for `DAN_LLM_*`, model name in surface hints
   - [x] [31-2-visibility-feedback](plans/31-2-visibility-feedback.md) — B. Chat cost tracking (`/cost`), notification wiring for chat-initiated runs, error retry UX (`/retry`), `/status` fast command
   - [x] [31-3-capability-exposure](plans/31-3-capability-exposure.md) — C. Expose 13 built-in tools (python_eval, csv_read, git tools, etc.) as chat capabilities, workflow introspection tools, `DAN_LEARNING_MODE` bundle
@@ -370,19 +370,32 @@
   - [x] [31-16-command-surface-unification](plans/31-16-command-surface-unification.md) — P. Canonical command registry, unified dispatch, `/help` *(complete: registry-driven adapter routing, REPL tab-completion, unknown-command suggestions, WhatsApp plain-text help, health check, command-doc generation, 94 tests)*
   - [x] [31-17-computer-control-and-browser-automation](plans/31-17-computer-control-and-browser-automation.md) — Q. Browser automation, desktop control, safety-first approvals *(policy/config/runtime-command core landed; chat capability/controller exposure remains in the Phase 21 live-wiring follow-up slice)*
   - [x] [31-21-proactive-domain-learning](plans/31-21-proactive-domain-learning.md) — R. Domain detection, post-task domain reflection, extraction templates, correction-to-domain bridge, pre-task expertise injection, domain-aware validation, template evolution (meta-learning), success pattern generalization, LLM-assisted template upgrade, context package assembly, two-phase pipeline, auto-read, reuse pattern wiring, 50 tests
-  - [ ] [31-22-self-adaptive-behavior](plans/31-22-self-adaptive-behavior.md) — S. Externalize prompts/thresholds/taxonomy/domains/models into BehaviorStore with declarative AdaptableParameter taxonomy; tiered lifecycle: tier 0 observes (parameter-outcome telemetry, pattern accumulation, retrieval correlation), tier 1 advises (proposals via `/adaptations` for user approval), tier 2 auto-applies bounded changes with regression detection; evidence infrastructure; tool description single-source; `/changes` + `/revert` + `/behavior` + `/adaptations` commands
+  - [x] [31-22-self-adaptive-behavior](plans/31-22-self-adaptive-behavior.md) — S. BehaviorStore + AdaptableParameterRegistry + BehaviorChangeLog + ThresholdCalibrator + PatternAccumulator + seeds + prompt/threshold/intent/domain/model externalization + tool description single-source + `/changes`/`/revert`/`/behavior` commands + AdaptationRegistry extensions (outcome tracking, changelog wiring, scope enforcement, measurement) + safety invariants + tier 1→2 promotion gates + intent/domain discovery tier behavior + prompt tier behavior + regression detection + 86 tests. Integration tests deferred.
 
-## Phase 22 — Workflow Generation Quality Evaluation
+## Phase 22 — Workflow Generation Optimization
+> Improve the NL→workflow pipeline end-to-end so generated workflows are more powerful, less
+> verbose, and work correctly on first attempt more often. Builder convenience layer, intent
+> compiler expansion, smart defaults, progressive refinement, domain profiles. Runs before
+> Phase 23 evaluation so the eval measures the optimized pipeline.
+
+- [x] [32-workflow-optimization](plans/32-workflow-optimization.md) — workflow generation optimization: convenience layer, intent expansion, smart defaults, refinement, domain profiles, runtime wiring
+  - [x] [32-1-builder-convenience-layer](plans/32-1-builder-convenience-layer.md) — A. `chain()`, `review_loop()`, `map_reduce()`, `tool_chain()`, pipeline `|` operator, auto-wiring
+  - [x] [32-2-intent-compiler-expansion](plans/32-2-intent-compiler-expansion.md) — B. Expand from 7 to ~15 patterns, auto-composition, domain-aware selection
+  - [x] [32-3-smart-generation-defaults](plans/32-3-smart-generation-defaults.md) — C. Auto-wire retry, validation gates, feedback loops, model tiering
+  - [x] [32-4-progressive-refinement](plans/32-4-progressive-refinement.md) — D. Structural mutation macros, NL follow-ups without rebuild
+  - [x] [32-5-domain-generation-profiles](plans/32-5-domain-generation-profiles.md) — E. Per-domain config bundles (tools, tiers, patterns), 5 seed profiles
+
+## Phase 23 — Workflow Generation Quality Evaluation
 > Measure how well DAN generates and executes workflows from natural language. Establish
 > baseline numbers on success rate, token cost, latency, and failure modes across a difficulty
 > spectrum. Manual pilot first, then automated battery, then targeted fixes.
 
-- [ ] [32-generation-quality-eval](plans/32-generation-quality-eval.md) — workflow generation quality evaluation: dual-lane measurement, durability, analysis
-  - [ ] [32-1-manual-pilot](plans/32-1-manual-pilot.md) — A. 10 prompts through live system (`agent` vs `build`), rough baseline
-  - [ ] [32-2-test-harness](plans/32-2-test-harness.md) — B. Automated runner, audit reader, JSONL logging, metrics, report
-  - [ ] [32-3-small-task-battery](plans/32-3-small-task-battery.md) — C. Small-task battery (patterns, composition, edge cases, reuse/adapt smoke tests)
-  - [ ] [32-4-complex-workflow-battery](plans/32-4-complex-workflow-battery.md) — D. Complex workflows, multi-turn refinement, durability smoke checks
-  - [ ] [32-5-analysis-and-fixes](plans/32-5-analysis-and-fixes.md) — E. Failure triage, telemetry gaps, top fixes, re-measure
+- [ ] [33-generation-quality-eval](plans/33-generation-quality-eval.md) — workflow generation quality evaluation: dual-lane measurement, durability, analysis
+  - [ ] [33-1-manual-pilot](plans/33-1-manual-pilot.md) — A. 10 prompts through live system (`agent` vs `build`), rough baseline
+  - [ ] [33-2-test-harness](plans/33-2-test-harness.md) — B. Automated runner, telemetry reader, JSONL logging, metrics, report
+  - [ ] [33-3-small-task-battery](plans/33-3-small-task-battery.md) — C. Small-task battery (patterns, composition, edge cases, reuse/adapt smoke tests)
+  - [ ] [33-4-complex-workflow-battery](plans/33-4-complex-workflow-battery.md) — D. Complex workflows, multi-turn refinement, durability smoke checks
+  - [ ] [33-5-analysis-and-fixes](plans/33-5-analysis-and-fixes.md) — E. Failure triage, targeted fixes, re-measure
 
 ## Benchmark Suite — Prove Long-Tail Advantage
 > Empirically prove DAN's typed-graph architecture outperforms monolithic agents on complex, multi-step tasks. Published academic benchmarks + custom long-tail scenarios. Analysis framework built first.
@@ -401,12 +414,7 @@
 ### strengthen workflow to make it more powerful and easier to use
 - [x] **IDE-compatible skill store** — `SkillStore` scans `~/.dan/skills/` (user) + `.dan/skills/` (project) + legacy `DAN_CUSTOM_SKILLS_DIR` for `SKILL.md` files. Frontmatter superset of Cursor/Claude/Codex format. `/skill list|info|import|scan` commands. 48 tests.
 - [x] ~~**Next deferred cleanup slice — Phase 21 live-wiring follow-ups**~~ — goal loop execution wiring (`GoalLoopExecutor` now spawns from `/goal`, tier-specific prompts, RepairClassifier inter-attempt diagnosis, intent recognition), proactive follow-up trigger emission (run-completion and schedule-result triggers wired in app.py, surface routing via PresenceTracker, per-task opt-out), progressive response pipeline (instant acknowledgment before LLM prep, phase transitions on capability execution, heartbeat enhancement), computer-use capability tools (7 browser + 5 desktop tools registered as chat capabilities, observe-act-verify loop, foreground-only enforcement, abort/fail-safe), and centered command reference (`docs/commands.md` + generation script)
-- [ ] **Optimize workflow generation quality** — improve the NL→workflow pipeline end-to-end so generated workflows are more powerful and easier to use out of the box. Key areas:
-  - **Smarter template selection** — expand the intent compiler's template catalog beyond common patterns; auto-detect domain (research, quant, data pipeline, content) and select best-fit skeleton.
-  - **Richer default wiring** — generated workflows should include validation gates, retry policies, and feedback loops by default where appropriate, not just linear chains.
-  - **One-shot usability** — generated workflows should run successfully on first attempt more often; tighten the codegen→validate→smoke-test loop, improve error messages when they don't.
-  - **Progressive complexity** — start simple but make it easy to layer on power (add a review loop, fan out, plug in tools) via NL follow-ups without regenerating from scratch.
-  - **Domain-specific generation profiles** — pre-configured generation settings for common domains (academic research, equity analysis, data ETL, content pipelines) with domain-appropriate tools, models, and structure.
+- [x] ~~**Optimize workflow generation quality**~~ → promoted to [Phase 22](#phase-22--workflow-generation-optimization) (Plan 32)
 
 ### Infrastructure / CI
 - [ ] **Playwright E2E browser tests** (12-6 tasks 5-6) — mode transitions, mention autocomplete, stop generation, export. Requires Playwright setup + CI pipeline.

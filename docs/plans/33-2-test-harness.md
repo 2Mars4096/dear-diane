@@ -1,6 +1,6 @@
-# 32-2: Test Harness
+# 33-2: Test Harness
 
-**Parent:** [32-generation-quality-eval](32-generation-quality-eval.md)
+**Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
 **Status:** not-started
 **Goal:** Build the automated test runner that sends prompt batteries through the live concierge API, compares `agent` vs `build` lanes, collects metrics, and produces a summary report.
 
@@ -40,7 +40,9 @@ Pytest is for deterministic pass/fail assertions. This harness measures *quality
   - [ ] 3-4. Repair tracking: telemetry `chat_turn.retry_count` + stream events for intent-compiler vs codegen path signals
   - [ ] 3-5. Classification & guard data: telemetry `classification` (intent, confidence, duration) and `guard_check` (action, duration) events correlated via `parent_event_id`
   - [ ] 3-6. Graph quality: node_count, node_types, edge_count, has_loop, has_fan_out, sub_graph_depth
-  - [ ] 3-7. Failure classification: `misrouted`, `no_graph_created`, `validation_error`, `wrong_topology`, `execution_error`, `timeout`
+  - [ ] 3-7. Generation path: intent compiler vs codegen (from `chat_intent_extracted` / `chat_code_generated` stream events). After Phase 22's expanded catalog, track the ratio.
+  - [ ] 3-8. Domain detection: did `detect_domain()` (31-21) fire? Which domain profile was applied? (from telemetry metadata or stream events)
+  - [ ] 3-9. Failure classification: `misrouted`, `no_graph_created`, `validation_error`, `wrong_topology`, `execution_error`, `timeout`, `guard_short_circuit`
 
 - [ ] 4. Execution testing (optional, flag-gated)
   - [ ] 4-1. For execution-friendly validated graphs, start a run with `POST /api/runs` using `{graph_id, inputs}`
@@ -58,8 +60,9 @@ Pytest is for deterministic pass/fail assertions. This harness measures *quality
   - [ ] 6-2. Compute overall: total, passed, failed, pass_rate, total_build_tokens, total_run_tokens, total_time
   - [ ] 6-3. Top-N token consumers, top-N slowest, top-N most repair-heavy cases
   - [ ] 6-4. Failure mode summary: count per failure type, example prompt for each
-  - [ ] 6-5. Lane comparison: prompts that fail in `agent` but pass in `build` (routing issue) vs fail in both (generation issue)
-  - [ ] 6-6. Print to stdout (Rich table) + save as JSON
+  - [ ] 6-5. Lane comparison: prompts that fail in `agent` but pass in `build` (routing issue) vs fail in both (generation issue). Flag guard interventions (31-19) as a routing sub-category.
+  - [ ] 6-6. Generation path breakdown: % intent compiler vs % codegen per tier. After Phase 22 expansion, T1/T2 should be mostly intent compiler.
+  - [ ] 6-7. Print to stdout (Rich table) + save as JSON
 
 - [ ] 7. CLI interface
   - [ ] 7-1. `python -m tests.eval` — run all prompts, produce report
@@ -81,7 +84,7 @@ Pytest is for deterministic pass/fail assertions. This harness measures *quality
 | `tests/eval/metrics.py` | Create — metrics collection and JSONL logging |
 | `tests/eval/telemetry_reader.py` | Create — reads `~/.dan/telemetry.db` (31-20) for tokens, cost, duration, model, retry, classification, guard data |
 | `tests/eval/report.py` | Create — report generation |
-| `tests/eval/prompts.json` | Create — prompt fixtures (from 32-3 and 32-4) |
+| `tests/eval/prompts.json` | Create — prompt fixtures (from 33-3 and 33-4) |
 | `tests/eval/results/` | Create (gitignored) — output directory |
 
 ## Decisions
@@ -93,3 +96,5 @@ Pytest is for deterministic pass/fail assertions. This harness measures *quality
 - The harness depends on a running server (`dan-up`). It does NOT start/stop the server.
 - Token and cost data come from the unified telemetry store (31-20). Every `chat_turn` event records exact `prompt_tokens`, `completion_tokens`, `estimated_cost`, and `duration_ms`. Child events (`classification`, `guard_check`, `tool_call`) are linked via `parent_event_id`. Stream events remain useful for generation-path signals (intent vs codegen path), but are not needed for token/cost/latency metrics.
 - Each prompt uses a unique, pre-created empty workflow ID to prevent cross-contamination. The harness cleans up created graphs after the run (optional `--keep-graphs` flag).
+- **Test isolation:** Do not set project context in requests. Project-scoped memory (31-18) and domain learning (31-21) accumulate state that can bleed between prompts if the same project is reused. Unique workflow IDs per prompt are sufficient for isolation.
+- **Reproducibility:** Self-adaptive behavior (31-22) means prompts and thresholds may drift. If `DAN_BEHAVIOR_TIER >= 2`, log the active behavior snapshot (`BehaviorChangeLog` state) at the start of the run for reproducibility.

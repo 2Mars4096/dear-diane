@@ -1,6 +1,6 @@
-# 32-1: Manual Pilot
+# 33-1: Manual Pilot
 
-**Parent:** [32-generation-quality-eval](32-generation-quality-eval.md)
+**Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
 **Status:** not-started
 **Goal:** Send 5-10 workflow-building prompts through the live DAN system, observe what happens in both `agent` and `build` lanes, and establish a rough baseline before building automation.
 
@@ -57,11 +57,15 @@ Use a Python script that hits the live server API (`POST /api/chat/message`) wit
   - [ ] 2-2. Re-run ambiguous failures in `build` lane on fresh graphs
   - [ ] 2-3. Manual review of each result (was it right? what went wrong?)
   - [ ] 2-4. Note any crashes, hangs, missing telemetry, or unexpected routing
+  - [ ] 2-5. For each prompt, record which generation path was used: intent compiler (fast) vs codegen (slow). After Phase 22, T1/T2 prompts should mostly use intent compiler.
+  - [ ] 2-6. In `agent` lane, check telemetry for `guard_check` events — did the request guard pipeline (31-19) reclassify or short-circuit any prompts?
 - [ ] 3. Produce pilot summary
   - [ ] 3-1. Table: prompt | lane | success/fail | time | graph_created | node_count | notes
   - [ ] 3-2. Rough baseline: X/10 succeed in `agent`, Y/10 in `build`
-  - [ ] 3-3. List of failure modes observed
-  - [ ] 3-4. Decision: is the pipeline functional enough for automated testing, or does it need routing fixes first?
+  - [ ] 3-3. Generation path breakdown: how many used intent compiler vs codegen?
+  - [ ] 3-4. List of failure modes observed
+  - [ ] 3-5. Note whether domain detection (31-21) and guard pipeline (31-19) visibly affected any prompts
+  - [ ] 3-6. Decision: is the pipeline functional enough for automated testing, or does it need routing fixes first?
 
 ## Files
 
@@ -79,5 +83,7 @@ Use a Python script that hits the live server API (`POST /api/chat/message`) wit
 
 - The server must be running (`dan-up`) before the pilot. Current config: deepseek-v3.2, tier: on, learning: on.
 - Do **not** rely on `_scratch` for isolated measurements. `_scratch` is special-cased by the server; the pilot should pre-create fresh empty graphs for each case.
-- The pilot script is disposable — it's not the final harness. The harness (32-2) will be designed based on pilot findings.
+- The pilot script is disposable — it's not the final harness. The harness (33-2) will be designed based on pilot findings.
 - A prototype runner may exist during this phase, but the task is not complete until the script is verified against the live server.
+- **Test isolation:** Use unique workflow IDs (uuid-based) per prompt. Do not set a project context — project-scoped memory (31-18) could leak between prompts if the same project is reused.
+- **Pipeline context:** This pilot runs against the Phase 22 optimized pipeline (convenience layer, 15+ intent patterns, smart defaults, domain profiles). The prompts cover its claimed capability range.

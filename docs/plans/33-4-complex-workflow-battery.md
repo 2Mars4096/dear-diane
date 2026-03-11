@@ -1,12 +1,12 @@
-# 32-4: Complex Workflow Battery
+# 33-4: Complex Workflow Battery
 
-**Parent:** [32-generation-quality-eval](32-generation-quality-eval.md)
+**Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
 **Status:** not-started
 **Goal:** Test workflow generation on complex, multi-pattern, real-world-scale prompts, multi-turn progressive refinement sequences, and durability smoke checks. These stress the limits of generation and reveal composition, wiring, and workflow-stability failure modes.
 
 ## T4: Complex Workflows (4 prompts)
 
-These require nested sub-graphs, multi-department coordination, or deep pipelines (10+ nodes). They push the boundaries of what the builder codegen can produce in one shot.
+These require nested sub-graphs, multi-department coordination, or deep pipelines (10+ nodes). They push the boundaries of what the builder codegen can produce in one shot. Domain generation profiles (32-5) should activate for equity/research/data analysis prompts, injecting domain-appropriate tools and model tiers.
 
 | ID | Prompt | Key Features | Expected Nodes |
 |----|--------|-------------|---------------|
@@ -17,7 +17,7 @@ These require nested sub-graphs, multi-department coordination, or deep pipeline
 
 ## Multi-Turn Progressive Refinement (3 sequences)
 
-These test whether users can build workflows incrementally through conversation. Each sequence is 2-4 turns.
+These test whether users can build workflows incrementally through conversation. Each sequence is 2-4 turns. Progressive NL refinement (32-4) added structural mutation macros — turns like "add a review loop" and "make it fan out" should use targeted mutations rather than full rebuilds.
 
 ### Sequence M1: Start simple, add complexity
 
@@ -137,6 +137,8 @@ Take one valid generated workflow and apply 1-2 natural-language follow-ups that
 - [ ] 5. Attempt execution on execution-friendly valid graphs
 - [ ] 6. Run durability smoke checks
 - [ ] 7. Review results, annotate failure modes
+- [ ] 8. Check whether domain profiles (32-5) activated for domain-specific T4 prompts (equity, research, Kaggle)
+- [ ] 9. For multi-turn sequences, verify that progressive refinement (32-4) used structural mutations rather than full rebuilds
 
 ## Files
 
@@ -155,3 +157,5 @@ Take one valid generated workflow and apply 1-2 natural-language follow-ups that
 - Multi-turn testing requires maintaining conversation history across turns. The harness needs to pass both `history` and the latest `client_graph_revision` back to each subsequent API call.
 - Execution testing is informational, not pass/fail. A workflow that validates but fails to execute is still a generation success — it is a separate category of issue.
 - Durability matters most on a smaller execution-friendly subset. Do not block the entire phase on making every complex workflow fully runnable.
+- **Smart defaults (32-3):** T4 graphs should have auto-wired retry policies and validation gates. If they don't, that's a signal that smart defaults aren't activating at scale.
+- **Domain profiles (32-5):** t4-02 (paper), t4-03 (equity), t4-04 (data/ML) should each activate their respective domain profile. Check whether domain-specific tools and model tiers appear in the generated graph.

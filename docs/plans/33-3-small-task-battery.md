@@ -1,6 +1,6 @@
-# 32-3: Small Task Battery
+# 33-3: Small Task Battery
 
-**Parent:** [32-generation-quality-eval](32-generation-quality-eval.md)
+**Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
 **Status:** not-started
 **Goal:** Define and run 20+ small-to-medium workflow generation prompts that exercise each major pattern family, reuse/adaptation behavior, and composition quality, establishing the baseline success rate for everyday use cases.
 
@@ -8,7 +8,7 @@
 
 ### T1: Trivial — Single Pattern Expansions (8 prompts)
 
-These map directly to known patterns. If these fail, the generation path has fundamental issues.
+These map directly to known patterns and should exercise the builder convenience layer (`chain()`, `review_loop()`, `map_reduce()`) and expanded intent compiler (32-1, 32-2). If these fail, the generation path has fundamental issues.
 
 | ID | Prompt | Expected Pattern | Expected Nodes |
 |----|--------|-----------------|---------------|
@@ -23,7 +23,7 @@ These map directly to known patterns. If these fail, the generation path has fun
 
 ### T2: Simple — Standard Multi-Node Workflows (6 prompts)
 
-These require composing 2+ patterns or integrating tools. Should work on first attempt most of the time.
+These require composing 2+ patterns or integrating tools. Smart generation defaults (32-3) should auto-add retry policies and validation gates. Should work on first attempt most of the time.
 
 | ID | Prompt | Key Features | Expected Nodes |
 |----|--------|-------------|---------------|
@@ -46,7 +46,7 @@ These are small prompts that should tell us whether DAN can reuse or adapt previ
 
 ### T3: Medium — Multi-Pattern Composition (5 prompts)
 
-These combine multiple patterns, tools, and control flow. May need 1 retry.
+These combine multiple patterns, tools, and control flow. Domain generation profiles (32-5) should activate for prompts with domain cues (equity/research/data analysis). May need 1 retry.
 
 | ID | Prompt | Key Features | Expected Nodes |
 |----|--------|-------------|---------------|
@@ -58,7 +58,7 @@ These combine multiple patterns, tools, and control flow. May need 1 retry.
 
 ### T5: Edge Cases (4 prompts)
 
-These test boundary conditions: ambiguous intent, non-workflow requests, over-specified prompts.
+These test boundary conditions: ambiguous intent, non-workflow requests, over-specified prompts. The request guard pipeline (31-19) should help with correct routing here — classification coherence and understanding guards should prevent false-positive workflow builds.
 
 | ID | Prompt | Expected Behavior |
 |----|--------|------------------|
@@ -94,10 +94,13 @@ Reuse / adaptation prompts (T2R) have different criteria:
 ## Tasks
 
 - [ ] 1. Write all prompt fixtures into `tests/eval/prompts.json`
-- [ ] 2. Run the battery via the harness (32-2)
+- [ ] 2. Run the battery via the harness (33-2)
 - [ ] 3. Review results and annotate false positives/negatives
 - [ ] 4. Compute per-tier and per-lane pass rates
-- [ ] 5. Summarize reuse / adaptation behavior from the T2R prompts
+- [ ] 5. Record generation path per prompt: intent compiler vs codegen. T1 prompts should mostly use intent compiler after Phase 22 expansion.
+- [ ] 6. Check whether smart defaults (32-3) were applied: do generated T2/T3 graphs include retry policies and validation gates?
+- [ ] 7. Note which domain profiles (32-5) activated, if any (especially for t3-03 equity and t3-05 data analysis prompts)
+- [ ] 8. Summarize reuse / adaptation behavior from the T2R prompts
 
 ## Files
 
@@ -111,7 +114,7 @@ Reuse / adaptation prompts (T2R) have different criteria:
 
 ## Notes
 
-- T1 prompts should be near-100% pass rate in `build` lane. If they fail there, the generation path has a core problem.
+- T1 prompts should be near-100% pass rate in `build` lane. If they fail there, the generation path has a core problem. These should also use the intent compiler path (not codegen) after the Phase 22 expansion to 15+ patterns.
 - T2-T3 prompt expected node counts are approximate — the LLM may produce slightly different but valid topologies.
 - Edge cases (T5) are judged by routing correctness, not graph quality.
 - Reuse / adaptation prompts are judged by behavior and telemetry signals (e.g. memory_retrieval events from 31-20), not by forcing a specific graph shape.

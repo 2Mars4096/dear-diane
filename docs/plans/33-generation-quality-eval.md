@@ -1,13 +1,30 @@
-# 32: Workflow Generation Quality Evaluation
+# 33: Workflow Generation Quality Evaluation
 
 **Status:** not-started
 **Goal:** Measure how well DAN generates and executes workflows from natural language, across a difficulty spectrum from trivial to complex, producing hard numbers on success rate, token cost, latency, and failure modes.
 
 ## Motivation
 
-DAN has 21 phases of infrastructure: builder codegen, intent compiler, meta-orchestrator, concierge pipeline, bounded diagnosis, experience memory, 1300+ tests. But no one has systematically measured: **if a user says "build me X," does X come out the other end?**
+DAN has 22 phases of infrastructure: builder codegen, intent compiler, meta-orchestrator, concierge pipeline, bounded diagnosis, experience memory, request guard pipeline, unified telemetry, proactive domain learning, self-adaptive behavior, and a freshly completed generation optimization pass (Phase 22). But no one has systematically measured: **if a user says "build me X," does X come out the other end?**
 
 The quality suite plan (24-3) and real-world scenarios (28-6) were designed but never implemented as runnable artifacts. The pytest marker `quality_suite` is configured but no test files exist. This phase fills that gap with live evaluation against real LLMs.
+
+### Pipeline under test
+
+This evaluation runs against the **post-Phase 22 optimized pipeline**, which includes:
+
+| Capability | Source | What it changes for eval |
+|---|---|---|
+| Builder convenience layer | 32-1 | `chain()`, `review_loop()`, `map_reduce()`, `tool_chain()`, `\|` operator — T1/T2 prompts should use these; shorter codegen, fewer wiring errors |
+| Expanded intent compiler | 32-2 | 15+ patterns (up from 7), auto-composition — more prompts should take the fast deterministic path |
+| Smart generation defaults | 32-3 | Auto retry policies, validation gates, feedback loops — generated graphs should be more robust by default |
+| Progressive NL refinement | 32-4 | Structural mutation macros — multi-turn follow-ups should modify without full rebuild |
+| Domain generation profiles | 32-5 | Per-domain tools, tiers, patterns — domain-tagged prompts should get domain-appropriate structure |
+| Request guard pipeline | 31-19 | Classification/understanding/relevance guards — affects `agent` lane routing; may reclassify or short-circuit |
+| Project-scoped memory | 31-18 | Memories scoped to project — test isolation requires unique project contexts or fresh graphs |
+| Proactive domain learning | 31-21 | `detect_domain()`, domain templates — the system may inject domain expertise into generation |
+| Self-adaptive behavior | 31-22 | Externalized prompts, observable parameters — prompt versions and thresholds may shift between runs |
+| Unified telemetry | 31-20 | `TelemetryEvent` per LLM call — exact tokens, cost, duration, model for every interaction |
 
 ### What we want to learn
 
@@ -68,6 +85,7 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 - **Routing success**: in `agent` lane, did the system choose workflow generation when it should?
 - **Generation success**: did the produced graph pass `/api/graphs/{id}/validate`?
 - **Execution success**: for the execution-friendly subset, did the workflow run without error?
+- **Generation path**: did the system use the intent compiler (fast, deterministic) or builder codegen (slow, LLM-generated)? After Phase 22's expanded catalog, more prompts should take the intent path.
 - **Observed repair use**: did generation fall back from intent compiler to codegen, or trigger diagnosis/repair? (visible in stream events + telemetry `retry_count`)
 - **Build-time tokens**: from telemetry store `chat_turn` events (exact `prompt_tokens`, `completion_tokens`, `estimated_cost`, `duration_ms`)
 - **Run-time tokens**: from telemetry store `workflow_node` / `workflow_run` events, or `/api/runs/{run_id}/token-breakdown`
@@ -81,20 +99,20 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 
 | # | Sub-Plan | Scope | Effort | Dependencies |
 |---|----------|-------|--------|--------------|
-| [32-1](32-1-manual-pilot.md) | Manual Pilot | 5-10 prompts through live system in `agent` and `build` lanes, observe and log results, establish rough baseline | ~0.5 day | Server running |
-| [32-2](32-2-test-harness.md) | Test Harness | Automated runner: dual lanes, API client, telemetry reader (31-20), JSONL logging, metrics collection, report generator | ~1 day | 32-1 (informs design) |
-| [32-3](32-3-small-task-battery.md) | Small Task Battery | 20+ prompts across T1-T3 plus edge and reuse/adaptation checks, validation checks, graph quality assertions | ~0.5 day | 32-2 |
-| [32-4](32-4-complex-workflow-battery.md) | Complex Workflow Battery | T4 prompts, multi-turn sequences, execution attempts, and durability smoke checks | ~0.5 day | 32-2 |
-| [32-5](32-5-analysis-and-fixes.md) | Analysis & Fixes | Read baseline report, diagnose top failure modes and telemetry gaps, targeted fixes, re-measure | ~1 day | 32-3, 32-4 |
+| [33-1](33-1-manual-pilot.md) | Manual Pilot | 5-10 prompts through live system in `agent` and `build` lanes, observe and log results, establish rough baseline | ~0.5 day | Server running |
+| [33-2](33-2-test-harness.md) | Test Harness | Automated runner: dual lanes, API client, telemetry reader (31-20), JSONL logging, metrics collection, report generator | ~1 day | 33-1 (informs design) |
+| [33-3](33-3-small-task-battery.md) | Small Task Battery | 20+ prompts across T1-T3 plus edge and reuse/adaptation checks, validation checks, graph quality assertions | ~0.5 day | 33-2 |
+| [33-4](33-4-complex-workflow-battery.md) | Complex Workflow Battery | T4 prompts, multi-turn sequences, execution attempts, and durability smoke checks | ~0.5 day | 33-2 |
+| [33-5](33-5-analysis-and-fixes.md) | Analysis & Fixes | Read baseline report, diagnose top failure modes and telemetry gaps, targeted fixes, re-measure | ~1 day | 33-3, 33-4 |
 
 ## Dependencies / Sequencing
 
 ```
-32-1 (Manual Pilot) ← start here, informs everything else
-  └→ 32-2 (Test Harness) ← build automation based on pilot findings
-       ├→ 32-3 (Small Task Battery) ← can run as soon as harness exists
-       ├→ 32-4 (Complex Workflow Battery) ← can run in parallel with 32-3
-       └→ 32-5 (Analysis & Fixes) ← after first full run of 32-3 + 32-4
+33-1 (Manual Pilot) ← start here, informs everything else
+  └→ 33-2 (Test Harness) ← build automation based on pilot findings
+       ├→ 33-3 (Small Task Battery) ← can run as soon as harness exists
+       ├→ 33-4 (Complex Workflow Battery) ← can run in parallel with 33-3
+       └→ 33-5 (Analysis & Fixes) ← after first full run of 33-3 + 33-4
 ```
 
 ## Success Criteria
@@ -112,6 +130,9 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 
 ## Notes
 
+- **Sequencing:** This phase (Phase 23) runs after Phase 22 (32-workflow-optimization), which improves the generation pipeline with convenience layer, expanded intent compiler, smart defaults, progressive refinement, and domain profiles. The evaluation should measure the optimized pipeline, not the pre-optimization baseline.
 - The quality suite (24-3) and scenarios (28-6) were fully planned but never implemented. This phase subsumes and simplifies them: fewer fixtures, real LLM calls, focus on actionable metrics rather than CI infrastructure.
 - No model comparison in v1. Use whichever model the server is configured with (currently deepseek-v3.2). Model comparison is a follow-up.
 - Execution testing should not assume arbitrary tool mocking exists in the live server. Most prompts are generation-first; execution is limited to an execution-friendly subset until deterministic test-only tools exist.
+- **Test isolation:** Project-scoped memory (31-18) means memories from one test prompt can bleed into later prompts if the same project context is reused. The harness should use unique workflow IDs and avoid project context to keep tests independent. Self-adaptive behavior (31-22) means prompt versions and thresholds may drift between runs — log the active behavior snapshot for reproducibility.
+- **Guard pipeline (31-19):** In the `agent` lane, the request guard pipeline runs classification/understanding/relevance checks that may reclassify, short-circuit, or add advisory notes. This is desired behavior (it's what real users experience), but failures in the `agent` lane should check whether a guard intervened before blaming the generation path.

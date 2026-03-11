@@ -1424,6 +1424,112 @@ wf.edge(ref["results"], downstream["input"])
 
 ---
 
+## 11b. Builder Convenience Methods (Phase 32)
+
+High-level builder methods that reduce boilerplate for common workflow patterns. Each compiles down to the same graph primitives — they're syntactic sugar, not new node types.
+
+### `wf.chain(*steps) → NodeRef`
+
+Linear sequence of LLM nodes with auto-wiring. Each step is a `(name, prompt)` tuple or `(name, prompt, model)` triple.
+
+```python
+wf = workflow("my_chain")
+result = wf.chain(
+    ("research", "Research {topic}"),
+    ("analyze", "Analyze the research findings"),
+    ("summarize", "Write a concise summary"),
+)
+graph = wf.build()
+```
+
+Returns the last node's `NodeRef`. `{topic}` in the first step is auto-detected as a graph-level input variable.
+
+### `wf.review_loop(writer_prompt, reviewer_prompt, ...) → NodeRef`
+
+Writer-reviewer loop with gate in one call.
+
+```python
+wf = workflow("reviewed_draft")
+draft = wf.review_loop(
+    writer_prompt="Write a blog post about {topic}",
+    reviewer_prompt="Review this draft for clarity and completeness",
+    max_rounds=3,
+)
+graph = wf.build()
+```
+
+Internally creates: writer LLM → while_loop(reviewer LLM → gate). Optional `name`, `writer_model`, `reviewer_model` kwargs.
+
+### `wf.map_reduce(items_expr, map_prompt, reduce_prompt, ...) → NodeRef`
+
+Fan-out over items with parallel processing and aggregation.
+
+```python
+wf = workflow("parallel_analysis")
+result = wf.map_reduce(
+    items_expr="{documents}",
+    map_prompt="Summarize this document",
+    reduce_prompt="Synthesize all summaries into a unified report",
+)
+graph = wf.build()
+```
+
+Internally creates: for_each(map LLM) → reduce LLM. Optional `name`, `map_model`, `reduce_model` kwargs.
+
+### `wf.tool_chain(*steps) → NodeRef`
+
+Chain mixing LLM and tool nodes. Each step is `(name, tool_id_or_None, config_or_prompt)`. `tool_id=None` creates an LLM node.
+
+```python
+wf = workflow("tool_pipeline")
+result = wf.tool_chain(
+    ("search", "web_search", {"query": "{topic}"}),
+    ("analyze", None, "Analyze these search results"),
+    ("save", "file_write", {"path": "report.md"}),
+)
+graph = wf.build()
+```
+
+### Pipeline `|` Operator
+
+`|` is an alias for `>>` that reads more naturally for linear pipelines:
+
+```python
+search = wf.tool("search", tool_id="web_search")
+analyze = wf.llm("analyze", prompt="Analyze findings")
+report = wf.llm("report", prompt="Write report")
+search | analyze | report  # equivalent to search >> analyze >> report
+```
+
+### Structural Mutation Macros (Progressive Refinement)
+
+Six macros in `dan.meta.structural_mutations` for modifying existing graphs without full rebuild:
+
+| Macro | Purpose |
+|-------|---------|
+| `wrap_in_review_loop(graph, node_id, reviewer_prompt, max_rounds)` | Insert reviewer + gate after target node |
+| `fan_out_node(graph, node_id, items_expr)` | Wrap target node in for_each + reduce |
+| `insert_validator(graph, source_id, target_id, rules)` | Insert validator between two nodes |
+| `insert_tool(graph, anchor_id, tool_id, config, position)` | Insert tool node before/after anchor |
+| `parallelize(graph, node_ids)` | Wrap listed nodes in parallel_subagents |
+| `unwrap_loop(graph, loop_node_id)` | Remove loop structure, straighten pipeline |
+
+`resolve_node(graph, reference_text)` resolves natural-language node references (exact name, fuzzy match, prompt keyword, position).
+`summarize_graph(graph)` produces a compact text summary for codegen context injection.
+
+### Domain Generation Profiles
+
+Per-domain configuration bundles loaded from `src/dan/data/generation_profiles/`. Five seed profiles: `literature_review`, `paper_rendering`, `equity_research`, `data_analysis`, `code_generation`. Each specifies preferred tools, patterns, model tier hints, and prompt guidance. User overrides at `~/.dan/generation_profiles/` take precedence.
+
+```python
+from dan.meta.generation_defaults import get_domain_profile
+
+profile = get_domain_profile("equity_research")
+# DomainGenerationProfile with preferred_tools, preferred_patterns, model_tier_hints, etc.
+```
+
+---
+
 ## 12. Workflow Generation Playbook
 
 Use this when an LLM is asked to generate workflow markdown (`workflow.md`, agent `.md` files) or Python builder scripts.

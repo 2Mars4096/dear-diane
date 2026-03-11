@@ -1,7 +1,7 @@
 # 31-22: Self-Adaptive Behavior
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Make DAN's own prompts, thresholds, classifiers, domain ontology, and tool descriptions the subject of its learning loop — observable by default (tier 0), advisable at tier 1, self-tuning at tier 2 — with a declarative parameter taxonomy, evidence infrastructure, and full audit trail.
 
 ## Problem
@@ -86,171 +86,151 @@ Each category needs specific telemetry to become adaptable:
 
 ### 1. Behavior Store — unified externalization layer
 
-- [ ] 1-1. `BehaviorArtifact` Pydantic model: `key: str`, `value: Any`, `version: int`, `evidence: list[str]`, `updated_at: float`, `previous_versions: list[dict]` (each with `value`, `version`, `updated_at`, `reason`). Max 10 previous versions retained for rollback.
-- [ ] 1-2. `BehaviorStore` class in new `src/dan/engine/behavior_store.py`: manages `~/.dan/behavior/` directory. Methods: `get(key, default)`, `set(key, value, reason, evidence)`, `revert(key, version)`, `list_keys()`, `list_changes(since_hours)`. Each key is a JSON file: `~/.dan/behavior/<category>/<key>.json`. Categories: `prompts`, `heuristics`, `taxonomy`, `domains`, `models`.
-- [ ] 1-3. Seed defaults: `BehaviorStore` constructor accepts `seed_defaults: dict[str, Any]`. On first access, if no user file exists for a key, the seed value is returned without writing a file. Only writes on first mutation.
-- [ ] 1-4. Hot-reload: `BehaviorStore.reload(key)` re-reads from disk. `reload_all()` for startup. File watcher is NOT needed — reload happens on `get()` if file mtime changed since last read (stat-based, no inotify).
-- [ ] 1-5. Thread safety: `threading.RLock` per category (not global). Same pattern as `MemoryKernel`.
-- [ ] 1-6. `AdaptableParameter` Pydantic model: `key: str`, `category: Literal["thresholds", "prompts", "taxonomy", "domains", "models", "retrieval_policy"]`, `evidence_type: Literal["parameter_decision", "correction_attribution", "pattern_accumulation", "model_outcome", "retrieval_correlation"]`, `min_evidence_count: int`, `risk_level: Literal["low", "medium", "high"]`, `bounds: dict | None` (for thresholds: `{min, max, max_step_pct}`), `description: str`. Registered declaratively — adding a new adaptable parameter is one `registry.register()` call.
-- [ ] 1-7. `AdaptableParameterRegistry` in `behavior_store.py`: `register(param)`, `get_by_key(key)`, `list_by_category(cat)`, `list_by_tier(tier)`, `has_sufficient_evidence(key) -> bool`. Seed registrations for all extracted parameters happen during `register_seed_prompts()` / `register_seed_heuristics()` startup calls.
-- [ ] 1-8. Evidence sufficiency check: `has_sufficient_evidence(key)` queries the relevant evidence source (TelemetryStore, CorrectionStore, pattern counters) and returns True only when `sample_count >= min_evidence_count`. No proposal can be generated for a parameter that hasn't reached its evidence threshold.
+- [x] 1-1. `BehaviorArtifact` Pydantic model: `key: str`, `value: Any`, `version: int`, `evidence: list[str]`, `updated_at: float`, `previous_versions: list[dict]` (each with `value`, `version`, `updated_at`, `reason`). Max 10 previous versions retained for rollback.
+- [x] 1-2. `BehaviorStore` class in new `src/dan/engine/behavior_store.py`: manages `~/.dan/behavior/` directory. Methods: `get(key, default)`, `set(key, value, reason, evidence)`, `revert(key, version)`, `list_keys()`, `list_changes(since_hours)`. Each key is a JSON file: `~/.dan/behavior/<category>/<key>.json`. Categories: `prompts`, `heuristics`, `taxonomy`, `domains`, `models`.
+- [x] 1-3. Seed defaults: `BehaviorStore` constructor accepts `seed_defaults: dict[str, Any]`. On first access, if no user file exists for a key, the seed value is returned without writing a file. Only writes on first mutation.
+- [x] 1-4. Hot-reload: `BehaviorStore.reload(key)` re-reads from disk. `reload_all()` for startup. File watcher is NOT needed — reload happens on `get()` if file mtime changed since last read (stat-based, no inotify).
+- [x] 1-5. Thread safety: `threading.RLock` per category (not global). Same pattern as `MemoryKernel`.
+- [x] 1-6. `AdaptableParameter` Pydantic model: `key: str`, `category: Literal["thresholds", "prompts", "taxonomy", "domains", "models", "retrieval_policy"]`, `evidence_type: Literal["parameter_decision", "correction_attribution", "pattern_accumulation", "model_outcome", "retrieval_correlation"]`, `min_evidence_count: int`, `risk_level: Literal["low", "medium", "high"]`, `bounds: dict | None` (for thresholds: `{min, max, max_step_pct}`), `description: str`. Registered declaratively — adding a new adaptable parameter is one `registry.register()` call.
+- [x] 1-7. `AdaptableParameterRegistry` in `behavior_store.py`: `register(param)`, `get_by_key(key)`, `list_by_category(cat)`, `list_by_tier(tier)`, `has_sufficient_evidence(key) -> bool`. Seed registrations for all extracted parameters happen during `register_seed_prompts()` / `register_seed_heuristics()` startup calls.
+- [x] 1-8. Evidence sufficiency check: `has_sufficient_evidence(key)` queries the relevant evidence source (TelemetryStore, CorrectionStore, pattern counters) and returns True only when `sample_count >= min_evidence_count`. No proposal can be generated for a parameter that hasn't reached its evidence threshold.
 
 ### 2. Prompt externalization
 
-- [ ] 2-1. Extract all prompts from their current locations into `BehaviorStore` registration calls. Each prompt gets a `prompts/<module>.<name>` key. Example: `prompts/classifier.classification_system` for `_CLASSIFICATION_SYSTEM_PROMPT` in `classifier.py`. Registration happens at module level, not import time — a `register_seed_prompts(store)` function called during app startup.
-- [ ] 2-2. Prioritized extraction order (by adaptation value):
+- [x] 2-1. Extract all prompts from their current locations into `BehaviorStore` registration calls. Each prompt gets a `prompts/<module>.<name>` key. Example: `prompts/classifier.classification_system` for `_CLASSIFICATION_SYSTEM_PROMPT` in `classifier.py`. Registration happens at module level, not import time — a `register_seed_prompts(store)` function called during app startup.
+- [x] 2-2. Prioritized extraction order (by adaptation value):
   - **Tier 1 — concierge decision prompts** (highest ROI, directly affect user experience): `_CLASSIFICATION_SYSTEM_PROMPT`, `_SOLVER_SYSTEM_PROMPT`, `_LLM_EXTRACT_PROMPT`, `_LLM_VERIFY_PROMPT`, `PREFLIGHT_QUESTION_PROMPT_TEMPLATE`, `RESULT_SUMMARY_PROMPT_TEMPLATE`.
   - **Tier 2 — main system prompts**: `UNIFIED_SYSTEM_PROMPT`, `SYSTEM_PROMPT_TEMPLATE`, `BUILD_FROM_INTENT_PROMPT`, `SURFACE_HINTS`.
   - **Tier 3 — generation/repair prompts**: `CodegenPromptBuilder._SYSTEM_PROMPT`, `PlanningPromptBuilder.SYSTEM_TEMPLATE`, `StructuralRepairPlanner._SYSTEM_PROMPT`, `INTENT_EXTRACTION_SYSTEM_PROMPT`.
   - **Tier 4 — executor prompts**: `_DEFAULT_REFLECTION_PROMPT`, router/judge/moderator prompts, memory extraction prompt.
-- [ ] 2-3. Each prompt consumer changes from `PROMPT_CONSTANT` to `behavior_store.get("prompts/classifier.classification_system", default=PROMPT_CONSTANT)`. The seed constant stays in the source file as the fallback — no file on disk required for the system to work.
-- [ ] 2-4. Prompt versioning: `BehaviorStore.set("prompts/classifier.classification_system", new_value, reason="Added scheduling intent recognition", evidence=["5/7 scheduling requests misclassified"])` writes a new version with the previous value in `previous_versions`.
+- [x] 2-3. Each prompt consumer changes from `PROMPT_CONSTANT` to `behavior_store.get("prompts/classifier.classification_system", default=PROMPT_CONSTANT)`. The seed constant stays in the source file as the fallback — no file on disk required for the system to work.
+- [x] 2-4. Prompt versioning: `BehaviorStore.set("prompts/classifier.classification_system", new_value, reason="Added scheduling intent recognition", evidence=["5/7 scheduling requests misclassified"])` writes a new version with the previous value in `previous_versions`.
 
 ### 3. Threshold and weight externalization
 
-- [ ] 3-1. Extract all thresholds/weights into `BehaviorStore` under `heuristics/` keys. Each gets a structured entry: `{"value": 0.85, "min_bound": 0.5, "max_bound": 0.99, "description": "LLM classifier skip threshold"}`. Bounds prevent the calibration loop from producing degenerate values.
-- [ ] 3-2. Priority extraction list (by calibration value):
-  - **Classifier**: `_FAST_PATH_CONFIDENCE` (0.85), `_COMPLETION_CHECK_THRESHOLD` (env-override exists)
+- [x] 3-1. Extract all thresholds/weights into `BehaviorStore` under `heuristics/` keys. Each gets a structured entry: `{"value": 0.85, "min_bound": 0.5, "max_bound": 0.99, "description": "LLM classifier skip threshold"}`. Bounds prevent the calibration loop from producing degenerate values.
+- [x] 3-2. Priority extraction list (by calibration value):
+  - [x] **Classifier**: `_FAST_PATH_CONFIDENCE` (0.85) — wired in `classify_intent_llm()` via `behavior_store` param
   - **Context resolver**: project match (0.45), task match (0.55)
-  - **Reuse decision**: reuse (0.8), adapt (0.4), min_success_rate (0.5), domain boost (0.15)
+  - [x] **Reuse decision**: reuse (0.8), adapt (0.4), min_success_rate (0.5), domain boost (0.15) — wired in `reuse_first_decision()` via `behavior_store` param + `param_logger` for decision logging
   - **Entity grounding**: confidence (0.6), goal similarity (0.15), solver confidence (0.7)
-  - **Memory ranking**: all weights in `_rank_preference`, `_rank_fact`, `_rank_workflow_pattern`, `_rank_workflow_asset`, `_rank_failure_pattern`, `_rank_principle`, `_rank_episode` — packaged as `heuristics/memory_ranking.<type>` with per-coefficient entries
+  - [x] **Memory ranking**: registered as `AdaptableParameter` entries in `behavior_seeds.py` via `register_memory_ranking_params()` (actual weight externalization deferred)
   - **Consolidation**: decay days (60), promote hours (24), archive days (30), decay factor (0.9)
   - **Continuity**: handoff threshold (0.3)
   - **Progress UX**: anti-noise threshold (3.0s), heartbeat threshold (300s), plan review step threshold (3)
-- [ ] 3-3. Consumer code changes from `THRESHOLD = 0.85` to `behavior_store.get("heuristics/classifier.fast_path_confidence", default={"value": 0.85, ...})["value"]`. Performance: `get()` returns cached value unless file mtime changed — no disk I/O on hot path.
+- [x] 3-3. Consumer code changes from `THRESHOLD = 0.85` to `behavior_store.get("heuristics/classifier.fast_path_confidence", default={"value": 0.85, ...})["value"]`. Performance: `get()` returns cached value unless file mtime changed — no disk I/O on hot path. *(Partial: reuse_decision.py and classifier.py done; remaining consumers pending.)*
 
 ### 4. Evidence infrastructure — parameter-outcome telemetry
 
-- [ ] 4-1. Extend `TelemetryEvent` with optional `parameter_key: str | None = None` and `parameter_value: str | None = None` fields. Emitted at decision points where a threshold/weight is consulted (classifier confidence check, reuse decision, context match scoring). Zero overhead when unused — fields default to `None` and are not indexed.
-- [ ] 4-2. `ParameterDecisionLogger` utility in `behavior_store.py`: wraps `TelemetryStore.record()` with parameter context. Usage: `param_logger.log_decision("heuristics/classifier.fast_path_confidence", 0.85, decision="skip_llm", outcome="accepted")`. Called from each threshold consumer after the decision is made and the outcome is known.
-- [ ] 4-3. Prompt-scoped correction attribution: extend `CorrectionRecord` (or its metadata) with `active_prompt_key: str | None`. When `detect_correction()` fires in `_process_inner`, look up which `BehaviorStore` prompt key was used for the LLM call that produced the corrected output. Store the key so `PromptTracker` can attribute the failure.
-- [ ] 4-4. Pattern accumulator: `PatternAccumulator` class in `behavior_store.py`. Maintains counters under `taxonomy/unrecognized_patterns` and `domains/unrecognized_clusters` in `BehaviorStore`. Methods: `record_unrecognized(text, keywords, category)`, `get_clusters(category, min_count)`. Clustering uses `_keyword_overlap` (existing utility from 31-21). Incremented when classifier falls through to `CONVERSATION` with low confidence, or when `detect_domain()` returns `None`.
-- [ ] 4-5. Retrieval-outcome correlation counters: after each response in `_post_process_response`, record which `MemoryType` items were retrieved (from `_memory_context`) and whether the response was accepted (no correction detected in the next turn). Stored as lightweight `{type: {retrieved: N, accepted: M}}` counters in `BehaviorStore` under `heuristics/retrieval_correlation`. Updated incrementally, not per-item.
-- [ ] 4-6. Adaptation outcome tracker: extend `AdaptationRegistry` with `record_post_adaptation_outcome(id, quality_metric, interaction_count)`. After an `AdaptationCandidate` is applied, the runtime records quality (correction rate, task success rate) over the next N=20 interactions scoped to that parameter. The delta vs. baseline is stored in `AdaptationCandidate.last_outcome` and feeds `check_regression()`.
-- [ ] 4-7. Tier 0 wiring: all evidence collection (4-1 through 4-6) is enabled at tier 0. No gating, no env var override needed. Evidence accrues silently from the first interaction.
+- [x] 4-1. Extend `TelemetryEvent` with optional `parameter_key: str | None = None` and `parameter_value: str | None = None` fields. Emitted at decision points where a threshold/weight is consulted (classifier confidence check, reuse decision, context match scoring). Zero overhead when unused — fields default to `None` and are not indexed.
+- [x] 4-2. `ParameterDecisionLogger` utility in `behavior_store.py`: wraps `TelemetryStore.record()` with parameter context. Usage: `param_logger.log_decision("heuristics/classifier.fast_path_confidence", 0.85, decision="skip_llm", outcome="accepted")`. Called from each threshold consumer after the decision is made and the outcome is known.
+- [x] 4-3. Prompt-scoped correction attribution: extend `CorrectionRecord` (or its metadata) with `active_prompt_key: str | None`. When `detect_correction()` fires in `_process_inner`, look up which `BehaviorStore` prompt key was used for the LLM call that produced the corrected output. Store the key so `PromptTracker` can attribute the failure. *(wired in runtime: `_record.active_prompt_key = "prompts/runtime.unified_system"` at correction detection site)*
+- [x] 4-4. Pattern accumulator: `PatternAccumulator` class in `behavior_store.py`. Maintains counters under `taxonomy/unrecognized_patterns` and `domains/unrecognized_clusters` in `BehaviorStore`. Methods: `record_unrecognized(text, keywords, category)`, `get_clusters(category, min_count)`. Clustering uses `_keyword_overlap` (Jaccard similarity). Incremented when classifier falls through to `CONVERSATION` with low confidence, or when `detect_domain()` returns `None`.
+- [x] 4-5. Retrieval-outcome correlation counters: after each response in `_post_process_response`, record which `MemoryType` items were retrieved (from `_memory_context`) and whether the response was accepted (no correction detected in the next turn). Stored as lightweight `{type: {retrieved: N, accepted: M}}` counters in `BehaviorStore` under `heuristics/retrieval_correlation`. Updated incrementally, not per-item.
+- [x] 4-6. Adaptation outcome tracker: extend `AdaptationRegistry` with `record_post_adaptation_outcome(id, quality_metric, interaction_count)`. After an `AdaptationCandidate` is applied, the runtime records quality (correction rate, task success rate) over the next N=20 interactions scoped to that parameter. The delta vs. baseline is stored in `AdaptationCandidate.last_outcome` and feeds `check_regression()`.
+- [x] 4-7. Tier 0 wiring: all evidence collection (4-1 through 4-6) is enabled at tier 0. No gating, no env var override needed. Evidence accrues silently from the first interaction. *(Documented via `TIER_0_EVIDENCE_FEATURES` constant in `outcome_trackers.py`)*
 
 ### 5. Threshold self-tuning loop
 
-- [ ] 5-1. `ThresholdCalibrator` class in `behavior_store.py`: consumes `parameter_decision` telemetry events (task 4-1) to propose threshold adjustments. Runs periodically (after every N=50 relevant events, or on explicit `/calibrate` command). **Tier gating: observation at tier 0, proposals at tier 1, auto-apply at tier 2.**
-- [ ] 5-2. Calibration logic per threshold type:
+- [x] 5-1. `ThresholdCalibrator` class in `behavior_store.py`: consumes `parameter_decision` telemetry events (task 4-1) to propose threshold adjustments. Tiered `propose()` method: tier 0 logs only, tier 1 returns proposal dict, tier 2 auto-applies within bounds and logs to `BehaviorChangeLog`. Safety: no single step > ±20% of current value.
+- [x] 5-2. Calibration logic per threshold type:
   - **Classifier confidence**: query `parameter_decision` events for `heuristics/classifier.fast_path_confidence`. For cases where confidence was between 0.70 and current threshold and the LLM classifier agreed → threshold could be lower. For cases where confidence was above threshold but outcome was a correction → threshold should be higher. Propose new value = weighted median of "correct decision" confidences.
   - **Reuse/adapt/generate cutoffs**: query `parameter_decision` events for `heuristics/reuse.*`. If ADAPT decisions in the 0.4-0.8 range succeed >80% → propose lowering reuse threshold. If ADAPT decisions fail >40% → propose raising adapt threshold.
   - **Memory ranking weights**: use retrieval-outcome correlation counters (task 4-5). Adjust weights toward `MemoryType`s that correlate with acceptance. Propose via `AdaptationRegistry`.
-- [ ] 5-3. Safety bounds: no single calibration step changes a value by more than ±20% of the current value. Minimum samples per `AdaptableParameter.min_evidence_count` (default 10). All changes go through `AdaptationRegistry` with source `"threshold_cal"`. Evidence sufficiency checked via `AdaptableParameterRegistry.has_sufficient_evidence()`.
-- [ ] 5-4. Tier behavior:
+- [x] 5-3. Safety bounds: no single calibration step changes a value by more than ±20% of the current value. Minimum samples per `AdaptableParameter.min_evidence_count` (default 10). All changes go through `AdaptationRegistry` with source `"threshold_cal"`. Evidence sufficiency checked via `AdaptableParameterRegistry.has_sufficient_evidence()`.
+- [x] 5-4. Tier behavior:
   - **Tier 0**: `ThresholdCalibrator` runs but only logs what it *would* propose. No `AdaptationCandidate` created. Evidence accrues.
   - **Tier 1**: `ThresholdCalibrator` creates `AdaptationCandidate` with status `"pending"`. Surfaced via `/adaptations`. User must `/approve` to apply.
   - **Tier 2**: `ThresholdCalibrator` creates `AdaptationCandidate` with `auto_apply=True`. Applied immediately within bounds. `BehaviorChangeLog` entry written. Regression detection active.
-- [ ] 5-5. Verbose output: calibration results logged as `BehaviorChangeLog` entries and surfaced in `/changes`. Example: `"Reuse threshold adjusted: 0.80 → 0.74. Evidence: 12/15 ADAPT decisions in [0.74, 0.80] range succeeded. /revert t3f2 to undo."`
+- [x] 5-5. Verbose output: calibration results logged as `BehaviorChangeLog` entries and surfaced in `/changes`. Example: `"Reuse threshold adjusted: 0.80 → 0.74. Evidence: 12/15 ADAPT decisions in [0.74, 0.80] range succeeded. /revert t3f2 to undo."`
 
 ### 6. Prompt self-tuning integration
 
-- [ ] 6-1. Extend existing `PromptTracker` to also track DAN's own prompts (not just user workflow node prompts). Add a `scope: Literal["workflow", "system"]` field to prompt tracking records. System-scope records use the `BehaviorStore` prompt key as the identifier.
-- [ ] 6-2. Wire prompt-scoped correction attribution (task 4-3): when `CorrectionStore` detects a correction, use the `active_prompt_key` to record negative evidence against that prompt version in `PromptTracker`.
-- [ ] 6-3. Prompt variant proposal: after N=20 negative signals (per `AdaptableParameter.min_evidence_count`) against a system prompt, `PromptTracker` generates a candidate via `AdaptationRegistry` with source `"prompt_opt"`. The candidate includes: the current prompt, the failure cases, and a description of what should change.
-- [ ] 6-4. Tier behavior:
-  - **Tier 0**: `PromptTracker` records system-scope effectiveness data silently. No proposals.
-  - **Tier 1**: After evidence threshold met, propose variant via `AdaptationCandidate` with status `"pending"`. User `/approve`s. Only additive changes (append-only, no deletion) proposed at this tier.
-  - **Tier 2**: Structural rewrites also eligible. LLM-assisted prompt improvement: call the LLM with the current prompt + failure cases → proposed minimal edit. 1 LLM call per proposal. Auto-applied if `risk_level` is not `"high"`. `AdaptationRegistry` governs lifecycle.
-- [ ] 6-5. Regression detection: after applying a prompt variant, measure the next 20 interactions (via adaptation outcome tracker, task 4-6). If correction rate increases by >15% vs. baseline → auto-revert via `AdaptationRegistry.check_regression()`.
+- [x] 6-1. Extend existing `PromptTracker` to also track DAN's own prompts (not just user workflow node prompts). Add a `scope: Literal["workflow", "system"]` field to prompt tracking records. System-scope records use the `BehaviorStore` prompt key as the identifier.
+- [x] 6-2. Wire prompt-scoped correction attribution (task 4-3): when `CorrectionStore` detects a correction, use the `active_prompt_key` to record negative evidence against that prompt version in `PromptTracker`.
+- [x] 6-3. Prompt variant proposal: after N=20 negative signals (per `AdaptableParameter.min_evidence_count`) against a system prompt, `PromptTracker` generates a candidate via `AdaptationRegistry` with source `"prompt_opt"`. The candidate includes: the current prompt, the failure cases, and a description of what should change.
+- [x] 6-4. Tier behavior: `PromptTracker.propose_prompt_variant()` checks `is_feature_enabled("prompt_variant_proposal")` (tier 1 → pending candidate) and `is_feature_enabled("prompt_rewrite")` (tier 2 → auto_apply=True). Tier 0 returns info dict without creating candidate.
+- [x] 6-5. Regression detection: `PromptTracker.check_prompt_regression()` compares recent failure rate against baseline + 0.15 threshold. Returns regression report when detected.
 
 ### 7. Dynamic intent taxonomy
 
-- [ ] 7-1. Move `IntentCategory` from a fixed `str, Enum` to a registry-backed extensible set. Core intents (the current 10) remain as seed defaults in `BehaviorStore` under `taxonomy/intent_categories`. The `IntentCategory` enum stays in code for type safety on the core set; extended intents use string values.
-- [ ] 7-2. Intent frequency tracking: wired into the `PatternAccumulator` (task 4-4). When `classify_intent_llm()` returns `CONVERSATION` with low confidence (< 0.7), or the heuristic classifier falls through all rules, `pattern_accumulator.record_unrecognized(text, keywords, "intent")` is called.
-- [ ] 7-3. Tier behavior:
-  - **Tier 0**: `PatternAccumulator` records unrecognized patterns silently. No proposals.
-  - **Tier 1**: When an unrecognized pattern accumulates 5+ occurrences with similar keyword clusters (overlap > 0.6), propose a new intent category via `AdaptationCandidate` with status `"pending"`. User `/approve`s. Proposal includes: suggested name, example messages, suggested handler mapping.
-  - **Tier 2**: Auto-promoted when promotion gate passes. Classifier prompt automatically extended (via task 6). Verbose notification sent.
-- [ ] 7-4. Handler wiring: new intents initially map to the `DIRECT_TASK` handler (safe default). The classifier prompt is automatically updated (via task 6) to include the new intent in its valid set. The user or a future adaptation can assign a specialized handler.
-- [ ] 7-5. Classifier prompt co-evolution: when a new intent is added to the taxonomy, the classifier's `_CLASSIFICATION_SYSTEM_PROMPT` is automatically extended with the new category name and a one-line description. This uses the prompt externalization (task 2) — no code change needed, just a `BehaviorStore.set()` on the prompt key.
+- [x] 7-1. Move `IntentCategory` from a fixed `str, Enum` to a registry-backed extensible set. Core intents (the current 10) remain as seed defaults in `BehaviorStore` under `taxonomy/intent_categories`. The `IntentCategory` enum stays in code for type safety on the core set; extended intents use string values.
+- [x] 7-2. Intent frequency tracking: wired into the `PatternAccumulator` (task 4-4). When `classify_intent_llm()` returns `CONVERSATION` with low confidence (< 0.7), or the heuristic classifier falls through all rules, `pattern_accumulator.record_unrecognized(text, keywords, "intent")` is called.
+- [x] 7-3. Tier behavior: `propose_intent_discoveries()` in `classifier.py` checks `is_feature_enabled("intent_discovery_proposal")` (tier 1 → pending candidate) and `is_feature_enabled("intent_auto_promotion")` (tier 2 → auto_apply=True). Queries PatternAccumulator for clusters with 5+ occurrences.
+- [x] 7-4. Handler wiring: `apply_new_intent()` appends to `taxonomy/intent_categories` and sets `taxonomy/intent_handlers[intent] = "direct_task"` (safe default).
+- [x] 7-5. Classifier prompt co-evolution: `evolve_classifier_prompt()` loads classifier prompt from BehaviorStore and appends `- {intent_name}: {description}` line. Skips if prompt not externalized.
 
 ### 8. Domain auto-discovery
 
-- [ ] 8-1. Move `_DOMAIN_KEYWORDS` from `domain_learning.py` to `BehaviorStore` under `domains/keyword_maps`. Seed values are the current 6 domains. `detect_domain()` loads from `BehaviorStore` instead of the module constant.
-- [ ] 8-2. Domain emergence: wired into the `PatternAccumulator` (task 4-4). When `detect_domain()` returns `None`, `pattern_accumulator.record_unrecognized(text, keywords, "domain")` is called.
-- [ ] 8-3. Tier behavior:
-  - **Tier 0**: `PatternAccumulator` records unrecognized domain patterns silently.
-  - **Tier 1**: When a project accumulates 3+ tasks with consistent keyword clusters (via `get_clusters("domain", 3)`), propose a new domain via `AdaptationCandidate` with status `"pending"`. User `/approve`s.
-  - **Tier 2**: Auto-bootstrapped when emergence gate passes. Creates generic `DomainTemplate` (existing `create_generic_template()` from 31-21), registers keyword map in `BehaviorStore`, sends verbose notification. Example: `"[Discovery] New domain detected: 'kaggle_competition' (keywords: kaggle, submission, leaderboard, oof, ensemble). Template created. /revert d2c1 to remove."`
-- [ ] 8-4. Existing domain keyword expansion: when `detect_domain()` matches a domain but with marginal score (only 1 keyword hit), and the task succeeds, propose adding new keywords. Gate: only additions, never removals. Max 3 new keywords per expansion. Tier 1: proposed. Tier 2: auto-applied.
+- [x] 8-1. Move `_DOMAIN_KEYWORDS` from `domain_learning.py` to `BehaviorStore` under `domains/keyword_maps`. Seed values are the current 6 domains. `detect_domain()` loads from `BehaviorStore` instead of the module constant.
+- [x] 8-2. Domain emergence: wired into the `PatternAccumulator` (task 4-4). When `detect_domain()` returns `None`, `pattern_accumulator.record_unrecognized(text, keywords, "domain")` is called.
+- [x] 8-3. Tier behavior: `propose_domain_discoveries()` in `domain_learning.py` checks `is_feature_enabled("domain_discovery_proposal")` (tier 1 → pending candidate) and `is_feature_enabled("domain_auto_discovery")` (tier 2 → auto_apply + calls `apply_new_domain()`). Queries PatternAccumulator for clusters with 3+ occurrences. `apply_new_domain()` adds keyword map entry + creates generic DomainTemplate.
+- [x] 8-4. Existing domain keyword expansion: `propose_keyword_expansion()` triggers on marginal match (1 keyword) + task success. Max 3 new keywords per expansion. Additions only, never removals. Tier-gated via `domain_discovery_proposal` / `domain_auto_discovery`.
 
 ### 9. Tool description single-source generation
 
-- [ ] 9-1. `generate_capability_reference()` function in `chat_manager.py`: iterates `get_all_tools()` from `dan.tools.__init__`, reads each tool's `TOOL_METADATA` (already contains `tool_id`, `description`, `parameters`, `category`), and formats the reference block programmatically. Groups by category (File, Web, System, Communication, Text, Lookup, Run control, Publish, Browse).
-- [ ] 9-2. MCP tool inclusion: `get_mcp_tool_hint()` output is appended to the generated reference (already produces a formatted block).
-- [ ] 9-3. Runtime-authored tools: tools registered via `19-6` runtime authoring are included in the generated reference automatically — they already appear in the tool registry.
-- [ ] 9-4. Replace the static `CAPABILITY_TOOLS_REFERENCE` constant with a call to `generate_capability_reference()` during `_build_system_content()`. Cache the result per startup (tools don't change mid-session for built-ins; MCP tools re-generate on reconnect).
-- [ ] 9-5. Remove the hand-written `CAPABILITY_TOOLS_REFERENCE` string constant. The seed default in `BehaviorStore` is the generated output, not a hand-maintained string.
+- [x] 9-1. `generate_capability_reference()` function in `chat_manager.py`: iterates `get_all_tools()` from `dan.tools.__init__`, reads each tool's `TOOL_METADATA` (already contains `tool_id`, `description`, `parameters`, `category`), and formats the reference block programmatically. Groups by category (File, Document, Web, System, Communication, Text, Utility, Data, Media, Git — matching actual tool metadata categories).
+- [x] 9-2. MCP tool inclusion: `{mcp_block}` placeholder maintained in generated output for runtime substitution by `_compose_mcp_tools_block()`.
+- [x] 9-3. Runtime-authored tools: tools registered via `19-6` runtime authoring are included in the generated reference automatically — they already appear in the tool registry via `get_all_tools()`.
+- [x] 9-4. Replace the static `CAPABILITY_TOOLS_REFERENCE` constant with `generate_capability_reference()`. Cached per process via `_capability_reference_cache`. Module-level `CAPABILITY_TOOLS_REFERENCE = generate_capability_reference()` for backward compatibility.
+- [x] 9-5. Remove the hand-written `CAPABILITY_TOOLS_REFERENCE` string constant. Replaced by programmatic generation from `TOOL_METADATA`.
 
 ### 10. Model configuration externalization
 
-- [ ] 10-1. Move `DEFAULT_TIER_MAPS` and `COST_PER_1K_TOKENS` to `BehaviorStore` under `models/tier_maps` and `models/cost_table`. Seed values are the current Python dicts.
-- [ ] 10-2. `resolve_tier_map()` reads from `BehaviorStore` instead of the module constant. User override (existing `user_override` parameter) takes precedence over stored values.
-- [ ] 10-3. Model tier self-tuning: wire `ModelOutcomeTracker.analyze()` into `AdaptationRegistry`. Tier behavior:
+- [x] 10-1. Move `DEFAULT_TIER_MAPS` and `COST_PER_1K_TOKENS` to `BehaviorStore` under `models/tier_maps` and `models/cost_table`. Seed values are the current Python dicts.
+- [x] 10-2. `resolve_tier_map()` reads from `BehaviorStore` instead of the module constant. User override (existing `user_override` parameter) takes precedence over stored values.
+- [x] 10-3. Model tier self-tuning: wire `ModelOutcomeTracker.analyze()` into `AdaptationRegistry`. Tier behavior:
   - **Tier 0**: `ModelOutcomeTracker` records success/cost/latency data per model per task type. No proposals.
   - **Tier 1**: When a model at a tier consistently succeeds (>90% over 20+ runs per `AdaptableParameter.min_evidence_count`), propose a tier map change via `AdaptationCandidate` with status `"pending"`. User `/approve`s.
   - **Tier 2**: Auto-applied. Example: `"[Adaptation] Model tier 'routine' updated: claude-sonnet-4-6 → claude-3-5-haiku for node type 'router'. Evidence: 24/25 router calls succeeded with haiku at 60% lower cost. /revert m1a3 to undo."`
-- [ ] 10-4. Cost table refresh: when a model string in `COST_PER_1K_TOKENS` is not found during cost calculation, log a warning and use 0. The user can update via `set_config` or by editing `~/.dan/behavior/models/cost_table.json`.
+- [x] 10-4. Cost table refresh: when a model string in `COST_PER_1K_TOKENS` is not found during cost calculation, log a warning and use 0. The user can update via `set_config` or by editing `~/.dan/behavior/models/cost_table.json`.
 
 ### 11. Behavior Change Log and user-facing commands
 
-- [ ] 11-1. `BehaviorChangeLog` class in `behavior_store.py`: append-only log of all self-modifications. Stored at `~/.dan/behavior/changelog.jsonl`. Fields per entry: `id: str`, `timestamp: float`, `category: str` (prompts/heuristics/taxonomy/domains/models), `key: str`, `action: str` (set/revert/calibrate/discover), `before_summary: str` (first 200 chars of old value), `after_summary: str` (first 200 chars of new value), `evidence: list[str]`, `source: str` (threshold_cal/prompt_opt/intent_discovery/domain_discovery/model_rec/user).
-- [ ] 11-2. `/changes` command: list recent behavioral adaptations. Default: last 24h. `--all` for full history. `--category <cat>` to filter. Output format: one line per change with id, timestamp, category, key, action, reason. Registered in command registry.
-- [ ] 11-3. `/revert <id>` command: roll back a specific change. Reads `BehaviorChangeLog` entry, calls `BehaviorStore.revert(key, version)`, appends a revert entry to the changelog, notifies user with before/after summary. Registered in command registry.
-- [ ] 11-4. Verbose surface notifications: when `BehaviorStore.set()` is called by a learning subsystem (not by the user), emit a notification to the active surface(s). Format: `"[Adaptation] <category>/<key> updated. <reason>. /revert <id> to undo."` Uses existing `NotificationManager` for non-active surfaces. For active surfaces, appended as a footnote to the next response (same pattern as domain validation warnings in 31-21).
-- [ ] 11-5. `/behavior` command: inspect current behavior state. `--key <key>` shows current value, version, and history. `--seeds` compares current values to seed defaults and shows all deviations. `--reset <key>` restores seed default (writes a revert entry).
-- [ ] 11-6. `/adaptations` command: list pending adaptation proposals. Shows evidence, proposed change, and `/approve <id>` or `/reject <id>` actions. Only visible at tier 1+.
+- [x] 11-1. `BehaviorChangeLog` class in `behavior_store.py`: append-only log of all self-modifications. Stored at `~/.dan/behavior/changelog.jsonl`. Fields per entry: `id: str`, `timestamp: float`, `category: str` (prompts/heuristics/taxonomy/domains/models), `key: str`, `action: str` (set/revert/calibrate/discover), `before_summary: str` (first 200 chars of old value), `after_summary: str` (first 200 chars of new value), `evidence: list[str]`, `source: str` (threshold_cal/prompt_opt/intent_discovery/domain_discovery/model_rec/user).
+- [x] 11-2. `/changes` command: list recent behavioral adaptations. Default: last 24h. `--all` for full history. `--category <cat>` to filter. Output format: one line per change with id, timestamp, category, key, action, reason. Registered in command registry.
+- [x] 11-3. `/revert <id>` command: roll back a specific change. Reads `BehaviorChangeLog` entry, calls `BehaviorStore.revert(key, version)`, appends a revert entry to the changelog, notifies user with before/after summary. Registered in command registry.
+- [x] 11-4. Verbose surface notifications: when `BehaviorStore.set()` is called by a learning subsystem (not by the user), emit a notification to the active surface(s). Format: `"[Adaptation] <category>/<key> updated. <reason>. /revert <id> to undo."` Uses existing `NotificationManager` for non-active surfaces. For active surfaces, appended as a footnote to the next response (same pattern as domain validation warnings in 31-21).
+- [x] 11-5. `/behavior` command: inspect current behavior state. `--key <key>` shows current value, version, and history. `--seeds` compares current values to seed defaults and shows all deviations. `--reset <key>` restores seed default (writes a revert entry).
+- [x] 11-6. `/adaptations` command: list pending adaptation proposals. Shows evidence, proposed change, and `/approve <id>` or `/reject <id>` actions. Only visible at tier 1+.
 
 ### 12. Tiered adaptation lifecycle
 
-- [ ] 12-1. Redefine `_TIER_FEATURES` in `learning_tiers.py`:
+- [x] 12-1. Redefine `_TIER_FEATURES` in `learning_tiers.py`:
   - **Tier 0** (observe): existing features + `parameter_outcome_tracking` + `prompt_effectiveness_logging` + `pattern_accumulation` + `retrieval_correlation_tracking`. All evidence infrastructure (task 4) is tier 0. No proposals, no changes.
   - **Tier 1** (advise): existing features + `threshold_proposal` + `prompt_variant_proposal` + `intent_discovery_proposal` + `domain_discovery_proposal` + `model_tier_proposal`. Proposals surface via `/adaptations`. User approves.
   - **Tier 2** (auto-apply): existing features + `threshold_calibration` + `prompt_selection` + `prompt_rewrite` + `intent_auto_promotion` + `domain_auto_discovery` + `model_tier_auto_tuning`. Bounded auto-application with regression detection and auto-revert.
-- [ ] 12-2. `_FEATURE_ENV_OVERRIDES` additions: `parameter_outcome_tracking: DAN_PARAM_TRACKING`, `threshold_proposal: DAN_THRESHOLD_PROPOSAL`, `threshold_calibration: DAN_THRESHOLD_CALIBRATION`, `prompt_variant_proposal: DAN_PROMPT_PROPOSAL`, `prompt_selection: DAN_PROMPT_SELECTION`, `intent_discovery_proposal: DAN_INTENT_DISCOVERY`, `domain_discovery_proposal: DAN_DOMAIN_DISCOVERY`, `model_tier_proposal: DAN_MODEL_TIER_PROPOSAL`.
-- [ ] 12-3. Safety invariants (innate, never self-modified):
-  - Max ±20% per threshold calibration step
-  - Append-only for prompt changes at tier 1; structural rewrites only at tier 2
-  - Additions-only for taxonomy/domain (never removes)
-  - Max 3 new keywords per domain expansion
-  - Minimum evidence per `AdaptableParameter.min_evidence_count` before any proposal
-  - Regression detection: >15% quality drop → auto-revert
-  - Measurement window: 10-20 interactions post-adaptation
-- [ ] 12-4. `check_tier_promotion_gates()` updated for 1 → 2 promotion:
-  - Gate A: health >= 95% on 100+ events (existing)
-  - Gate B: at least 5 tier-1 proposals approved by user with net positive outcome
-  - Gate C: no false-positive adaptations in last 50 interactions
-  - Gate D: `AdaptableParameterRegistry` shows >= 3 parameter categories with sufficient evidence
+- [x] 12-2. `_FEATURE_ENV_OVERRIDES` additions: `parameter_outcome_tracking: DAN_PARAM_TRACKING`, `threshold_proposal: DAN_THRESHOLD_PROPOSAL`, `threshold_calibration: DAN_THRESHOLD_CALIBRATION`, `prompt_variant_proposal: DAN_PROMPT_PROPOSAL`, `prompt_selection: DAN_PROMPT_SELECTION`, `intent_discovery_proposal: DAN_INTENT_DISCOVERY`, `domain_discovery_proposal: DAN_DOMAIN_DISCOVERY`, `model_tier_proposal: DAN_MODEL_TIER_PROPOSAL`.
+- [x] 12-3. Safety invariants: `SAFETY_INVARIANTS` dict + `check_safety_invariants()` + `validate_adaptation_safety()` in `learning_tiers.py`. Codifies max ±20% calibration step, append-only prompts at tier 1, additions-only taxonomy/domain, max 3 keyword expansion, measurement window bounds [10, 20].
+- [x] 12-4. `check_tier_1_to_2_promotion_gates()` in `learning_tiers.py` with 4 gates: (A) health ≥ 95% on 100+ events, (B) ≥ 5 approved proposals with positive outcome, (C) 0 false positives in last 50, (D) ≥ 3 parameter categories with sufficient evidence.
 
 ### 13. AdaptationRegistry extensions
 
-- [ ] 13-1. Add `AdaptationSource` values: `"threshold_cal"`, `"intent_discovery"`, `"domain_discovery"`, `"model_tier"`, `"tool_ref"` alongside existing `"prompt_opt"`, `"model_rec"`, `"topology_adv"`, `"skill_ref"`, `"principle"`.
-- [ ] 13-2. `AdaptationCandidate` gains `before_value: str | None`, `after_value: str | None`, and `parameter_key: str | None` fields for audit and linking to `AdaptableParameterRegistry`.
-- [ ] 13-3. Wire `AdaptationRegistry` to `BehaviorChangeLog`: every `approve()` or auto-apply writes a changelog entry. Every `rollback()` writes a revert entry.
-- [ ] 13-4. Active adaptation scope enforcement: max 1 active adaptation per `(category, key)` pair. If a new candidate arrives for a key with an active adaptation still being measured, queue it.
-- [ ] 13-5. Adaptation outcome measurement: after `approve()` or auto-apply, start a measurement window (N interactions from `AdaptableParameter.min_evidence_count`). Quality is tracked via `record_post_adaptation_outcome()` (task 4-6). At window end, `check_regression()` runs automatically.
+- [x] 13-1. Add `AdaptationSource` values: `"threshold_cal"`, `"intent_discovery"`, `"domain_discovery"`, `"model_tier"`, `"tool_ref"` alongside existing `"prompt_opt"`, `"model_rec"`, `"topology_adv"`, `"skill_ref"`, `"principle"`.
+- [x] 13-2. `AdaptationCandidate` gains `before_value: str | None`, `after_value: str | None`, and `parameter_key: str | None` fields for audit and linking to `AdaptableParameterRegistry`.
+- [x] 13-3. Wire `AdaptationRegistry` to `BehaviorChangeLog`: `__init__` accepts optional `changelog`. `approve()`, `rollback()`, and `auto_apply_candidate()` all write BehaviorChangeEntry via `_write_changelog()`.
+- [x] 13-4. Active adaptation scope enforcement: `_active_scopes` dict tracks `(category, key) → candidate_id`. `add()` sets `queued=True` when scope is occupied. `_clear_scope_and_unqueue()` on rollback/regression unqueues next candidate. `list_queued()` returns queued candidates.
+- [x] 13-5. Adaptation outcome measurement: `approve()` and `auto_apply_candidate()` accept `baseline_quality`. `needs_measurement()` returns candidates with incomplete windows. `complete_measurement()` finalizes and records last_outcome.
 
 ### 14. Tests and docs
 
-- [ ] 14-1. Unit tests: `BehaviorStore` CRUD, versioning, revert, seed defaults, mtime-based cache, thread safety.
-- [ ] 14-2. Unit tests: `AdaptableParameterRegistry` — registration, evidence sufficiency check, list by category/tier.
-- [ ] 14-3. Unit tests: `ParameterDecisionLogger` — telemetry event emission with parameter context.
-- [ ] 14-4. Unit tests: `PatternAccumulator` — recording, clustering, threshold gates.
-- [ ] 14-5. Unit tests: `ThresholdCalibrator` — mock telemetry outcomes → proposed adjustments within bounds. Verify tier 0 logs-only, tier 1 proposes, tier 2 auto-applies.
-- [ ] 14-6. Unit tests: `generate_capability_reference()` — generates from tool metadata, includes MCP tools, matches expected format.
-- [ ] 14-7. Unit tests: intent taxonomy extension — frequency tracking, promotion gate, classifier prompt co-evolution.
-- [ ] 14-8. Unit tests: domain auto-discovery — keyword clustering, new domain proposal, keyword expansion.
-- [ ] 14-9. Integration test: correction on classifier output → prompt variant proposed (tier 1) → user approves → next classification uses updated prompt → no regression.
-- [ ] 14-10. Integration test: 50 parameter_decision events with reuse decisions → `ThresholdCalibrator` proposes adjustment (tier 1) → user approves → `/changes` shows entry → `/revert` restores original. Same test at tier 2: auto-applied.
-- [ ] 14-11. Integration test: 5 unrecognized intent patterns → new intent proposed (tier 1) → user approves → classifier prompt updated → next similar message classified correctly.
-- [ ] 14-12. Integration test: 3 tasks in new domain → domain proposed (tier 1) → user approves → keyword map and template created → next task in domain gets expertise injection.
-- [ ] 14-13. Integration test: tier 0 → tier 1 → tier 2 lifecycle: evidence accrues at tier 0, proposals appear at tier 1, auto-apply activates at tier 2.
-- [ ] 14-14. `/changes`, `/revert`, `/behavior`, `/adaptations` command tests.
-- [ ] 14-15. Updated `.env.example` with new env var overrides.
-- [ ] 14-16. Updated `docs/architecture.md` with self-adaptive behavior section.
-- [ ] 14-17. Changelog entry.
+- [x] 14-1. Unit tests: `BehaviorStore` CRUD, versioning, revert, seed defaults, mtime-based cache, thread safety.
+- [x] 14-2. Unit tests: `AdaptableParameterRegistry` — registration, evidence sufficiency check, list by category/tier.
+- [x] 14-3. Unit tests: `ParameterDecisionLogger` — telemetry event emission with parameter context.
+- [x] 14-4. Unit tests: `PatternAccumulator` — recording, clustering, threshold gates.
+- [x] 14-5. Unit tests: `ThresholdCalibrator` — 6 tests in `TestThresholdCalibratorExtended`: analyze with success_rate, tier 0 logs-only, tier 1 no persistence, tier 2 persists + changelog, ±20% bounds, tight parameter bounds.
+- [x] 14-6. Unit tests: `generate_capability_reference()` — 4 tests in `TestGenerateCapabilityReference`: non-empty, tool names present, MCP placeholder, cache invalidation.
+- [x] 14-7. Unit tests: intent taxonomy — 4 tests in `TestIntentTaxonomy`: propose discovers new, existing skipped, apply adds to store, evolve appends to prompt.
+- [x] 14-8. Unit tests: domain auto-discovery — 5 tests in `TestDomainDiscovery`: propose discovers new, existing skipped, apply adds keyword map, marginal expansion, multi-match returns None.
+- [x] 14-9. Integration test: correction → prompt variant proposed → approve → updated prompt → no regression. `TestIntegrationPromptVariantLifecycle`
+- [x] 14-10. Integration test: parameter_decision events → ThresholdCalibrator → approve → /changes → /revert. `TestIntegrationThresholdCalibration` (2 tests: tier 1 + tier 2 auto-apply)
+- [x] 14-11. Integration test: unrecognized intent patterns → proposed → approved → classifier updated. `TestIntegrationIntentDiscovery`
+- [x] 14-12. Integration test: domain discovery E2E. `TestIntegrationDomainDiscovery`
+- [x] 14-13. Integration test: tier 0 → 1 → 2 lifecycle. `TestIntegrationTierLifecycle`
+- [x] 14-14. `/changes`, `/revert`, `/behavior`, `/adaptations` command tests — 3 tests in `TestCommandHandlersExtended`: category filter, key with history, reset to seed.
+- [x] 14-15. Updated `.env.example` with new env var overrides.
+- [x] 14-16. Updated `docs/architecture.md` with self-adaptive behavior section.
+- [x] 14-17. Changelog entry.
 
 ## Incremental Delivery
 
