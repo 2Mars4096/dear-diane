@@ -113,11 +113,13 @@ class RunManager:
         tool_registry: ToolRegistry | None = None,
         run_store: RunStore | None = None,
         memory_kernel: Any | None = None,
+        telemetry_store: Any | None = None,
     ) -> None:
         self._config = engine_config or EngineConfig()
         self._tool_registry = tool_registry or ToolRegistry()
         self._run_store = run_store
         self._memory_kernel = memory_kernel
+        self._telemetry_store = telemetry_store
         self._runs: dict[str, RunRecord] = {}
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         self._tasks: dict[str, asyncio.Task[None]] = {}
@@ -834,6 +836,10 @@ class RunManager:
                         )
                         if cost is not None:
                             record.total_cost = (record.total_cost or 0.0) + cost
+        # -- 31-20: Telemetry bridge --
+        if self._telemetry_store is not None:
+            await self._emit_workflow_telemetry(record)
+
         if self._run_store is not None:
             self._run_store.save_summary(record.graph_id, record.run_id, record.snapshot())
 
@@ -1307,6 +1313,62 @@ class RunManager:
             "principle_id": principle_id,
             "tier": "rules",
         })
+
+    async def _emit_workflow_telemetry(self, record: RunRecord) -> None:
+        """Emit telemetry events for a completed workflow run (31-20)."""
+        try:
+            from dan.server.telemetry import TelemetryEvent
+
+            project_id = (record.goal_context or {}).get("project_id")
+            parent_event_id = (record.goal_context or {}).get("turn_event_id")
+
+            for node_id, usage in record.node_usage.items():
+                node_model = None
+                if record.result and record.result.metadata:
+                    node_meta = record.result.metadata.get(node_id, {})
+                    if isinstance(node_meta, dict):
+                        node_model = node_meta.get("model")
+                pt = usage.get("prompt_tokens", 0)
+                ct = usage.get("completion_tokens", 0)
+                tt = usage.get("total_tokens", 0)
+                node_cost = 0.0
+                if node_model:
+                    c = estimate_cost(node_model, pt, ct)
+                    if c is not None:
+                        node_cost = c
+                await self._telemetry_store.record(TelemetryEvent(
+                    event_type="workflow_node",
+                    project_id=project_id,
+                    parent_event_id=parent_event_id,
+                    run_id=record.run_id,
+                    graph_id=record.graph_id,
+                    model=node_model or record.model,
+                    node_id=node_id,
+                    prompt_tokens=pt,
+                    completion_tokens=ct,
+                    total_tokens=tt,
+                    estimated_cost=node_cost,
+                    duration_ms=0.0,
+                    success=record.status.value == "completed",
+                ))
+
+            await self._telemetry_store.record(TelemetryEvent(
+                event_type="workflow_run",
+                project_id=project_id,
+                parent_event_id=parent_event_id,
+                run_id=record.run_id,
+                graph_id=record.graph_id,
+                model=record.model,
+                prompt_tokens=record.total_prompt_tokens,
+                completion_tokens=record.total_completion_tokens,
+                total_tokens=record.total_tokens,
+                estimated_cost=record.total_cost or 0.0,
+                duration_ms=(record.elapsed_seconds or 0) * 1000,
+                success=record.status.value == "completed",
+                metadata={"node_count": len(record.node_usage), "error": record.error},
+            ))
+        except Exception:
+            logger.debug("Workflow telemetry failed", exc_info=True)
 
     async def _run_task(
         self,

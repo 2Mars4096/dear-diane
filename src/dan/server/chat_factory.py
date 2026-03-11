@@ -240,11 +240,19 @@ def build_chat_services(
     except Exception:
         logger.debug("MentionResolver not available", exc_info=True)
 
+    telemetry_store = None
+    try:
+        from dan.server.telemetry import get_telemetry_store
+        telemetry_store = get_telemetry_store()
+    except Exception:
+        logger.debug("Telemetry store not available", exc_info=True)
+
     tool_registry = _build_tool_registry()
     run_manager = RunManager(
         engine_config=engine_config,
         tool_registry=tool_registry,
         run_store=run_store,
+        telemetry_store=telemetry_store,
     )
     activity_tracker = ActivityTracker(run_manager)
 
@@ -347,6 +355,7 @@ def build_chat_services(
         mcp_bridge=mcp_bridge,
         capability_registry=capability_registry,
         tool_registry=tool_registry,
+        telemetry_store=telemetry_store,
     )
     if isinstance(result, tuple):
         concierge, dispatcher = result

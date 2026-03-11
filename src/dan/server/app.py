@@ -1335,10 +1335,20 @@ async def lifespan(app: FastAPI):
 
     memory_dir = getattr(engine_config, "memory_dir", "./memory")
     engine_config.tier_tracker = TierSuccessTracker(Path(memory_dir))
+    _telemetry_store = None
+    try:
+        from dan.server.telemetry import get_telemetry_store
+        _telemetry_store = get_telemetry_store()
+        await _telemetry_store.prune()
+        logger.info("Telemetry store initialized (%s)", type(_telemetry_store).__name__)
+    except Exception:
+        logger.debug("Telemetry store init skipped", exc_info=True)
+
     _run_manager = RunManager(
         engine_config=engine_config,
         tool_registry=_build_tool_registry(),
         run_store=_run_store,
+        telemetry_store=_telemetry_store,
     )
     workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
     _mention_resolver = MentionResolver(
@@ -1563,6 +1573,7 @@ async def lifespan(app: FastAPI):
             mcp_bridge=_mcp_bridge,
             capability_registry=_capability_registry,
             tool_registry=_run_manager.tool_registry if _run_manager is not None else None,
+            telemetry_store=_telemetry_store,
         )
         if isinstance(result, tuple):
             _concierge, _dispatcher = result
@@ -1859,6 +1870,12 @@ async def lifespan(app: FastAPI):
             await _consolidation_task
         except asyncio.CancelledError:
             pass
+
+    if _telemetry_store is not None:
+        try:
+            await _telemetry_store.close()
+        except Exception:
+            logger.debug("Telemetry store shutdown failed", exc_info=True)
 
     if _notification_manager is not None:
         try:
