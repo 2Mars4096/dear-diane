@@ -89,5 +89,5 @@ pnpm-debug.log*
 .vscode/
 .cursor/
 .claude/
-
-/tests
+/tests/*
+!/tests/test_domain_learning.py
