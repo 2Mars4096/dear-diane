@@ -2,7 +2,7 @@
     "domain": "code_generation",
     "description": "Code writing, testing, and refactoring",
     "preferred_tools": ["file_read", "file_write", "python_eval"],
-    "preferred_patterns": ["tool_chain", "iterative_improvement", "linear_chain"],
+    "preferred_patterns": ["tool_augmented", "research_review", "linear_chain"],
     "model_tier_hints": {"planning": "routine", "coding": "standard", "review": "routine"},
     "default_profile": "standard",
     "validation_hints": ["Run test coverage", "Check for syntax errors", "Verify import resolution"],
