@@ -576,6 +576,123 @@ class ParallelSubagentsExecutor:
 
 
 # ---------------------------------------------------------------------------
+# GoalLoop
+# ---------------------------------------------------------------------------
+
+
+class GoalLoopExecutor:
+    """Iterates a body sub-graph until a goal metric is satisfied or limits hit.
+
+    Each iteration:
+      1. Run the body sub-graph with current inputs
+      2. Extract the metric from body output
+      3. Check if metric meets the target (using comparison operator)
+      4. If met, return success; otherwise loop
+    """
+
+    _CMP_FNS: dict[str, Any] = {
+        ">=": lambda a, b: a >= b,
+        "<=": lambda a, b: a <= b,
+        "==": lambda a, b: abs(a - b) < 1e-9,
+        ">": lambda a, b: a > b,
+        "<": lambda a, b: a < b,
+    }
+
+    async def execute(
+        self,
+        node: NodeBase,
+        inputs: dict[str, Any],
+        context: ExecutionContext,
+    ) -> NodeResult:
+        from dan.models.control_flow import GoalLoopNode
+
+        assert isinstance(node, GoalLoopNode)
+
+        scope = context.local_state.get_scope(node.id)
+        scope.setdefault("iteration", 0)
+        scope.setdefault("best_score", None)
+
+        cmp_fn = self._CMP_FNS.get(node.comparison)
+        if cmp_fn is None:
+            return NodeResult(
+                outputs=inputs,
+                status=NodeStatus.FAILED,
+                error=f"Unknown comparison operator: {node.comparison!r}",
+            )
+
+        working_data = dict(inputs)
+        working_data["goal_text"] = node.goal_text
+        best_output: dict[str, Any] = {}
+
+        for iteration in range(node.max_iterations):
+            scope["iteration"] = iteration
+
+            await context.emit_event(
+                event_type="iteration_started",
+                node_id=node.id,
+                node_type="goal_loop",
+                data={
+                    "iteration": iteration,
+                    "max_iterations": node.max_iterations,
+                    "goal_text": node.goal_text,
+                    "metric": node.metric_name,
+                    "target": node.target_value,
+                },
+            )
+
+            body_output = await context.run_subgraph(
+                node.body_graph, working_data, parent_node_id=node.id,
+            )
+
+            score = body_output.get(node.metric_name)
+            if score is None:
+                try:
+                    score = float(body_output.get("result", 0))
+                except (TypeError, ValueError):
+                    score = 0.0
+            else:
+                score = float(score)
+
+            if scope["best_score"] is None or cmp_fn(score, scope["best_score"]):
+                scope["best_score"] = score
+                best_output = dict(body_output)
+
+            if node.success_criteria:
+                try:
+                    met = evaluate_condition(node.success_criteria, {**body_output, "score": score})
+                except ConditionError:
+                    met = False
+            else:
+                met = cmp_fn(score, node.target_value)
+
+            await context.emit_event(
+                event_type="iteration_completed",
+                node_id=node.id,
+                node_type="goal_loop",
+                data={
+                    "iteration": iteration,
+                    "score": score,
+                    "target": node.target_value,
+                    "met": met,
+                    "best_score": scope["best_score"],
+                },
+            )
+
+            if met:
+                return NodeResult(
+                    outputs={**best_output, "goal_met": True, "iterations": iteration + 1, "best_score": score},
+                    status=NodeStatus.COMPLETED,
+                )
+
+            working_data = {**inputs, **body_output, "goal_text": node.goal_text}
+
+        return NodeResult(
+            outputs={**best_output, "goal_met": False, "iterations": node.max_iterations, "best_score": scope["best_score"]},
+            status=NodeStatus.COMPLETED,
+        )
+
+
+# ---------------------------------------------------------------------------
 # ForEach
 # ---------------------------------------------------------------------------
 

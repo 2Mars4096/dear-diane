@@ -585,6 +585,45 @@ class AgentTeamNode(NodeBase):
 # ---------------------------------------------------------------------------
 
 
+class GoalLoopNode(NodeBase):
+    """Iterates a body sub-graph until a goal metric is satisfied or limits hit.
+
+    Reuses the ``GoalSpec`` contract from the concierge goal loop.
+    ``body_graph`` points to a sub-graph in ``Graph.sub_graphs``.
+    """
+
+    node_type: Literal["goal_loop"] = "goal_loop"
+
+    goal_text: str = Field(description="Natural language description of the goal")
+    metric_name: str = Field(default="score", description="Metric key to evaluate against")
+    target_value: float = Field(default=1.0, description="Target threshold")
+    comparison: Literal[">=", "<=", "==", ">", "<"] = ">="
+    max_iterations: int = Field(default=10, ge=1)
+    evaluator: str = Field(
+        default="llm_judge",
+        description="Evaluation mode: llm_judge | script | test_suite | custom",
+    )
+    success_criteria: str | None = Field(
+        default=None,
+        description="Optional expression evaluated on iteration output to check success",
+    )
+    body_graph: str = Field(description="Key into Graph.sub_graphs")
+
+    # Composite-node contract
+    external_input_schema: dict[str, Any] | None = None
+    external_output_schema: dict[str, Any] | None = None
+    control_state_schema: dict[str, Any] = Field(default_factory=dict)
+    local_state: NodeLocalState = Field(default_factory=NodeLocalState)
+    read_set: list[ContextDeclaration] = Field(default_factory=list)
+    write_set: list[ContextDeclaration] = Field(default_factory=list)
+    compaction_rule: CompactionRule | None = None
+    failure_policy: FailurePolicy = Field(default_factory=FailurePolicy)
+    projections: list[ContextProjection] = Field(default_factory=list)
+    boundary_contract: BoundaryContract | None = Field(
+        default=None, description="Formal boundary contract (Plan 14-2)",
+    )
+
+
 class VoteConfig(BaseModel):
     """Strategy-specific configuration for VoteNode."""
 

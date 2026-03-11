@@ -34,6 +34,7 @@ from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
     GateNode,
+    GoalLoopNode,
     HumanInTheLoopNode,
     InputNode,
     InputVariable,
@@ -455,6 +456,23 @@ def _compile_agent(
             max_principles=config.get("max_principles", 10),
             min_confidence=config.get("min_confidence", 0.3),
             dedup_strategy=config.get("dedup_strategy", "embedding_similarity"),
+            input_ports=input_ports,
+            output_ports=output_ports,
+            metadata=metadata,
+        )
+    elif spec.agent_type == "goal_loop":
+        raw = spec.raw_frontmatter
+        node = GoalLoopNode(
+            id=name,
+            name=name,
+            goal_text=raw.get("goal_text", spec.prompt_body or ""),
+            metric_name=raw.get("metric_name", "score"),
+            target_value=float(raw.get("target_value", 1.0)),
+            comparison=raw.get("comparison", ">="),
+            max_iterations=int(raw.get("max_iterations", 10)),
+            evaluator=raw.get("evaluator", "llm_judge"),
+            success_criteria=raw.get("success_criteria"),
+            body_graph=f"{name}_body",
             input_ports=input_ports,
             output_ports=output_ports,
             metadata=metadata,

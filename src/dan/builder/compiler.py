@@ -22,6 +22,7 @@ from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
     GateNode,
+    GoalLoopNode,
     HumanInTheLoopNode,
     IfElseNode,
     OrchestratorNode,
@@ -56,6 +57,7 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "if_else": "branch",
     "gate": "true",
     "while_loop": "result",
+    "goal_loop": "result",
     "for_each": "results",
     "parallel_subagents": "results",
     "orchestrator": "results",
@@ -380,6 +382,8 @@ def _build_node(pn: _PendingNode) -> NodeBase:
         return ParallelSubagentsNode(**common, **kwargs)
     elif pn.node_type == "orchestrator":
         return OrchestratorNode(**common, **kwargs)
+    elif pn.node_type == "goal_loop":
+        return GoalLoopNode(**common, **kwargs)
     else:
         raise BuildError([f"Unknown node_type: {pn.node_type!r}"])
 

@@ -12,6 +12,7 @@ from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
     GateNode,
+    GoalLoopNode,
     HumanInTheLoopNode,
     HumanNode,
     IfElseNode,
@@ -55,6 +56,7 @@ Node = Annotated[
         AgentTeamNode,
         VoteNode,
         ReflectionNode,
+        GoalLoopNode,
     ],
     Field(discriminator="node_type"),
 ]

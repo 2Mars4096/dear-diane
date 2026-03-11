@@ -55,7 +55,7 @@ class AgentSpec:
     file_path: Path | None = None
 
     # Frontmatter fields
-    agent_type: Literal["llm", "tool", "code", "human", "router", "composite", "reflection"] = "llm"
+    agent_type: Literal["llm", "tool", "code", "human", "router", "composite", "reflection", "goal_loop"] = "llm"
     model: str = ""
     temperature: float = 0.7
     max_tokens: int | None = None

@@ -684,6 +684,75 @@ class WorkflowBuilder:
         ))
 
     @contextmanager
+    def goal_loop(
+        self,
+        node_id: str,
+        *,
+        goal_text: str,
+        metric_name: str = "score",
+        target_value: float = 1.0,
+        comparison: str = ">=",
+        max_iterations: int = 10,
+        evaluator: str = "llm_judge",
+        success_criteria: str | None = None,
+        name: str | None = None,
+        description: str = "",
+        compaction: CompactionRule | None = None,
+        failure_policy: FailurePolicy | None = None,
+        read_set: list[ContextDeclaration] | None = None,
+        write_set: list[ContextDeclaration] | None = None,
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> Generator[WorkflowBuilder, None, None]:
+        """Context manager for a goal-loop sub-graph."""
+        from dan.models.ports import InputPort, OutputPort
+
+        sub_key = f"{node_id}_body"
+        sub = WorkflowBuilder(
+            sub_key, _parent=self, _scope_type="goal_loop"
+        )
+        sub._entry_input_ref = PortRef("__entry__", "input", sub)
+
+        yield sub
+
+        sub_graph = sub._compile_as_subgraph()
+
+        kwargs: dict[str, Any] = {
+            "name": name or node_id,
+            "description": description,
+            "goal_text": goal_text,
+            "metric_name": metric_name,
+            "target_value": target_value,
+            "comparison": comparison,
+            "body_graph": sub_key,
+            "max_iterations": max_iterations,
+            "evaluator": evaluator,
+            "success_criteria": success_criteria,
+        }
+        if compaction is not None:
+            kwargs["compaction_rule"] = compaction
+        if failure_policy is not None:
+            kwargs["failure_policy"] = failure_policy
+        if read_set is not None:
+            kwargs["read_set"] = read_set
+        if write_set is not None:
+            kwargs["write_set"] = write_set
+
+        pn = _PendingNode(
+            id=node_id,
+            node_type="goal_loop",
+            kwargs=kwargs,
+            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
+            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
+        )
+        self._add_node(pn)
+        self._sub_graphs.append(_PendingSubGraph(
+            parent_node_id=node_id,
+            sub_graph_key=sub_key,
+            graph=sub_graph,
+        ))
+
+    @contextmanager
     def for_each(
         self,
         node_id: str,

@@ -23,6 +23,7 @@ from dan.models.control_flow import (
     CompositeNode,
     ForEachNode,
     GateNode,
+    GoalLoopNode,
     HumanInTheLoopNode,
     IfElseNode,
     InputNode,
@@ -92,6 +93,7 @@ _BUILTINS: list[tuple[str, Type[NodeBase]]] = [
     ("validator", ValidatorNode),
     ("composite", CompositeNode),
     ("reflection", ReflectionNode),
+    ("goal_loop", GoalLoopNode),
 ]
 
 for _type_name, _cls in _BUILTINS:
