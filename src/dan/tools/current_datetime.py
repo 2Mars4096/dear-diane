@@ -8,8 +8,8 @@ TOOL_METADATA = {
     "tool_id": "current_datetime",
     "description": (
         "Return the current date, time, timezone, and day of week. "
-        "Use this whenever you need to know the current time or date. "
-        "The LLM does not have access to real-time information without this tool."
+        "Use this when you need the exact time or a specific timezone. "
+        "The current date is already shown in the system prompt."
     ),
     "parameters": {
         "type": "object",
@@ -36,6 +36,12 @@ TOOL_METADATA = {
     ],
     "category": "system",
     "returns": "dict with datetime (ISO), date, time, day_of_week, timezone, unix_timestamp",
+    "preflight": {
+        "trigger": "always",
+        "inject_as": "system_context",
+        "format": "Today is {day_of_week}, {date}.",
+        "args": {},
+    },
 }
 
 

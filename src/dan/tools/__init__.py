@@ -92,3 +92,18 @@ def get_all_tools() -> dict[str, tuple[ToolFunction, dict]]:
         tools[tool_id] = (fn, metadata)
 
     return tools
+
+
+def get_preflight_tools() -> dict[str, tuple[ToolFunction, dict]]:
+    """Return tools that declare a ``preflight`` hook in their metadata.
+
+    Returns ``{tool_id: (function, metadata)}`` for tools whose
+    ``TOOL_METADATA`` includes a ``preflight`` dict with at least a
+    ``trigger`` key.
+    """
+    return {
+        tid: (fn, meta)
+        for tid, (fn, meta) in get_all_tools().items()
+        if isinstance(meta.get("preflight"), dict)
+        and "trigger" in meta["preflight"]
+    }
