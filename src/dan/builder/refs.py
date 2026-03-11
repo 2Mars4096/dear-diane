@@ -108,6 +108,16 @@ class NodeRef:
             other._builder._register_chain(self, other)
         return other
 
+    def __or__(self, other: NodeRef) -> NodeRef:
+        """Pipeline operator — alias for ``>>``."""
+        if not isinstance(other, NodeRef):
+            return NotImplemented
+        if self._builder is not None:
+            self._builder._register_chain(self, other)
+        elif other._builder is not None:
+            other._builder._register_chain(self, other)
+        return other
+
     def __repr__(self) -> str:
         return f"NodeRef({self.node_id!r})"
 

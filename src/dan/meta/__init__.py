@@ -28,7 +28,17 @@ from dan.meta.diagnosis import (
     RePromptComposer,
 )
 from dan.meta.discovery import DiscoveryService, DiscoveryResult
-from dan.meta.intent_compiler import COVERAGE_CATALOG, CoverageChecker, CoverageResult, IntentCompiler
+from dan.meta.generation_defaults import (
+    DefaultProfile,
+    DefaultsEnricher,
+    DomainGenerationProfile,
+    GenerationDefaults,
+    build_domain_prompt_context,
+    clear_profile_cache,
+    detect_suppressions,
+    get_domain_profile,
+)
+from dan.meta.intent_compiler import COVERAGE_CATALOG, CoverageChecker, CoverageResult, DOMAIN_PATTERN_PREFERENCES, IntentCompiler
 from dan.meta.intent_extraction import (
     INTENT_EXTRACTION_SYSTEM_PROMPT,
     INTENT_FEW_SHOT_EXAMPLES,
@@ -38,6 +48,19 @@ from dan.meta.intent_schema import StageIntent, StageType, WorkflowIntent
 from dan.meta.planner import CodegenDiagnostics, WorkflowPlanner, PlannerOutput
 from dan.meta.repair import RepairEscalator, RepairLevel
 from dan.meta.self_knowledge import SelfKnowledgeIndex, RetrievedChunk
+from dan.meta.structural_mutations import (
+    DispatchResult,
+    MutationMacroResult,
+    dispatch_structural_mutation,
+    fan_out_node,
+    insert_tool,
+    insert_validator,
+    parallelize,
+    resolve_node,
+    summarize_graph,
+    unwrap_loop,
+    wrap_in_review_loop,
+)
 
 __all__ = [
     "ArtifactMapper",
@@ -49,26 +72,33 @@ __all__ = [
     "COVERAGE_CATALOG",
     "CoverageChecker",
     "CoverageResult",
+    "DOMAIN_PATTERN_PREFERENCES",
+    "DefaultProfile",
+    "DefaultsEnricher",
     "DiagnosisAttempt",
     "DiagnosisLoop",
     "DiagnosisMetrics",
     "DiagnosisResult",
     "DiscoveryResult",
     "DiscoveryService",
+    "DispatchResult",
+    "DomainGenerationProfile",
     "ErrorArtifact",
     "ErrorClassifier",
+    "GenerationDefaults",
     "GenerationError",
     "GenerationErrorType",
     "GenerationStage",
     "INTENT_EXTRACTION_SYSTEM_PROMPT",
     "INTENT_FEW_SHOT_EXAMPLES",
     "IntentCompiler",
-    "RePromptComposer",
     "MetaController",
     "MetaControllerConfig",
     "MetaSession",
     "MetaSessionStatus",
+    "MutationMacroResult",
     "PlannerOutput",
+    "RePromptComposer",
     "RepairEscalator",
     "RepairLevel",
     "RetrievedChunk",
@@ -87,6 +117,19 @@ __all__ = [
     "ValidationResult",
     "WorkflowIntent",
     "WorkflowPlanner",
-    "build_intent_tool_schema",
     "WorkflowSpec",
+    "build_domain_prompt_context",
+    "build_intent_tool_schema",
+    "clear_profile_cache",
+    "detect_suppressions",
+    "dispatch_structural_mutation",
+    "fan_out_node",
+    "get_domain_profile",
+    "insert_tool",
+    "insert_validator",
+    "parallelize",
+    "resolve_node",
+    "summarize_graph",
+    "unwrap_loop",
+    "wrap_in_review_loop",
 ]

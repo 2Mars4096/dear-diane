@@ -622,6 +622,170 @@ class WorkflowBuilder:
         ))
         return NodeRef(node_id, "composite", self)
 
+    # ── Convenience methods ──────────────────────────────────────
+
+    def chain(
+        self,
+        *steps: tuple[str, str] | tuple[str, str, str],
+        name_prefix: str = "",
+    ) -> NodeRef:
+        """Create a linear chain of LLM nodes with auto-wiring.
+
+        Each step is ``(node_id, prompt)`` or ``(node_id, prompt, model)``.
+        Returns the last node's NodeRef.
+        """
+        if not steps:
+            raise BuildError(["chain() requires at least one step"])
+
+        refs: list[NodeRef] = []
+        for i, step in enumerate(steps):
+            if len(step) == 2:
+                node_id, prompt = step[0], step[1]
+                model = ""
+            elif len(step) == 3:
+                node_id, prompt, model = step[0], step[1], step[2]
+            else:
+                raise BuildError([f"chain step {i} must be (id, prompt) or (id, prompt, model)"])
+
+            if name_prefix:
+                node_id = f"{name_prefix}_{node_id}"
+
+            if refs:
+                prompt = f"{prompt}\n\nInput: <<dan:{refs[-1].node_id}:{refs[-1].default_output}>>"
+
+            ref = self.llm(node_id, prompt=prompt, model=model)
+            if refs:
+                refs[-1] >> ref
+            refs.append(ref)
+
+        return refs[-1]
+
+    def review_loop(
+        self,
+        writer_prompt: str,
+        reviewer_prompt: str,
+        *,
+        name: str = "review",
+        max_rounds: int | None = None,
+        writer_model: str = "",
+        reviewer_model: str = "",
+    ) -> NodeRef:
+        """Create a writer-reviewer loop in one call.
+
+        Returns a NodeRef pointing to the while_loop node.
+        ``max_rounds`` defaults to 2 for content-oriented prompts, 3 otherwise.
+        """
+        if max_rounds is None:
+            from dan.meta.generation_defaults import _CONTENT_KEYWORDS
+            prompt_lower = writer_prompt.lower()
+            max_rounds = 2 if any(kw in prompt_lower for kw in _CONTENT_KEYWORDS) else 3
+        writer_id = f"{name}_writer"
+        reviewer_id = f"{name}_reviewer"
+        loop_id = f"{name}_loop"
+
+        with self.while_loop(
+            loop_id,
+            condition="quality_score < 8",
+            max_iterations=max_rounds,
+            input_ports=[{"name": "draft"}, {"name": "quality_score"}, {"name": "feedback"}],
+            output_ports=[{"name": "draft"}, {"name": "quality_score"}, {"name": "feedback"}],
+        ) as body:
+            writer = body.llm(
+                writer_id,
+                prompt=writer_prompt + "\n\nPrevious feedback: {feedback}",
+                model=writer_model,
+                input_ports=[{"name": "feedback"}],
+            )
+            reviewer = body.llm(
+                reviewer_id,
+                prompt=reviewer_prompt,
+                model=reviewer_model,
+                output_schema={
+                    "type": "object",
+                    "properties": {
+                        "quality_score": {"type": "integer"},
+                        "feedback": {"type": "string"},
+                    },
+                    "required": ["quality_score", "feedback"],
+                },
+                input_ports=[{"name": "text"}],
+            )
+            body.edge(writer["text"], reviewer["text"])
+
+        return NodeRef(loop_id, "while_loop", self)
+
+    def map_reduce(
+        self,
+        items_expr: str | PortRef,
+        map_prompt: str,
+        reduce_prompt: str,
+        *,
+        name: str = "map_reduce",
+        map_model: str = "",
+        reduce_model: str = "",
+        parallelism: int = 3,
+    ) -> NodeRef:
+        """Fan-out over items with parallel processing and aggregation.
+
+        Returns the reduce node's NodeRef.
+        """
+        fe_id = f"{name}_fan_out"
+        map_id = f"{name}_map"
+        reduce_id = f"{name}_reduce"
+
+        items_ref = items_expr if isinstance(items_expr, PortRef) else None
+
+        with self.for_each(
+            fe_id,
+            items=items_ref,
+            parallelism=parallelism,
+        ) as body:
+            body.llm(map_id, prompt=map_prompt, model=map_model)
+
+        fe_ref = NodeRef(fe_id, "for_each", self)
+        reduce_ref = self.llm(
+            reduce_id,
+            prompt=reduce_prompt,
+            model=reduce_model,
+            input_ports=[{"name": "results"}],
+        )
+        self.edge(fe_ref["results"], reduce_ref["results"])
+
+        return reduce_ref
+
+    def tool_chain(
+        self,
+        *steps: tuple[str, str | None, str | dict],
+    ) -> NodeRef:
+        """Chain mixing LLM and tool nodes.
+
+        Each step is ``(node_id, tool_id_or_None, prompt_or_config)``.
+        When ``tool_id`` is None, creates an LLM node with the third arg as prompt.
+        Otherwise creates a tool node with the third arg as config dict (or empty).
+        Returns the last node's NodeRef.
+        """
+        if not steps:
+            raise BuildError(["tool_chain() requires at least one step"])
+
+        refs: list[NodeRef] = []
+        for i, step in enumerate(steps):
+            if len(step) != 3:
+                raise BuildError([f"tool_chain step {i} must be (id, tool_id_or_None, prompt_or_config)"])
+            node_id, tool_id, prompt_or_config = step
+
+            if tool_id is None:
+                prompt = prompt_or_config if isinstance(prompt_or_config, str) else ""
+                ref = self.llm(node_id, prompt=prompt)
+            else:
+                config = prompt_or_config if isinstance(prompt_or_config, dict) else {}
+                ref = self.tool(node_id, tool_id=tool_id, tool_config=config)
+
+            if refs:
+                refs[-1] >> ref
+            refs.append(ref)
+
+        return refs[-1]
+
     # ── Sub-graph context managers ─────────────────────────────────
 
     @contextmanager

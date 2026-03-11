@@ -57,6 +57,54 @@ COVERAGE_CATALOG: dict[str, dict] = {
         "stage_types": [StageType.human_approval],
         "composable": True,
     },
+    "tool_chain": {
+        "description": "Sequential tool and LLM calls",
+        "stage_types": [StageType.tool_call, StageType.transform],
+        "composable": True,
+    },
+    "comparison": {
+        "description": "Fan-out items then compare/rank",
+        "stage_types": [StageType.fan_out, StageType.transform],
+        "composable": True,
+    },
+    "research_review": {
+        "description": "Research chain followed by review loop",
+        "stage_types": [StageType.transform, StageType.review_loop],
+        "composable": True,
+    },
+    "web_briefing": {
+        "description": "Web search then analysis chain",
+        "stage_types": [StageType.tool_call, StageType.transform],
+        "composable": True,
+    },
+    "code_analysis": {
+        "description": "File read + code execution + analysis",
+        "stage_types": [StageType.tool_call, StageType.code_execution, StageType.transform],
+        "composable": True,
+    },
+    "document_pipeline": {
+        "description": "Read → process → write document",
+        "stage_types": [StageType.tool_call, StageType.transform, StageType.tool_call],
+        "composable": True,
+    },
+    "multi_source_merge": {
+        "description": "Multiple source tools then fan-out + synthesis",
+        "stage_types": [StageType.tool_call, StageType.fan_out, StageType.transform],
+        "composable": True,
+    },
+    "iterative_improvement": {
+        "description": "Transform then goal-directed improvement loop",
+        "stage_types": [StageType.transform, StageType.review_loop],
+        "composable": True,
+    },
+}
+
+DOMAIN_PATTERN_PREFERENCES: dict[str, list[str]] = {
+    "paper_rendering": ["research_review", "fan_out_fan_in", "rag_qa", "linear_chain"],
+    "literature_review": ["research_review", "fan_out_fan_in", "rag_qa", "linear_chain"],
+    "equity_research": ["web_briefing", "code_analysis", "research_review", "tool_chain"],
+    "data_analysis": ["data_pipeline", "tool_chain", "tool_augmented", "code_analysis"],
+    "code_generation": ["tool_chain", "iterative_improvement", "linear_chain"],
 }
 
 
@@ -71,7 +119,8 @@ class CoverageResult(BaseModel):
     fully_covered: bool
     supported_stages: list[str] = Field(default_factory=list)
     unsupported_stages: list[str] = Field(default_factory=list)
-    recommendation: Literal["compile", "fallback", "partial"]
+    recommendation: Literal["compile", "fallback", "partial", "compose"]
+    constituent_patterns: list[str] | None = None
 
 
 class CoverageChecker:
@@ -83,11 +132,11 @@ class CoverageChecker:
 
     SUPPORTED_TYPES: set[StageType] = set(StageType)
 
-    def check(self, intent: WorkflowIntent) -> CoverageResult:
+    def check(self, intent: WorkflowIntent, *, try_compose: bool = True) -> CoverageResult:
         """Validate that every stage type in *intent* is in ``SUPPORTED_TYPES``.
 
-        If any stage is unsupported, ``recommendation`` is always ``"fallback"``
-        (Phase 14 — no partial compilation).
+        When ``try_compose`` is True and single-pattern match fails, attempts
+        decomposition into constituent catalog patterns (max 3).
         """
         supported: list[str] = []
         unsupported: list[str] = []
@@ -99,9 +148,22 @@ class CoverageChecker:
                 unsupported.append(stage.name)
 
         fully_covered = len(unsupported) == 0
-        recommendation: Literal["compile", "fallback", "partial"] = (
-            "compile" if fully_covered else "fallback"
-        )
+
+        if fully_covered:
+            recommendation = "compile"
+        elif try_compose:
+            decomposition = self._try_decompose(intent)
+            if decomposition is not None and len(decomposition) <= 3:
+                return CoverageResult(
+                    fully_covered=True,
+                    supported_stages=supported + unsupported,
+                    unsupported_stages=[],
+                    recommendation="compose",
+                    constituent_patterns=decomposition,
+                )
+            recommendation = "fallback"
+        else:
+            recommendation = "fallback"
 
         return CoverageResult(
             fully_covered=fully_covered,
@@ -109,6 +171,42 @@ class CoverageChecker:
             unsupported_stages=unsupported,
             recommendation=recommendation,
         )
+
+    def _try_decompose(self, intent: WorkflowIntent) -> list[str] | None:
+        """Try to decompose an intent into constituent catalog patterns (max 3)."""
+        stage_types = [s.stage_type for s in intent.stages]
+        if not stage_types:
+            return None
+
+        patterns: list[str] = []
+        i = 0
+        while i < len(stage_types):
+            matched = False
+            for length in range(min(len(stage_types) - i, 4), 0, -1):
+                segment = stage_types[i : i + length]
+                pattern = self._match_segment(segment)
+                if pattern:
+                    patterns.append(pattern)
+                    i += length
+                    matched = True
+                    break
+            if not matched:
+                return None
+            if len(patterns) > 3:
+                return None
+        return patterns if patterns else None
+
+    def _match_segment(self, segment: list[StageType]) -> str | None:
+        """Match a sequence of stage types to a catalog pattern."""
+        for name, entry in COVERAGE_CATALOG.items():
+            cat_types = entry["stage_types"]
+            if len(cat_types) == len(segment) and all(
+                ct == st for ct, st in zip(cat_types, segment)
+            ):
+                return name
+            if len(cat_types) == 1 and all(st == cat_types[0] for st in segment):
+                return name
+        return None
 
     def describe_coverage(self) -> str:
         """Return a human-readable summary of supported patterns."""
@@ -131,7 +229,7 @@ class CoverageChecker:
 class IntentCompiler:
     """Deterministically compiles WorkflowIntent into dan.builder Python code."""
 
-    def compile(self, intent: WorkflowIntent) -> str:
+    def compile(self, intent: WorkflowIntent, *, domain: str | None = None) -> str:
         """Return executable Python code that builds the workflow."""
         lines: list[str] = []
 
@@ -274,6 +372,155 @@ class IntentCompiler:
         prompt = _escape(stage.description or f"Please review and approve: {stage.name}")
         lines = [f'{var} = wf.human_in_the_loop("{stage.name}", prompt="{prompt}")']
         return var, var, lines
+
+    # -- composed compilation ------------------------------------------------
+
+    def compile_composed(
+        self,
+        intent: WorkflowIntent,
+        constituent_patterns: list[str],
+        *,
+        domain: str | None = None,
+    ) -> str:
+        """Compile a multi-pattern intent by chaining convenience method calls."""
+        lines: list[str] = [
+            "from dan.builder import workflow",
+            "from dan.builder.refs import NodeRef",
+            "",
+            f'wf = workflow("{_slugify(intent.goal[:50])}")',
+            "",
+        ]
+
+        segments = self._partition_stages(intent.stages, constituent_patterns)
+        prev_ref_var: str | None = None
+
+        for seg_idx, (pattern, stages) in enumerate(segments):
+            ref_var, code = self._compile_segment(
+                pattern, stages, seg_idx, prev_ref_var
+            )
+            lines.extend(code)
+            lines.append("")
+            prev_ref_var = ref_var
+
+        lines.append("graph = wf.build()")
+        return "\n".join(lines)
+
+    def _partition_stages(
+        self,
+        stages: list[StageIntent],
+        patterns: list[str],
+    ) -> list[tuple[str, list[StageIntent]]]:
+        """Partition stages into segments matching the pattern sequence."""
+        result: list[tuple[str, list[StageIntent]]] = []
+        idx = 0
+        for pattern in patterns:
+            cat_types = COVERAGE_CATALOG[pattern]["stage_types"]
+            n = max(len(cat_types), 1)
+            if len(cat_types) == 1:
+                count = 0
+                while (
+                    idx + count < len(stages)
+                    and stages[idx + count].stage_type == cat_types[0]
+                ):
+                    count += 1
+                n = max(count, 1)
+            seg = stages[idx : idx + n]
+            result.append((pattern, seg))
+            idx += n
+        if idx < len(stages) and result:
+            last_pattern, last_stages = result[-1]
+            result[-1] = (last_pattern, last_stages + stages[idx:])
+        return result
+
+    def _compile_segment(
+        self,
+        pattern: str,
+        stages: list[StageIntent],
+        seg_idx: int,
+        prev_ref_var: str | None,
+    ) -> tuple[str, list[str]]:
+        """Compile a single segment using convenience methods where possible."""
+        lines: list[str] = []
+        ref_var = f"seg_{seg_idx}"
+
+        if pattern == "linear_chain" and len(stages) >= 2:
+            steps = []
+            for s in stages:
+                desc = _escape(s.description or s.name)
+                steps.append(f'    ("{s.name}", "{desc}")')
+            steps_str = ",\n".join(steps)
+            lines.append(f"{ref_var} = wf.chain(\n{steps_str},\n)")
+        elif pattern == "review_loop" and stages:
+            s = stages[0]
+            reviewer_prompt = _escape(
+                s.review.reviewer_prompt if s.review else "Review for quality"
+            )
+            max_iter = s.review.max_iterations if s.review else 3
+            draft_prompt = _escape(s.description or s.name)
+            lines.append(
+                f"{ref_var} = wf.review_loop(\n"
+                f'    writer_prompt="{draft_prompt}",\n'
+                f'    reviewer_prompt="{reviewer_prompt}",\n'
+                f'    name="{s.name}",\n'
+                f"    max_rounds={max_iter},\n"
+                f")"
+            )
+        elif pattern in ("research_review", "iterative_improvement"):
+            transform_stages = [
+                s for s in stages if s.stage_type == StageType.transform
+            ]
+            review_stages = [
+                s for s in stages if s.stage_type == StageType.review_loop
+            ]
+
+            if transform_stages:
+                chain_steps = [
+                    f'    ("{s.name}", "{_escape(s.description or s.name)}")'
+                    for s in transform_stages
+                ]
+                lines.append(
+                    "chain_ref = wf.chain(\n" + ",\n".join(chain_steps) + ",\n)"
+                )
+
+            if review_stages:
+                rs = review_stages[0]
+                rp = _escape(
+                    rs.review.reviewer_prompt
+                    if rs.review
+                    else "Review for quality"
+                )
+                mi = rs.review.max_iterations if rs.review else 3
+                dp = _escape(rs.description or rs.name)
+                lines.append(
+                    f"{ref_var} = wf.review_loop(\n"
+                    f'    writer_prompt="{dp}",\n'
+                    f'    reviewer_prompt="{rp}",\n'
+                    f'    name="{rs.name}",\n'
+                    f"    max_rounds={mi},\n"
+                    f")"
+                )
+            else:
+                ref_var = "chain_ref"
+        elif pattern == "fan_out_fan_in" and stages:
+            s = stages[0]
+            desc = _escape(s.description or s.name)
+            lines.append(
+                f'with wf.for_each("{s.name}", parallelism={max(s.parallelism, 1)}) as body:\n'
+                f'    body.llm("{s.name}_proc", prompt="{desc}")\n'
+                f'{ref_var} = NodeRef("{s.name}", "for_each", wf)'
+            )
+        else:
+            for s in stages:
+                entry, exit_, stage_lines = self._compile_stage(
+                    s, WorkflowIntent(goal="", stages=stages)
+                )
+                lines.extend(stage_lines)
+                ref_var = exit_
+
+        if prev_ref_var and lines:
+            lines.insert(0, f"{prev_ref_var} >> {ref_var}")
+
+        return ref_var, lines
 
 
 # ---------------------------------------------------------------------------

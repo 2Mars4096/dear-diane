@@ -41,6 +41,16 @@ and max_iterations.
 deliverables).
 - If the goal is ambiguous or underspecified, ask a clarification question instead \
 of guessing. Never fabricate details the user did not mention.
+
+Common workflow patterns (use these as guidance):
+- Linear chain: sequential transform stages
+- Review loop: draft → review → revise cycle
+- Tool chain: sequential tool and LLM calls
+- Research + review: research stages followed by quality review
+- Comparison: process items in parallel then compare
+- Document pipeline: read → process → write
+- Code analysis: file operations + code execution + analysis
+- Iterative improvement: repeated refinement toward a goal
 """.format(
     stage_types="\n".join(
         f"  - {st.value}: {desc}" for st, desc in _STAGE_TYPE_DESCRIPTIONS.items()
@@ -133,6 +143,43 @@ INTENT_FEW_SHOT_EXAMPLES: list[dict] = [
             ],
             "global_inputs": ["data_path"],
             "global_outputs": ["report"],
+        },
+    },
+    {
+        "user": "Research the top 5 AI companies and write a comparison report with review",
+        "intent": {
+            "goal": "Research AI companies and write comparison report",
+            "stages": [
+                {
+                    "name": "search",
+                    "stage_type": "tool_call",
+                    "description": "Search for top AI companies",
+                    "config": {"tool_id": "web_search"},
+                },
+                {
+                    "name": "analyze_each",
+                    "stage_type": "fan_out",
+                    "description": "Analyze each company",
+                    "parallelism": 5,
+                },
+                {
+                    "name": "compare",
+                    "stage_type": "transform",
+                    "description": "Compare and rank companies",
+                },
+                {
+                    "name": "review_report",
+                    "stage_type": "review_loop",
+                    "description": "Review comparison report",
+                    "review": {
+                        "reviewer_prompt": "Check for factual accuracy and completeness",
+                        "condition": "quality_score >= 8",
+                        "max_iterations": 2,
+                    },
+                },
+            ],
+            "global_inputs": ["topic"],
+            "global_outputs": ["comparison_report"],
         },
     },
 ]
