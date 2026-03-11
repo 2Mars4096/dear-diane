@@ -50,6 +50,7 @@ from dan.server.graph_mutator import GraphMutator, MutationPlan
 from dan.server.graph_store import GraphStore, _validate_graph_id
 from dan.server.run_manager import RunManager, RunStatus
 from dan.server.run_store import RunStore
+from dan.server.terminal_output import collect_terminal_content
 from dan.server.test_cases import NodeTestCase, TestCaseRunResult, TestCaseStore
 from dan.server.scoped_run import (
     ScopedRunRequest,
@@ -131,8 +132,9 @@ def _get_engine_config() -> EngineConfig:
     if google_key:
         providers["google"] = ProviderConfig(api_key=google_key)
 
+    from dan.rag import DEFAULT_EMBEDDING_MODEL
     default_embedding_model = os.environ.get(
-        "DAN_DEFAULT_EMBEDDING_MODEL", "text-embedding-3-small",
+        "DAN_DEFAULT_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL,
     )
     embedding_api_key = os.environ.get(
         "DAN_EMBEDDING_API_KEY",
@@ -1290,18 +1292,37 @@ async def lifespan(app: FastAPI):
     global _run_manager, _chat_manager, _mention_resolver, _notification_manager
     global _publish_registry, _block_registry, _concierge, _dispatcher, _mcp_bridge
 
+    # 31-15: Tier-based learning activation (replaces DAN_LEARNING_MODE bundle)
+    try:
+        from dan.engine.learning_tiers import (
+            resolve_learning_tier,
+            features_enabled_at_tier,
+        )
+
+        _lt = resolve_learning_tier()
+        _enabled = features_enabled_at_tier(_lt)
+        if "prompt_variant_proposals" in _enabled or "ab_prompt_promotion" in _enabled:
+            os.environ.setdefault("DAN_PROMPT_OPTIMIZATION", "1")
+        if "model_recommendations" in _enabled:
+            os.environ.setdefault("DAN_MODEL_LEARNING", "1")
+        if "topology_suggestions" in _enabled:
+            os.environ.setdefault("DAN_TOPOLOGY_LEARNING", "1")
+        if "skill_refinement" in _enabled:
+            os.environ.setdefault("DAN_SKILL_LEARNING", "1")
+        if _lt >= 1:
+            logger.info(
+                "Learning tier %d active — enabled features: %s",
+                _lt,
+                ", ".join(sorted(_enabled)),
+            )
+    except Exception:
+        logger.debug("Tier-based learning activation skipped", exc_info=True)
+
     if os.environ.get("DAN_LEARNING_MODE") == "1":
         os.environ.setdefault("DAN_PROMPT_OPTIMIZATION", "1")
         os.environ.setdefault("DAN_MODEL_LEARNING", "1")
         os.environ.setdefault("DAN_TOPOLOGY_LEARNING", "1")
         os.environ.setdefault("DAN_SKILL_LEARNING", "1")
-        logger.info(
-            "Learning features active: prompt_opt=%s model=%s topology=%s skill=%s",
-            os.environ.get("DAN_PROMPT_OPTIMIZATION"),
-            os.environ.get("DAN_MODEL_LEARNING"),
-            os.environ.get("DAN_TOPOLOGY_LEARNING"),
-            os.environ.get("DAN_SKILL_LEARNING"),
-        )
 
     _runs_dir = os.environ.get("DAN_RUNS_DIR", os.path.join(_graphs_dir, "runs"))
     _run_store = RunStore(base_dir=_runs_dir)
@@ -1468,8 +1489,9 @@ async def lifespan(app: FastAPI):
         from dan.meta.self_knowledge import SelfKnowledgeIndex
 
         embedding_registry = build_embedding_registry(engine_config)
+        _emb_model = getattr(engine_config, "default_embedding_model", DEFAULT_EMBEDDING_MODEL)
         if embedding_registry.has_provider("default"):
-            provider = embedding_registry.resolve("text-embedding-3-small")
+            provider = embedding_registry.resolve(_emb_model)
             _project_root = Path(__file__).resolve().parents[3]
             docs_dir = _project_root / "docs"
             doc_paths = []
@@ -1481,7 +1503,7 @@ async def lifespan(app: FastAPI):
             if doc_paths:
                 _self_knowledge_index = SelfKnowledgeIndex(
                     embedding_provider=provider,
-                    embedding_model="text-embedding-3-small",
+                    embedding_model=_emb_model,
                 )
                 examples_dir = _project_root / "examples"
                 await _self_knowledge_index.refresh(
@@ -1560,22 +1582,11 @@ async def lifespan(app: FastAPI):
         else:
             return ""
 
-        final_content = ""
         reassurance_messages = set(getattr(_concierge, "_REASSURANCE_MESSAGES", [])) if _concierge is not None else set()
-        async for event in event_stream:
-            evt_type = getattr(event, "type", "")
-            if evt_type == "chat_error":
-                raise RuntimeError(getattr(event, "error", "Unknown concierge error"))
-            if evt_type == "chat_interrupted":
-                raise RuntimeError("Scheduled action was interrupted")
-            if evt_type == "chat_complete":
-                content = getattr(event, "content", "") or ""
-                if content in reassurance_messages:
-                    continue
-                final_content = content
-        if not final_content:
-            raise RuntimeError("No terminal response produced")
-        return final_content
+        return await collect_terminal_content(
+            event_stream,
+            reassurance_messages=reassurance_messages,
+        )
 
     async def _dispatch_scheduled_action(action: str, trigger_context: Any, delivery_target: Any) -> str:
         from dan.server.concierge.models import SurfaceMessage
@@ -1598,7 +1609,24 @@ async def lifespan(app: FastAPI):
                 "delivery_target": delivery_target.model_dump(mode="json"),
             },
         )
-        return await _collect_concierge_terminal_content(surface_msg)
+        result = await _collect_concierge_terminal_content(surface_msg)
+
+        # 31-12: Create follow-up trigger for scheduled task result
+        _fu_config = getattr(_concierge, "_follow_up_config", None)
+        _fu_queue = getattr(_concierge, "_follow_up_queue", None)
+        if _fu_config is not None and _fu_queue is not None and _fu_config.enabled:
+            try:
+                from dan.server.concierge.follow_up import create_schedule_result_trigger
+                schedule_name = getattr(trigger_context, "task_id", None) or action[:60]
+                trigger = create_schedule_result_trigger(
+                    schedule_name=schedule_name,
+                    result=result[:200] if result else "completed",
+                )
+                _fu_queue.enqueue(trigger)
+            except Exception:
+                logger.debug("Schedule result follow-up trigger failed", exc_info=True)
+
+        return result
 
     async def _dispatch_follow_up(trigger: Any) -> None:
         target_surface = str(trigger.target_surface or "").strip()
@@ -1615,7 +1643,7 @@ async def lifespan(app: FastAPI):
                     external_id = preferred.surface_id
 
         if target_surface and external_id:
-            for aid, (adapter, _task) in _active_adapters.items():
+            for aid, (adapter, _task) in list(_active_adapters.items()):
                 if _adapter_surface_types.get(aid) != target_surface:
                     continue
                 await _send_adapter_text(adapter, external_id, trigger.message)
@@ -1634,24 +1662,34 @@ async def lifespan(app: FastAPI):
 
         logger.info("Undeliverable follow-up retained in queue: %s", trigger.message)
 
-    # 31-7: Scheduled task background loop
+    # 31-7: Scheduled task background loop (with lease-based authority)
     _task_scheduler = None
     try:
-        from dan.server.concierge.scheduler import TaskScheduler
+        from dan.server.concierge.scheduler import (
+            SchedulerAuthority,
+            TaskScheduler,
+            create_server_scheduler,
+            resolve_scheduler_authority,
+        )
 
         _schedule_store = getattr(_concierge, "_schedule_store", None)
         _schedule_history_store = getattr(_concierge, "_schedule_history_store", None)
         if _schedule_store is not None:
-            _task_scheduler = TaskScheduler(
-                store=_schedule_store,
-                dispatch_fn=_dispatch_scheduled_action,
-                history_store=_schedule_history_store,
-            )
-            if _concierge is not None:
-                _concierge._task_scheduler = _task_scheduler
-            await _task_scheduler.start()
-            app.state.task_scheduler = _task_scheduler
-            logger.info("Task scheduler started")
+            _sched_authority = resolve_scheduler_authority()
+            if _sched_authority == SchedulerAuthority.SERVICE:
+                logger.info("Service daemon holds schedule lease — server scheduler deferred")
+            else:
+                _task_scheduler = create_server_scheduler(
+                    store=_schedule_store,
+                    dispatch_fn=_dispatch_scheduled_action,
+                    history_store=_schedule_history_store,
+                    event_bus=_global_event_bus,
+                )
+                if _concierge is not None:
+                    _concierge._task_scheduler = _task_scheduler
+                await _task_scheduler.start()
+                app.state.task_scheduler = _task_scheduler
+                logger.info("Task scheduler started (authority=SERVER)")
     except Exception:
         logger.debug("Task scheduler startup skipped", exc_info=True)
 
@@ -1685,18 +1723,34 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("Follow-up engine startup skipped", exc_info=True)
 
-    # 31-15: Learning tier activation
+    # 31-12: Wire run-completion triggers to follow-up queue
+    try:
+        if _follow_up_config is not None and _follow_up_queue is not None:
+            async def _on_run_completed_follow_up(event: dict) -> None:
+                if not _follow_up_config.enabled:
+                    return
+                event_type = event.get("event_type", "")
+                if event_type in ("run_completed", "run_failed"):
+                    run_id = event.get("data", {}).get("run_id", event.get("run_id", "unknown"))
+                    summary = event.get("data", {}).get("summary", event_type)
+                    project_id = event.get("data", {}).get("project_id")
+                    from dan.server.concierge.follow_up import create_run_completion_trigger
+                    trigger = create_run_completion_trigger(run_id, summary, project_id=project_id)
+                    _follow_up_queue.enqueue(trigger)
+
+            if hasattr(_gw_event_bus, "subscribe"):
+                _gw_event_bus.subscribe(_on_run_completed_follow_up)
+                logger.info("Run-completion follow-up trigger wired to event bus")
+    except Exception:
+        logger.debug("Run-completion follow-up wiring skipped", exc_info=True)
+
+    # 31-15: Learning tier activation — store resolved tier on concierge
     try:
         from dan.engine.learning_tiers import resolve_learning_tier, is_feature_enabled
         _learning_tier = resolve_learning_tier()
         if _concierge is not None:
             _concierge._learning_tier = _learning_tier
-        logger.info(
-            "Learning tier: %s (correction_detection=%s, adaptation_registry=%s)",
-            _learning_tier.value,
-            is_feature_enabled(_learning_tier, "correction_detection"),
-            is_feature_enabled(_learning_tier, "adaptation_registry"),
-        )
+        logger.info("Learning tier: %d", _learning_tier)
     except Exception:
         logger.debug("Learning tier resolution skipped", exc_info=True)
 
@@ -1720,22 +1774,34 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("Computer control config load skipped", exc_info=True)
 
-    # Custom skills discovery (19-6)
-    custom_skills_dir = Path(os.environ.get("DAN_CUSTOM_SKILLS_DIR", "custom_skills"))
-    if custom_skills_dir.is_dir():
-        try:
-            from dan.meta.authoring import RuntimeAuthor
-            from dan.server.skill_library import SKILL_LIBRARY
+    # Skill store: scan user / project / legacy dirs for SKILL.md files
+    _skill_store = None
+    try:
+        from dan.server.skill_store import SkillStore
 
-            skills = RuntimeAuthor.discover_custom_skills(custom_skills_dir)
-            for skill in skills:
-                skill_key = skill.get("name", "").lower().replace(" ", "_")
-                if skill_key and skill_key not in SKILL_LIBRARY:
-                    SKILL_LIBRARY[skill_key] = skill
-            if skills:
-                logger.info("Discovered %d custom skills from %s", len(skills), custom_skills_dir)
-        except Exception:
-            logger.debug("Custom skill discovery failed", exc_info=True)
+        _extra_dirs: list[Path] = []
+        _legacy_dir = Path(os.environ.get("DAN_CUSTOM_SKILLS_DIR", "custom_skills"))
+        if _legacy_dir.is_dir():
+            _extra_dirs.append(_legacy_dir)
+
+        _project_skills = Path(os.environ.get("DAN_PROJECT_SKILLS_DIR", ".dan/skills"))
+
+        _skill_store = SkillStore(
+            project_dir=_project_skills if _project_skills.is_dir() else None,
+            extra_dirs=_extra_dirs,
+        )
+        _n_skills = _skill_store.scan()
+        _n_added = _skill_store.populate_skill_library()
+        if _concierge is not None:
+            _concierge._skill_store = _skill_store
+        if _n_skills:
+            logger.info(
+                "Skill store: %d skill(s) loaded (%d new), dirs=%s",
+                _n_skills, _n_added,
+                [str(d) for d in [_skill_store.user_dir, _skill_store.project_dir] + _extra_dirs if d],
+            )
+    except Exception:
+        logger.debug("Skill store startup failed", exc_info=True)
 
     _consolidation_task = None
     if memory_kernel is not None:
@@ -1751,10 +1817,16 @@ async def lifespan(app: FastAPI):
                 _consolidation_interval_hours,
             )
 
-    # 31-5: Startup feature log
+    # 31-5 / 31-15 §4-4: Startup feature log with learning tier
     model_name = getattr(engine_config, "llm_default_model", "claude-sonnet-4-6")
     tier_policy = "on" if os.environ.get("DAN_ENABLE_TIER_POLICY") == "1" else "off"
-    learning = "on" if os.environ.get("DAN_LEARNING_MODE") == "1" else "off"
+    try:
+        from dan.engine.learning_tiers import resolve_learning_tier, features_enabled_at_tier
+        _startup_tier = resolve_learning_tier()
+        _startup_features = features_enabled_at_tier(_startup_tier)
+        learning = f"tier {_startup_tier} ({', '.join(sorted(_startup_features))})"
+    except Exception:
+        learning = "on" if os.environ.get("DAN_LEARNING_MODE") == "1" else "off"
     mcp_count = len(_mcp_bridge._clients) if _mcp_bridge and hasattr(_mcp_bridge, "_clients") else 0
     notif_count = len(_notification_manager.channels) if _notification_manager else 0
     autonomy = os.environ.get("DAN_CONCIERGE_AUTONOMY", "auto")
@@ -4672,6 +4744,56 @@ async def _run_adapter_concierge(
     """Route an adapter message through the concierge dispatcher."""
     from dan.server.concierge.models import SurfaceMessage
 
+    async def _relay_adapter_event(event: Any) -> None:
+        evt_type = getattr(event, "type", "")
+        if (
+            evt_type == "chat_complete"
+            and getattr(event, "detected_mode", None) == "progress_ack"
+        ):
+            return
+        if evt_type in {"chat_complete", "chat_mutation", "chat_interrupted"}:
+            content = getattr(event, "content", "")
+            if content:
+                await _send_adapter_text(adapter, external_id, content)
+            return
+        if evt_type == "chat_error":
+            error = getattr(event, "error", "")
+            if error:
+                await _send_adapter_text(adapter, external_id, error)
+            return
+        if evt_type == "chat_multi_part":
+            for part in getattr(event, "parts", []) or []:
+                if part:
+                    await _send_adapter_text(adapter, external_id, part)
+            return
+        if evt_type == "chat_queued" and _dispatcher is not None:
+            queue_position = max(int(getattr(event, "queue_position", 0) or 0), 1)
+            if queue_position == 1:
+                queued_text = (
+                    "Queued behind an earlier message — I'll reply here when it's done."
+                )
+            else:
+                queued_text = (
+                    f"Queued behind {queue_position} earlier messages — "
+                    "I'll reply here when it's done."
+                )
+            await _send_adapter_text(adapter, external_id, queued_text)
+
+            queued_channel = str(getattr(event, "stream_channel_id", "") or "").strip()
+            if not queued_channel:
+                return
+            bus = _dispatcher.get_response_bus(queued_channel)
+            if bus is None:
+                return
+            try:
+                while True:
+                    queued_event = await bus.get()
+                    if queued_event is None:
+                        break
+                    await _relay_adapter_event(queued_event)
+            finally:
+                _dispatcher.cleanup_response_bus(queued_channel)
+
     msg = SurfaceMessage(
         surface=surface,
         external_id=external_id,
@@ -4680,13 +4802,7 @@ async def _run_adapter_concierge(
     )
     try:
         async for event in _dispatcher.dispatch(msg):
-            evt_type = getattr(event, "type", "")
-            if evt_type == "chat_complete":
-                content = getattr(event, "content", "")
-                if content:
-                    await _send_adapter_text(adapter, external_id, content)
-            elif evt_type == "chat_stream":
-                pass
+            await _relay_adapter_event(event)
     except Exception:
         logger.exception("Adapter %s concierge dispatch failed", adapter_id)
         try:

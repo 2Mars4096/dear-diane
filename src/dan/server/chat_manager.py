@@ -11,6 +11,7 @@ import os
 import re
 import time
 import uuid
+from contextvars import ContextVar
 from typing import Any, AsyncIterator
 
 from pydantic import BaseModel, Field
@@ -80,6 +81,8 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+pii_session_var: ContextVar["Any"] = ContextVar("pii_session", default=None)
 
 NODE_TYPES: list[str] = [
     "llm_operator",
@@ -428,11 +431,8 @@ SURFACE_HINTS = {
         "- Current model: {model_name}\n"
         "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
         "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
-        "- ABSOLUTELY NO HTML tags (<div>, <p>, <h2>, <span>, <ul>, <li>, etc.) \u2014 WhatsApp renders these as raw text\n"
+        "- ABSOLUTELY NO HTML tags \u2014 WhatsApp renders these as raw text\n"
         "- No code blocks, no markdown tables \u2014 plain text only\n"
-        "- Never include raw HTML from web_fetch results in your response \u2014 always summarize in plain text\n"
-        "- Never reproduce raw extracted text from pdf_read or file_read \u2014 always produce a structured summary or answer\n"
-        "- NEVER echo back full script or code content from tool results (Stata do-files, Python scripts, shell commands, etc.) \u2014 the user cannot review code in chat. Only report: what you ran, key numeric results, errors, or a 1-line summary of what the script does\n"
         "- URLs on their own line (auto-linkified)\n"
         "- For long reports, organize into clearly separated sections"
     ),
@@ -441,11 +441,8 @@ SURFACE_HINTS = {
         "- Current model: {model_name}\n"
         "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
         "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
-        "- ABSOLUTELY NO HTML tags (<div>, <p>, <h2>, <span>, <ul>, <li>, etc.) \u2014 WhatsApp renders these as raw text\n"
+        "- ABSOLUTELY NO HTML tags \u2014 WhatsApp renders these as raw text\n"
         "- No code blocks, no markdown tables \u2014 plain text only\n"
-        "- Never include raw HTML from web_fetch results in your response \u2014 always summarize in plain text\n"
-        "- Never reproduce raw extracted text from pdf_read or file_read \u2014 always produce a structured summary or answer\n"
-        "- NEVER echo back full script or code content from tool results (Stata do-files, Python scripts, shell commands, etc.) \u2014 the user cannot review code in chat. Only report: what you ran, key numeric results, errors, or a 1-line summary of what the script does\n"
         "- URLs on their own line (auto-linkified)\n"
         "- For long reports, organize into clearly separated sections"
     ),
@@ -456,8 +453,6 @@ SURFACE_HINTS = {
         "- Telegram supports Markdown: **bold**, _italic_, `code`, ```code blocks```, [links](url), ~~strikethrough~~, ||spoilers||\n"
         "- Use code blocks for data/code output — they render properly in Telegram\n"
         "- No raw HTML tags — use Markdown only\n"
-        "- Never echo back full script or code content from tool results — only report: what you ran, key results, errors, or a 1-line summary\n"
-        "- Never reproduce raw extracted text from pdf_read or file_read — always produce a structured summary or answer\n"
         "- URLs on their own line (auto-linkified)\n"
         "- For long reports, organize into clearly separated sections"
     ),
@@ -521,6 +516,11 @@ get_learned_principles, discover_capabilities, submit_human_input
 4. NEVER guess file contents or directory listings. Call the tool.
 5. If a tool fails, tell the user what happened. Don't silently make something up.
 6. If you can't do something, say so. Suggest what the user can do instead.
+7. NEVER dump raw tool output to the user. Always summarize or extract the relevant facts. \
+This applies to all tools — web_fetch pages, file_read contents, list_directory listings, \
+shell_command output, pdf_read text. Present clean, structured answers, not raw data.
+8. NEVER include image markdown (![alt](url)), navigation link blocks, or raw HTML in your response. \
+Summarize the information from web pages; do not reproduce their markup.
 
 ## Research & Report Behavior
 
@@ -1652,7 +1652,11 @@ class ChatManager:
         self._cancel_events.pop(channel_id, None)
 
     def _resolve_provider(self, *, pii_session_key: str | None = None) -> Any:
-        """Resolve the active provider and wrap it for PII protection when enabled."""
+        """Resolve the active provider and wrap it for PII protection when enabled.
+
+        The resolved ``PIISession`` is also stored in :data:`pii_session_var`
+        so deeper call stacks can access it without explicit parameter passing.
+        """
         provider = self._providers.resolve(self._chat_model)
         try:
             from dan.server.concierge.pii_tokenizer import (
@@ -1663,9 +1667,11 @@ class ChatManager:
             )
 
             if is_pii_enabled():
+                session = get_pii_session(pii_session_key)
+                pii_session_var.set(session)
                 return TokenizingProviderWrapper(
                     provider=provider,
-                    session=get_pii_session(pii_session_key),
+                    session=session,
                     registry=SensitiveWordRegistry.load(),
                 )
         except Exception:

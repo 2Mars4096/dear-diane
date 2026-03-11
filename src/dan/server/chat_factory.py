@@ -81,6 +81,7 @@ def _build_engine_config() -> Any:
     """
     from dan.engine.executor import EngineConfig
     from dan.providers import ProviderConfig
+    from dan.rag import DEFAULT_EMBEDDING_MODEL
 
     providers: dict[str, ProviderConfig] = {}
     embedding_providers: dict[str, ProviderConfig] = {}
@@ -98,7 +99,7 @@ def _build_engine_config() -> Any:
         providers["google"] = ProviderConfig(api_key=google_key)
 
     default_embedding_model = os.environ.get(
-        "DAN_DEFAULT_EMBEDDING_MODEL", "text-embedding-3-small",
+        "DAN_DEFAULT_EMBEDDING_MODEL", DEFAULT_EMBEDDING_MODEL,
     )
     embedding_api_key = os.environ.get(
         "DAN_EMBEDDING_API_KEY",
