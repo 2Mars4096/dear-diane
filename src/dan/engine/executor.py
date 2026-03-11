@@ -16,6 +16,8 @@ if TYPE_CHECKING:
     from dan.providers.registry import ProviderRegistry
     from dan.rag import EmbeddingRegistry
 
+from dan.rag import DEFAULT_EMBEDDING_MODEL
+
 
 # ---------------------------------------------------------------------------
 # Human rendering surface protocol (Plan 16-3)
@@ -128,7 +130,7 @@ class EngineConfig:
     model_provider_map: dict[str, str] = field(default_factory=dict)
     embedding_providers: dict[str, ProviderConfig] = field(default_factory=dict)
     embedding_model_provider_map: dict[str, str] = field(default_factory=dict)
-    default_embedding_model: str = "text-embedding-3-small"
+    default_embedding_model: str = DEFAULT_EMBEDDING_MODEL
     # -- 14-1: Session memory ------------------------------------------------
     memory_dir: str = "./memory"
     memory_enabled: bool = True

@@ -427,6 +427,12 @@ Output ONLY a single valid JSON object. No markdown, no explanation."""
                 )
             if ctx_lines:
                 sections.append("## Plan Constraints\n" + "\n".join(ctx_lines))
+            calibration_hints = plan_context.get("calibration_hints")
+            if calibration_hints:
+                sections.append(
+                    "## Experience-Based Calibration\n"
+                    + "\n".join(f"- {h}" for h in calibration_hints)
+                )
 
         if discoveries.self_knowledge_formatted:
             sections.append(discoveries.self_knowledge_formatted)
@@ -843,8 +849,16 @@ class WorkflowPlanner:
         error_context: str | None = None,
         plan_context: dict[str, Any] | None = None,
     ) -> PlannerOutput:
-        """Discover → prompt → LLM → parse → validate."""
+        """Discover → prompt → LLM → parse → validate.
+
+        Planning-time calibration (31-15 §7-4): when available, injects
+        duration estimates, failure hotspot warnings, and model preference
+        hints from ``planning_calibration`` into the LLM planning context.
+        """
         discoveries = await self._discovery.discover_all(goal, self._discovery_top_k)
+
+        plan_context = dict(plan_context or {})
+        plan_context = self._inject_calibration(goal, plan_context)
 
         builder = PlanningPromptBuilder()
         system_prompt = builder.build_system_prompt()
@@ -875,6 +889,48 @@ class WorkflowPlanner:
             plan=GeneratePlan(description=goal, spec={}),
             review=PlanReview(valid=False, errors=[last_error or "Planning failed"]),
         )
+
+    def _inject_calibration(
+        self,
+        goal: str,
+        plan_context: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Inject planning-time calibration data from experience (31-15 §7-4)."""
+        try:
+            from dan.engine.planning_calibration import (
+                DurationEstimator,
+                FailureHotspotPredictor,
+                ModelPreference,
+            )
+
+            calibration_hints: list[str] = []
+
+            estimator = DurationEstimator()
+            median, ci = estimator.estimate(goal)
+            calibration_hints.append(
+                f"Estimated duration: ~{median:.0f} min (±{ci:.0f} min)"
+            )
+
+            predictor = FailureHotspotPredictor()
+            for ntype in ("code_operator", "tool_operator", "llm_operator"):
+                prob, advice = predictor.predict(ntype)
+                if prob > 0.10:
+                    calibration_hints.append(f"Failure warning ({ntype}): {advice}")
+
+            model_pref = ModelPreference()
+            rec = model_pref.recommend("llm_operator", task_pattern=goal)
+            if rec:
+                calibration_hints.append(
+                    f"Model tier recommendation: {rec}"
+                )
+
+            if calibration_hints:
+                plan_context["calibration_hints"] = calibration_hints
+
+        except Exception:
+            logger.debug("Planning calibration injection skipped", exc_info=True)
+
+        return plan_context
 
     async def execute_plan(self, plan: PlanResult) -> dict[str, Any]:
         """Execute a PlanResult: load, adapt, or compile a graph.

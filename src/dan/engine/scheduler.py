@@ -468,6 +468,7 @@ class Engine:
             ("vote", VoteExecutor()),
             ("agent_team", AgentTeamExecutor()),
             ("reflection", self._make_reflection_executor()),
+            ("goal_loop", self._make_goal_loop_executor()),
         ]
 
         for node_type, executor in defaults:
@@ -479,6 +480,12 @@ class Engine:
         from dan.executors.reflection import ReflectionExecutor
 
         return ReflectionExecutor()
+
+    @staticmethod
+    def _make_goal_loop_executor():
+        from dan.executors.control_flow import GoalLoopExecutor
+
+        return GoalLoopExecutor()
 
     @staticmethod
     def _apply_parameter_mutations(graph: Graph, mutations) -> Graph:
