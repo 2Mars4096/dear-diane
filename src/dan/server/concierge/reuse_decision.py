@@ -14,6 +14,15 @@ from typing import Any, Literal
 from dan.engine.memory_kernel import MemoryType, ScoredMemoryItem
 
 
+def _load_threshold(store: Any, key: str, default: float) -> float:
+    val = store.get(key, default=default)
+    if isinstance(val, dict):
+        return float(val.get("value", default))
+    if isinstance(val, (int, float)):
+        return float(val)
+    return default
+
+
 @dataclass
 class ReuseCandidate:
     """A workflow asset candidate for reuse or adaptation."""
@@ -50,13 +59,21 @@ def reuse_first_decision(
     min_success_rate: float = 0.5,
     limit: int = 10,
     domain_patterns: list[Any] | None = None,
+    behavior_store: Any = None,
+    param_logger: Any = None,
 ) -> tuple[Literal["reuse", "adapt", "generate"], ReuseCandidate | None]:
     """Decide REUSE/ADAPT/GENERATE from memory (29-4 §1-1 to §1-4).
 
     Returns (decision, candidate). Candidate is None for GENERATE.
     When domain_patterns is provided and non-empty, candidates with keyword
-    overlap > 0.3 get a +0.15 score boost.
+    overlap > 0.3 get a score boost (default +0.15).
     """
+    domain_boost = 0.15
+    if behavior_store is not None:
+        reuse_threshold = _load_threshold(behavior_store, "heuristics/reuse.reuse_threshold", reuse_threshold)
+        adapt_threshold = _load_threshold(behavior_store, "heuristics/reuse.adapt_threshold", adapt_threshold)
+        min_success_rate = _load_threshold(behavior_store, "heuristics/reuse.min_success_rate", min_success_rate)
+        domain_boost = _load_threshold(behavior_store, "heuristics/reuse.domain_boost", domain_boost)
     if not memory_kernel:
         return "generate", None
     try:
@@ -79,7 +96,7 @@ def reuse_first_decision(
                 for p in domain_patterns:
                     pc = _extract_pattern_content(p)
                     if pc and _word_overlap(cand_content, pc) > 0.3:
-                        adj += 0.15
+                        adj += domain_boost
                         break
                 return adj
             workflow_assets = sorted(
@@ -98,7 +115,7 @@ def reuse_first_decision(
             for p in domain_patterns:
                 pc = _extract_pattern_content(p)
                 if pc and _word_overlap(cand_content, pc) > 0.3:
-                    score += 0.15
+                    score += domain_boost
                     break
 
         candidate = ReuseCandidate(
@@ -109,10 +126,28 @@ def reuse_first_decision(
         )
 
         if score >= reuse_threshold and success_rate >= min_success_rate:
-            return "reuse", candidate
-        if score >= adapt_threshold:
-            return "adapt", candidate
-        return "generate", None
+            decision = "reuse"
+        elif score >= adapt_threshold:
+            decision = "adapt"
+        else:
+            decision = "generate"
+            candidate = None
+
+        if param_logger is not None:
+            param_logger.log_decision(
+                "heuristics/reuse.reuse_threshold",
+                reuse_threshold,
+                decision=decision,
+                outcome=None,
+                metadata={
+                    "score": score,
+                    "adapt_threshold": adapt_threshold,
+                    "min_success_rate": min_success_rate,
+                    "success_rate": success_rate,
+                },
+            )
+
+        return decision, candidate
     except Exception:
         return "generate", None
 
@@ -126,6 +161,8 @@ async def reuse_first_decision_async(
     min_success_rate: float = 0.5,
     limit: int = 10,
     domain_patterns: list[Any] | None = None,
+    behavior_store: Any = None,
+    param_logger: Any = None,
 ) -> tuple[Literal["reuse", "adapt", "generate"], ReuseCandidate | None]:
     """Async version of :func:`reuse_first_decision` (29-5 §6-2).
 
@@ -141,6 +178,8 @@ async def reuse_first_decision_async(
         min_success_rate=min_success_rate,
         limit=limit,
         domain_patterns=domain_patterns,
+        behavior_store=behavior_store,
+        param_logger=param_logger,
     )
 
 

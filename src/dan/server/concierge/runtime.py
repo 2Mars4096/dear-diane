@@ -217,6 +217,45 @@ class Concierge:
         self._computer_lease: Any = None
         self._computer_audit: Any = None
         self._learning_tier: Any = None
+        self._behavior_store: Any = None
+        self._behavior_changelog: Any = None
+        self._param_registry: Any = None
+        self._param_logger: Any = None
+        self._pattern_accumulator: Any = None
+        try:
+            from dan.engine.behavior_store import (
+                BehaviorStore, BehaviorChangeLog, AdaptableParameterRegistry,
+                ParameterDecisionLogger, PatternAccumulator,
+            )
+            from dan.engine.behavior_seeds import register_all_seeds
+
+            self._behavior_store = BehaviorStore()
+            self._behavior_changelog = BehaviorChangeLog()
+            self._param_registry = AdaptableParameterRegistry()
+            self._param_logger = ParameterDecisionLogger(
+                telemetry_store=self._telemetry_store,
+            )
+            self._pattern_accumulator = PatternAccumulator(self._behavior_store)
+            register_all_seeds(self._behavior_store, self._param_registry)
+
+            from dan.server.concierge.classifier import register_seed_intents
+            from dan.server.concierge.domain_learning import register_seed_domains
+            register_seed_intents(self._behavior_store)
+            register_seed_domains(self._behavior_store)
+
+            from dan.providers.tier_defaults import register_seed_tier_maps
+            from dan.providers.costs import register_seed_cost_table
+            register_seed_tier_maps(self._behavior_store)
+            register_seed_cost_table(self._behavior_store)
+            if hasattr(self.chat_manager, "set_behavior_store"):
+                self.chat_manager.set_behavior_store(self._behavior_store)
+        except Exception as exc:
+            logger.warning("BehaviorStore init failed: %s", exc)
+            self._behavior_store = None
+            self._behavior_changelog = None
+            self._param_registry = None
+            self._param_logger = None
+            self._pattern_accumulator = None
         self._classifier_model: str = os.environ.get(
             "DAN_CLASSIFIER_MODEL", ""
         )
@@ -921,6 +960,35 @@ class Concierge:
             return await self._coerce_fast_command_result(
                 handler(msg.text, self._adaptation_registry or AdaptationRegistry()),
             )
+        if descriptor.name == "/changes":
+            from dan.engine.behavior_store import BehaviorChangeLog as _BCL
+            from .learning import handle_changes_command
+
+            return await self._coerce_fast_command_result(
+                handle_changes_command(msg.text, self._behavior_changelog or _BCL()),
+            )
+        if descriptor.name == "/revert":
+            from dan.engine.behavior_store import BehaviorChangeLog as _BCL2, BehaviorStore as _BS
+            from .learning import handle_revert_command
+
+            return await self._coerce_fast_command_result(
+                handle_revert_command(
+                    msg.text,
+                    self._behavior_changelog or _BCL2(),
+                    self._behavior_store or _BS(),
+                ),
+            )
+        if descriptor.name == "/behavior":
+            from dan.engine.behavior_store import BehaviorStore as _BS2
+            from .learning import handle_behavior_command
+
+            return await self._coerce_fast_command_result(
+                handle_behavior_command(
+                    msg.text,
+                    self._behavior_store or _BS2(),
+                    self._param_registry,
+                ),
+            )
         if descriptor.name == "/computer":
             from .computer_policy import AuditLog, ComputerControlConfig
             from .computer_use import ComputerUseLeaseManager
@@ -1495,13 +1563,20 @@ class Concierge:
             if self.memory_kernel and not msg.metadata.get("reuse_choice"):
                 from .reuse_decision import reuse_first_decision
 
+                _bs = self._behavior_store
+                _pl = self._param_logger
                 prep_tasks["reuse"] = lambda: asyncio.to_thread(
                     reuse_first_decision, self.memory_kernel, msg.text,
+                    behavior_store=_bs, param_logger=_pl,
                 )
             # 31-21: domain expertise retrieval
             try:
                 from .domain_learning import detect_domain
-                _domain_hint = detect_domain(msg.text, None)
+                _domain_hint = detect_domain(
+                    msg.text, None,
+                    behavior_store=self._behavior_store,
+                    pattern_accumulator=self._pattern_accumulator,
+                )
             except Exception:
                 _domain_hint = None
             if _domain_hint and self.memory_kernel:
@@ -1682,6 +1757,8 @@ class Concierge:
             _cls_start = time.monotonic()
             classification = await classify_intent_llm(
                 msg.text, context, self._classify_llm_complete,
+                behavior_store=self._behavior_store,
+                pattern_accumulator=self._pattern_accumulator,
             )
             _intent_str = classification.intent.value if hasattr(classification.intent, "value") else str(classification.intent)
             self._telem_intent = _intent_str
@@ -1728,6 +1805,8 @@ class Concierge:
                     if _g1.action == "reclassify":
                         classification = await classify_intent_llm(
                             msg.text, context, self._classify_llm_complete,
+                            behavior_store=self._behavior_store,
+                            pattern_accumulator=self._pattern_accumulator,
                         )
                         _guard_ctx.classification = classification
                     if _g1.action == "clarify" and _g1.clarification_question:
@@ -1801,9 +1880,9 @@ class Concierge:
                     if signal is not None:
                         actions = route_correction(signal)
                         if actions:
-                            correction_store.add(
-                                CorrectionRecord(signal=signal, actions=actions),
-                            )
+                            _record = CorrectionRecord(signal=signal, actions=actions)
+                            _record.active_prompt_key = "prompts/runtime.unified_system"
+                            correction_store.add(_record)
                             # 31-21: bridge corrections to domain knowledge
                             _corr_domain = getattr(context, 'domain', None)
                             if _corr_domain and self.memory_kernel:
@@ -2762,7 +2841,11 @@ class Concierge:
         try:
             from .domain_learning import detect_domain
 
-            detected = detect_domain(text, context.project)
+            detected = detect_domain(
+                text, context.project,
+                behavior_store=self._behavior_store,
+                pattern_accumulator=self._pattern_accumulator,
+            )
             if detected:
                 context.domain = detected
         except Exception:
@@ -2860,6 +2943,8 @@ class Concierge:
             self.memory_kernel,
             goal_description,
             domain_patterns=_domain_patterns or None,
+            behavior_store=self._behavior_store,
+            param_logger=self._param_logger,
         )
 
     def _maybe_add_reuse_choice(
@@ -3032,7 +3117,7 @@ class Concierge:
         question: str,
     ) -> ChatCompleteEvent:
         """Pause the current task and ask a focused clarification question."""
-        inferred_intent = classify_intent(msg.text, context).intent
+        inferred_intent = classify_intent(msg.text, context, pattern_accumulator=self._pattern_accumulator).intent
         intent_value = (
             inferred_intent.value
             if hasattr(inferred_intent, "value")

@@ -866,6 +866,49 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         handler="dan.server.concierge.learning.handle_adaptations_command",
     ))
 
+    # -- Behavior commands (31-22) -----------------------------------------
+    registry.register(CommandDescriptor(
+        name="/changes",
+        kind="chat",
+        surfaces=["all"],
+        help_text="List recent behavioral adaptations",
+        group="behavior",
+        handler="dan.server.concierge.learning.handle_changes_command",
+    ))
+    registry.register(CommandDescriptor(
+        name="/revert",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="<id>",
+        help_text="Roll back a specific behavior change",
+        group="behavior",
+        handler="dan.server.concierge.learning.handle_revert_command",
+    ))
+    registry.register(CommandDescriptor(
+        name="/behavior",
+        kind="chat",
+        surfaces=["all"],
+        help_text="Inspect current behavior state",
+        group="behavior",
+        subcommands={
+            "--key": SubcommandDescriptor(
+                name="--key",
+                args_schema="<key>",
+                help_text="Show value, version, and history for a specific key",
+            ),
+            "--seeds": SubcommandDescriptor(
+                name="--seeds",
+                help_text="Compare current values to seed defaults",
+            ),
+            "--reset": SubcommandDescriptor(
+                name="--reset",
+                args_schema="<key>",
+                help_text="Restore a key to its seed default",
+            ),
+        },
+        handler="dan.server.concierge.learning.handle_behavior_command",
+    ))
+
     # 31-17: Computer Control & Browser Automation
     registry.register(CommandDescriptor(
         name="/computer",

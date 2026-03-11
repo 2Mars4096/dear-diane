@@ -29,6 +29,7 @@ from dan.engine.memory_kernel import (
 )
 
 if TYPE_CHECKING:
+    from dan.engine.behavior_store import BehaviorStore
     from dan.engine.memory_kernel import MemoryKernel
     from dan.providers.base import LLMProvider
     from dan.server.concierge.models import Project, TaskTurn
@@ -67,21 +68,40 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def detect_domain(message: str, project: Project | None = None) -> str | None:
+def register_seed_domains(store: BehaviorStore) -> None:
+    """Register domain keyword maps as seed defaults."""
+    store.register_seed("domains/keyword_maps", dict(_DOMAIN_KEYWORDS))
+
+
+def detect_domain(
+    message: str,
+    project: Project | None = None,
+    behavior_store: Any = None,
+    pattern_accumulator: Any = None,
+) -> str | None:
     """Keyword + project-tag based domain classifier."""
     if project is not None:
         proj_domain = getattr(project, "domain", None)
         if proj_domain:
             return proj_domain
 
+    kw_map = _DOMAIN_KEYWORDS
+    if behavior_store is not None:
+        stored = behavior_store.get("domains/keyword_maps")
+        if isinstance(stored, dict):
+            kw_map = stored
+
     msg_lower = message.lower()
     scores: dict[str, int] = {}
-    for domain, keywords in _DOMAIN_KEYWORDS.items():
-        count = sum(1 for kw in keywords if kw in msg_lower)
+    for domain, kws in kw_map.items():
+        count = sum(1 for kw in kws if kw in msg_lower)
         if count > 0:
             scores[domain] = count
 
     if not scores:
+        if pattern_accumulator is not None:
+            msg_kws = [w for w in message.lower().split() if len(w) > 3][:10]
+            pattern_accumulator.record_unrecognized(message[:200], msg_kws, "domain")
         return None
     return max(scores, key=scores.__getitem__)
 
@@ -788,3 +808,191 @@ def check_context_sufficiency(
         )
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Domain auto-discovery (task 8-3, plan 31-22)
+# ---------------------------------------------------------------------------
+
+
+def apply_new_domain(
+    domain_name: str,
+    keywords: list[str],
+    behavior_store: Any,
+) -> None:
+    """Register a newly discovered domain — additions only, never removes existing."""
+    kw_map = behavior_store.get("domains/keyword_maps", {})
+    if not isinstance(kw_map, dict):
+        kw_map = {}
+    kw_map[domain_name] = keywords
+    behavior_store.set(
+        "domains/keyword_maps",
+        kw_map,
+        reason=f"auto-discovered domain '{domain_name}'",
+    )
+    template = create_generic_template(domain_name)
+    save_domain_template(template)
+
+
+def propose_domain_discoveries(
+    pattern_accumulator: Any,
+    behavior_store: Any = None,
+    adaptation_registry: Any = None,
+) -> list[dict]:
+    """Propose or auto-apply newly discovered domains from accumulated patterns."""
+    from dan.engine.adaptation_registry import AdaptationCandidate
+
+    clusters = pattern_accumulator.get_clusters("domain", min_count=3)
+    if not clusters:
+        return []
+
+    existing_domains: set[str] = set(_DOMAIN_KEYWORDS.keys())
+    if behavior_store is not None:
+        stored = behavior_store.get("domains/keyword_maps")
+        if isinstance(stored, dict):
+            existing_domains.update(stored.keys())
+
+    proposals: list[dict] = []
+    for cluster in clusters:
+        keywords = cluster.get("keywords", [])
+        domain_name = "_".join(w.lower() for w in keywords[:3])
+        if domain_name in existing_domains:
+            continue
+
+        count = cluster.get("count", 0)
+        examples = cluster.get("examples", [])
+        proposal = {
+            "name": domain_name,
+            "keywords": keywords,
+            "count": count,
+            "examples": examples,
+        }
+
+        if is_feature_enabled("domain_auto_discovery"):
+            candidate = AdaptationCandidate(
+                source="domain_discovery",
+                auto_apply=True,
+                parameter_key="domains/keyword_maps",
+                description=(
+                    f"Auto-discovered domain '{domain_name}' with keywords "
+                    f"{keywords} from {count} unrecognized messages. "
+                    f"Examples: {examples[:3]}"
+                ),
+                sample_size=count,
+            )
+            if adaptation_registry is not None:
+                adaptation_registry.add(candidate)
+            if behavior_store is not None:
+                apply_new_domain(domain_name, keywords, behavior_store)
+        elif is_feature_enabled("domain_discovery_proposal"):
+            candidate = AdaptationCandidate(
+                source="domain_discovery",
+                parameter_key="domains/keyword_maps",
+                description=(
+                    f"Propose new domain '{domain_name}' with keywords "
+                    f"{keywords} from {count} unrecognized messages. "
+                    f"Examples: {examples[:3]}"
+                ),
+                sample_size=count,
+            )
+            if adaptation_registry is not None:
+                adaptation_registry.add(candidate)
+        else:
+            logger.debug(
+                "Tier 0: discovered potential domain '%s' (%d occurrences)",
+                domain_name,
+                count,
+            )
+
+        proposals.append(proposal)
+    return proposals
+
+
+# ---------------------------------------------------------------------------
+# Keyword expansion (task 8-4, plan 31-22)
+# ---------------------------------------------------------------------------
+
+
+def propose_keyword_expansion(
+    domain: str,
+    message: str,
+    task_succeeded: bool,
+    behavior_store: Any = None,
+    adaptation_registry: Any = None,
+) -> dict | None:
+    """Propose expanding a domain's keywords after a successful marginal match."""
+    from dan.engine.adaptation_registry import AdaptationCandidate
+
+    if not task_succeeded:
+        return None
+
+    kw_map = dict(_DOMAIN_KEYWORDS)
+    if behavior_store is not None:
+        stored = behavior_store.get("domains/keyword_maps")
+        if isinstance(stored, dict):
+            kw_map = stored
+
+    current_keywords = kw_map.get(domain, [])
+    if not current_keywords:
+        return None
+
+    msg_lower = message.lower()
+    hit_count = sum(1 for kw in current_keywords if kw in msg_lower)
+    if hit_count != 1:
+        return None
+
+    existing_lower = {kw.lower() for kw in current_keywords}
+    word_freq: dict[str, int] = {}
+    for w in re.findall(r"\b\w{4,}\b", msg_lower):
+        if w not in existing_lower:
+            word_freq[w] = word_freq.get(w, 0) + 1
+
+    new_keywords = sorted(word_freq, key=word_freq.__getitem__, reverse=True)[:3]
+    if not new_keywords:
+        return None
+
+    proposal: dict = {
+        "domain": domain,
+        "existing_keywords": current_keywords,
+        "new_keywords": new_keywords,
+        "message_preview": message[:200],
+    }
+
+    if is_feature_enabled("domain_auto_discovery"):
+        candidate = AdaptationCandidate(
+            source="domain_discovery",
+            auto_apply=True,
+            parameter_key="domains/keyword_maps",
+            description=(
+                f"Auto-expand domain '{domain}' keywords with {new_keywords} "
+                f"after successful marginal-match task"
+            ),
+        )
+        if adaptation_registry is not None:
+            adaptation_registry.add(candidate)
+        if behavior_store is not None:
+            kw_map[domain] = list(set(kw_map.get(domain, []) + new_keywords))
+            behavior_store.set(
+                "domains/keyword_maps",
+                kw_map,
+                reason=f"keyword expansion for domain '{domain}': +{new_keywords}",
+            )
+    elif is_feature_enabled("domain_discovery_proposal"):
+        candidate = AdaptationCandidate(
+            source="domain_discovery",
+            parameter_key="domains/keyword_maps",
+            description=(
+                f"Propose expanding domain '{domain}' keywords with "
+                f"{new_keywords} after successful marginal-match task"
+            ),
+        )
+        if adaptation_registry is not None:
+            adaptation_registry.add(candidate)
+    else:
+        logger.debug(
+            "Tier 0: potential keyword expansion for '%s': %s",
+            domain,
+            new_keywords,
+        )
+
+    return proposal

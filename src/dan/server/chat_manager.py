@@ -406,24 +406,99 @@ Apply when user mentions a specific journal.
 - Ambiguous intent → sensible defaults (intro, methods, results, discussion).
 """
 
-CAPABILITY_TOOLS_REFERENCE = """
-## Available tools
+_capability_reference_cache: str | None = None
 
-Call these when the user's intent matches:
+_CATEGORY_ORDER = [
+    ("file", "File"),
+    ("document", "Document"),
+    ("web", "Web"),
+    ("system", "System"),
+    ("communication", "Communication"),
+    ("text", "Text"),
+    ("utility", "Utility"),
+    ("data", "Data"),
+    ("media", "Media"),
+    ("git", "Git"),
+]
 
-**File:** file_read (read text file), pdf_read (extract PDF text — use for summarize/review), list_directory (list folder contents), file_write (save/create files, agent mode only)
-**Web:** web_search (live data: prices, weather, news), web_fetch (read a URL), http_request (REST API calls, agent mode only)
-**System:** shell_command (run terminal commands, agent mode only), current_datetime (today's date/time — always call instead of guessing), screenshot (capture screen, macOS), clipboard (read/write system clipboard, macOS), set_config (set API keys and SMTP credentials at runtime — updates immediately + persists to .env)
-**Communication:** send_email (send email via SMTP, agent mode only — requires DAN_SMTP_* config via set_config)
-**Text:** text_chunk (split long text), json_extract (dot-path extraction), regex_match (pattern matching/replacement)
-**Lookup:** search_workflow_history, get_workflow_details, search_run_history, get_learned_principles, discover_capabilities
-**Run control:** start_run, get_run_status, list_active_runs, cancel_run, resume_run, get_run_logs, submit_human_input
-**Publish:** publish_workflow, unpublish_workflow, export_workflow, share_workflow, list_published
-**Browse:** list_graphs, get_activity, list_blocks
 
-file_read, pdf_read, list_directory accept absolute paths (~/Dropbox/...).
-Read-only modes (ask/plan): lookup + browse + file read + web read only.
-{mcp_block}"""
+_ABBREVIATIONS = ("e.g.", "i.e.", "etc.", "vs.")
+_ABBR_SENTINEL = "\x00"
+
+
+def _brief_tool_description(full: str) -> str:
+    protected = full
+    for abbr in _ABBREVIATIONS:
+        protected = protected.replace(abbr, abbr.replace(".", _ABBR_SENTINEL))
+    sentence = protected.split(". ")[0]
+    sentence = sentence.replace(_ABBR_SENTINEL, ".").rstrip(".")
+    if sentence:
+        sentence = sentence[0].lower() + sentence[1:]
+    return sentence
+
+
+def generate_capability_reference() -> str:
+    """Build the '## Available tools' block from TOOL_METADATA (cached per process)."""
+    global _capability_reference_cache
+    if _capability_reference_cache is not None:
+        return _capability_reference_cache
+
+    try:
+        from dan.tools import get_all_tools
+        all_tools = get_all_tools()
+    except Exception:
+        all_tools = {}
+
+    by_category: dict[str, list[tuple[str, str]]] = {}
+    for tool_id, (_fn, meta) in all_tools.items():
+        cat = meta.get("category", "other")
+        brief = _brief_tool_description(meta.get("description", tool_id))
+        by_category.setdefault(cat, []).append((tool_id, brief))
+
+    lines = [
+        "## Available tools",
+        "",
+        "Call these when the user's intent matches:",
+        "",
+    ]
+
+    seen: set[str] = set()
+    for cat_key, cat_label in _CATEGORY_ORDER:
+        entries = by_category.get(cat_key)
+        if not entries:
+            continue
+        seen.add(cat_key)
+        items = ", ".join(f"{tid} ({desc})" for tid, desc in entries)
+        lines.append(f"**{cat_label}:** {items}")
+
+    for cat_key in sorted(by_category.keys()):
+        if cat_key in seen:
+            continue
+        entries = by_category[cat_key]
+        label = cat_key.replace("_", " ").title()
+        items = ", ".join(f"{tid} ({desc})" for tid, desc in entries)
+        lines.append(f"**{label}:** {items}")
+
+    lines.append("")
+    lines.append(
+        "file_read, pdf_read, list_directory accept absolute paths (~/Dropbox/...)."
+    )
+    lines.append(
+        "Read-only modes (ask/plan): lookup + browse + file read + web read only."
+    )
+    lines.append("{mcp_block}")
+
+    _capability_reference_cache = "\n".join(lines)
+    return _capability_reference_cache
+
+
+def invalidate_capability_cache() -> None:
+    """Clear cached tool reference so it regenerates on next access."""
+    global _capability_reference_cache
+    _capability_reference_cache = None
+
+
+CAPABILITY_TOOLS_REFERENCE = generate_capability_reference()
 
 SURFACE_HINTS = {
     "whatsapp": (
@@ -1634,6 +1709,7 @@ class ChatManager:
         self._user_profile = user_profile
         self._conversation_memory = conversation_memory
         self._memory_kernel = memory_kernel
+        self._behavior_store: Any | None = None
         self._chat_model = os.environ.get(
             "DAN_CHAT_MODEL",
             os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6"),
@@ -1657,6 +1733,10 @@ class ChatManager:
     def unregister_stream(self, channel_id: str) -> None:
         """Clean up a finished stream's cancellation event."""
         self._cancel_events.pop(channel_id, None)
+
+    def set_behavior_store(self, store: Any) -> None:
+        """Inject a BehaviorStore for domain detection and parameter resolution."""
+        self._behavior_store = store
 
     def _resolve_provider(self, *, pii_session_key: str | None = None) -> Any:
         """Resolve the active provider and wrap it for PII protection when enabled.
@@ -2080,6 +2160,53 @@ class ChatManager:
                         "Codegen path failed for %s, falling back to mutation path",
                         workflow_id,
                     )
+
+            # -- 32-4: Structural mutation macro fast path ------------------
+            if (
+                not is_empty_graph
+                and mode in ("agent", "build", "mutate")
+                and graph_dict is not None
+            ):
+                try:
+                    from dan.meta.structural_mutations import (
+                        dispatch_structural_mutation,
+                        summarize_graph as _summarize_graph,
+                    )
+
+                    dispatch = dispatch_structural_mutation(graph_dict, message)
+                    if dispatch.matched and dispatch.result and dispatch.result.success:
+                        self._graph_store.save_graph(workflow_id, graph_dict)
+                        updated_graph = Graph.model_validate(graph_dict)
+                        updated_summary = build_graph_summary(updated_graph, workflow_id)
+                        macro_msg = (
+                            f"Applied `{dispatch.macro_name}`: "
+                            f"{dispatch.result.edges_added} edges added, "
+                            f"{len(dispatch.result.nodes_added)} nodes added."
+                        )
+                        message_id = uuid.uuid4().hex[:12]
+                        yield ChatGraphCreatedEvent(
+                            workflow_id=workflow_id,
+                            node_count=updated_summary.node_count,
+                            edge_count=updated_summary.edge_count,
+                            graph_revision=updated_summary.revision,
+                        )
+                        self._record_conversation_summary(
+                            workflow_id=workflow_id,
+                            user_message=message,
+                            assistant_message=macro_msg,
+                        )
+                        yield ChatCompleteEvent(
+                            message_id=message_id,
+                            content=macro_msg,
+                            token_usage={},
+                            context_window=_get_context_window(self._chat_model),
+                            graph_revision=updated_summary.revision,
+                            revision_mismatch=False,
+                            detected_mode=mode,
+                        )
+                        return
+                except Exception:
+                    logger.debug("Structural mutation dispatch failed, continuing to mutation path", exc_info=True)
 
             # -- Mutation path (extended with capability tools) -------------
             messages = self._build_messages(
@@ -3024,6 +3151,15 @@ class ChatManager:
         events: list[ChatStreamEvent] = []
         provider = self._resolve_provider(pii_session_key=workflow_id)
 
+        detected_domain: str | None = None
+        try:
+            from dan.server.concierge.domain_learning import detect_domain
+            detected_domain = detect_domain(
+                user_message, None, behavior_store=self._behavior_store,
+            )
+        except Exception:
+            pass
+
         # -- Step 1: intent extraction ------------------------------------
         intent: WorkflowIntent | None = None
         try:
@@ -3058,7 +3194,7 @@ class ChatManager:
         if intent is not None and coverage_fully_covered:
             try:
                 compiler = IntentCompiler()
-                builder_code = compiler.compile(intent)
+                builder_code = compiler.compile(intent, domain=detected_domain)
                 events.append(ChatCodeGeneratedEvent(
                     code_snippet=builder_code[:500],
                     source="intent_compiler",
@@ -3098,6 +3234,7 @@ class ChatManager:
         system_prompt, user_prompt = codegen_builder.build_full_prompt(
             goal=user_message,
             error_context=error_ctx,
+            domain=detected_domain,
         )
         try:
             codegen_result: CompletionResult = await provider.complete(

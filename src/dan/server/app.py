@@ -3165,7 +3165,8 @@ def _build_meta_controller():
     session_store = MetaSessionStore(memory_store)
 
     async def _run_workflow(plan: Any, session_id: str) -> dict[str, Any]:
-        exec_result = await planner.execute_plan(plan)
+        user_text = getattr(plan, "description", None)
+        exec_result = await planner.execute_plan(plan, user_text=user_text)
         workflow_id = str(exec_result.get("workflow_id", "")).strip()
         graph_data = exec_result.get("graph")
         if not workflow_id:

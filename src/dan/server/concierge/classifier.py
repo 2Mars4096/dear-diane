@@ -6,11 +6,14 @@ import re
 from difflib import SequenceMatcher
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import TYPE_CHECKING, Any, Callable, Protocol
 
 from pydantic import BaseModel
 
 from .context_resolver import ResolvedContext
+
+if TYPE_CHECKING:
+    from dan.engine.behavior_store import BehaviorStore
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,12 @@ class ClassificationResult(BaseModel):
     confidence: float
     param: str = ""
     raw_text: str
+
+
+def register_seed_intents(store: BehaviorStore) -> None:
+    """Register core intent categories as seed defaults."""
+    core_intents = [e.value for e in IntentCategory]
+    store.register_seed("taxonomy/intent_categories", core_intents)
 
 
 def extract_search_query_from_send_request(text: str) -> str | None:
@@ -222,7 +231,11 @@ _INTERNAL_STATUS_OBJECTS = (
 )
 
 
-def classify_intent(text: str, context: ResolvedContext) -> ClassificationResult:
+def classify_intent(
+    text: str,
+    context: ResolvedContext,
+    pattern_accumulator: Any = None,
+) -> ClassificationResult:
     lower = text.lower().strip()
     clean = lower.rstrip(".!?,")
     recent_file_context = any(
@@ -329,6 +342,9 @@ def classify_intent(text: str, context: ResolvedContext) -> ClassificationResult
     if recent_file_context and any(phrase in clean for phrase in ("summarize it", "review it", "read it", "summarize this", "review this")):
         return ClassificationResult(intent=IntentCategory.FILE_REQUEST, confidence=0.75, raw_text=text)
 
+    if pattern_accumulator is not None:
+        keywords = [w for w in text.lower().split() if len(w) > 3][:10]
+        pattern_accumulator.record_unrecognized(text[:200], keywords, "taxonomy")
     return ClassificationResult(intent=IntentCategory.CONVERSATION, confidence=0.5, raw_text=text)
 
 
@@ -397,14 +413,24 @@ async def classify_intent_llm(
     text: str,
     context: ResolvedContext,
     llm_complete: LLMCompleteFunc,
+    behavior_store: Any = None,
+    pattern_accumulator: Any = None,
 ) -> ClassificationResult:
     """Primary classifier: uses a micro-tier LLM call with keyword fallback.
 
     Fast-path rules (filesystem paths, slash commands) are checked first.
     If the LLM call fails or returns garbage, falls back to keyword rules.
     """
-    heuristic = classify_intent(text, context)
-    if heuristic.confidence >= 0.85 or (
+    fast_path_conf = 0.85
+    if behavior_store is not None:
+        val = behavior_store.get("heuristics/classifier.fast_path_confidence", default=0.85)
+        if isinstance(val, dict):
+            fast_path_conf = val.get("value", 0.85)
+        elif isinstance(val, (int, float)):
+            fast_path_conf = float(val)
+
+    heuristic = classify_intent(text, context, pattern_accumulator=pattern_accumulator)
+    if heuristic.confidence >= fast_path_conf or (
         heuristic.intent != IntentCategory.CONVERSATION and heuristic.confidence >= 0.8
     ):
         return heuristic
@@ -424,5 +450,130 @@ async def classify_intent_llm(
     except Exception:
         logger.debug("LLM classifier failed, falling back to keyword rules", exc_info=True)
 
-    return classify_intent(text, context)
+    return classify_intent(text, context, pattern_accumulator=pattern_accumulator)
+
+
+# ---------------------------------------------------------------------------
+# Self-adaptive intent discovery (plan 31-22, tasks 7-3 / 7-4 / 7-5)
+# ---------------------------------------------------------------------------
+
+
+def propose_intent_discoveries(
+    pattern_accumulator: Any,
+    behavior_store: Any = None,
+    adaptation_registry: Any = None,
+) -> list[dict]:
+    """Scan accumulated unrecognized patterns and propose new intent categories.
+
+    Tier behaviour:
+      - Tier 0 (pattern_accumulation): just returns discoveries for logging.
+      - Tier 1 (intent_discovery_proposal): creates pending AdaptationCandidates.
+      - Tier 2 (intent_auto_promotion): creates auto-apply candidates.
+    """
+    from dan.engine.learning_tiers import is_feature_enabled
+
+    clusters = pattern_accumulator.get_clusters("taxonomy", min_count=5)
+    if not clusters:
+        return []
+
+    existing_names: set[str] = {e.value for e in IntentCategory}
+    if behavior_store is not None:
+        stored = behavior_store.get("taxonomy/intent_categories", default=[])
+        if isinstance(stored, list):
+            existing_names.update(str(v) for v in stored)
+
+    discoveries: list[dict] = []
+    for cluster in clusters:
+        kws: list[str] = cluster.get("keywords", [])[:2]
+        if not kws:
+            continue
+        proposed_name = "_".join(k.lower() for k in kws)
+        if proposed_name in existing_names:
+            continue
+
+        examples = cluster.get("examples", [])
+        count = cluster.get("count", 0)
+        info: dict = {
+            "name": proposed_name,
+            "keywords": cluster.get("keywords", []),
+            "count": count,
+            "examples": examples[:5],
+        }
+
+        if adaptation_registry is not None and is_feature_enabled("intent_discovery_proposal"):
+            from dan.engine.adaptation_registry import AdaptationCandidate
+
+            auto = is_feature_enabled("intent_auto_promotion")
+            candidate = AdaptationCandidate(
+                source="intent_discovery",
+                description=f"New intent '{proposed_name}' from {count} unrecognized messages (e.g. {examples[:2]})",
+                parameter_key="taxonomy/intent_categories",
+                before_value=str(sorted(existing_names)),
+                after_value=str(sorted(existing_names | {proposed_name})),
+                evidence=[f"keywords={kws}", f"count={count}", *(ex[:80] for ex in examples[:3])],
+                auto_apply=auto,
+            )
+            adaptation_registry.add(candidate)
+
+        discoveries.append(info)
+
+    return discoveries
+
+
+def apply_new_intent(
+    intent_name: str,
+    keywords: list[str],
+    behavior_store: Any,
+) -> None:
+    """Wire a discovered intent into the behavior store's taxonomy and handler map."""
+    current = behavior_store.get("taxonomy/intent_categories", default=[])
+    if not isinstance(current, list):
+        current = []
+
+    if intent_name not in current:
+        current.append(intent_name)
+        behavior_store.set(
+            "taxonomy/intent_categories",
+            current,
+            reason=f"Added discovered intent '{intent_name}' (keywords: {keywords})",
+        )
+
+    handlers: dict = behavior_store.get("taxonomy/intent_handlers", default={})
+    if not isinstance(handlers, dict):
+        handlers = {}
+    handlers[intent_name] = "direct_task"
+    behavior_store.set(
+        "taxonomy/intent_handlers",
+        handlers,
+        reason=f"Default handler for new intent '{intent_name}'",
+    )
+
+
+def evolve_classifier_prompt(
+    intent_name: str,
+    description: str,
+    behavior_store: Any,
+) -> None:
+    """Append a newly discovered intent to the classifier system prompt stored in the behavior store."""
+    prompt = behavior_store.get("prompts/classifier.classification_system", default=None)
+    if prompt is None:
+        logger.debug(
+            "Classifier system prompt not externalised to behavior store yet; "
+            "skipping prompt co-evolution for intent '%s'",
+            intent_name,
+        )
+        return
+
+    if not isinstance(prompt, str):
+        return
+
+    if intent_name in prompt:
+        return
+
+    updated = prompt.rstrip() + f"\n- {intent_name}: {description}"
+    behavior_store.set(
+        "prompts/classifier.classification_system",
+        updated,
+        reason=f"Added discovered intent '{intent_name}' to classifier prompt",
+    )
 

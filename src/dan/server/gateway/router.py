@@ -106,7 +106,7 @@ async def _dispatch_text(
             f"Planning failed: {'; '.join(planner_output.review.errors)}",
         )
 
-    exec_result = await planner.execute_plan(planner_output.plan)
+    exec_result = await planner.execute_plan(planner_output.plan, user_text=goal)
     graph_data = exec_result.get("graph")
     workflow_id = exec_result.get("workflow_id", f"meta-{uuid.uuid4().hex[:10]}")
 

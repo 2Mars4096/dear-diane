@@ -99,6 +99,10 @@ class TelemetryEvent(BaseModel):
     retry_count: int = 0
     guard_action: str | None = None
 
+    # Self-adaptive behavior: parameter-outcome linking (31-22 task 4-1)
+    parameter_key: str | None = None
+    parameter_value: str | None = None
+
     # Extensible context
     metadata: dict[str, Any] = Field(default_factory=dict)
 

@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from dan.engine.behavior_store import BehaviorStore
+
 COST_PER_1K_TOKENS: dict[str, dict[str, float]] = {
     # OpenAI
     "gpt-4o": {"prompt": 0.0025, "completion": 0.01},
@@ -27,16 +32,31 @@ COST_PER_1K_TOKENS: dict[str, dict[str, float]] = {
 }
 
 
+def register_seed_cost_table(store: BehaviorStore) -> None:
+    """Register cost table as seed default."""
+    store.register_seed("models/cost_table", dict(COST_PER_1K_TOKENS))
+
+
 def estimate_cost(
-    model: str, prompt_tokens: int, completion_tokens: int
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    behavior_store: Any = None,
 ) -> float | None:
     """Estimate cost in USD for a given model and token counts.
 
-    Returns None for unknown models.
+    Returns None for unknown models.  If *behavior_store* is provided,
+    its ``models/cost_table`` entry is consulted before the module constant.
     """
-    rates = COST_PER_1K_TOKENS.get(model)
+    cost_table = COST_PER_1K_TOKENS
+    if behavior_store is not None:
+        stored = behavior_store.get("models/cost_table")
+        if isinstance(stored, dict):
+            cost_table = stored
+
+    rates = cost_table.get(model)
     if rates is None:
-        for key, r in COST_PER_1K_TOKENS.items():
+        for key, r in cost_table.items():
             if model.startswith(key):
                 rates = r
                 break

@@ -8,7 +8,10 @@ name (e.g. Anthropic reasoning/critical both use Opus), per-tier
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from dan.engine.behavior_store import BehaviorStore
 
 DEFAULT_TIER_MAPS: dict[str, dict[str, str]] = {
     "anthropic": {
@@ -42,34 +45,49 @@ _TIER_KEYS = {"micro", "routine", "reasoning", "critical"}
 _PROVIDER_PREFERENCE = ["anthropic", "openai", "google"]
 
 
+def register_seed_tier_maps(store: BehaviorStore) -> None:
+    """Register default tier maps as seed defaults."""
+    store.register_seed("models/tier_maps", dict(DEFAULT_TIER_MAPS))
+
+
 def resolve_tier_map(
     configured_providers: list[str],
     user_override: dict[str, str] | None = None,
+    behavior_store: Any = None,
 ) -> dict[str, str]:
-    """Resolve a complete tier→model map from provider config and user overrides.
+    """Resolve a complete tier->model map from provider config and user overrides.
 
     * If *user_override* covers all four tier keys, return it as-is.
     * Otherwise pick the best-match provider ecosystem (prefer
       anthropic > openai > google when multiple are configured) and
       merge any partial *user_override* on top of the provider defaults.
+    * If *behavior_store* is provided, its ``models/tier_maps`` entry
+      is used in place of the module-level ``DEFAULT_TIER_MAPS``.
     """
     if user_override and _TIER_KEYS <= user_override.keys():
         return user_override
 
+    tier_maps = DEFAULT_TIER_MAPS
+    if behavior_store is not None:
+        stored = behavior_store.get("models/tier_maps")
+        if isinstance(stored, dict):
+            tier_maps = stored
+
     base: dict[str, str] = {}
     for provider in _PROVIDER_PREFERENCE:
-        if provider in configured_providers and provider in DEFAULT_TIER_MAPS:
-            base = dict(DEFAULT_TIER_MAPS[provider])
+        if provider in configured_providers and provider in tier_maps:
+            base = dict(tier_maps[provider])
             break
 
     if not base:
         for provider in configured_providers:
-            if provider in DEFAULT_TIER_MAPS:
-                base = dict(DEFAULT_TIER_MAPS[provider])
+            if provider in tier_maps:
+                base = dict(tier_maps[provider])
                 break
 
     if not base:
-        base = dict(DEFAULT_TIER_MAPS["anthropic"])
+        fallback = tier_maps.get("anthropic") or DEFAULT_TIER_MAPS["anthropic"]
+        base = dict(fallback)
 
     if user_override:
         base.update(user_override)
