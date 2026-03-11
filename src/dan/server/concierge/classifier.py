@@ -213,48 +213,13 @@ _STATUS_PHRASES = (
     "how's the run", "how is the run",
     "what's the progress", "whats the progress", "what is the progress",
     "progress update", "progress check",
-    "what progress do we have", "what progress have we made",
-    "any updates", "any progress",
 )
 
 _INTERNAL_STATUS_OBJECTS = (
     "run", "runs", "workflow", "workflows", "task", "tasks",
     "job", "jobs", "session", "sessions", "build", "builds",
-    "goal", "goals", "project", "projects",
+    "goal", "goals",
 )
-
-_PROJECT_STATUS_WORDS = ("progress", "status", "update", "review", "going", "doing")
-
-_DAN_PROJECT_CONTEXT = frozenset({
-    "what", "whats", "what's", "is", "the", "our", "my", "how",
-    "hows", "how's", "any", "give", "show", "check", "get", "me",
-    "a", "on", "of", "do", "we", "have",
-    "progress", "status", "update", "review", "going", "doing",
-})
-
-_EXTERNAL_TOPIC_NOUNS = frozenset({
-    "thesis", "report", "email", "plan", "proposal", "presentation",
-    "budget", "contract", "invoice", "letter", "memo", "essay",
-    "article", "brief", "draft", "summary", "agenda", "minutes",
-    "syllabus", "lecture", "course", "assignment", "homework",
-    "manuscript", "grant", "application", "resume", "cv",
-})
-
-
-def _looks_like_topical_status_request(clean: str) -> bool:
-    """Detect status/progress about an external topic, not DAN runtime state."""
-    topical_markers = (
-        "status of ",
-        "progress of ",
-        "track the progress of ",
-        "updates on ",
-    )
-    if not any(marker in clean for marker in topical_markers):
-        return False
-    return not any(
-        re.search(rf"\b{re.escape(noun)}\b", clean)
-        for noun in _INTERNAL_STATUS_OBJECTS
-    )
 
 
 def classify_intent(text: str, context: ResolvedContext) -> ClassificationResult:
@@ -289,32 +254,8 @@ def classify_intent(text: str, context: ResolvedContext) -> ClassificationResult
             raw_text=text,
         )
 
-    if _looks_like_topical_status_request(clean):
-        return ClassificationResult(
-            intent=IntentCategory.CONVERSATION,
-            confidence=0.85,
-            raw_text=text,
-        )
-
     if any(phrase in clean for phrase in _STATUS_PHRASES):
         return ClassificationResult(intent=IntentCategory.STATUS_CHECK, confidence=0.95, raw_text=text)
-
-    if "project" in clean and any(w in clean for w in _PROJECT_STATUS_WORDS):
-        words = clean.split()
-        try:
-            proj_pos = words.index("project")
-        except ValueError:
-            proj_pos = len(words)
-        preceding = set(words[:proj_pos])
-        all_words = set(words)
-        is_dan_project = preceding.issubset(_DAN_PROJECT_CONTEXT) or len(words) <= 3
-        has_external_noun = bool(all_words & _EXTERNAL_TOPIC_NOUNS)
-        if is_dan_project and not has_external_noun and not has_path and not any(
-            t in clean for t in ("pdf", "paper", "document", "folder", "directory")
-        ):
-            return ClassificationResult(
-                intent=IntentCategory.STATUS_CHECK, confidence=0.85, raw_text=text,
-            )
 
     if any(phrase in clean for phrase in ("cancel", "resume", "stop the run", "run it", "pause")):
         return ClassificationResult(intent=IntentCategory.RUN_CONTROL, confidence=0.9, raw_text=text)
@@ -402,7 +343,7 @@ Intents:
 - file_request: Find/open/read/review/summarize a local file or document. Mentions a filesystem path or filename.
 - direct_task: Quick factual lookup, web search, drafting a short email or message.
 - run_control: Start, stop, cancel, resume, or pause a workflow run.
-- status_check: Check status/progress of active DAN projects, tasks, or runs. Includes "project review", "project progress", "how's the project going".
+- status_check: Check status/progress of active DAN runs, tasks, or scheduled jobs. Includes "what's running", "check the run". Does NOT include asking about a project by name — those are handled by project commands.
 - workflow_build: Create, modify, or edit a workflow or pipeline.
 - workflow_query: List or inspect existing workflows.
 - experience_query: Ask about past work, similar projects, or lessons learned.

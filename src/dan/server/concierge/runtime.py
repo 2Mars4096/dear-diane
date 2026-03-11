@@ -20,6 +20,16 @@ from dan.server.chat_manager import ChatCompleteEvent, ChatErrorEvent, ChatStrea
 from .classifier import ClassificationResult, IntentCategory, classify_intent, classify_intent_llm
 from .command_registry import CommandDescriptor, CommandRegistry, get_default_registry
 from .context_resolver import ProjectContextResolver, ResolvedContext
+from .entity_grounding import (
+    EntityContext,
+    GuardContext,
+    GuardResult,
+    ground_entities,
+    guard_classification,
+    guard_response_relevance,
+    guard_understanding,
+    guards_enabled,
+)
 from .identity import format_bare_prefix, format_prefix, starts_with_prefix
 from .models import ConciergeGoal, ConciergeState, SurfaceMessage
 
@@ -81,7 +91,7 @@ _AUTONOMY_OVERRIDE_PHRASES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("show me every step", "step by step", "walk me through"), AutonomyLevel.INTERACTIVE.value),
 )
 
-_FAST_COMMAND_PREFIXES = ("/save", "/build-", "/memory-", "/mcp", "/model", "/cost", "/retry", "/status", "/skill")
+_FAST_COMMAND_PREFIXES = ("/save", "/build-", "/memory-", "/mcp", "/model", "/cost", "/retry", "/status", "/skill", "/project")
 _PREF_CONFIRM_WORDS = frozenset({"confirm all", "yes", "confirm"})
 
 _GREETING_TOKENS = frozenset({
@@ -125,6 +135,7 @@ class Concierge:
         mcp_bridge: Any = None,
         capability_registry: Any = None,
         tool_registry: Any = None,
+        telemetry_store: Any = None,
     ) -> None:
         self.project_store = project_store
         self.context_resolver = context_resolver
@@ -144,6 +155,12 @@ class Concierge:
         self.mcp_bridge = mcp_bridge
         self._capability_registry = capability_registry
         self._tool_registry = tool_registry
+        self._telemetry_store = telemetry_store
+        self._current_turn_event_id: str | None = None
+        self._telem_is_fast_command = False
+        self._telem_model: str | None = None
+        self._telem_intent: str | None = None
+        self._last_context: Any = None
         _raw = (autonomy_level or os.environ.get("DAN_CONCIERGE_AUTONOMY", "supervised")).strip().lower()
         if _raw in (e.value for e in AutonomyLevel):
             self._autonomy_level = _raw
@@ -240,6 +257,20 @@ class Concierge:
             messages=messages, model=model, temperature=0.0, max_tokens=60,
         )
         return result.text
+
+    async def _emit_telemetry_event(self, event_type: str, **kwargs) -> None:
+        """Fire-and-forget telemetry emission."""
+        store = getattr(self, "_telemetry_store", None)
+        if store is None:
+            return
+        try:
+            from dan.server.telemetry import TelemetryEvent
+
+            parent = getattr(self, "_current_turn_event_id", None)
+            ev = TelemetryEvent(event_type=event_type, parent_event_id=parent, **kwargs)
+            await store.record(ev)
+        except Exception:
+            logger.debug("Telemetry emit failed", exc_info=True)
 
     @property
     def _current_surface_id(self) -> str | None:
@@ -370,6 +401,191 @@ class Concierge:
                     total_cost += m.estimated_cost
                 
         return self._complete_event(content=f"{format_prefix(ctx.project.label)} Total estimated cost for this thread: ${total_cost:.4f}")
+
+    # -- /analytics ----------------------------------------------------------
+
+    async def _handle_analytics_command(self, msg: SurfaceMessage) -> str:
+        """Handle /analytics command — query telemetry store and present usage reports."""
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        from dan.server.telemetry import NullTelemetryStore, TelemetryQuery
+
+        store = self._telemetry_store
+        if store is None or isinstance(store, NullTelemetryStore):
+            return "Telemetry is not enabled. Set DAN_TELEMETRY=1 to enable."
+
+        raw = msg.text.strip()
+        args = raw[len("/analytics"):].strip() if raw.lower().startswith("/analytics") else raw
+
+        since_days = 7
+        since_dt: _dt | None = None
+        since_match = re.search(r"--since\s+(\d+)d", args)
+        if since_match:
+            since_days = int(since_match.group(1))
+            args = args[: since_match.start()] + args[since_match.end() :]
+        else:
+            date_match = re.search(r"--since\s+(\d{4}-\d{2}-\d{2})", args)
+            if date_match:
+                since_dt = _dt.fromisoformat(date_match.group(1)).replace(tzinfo=_tz.utc)
+                args = args[: date_match.start()] + args[date_match.end() :]
+
+        if since_dt is None:
+            since_dt = _dt.now(_tz.utc) - _td(days=since_days)
+
+        group_by_match = re.search(r"--by\s+(\w+)", args)
+        group_by: list[str] | None = None
+        if group_by_match:
+            group_by = [group_by_match.group(1)]
+            args = args[: group_by_match.start()] + args[group_by_match.end() :]
+
+        args = args.strip()
+
+        if args.startswith("export"):
+            return await self._analytics_export(store, since_dt, args)
+        if args.startswith("project"):
+            project_name = args[len("project") :].strip()
+            return await self._analytics_project(store, project_name, since_dt, group_by, msg)
+
+        if since_match:
+            header_label = f"last {since_days} days"
+        elif date_match:
+            header_label = f"since {date_match.group(1)}"
+        else:
+            header_label = f"last {since_days} days"
+        return await self._analytics_default(store, since_dt, header_label, group_by)
+
+    async def _analytics_default(
+        self,
+        store: Any,
+        since: Any,
+        header_label: str,
+        group_by: list[str] | None,
+    ) -> str:
+        from dan.server.telemetry import TelemetryQuery
+
+        q = TelemetryQuery(since=since, limit=10_000)
+        all_events = await store.query(q)
+        if not all_events:
+            return "No telemetry data found for the given time range."
+
+        total_prompt = sum(e.prompt_tokens for e in all_events)
+        total_completion = sum(e.completion_tokens for e in all_events)
+        total_tokens = sum(e.total_tokens for e in all_events)
+        total_cost = sum(e.estimated_cost for e in all_events)
+
+        chat_turns = [e for e in all_events if e.event_type == "chat_turn"]
+        fast_cmds = [e for e in all_events if e.event_type == "fast_command"]
+        runs = [e for e in all_events if e.event_type == "workflow_run"]
+        tools = [e for e in all_events if e.event_type == "tool_call"]
+
+        avg_response = 0.0
+        if chat_turns:
+            avg_response = sum(e.duration_ms for e in chat_turns) / len(chat_turns) / 1000
+
+        lines = [
+            f"Usage Report ({header_label})",
+            "\u2500" * 30,
+            f"Total tokens: {total_tokens:,} (in: {total_prompt:,} / out: {total_completion:,})",
+            f"Total cost: ${total_cost:.2f}",
+        ]
+        if chat_turns:
+            lines.append(f"Avg response time: {avg_response:.1f}s")
+        lines.append(
+            f"Turns: {len(chat_turns)} | Commands: {len(fast_cmds)} | Runs: {len(runs)} | Tools: {len(tools)}"
+        )
+        lines.append("")
+
+        effective_group = group_by or ["event_type"]
+        rows = await store.aggregate(q, group_by=effective_group)
+        if rows:
+            label = effective_group[0] if len(effective_group) == 1 else "+".join(effective_group)
+            lines.append(f"By {label}:")
+            for r in sorted(rows, key=lambda x: x.total_cost, reverse=True):
+                key_val = " / ".join(str(v) for v in r.group_key.values() if v)
+                avg_s = r.avg_duration_ms / 1000 if r.avg_duration_ms else 0
+                lines.append(
+                    f"  {key_val:20s}  {r.total_tokens:>8,} tok  ${r.total_cost:>6.2f}  {avg_s:.1f}s avg  {r.count} events"
+                )
+
+        return "\n".join(lines)
+
+    async def _analytics_project(
+        self,
+        store: Any,
+        project_name: str,
+        since: Any,
+        group_by: list[str] | None,
+        msg: SurfaceMessage,
+    ) -> str:
+        from dan.server.telemetry import TelemetryQuery
+
+        if not project_name:
+            return "Usage: /analytics project <name>"
+
+        surface_id = msg.external_id
+        projects = self.project_store.list_projects(surface_id)
+        matched = None
+        for p in projects:
+            if project_name.lower() in p.label.lower():
+                matched = p
+                break
+
+        if matched is None:
+            return f"No project matching '{project_name}' found."
+
+        q = TelemetryQuery(project_id=matched.project_id, since=since, limit=10_000)
+        all_events = await store.query(q)
+        if not all_events:
+            return f"No telemetry data for project '{matched.label}' in the given time range."
+
+        total_tokens = sum(e.total_tokens for e in all_events)
+        total_cost = sum(e.estimated_cost for e in all_events)
+        chat_turns = [e for e in all_events if e.event_type == "chat_turn"]
+
+        lines = [
+            f"Project: {matched.label}",
+            "\u2500" * 30,
+            f"Total tokens: {total_tokens:,}",
+            f"Total cost: ${total_cost:.2f}",
+            f"Chat turns: {len(chat_turns)}",
+            "",
+        ]
+
+        effective_group = group_by or ["model"]
+        rows = await store.aggregate(q, group_by=effective_group)
+        if rows:
+            label = effective_group[0]
+            lines.append(f"By {label}:")
+            for r in sorted(rows, key=lambda x: x.total_cost, reverse=True):
+                key_val = " / ".join(str(v) for v in r.group_key.values() if v)
+                lines.append(
+                    f"  {key_val:20s}  {r.total_tokens:>8,} tok  ${r.total_cost:>6.2f}  {r.count} events"
+                )
+
+        return "\n".join(lines)
+
+    async def _analytics_export(self, store: Any, since: Any, args: str) -> str:
+        from datetime import datetime as _dt
+        from pathlib import Path
+
+        from dan.server.telemetry import TelemetryQuery
+
+        fmt = "jsonl"
+        fmt_match = re.search(r"--format\s+(jsonl|csv)", args)
+        if fmt_match:
+            fmt = fmt_match.group(1)
+
+        q = TelemetryQuery(since=since, limit=100_000)
+        export_dir = Path.home() / ".dan" / "exports"
+        timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+
+        if fmt == "csv":
+            path = export_dir / f"telemetry_{timestamp}.csv"
+            count = await store.export_csv(q, path=path)
+        else:
+            path = export_dir / f"telemetry_{timestamp}.jsonl"
+            count = await store.export_jsonl(q, path=path)
+
+        return f"Exported {count} events to {path}"
 
     async def _handle_retry_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
         """Handle /retry command to re-process the last user message."""
@@ -735,11 +951,13 @@ class Concierge:
                 registry,
             )
             if dispatch_result is not None:
+                self._telem_is_fast_command = True
                 return dispatch_result
         pref_confirmation = self.handle_preference_confirmation(
             msg.external_id, msg.text,
         )
         if pref_confirmation:
+            self._telem_is_fast_command = True
             return self._complete_event(
                 content=f"{format_prefix()} {pref_confirmation}",
             )
@@ -964,12 +1182,72 @@ class Concierge:
             return f"{fallback} ({self._format_elapsed_seconds(elapsed_seconds)})"
         return self._REASSURANCE_MESSAGES[idx]
 
+    async def _emit_turn_telemetry(
+        self,
+        *,
+        turn_event_id: str,
+        start_time: float,
+        msg: SurfaceMessage,
+        tokens: dict[str, int],
+        cost: float,
+        is_fast_command: bool,
+        success: bool = True,
+        model: str | None = None,
+        intent: str | None = None,
+    ) -> None:
+        if self._telemetry_store is None:
+            return
+        try:
+            from dan.server.telemetry import TelemetryEvent
+
+            duration_ms = (time.monotonic() - start_time) * 1000
+            _ctx = self._last_context
+            if model is None:
+                model = getattr(self, "_telem_model", None)
+            if intent is None:
+                intent = getattr(self, "_telem_intent", None)
+            ev = TelemetryEvent(
+                id=turn_event_id,
+                event_type="fast_command" if is_fast_command else "chat_turn",
+                project_id=getattr(getattr(_ctx, "project", None), "project_id", None),
+                task_id=getattr(getattr(_ctx, "task", None), "task_id", None),
+                surface=getattr(msg, "surface_id", None),
+                session_id=msg.external_id,
+                model=model,
+                intent=intent,
+                prompt_tokens=tokens.get("prompt_tokens", 0),
+                completion_tokens=tokens.get("completion_tokens", 0),
+                total_tokens=tokens.get("total_tokens", 0),
+                estimated_cost=cost,
+                duration_ms=duration_ms,
+                success=success,
+            )
+            await self._telemetry_store.record(ev)
+        except Exception:
+            logger.debug("Telemetry emit failed", exc_info=True)
+
     async def process(self, msg: SurfaceMessage) -> AsyncIterator[ChatStreamEvent]:
-        # Messaging surfaces own their own progress timer in the adapter layer.
-        # Concierge just streams events without injecting reassurance bubbles.
+        from dan.server.telemetry import generate_event_id
+
+        turn_event_id = generate_event_id()
+        self._current_turn_event_id = turn_event_id
+        _telem_start = time.monotonic()
+        _telem_tokens: dict[str, int] = {}
+        _telem_cost = 0.0
+        self._telem_is_fast_command = False
+        self._telem_model = None
+        self._telem_intent = None
+        _telem_success = True
+
         if self._REASSURANCE_INITIAL_DELAY <= 0 or self._is_messaging_surface(msg):
             try:
                 async for event in self._process_inner(msg):
+                    if isinstance(event, ChatCompleteEvent):
+                        _tu = getattr(event, "token_usage", {}) or {}
+                        _telem_tokens["prompt_tokens"] = _telem_tokens.get("prompt_tokens", 0) + _tu.get("prompt_tokens", 0)
+                        _telem_tokens["completion_tokens"] = _telem_tokens.get("completion_tokens", 0) + _tu.get("completion_tokens", 0)
+                        _telem_tokens["total_tokens"] = _telem_tokens.get("total_tokens", 0) + _tu.get("total_tokens", 0)
+                        _telem_cost += getattr(event, "estimated_cost", 0) or 0
                     if (
                         self._is_messaging_surface(msg)
                         and isinstance(event, ChatCompleteEvent)
@@ -977,8 +1255,20 @@ class Concierge:
                     ):
                         continue
                     yield event
+            except Exception:
+                _telem_success = False
+                raise
             finally:
                 self._progress_sessions.pop(msg.external_id, None)
+                await self._emit_turn_telemetry(
+                    turn_event_id=turn_event_id,
+                    start_time=_telem_start,
+                    msg=msg,
+                    tokens=_telem_tokens,
+                    cost=_telem_cost,
+                    is_fast_command=self._telem_is_fast_command,
+                    success=_telem_success,
+                )
             return
 
         _sentinel = object()
@@ -1035,6 +1325,12 @@ class Concierge:
                     break
                 if isinstance(item, Exception):
                     raise item
+                if isinstance(item, ChatCompleteEvent):
+                    _tu = getattr(item, "token_usage", {}) or {}
+                    _telem_tokens["prompt_tokens"] = _telem_tokens.get("prompt_tokens", 0) + _tu.get("prompt_tokens", 0)
+                    _telem_tokens["completion_tokens"] = _telem_tokens.get("completion_tokens", 0) + _tu.get("completion_tokens", 0)
+                    _telem_tokens["total_tokens"] = _telem_tokens.get("total_tokens", 0) + _tu.get("total_tokens", 0)
+                    _telem_cost += getattr(item, "estimated_cost", 0) or 0
                 is_phase_event = (
                     isinstance(item, ChatCompleteEvent)
                     and getattr(item, "detected_mode", None) == "progress_ack"
@@ -1054,8 +1350,20 @@ class Concierge:
                     "level": "info",
                     "surface_id": msg.surface_id,
                 })
+        except Exception:
+            _telem_success = False
+            raise
         finally:
             self._progress_sessions.pop(msg.external_id, None)
+            await self._emit_turn_telemetry(
+                turn_event_id=turn_event_id,
+                start_time=_telem_start,
+                msg=msg,
+                tokens=_telem_tokens,
+                cost=_telem_cost,
+                is_fast_command=self._telem_is_fast_command,
+                success=_telem_success,
+            )
             if not drain_task.done():
                 drain_task.cancel()
                 try:
@@ -1067,6 +1375,7 @@ class Concierge:
         self._current_surface_id = msg.external_id
         self._concierge_state = self._load_concierge_state(msg.external_id)
         self._concierge_state.last_interaction_at = time.time()
+        self._telem_model = getattr(self.chat_manager, "_chat_model", None)
 
         # Fast-path: known commands respond instantly without LLM/memory prep.
         fast_event = await self._try_fast_command(msg)
@@ -1195,9 +1504,27 @@ class Concierge:
 
         self._save_concierge_state(msg.external_id, self._concierge_state)
 
+        # ── UNDERSTAND phase: entity grounding ──────────────────────
+        _entity_ctx = EntityContext(
+            matched_projects=[], matched_tasks=[], matched_workflows=[],
+            unresolved_refs=[], is_about_project=False,
+        )
+        if guards_enabled():
+            try:
+                _entity_ctx = ground_entities(msg.text, self.project_store, msg.external_id)
+                if _entity_ctx.matched_projects:
+                    logger.info(
+                        "Entity grounding matched %d project(s): %s",
+                        len(_entity_ctx.matched_projects),
+                        ", ".join(p.label for p in _entity_ctx.matched_projects[:3]),
+                    )
+            except Exception:
+                logger.debug("Entity grounding failed", exc_info=True)
+
         pending_resolution = self._resolve_pending_follow_up(msg)
         if pending_resolution is not None:
             immediate_event, context, classification, msg = pending_resolution
+            self._last_context = context
             if immediate_event is not None:
                 yield immediate_event
                 return
@@ -1207,9 +1534,87 @@ class Concierge:
                 if _precomputed_context is not None
                 else self.context_resolver.resolve(msg)
             )
+            self._last_context = context
+            _cls_start = time.monotonic()
             classification = await classify_intent_llm(
                 msg.text, context, self._classify_llm_complete,
             )
+            _intent_str = classification.intent.value if hasattr(classification.intent, "value") else str(classification.intent)
+            self._telem_intent = _intent_str
+            await self._emit_telemetry_event(
+                "classification",
+                intent=_intent_str,
+                duration_ms=(time.monotonic() - _cls_start) * 1000,
+                metadata={"confidence": getattr(classification, "confidence", None)},
+            )
+
+        # ── UNDERSTAND phase: Guard 1 — classification coherence ──
+        _guard_ctx = GuardContext(
+            message=msg, entity_ctx=_entity_ctx, classification=classification,
+        )
+        if guards_enabled():
+            try:
+                _g1_start = time.monotonic()
+                _g1 = guard_classification(_guard_ctx)
+                await self._emit_telemetry_event(
+                    "guard_check",
+                    duration_ms=(time.monotonic() - _g1_start) * 1000,
+                    guard_action=_g1.action,
+                    success=_g1.passed,
+                    metadata={"guard": "classification", "notes": _g1.notes},
+                )
+                for _note in _g1.notes:
+                    logger.info("Guard 1: %s", _note)
+                if not _g1.passed:
+                    if _g1.action == "short_circuit" and _g1.short_circuit_response:
+                        label = self._format_reply_label(context, msg)
+                        sc_content = _g1.short_circuit_response
+                        if label and not sc_content.startswith("["):
+                            sc_content = f"{label} {sc_content}"
+                        self.project_store.append_turn(
+                            context.project.project_id,
+                            context.task.task_id,
+                            TaskTurn(role="user", content=msg.text, intent="status_check"),
+                            msg.external_id,
+                        )
+                        self._record_assistant_turn(context, msg, sc_content)
+                        self._finalize_task(context, msg, IntentCategory.STATUS_CHECK, True)
+                        yield self._complete_event(content=sc_content)
+                        return
+                    if _g1.action == "reclassify":
+                        classification = await classify_intent_llm(
+                            msg.text, context, self._classify_llm_complete,
+                        )
+                        _guard_ctx.classification = classification
+                    if _g1.action == "clarify" and _g1.clarification_question:
+                        self.project_store.append_turn(
+                            context.project.project_id,
+                            context.task.task_id,
+                            TaskTurn(role="user", content=msg.text, intent=classification.intent.value),
+                            msg.external_id,
+                        )
+                        self._record_assistant_turn(context, msg, _g1.clarification_question)
+                        yield self._complete_event(content=_g1.clarification_question)
+                        return
+            except Exception:
+                logger.debug("Guard 1 (classification) failed", exc_info=True)
+
+        _resolved_project_id = context.project.project_id
+        if _resolved_project_id and self.memory_kernel and self._memory_context is not None:
+            _mem_start = time.monotonic()
+            _project_supplement = self._retrieve_memory_context(
+                msg.text,
+                has_active_build=has_active_build,
+                project_id=_resolved_project_id,
+            )
+            await self._emit_telemetry_event(
+                "memory_retrieval",
+                duration_ms=(time.monotonic() - _mem_start) * 1000,
+                metadata={"has_results": bool(_project_supplement), "source": "context_building"},
+            )
+            if _project_supplement and _project_supplement not in (self._memory_context or ""):
+                existing = (self._memory_context or "").rstrip()
+                self._memory_context = f"{existing}\n{_project_supplement}".strip() if existing else _project_supplement
 
         _phase_evt = self._make_phase_event(
             msg.external_id,
@@ -1278,17 +1683,20 @@ class Concierge:
                                 )
                         # 31-15 §3-4: Store preferences/principles in MemoryKernel
                         if actions and self.memory_kernel is not None:
+                            _correction_project_id = context.project.project_id
                             for action in actions:
                                 atype = action.get("type")
                                 avalue = action.get("value", "")
                                 if atype == "preference" and avalue:
                                     self.memory_kernel.store_preference(
                                         avalue, confirmed=False,
+                                        project_id=_correction_project_id,
                                     )
                                 elif atype == "principle" and avalue:
                                     self.memory_kernel.store_principle(
                                         avalue,
                                         confidence=signal.confidence,
+                                        project_id=_correction_project_id,
                                     )
         except Exception:
             logger.debug("Correction detection failed", exc_info=True)
@@ -1367,7 +1775,7 @@ class Concierge:
         )
 
         if self.goal_resolver is not None and not use_goal_orchestrator:
-            async for event in self._solver_path(msg, context, classification):
+            async for event in self._solver_path(msg, context, classification, entity_ctx=_entity_ctx):
                 yield event
             return
 
@@ -1554,6 +1962,49 @@ class Concierge:
                         task_status_override=self._task_status_for_goal(goal),
                     )
                     return
+            # ── UNDERSTAND phase: Guard 2 on goal orchestrator path ──
+            if guards_enabled() and _entity_ctx is not None:
+                try:
+                    from .solver import ExecutionMode as _EM, SolverDecision as _SD
+                    _intent_mode_map = {
+                        IntentCategory.META_GOAL: _EM.META_DELEGATE,
+                        IntentCategory.WORKFLOW_BUILD: _EM.WORKFLOW_BUILD,
+                    }
+                    _proxy = _SD(
+                        user_goal=goal.description,
+                        requested_deliverable="",
+                        execution_mode=_intent_mode_map.get(classification.intent, _EM.DIRECT_ACTION),
+                        assumptions=[],
+                        confidence=0.8,
+                    )
+                    _g2_ctx = GuardContext(
+                        message=msg, entity_ctx=_entity_ctx,
+                        classification=classification, solver_decision=_proxy,
+                    )
+                    _g2_start = time.monotonic()
+                    _g2 = guard_understanding(_g2_ctx)
+                    await self._emit_telemetry_event(
+                        "guard_check",
+                        duration_ms=(time.monotonic() - _g2_start) * 1000,
+                        guard_action=_g2.action,
+                        success=_g2.passed,
+                        metadata={"guard": "understanding_goal_orch", "notes": _g2.notes},
+                    )
+                    for _note in _g2.notes:
+                        logger.info("Guard 2 (goal orch): %s", _note)
+                    if not _g2.passed and _g2.action == "clarify" and _g2.clarification_question:
+                        self.project_store.append_turn(
+                            context.project.project_id,
+                            context.task.task_id,
+                            TaskTurn(role="user", content=msg.text, intent=classification.intent.value),
+                            msg.external_id,
+                        )
+                        self._record_assistant_turn(context, msg, _g2.clarification_question)
+                        yield self._complete_event(content=_g2.clarification_question)
+                        return
+                except Exception:
+                    logger.debug("Guard 2 (goal orch) failed", exc_info=True)
+
             async for event in self._execute_goal(goal, msg, context):
                 if getattr(event, "type", "") == "chat_complete":
                     last_content = getattr(event, "content", "") or ""
@@ -1569,6 +2020,7 @@ class Concierge:
                     "error_history": goal.error_history,
                     "metadata": {"goal_id": goal.id},
                 },
+                project_id=context.project.project_id,
             )
             self._finalize_task(
                 context,
@@ -1649,14 +2101,14 @@ class Concierge:
                 if evt_type == "chat_complete":
                     raw_content = getattr(event, "content", "") or ""
                     final_content = self._check_unsourced_claims(raw_content, saw_tool_call)
-                    final_content = await self._post_process_response(final_content, msg.text, msg=msg)
+                    final_content = await self._post_process_response(final_content, msg.text, msg=msg, entity_ctx=_entity_ctx)
                     stream_channel_id = getattr(event, "stream_channel_id", None)
                     if hasattr(event, "model_copy"):
                         event = event.model_copy(update={"content": final_content})
                 yield event
             if final_content:
                 self._record_assistant_turn(context, msg, final_content)
-                self._store_memory_candidates(msg.text, final_content, None)
+                self._store_memory_candidates(msg.text, final_content, None, project_id=context.project.project_id)
             self._finalize_task(
                 context,
                 msg,
@@ -1679,7 +2131,7 @@ class Concierge:
             IntentCategory.CONVERSATION, IntentCategory.DIRECT_TASK,
         )
         content = self._check_unsourced_claims(content, had_tool_call)
-        content = await self._post_process_response(content, msg.text, msg=msg)
+        content = await self._post_process_response(content, msg.text, msg=msg, entity_ctx=_entity_ctx)
         if self.promoter and self.promoter.should_propose(context.project, context.task):
             proposal = self.promoter.build_proposal(context.project, context.task)
             content = f"{content}\n\nSave as reusable workflow? -> {proposal.save_command}"
@@ -1687,7 +2139,7 @@ class Concierge:
         if pref_prompt:
             content = f"{content}\n\n{pref_prompt}" if content else pref_prompt
         self._record_assistant_turn(context, msg, content)
-        self._store_memory_candidates(msg.text, content, None)
+        self._store_memory_candidates(msg.text, content, None, project_id=context.project.project_id)
         self._finalize_task(
             context,
             msg,
@@ -1702,6 +2154,8 @@ class Concierge:
         msg: SurfaceMessage,
         context: ResolvedContext,
         classification: ClassificationResult,
+        *,
+        entity_ctx: EntityContext | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         workflow_candidates = []
         experience_context_str = None
@@ -1716,13 +2170,48 @@ class Concierge:
             except Exception:
                 logger.debug("Memory retrieval failed", exc_info=True)
 
+        _entity_ctx_dict = None
+        if entity_ctx and entity_ctx.matched_projects:
+            _entity_ctx_dict = {
+                "matched_projects": [
+                    {"label": p.label, "status": p.status, "tasks": len(p.tasks),
+                     "active_tasks": sum(1 for t in p.tasks if t.status == "active")}
+                    for p in entity_ctx.matched_projects[:5]
+                ],
+                "is_about_project": entity_ctx.is_about_project,
+            }
+
         decision = await self.goal_resolver.resolve(
             msg, context, classification,
             workflow_candidates=workflow_candidates,
             experience_context=experience_context_str,
+            entity_context=_entity_ctx_dict,
         )
 
         decision = self.plan_builder.build_plan(decision)
+
+        # ── UNDERSTAND phase: Guard 2 — understanding coherence ──
+        if guards_enabled() and entity_ctx is not None:
+            try:
+                _g2_ctx = GuardContext(
+                    message=msg, entity_ctx=entity_ctx,
+                    classification=classification, solver_decision=decision,
+                )
+                _g2_start = time.monotonic()
+                _g2 = guard_understanding(_g2_ctx)
+                await self._emit_telemetry_event(
+                    "guard_check",
+                    duration_ms=(time.monotonic() - _g2_start) * 1000,
+                    guard_action=_g2.action,
+                    success=_g2.passed,
+                    metadata={"guard": "understanding", "notes": _g2.notes},
+                )
+                for _note in _g2.notes:
+                    logger.info("Guard 2: %s", _note)
+                if not _g2.passed and _g2.action == "clarify" and _g2.clarification_question:
+                    decision.clarification_question = _g2.clarification_question
+            except Exception:
+                logger.debug("Guard 2 (understanding) failed", exc_info=True)
 
         # 31-14 §3-3: Plan disclosure for multi-step plans
         if len(decision.plan_steps) > 1:
@@ -1819,7 +2308,7 @@ class Concierge:
                 if evt_type == "chat_complete":
                     raw_content = getattr(event, "content", "") or ""
                     final_content = self._check_unsourced_claims(raw_content, saw_tool_call)
-                    final_content = await self._post_process_response(final_content, msg.text, msg=msg)
+                    final_content = await self._post_process_response(final_content, msg.text, msg=msg, entity_ctx=entity_ctx)
                     stream_channel_id = getattr(event, "stream_channel_id", None)
                     if hasattr(event, "model_copy"):
                         event = event.model_copy(update={"content": final_content})
@@ -1849,7 +2338,7 @@ class Concierge:
                     logger.debug("Result checkpoint (events path) failed", exc_info=True)
             if final_content:
                 self._record_assistant_turn(context, msg, final_content)
-                self._store_memory_candidates(msg.text, final_content, None)
+                self._store_memory_candidates(msg.text, final_content, None, project_id=context.project.project_id)
             self._finalize_task(
                 context, msg, classification.intent, bool(final_content),
                 task_status_override=(handler_result.task_update or {}).get("status"),
@@ -1874,7 +2363,7 @@ class Concierge:
             and handler_result.content != content
         )
         content = self._check_unsourced_claims(content, had_tool_call)
-        content = await self._post_process_response(content, msg.text, msg=msg)
+        content = await self._post_process_response(content, msg.text, msg=msg, entity_ctx=entity_ctx)
 
         if self.promoter and decision.save_candidate:
             if self.promoter.should_propose(context.project, context.task):
@@ -1906,7 +2395,7 @@ class Concierge:
             logger.debug("Result checkpoint failed", exc_info=True)
 
         self._record_assistant_turn(context, msg, content)
-        self._store_memory_candidates(msg.text, content, None)
+        self._store_memory_candidates(msg.text, content, None, project_id=context.project.project_id)
         self._finalize_task(
             context, msg, classification.intent, bool(content),
         )
@@ -2377,6 +2866,212 @@ class Concierge:
 
         return None
 
+    def _handle_project_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
+        """Handle /project list|info|set|memory|delete."""
+        text = msg.text.strip()
+        lower = text.lower()
+
+        if not lower.startswith("/project"):
+            return None
+
+        args = text[len("/project"):].strip()
+        args_lower = args.lower()
+
+        if not args or args_lower == "list":
+            return self._project_list_response(msg.external_id)
+        if args_lower.startswith("info"):
+            name = args[len("info"):].strip()
+            return self._project_info_response(msg.external_id, name or None)
+        if args_lower.startswith("set "):
+            rest = args[len("set "):].strip()
+            return self._project_set_response(msg.external_id, rest)
+        if args_lower.startswith("memory"):
+            name = args[len("memory"):].strip()
+            return self._project_memory_response(msg.external_id, name or None)
+        if args_lower.startswith("delete "):
+            name = args[len("delete "):].strip()
+            return self._project_delete_response(msg.external_id, name)
+
+        return self._complete_event(
+            content="Usage: /project [list|info [name]|set <key> <value>|memory [name]|delete <name>]",
+        )
+
+    def _project_list_response(self, surface_id: str) -> ChatCompleteEvent:
+        all_projects = self.project_store.list_projects(surface_id)
+        if not all_projects:
+            return self._complete_event(content="No projects on this surface.")
+        lines = [f"**Projects ({len(all_projects)}):**"]
+        for p in all_projects:
+            task_count = len(p.tasks)
+            active_tasks = sum(1 for t in p.tasks if t.status == "active")
+            status_icon = {"active": "+", "paused": "~", "completed": "x"}.get(p.status, "?")
+            lines.append(
+                f"  [{status_icon}] **{p.label}** — {task_count} tasks "
+                f"({active_tasks} active), id: `{p.project_id}`"
+            )
+        return self._complete_event(content="\n".join(lines))
+
+    def _project_info_response(
+        self, surface_id: str, name: str | None,
+    ) -> ChatCompleteEvent:
+        project = self._resolve_project_by_name(surface_id, name)
+        if project is None:
+            if name:
+                return self._complete_event(
+                    content=f'Project "{name}" not found. Use `/project list` to see available projects.',
+                )
+            return self._complete_event(content="No active project. Use `/project list`.")
+
+        lines = [f"**{project.label}** ({project.status})"]
+        lines.append(f"ID: `{project.project_id}`")
+        lines.append(f"Created: {project.created_at:%Y-%m-%d %H:%M}")
+        lines.append(f"Updated: {project.updated_at:%Y-%m-%d %H:%M}")
+
+        if project.summary:
+            lines.append(f"Summary: {project.summary}")
+
+        if project.tasks:
+            lines.append(f"\n**Tasks ({len(project.tasks)}):**")
+            for t in project.tasks:
+                icon = {"active": "+", "paused": "~", "blocked": "!", "completed": "x"}.get(t.status, "?")
+                turn_count = len(t.turns)
+                lines.append(f"  [{icon}] {t.label} — {turn_count} turns")
+                if t.current_blocker:
+                    lines.append(f"      Blocker: {t.current_blocker}")
+
+        if project.linked_workflow_ids:
+            lines.append(f"\nLinked workflows: {', '.join(project.linked_workflow_ids[:5])}")
+        if project.linked_run_ids:
+            lines.append(f"Linked runs: {', '.join(project.linked_run_ids[:5])}")
+
+        mem_count = self._count_project_memories(project.project_id)
+        if mem_count > 0:
+            lines.append(f"\nProject memories: {mem_count} items (use `/project memory` to view)")
+
+        return self._complete_event(content="\n".join(lines))
+
+    def _project_set_response(self, surface_id: str, rest: str) -> ChatCompleteEvent:
+        parts = rest.split(None, 1)
+        if len(parts) < 2:
+            return self._complete_event(
+                content="Usage: /project set <key> <value>\nExample: /project set data_path /Users/me/data",
+            )
+        key, value = parts[0], parts[1]
+
+        project = self._resolve_project_by_name(surface_id, None)
+        if project is None:
+            return self._complete_event(content="No active project. Start a conversation first.")
+
+        if not self.memory_kernel:
+            return self._complete_event(content="Memory kernel not available.")
+
+        self.memory_kernel.store_fact(
+            content=f"{key}: {value}",
+            project_id=project.project_id,
+            tags=[key],
+            importance=1.0,
+        )
+        return self._complete_event(
+            content=f"Stored for **{project.label}**: `{key}` = `{value}`",
+        )
+
+    def _project_memory_response(
+        self, surface_id: str, name: str | None,
+    ) -> ChatCompleteEvent:
+        project = self._resolve_project_by_name(surface_id, name)
+        if project is None:
+            if name:
+                return self._complete_event(
+                    content=f'Project "{name}" not found. Use `/project list`.',
+                )
+            return self._complete_event(content="No active project. Use `/project list`.")
+
+        if not self.memory_kernel:
+            return self._complete_event(content="Memory kernel not available.")
+
+        from dan.engine.memory_kernel import MemoryScope
+
+        items = []
+        for mem_type_items in self.memory_kernel._type_index.values():
+            for item_id in mem_type_items:
+                item = self.memory_kernel._index.get(item_id)
+                if item is None:
+                    continue
+                if (
+                    item.scope == MemoryScope.PROJECT
+                    and item.metadata.get("project_id") == project.project_id
+                    and item.lifecycle.value != "archive"
+                ):
+                    items.append(item)
+
+        if not items:
+            return self._complete_event(
+                content=f"No memories stored for **{project.label}**.\n"
+                f"Use `/project set <key> <value>` to add project-specific facts.",
+            )
+
+        items.sort(key=lambda x: x.updated_at, reverse=True)
+        lines = [f"**Memories for {project.label}** ({len(items)} items):"]
+        for i, item in enumerate(items[:20], 1):
+            tag = item.memory_type.value.upper()
+            snippet = item.content[:100].replace("\n", " ")
+            lines.append(f"  {i}. [{tag}] {snippet}")
+        if len(items) > 20:
+            lines.append(f"  ... and {len(items) - 20} more")
+        return self._complete_event(content="\n".join(lines))
+
+    def _project_delete_response(self, surface_id: str, name: str) -> ChatCompleteEvent:
+        project = self._resolve_project_by_name(surface_id, name)
+        if project is None:
+            return self._complete_event(
+                content=f'Project "{name}" not found. Use `/project list`.',
+            )
+        self.project_store.update_project_status(
+            project.project_id, "completed", surface_id,
+        )
+        return self._complete_event(
+            content=f"Project **{project.label}** marked as completed.",
+        )
+
+    def _resolve_project_by_name(
+        self, surface_id: str, name: str | None,
+    ) -> Project | None:
+        projects = self.project_store.list_projects(surface_id)
+        if not projects:
+            return None
+        if not name:
+            active = [p for p in projects if p.status == "active"]
+            return active[0] if active else projects[0]
+        name_lower = name.lower().strip()
+        for p in projects:
+            if p.label.lower() == name_lower:
+                return p
+        for p in projects:
+            if name_lower in p.label.lower():
+                return p
+        for p in projects:
+            if p.project_id == name_lower:
+                return p
+        return None
+
+    def _count_project_memories(self, project_id: str) -> int:
+        if not self.memory_kernel:
+            return 0
+        from dan.engine.memory_kernel import MemoryScope
+
+        count = 0
+        for mem_type_items in self.memory_kernel._type_index.values():
+            for item_id in mem_type_items:
+                item = self.memory_kernel._index.get(item_id)
+                if (
+                    item is not None
+                    and item.scope == MemoryScope.PROJECT
+                    and item.metadata.get("project_id") == project_id
+                    and item.lifecycle.value != "archive"
+                ):
+                    count += 1
+        return count
+
     def _handle_memory_command(self, msg: SurfaceMessage) -> ChatCompleteEvent | None:
         """Handle /memory-stats, /memory-search, /memory-delete, /memory-forget, /memory-confirm, /memory-reject."""
         text = msg.text.strip()
@@ -2747,8 +3442,9 @@ class Concierge:
         user_text: str,
         *,
         msg: SurfaceMessage | None = None,
+        entity_ctx: EntityContext | None = None,
     ) -> str:
-        """ResponsePostProcessor pipeline: completion guard.
+        """ResponsePostProcessor pipeline: Guard 3 (relevance) + completion guard.
 
         PII detokenization is handled at the provider boundary via
         ``TokenizingProviderWrapper`` (31-10), not in this method.
@@ -2758,6 +3454,29 @@ class Concierge:
 
         if len(content) < _COMPLETION_GUARD_MIN_RESPONSE_LEN:
             return content
+
+        # ── VERIFY phase: Guard 3 — response relevance ──
+        if guards_enabled() and entity_ctx is not None and msg is not None:
+            try:
+                _g3_ctx = GuardContext(
+                    message=msg, entity_ctx=entity_ctx,
+                    response_content=content,
+                )
+                _g3_start = time.monotonic()
+                _g3 = guard_response_relevance(_g3_ctx)
+                await self._emit_telemetry_event(
+                    "guard_check",
+                    duration_ms=(time.monotonic() - _g3_start) * 1000,
+                    guard_action=_g3.action,
+                    success=_g3.passed,
+                    metadata={"guard": "response_relevance", "notes": _g3.notes},
+                )
+                for _note in _g3.notes:
+                    logger.info("Guard 3: %s", _note)
+                if not _g3.passed and _g3.short_circuit_response:
+                    content = f"{content.rstrip()}\n\n{_g3.short_circuit_response}"
+            except Exception:
+                logger.debug("Guard 3 (relevance) failed", exc_info=True)
 
         # 31-9 §4-2: skip completion guard for greetings, follow-ups, confirmations
         skip_completion = msg is not None and self._should_skip_completion_guard(msg)
@@ -2822,7 +3541,13 @@ class Concierge:
         )
         self.memory_kernel.store(item)
 
-    def _retrieve_memory_context(self, message: str, *, has_active_build: bool = False) -> str:
+    def _retrieve_memory_context(
+        self,
+        message: str,
+        *,
+        has_active_build: bool = False,
+        project_id: str | None = None,
+    ) -> str:
         """Retrieve relevant memory for this message (task-type-aware). Used for goal detection and planning."""
         if not self.memory_kernel:
             return ""
@@ -2833,13 +3558,17 @@ class Concierge:
                 message,
                 task_type=classify_task_type(message, has_active_build=has_active_build),
                 limit=10,
+                project_id=project_id,
             )
             if not scored:
                 return ""
             lines = ["Relevant context from memory:"]
             for si in scored[:8]:
                 tag = si.item.memory_type.value.upper()
-                lines.append(f"- [{tag}] {si.item.content[:200]}")
+                scope_hint = ""
+                if si.item.scope.value == "project":
+                    scope_hint = " (project)"
+                lines.append(f"- [{tag}{scope_hint}] {si.item.content[:200]}")
             block = "\n".join(lines)
             return block[:800].rstrip() + ("..." if len(block) > 800 else "")
         except Exception:
@@ -2889,6 +3618,7 @@ class Concierge:
         message: str,
         response: str,
         goal_context: dict[str, Any] | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Schedule concurrent memory extraction as a fire-and-forget background task.
 
@@ -2901,10 +3631,10 @@ class Concierge:
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
-            self._store_memory_candidates_sync(message, response, goal_context)
+            self._store_memory_candidates_sync(message, response, goal_context, project_id)
             return
         task = loop.create_task(
-            self._store_memory_candidates_async(message, response, goal_context),
+            self._store_memory_candidates_async(message, response, goal_context, project_id),
         )
         self._bg_memory_tasks.add(task)
         task.add_done_callback(self._bg_memory_tasks.discard)
@@ -2914,17 +3644,19 @@ class Concierge:
         message: str,
         response: str,
         goal_context: dict[str, Any] | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Fallback synchronous path when no event loop is running."""
         self._store_episode_candidates(message, response, goal_context)
-        self._try_extract_preferences(message, response)
-        self._try_memory_extraction(message, response, goal_context)
+        self._try_extract_preferences(message, response, project_id=project_id)
+        self._try_memory_extraction(message, response, goal_context, project_id=project_id)
 
     async def _store_memory_candidates_async(
         self,
         message: str,
         response: str,
         goal_context: dict[str, Any] | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Fan out episode, preference, and LLM-backed memory extraction concurrently."""
         from .fan_out import fan_out_dict
@@ -2934,10 +3666,10 @@ class Concierge:
                 self._store_episode_candidates, message, response, goal_context,
             ),
             "preferences": lambda: asyncio.to_thread(
-                self._try_extract_preferences, message, response,
+                self._try_extract_preferences, message, response, project_id=project_id,
             ),
             "memory_extraction": lambda: asyncio.to_thread(
-                self._try_memory_extraction, message, response, goal_context,
+                self._try_memory_extraction, message, response, goal_context, project_id=project_id,
             ),
         }
         results = await fan_out_dict(tasks)
@@ -2959,7 +3691,12 @@ class Concierge:
             except Exception:
                 logger.debug("Failed to store memory candidate", exc_info=True)
 
-    def _try_extract_preferences(self, user_message: str, assistant_message: str) -> None:
+    def _try_extract_preferences(
+        self,
+        user_message: str,
+        assistant_message: str,
+        project_id: str | None = None,
+    ) -> None:
         """Run preference extraction on every interaction, store results in memory kernel."""
         if self.memory_kernel is None:
             return
@@ -2984,17 +3721,20 @@ class Concierge:
                         self.memory_kernel.store_preference(
                             content=f"{key}: {sub_key} -> {sub_val}",
                             tags=[key, sub_key],
+                            project_id=project_id,
                         )
                 elif isinstance(value, list):
                     for entry in value:
                         self.memory_kernel.store_preference(
                             content=f"{key}: {entry}",
                             tags=[key],
+                            project_id=project_id,
                         )
                 elif isinstance(value, str) and value:
                     self.memory_kernel.store_preference(
                         content=f"{key}: {value}",
                         tags=[key],
+                        project_id=project_id,
                     )
         except Exception:
             logger.debug("Preference extraction failed", exc_info=True)
@@ -3075,6 +3815,7 @@ class Concierge:
         user_message: str,
         assistant_message: str,
         goal_context: dict[str, Any] | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Run LLM-backed memory extraction with heuristic fallback."""
         if self.memory_kernel is None:
@@ -3096,12 +3837,13 @@ class Concierge:
                 if candidate.memory_type == "fact":
                     self.memory_kernel.store_fact(
                         candidate.content, tags=candidate.tags,
+                        project_id=project_id,
                     )
                 elif candidate.memory_type == "preference":
                     self.memory_kernel.store_preference(
                         candidate.content, tags=candidate.tags,
+                        project_id=project_id,
                     )
-                # episodes already stored by _extract_memory_candidates
         except Exception:
             logger.debug("Memory extraction failed", exc_info=True)
 
@@ -3878,6 +4620,7 @@ def build_concierge(
     mcp_bridge: Any = None,
     capability_registry: Any = None,
     tool_registry: Any = None,
+    telemetry_store: Any = None,
 ) -> "Concierge | tuple[Concierge, ConcurrentDispatcher]":
     project_store = ProjectStore()
     resolver = ProjectContextResolver(
@@ -3921,6 +4664,7 @@ def build_concierge(
         mcp_bridge=mcp_bridge,
         capability_registry=capability_registry,
         tool_registry=tool_registry,
+        telemetry_store=telemetry_store,
     )
     try:
         from .scheduler import ScheduleHistoryStore, ScheduleStore

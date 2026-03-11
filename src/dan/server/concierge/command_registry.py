@@ -474,6 +474,19 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         handler="dan.server.concierge.runtime.Concierge._handle_cost_command",
     ))
     registry.register(CommandDescriptor(
+        name="/analytics",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="[project <name>] [--since Nd] [--by model|surface|day|intent] | export [--format jsonl|csv]",
+        subcommands={
+            "project": SubcommandDescriptor(name="project", args_schema="<name> [--since Nd]", help_text="Project-specific usage report"),
+            "export": SubcommandDescriptor(name="export", args_schema="[--since Nd] [--format jsonl|csv]", help_text="Export raw telemetry events"),
+        },
+        help_text="Show usage analytics (tokens, cost, timing)",
+        group="model_config",
+        handler="dan.server.concierge.runtime.Concierge._handle_analytics_command",
+    ))
+    registry.register(CommandDescriptor(
         name="/status",
         kind="chat",
         surfaces=["all"],
@@ -488,6 +501,24 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         help_text="Retry the last failed request",
         group="model_config",
         handler="dan.server.concierge.runtime.Concierge._handle_retry_command",
+    ))
+
+    # -- Project commands --------------------------------------------------
+    registry.register(CommandDescriptor(
+        name="/project",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="[list|info [name]|set <key> <value>|memory [name]|delete <name>]",
+        subcommands={
+            "list": SubcommandDescriptor(name="list", help_text="List all projects on this surface"),
+            "info": SubcommandDescriptor(name="info", args_schema="[name]", help_text="Show project details"),
+            "set": SubcommandDescriptor(name="set", args_schema="<key> <value>", help_text="Store a project-specific fact"),
+            "memory": SubcommandDescriptor(name="memory", args_schema="[name]", help_text="Browse project memories"),
+            "delete": SubcommandDescriptor(name="delete", args_schema="<name>", help_text="Mark project completed"),
+        },
+        help_text="Manage projects: list all, inspect details, store project-specific facts, browse project memories",
+        group="project",
+        handler="dan.server.concierge.runtime.Concierge._handle_project_command",
     ))
 
     # -- Memory commands ---------------------------------------------------

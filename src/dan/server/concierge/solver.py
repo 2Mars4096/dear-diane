@@ -92,7 +92,9 @@ _SOLVER_SYSTEM_PROMPT = (
     "workflow_build | run_control | status_pull | experience_lookup | "
     "publish_share | conversation_synthesis | meta_delegate\n"
     "- assumptions: list of assumptions made\n"
-    "- clarification_question: null unless ambiguity blocks useful action\n\n"
+    "- clarification_question: set if the user's intent is unclear, multiple "
+    "interpretations exist, or you need to make non-obvious assumptions. "
+    "Prefer asking over guessing.\n\n"
     "ROUTING RULE: Time-sensitive queries (prices, rates, weather, scores, "
     "news, market data) → direct_action. Never guess live data.\n\n"
     '{"user_goal":"...","requested_deliverable":"...","execution_mode":"...",'
@@ -134,6 +136,7 @@ class GoalResolver:
         *,
         workflow_candidates: list[dict[str, Any]] | None = None,
         experience_context: str | None = None,
+        entity_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         recent_turns = [
             {"role": t.role, "content": t.content, "intent": t.intent}
@@ -143,7 +146,7 @@ class GoalResolver:
         if context.project.pending_action:
             pa = context.project.pending_action
             pending = {"kind": pa.kind, "intent": pa.intent, "options": pa.options}
-        return {
+        ctx = {
             "message": msg.text,
             "project_summary": context.project.summary,
             "project_label": context.project.label,
@@ -156,6 +159,9 @@ class GoalResolver:
             "workflow_candidates": workflow_candidates or [],
             "experience_context": experience_context or "",
         }
+        if entity_context:
+            ctx["known_projects"] = entity_context
+        return ctx
 
     async def resolve(
         self,
@@ -165,6 +171,7 @@ class GoalResolver:
         *,
         workflow_candidates: list[dict[str, Any]] | None = None,
         experience_context: str | None = None,
+        entity_context: dict[str, Any] | None = None,
     ) -> SolverDecision:
         if self._is_fast_path(classification):
             logger.debug(
@@ -176,6 +183,7 @@ class GoalResolver:
             msg, context, classification,
             workflow_candidates=workflow_candidates,
             experience_context=experience_context,
+            entity_context=entity_context,
         )
         if self._llm is None:
             return self._heuristic_decision(classification, msg.text, planning_ctx)
