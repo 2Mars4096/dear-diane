@@ -20,7 +20,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, AsyncIterator
 
 from dan.adapters.telegram_adapter import (
     MessageContext,
@@ -68,6 +68,25 @@ class BotFleet:
     pattern so they share one event loop.
     """
 
+    _QUEUE_HINT_INITIAL_DELAY: float = float(
+        os.environ.get("DAN_TELEGRAM_QUEUE_HINT_DELAY", "10")
+    )
+    _QUEUE_HINT_REPEAT_INTERVAL: float = float(
+        os.environ.get("DAN_TELEGRAM_QUEUE_HINT_INTERVAL", "20")
+    )
+    _PROGRESS_INITIAL_DELAY: float = float(
+        os.environ.get("DAN_TELEGRAM_PROGRESS_DELAY", "10")
+    )
+    _PROGRESS_REPEAT_INTERVAL: float = float(
+        os.environ.get("DAN_TELEGRAM_PROGRESS_INTERVAL", "20")
+    )
+    _PROGRESS_MAX_INTERVAL: float = float(
+        os.environ.get("DAN_TELEGRAM_PROGRESS_MAX_INTERVAL", "300")
+    )
+    _PROGRESS_BACKOFF_FACTOR: float = float(
+        os.environ.get("DAN_TELEGRAM_PROGRESS_BACKOFF", "1.5")
+    )
+
     def __init__(
         self,
         config: TelegramFleetConfig,
@@ -92,6 +111,13 @@ class BotFleet:
         self._conversation_history: dict[str, list[dict[str, str]]] = {}
         self._conversation_workflows: dict[str, str] = {}
         self._history_locks: dict[str, asyncio.Lock] = {}
+        self._message_lanes: dict[tuple[int, int], tuple[str, float]] = {}
+        self._last_outbound: dict[int, tuple[int, float]] = {}
+
+    def _latest_outbound_id(self, chat_id: int) -> int | None:
+        """Most recent outbound message id we sent in *chat_id*."""
+        entry = self._last_outbound.get(chat_id)
+        return entry[0] if entry else None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -225,12 +251,159 @@ class BotFleet:
         ]
         for k in expired_ingress:
             del self._seen_ingress[k]
+        expired_lane_keys = [
+            k for k, (_lane_key, ts) in self._message_lanes.items() if ts < cutoff
+        ]
+        for k in expired_lane_keys:
+            del self._message_lanes[k]
+    def _remember_message_lane(
+        self,
+        chat_id: int,
+        message_id: int | None,
+        lane_key: str | None,
+    ) -> None:
+        if message_id is None or not lane_key:
+            return
+        self._message_lanes[(chat_id, message_id)] = (lane_key, time.monotonic())
 
-    def _remember_outbound_message(self, chat_id: int, message_id: int | None) -> None:
+    def _lookup_message_lane(self, chat_id: int, message_id: int | None) -> str | None:
+        if message_id is None:
+            return None
+        entry = self._message_lanes.get((chat_id, message_id))
+        if entry is None:
+            return None
+        lane_key, _timestamp = entry
+        return lane_key
+
+    def _remember_outbound_message(
+        self,
+        chat_id: int,
+        message_id: int | None,
+        *,
+        lane_key: str | None = None,
+    ) -> None:
         """Pre-seed dedup for bot messages that will later arrive via getUpdates."""
         if message_id is None:
             return
-        self._seen[(chat_id, message_id)] = time.monotonic()
+        now = time.monotonic()
+        self._seen[(chat_id, message_id)] = now
+        self._last_outbound[chat_id] = (message_id, now)
+        if lane_key:
+            self._message_lanes[(chat_id, message_id)] = (lane_key, now)
+
+    @staticmethod
+    def _format_elapsed_seconds(elapsed_seconds: float) -> str:
+        seconds = max(1, int(round(elapsed_seconds)))
+        if seconds < 60:
+            return f"{seconds}s elapsed"
+        minutes, seconds = divmod(seconds, 60)
+        if seconds == 0:
+            return f"{minutes}m elapsed"
+        return f"{minutes}m {seconds}s elapsed"
+
+    def _format_queue_hint(
+        self,
+        queue_position: int,
+        elapsed_seconds: float,
+        *,
+        hint_count: int,
+    ) -> str:
+        earlier = max(int(queue_position or 0), 1)
+        prefix = "Working on it" if hint_count == 0 else "Still working"
+        if earlier == 1:
+            label = "queued behind an earlier request"
+        else:
+            label = f"queued behind {earlier} earlier requests"
+        return (
+            f"{prefix} — {label} "
+            f"({self._format_elapsed_seconds(elapsed_seconds)})"
+        )
+
+    @staticmethod
+    def _format_non_text_delivery_status(
+        delivered_file_count: int,
+        delivered_poll_count: int,
+        failed_file_count: int = 0,
+        failed_poll_count: int = 0,
+    ) -> str | None:
+        def _noun(count: int, singular: str, plural: str) -> str:
+            return singular if count == 1 else plural
+
+        def _join(parts: list[str]) -> str:
+            if not parts:
+                return ""
+            if len(parts) == 1:
+                return parts[0]
+            if len(parts) == 2:
+                return f"{parts[0]} and {parts[1]}"
+            return f"{', '.join(parts[:-1])}, and {parts[-1]}"
+
+        success_parts: list[str] = []
+        failure_parts: list[str] = []
+        if delivered_file_count > 0:
+            success_parts.append(
+                f"delivered the requested "
+                f"{_noun(delivered_file_count, 'file', 'files')}",
+            )
+        if delivered_poll_count > 0:
+            success_parts.append(
+                f"sent the requested "
+                f"{_noun(delivered_poll_count, 'poll', 'polls')}",
+            )
+        if failed_file_count > 0:
+            failure_parts.append(
+                f"couldn't deliver the requested "
+                f"{_noun(failed_file_count, 'file', 'files')}",
+            )
+        if failed_poll_count > 0:
+            failure_parts.append(
+                f"couldn't send the requested "
+                f"{_noun(failed_poll_count, 'poll', 'polls')}",
+            )
+        if not success_parts and not failure_parts:
+            return None
+        if success_parts and not failure_parts:
+            sentence = _join(success_parts)
+            return f"{sentence[0].upper()}{sentence[1:]}."
+        if failure_parts and not success_parts:
+            return f"I {_join(failure_parts)}."
+        return f"I {_join(success_parts)}, but I {_join(failure_parts)}."
+
+    async def _append_history_turn(
+        self,
+        lane_key: str,
+        turn: dict[str, str],
+    ) -> list[dict[str, str]]:
+        history_lock = self._history_locks.setdefault(lane_key, asyncio.Lock())
+        async with history_lock:
+            history = list(self._conversation_history.get(lane_key, []))
+            history.append(turn)
+            if len(history) > 40:
+                history = history[-40:]
+            self._conversation_history[lane_key] = history
+            return list(history)
+
+    async def _remove_history_turn(
+        self,
+        lane_key: str,
+        turn: dict[str, str],
+    ) -> None:
+        history_lock = self._history_locks.setdefault(lane_key, asyncio.Lock())
+        async with history_lock:
+            history = list(self._conversation_history.get(lane_key, []))
+            for idx in range(len(history) - 1, -1, -1):
+                if history[idx] is turn:
+                    del history[idx]
+                    break
+            self._conversation_history[lane_key] = history
+
+    async def _append_assistant_turn(self, lane_key: str, content: str) -> None:
+        if not content:
+            return
+        await self._append_history_turn(
+            lane_key,
+            {"role": "assistant", "content": content},
+        )
 
     def _start_cleanup_task(self) -> None:
         async def _cleanup_loop() -> None:
@@ -343,130 +516,150 @@ class BotFleet:
         if settings.use_reactions:
             await bot.adapter.set_reaction(ctx.chat_id, ctx.message_id, "⏳")
 
-        thread_key = _conversation_thread_key(ctx, bot.name)
+        conversation_key = _conversation_thread_key(ctx, bot.name)
+        lane_key = _conversation_lane_key(
+            ctx,
+            bot.name,
+            reply_lane_key=self._lookup_message_lane(
+                ctx.chat_id,
+                ctx.reply_to_message_id,
+            ),
+        )
+        self._remember_message_lane(ctx.chat_id, ctx.message_id, lane_key)
         surface = f"telegram:{bot.name}"
+        user_turn: dict[str, str] | None = None
 
         try:
-            history_lock = self._history_locks.setdefault(thread_key, asyncio.Lock())
-            async with history_lock:
-                wf_id = await self._ensure_scratch(thread_key)
+            wf_id = await self._ensure_scratch(conversation_key)
 
-                history = self._conversation_history.get(thread_key, [])
-                att_path = _extract_attachment(text)
-                voice_path = _extract_voice_note(text)
-                msg_text = text
+            att_path = _extract_attachment(text)
+            voice_path = _extract_voice_note(text)
+            msg_text = text
 
-                if voice_path:
-                    transcribed = await _transcribe_voice_note(voice_path)
-                    if transcribed:
-                        msg_text = _merge_voice_context(text, transcribed)
-                    else:
-                        sent_message_id = await bot.adapter._send_text(
-                            ctx.chat_id,
-                            "I received your voice message but couldn't transcribe it. "
-                            "Please send as text.",
-                            reply_to=ctx.message_id,
-                        )
-                        self._remember_outbound_message(ctx.chat_id, sent_message_id)
-                        if settings.use_reactions:
-                            await bot.adapter.set_reaction(
-                                ctx.chat_id,
-                                ctx.message_id,
-                                "❌",
-                            )
-                        return
-                elif att_path and att_path.lower().endswith(".pdf"):
-                    msg_text = (
-                        f"Please review this PDF: {att_path}\n{_strip_media_marker(text)}"
-                        if _strip_media_marker(text)
-                        else f"Please review this PDF: {att_path}"
-                    )
-
-                history.append({"role": "user", "content": msg_text})
-                if len(history) > 40:
-                    history = history[-40:]
-                self._conversation_history[thread_key] = history
-
-                _bare = format_bare_prefix(bot_name=bot.name.upper())
-                identity_block = (
-                    f"You are {bot.name}, a {bot.personality or 'helpful'} assistant. "
-                    f"Short replies (1-3 sentences). Answer directly — no {_bare} prefix."
-                )
-                if bot.projects:
-                    identity_block += (
-                        f" You focus on these projects: {', '.join(bot.projects)}."
-                    )
-                other_names = [
-                    f"{b.name} (@{b.bot_username})"
-                    for b in self._bots.values()
-                    if b.name != bot.name
-                ]
-                if other_names:
-                    identity_block += (
-                        f" Other bots in this group: {', '.join(other_names)}."
-                    )
-
-                history_with_context = [
-                    {"role": "system", "content": identity_block},
-                    *history,
-                ]
-                body: dict[str, Any] = {
-                    "workflow_id": wf_id,
-                    "message": msg_text,
-                    "history": history_with_context,
-                    "thread_id": thread_key,
-                    "mode": "auto",
-                    "surface": surface,
-                }
-                if att_path:
-                    body["attachment_path"] = att_path
-
-                resp = await self._http.post("/api/chat/message", json=body)
-                if resp.status_code != 200:
-                    if history and history[-1].get("role") == "user":
-                        history.pop()
-                    if settings.use_reactions:
-                        await bot.adapter.set_reaction(
-                            ctx.chat_id, ctx.message_id, "❌",
-                        )
-                    return
-
-                payload = resp.json()
-                channel_id = payload.get("stream_channel_id")
-
-                if not channel_id:
-                    content = payload.get("content", "")
-                    if content:
-                        await self._send_reply(bot, ctx, content)
-                        history.append({"role": "assistant", "content": content})
-                    if settings.use_reactions:
-                        await bot.adapter.set_reaction(
-                            ctx.chat_id, ctx.message_id, "✅",
-                        )
-                    return
-
-                if settings.streaming_edits:
-                    full_reply = await self._stream_with_edits(
-                        bot, ctx, channel_id,
-                    )
+            if voice_path:
+                transcribed = await _transcribe_voice_note(voice_path)
+                if transcribed:
+                    msg_text = _merge_voice_context(text, transcribed)
                 else:
-                    full_reply = await self._stream_collect(
-                        bot, ctx, channel_id,
+                    sent_message_id = await bot.adapter._send_text(
+                        ctx.chat_id,
+                        "I received your voice message but couldn't transcribe it. "
+                        "Please send as text.",
+                        reply_to=ctx.message_id,
                     )
+                    self._remember_outbound_message(
+                        ctx.chat_id,
+                        sent_message_id,
+                        lane_key=lane_key,
+                    )
+                    if settings.use_reactions:
+                        await bot.adapter.set_reaction(
+                            ctx.chat_id,
+                            ctx.message_id,
+                            "❌",
+                        )
+                    return
+            elif att_path and att_path.lower().endswith(".pdf"):
+                msg_text = (
+                    f"Please review this PDF: {att_path}\n{_strip_media_marker(text)}"
+                    if _strip_media_marker(text)
+                    else f"Please review this PDF: {att_path}"
+                )
 
-                if full_reply:
-                    history.append({"role": "assistant", "content": full_reply})
+            user_turn = {"role": "user", "content": msg_text}
+            history = await self._append_history_turn(lane_key, user_turn)
 
+            _bare = format_bare_prefix(bot_name=bot.name.upper())
+            identity_block = (
+                f"You are {bot.name}, a {bot.personality or 'helpful'} assistant. "
+                f"Short replies (1-3 sentences). Answer directly — no {_bare} prefix."
+            )
+            if bot.projects:
+                identity_block += (
+                    f" You focus on these projects: {', '.join(bot.projects)}."
+                )
+            other_names = [
+                f"{b.name} (@{b.bot_username})"
+                for b in self._bots.values()
+                if b.name != bot.name
+            ]
+            if other_names:
+                identity_block += (
+                    f" Other bots in this group: {', '.join(other_names)}."
+                )
+
+            history_with_context = [
+                {"role": "system", "content": identity_block},
+                *history,
+            ]
+            body: dict[str, Any] = {
+                "workflow_id": wf_id,
+                "message": msg_text,
+                "history": history_with_context,
+                "thread_id": conversation_key,
+                "mode": "auto",
+                "surface": surface,
+            }
+            if att_path:
+                body["attachment_path"] = att_path
+
+            resp = await self._http.post("/api/chat/message", json=body)
+            if resp.status_code != 200:
+                await self._remove_history_turn(lane_key, user_turn)
+                if settings.use_reactions:
+                    await bot.adapter.set_reaction(
+                        ctx.chat_id, ctx.message_id, "❌",
+                    )
+                return
+
+            payload = resp.json()
+            channel_id = payload.get("stream_channel_id")
+
+            if not channel_id:
+                content = payload.get("content", "")
+                if content:
+                    content = _format_for_telegram(content)
+                    await self._send_reply(
+                        bot,
+                        ctx,
+                        content,
+                        lane_key=lane_key,
+                        already_cleaned=True,
+                    )
+                    await self._append_assistant_turn(lane_key, content)
                 if settings.use_reactions:
                     await bot.adapter.set_reaction(
                         ctx.chat_id, ctx.message_id, "✅",
                     )
+                return
+
+            if settings.streaming_edits:
+                full_reply = await self._stream_with_edits(
+                    bot,
+                    ctx,
+                    channel_id,
+                    lane_key=lane_key,
+                )
+            else:
+                full_reply = await self._stream_collect(
+                    bot,
+                    ctx,
+                    channel_id,
+                    lane_key=lane_key,
+                )
+
+            if full_reply:
+                await self._append_assistant_turn(lane_key, full_reply)
+
+            if settings.use_reactions:
+                await bot.adapter.set_reaction(
+                    ctx.chat_id, ctx.message_id, "✅",
+                )
 
         except Exception as exc:
             logger.exception("Fleet dispatch failed for %s: %s", bot.name, exc)
-            history = self._conversation_history.get(thread_key, [])
-            if history and history[-1].get("role") == "user":
-                history.pop()
+            if user_turn is not None:
+                await self._remove_history_turn(lane_key, user_turn)
             if settings.use_reactions:
                 await bot.adapter.set_reaction(
                     ctx.chat_id, ctx.message_id, "❌",
@@ -477,15 +670,19 @@ class BotFleet:
         bot: BotInstance,
         ctx: MessageContext,
         channel_id: str,
+        *,
+        lane_key: str | None = None,
     ) -> str:
-        """Process WS events incrementally, editing the message in place."""
-        import websockets
+        """Process WS events incrementally, editing the message in place.
 
+        The progress timer lives here (not in the concierge) so that
+        messaging surfaces own their own UX:
+        - No progress bubble for fast replies
+        - After ``_PROGRESS_INITIAL_DELAY`` seconds of silence, show a
+          compact status that is edited in-place every
+          ``_PROGRESS_REPEAT_INTERVAL`` seconds with elapsed time.
+        """
         assert bot.adapter is not None
-        ws_url = self._server_url.replace("http://", "ws://").replace(
-            "https://", "wss://",
-        )
-        url = f"{ws_url}/api/chat/{channel_id}/events"
 
         collected_tokens: list[str] = []
         current_msg_id: int | None = None
@@ -495,84 +692,201 @@ class BotFleet:
         file_paths: list[str] = []
         error_message = ""
         complete_content = ""
+        delivered_poll_count = 0
+        failed_poll_count = 0
+
+        stream_start = time.monotonic()
+        progress_count = 0
+        got_content = False
+        progress_msg_id: int | None = None
+        current_repeat_interval = self._PROGRESS_REPEAT_INTERVAL
+        last_progress_time = 0.0
+
+        async def _show_progress() -> None:
+            nonlocal current_msg_id, progress_count, progress_msg_id
+            nonlocal current_repeat_interval, last_progress_time
+            elapsed = time.monotonic() - stream_start
+            prefix = "Working on it" if progress_count == 0 else "Still working"
+            text = (
+                f"{prefix} — preparing response "
+                f"({self._format_elapsed_seconds(elapsed)})"
+            )
+
+            latest = self._latest_outbound_id(ctx.chat_id)
+            chat_has_moved_on = (
+                progress_msg_id is not None
+                and latest is not None
+                and latest != progress_msg_id
+            )
+
+            if chat_has_moved_on:
+                progress_msg_id = None
+                current_msg_id = None
+
+            edit_target = progress_msg_id if progress_msg_id is not None else current_msg_id
+            new_id = await bot.adapter.send_or_edit(
+                ctx.chat_id,
+                text,
+                edit_target,
+                reply_to=(
+                    ctx.message_id if edit_target is None else None
+                ),
+            )
+            if new_id is not None:
+                progress_msg_id = new_id
+                current_msg_id = new_id
+            self._remember_outbound_message(
+                ctx.chat_id, progress_msg_id, lane_key=lane_key,
+            )
+            progress_count += 1
+            last_progress_time = time.monotonic()
+
+            current_repeat_interval = min(
+                current_repeat_interval * self._PROGRESS_BACKOFF_FACTOR,
+                self._PROGRESS_MAX_INTERVAL,
+            )
+
+        _sentinel = object()
+        event_queue: asyncio.Queue[Any] = asyncio.Queue()
+
+        async def _drain_stream() -> None:
+            try:
+                async for ev in self._iter_chat_stream_events(channel_id):
+                    await event_queue.put(ev)
+            except Exception as exc:
+                await event_queue.put(exc)
+            finally:
+                await event_queue.put(_sentinel)
+
+        drain_task = asyncio.create_task(_drain_stream())
 
         try:
-            async with websockets.connect(
-                url, ping_interval=None, ping_timeout=None,
-            ) as ws:
-                async for ws_msg in ws:
-                    event = json.loads(ws_msg)
-                    if not isinstance(event, dict):
-                        continue
-                    evt_type = event.get("type", "")
+            while True:
+                if not got_content and progress_count == 0:
+                    timeout: float | None = self._PROGRESS_INITIAL_DELAY
+                elif not got_content:
+                    timeout = current_repeat_interval
+                else:
+                    timeout = None
 
-                    if evt_type == "chat_token":
-                        collected_tokens.append(event.get("token", ""))
-                        now = time.monotonic()
-                        if now - last_edit_time >= edit_interval:
-                            text = _strip_prefix_and_html(
-                                "".join(collected_tokens).strip(),
-                            )
-                            chunk_text = text[sent_prefix_len:]
+                try:
+                    if timeout is not None:
+                        item = await asyncio.wait_for(
+                            event_queue.get(), timeout=timeout,
+                        )
+                    else:
+                        item = await event_queue.get()
+                except asyncio.TimeoutError:
+                    await _show_progress()
+                    continue
+
+                if item is _sentinel:
+                    break
+                if isinstance(item, Exception):
+                    raise item
+                event = item
+                evt_type = event.get("type", "")
+
+                if evt_type == "chat_token":
+                    got_content = True
+                    collected_tokens.append(event.get("token", ""))
+                    now = time.monotonic()
+                    if now - last_edit_time >= edit_interval:
+                        text = _format_for_telegram(
+                            "".join(collected_tokens).strip(),
+                        )
+                        chunk_text = text[sent_prefix_len:]
+                        if chunk_text:
+                            if len(chunk_text) > 4000 and current_msg_id is not None:
+                                finalized = chunk_text[:4096]
+                                await bot.adapter.send_or_edit(
+                                    ctx.chat_id,
+                                    finalized,
+                                    current_msg_id,
+                                )
+                                sent_prefix_len += len(finalized)
+                                current_msg_id = None
+                                chunk_text = text[sent_prefix_len:]
                             if chunk_text:
-                                if len(chunk_text) > 4000 and current_msg_id is not None:
-                                    finalized = chunk_text[:4096]
-                                    await bot.adapter.send_or_edit(
-                                        ctx.chat_id,
-                                        finalized,
-                                        current_msg_id,
-                                    )
-                                    sent_prefix_len += len(finalized)
-                                    current_msg_id = None
-                                    chunk_text = text[sent_prefix_len:]
-                                if chunk_text:
-                                    current_msg_id = await bot.adapter.send_or_edit(
-                                        ctx.chat_id,
-                                        chunk_text,
-                                        current_msg_id,
-                                        reply_to=(
-                                            ctx.message_id
-                                            if current_msg_id is None
-                                            else None
-                                        ),
-                                    )
-                                    self._remember_outbound_message(
-                                        ctx.chat_id, current_msg_id,
-                                    )
-                                last_edit_time = now
+                                current_msg_id = await bot.adapter.send_or_edit(
+                                    ctx.chat_id,
+                                    chunk_text,
+                                    current_msg_id,
+                                    reply_to=(
+                                        ctx.message_id
+                                        if current_msg_id is None
+                                        else None
+                                    ),
+                                )
+                                self._remember_outbound_message(
+                                    ctx.chat_id,
+                                    current_msg_id,
+                                    lane_key=lane_key,
+                                )
+                            last_edit_time = now
 
-                    elif evt_type == "chat_file_attachment":
-                        path = event.get("path", "")
-                        if path:
-                            file_paths.append(path)
+                elif evt_type == "chat_file_attachment":
+                    path = event.get("path", "")
+                    if path:
+                        file_paths.append(path)
 
-                    elif evt_type == "chat_poll_request":
-                        q = event.get("question", "")
-                        opts = event.get("options", [])
-                        if q and opts:
-                            await bot.adapter.send_poll(
-                                ctx.chat_id, q, opts,
-                                is_anonymous=event.get("is_anonymous", False),
-                                allows_multiple=event.get("allows_multiple", False),
-                                reply_to=ctx.message_id,
+                elif evt_type == "chat_poll_request":
+                    q = event.get("question", "")
+                    opts = event.get("options", [])
+                    if q and opts:
+                        poll_id = await bot.adapter.send_poll(
+                            ctx.chat_id, q, opts,
+                            is_anonymous=event.get("is_anonymous", False),
+                            allows_multiple=event.get("allows_multiple", False),
+                            reply_to=ctx.message_id,
+                        )
+                        if poll_id:
+                            delivered_poll_count += 1
+                        else:
+                            failed_poll_count += 1
+
+                elif evt_type in (
+                    "chat_complete",
+                    "chat_interrupted",
+                ):
+                    if event.get("detected_mode") == "progress_ack":
+                        text = (event.get("content", "") or "").strip()
+                        if text:
+                            current_msg_id = await bot.adapter.send_or_edit(
+                                ctx.chat_id,
+                                text,
+                                current_msg_id,
+                                reply_to=(
+                                    ctx.message_id
+                                    if current_msg_id is None
+                                    else None
+                                ),
                             )
+                            self._remember_outbound_message(
+                                ctx.chat_id,
+                                current_msg_id,
+                                lane_key=lane_key,
+                            )
+                        continue
+                    complete_content = event.get("content", "") or ""
+                    break
 
-                    elif evt_type in (
-                        "chat_complete",
-                        "chat_interrupted",
-                    ):
-                        complete_content = event.get("content", "") or ""
-                        break
-
-                    elif evt_type == "chat_error":
-                        error_message = str(
-                            event.get("error", "") or "",
-                        ).strip()
-                        break
+                elif evt_type == "chat_error":
+                    error_message = str(
+                        event.get("error", "") or "",
+                    ).strip()
+                    break
 
         except Exception as exc:
             logger.error("WS stream error: %s", exc)
             error_message = str(exc)
+        finally:
+            if not drain_task.done():
+                drain_task.cancel()
+                try:
+                    await drain_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
         streamed_full = "".join(collected_tokens).strip()
         from dan.cli.adapter import _strip_function_call_xml
@@ -599,45 +913,108 @@ class BotFleet:
             full = streamed_full
 
         if full:
-            clean = _strip_prefix_and_html(full)
+            clean = _format_for_telegram(full)
             if used_complete and current_msg_id is not None:
                 current_msg_id = await bot.adapter.send_or_edit(
                     ctx.chat_id, clean[:4096], current_msg_id,
                 )
-                self._remember_outbound_message(ctx.chat_id, current_msg_id)
+                self._remember_outbound_message(
+                    ctx.chat_id,
+                    current_msg_id,
+                    lane_key=lane_key,
+                )
                 remaining = clean[4096:]
                 for chunk in _split_message(remaining):
                     sent_message_id = await bot.adapter.send_or_edit(ctx.chat_id, chunk)
-                    self._remember_outbound_message(ctx.chat_id, sent_message_id)
+                    self._remember_outbound_message(
+                        ctx.chat_id,
+                        sent_message_id,
+                        lane_key=lane_key,
+                    )
             elif used_complete:
-                await self._send_reply(bot, ctx, clean)
+                await self._send_reply(bot, ctx, clean, lane_key=lane_key, already_cleaned=True)
             else:
                 remaining = clean[sent_prefix_len:]
                 if current_msg_id is not None and remaining:
                     current_msg_id = await bot.adapter.send_or_edit(
                         ctx.chat_id, remaining[:4096], current_msg_id,
                     )
-                    self._remember_outbound_message(ctx.chat_id, current_msg_id)
+                    self._remember_outbound_message(
+                        ctx.chat_id,
+                        current_msg_id,
+                        lane_key=lane_key,
+                    )
                     sent_prefix_len += min(len(remaining), 4096)
                     remaining = clean[sent_prefix_len:]
                 if remaining:
                     for chunk in _split_message(remaining):
                         sent_message_id = await bot.adapter.send_or_edit(ctx.chat_id, chunk)
-                        self._remember_outbound_message(ctx.chat_id, sent_message_id)
+                        self._remember_outbound_message(
+                            ctx.chat_id,
+                            sent_message_id,
+                            lane_key=lane_key,
+                        )
                 elif current_msg_id is None:
-                    await self._send_reply(bot, ctx, clean)
+                    await self._send_reply(bot, ctx, clean, lane_key=lane_key, already_cleaned=True)
 
+        delivered_file_count = 0
+        failed_file_count = 0
         for fp in file_paths:
             if bot.adapter:
                 try:
                     sent_message_id = await bot.adapter._send_file_to_chat(ctx.chat_id, fp)
-                    self._remember_outbound_message(ctx.chat_id, sent_message_id)
+                    self._remember_outbound_message(
+                        ctx.chat_id,
+                        sent_message_id,
+                        lane_key=lane_key,
+                    )
                     if self._config.settings.auto_pin_deliverables:
                         last_id = bot.adapter._last_bot_message_id.get(ctx.chat_id)
                         if last_id:
                             await bot.adapter.pin_message(ctx.chat_id, last_id)
+                    if sent_message_id is not None:
+                        delivered_file_count += 1
+                    else:
+                        failed_file_count += 1
                 except Exception as exc:
+                    failed_file_count += 1
                     logger.warning("Failed to send file %s: %s", fp, exc)
+
+        if not full:
+            delivery_status = self._format_non_text_delivery_status(
+                delivered_file_count,
+                delivered_poll_count,
+                failed_file_count,
+                failed_poll_count,
+            )
+            should_surface_status = (
+                delivery_status is not None
+                and (
+                    current_msg_id is not None
+                    or failed_file_count > 0
+                    or failed_poll_count > 0
+                )
+            )
+            if should_surface_status:
+                if current_msg_id is not None:
+                    current_msg_id = await bot.adapter.send_or_edit(
+                        ctx.chat_id,
+                        delivery_status,
+                        current_msg_id,
+                    )
+                    self._remember_outbound_message(
+                        ctx.chat_id,
+                        current_msg_id,
+                        lane_key=lane_key,
+                    )
+                else:
+                    await self._send_reply(
+                        bot,
+                        ctx,
+                        delivery_status,
+                        lane_key=lane_key,
+                    )
+                full = delivery_status
 
         return full
 
@@ -646,31 +1023,30 @@ class BotFleet:
         bot: BotInstance,
         ctx: MessageContext,
         channel_id: str,
+        *,
+        lane_key: str | None = None,
     ) -> str:
         """Collect all events then send final reply (non-streaming mode)."""
-        import websockets
-
         assert bot.adapter is not None
-        ws_url = self._server_url.replace("http://", "ws://").replace(
-            "https://", "wss://",
-        )
-        url = f"{ws_url}/api/chat/{channel_id}/events"
 
         stream_events: list[dict[str, Any]] = []
         try:
-            async with websockets.connect(
-                url, ping_interval=None, ping_timeout=None,
-            ) as ws:
-                async for ws_msg in ws:
-                    event = json.loads(ws_msg)
-                    if isinstance(event, dict):
-                        stream_events.append(event)
-                    if isinstance(event, dict) and event.get("type") in (
-                        "chat_complete",
-                        "chat_interrupted",
-                        "chat_error",
-                    ):
-                        break
+            from dan.cli.adapter import _is_progress_ack_event
+            async for event in self._iter_chat_stream_events(channel_id):
+                if isinstance(event, dict):
+                    stream_events.append(event)
+                if (
+                    isinstance(event, dict)
+                    and event.get("type") == "chat_complete"
+                    and _is_progress_ack_event(event)
+                ):
+                    continue
+                if isinstance(event, dict) and event.get("type") in (
+                    "chat_complete",
+                    "chat_interrupted",
+                    "chat_error",
+                ):
+                    break
         except Exception as exc:
             logger.error("WS stream error: %s", exc)
 
@@ -681,14 +1057,18 @@ class BotFleet:
         )
 
         if full_reply:
-            clean = _strip_prefix_and_html(full_reply)
-            await self._send_reply(bot, ctx, clean)
+            clean = _format_for_telegram(full_reply)
+            await self._send_reply(bot, ctx, clean, lane_key=lane_key, already_cleaned=True)
 
         for fp in file_paths:
             if bot.adapter:
                 try:
                     sent_message_id = await bot.adapter._send_file_to_chat(ctx.chat_id, fp)
-                    self._remember_outbound_message(ctx.chat_id, sent_message_id)
+                    self._remember_outbound_message(
+                        ctx.chat_id,
+                        sent_message_id,
+                        lane_key=lane_key,
+                    )
                     if self._config.settings.auto_pin_deliverables:
                         last_id = bot.adapter._last_bot_message_id.get(ctx.chat_id)
                         if last_id:
@@ -712,8 +1092,114 @@ class BotFleet:
 
         return full_reply
 
+    async def _iter_chat_stream_events(
+        self,
+        channel_id: str,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Yield chat events, following queued-channel redirects when present."""
+        import websockets
+
+        ws_url = self._server_url.replace("http://", "ws://").replace(
+            "https://", "wss://",
+        )
+        next_channel = channel_id
+        seen_channels: set[str] = set()
+        queue_position: int | None = None
+        queued_started_at: float | None = None
+        queue_hint_count = 0
+
+        def _handle_queue_redirect(event: dict[str, Any]) -> str:
+            nonlocal queue_position, queued_started_at, queue_hint_count
+            queue_position = max(int(event.get("queue_position", 0) or 0), 1)
+            if queued_started_at is None:
+                queued_started_at = time.monotonic()
+            queue_hint_count = 0
+            return str(event.get("stream_channel_id") or "").strip()
+
+        while next_channel:
+            current_channel = next_channel
+            next_channel = ""
+            if current_channel in seen_channels:
+                logger.warning(
+                    "Skipping repeated queued channel redirect for %s",
+                    current_channel,
+                )
+                break
+            seen_channels.add(current_channel)
+            url = f"{ws_url}/api/chat/{current_channel}/events"
+            async with websockets.connect(
+                url, ping_interval=None, ping_timeout=None,
+            ) as ws:
+                if not hasattr(ws, "recv"):
+                    async for ws_msg in ws:
+                        event = json.loads(ws_msg)
+                        if not isinstance(event, dict):
+                            continue
+                        if event.get("type") == "chat_queued":
+                            redirected = _handle_queue_redirect(event)
+                            if redirected and redirected not in seen_channels:
+                                next_channel = redirected
+                                break
+                            continue
+                        queue_position = None
+                        queued_started_at = None
+                        queue_hint_count = 0
+                        yield event
+                    continue
+
+                while True:
+                    timeout: float | None = None
+                    if queue_position is not None and queued_started_at is not None:
+                        timeout = (
+                            self._QUEUE_HINT_INITIAL_DELAY
+                            if queue_hint_count == 0
+                            else self._QUEUE_HINT_REPEAT_INTERVAL
+                        )
+                    try:
+                        if timeout is None:
+                            ws_msg = await ws.recv()
+                        else:
+                            ws_msg = await asyncio.wait_for(ws.recv(), timeout)
+                    except asyncio.TimeoutError:
+                        if queue_position is None or queued_started_at is None:
+                            continue
+                        yield {
+                            "type": "chat_complete",
+                            "content": self._format_queue_hint(
+                                queue_position,
+                                time.monotonic() - queued_started_at,
+                                hint_count=queue_hint_count,
+                            ),
+                            "detected_mode": "progress_ack",
+                        }
+                        queue_hint_count += 1
+                        continue
+                    except Exception as exc:
+                        if exc.__class__.__name__.startswith("ConnectionClosed"):
+                            break
+                        raise
+                    event = json.loads(ws_msg)
+                    if not isinstance(event, dict):
+                        continue
+                    if event.get("type") == "chat_queued":
+                        redirected = _handle_queue_redirect(event)
+                        if redirected and redirected not in seen_channels:
+                            next_channel = redirected
+                            break
+                        continue
+                    queue_position = None
+                    queued_started_at = None
+                    queue_hint_count = 0
+                    yield event
+
     async def _send_reply(
-        self, bot: BotInstance, ctx: MessageContext, text: str,
+        self,
+        bot: BotInstance,
+        ctx: MessageContext,
+        text: str,
+        *,
+        lane_key: str | None = None,
+        already_cleaned: bool = False,
     ) -> None:
         assert bot.adapter is not None
         from dan.server.concierge.actions import (
@@ -721,14 +1207,18 @@ class BotFleet:
             strip_html_for_messaging,
         )
 
-        clean = strip_html_for_messaging(text)
+        clean = text if already_cleaned else strip_html_for_messaging(text)
         parts = split_message_for_surface(clean, "telegram")
         for i, part in enumerate(parts):
             reply_to = ctx.message_id if i == 0 else None
             sent_message_id = await bot.adapter._send_text(
                 ctx.chat_id, part, reply_to=reply_to,
             )
-            self._remember_outbound_message(ctx.chat_id, sent_message_id)
+            self._remember_outbound_message(
+                ctx.chat_id,
+                sent_message_id,
+                lane_key=lane_key,
+            )
             if len(parts) > 1:
                 await asyncio.sleep(0.3)
 
@@ -939,6 +1429,19 @@ def _conversation_thread_key(ctx: MessageContext, bot_name: str) -> str:
     return f"{ctx.chat_id}:{thread_part}:{bot_name}"
 
 
+def _conversation_lane_key(
+    ctx: MessageContext,
+    bot_name: str,
+    reply_lane_key: str | None = None,
+) -> str:
+    conversation_key = _conversation_thread_key(ctx, bot_name)
+    if ctx.thread_id is not None or ctx.chat_type != "private":
+        return conversation_key
+    if reply_lane_key:
+        return reply_lane_key
+    return f"{conversation_key}:m{ctx.message_id}"
+
+
 def _user_allowed(
     allowed: list[int | str],
     user_id: int | None,
@@ -975,13 +1478,26 @@ def _is_bot_authored_message(
     return False
 
 
-def _strip_prefix_and_html(text: str) -> str:
-    from dan.server.concierge.identity import strip_prefix
+def _format_for_telegram(text: str) -> str:
+    """Convert concierge content for Telegram display.
+
+    Transforms ``[DAN - Project] body`` → ``[Project]\\nbody`` so the user
+    sees a compact project header while ``reply_to_message_id`` gives the
+    conversational context.  HTML is also stripped.
+    """
+    from dan.server.concierge.identity import extract_label_from_prefix
     from dan.server.concierge.actions import strip_html_for_messaging
 
-    text = strip_prefix(text)
-    text = strip_html_for_messaging(text)
-    return text
+    label, remaining = extract_label_from_prefix(text)
+    remaining = strip_html_for_messaging(remaining)
+    if label:
+        return f"[{label}]\n{remaining}"
+    return remaining
+
+
+def _strip_prefix_and_html(text: str) -> str:
+    """Legacy alias kept for any callers that still import this name."""
+    return _format_for_telegram(text)
 
 
 def _pid_is_running(pid: int) -> bool:
