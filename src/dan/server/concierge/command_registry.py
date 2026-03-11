@@ -4,6 +4,29 @@ Every slash command, REPL command, CLI binary, and adapter-local command is
 registered here as a ``CommandDescriptor``.  The registry drives dispatch,
 ``/help`` text, Telegram ``set_my_commands()``, adapter forwarding decisions,
 tab-completion, and generated docs.
+
+How to add a new command
+------------------------
+1. Create a ``CommandDescriptor`` with ``name``, ``kind``, ``surfaces``,
+   ``help_text``, ``handler`` (dotted path to the callable), and ``group``.
+2. Call ``registry.register(descriptor)`` inside ``_populate_default_commands``
+   in this module (or at module load time for plugin commands).
+3. The handler function receives ``(concierge, message, args_str)`` for chat
+   commands, or is a standalone coroutine for adapter-local commands.
+4. That's it — the registry drives dispatch, ``/help``, Telegram menus,
+   tab-completion, and ``docs/commands.md`` generation automatically.
+
+Example::
+
+    registry.register(CommandDescriptor(
+        name="/my-cmd",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="<arg>",
+        help_text="Does something useful",
+        group="integration",
+        handler="dan.server.concierge.my_module.handle_my_cmd",
+    ))
 """
 
 from __future__ import annotations
@@ -205,6 +228,85 @@ class CommandRegistry:
                     lines.append(f"    `{cmd.name} {sub.name}{sub_args}` — {sub.help_text}")
 
         return "\n".join(lines)
+
+    def completion_candidates(self, surface: str = "all") -> list[str]:
+        """Return command names and aliases for tab-completion on *surface*."""
+        commands = self.list_by_surface(surface)
+        names: list[str] = []
+        for cmd in commands:
+            names.append(cmd.name)
+            names.extend(cmd.aliases)
+        return sorted(set(names))
+
+    def format_help_plain(
+        self,
+        surface: str = "all",
+        group: str | None = None,
+        include_hidden: bool = False,
+    ) -> str:
+        """Plain-text help suitable for WhatsApp and other non-markdown surfaces."""
+        commands = self.list_by_surface(surface)
+        if group:
+            commands = [c for c in commands if c.group == group]
+        if not include_hidden:
+            commands = [c for c in commands if not c.hidden]
+        commands.sort(key=lambda c: (c.group, c.name))
+
+        if not commands:
+            return "No commands available."
+
+        lines: list[str] = []
+        current_group = ""
+        for cmd in commands:
+            if cmd.group != current_group:
+                current_group = cmd.group
+                lines.append(f"\n{current_group.replace('_', ' ').upper()}")
+            args_str = f" {cmd.args_schema}" if cmd.args_schema else ""
+            lines.append(f"  {cmd.name}{args_str} - {cmd.help_text}")
+
+        return "\n".join(lines)
+
+    def health_check(self) -> list[str]:
+        """Validate registry metadata and handler module importability.
+
+        Returns a list of warning strings.  Called at server startup to detect
+        stale or broken handler paths early.
+        """
+        warnings: list[str] = []
+        _module_cache: dict[str, bool] = {}
+
+        for cmd in self._commands.values():
+            if not cmd.help_text:
+                warnings.append(f"{cmd.name}: empty help_text")
+            if not cmd.surfaces:
+                warnings.append(f"{cmd.name}: no surfaces defined")
+            valid_surfaces = {"cli", "editor", "telegram", "whatsapp", "whatsapp-web", "email", "all"}
+            for s in cmd.surfaces:
+                if s not in valid_surfaces:
+                    warnings.append(f"{cmd.name}: unknown surface '{s}'")
+            if cmd.handler:
+                parts = cmd.handler.split(".")
+                module_found = False
+                for idx in range(len(parts), 0, -1):
+                    mod_path = ".".join(parts[:idx])
+                    if mod_path in _module_cache:
+                        if _module_cache[mod_path]:
+                            module_found = True
+                            break
+                        continue
+                    try:
+                        importlib.import_module(mod_path)
+                        _module_cache[mod_path] = True
+                        module_found = True
+                        break
+                    except ImportError:
+                        _module_cache[mod_path] = False
+                if not module_found:
+                    warnings.append(
+                        f"{cmd.name}: handler module not importable: {cmd.handler}"
+                    )
+
+        return warnings
 
     def telegram_commands(self, scope: str = "dm") -> list[tuple[str, str]]:
         """Return (command, description) tuples for Telegram set_my_commands."""
@@ -474,6 +576,38 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         },
     ))
 
+    # -- Skill commands ----------------------------------------------------
+    registry.register(CommandDescriptor(
+        name="/skill",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="<list|info|import|scan> [args]",
+        help_text="Manage skills (IDE-compatible SKILL.md format)",
+        group="integration",
+        handler="dan.server.skill_store.handle_skill_command",
+        subcommands={
+            "list": SubcommandDescriptor(
+                name="list",
+                args_schema="[user|project]",
+                help_text="List loaded skills, optionally filter by scope",
+            ),
+            "info": SubcommandDescriptor(
+                name="info",
+                args_schema="<name>",
+                help_text="Show skill details and content preview",
+            ),
+            "import": SubcommandDescriptor(
+                name="import",
+                args_schema="<path>",
+                help_text="Import skill from Cursor/Claude/Codex or any path",
+            ),
+            "scan": SubcommandDescriptor(
+                name="scan",
+                help_text="Rescan all skill directories",
+            ),
+        },
+    ))
+
     # -- Adapter-local commands --------------------------------------------
     registry.register(CommandDescriptor(
         name="/find",
@@ -584,6 +718,17 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
                 help_text="Show run history for a schedule",
             ),
         },
+    ))
+
+    # 31-8: Plan Dependency Optimization
+    registry.register(CommandDescriptor(
+        name="/plan",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="[--replan]",
+        help_text="Show current plan schedule; --replan forces re-decomposition",
+        group="scheduling",
+        handler="dan.engine.plan_scheduler.handle_plan_command",
     ))
 
     # 31-9: Completion Guard

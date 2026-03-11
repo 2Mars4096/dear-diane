@@ -194,7 +194,15 @@ class FileHandler:
                 )
             return HandlerResult(content=f"Found file: {explicit_file}", attachments=[explicit_file])
             
-        query = classification.param or self._extract_filename_pattern(msg.text) or msg.text
+        scoped_search = self._has_explicit_path_reference(msg.text)
+        query = classification.param or self._extract_filename_pattern(msg.text)
+        if not query:
+            query = self._extract_search_query(
+                msg.text,
+                scoped_search=scoped_search,
+            )
+        if not query and not scoped_search:
+            query = msg.text
         matches: list[str] = []
         filename_pattern = self._extract_filename_pattern(msg.text)
         if filename_pattern and candidate_dirs:
@@ -210,7 +218,15 @@ class FileHandler:
                 )
         elif not matches:
             matches = search_local_files(query, candidate_dirs or self.search_dirs)
+            if not matches and candidate_dirs:
+                matches = self._search_matching_directories(query, candidate_dirs)
         if not matches:
+            if not query and len(candidate_dirs) == 1:
+                target_dir = candidate_dirs[0]
+                return HandlerResult(
+                    content=f"Found folder: {target_dir}",
+                    attachments=[target_dir],
+                )
             return HandlerResult(content=f"No files found matching '{query}'.")
         if len(matches) == 1:
             path = Path(matches[0])
@@ -223,7 +239,8 @@ class FileHandler:
                     content=f"File content:\n{content}\n\nUser message: {msg.text}",
                     attachments=[path]
                 )
-            return HandlerResult(content=f"Found file: {path}", attachments=[path])
+            label = "folder" if path.is_dir() else "file"
+            return HandlerResult(content=f"Found {label}: {path}", attachments=[path])
             
         numbered = "\n".join(f"{idx}. {path}" for idx, path in enumerate(matches[:10], 1))
         return HandlerResult(
@@ -244,26 +261,135 @@ class FileHandler:
         except Exception:
             return None
 
+    _PATH_RE = re.compile(
+        r"(?P<path>(?:~|/)[A-Za-z0-9._~/-]+(?:/[A-Za-z0-9._~-]+)+|[A-Za-z0-9._-]+(?:/[A-Za-z0-9._~-]+)+)"
+    )
+
     def _candidate_search_dirs(self, msg: SurfaceMessage, context: ResolvedContext) -> tuple[list[Path], Path | None]:
-        texts = [msg.text] + [
+        # Scan user turns first (highest priority), then assistant turns
+        user_texts = [msg.text] + [
             turn.content
             for turn in reversed(context.task.turns[-6:])
             if turn.role == "user"
         ]
+        assistant_texts = [
+            turn.content
+            for turn in reversed(context.task.turns[-6:])
+            if turn.role == "assistant"
+        ]
+
         workspace_root = Path(os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())).resolve()
-        for text in texts:
-            for match in re.finditer(
-                r"(?P<path>(?:~|/)[A-Za-z0-9._~/-]+(?:/[A-Za-z0-9._~-]+)+|[A-Za-z0-9._-]+(?:/[A-Za-z0-9._~-]+)+)",
-                text,
-            ):
-                raw = match.group("path").rstrip("\"'()[]{}.,;:!?")
-                expanded = Path(raw).expanduser()
-                candidate = expanded if expanded.is_absolute() else (workspace_root / expanded).resolve()
-                if candidate.is_file():
-                    return [], candidate
-                if candidate.is_dir():
-                    return [candidate], None
+
+        # Pass 1: exact path from user turns
+        for text in user_texts:
+            result = self._try_extract_path(text, workspace_root)
+            if result is not None:
+                return result
+
+        # Pass 2: exact path from assistant turns (bot mentioned a dir/file earlier)
+        for text in assistant_texts:
+            result = self._try_extract_path(text, workspace_root)
+            if result is not None:
+                return result
+
+        # Pass 3: extract paths from project summary (often contains the working dir)
+        summary = context.project.summary or ""
+        if summary:
+            result = self._try_extract_path(summary, workspace_root)
+            if result is not None:
+                return result
+
         return self.search_dirs, None
+
+    def _try_extract_path(self, text: str, workspace_root: Path) -> tuple[list[Path], Path | None] | None:
+        for match in self._PATH_RE.finditer(text):
+            raw = match.group("path").rstrip("\"'()[]{}.,;:!?")
+            expanded = Path(raw).expanduser()
+            candidate = expanded if expanded.is_absolute() else (workspace_root / expanded).resolve()
+            if candidate.is_file():
+                return [], candidate
+            if candidate.is_dir():
+                return [candidate], None
+        return None
+
+    @staticmethod
+    def _extract_search_query(text: str, *, scoped_search: bool) -> str:
+        """Use explicit paths as scope hints, not literal search terms."""
+        if not scoped_search:
+            return text
+        query = re.sub(
+            r"(?:(?:~|/)[A-Za-z0-9._~/-]+(?:/[A-Za-z0-9._~-]+)+|[A-Za-z0-9._-]+(?:/[A-Za-z0-9._~-]+)+)",
+            " ",
+            text,
+        )
+        query = re.sub(
+            r"\b(?:i have|i've got)?\s*(?:notes|files|docs|documents|materials)\s+(?:in|under|inside|within)\b\s*$",
+            "",
+            query,
+            flags=re.IGNORECASE,
+        )
+        query = re.sub(r"\s+", " ", query).strip(" ,.;:-")
+        return query
+
+    @staticmethod
+    def _has_explicit_path_reference(text: str) -> bool:
+        return bool(re.search(
+            r"(?:(?:~|/)[A-Za-z0-9._~/-]+(?:/[A-Za-z0-9._~-]+)+|[A-Za-z0-9._-]+(?:/[A-Za-z0-9._~-]+)+)",
+            text,
+        ))
+
+    @staticmethod
+    def _search_matching_directories(query: str, search_dirs: list[Path], *, limit: int = 10) -> list[str]:
+        query_norm = " ".join(re.findall(r"[a-z0-9]+", query.lower()))
+        query_tokens = query_norm.split()
+        if not query_tokens:
+            return []
+
+        candidates: dict[str, tuple[float, str]] = {}
+
+        def _consider(path: Path) -> None:
+            if not path.is_dir():
+                return
+            name_norm = " ".join(re.findall(r"[a-z0-9]+", path.name.lower()))
+            if not name_norm:
+                return
+            coverage = sum(1 for token in query_tokens if token in name_norm)
+            if coverage == 0:
+                return
+            contains_phrase = 1.0 if query_norm and query_norm in name_norm else 0.0
+            score = (coverage * 10.0) + (contains_phrase * 5.0)
+            key = str(path)
+            current = candidates.get(key)
+            if current is None or score > current[0]:
+                candidates[key] = (score, path.name.lower())
+
+        exactish_pattern = f"*{'*'.join(query_tokens)}*"
+        for directory in search_dirs:
+            if not directory.exists():
+                continue
+            try:
+                for match in directory.rglob(exactish_pattern):
+                    _consider(match)
+            except Exception:
+                continue
+
+        if not candidates:
+            token_patterns = [f"*{token}*" for token in query_tokens[:4]]
+            for directory in search_dirs:
+                if not directory.exists():
+                    continue
+                for pattern in token_patterns:
+                    try:
+                        for match in directory.rglob(pattern):
+                            _consider(match)
+                    except Exception:
+                        continue
+
+        ranked = sorted(
+            candidates.items(),
+            key=lambda item: (-item[1][0], item[1][1], item[0]),
+        )
+        return [path for path, _meta in ranked[:limit]]
 
     @staticmethod
     def _should_review_document(text: str, path: Path) -> bool:

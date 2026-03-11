@@ -62,6 +62,7 @@ class ConcurrentDispatcher:
         self._active_tasks: dict[str, asyncio.Task[None]] = {}
         self._project_queues: dict[str, asyncio.Queue[tuple[SurfaceMessage, str]]] = {}
         self._response_buses: dict[str, tuple[asyncio.Queue[ChatStreamEvent], float]] = {}
+        self._response_bus_pins: dict[str, int] = {}
         self._bus_ttl_seconds = 300.0
         from dan.server.concierge.resources import PriorityQueue, MessagePriority, classify_priority
 
@@ -134,13 +135,16 @@ class ConcurrentDispatcher:
                 event_queue.put_nowait(None)
             try:
                 await self._drain_project_queue(project_id)
-                await self._drain_global_overflow()
             except Exception:
                 logger.exception("Drain failed for project %s", project_id)
             finally:
                 self._active_tasks.pop(project_id, None)
                 if self._resource_tracker is not None:
                     await self._resource_tracker.release("run")
+            try:
+                await self._drain_global_overflow()
+            except Exception:
+                logger.exception("Overflow drain failed for project %s", project_id)
 
         task = asyncio.create_task(_run())
         self._active_tasks[project_id] = task
@@ -292,6 +296,15 @@ class ConcurrentDispatcher:
                     await bus.put(None)
                 continue
 
+            if self._resource_tracker is not None:
+                acquired = await self._resource_tracker.try_acquire("run")
+                if not acquired:
+                    await self._global_queue.put(
+                        (queued_msg, channel_id),
+                        priority=int(self._classify_priority(queued_msg.text)),
+                    )
+                    break
+
             task = asyncio.create_task(
                 self._process_overflow_message(project_id, queued_msg, bus),
             )
@@ -322,6 +335,12 @@ class ConcurrentDispatcher:
             logger.exception("Drain failed after overflow for project %s", project_id)
         finally:
             self._active_tasks.pop(project_id, None)
+            if self._resource_tracker is not None:
+                await self._resource_tracker.release("run")
+        try:
+            await self._drain_global_overflow()
+        except Exception:
+            logger.exception("Overflow drain failed after project %s", project_id)
 
     # ------------------------------------------------------------------
     # Response bus management
@@ -330,29 +349,48 @@ class ConcurrentDispatcher:
     def _create_response_bus(self, channel_id: str) -> asyncio.Queue:
         bus: asyncio.Queue = asyncio.Queue()
         self._response_buses[channel_id] = (bus, time.monotonic())
+        self._response_bus_pins.setdefault(channel_id, 0)
         return bus
 
     def _get_or_create_bus(self, channel_id: str) -> asyncio.Queue:
         entry = self._response_buses.get(channel_id)
         if entry is not None:
-            return entry[0]
+            bus, _ts = entry
+            self._response_buses[channel_id] = (bus, time.monotonic())
+            return bus
         return self._create_response_bus(channel_id)
 
     def get_response_bus(self, channel_id: str) -> asyncio.Queue[ChatStreamEvent | None] | None:
         """Retrieve the response bus for a queued message's stream channel."""
         entry = self._response_buses.get(channel_id)
-        return entry[0] if entry is not None else None
+        if entry is None:
+            return None
+        bus, _ts = entry
+        self._response_buses[channel_id] = (bus, time.monotonic())
+        self._response_bus_pins[channel_id] = self._response_bus_pins.get(channel_id, 0) + 1
+        return bus
 
     def cleanup_response_bus(self, channel_id: str) -> None:
         """Remove a response bus after the consumer has drained it."""
+        pins = self._response_bus_pins.get(channel_id, 0)
+        if pins > 1:
+            self._response_bus_pins[channel_id] = pins - 1
+            return
+        self._response_bus_pins.pop(channel_id, None)
         self._response_buses.pop(channel_id, None)
 
     def _reap_stale_buses(self) -> None:
         """Remove response buses older than TTL (guards against leaked consumers)."""
         now = time.monotonic()
-        stale = [k for k, (_, ts) in self._response_buses.items() if now - ts > self._bus_ttl_seconds]
+        stale = [
+            k
+            for k, (_, ts) in self._response_buses.items()
+            if now - ts > self._bus_ttl_seconds
+            and self._response_bus_pins.get(k, 0) <= 0
+        ]
         for k in stale:
             self._response_buses.pop(k, None)
+            self._response_bus_pins.pop(k, None)
 
     # ------------------------------------------------------------------
     # Background task tracking (prevent GC warnings)

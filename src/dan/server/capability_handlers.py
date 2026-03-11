@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import atexit
+import re as _re
 import shutil
 import tempfile
 import threading
@@ -50,6 +51,27 @@ def _schedule_export_cleanup(path: str) -> None:
 
 def _truncate(text: str, limit: int = 500) -> str:
     return text[:limit] + "…" if len(text) > limit else text
+
+
+_IMG_MD_RE = _re.compile(r"!\[[^\]]*\]\([^)]+\)")
+_BARE_IMG_URL_RE = _re.compile(
+    r"^\s*\(?https?://[^\s)]+\.(?:png|jpg|jpeg|gif|webp|svg|ico)\b[^\s)]*\)?\s*$",
+    _re.MULTILINE | _re.IGNORECASE,
+)
+_NAV_LINK_BLOCK_RE = _re.compile(
+    r"(?:^[ \t]*\[[^\]]{1,60}\]\(https?://[^)]+\)\s*){4,}",
+    _re.MULTILINE,
+)
+_REPEATED_BLANK_RE = _re.compile(r"\n{4,}")
+
+
+def _sanitize_web_content(text: str) -> str:
+    """Strip image markdown, bare image URLs, and dense navigation link blocks."""
+    text = _IMG_MD_RE.sub("", text)
+    text = _BARE_IMG_URL_RE.sub("", text)
+    text = _NAV_LINK_BLOCK_RE.sub("[... navigation links removed ...]", text)
+    text = _REPEATED_BLANK_RE.sub("\n\n", text)
+    return text.strip()
 
 
 # ── Web search tool ────────────────────────────────────────────────
@@ -941,6 +963,7 @@ async def handle_web_fetch(args: dict[str, Any], ctx: CapabilityContext) -> Capa
         from dan.tools.web_fetch import web_fetch
         result = await web_fetch(url=url)
         content = result.get("content", "")
+        content = _sanitize_web_content(content)
         if len(content) > _FILE_READ_MAX:
             content = content[:_FILE_READ_MAX] + "\n\n[truncated]"
         return CapabilityResult(success=True, message=content, data=result)
@@ -4067,4 +4090,315 @@ def register_introspection_capabilities(registry: ChatCapabilityRegistry) -> Non
         modes=["agent", "debug"],
         category="introspection",
     )
+
+
+# ── Computer control tools (DAN_COMPUTER_CONTROL) ─────────────────
+
+_computer_controller: Any = None
+
+
+def _get_controller() -> Any:
+    return _computer_controller
+
+
+BROWSER_OPEN_SCHEMA = build_tool_schema(
+    name="browser_open",
+    description="Open a URL in the browser.",
+    parameters={
+        "type": "object",
+        "properties": {"url": {"type": "string", "description": "URL to open"}},
+        "required": ["url"],
+    },
+)
+
+BROWSER_CLICK_SCHEMA = build_tool_schema(
+    name="browser_click",
+    description="Click an element in the browser by CSS selector.",
+    parameters={
+        "type": "object",
+        "properties": {"selector": {"type": "string", "description": "CSS selector"}},
+        "required": ["selector"],
+    },
+)
+
+BROWSER_TYPE_SCHEMA = build_tool_schema(
+    name="browser_type",
+    description="Type text into a browser element (appends).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "selector": {"type": "string", "description": "CSS selector"},
+            "text": {"type": "string", "description": "Text to type"},
+        },
+        "required": ["selector", "text"],
+    },
+)
+
+BROWSER_FILL_SCHEMA = build_tool_schema(
+    name="browser_fill",
+    description="Fill (clear + type) text into a browser element.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "selector": {"type": "string", "description": "CSS selector"},
+            "text": {"type": "string", "description": "Text to fill"},
+        },
+        "required": ["selector", "text"],
+    },
+)
+
+BROWSER_EXTRACT_SCHEMA = build_tool_schema(
+    name="browser_extract",
+    description="Extract text from the browser page or a specific element.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "selector": {"type": "string", "description": "CSS selector (optional, omit for full page)"},
+        },
+    },
+)
+
+BROWSER_SCREENSHOT_SCHEMA = build_tool_schema(
+    name="browser_screenshot",
+    description="Take a screenshot of the current browser page.",
+    parameters={"type": "object", "properties": {}},
+)
+
+BROWSER_TABS_SCHEMA = build_tool_schema(
+    name="browser_tabs",
+    description="List open browser tabs.",
+    parameters={"type": "object", "properties": {}},
+)
+
+DESKTOP_OBSERVE_SCHEMA = build_tool_schema(
+    name="desktop_observe",
+    description="Observe the current desktop UI state (screenshot + OCR).",
+    parameters={"type": "object", "properties": {}},
+)
+
+DESKTOP_FOCUS_SCHEMA = build_tool_schema(
+    name="desktop_focus",
+    description="Focus (activate) a desktop application by name.",
+    parameters={
+        "type": "object",
+        "properties": {"app": {"type": "string", "description": "Application name"}},
+        "required": ["app"],
+    },
+)
+
+DESKTOP_CLICK_SCHEMA = build_tool_schema(
+    name="desktop_click",
+    description="Click at absolute screen coordinates.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "x": {"type": "integer", "description": "X coordinate"},
+            "y": {"type": "integer", "description": "Y coordinate"},
+        },
+        "required": ["x", "y"],
+    },
+)
+
+DESKTOP_TYPE_SCHEMA = build_tool_schema(
+    name="desktop_type",
+    description="Type text using the keyboard (into the focused application).",
+    parameters={
+        "type": "object",
+        "properties": {"text": {"type": "string", "description": "Text to type"}},
+        "required": ["text"],
+    },
+)
+
+DESKTOP_HOTKEY_SCHEMA = build_tool_schema(
+    name="desktop_hotkey",
+    description="Press a keyboard shortcut (e.g. ['command', 'c'] for copy).",
+    parameters={
+        "type": "object",
+        "properties": {
+            "keys": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of keys (modifiers + key)",
+            },
+        },
+        "required": ["keys"],
+    },
+)
+
+
+async def handle_browser_open(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("open", args["url"])
+        return CapabilityResult(success=result.get("status") != "error", message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"browser_open error: {exc}")
+
+
+async def handle_browser_click(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("click", args["selector"])
+        return CapabilityResult(success=result.get("status") != "error", message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"browser_click error: {exc}")
+
+
+async def handle_browser_type(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("type_text", args["selector"], text=args["text"])
+        return CapabilityResult(success=result.get("status") != "error", message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"browser_type error: {exc}")
+
+
+async def handle_browser_fill(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("fill", args["selector"], text=args["text"])
+        return CapabilityResult(success=result.get("status") != "error", message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"browser_fill error: {exc}")
+
+
+async def handle_browser_extract(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("extract_text", args.get("selector"))
+        return CapabilityResult(success=True, message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"browser_extract error: {exc}")
+
+
+async def handle_browser_screenshot(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("screenshot")
+        return CapabilityResult(success=True, message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"browser_screenshot error: {exc}")
+
+
+async def handle_browser_tabs(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("list_tabs")
+        return CapabilityResult(success=True, message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"browser_tabs error: {exc}")
+
+
+async def handle_desktop_observe(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        obs = await ctrl.observe("desktop")
+        data = obs.model_dump() if hasattr(obs, "model_dump") else obs.dict()
+        return CapabilityResult(success=True, message="Desktop observation captured", data=data)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"desktop_observe error: {exc}")
+
+
+async def handle_desktop_focus(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("focus_window", args["app"])
+        return CapabilityResult(success=result.get("status") != "error", message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"desktop_focus error: {exc}")
+
+
+async def handle_desktop_click(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("click", None, x=args["x"], y=args["y"])
+        return CapabilityResult(success=result.get("status") != "error", message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"desktop_click error: {exc}")
+
+
+async def handle_desktop_type(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("type_text", args["text"])
+        return CapabilityResult(success=result.get("status") != "error", message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"desktop_type error: {exc}")
+
+
+async def handle_desktop_hotkey(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act("hotkey", None, keys=args["keys"])
+        return CapabilityResult(success=result.get("status") != "error", message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"desktop_hotkey error: {exc}")
+
+
+def register_computer_capabilities(
+    registry: ChatCapabilityRegistry,
+    controller: Any = None,
+) -> None:
+    """Register browser and desktop computer-control tools.
+
+    Gated behind ``DAN_COMPUTER_CONTROL`` env var.  If *controller* is
+    provided it is stored as the module-level instance used by all handlers.
+    """
+    if os.getenv("DAN_COMPUTER_CONTROL", "0") == "0":
+        return
+
+    global _computer_controller
+    if controller is not None:
+        _computer_controller = controller
+
+    logger.info("DAN_COMPUTER_CONTROL enabled: registering 12 computer-control tools.")
+
+    registry.register("browser_open", BROWSER_OPEN_SCHEMA, handle_browser_open,
+                       modes=["agent"], category="computer")
+    registry.register("browser_click", BROWSER_CLICK_SCHEMA, handle_browser_click,
+                       modes=["agent"], category="computer")
+    registry.register("browser_type", BROWSER_TYPE_SCHEMA, handle_browser_type,
+                       modes=["agent"], category="computer")
+    registry.register("browser_fill", BROWSER_FILL_SCHEMA, handle_browser_fill,
+                       modes=["agent"], category="computer")
+    registry.register("browser_extract", BROWSER_EXTRACT_SCHEMA, handle_browser_extract,
+                       modes=["agent", "ask"], category="computer")
+    registry.register("browser_screenshot", BROWSER_SCREENSHOT_SCHEMA, handle_browser_screenshot,
+                       modes=["agent"], category="computer")
+    registry.register("browser_tabs", BROWSER_TABS_SCHEMA, handle_browser_tabs,
+                       modes=["agent", "ask"], category="computer")
+    registry.register("desktop_observe", DESKTOP_OBSERVE_SCHEMA, handle_desktop_observe,
+                       modes=["agent", "ask"], category="computer")
+    registry.register("desktop_focus", DESKTOP_FOCUS_SCHEMA, handle_desktop_focus,
+                       modes=["agent"], category="computer")
+    registry.register("desktop_click", DESKTOP_CLICK_SCHEMA, handle_desktop_click,
+                       modes=["agent"], category="computer")
+    registry.register("desktop_type", DESKTOP_TYPE_SCHEMA, handle_desktop_type,
+                       modes=["agent"], category="computer")
+    registry.register("desktop_hotkey", DESKTOP_HOTKEY_SCHEMA, handle_desktop_hotkey,
+                       modes=["agent"], category="computer")
 
