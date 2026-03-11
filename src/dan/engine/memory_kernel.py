@@ -557,6 +557,7 @@ class MemoryKernel:
         query: str,
         policy: RetrievalPolicy | str | None = None,
         limit: int | None = None,
+        project_id: str | None = None,
     ) -> list[ScoredMemoryItem]:
         if isinstance(policy, str):
             policy = POLICY_REGISTRY.get(policy, GENERAL_CONVERSATION_POLICY)
@@ -574,16 +575,29 @@ class MemoryKernel:
                 section_limit = max(1, int(max_total * weight))
 
                 type_ids = self._type_index.get(mem_type.value, [])
-                candidates = [
-                    self._index[iid]
-                    for iid in type_ids
-                    if iid in self._index
-                    and self._index[iid].lifecycle != MemoryLifecycle.ARCHIVE
-                ]
+                candidates = []
+                for iid in type_ids:
+                    if iid not in self._index:
+                        continue
+                    item = self._index[iid]
+                    if item.lifecycle == MemoryLifecycle.ARCHIVE:
+                        continue
+                    if item.scope == MemoryScope.PROJECT:
+                        item_proj = item.metadata.get("project_id")
+                        if project_id and item_proj and item_proj != project_id:
+                            continue
+                    candidates.append(item)
 
                 scored = []
+                _PROJECT_MATCH_BONUS = 0.3
                 for item in candidates:
                     score = ranker(item, query)
+                    if (
+                        project_id
+                        and item.scope == MemoryScope.PROJECT
+                        and item.metadata.get("project_id") == project_id
+                    ):
+                        score = min(score + _PROJECT_MATCH_BONUS, 1.0)
                     scored.append(ScoredMemoryItem(
                         item=item,
                         score=score,
@@ -607,24 +621,53 @@ class MemoryKernel:
                 self._dirty = False
             return all_scored[:max_total]
 
-    def retrieve_by_task(self, query: str, task_type: str | None = None, limit: int = 20) -> list[ScoredMemoryItem]:
+    def retrieve_by_task(
+        self,
+        query: str,
+        task_type: str | None = None,
+        limit: int = 20,
+        project_id: str | None = None,
+    ) -> list[ScoredMemoryItem]:
         policy_key = task_type or classify_task_type(query)
         policy = POLICY_REGISTRY.get(policy_key, GENERAL_CONVERSATION_POLICY)
-        return self.retrieve(query, policy=policy, limit=limit)
+        return self.retrieve(query, policy=policy, limit=limit, project_id=project_id)
 
     # -- Convenience --------------------------------------------------------
 
-    def store_fact(self, content: str, scope: MemoryScope = MemoryScope.USER, **kw: Any) -> MemoryItem:
+    def store_fact(
+        self,
+        content: str,
+        scope: MemoryScope = MemoryScope.USER,
+        project_id: str | None = None,
+        **kw: Any,
+    ) -> MemoryItem:
+        if project_id:
+            scope = MemoryScope.PROJECT
+            meta = dict(kw.pop("metadata", None) or {})
+            meta["project_id"] = project_id
+            kw["metadata"] = meta
         return self.store(MemoryItem(content=content, memory_type=MemoryType.FACT, scope=scope, **kw))
 
-    def store_preference(self, content: str, confirmed: bool = False, **kw: Any) -> MemoryItem | None:
+    def store_preference(
+        self,
+        content: str,
+        confirmed: bool = False,
+        project_id: str | None = None,
+        **kw: Any,
+    ) -> MemoryItem | None:
         skip = self._resolve_preference_conflicts(content, confirmed)
         if skip:
             return None
+        scope = MemoryScope.USER
+        if project_id:
+            scope = MemoryScope.PROJECT
+            meta = dict(kw.pop("metadata", None) or {})
+            meta["project_id"] = project_id
+            kw["metadata"] = meta
         return self.store(MemoryItem(
             content=content,
             memory_type=MemoryType.PREFERENCE,
-            scope=MemoryScope.USER,
+            scope=scope,
             provenance=Provenance(confirmed_by_user=confirmed),
             **kw,
         ))
@@ -632,12 +675,25 @@ class MemoryKernel:
     def store_episode(self, content: str, scope: MemoryScope = MemoryScope.SESSION, **kw: Any) -> MemoryItem:
         return self.store(MemoryItem(content=content, memory_type=MemoryType.EPISODE, scope=scope, **kw))
 
-    def store_principle(self, content: str, confidence: float = 0.5, **kw: Any) -> MemoryItem:
+    def store_principle(
+        self,
+        content: str,
+        confidence: float = 0.5,
+        project_id: str | None = None,
+        **kw: Any,
+    ) -> MemoryItem:
+        scope = MemoryScope.GLOBAL
+        meta: dict[str, Any] = {"confidence": confidence}
+        if project_id:
+            scope = MemoryScope.PROJECT
+            meta["project_id"] = project_id
+        if "metadata" in kw:
+            meta.update(kw.pop("metadata"))
         return self.store(MemoryItem(
             content=content,
             memory_type=MemoryType.PRINCIPLE,
-            scope=MemoryScope.GLOBAL,
-            metadata={"confidence": confidence},
+            scope=scope,
+            metadata=meta,
             **kw,
         ))
 
