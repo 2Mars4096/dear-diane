@@ -41,6 +41,16 @@
 - **`memory_kernel.py`** — `MemoryKernel` now maintains a `_type_index` (`dict[str, list[str]]` keyed by memory_type) to eliminate linear scans in `list_by_type` and `retrieve`. Accepts optional `backend: MemoryBackend` parameter for backend delegation. **Project-scoped memory (31-18):** `retrieve()` and `retrieve_by_task()` accept optional `project_id` — `PROJECT`-scoped items whose `metadata["project_id"]` doesn't match are filtered out, while matching items get a 0.3 score bonus. `USER`/`GLOBAL`/`SESSION`/`WORKFLOW` items pass unfiltered (like always-applied rules). `store_fact()`, `store_preference()`, `store_principle()` accept optional `project_id` — when provided, `scope` is set to `PROJECT` and `metadata["project_id"]` is populated automatically. The concierge threads the resolved project ID through all store/retrieve paths so memories activate by context, not manual tagging.
 - **`learning.py`** — lightweight `/corrections` and `/adaptations` handlers; imports engine stores only for type checking so command registry/help wiring does not eagerly pull in heavy learning dependencies.
 
+### Domain Learning (31-21)
+
+- `src/dan/server/concierge/domain_learning.py` — domain detection, knowledge extraction, validation, template management
+- `src/dan/data/domain_templates/` — seed JSON templates for 4 domains (paper_rendering, equity_research, data_analysis, literature_review)
+- Domain knowledge uses existing `MemoryType` values with `tags=["domain_knowledge"]` and `metadata={"domain": "...", "category": "..."}`
+- `DomainReflector` runs post-task (triggered from `_finalize_task()`) to extract domain knowledge via LLM
+- `DomainValidator` checks responses against domain rules (keyword-level, no LLM cost)
+- `ContextPackage` model assembles domain expertise, artifacts, task state, and memory context for enriched prompts
+- Gated behind `DAN_DOMAIN_LEARNING` and `DAN_DOMAIN_VALIDATION` env vars (tier 1 features)
+
 ### Goal-Oriented Loop (31-6)
 
 - **`goal_loop.py`** — `GoalSpec`, `EvaluationResult`, `AttemptRecord`, `GoalLoopState` models; `ComparisonOp` type alias; `is_target_met()` / `is_better()` comparison helpers; `Evaluator` protocol with `ScriptEvaluator`, `LLMJudgeEvaluator`, `TestSuiteEvaluator`, `CustomEvaluator`; `GoalLoopExecutor` (attempt→evaluate→best-so-far→escalate loop with wall-clock deadline); `/goal`, `/goal-status`, `/goal-stop` command handlers; JSON state serialization.

@@ -1,6 +1,6 @@
 # 31: Daily-Use Quality-of-Life & Power-Ups
 
-**Status:** completed
+**Status:** in-progress
 **Goal:** Make everything that's built actually work smoothly for daily use. Activate dormant features, add missing control surfaces, improve visibility, expose hidden capabilities, polish rough edges, and add execution intelligence, safety, and continuity features.
 
 ## Problem
@@ -53,6 +53,7 @@ After 20 phases of infrastructure, the platform is deep but rough around the edg
 | 31-17 | [Computer Control & Browser Automation](31-17-computer-control-and-browser-automation.md) | Narrow v1: Playwright-first browser automation, browser-owned native-dialog handoff, minimal macOS desktop fallback, and safety-first policy | 5-7d |
 | 31-20 | [Unified Telemetry & Analytics](31-20-unified-telemetry.md) | Single TelemetryEvent model + SQLite store for chat turns, workflow nodes, guard checks, tool calls. Per-turn timing, project-level cost rollup, `/analytics` command, JSONL/CSV export | 2-3d |
 | 31-21 | [Proactive Domain Learning](31-21-proactive-domain-learning.md) | Domain detection, post-task reflection, extraction templates, correction-to-domain bridge, pre-task expertise injection, domain-aware validation, template evolution, success pattern generalization, active context assembly & sufficiency check, parallel pipeline orchestration | 5-6d |
+| 31-22 | [Self-Adaptive Behavior](31-22-self-adaptive-behavior.md) | Externalize prompts/thresholds/taxonomy/domains/models into `BehaviorStore`, self-tuning loop from telemetry, dynamic intent/domain discovery, tool description single-source, verbose `/changes` + `/revert`, adaptability as tier 0 default | 6-8d |
 
 Order: 31-1 through 31-5 completed. For 31-6 through 31-17:
 - **Foundation (land first):** 31-16 (command registry) — **must** land before any plan introducing new commands. If that's not practical, those plans include fallback wiring instructions with an explicit TODO for registry migration.
