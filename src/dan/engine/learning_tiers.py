@@ -30,11 +30,11 @@ _TIER_FEATURES: dict[int, set[str]] = {
     },
     1: {
         "topology_suggestions", "model_recommendations",
-        "prompt_variant_proposals",
+        "prompt_variant_proposals", "domain_learning", "domain_validation",
     },
     2: {
         "ab_prompt_promotion", "skill_refinement",
-        "auto_adaptation",
+        "auto_adaptation", "domain_template_upgrade",
     },
 }
 
@@ -45,6 +45,9 @@ _FEATURE_ENV_OVERRIDES: dict[str, str] = {
     "topology_suggestions": "DAN_TOPOLOGY_LEARNING",
     "skill_refinement": "DAN_SKILL_LEARNING",
     "memory_extraction": "DAN_MEMORY_EXTRACTION",
+    "domain_learning": "DAN_DOMAIN_LEARNING",
+    "domain_validation": "DAN_DOMAIN_VALIDATION",
+    "domain_template_upgrade": "DAN_DOMAIN_TEMPLATE_UPGRADE",
 }
 
 
