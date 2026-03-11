@@ -1,7 +1,7 @@
 # 33-5: Analysis & Fixes
 
 **Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Analyze the baseline results from 33-3 and 33-4, identify the top failure modes, apply targeted fixes, and re-measure to confirm improvement.
 
 ## Process
@@ -23,7 +23,12 @@ For each failure mode, categorize by root cause:
 | Failure Stage | Meaning | Fix Location |
 |---|---|---|
 | `misrouted` | Classifier/solver didn't recognize this as a workflow build request | classifier.py, solver.py |
-| `no_graph_created` | Build pipeline ran but produced no graph (codegen silently failed, or mutation wasn't applied) | chat_manager.py, planner.py |
+| `routing_blocked` | Confirmation prompt or meta-session prevented build (33-8 granular) | runtime.py CONFIRM bypass |
+| `no_graph_created` | Build pipeline ran but produced no graph (legacy/fallback) | chat_manager.py, planner.py |
+| `timeout_planning` | Stuck in planning/context, never reached codegen | LLM API, 90s wall timeout |
+| `timeout_codegen` | Reached codegen but LLM timed out | LLM API, retry (33-8) |
+| `stream_error` | WebSocket/connection failure before events | app.py, client reconnect |
+| `llm_error` | LLM returned 500, internal error, empty response | Retry (33-8) |
 | `syntax_error` | Generated builder code has Python syntax errors | codegen prompt, few-shot examples |
 | `build_error` | Builder code runs but `build()` fails (bad node config, port mismatch) | codegen prompt, builder API |
 | `validation_error` | Graph compiles but `validate_graph()` rejects it (unreachable nodes, missing edges, port mismatch) | codegen prompt, graph_mutator.py |
@@ -73,15 +78,15 @@ Write up:
 
 ## Tasks
 
-- [ ] 1. Generate baseline report from first full run
-- [ ] 2. Triage failures into root-cause categories (include new Phase 22 categories: `guard_short_circuit`, `wrong_path`, `missing_defaults`, `wrong_domain`)
-- [ ] 3. Verify telemetry data completeness (tokens, cost, duration present for each turn)
-- [ ] 4. Select top 3 failure modes for fixing
-- [ ] 5. Apply targeted fixes (prompt, config, telemetry, or code)
-- [ ] 6. Re-run failed prompts to verify fixes
-- [ ] 7. Re-run full battery for regression check
-- [ ] 8. Produce comparison report (baseline vs post-fix, plus `agent` vs `build`)
-- [ ] 9. Update docs: bugs.md (root causes found), todo.md (remaining work), changelog.md
+- [x] 1. Generate baseline report from first full run *(pilot 10 prompts, Run 1: 60% pass)*
+- [x] 2. Triage failures into root-cause categories *(see [33-pilot-findings](33-pilot-findings-2026-03-11.md) and parent plan Measure-Fix-Measure)*
+- [x] 3. Verify telemetry data completeness (tokens, cost, duration present for each turn) *(report now includes telemetry_completeness: with_tokens, with_cost, tokens_complete_rate)*
+- [x] 4. Select top 3 failure modes for fixing *(routing_blocked, timeout, LLM flakiness)*
+- [x] 5. Apply targeted fixes *(CONFIRM bypass, META_GOAL override, clarification auto-reply, 33-6/7/8 patches)*
+- [x] 6. Re-run failed prompts to verify fixes *(Run 2: p04 fixed)*
+- [ ] 7. Re-run full battery for regression check *(deferred: LLM API instability; pilot re-run done)*
+- [x] 8. Produce comparison report *(baseline vs post-fix in [33-generation-quality-eval](33-generation-quality-eval.md#measure-fix-measure-cycle-2026-03-11))*
+- [x] 9. Update docs: bugs.md (root causes found), todo.md (remaining work), changelog.md *(bugs.md: Phase 33 root causes triage section added)*
 
 ## Files
 
@@ -95,7 +100,8 @@ Write up:
 
 ## Decisions
 
-- (filled in during execution)
+- **Granular failure modes (33-8 Task 7):** Added `routing_blocked` to `_determine_status()` when events contain "please confirm" or "meta session started" — distinguishes confirmation-blocked builds from generic `no_graph_created`.
+- **Full battery deferred:** LLM API reliability and server stability under load are the main remaining blockers. Full 44-prompt battery deferred until provider stabilizes.
 
 ## Notes
 
@@ -103,6 +109,7 @@ Write up:
 - Prompt tweaks (changing the codegen system prompt, adding few-shot examples) are the lowest-risk, highest-impact fixes. Code changes to the builder or validator should only happen if the prompt fix can't address the issue.
 - The unified telemetry store (31-20) should provide exact build-phase tokens, cost, and duration via `chat_turn` events. If data gaps exist, the fix belongs in the telemetry emission sites (concierge, run_manager), not in the test harness.
 - This plan is explicitly time-boxed: 1 day for analysis + fixes + re-run. If generation quality needs more than 1 day of fixes, that becomes a separate plan.
-- **Phase 22 feedback loop:** If the analysis reveals that convenience layer methods aren't being used (prompts still produce verbose code), or the expanded intent compiler isn't activating on expected patterns, or smart defaults aren't being applied — these are issues in the Phase 22 implementation, not in the generation pipeline per se. File as bugs against the relevant 32-X component.
+- **Phase 22 feedback loop:** If the analysis reveals that convenience layer methods aren't being used (prompts still produce verbose code), or the expanded intent compiler isn't activating on expected patterns, or smart defaults aren't being applied, or the new 32-6 ergonomics still fall back to verbose branching / hardcoded `quality_score` / single-macro-only follow-ups — these are issues in the Phase 22 implementation, not in the generation pipeline per se. File as bugs against the relevant 32-X component.
+- **Remaining verbosity signal:** If builder codegen still frequently emits manual `NodeRef(...)` recovery after `for_each` / `while_loop` / `parallel_subagents` / `orchestrator`, that is likely the next post-33 ergonomics slice (context-manager ref ergonomics), not a generic model-quality issue.
 - **Guard pipeline (31-19) false positives:** If `guard_short_circuit` appears for legitimate build requests, the guard threshold or entity grounding may need tuning. This feeds back into self-adaptive behavior (31-22) parameter calibration.
 - **Self-adaptive behavior (31-22):** If `DAN_BEHAVIOR_TIER >= 1`, check whether any behavior proposals were generated during the battery run. These might indicate the system is already learning from the test prompts — which is useful signal but could also introduce non-determinism between runs.

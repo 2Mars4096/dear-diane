@@ -54,6 +54,7 @@ After 20 phases of infrastructure, the platform is deep but rough around the edg
 | 31-20 | [Unified Telemetry & Analytics](31-20-unified-telemetry.md) | Single TelemetryEvent model + SQLite store for chat turns, workflow nodes, guard checks, tool calls. Per-turn timing, project-level cost rollup, `/analytics` command, JSONL/CSV export | 2-3d |
 | 31-21 | [Proactive Domain Learning](31-21-proactive-domain-learning.md) | Domain detection, post-task reflection, extraction templates, correction-to-domain bridge, pre-task expertise injection, domain-aware validation, template evolution, success pattern generalization, active context assembly & sufficiency check, parallel pipeline orchestration | 5-6d |
 | 31-22 | [Self-Adaptive Behavior](31-22-self-adaptive-behavior.md) | Externalize prompts/thresholds/taxonomy/domains/models into `BehaviorStore` with `AdaptableParameterRegistry`; tiered lifecycle (tier 0 observe, tier 1 advise, tier 2 auto-apply); evidence infrastructure (parameter-outcome telemetry, pattern accumulation, retrieval correlation); tool description single-source; `/changes` + `/revert` + `/behavior` + `/adaptations` commands | 8-9d |
+| 31-23 | [Execution Boundary Handoff](31-23-execution-boundary-handoff.md) | Typed `BoundaryHandoff` at build iterations, goal-loop attempts, workflow-to-workflow boundaries; deterministic signal extraction + LLM advice on failure only; dual-purpose: structured context for execution quality + progressive rendering for user-visible continuity; budget-capped prompt precedence | 3-4d |
 
 Order: 31-1 through 31-5 completed. For 31-6 through 31-17:
 - **Foundation (land first):** 31-16 (command registry) — **must** land before any plan introducing new commands. If that's not practical, those plans include fallback wiring instructions with an explicit TODO for registry migration.
@@ -114,6 +115,10 @@ Order: 31-1 through 31-5 completed. For 31-6 through 31-17:
 - **31-17 → 31-14**: Computer-use tasks are long-running, multi-phase operations that should emit progressive response updates ("opening browser", "waiting for download", "switching to file dialog")
 - **31-17 → 31-10**: Screenshot/OCR content sent to external LLMs must pass through provider-boundary PII tokenization
 - **31-17 → 31-16**: Minimal `/computer status|doctor|approve` commands should register through the command registry when available; broader policy-edit commands are intentionally deferred
+- **31-23 → 31-14**: Handoff `user_summary` is rendered via `ProgressSession` phase transitions (31-14 rendering infrastructure)
+- **31-23 → 31-21**: Handoff context injected via `_build_prompt_from_package()` with explicit precedence after task state but before domain expertise
+- **31-23 → 31-6**: GoalLoop attempts receive typed `BoundaryHandoff` instead of text-appended diagnosis
+- **31-23 → 17-2**: Ephemeral handoffs are NOT persisted; only lessons promoted through existing 17-2 reflection pathway
 
 ## Non-Goals (this phase)
 

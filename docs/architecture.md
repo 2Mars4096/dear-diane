@@ -182,7 +182,7 @@ deep-agent-network/
       tier_scorer.py               # DifficultyScorer, ImpactScorer, RecoverabilityScorer, TierScorer, TierResult
     mcp_bridge.py                # Phase 19 (29-9) — MCP client bridge: consume external MCP servers as tools
     tools/                       # Phase 4 — built-in tool library (dan.tools)
-      __init__.py                # get_all_tools() auto-discovery
+      __init__.py                # get_all_tools() auto-discovery, get_preflight_tools() hook discovery
       _workspace.py              # Workspace root sandboxing utility
       _git_helpers.py            # Shared _find_repo, _run_git for git tools
       file_read.py               # Read file with line range, size guard
@@ -271,6 +271,7 @@ deep-agent-network/
       intent_schema.py           # Phase 24-2 — WorkflowIntent, StageIntent, StageType Pydantic models; structured intent for deterministic compilation
       intent_compiler.py         # Phase 24-2 — IntentCompiler (WorkflowIntent → builder DSL code), CoverageChecker, CoverageResult; deterministic fast path for common workflow shapes
       intent_extraction.py      # Phase 24-2 — Intent extraction prompt, tool schema, few-shot examples for LLM function-calling
+      graph_quality.py           # Phase 33-7 — QualityCheck, GraphQualityReport, check_node_count/pattern_presence/tool_coverage/topology, compute_quality_report; semantic quality scoring (0-100) after structural validation; `DAN_GRAPH_QUALITY_THRESHOLD` (default 0) enables opt-in rejection of graphs below score
       diagnosis.py               # Phase 24-4 — GenerationError, ErrorClassifier, ArtifactMapper, CorrectionStrategySelector, AutoFixApplier, DiagnosisLoop, DiagnosisMetrics; bounded repair for failed generations
       generation_defaults.py     # Phase 32-3/32-5 — DefaultProfile, GenerationDefaults, DefaultsEnricher (smart defaults), DomainGenerationProfile, get_domain_profile() registry, build_domain_prompt_context()
       structural_mutations.py    # Phase 32-4 — 6 structural mutation macros (wrap_in_review_loop, fan_out_node, insert_validator, insert_tool, parallelize, unwrap_loop), resolve_node(), dispatch_structural_mutation(), summarize_graph()
@@ -352,7 +353,7 @@ deep-agent-network/
       skill_library.py           # SKILL_LIBRARY: domain-specific prompt-injection skills (management_science_writing, informs_latex_style) targeted by node tags
       capability_registry.py     # Phase 15 (25-1) — ChatCapabilityRegistry, CapabilityContext, CapabilityResult, build_tool_schema(); mode-aware multi-tool dispatch for chat-as-control-plane
       capability_handlers.py     # Phase 15 (25-1–25-4, 25-13) — 36 capability tool handlers (experience, run lifecycle, publish/share/export, graph, all 11 built-in tools, telegram_poll); register_*_capabilities() functions
-      chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA) + capability tools (ChatCapabilityRegistry), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history), profile/memory prompt injection, and conversation-summary persistence (26-3 integration)
+      chat_manager.py            # ChatManager: graph-aware LLM conversations, function-calling for graph mutations (MUTATION_TOOL_SCHEMA) + capability tools (ChatCapabilityRegistry), text-streaming fallback, context window management (MODEL_CONTEXT_WINDOWS, estimate_tokens, compact_history), profile/memory prompt injection, preflight tool hook execution (_run_preflight_hooks), and conversation-summary persistence (26-3 integration)
       chat_store.py              # Filesystem-based chat persistence (per-workflow threads)
       concierge/                # Phase 15 (25-6/25-7) — deterministic routing/runtime layer: project/task store, classifier, handlers, policy, queue, progress, promotion, goal loop (31-6)
         completion_guard.py      # Phase 21 (31-9) — Completion guard: RequirementExtractor (heuristic+LLM), CompletionChecker (keyword+LLM), augment_response(), run_completion_check(), /completion command, CompletionStats
@@ -456,6 +457,18 @@ deep-agent-network/
       report.py                  # GenerationQualityReport + baseline regression comparison
       __main__.py                # python -m tests.quality_suite CLI entry point
       test_quality_suite.py      # 25 tests for runners, reports, baseline, topology, conversions
+    eval/                        # Phase 33 workflow generation quality evaluation harness; see docs/eval-run-guide.md
+      __init__.py                # Shared Pydantic models: PromptFixture, EvalRecord, TimingInfo, TokenInfo, etc.
+      client.py                  # Async HTTP/WS client (httpx + websockets) for DAN API
+      telemetry_reader.py        # Sync read-only SQLite reader for ~/.dan/telemetry.db
+      runner.py                  # EvalRunner: run_battery(), run_single(), run_multi_turn(), load_prompts()
+      metrics.py                 # EvalLogger: timestamped JSONL writer with round-trip load_records()
+      report.py                  # ReportGenerator: per-tier/lane/path breakdowns, Rich table output
+      durability_checks.py       # D1-D4 durability smoke checks (repeat-run, reload, export, mutation)
+      __main__.py                # CLI: python -m tests.eval [--tier T1] [--pilot] [--execute] [--report ...]
+      prompts.json               # 44 prompt fixtures (T1-T5, pilot, multi-turn, edge cases)
+    test_eval_runner.py            # Regression tests for eval runner stream handling and clarification auto-reply
+    test_concierge_runtime_modes.py  # Tests for _requested_mode_forces_solver_path() build/mutate bypass
     fixtures/
       golden_intents/            # 18 golden intent JSON fixtures (5 families × 3 variants + 3 edge cases) + schema.json
       generation_quality_baseline.json  # Committed pass-rate baseline for regression detection
@@ -791,6 +804,7 @@ result = await engine.resume(graph, run_id="abc123")
   - **Communication** — `send_email` (SMTP via aiosmtplib)
   - **Archive** — `compress` (zip/tar.gz)
 - **Auto-discovery:** Each module exports `TOOL_METADATA` dict (keys: `tool_id`, `description`, `parameters`, `examples`, `category`, `returns`) and an async callable with the same name as `tool_id`. `get_all_tools()` scans all modules and returns `{tool_id: (function, metadata)}`.
+- **Preflight hooks:** Tools can declare an optional `preflight` block in `TOOL_METADATA` for automatic pre-invocation before the LLM sees the message. Keys: `trigger` (`"always"` — every message, or `"pattern"` — only when regex matches), `patterns` (list of regex for pattern trigger), `format` (Python format string applied to tool result dict), `inject_as` (`"system_context"`), `args` (default kwargs). `get_preflight_tools()` returns only hook-enabled tools. `ChatManager._run_preflight_hooks()` executes matching hooks at message-build time and injects results into the system prompt. `current_datetime` uses `trigger: "always"` so the LLM always knows the date without a tool call.
 - Auto-registered during server lifespan via `ToolRegistry.register_builtin_tools()` — custom tools can override built-in IDs
 - Graceful degradation: optional SDK tools (`pypdf` for `pdf_read`, `duckduckgo-search` for `web_search` fallback, `openpyxl` for `spreadsheet_read`, `openai` for `audio_transcribe`/`image_describe`) skip with warning if SDK not installed
 - **Web search provider cascade:** `web_search` checks `DAN_TAVILY_API_KEY` → Tavily (recommended, built for LLM agents); then `DAN_BRAVE_API_KEY` → Brave Search; then DuckDuckGo scraping (zero-config). Each provider auto-falls back to the next on failure.

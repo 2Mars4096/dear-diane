@@ -8,6 +8,7 @@
 - ~~**`msg.surface_id` in `/memory-confirm` and `/memory-reject` handlers.**~~ **FIXED 2026-03-10.** `SurfaceMessage` has no `surface_id` field — the correct field is `external_id`. Both `/memory-confirm` and `/memory-reject` handlers in `_handle_memory_command` (runtime.py) used the wrong attribute, causing `AttributeError`. Fixed to `msg.external_id`.
 - ~~**Telegram dumped raw web_fetch content (image markdown, navigation links, ticker badges) directly to the user.**~~ **FIXED 2026-03-10.** `handle_web_fetch` returned up to 100KB of raw scraped page content with no sanitization. The LLM sometimes echoed this directly, flooding Telegram with `![Image](url)` blocks, dense `[Ticker](url)` navigation lists, and bare `.webp`/`.png` URLs. Fixed by adding `_sanitize_web_content()` (strips image markdown, bare image URLs, and navigation link blocks) and adding explicit Telegram surface hints matching the existing WhatsApp protections.
 - ~~**File search fell back to broad ~/Dropbox when follow-up messages lacked an explicit path.**~~ **FIXED 2026-03-10.** `FileHandler._candidate_search_dirs()` only scanned user turns for path references. When a user said "the first folder, please review" (referencing a directory the bot had just mentioned), the regex found nothing in the vague user text, and search fell through to the default `[~/Dropbox, ~/Documents, ~/Desktop]` dirs. Fixed by also scanning assistant turns and the project summary for path clues.
+- ~~**Infinite clarification loop: bot repeats "Before I proceed: I'm making some assumptions..." regardless of user reply.**~~ **FIXED 2026-03-11.** Two interacting bugs: (1) `solver.py` heuristic path set `assumptions=["Inferred from classification heuristic without LLM planning"]` — a system-internal note whose content words never overlap any user message, so `guard_understanding()` always flagged it as ungrounded. (2) When the user answered, the replay re-entered `_solver_path()` with no guard bypass, re-triggering the same ungrounded-assumption check and producing the same clarification — infinite loop. Fixed by clearing heuristic assumptions and adding guard bypass on clarification replays.
 - **`/cost` and `/retry` access `ctx.project.thread_id` which doesn't exist on `Project`.** Both `_handle_cost_command` and `_handle_retry_command` in runtime.py reference `ctx.project.thread_id` after `context_resolver.resolve(msg)`, but the `Project` model has no `thread_id` field. These commands will `AttributeError` at runtime. Low priority since these paths are rarely exercised (cost/retry require chat-store wiring).
 - ~~**Telegram showed "Working on it..." for every message, including instant greetings.**~~ **FIXED 2026-03-10.** Telegram's `compact` verbosity caused `_process_inner` to yield an eager `progress_ack` before the LLM even started, so trivial messages like "Hi" and "Hello" showed a visible "Working on it..." bubble. Fixed by removing the eager `progress_ack` yield and relying on the existing `process()` reassurance timer (5s delay). Quick replies that complete within the delay window never show an interim bubble; long tasks still get reassurance after 5s. Reassurance events are now properly marked as `progress_ack` so stream consumers treat them as non-terminal.
 - **Telegram/WhatsApp long responses still lack full LLM-generated plan disclosure and result checkpoints.** 31-14's phase-transition events are now wired (context → execution phases emit live `progress_ack` events that edit the Telegram message in place), but plan disclosure (§3-3), result checkpoints (§3-5), pre-flight clarification questions (§4-2 through §4-4), and interactive checkpoint timeout/disconnect handling (§5-3, §5-4) are still not implemented.
@@ -26,6 +27,39 @@
 - ~~**Concierge LLM classifier could silently select an unsupported micro model on generic OpenAI-compatible endpoints, then fall back to brittle routing.**~~ **FIXED 2026-03-10.** The first `classify_intent_llm()` implementation auto-resolved a provider-tier "micro" model (`gpt-4o-mini` / Haiku / Flash) from registered provider names. On deployments that only expose a generic `default` provider backed by an OpenAI-compatible endpoint (for example `vectorengine.ai` serving `deepseek-v3.2` / `MiniMax-M2.5`), that logic could pick a provider-specific model string the endpoint did not support. The classifier call failed, routing silently fell back to heuristics, and topical requests could still hit old dead-end paths. Fixed by using the configured chat/default model as the classifier fallback whenever only the generic default provider is present, and by moving to a hybrid classifier that trusts strong heuristics before calling the LLM.
 
 - ~~**Experience lookup could end the conversation with "No similar workflows found."**~~ **FIXED 2026-03-10.** `ExperienceHandler` returned the raw capability message when workflow-history lookup found no matches, which produced a dead-end user reply for open-ended questions like "have we done anything similar to a supply chain risk analysis before?" Fixed by falling back to a normal helpful chat response when history search returns no matches, while still preserving the "no matching saved workflows" context.
+
+## Phase 33 Eval Findings (2026-03-11)
+
+### Root causes (33-5 triage)
+- **Routing (fixed):** CONFIRM handler and META_GOAL classification blocked explicit build requests. Fixed via `_requested_mode_forces_solver_path` bypass and META_GOAL→WORKFLOW_BUILD override.
+- **LLM API flakiness (open):** Empty classifier responses, codegen timeouts, internal errors. Primary cause of cross-run variance. Retry (33-8) helps but provider stability is external.
+- **Server stability (open):** 0-event responses under sustained eval load; WebSocket keepalive timeout on long codegen. `--delay` and heartbeat mitigate.
+- **Semantic underspec (33-7):** Structurally valid but useless graphs (p02: 2-node review loop, p08: 1-node equity). Quality gates now flag score <30.
+
+### LLM classifier returns empty response
+- **Symptom:** `LLM classifier returned unparseable response: ` in server.log — empty string
+- **Root cause:** The micro-tier classifier model (MiniMax-M2.5 via custom API endpoint) returns empty responses, possibly due to API issues or model configuration
+- **Impact:** All prompts fall through to keyword heuristic classifier, which has limited pattern coverage
+- **Workaround:** Added classification override for explicit `mode=build` requests
+- **Status:** Open — classifier model/API reliability is outside eval harness scope
+
+### Server solver path hangs for 60s+ without producing graph
+- **Symptom:** After classification succeeds and routes to solver, the server emits progress-ack pings but never produces a final response or graph mutation
+- **Root cause:** The solver path makes LLM calls (via the configured API endpoint) that appear to hang or timeout silently
+- **Impact:** 0% graph creation rate in pilot evaluation (first run); improved to 60% after routing fixes
+- **Workaround:** Added 90s wall-clock timeout in eval runner
+- **Status:** Open for some prompts — likely LLM API reliability/latency issue
+
+### `ActionPolicy.CONFIRM` blocks solver path for explicit build requests
+- **Symptom:** Complex "Build a multi-department..." prompts get classified as `META_GOAL` (estimated cost 2.0 > threshold 1.0), triggering CONFIRM handler that returns "Please confirm before I do that" — BEFORE the solver-path bypass runs
+- **Root cause:** CONFIRM check at line 1979 executes before `_requested_mode_forces_solver_path()` at line 2036
+- **Fix applied:** Added `not _requested_mode_forces_solver_path(msg.metadata)` to CONFIRM guard; extended classification override to also catch `META_GOAL` → `WORKFLOW_BUILD` for explicit build mode
+- **Status:** Fixed
+
+### `normalize_chat_mode("build")` maps to `"agent"`, losing mode signal
+- **Symptom:** `CHAT_MODE_ALIASES = {"build": "agent", "mutate": "agent"}` means the concierge never sees the original requested mode
+- **Fix applied:** Added `requested_mode` field to SurfaceMessage metadata preserving the pre-normalization mode
+- **Status:** Fixed
 
 ## Known Limitations (Adapter)
 

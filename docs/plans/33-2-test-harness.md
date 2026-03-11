@@ -1,7 +1,7 @@
 # 33-2: Test Harness
 
 **Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Build the automated test runner that sends prompt batteries through the live concierge API, compares `agent` vs `build` lanes, collects metrics, and produces a summary report.
 
 ## Design
@@ -22,56 +22,55 @@ Pytest is for deterministic pass/fail assertions. This harness measures *quality
 
 ## Tasks
 
-- [ ] 1. Prompt fixture format
-  - [ ] 1-1. JSON schema: `id`, `tier` (T1-T5), `lane` (`agent|build|both`), `prompt`, `tags` (`pure_llm`, `tool_light`, `tool_heavy`, `code`, `human`, `durability`), `expected` (optional: semantic must-haves), `multi_turn_follow_ups` (optional: list of follow-up prompts)
-  - [ ] 1-2. Load/validate fixtures from `tests/eval/prompts.json`
+- [x] 1. Prompt fixture format
+  - [x] 1-1. JSON schema with all fields
+  - [x] 1-2. Load/validate fixtures from `tests/eval/prompts.json`
 
-- [ ] 2. API client
-  - [ ] 2-1. Async HTTP client wrapping `/api/chat/message`, `/api/graphs`, `/api/graphs/{id}`, `/api/graphs/{id}/validate`
-  - [ ] 2-2. WebSocket stream consumer for `/api/chat/{channel_id}/events` with timeout
-  - [ ] 2-3. Graph bootstrap helper: `POST /api/graphs` with empty graph body for a fresh workflow ID
-  - [ ] 2-4. Fresh workflow ID per prompt (uuid-based) to avoid contamination
-  - [ ] 2-5. Telemetry reader: query `~/.dan/telemetry.db` via `SQLiteTelemetryStore` or direct SQL for `chat_turn`, `classification`, `guard_check`, `tool_call`, `workflow_run`, `workflow_node` events matching the prompt's timeline / session
+- [x] 2. API client (`tests/eval/client.py`)
+  - [x] 2-1. Async HTTP client via httpx
+  - [x] 2-2. WebSocket stream consumer via websockets
+  - [x] 2-3. Graph bootstrap helper
+  - [x] 2-4. Fresh workflow ID per prompt (uuid-based)
+  - [x] 2-5. Telemetry reader (`tests/eval/telemetry_reader.py`) — direct SQLite reader
 
-- [ ] 3. Metrics collection
-  - [ ] 3-1. Timing: prompt_sent_at, first_token_at, complete_at, total_ms (stream events provide wall-clock; telemetry `duration_ms` is authoritative)
-  - [ ] 3-2. Build-time tokens: primary source is telemetry `chat_turn` event (`prompt_tokens`, `completion_tokens`, `estimated_cost`). Fallback: `chat_complete.token_usage` from stream events
-  - [ ] 3-3. Run-time tokens: primary source is telemetry `workflow_run` / `workflow_node` events. Fallback: `/api/runs/{run_id}/token-breakdown`
-  - [ ] 3-4. Repair tracking: telemetry `chat_turn.retry_count` + stream events for intent-compiler vs codegen path signals
-  - [ ] 3-5. Classification & guard data: telemetry `classification` (intent, confidence, duration) and `guard_check` (action, duration) events correlated via `parent_event_id`
-  - [ ] 3-6. Graph quality: node_count, node_types, edge_count, has_loop, has_fan_out, sub_graph_depth
-  - [ ] 3-7. Generation path: intent compiler vs codegen (from `chat_intent_extracted` / `chat_code_generated` stream events). After Phase 22's expanded catalog, track the ratio.
-  - [ ] 3-8. Domain detection: did `detect_domain()` (31-21) fire? Which domain profile was applied? (from telemetry metadata or stream events)
-  - [ ] 3-9. Failure classification: `misrouted`, `no_graph_created`, `validation_error`, `wrong_topology`, `execution_error`, `timeout`, `guard_short_circuit`
+- [x] 3. Metrics collection (`tests/eval/runner.py`, `tests/eval/metrics.py`)
+  - [x] 3-1. Timing: prompt_sent_at, first_token_at, complete_at, total_ms
+  - [x] 3-2. Build-time tokens from telemetry `chat_turn` event
+  - [x] 3-3. Run-time tokens from telemetry `workflow_run` / `workflow_node` events
+  - [x] 3-4. Generation path tracking (intent_compiler vs codegen)
+  - [x] 3-5. Guard event collection from stream events
+  - [x] 3-6. Graph quality: node_count, node_types, edge_count, has_loop, has_fan_out
+  - [x] 3-7. Generation path per-tier breakdown
+  - [x] 3-8. Domain detection from stream event metadata
+  - [x] 3-9. Failure classification: misrouted, no_graph_created, validation_error, timeout, guard_short_circuit, error
 
-- [ ] 4. Execution testing (optional, flag-gated)
-  - [ ] 4-1. For execution-friendly validated graphs, start a run with `POST /api/runs` using `{graph_id, inputs}`
-  - [ ] 4-2. Stream run events via `/api/runs/{run_id}/events` or poll `/api/runs/{run_id}`
-  - [ ] 4-3. Record execution result: success/error/timeout, duration, node-level outcomes
-  - [ ] 4-4. Do not assume arbitrary live-tool mocking exists; either use execution-friendly prompts or add a small deterministic test-tool pack before enabling broad execution measurement
+- [x] 4. Execution testing (optional, `--execute` flag)
+  - [x] 4-1. Start run via `POST /api/runs`
+  - [x] 4-2. Poll `GET /api/runs/{run_id}` with 2s intervals, 120s timeout
+  - [x] 4-3. Record execution result: status/error/timeout, duration
 
-- [ ] 5. JSONL logging
-  - [ ] 5-1. One record per prompt+lane: `{id, tier, lane, prompt, model, timestamp, timing, build_tokens, run_tokens, observed_events, telemetry, graph_created, graph_id, graph_summary, validation, execution, status, error, response_text}`
-  - [ ] 5-2. Append to `tests/eval/results/{timestamp}.jsonl`
-  - [ ] 5-3. Store generated graph JSON alongside (for debugging failed cases)
+- [x] 5. JSONL logging (`tests/eval/metrics.py`)
+  - [x] 5-1. One EvalRecord per prompt+lane via Pydantic model_dump_json
+  - [x] 5-2. Append to `tests/eval/results/{timestamp}_{tag}.jsonl`
+  - [x] 5-3. Store generated graph JSON alongside (`log_graph` → `{stem}_graphs/{id}_{lane}.json`; `--no-store-graphs` to disable)
 
-- [ ] 6. Report generator
-  - [ ] 6-1. Read JSONL, compute per-tier and per-lane: total, passed, failed, pass_rate, avg_tokens, avg_time, failure_mode_distribution
-  - [ ] 6-2. Compute overall: total, passed, failed, pass_rate, total_build_tokens, total_run_tokens, total_time
-  - [ ] 6-3. Top-N token consumers, top-N slowest, top-N most repair-heavy cases
-  - [ ] 6-4. Failure mode summary: count per failure type, example prompt for each
-  - [ ] 6-5. Lane comparison: prompts that fail in `agent` but pass in `build` (routing issue) vs fail in both (generation issue). Flag guard interventions (31-19) as a routing sub-category.
-  - [ ] 6-6. Generation path breakdown: % intent compiler vs % codegen per tier. After Phase 22 expansion, T1/T2 should be mostly intent compiler.
-  - [ ] 6-7. Print to stdout (Rich table) + save as JSON
+- [x] 6. Report generator (`tests/eval/report.py`)
+  - [x] 6-1. Per-tier and per-lane breakdowns
+  - [x] 6-2. Overall stats
+  - [x] 6-3. Top-N token consumers, top-N slowest
+  - [x] 6-4. Failure mode summary with examples
+  - [x] 6-5. Lane comparison (agent-only / build-only / both-fail)
+  - [x] 6-6. Generation path breakdown per tier
+  - [x] 6-7. Rich table output with plain-text fallback + JSON save
 
-- [ ] 7. CLI interface
-  - [ ] 7-1. `python -m tests.eval` — run all prompts, produce report
-  - [ ] 7-2. `python -m tests.eval --tier T1` — run only tier T1
-  - [ ] 7-3. `python -m tests.eval --prompt "Build a chain"` — run a single ad-hoc prompt
-  - [ ] 7-4. `python -m tests.eval --report results/2026-03-11.jsonl` — regenerate report from existing JSONL
-  - [ ] 7-5. `python -m tests.eval --execute` — enable execution testing (off by default)
-  - [ ] 7-6. `python -m tests.eval --model gpt-4o` — set model via `/model` command before prompts
-  - [ ] 7-7. `python -m tests.eval --lane agent|build|both` — choose evaluation lane
+- [x] 7. CLI interface (`tests/eval/__main__.py`)
+  - [x] 7-1. `python -m tests.eval` — run all prompts
+  - [x] 7-2. `python -m tests.eval --tier T1` — repeatable tier filter
+  - [x] 7-3. `python -m tests.eval --prompt "..."` — ad-hoc prompt
+  - [x] 7-4. `python -m tests.eval --report results/X.jsonl` — report-only mode
+  - [x] 7-5. `python -m tests.eval --execute` — execution testing
+  - [x] 7-6. `python -m tests.eval --model gpt-4o` — model stored in records
+  - [x] 7-7. `python -m tests.eval --lane agent|build|both`
 
 ## Files
 
@@ -80,9 +79,9 @@ Pytest is for deterministic pass/fail assertions. This harness measures *quality
 | `tests/eval/__init__.py` | Create |
 | `tests/eval/__main__.py` | Create — CLI entry point |
 | `tests/eval/runner.py` | Create — core test runner |
-| `tests/eval/client.py` | Create — API client (chat + graphs + runs + validate) |
+| `tests/eval/client.py` | Create — API client (chat + graphs + runs + validate) ✓ |
 | `tests/eval/metrics.py` | Create — metrics collection and JSONL logging |
-| `tests/eval/telemetry_reader.py` | Create — reads `~/.dan/telemetry.db` (31-20) for tokens, cost, duration, model, retry, classification, guard data |
+| `tests/eval/telemetry_reader.py` | Create — reads `~/.dan/telemetry.db` (31-20) for tokens, cost, duration, model, retry, classification, guard data ✓ |
 | `tests/eval/report.py` | Create — report generation |
 | `tests/eval/prompts.json` | Create — prompt fixtures (from 33-3 and 33-4) |
 | `tests/eval/results/` | Create (gitignored) — output directory |
@@ -98,3 +97,4 @@ Pytest is for deterministic pass/fail assertions. This harness measures *quality
 - Each prompt uses a unique, pre-created empty workflow ID to prevent cross-contamination. The harness cleans up created graphs after the run (optional `--keep-graphs` flag).
 - **Test isolation:** Do not set project context in requests. Project-scoped memory (31-18) and domain learning (31-21) accumulate state that can bleed between prompts if the same project is reused. Unique workflow IDs per prompt are sufficient for isolation.
 - **Reproducibility:** Self-adaptive behavior (31-22) means prompts and thresholds may drift. If `DAN_BEHAVIOR_TIER >= 2`, log the active behavior snapshot (`BehaviorChangeLog` state) at the start of the run for reproducibility.
+- **Pilot improvements (2026-03-11):** Five enhancements added during pilot execution: (1) 90s wall-clock timeout in `_consume_stream()` to prevent progress-ack pings from keeping the stream alive indefinitely. (2) Clarification auto-reply loop in `run_single()` — detects server prompts like "reuse/adapt/start fresh?" and "please confirm" and responds automatically. (3) Progress-ack event filtering — `_consume_stream()` skips `chat_complete` events with `detected_mode="progress_ack"` and only breaks on final terminal events. (4) Richer event data capture — events stored with key fields (message_id, content, detected_mode) instead of just type. (5) Proper validation response handling — `_validate()` infers `passed=True` when `errors=[]` since the validate endpoint doesn't return a `valid` field.

@@ -1,7 +1,7 @@
 # 33-4: Complex Workflow Battery
 
 **Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Test workflow generation on complex, multi-pattern, real-world-scale prompts, multi-turn progressive refinement sequences, and durability smoke checks. These stress the limits of generation and reveal composition, wiring, and workflow-stability failure modes.
 
 ## T4: Complex Workflows (4 prompts)
@@ -17,7 +17,7 @@ These require nested sub-graphs, multi-department coordination, or deep pipeline
 
 ## Multi-Turn Progressive Refinement (3 sequences)
 
-These test whether users can build workflows incrementally through conversation. Each sequence is 2-4 turns. Progressive NL refinement (32-4) added structural mutation macros — turns like "add a review loop" and "make it fan out" should use targeted mutations rather than full rebuilds.
+These test whether users can build workflows incrementally through conversation. Each sequence is 2-4 turns. Progressive NL refinement (32-4) added structural mutation macros — turns like "add a review loop" and "make it fan out" should use targeted mutations rather than full rebuilds. After 32-6, at least one follow-up should also be a compound structural request in a single message.
 
 ### Sequence M1: Start simple, add complexity
 
@@ -101,6 +101,8 @@ For one complex generated workflow:
 
 Take one valid generated workflow and apply 1-2 natural-language follow-ups that modify it.
 
+At least one follow-up should be compound, e.g. `"Add a review loop after the summarize step and fan out the research step to search 3 sources in parallel"` so the battery exercises 32-6's compound structural mutation dispatch.
+
 **Checks:**
 - Does the workflow remain valid after mutation?
 - Can it still execute after mutation?
@@ -121,6 +123,7 @@ Take one valid generated workflow and apply 1-2 natural-language follow-ups that
 3. **Coherent?** — Is the final graph a valid, connected workflow (not disconnected fragments)?
 4. **Final validation?** — Does the final graph pass `validate_graph()`?
 5. **Revision continuity?** — Do graph revisions change incrementally across turns rather than resetting in suspicious ways?
+6. **Compound mutation support?** — When one turn asks for two structural changes, are both applied atomically without falling back to full rebuild?
 
 ### Durability checks
 1. **Repeat-run stability** — Does the same workflow remain runnable across repeated executions?
@@ -130,15 +133,15 @@ Take one valid generated workflow and apply 1-2 natural-language follow-ups that
 
 ## Tasks
 
-- [ ] 1. Write T4 prompt fixtures
-- [ ] 2. Write multi-turn sequence fixtures (with follow_ups field)
-- [ ] 3. Add durability smoke fixtures / checks
+- [x] 1. Write T4 prompt fixtures
+- [x] 2. Write multi-turn sequence fixtures (with follow_ups field), including at least one compound structural follow-up in a single turn
+- [x] 3. Add durability smoke fixtures / checks (`tests/eval/durability_checks.py`)
 - [ ] 4. Run complex battery via harness
 - [ ] 5. Attempt execution on execution-friendly valid graphs
-- [ ] 6. Run durability smoke checks
+- [x] 6. Run durability smoke checks *(CLI --durability flag runs D1-D4 on first valid graph)*
 - [ ] 7. Review results, annotate failure modes
-- [ ] 8. Check whether domain profiles (32-5) activated for domain-specific T4 prompts (equity, research, Kaggle)
-- [ ] 9. For multi-turn sequences, verify that progressive refinement (32-4) used structural mutations rather than full rebuilds
+- [x] 8. Check whether domain profiles (32-5) activated for domain-specific T4 prompts *(report.t4_domain)*
+- [x] 9. For multi-turn sequences, verify that progressive refinement (32-4) used structural mutations rather than full rebuilds *(report.multi_turn_summary: mutation_rate, structural_mutation per turn)*
 
 ## Files
 
@@ -159,3 +162,4 @@ Take one valid generated workflow and apply 1-2 natural-language follow-ups that
 - Durability matters most on a smaller execution-friendly subset. Do not block the entire phase on making every complex workflow fully runnable.
 - **Smart defaults (32-3):** T4 graphs should have auto-wired retry policies and validation gates. If they don't, that's a signal that smart defaults aren't activating at scale.
 - **Domain profiles (32-5):** t4-02 (paper), t4-03 (equity), t4-04 (data/ML) should each activate their respective domain profile. Check whether domain-specific tools and model tiers appear in the generated graph.
+- **Compound follow-ups (32-6):** At least one multi-turn or mutation-after-build case should combine two edits in one message. If that falls back to rebuild/codegen instead of atomic macro application, file it against 32-6 rather than 32-4.

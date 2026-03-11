@@ -17,13 +17,14 @@ These gaps compound: the LLM produces more code with more error opportunities, a
 
 ## Approach
 
-Five targeted improvements, ordered by impact:
+Six targeted improvements, ordered by impact:
 
 1. **Builder convenience layer** — High-level methods (`chain`, `review_loop`, `map_reduce`) and pipeline syntax that reduce the amount of code the LLM must generate. Direct impact: shorter codegen, fewer wiring errors.
 2. **Intent compiler expansion** — Broader pattern catalog with auto-composition so the fast, deterministic path handles more requests without falling to free-form codegen.
 3. **Smart generation defaults** — Codegen prompts and post-generation enrichment automatically include retry policies, validation checkpoints, and quality gates where appropriate.
 4. **Progressive NL refinement** — Structural mutations ("add a review loop", "fan out this step") handled cleanly without full rebuild. Bridges the gap between one-shot codegen and incremental mutation.
 5. **Domain generation profiles** — Per-domain configuration bundles (tools, model tiers, node patterns, validation rules) that the planner selects based on detected domain.
+6. **Follow-up convenience gaps patch-up** — Close the remaining common-control-flow ergonomics gaps surfaced in review: narrow conditional branching convenience, flexible `review_loop()` criteria, and compound structural follow-up mutations.
 
 ## Existing Infrastructure
 
@@ -52,6 +53,7 @@ Five targeted improvements, ordered by impact:
 | [32-3](32-3-smart-generation-defaults.md) | Smart Generation Defaults | Auto-wire retry policies, validation gates, feedback loops in generated workflows; codegen prompt updates; post-generation enrichment | ~1.5 days | 32-1 |
 | [32-4](32-4-progressive-refinement.md) | Progressive NL Refinement | Structural mutation macros (wrap-in-loop, fan-out, insert-gate), node resolution by name, graph-context injection for follow-up turns | ~2 days | 32-1, 32-2 |
 | [32-5](32-5-domain-generation-profiles.md) | Domain Generation Profiles | Per-domain config bundles (tools, model tiers, patterns, validation), 4 seed profiles, codegen prompt injection | ~1.5 days | 32-2, 32-3 |
+| [32-6](32-6-convenience-gaps.md) | Workflow Convenience Gaps Patch-Up | narrow conditional branching, flexible `review_loop()`, compound structural follow-ups | ~1 day | 32-1, 32-2, 32-4 |
 
 ## Dependencies / Sequencing
 
@@ -65,6 +67,7 @@ Five targeted improvements, ordered by impact:
 
 32-2 and 32-3 can run in parallel after 32-1 completes.
 32-5 waits for both 32-2 (expanded pattern catalog) and 32-3 (`generation_defaults.py` created).
+32-6 is a narrow follow-up patch slice after the main Phase 32 implementation; it depends on the existing convenience layer, intent compiler, and structural mutation work already being in place.
 
 ## Success Criteria
 
@@ -76,6 +79,7 @@ Five targeted improvements, ordered by impact:
 - [x] `docs/llm-api-guide.md` updated with all new convenience methods
 - [x] Existing builder tests and quality suite fixtures continue to pass
 - [x] Phase 23 (33-generation-quality-eval) can run against the optimized pipeline
+- [x] Common control-flow ergonomics gap closed: narrow branch convenience exists, `review_loop()` can express non-score criteria, and compound structural follow-up requests avoid unnecessary codegen fallback
 
 ## Decisions
 
@@ -90,3 +94,4 @@ Five targeted improvements, ordered by impact:
 - **No `codegen_prompts.py` exists.** The builder codegen system prompt lives in `meta/planner.py` (`CodegenPromptBuilder._SYSTEM_PROMPT`). The intent-extraction prompt lives in `meta/intent_extraction.py` (`INTENT_EXTRACTION_SYSTEM_PROMPT`). Sub-plans that reference `codegen_prompts.py` should target these locations instead.
 - This phase should complete before Phase 23 (generation quality evaluation) runs its full battery, so the eval measures the optimized pipeline.
 - The backlog item "Optimize workflow generation quality" is promoted to this phase.
+- 32-6 is intentionally a small patch slice, not a broad re-open. Typed `map_reduce()` schemas, decomposer backtracking, and richer routing families remain deferred until Phase 33 evidence says they are worth it.

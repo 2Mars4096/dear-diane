@@ -1,12 +1,14 @@
 # 33-3: Small Task Battery
 
 **Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Define and run 20+ small-to-medium workflow generation prompts that exercise each major pattern family, reuse/adaptation behavior, and composition quality, establishing the baseline success rate for everyday use cases.
+
+**Pilot subset:** The 10-prompt manual pilot (33-1) ran successfully in build lane with 60% pass rate. See [33-generation-quality-eval](33-generation-quality-eval.md#pilot-findings-2026-03-11) for results.
 
 ## Prompt Catalog
 
-### T1: Trivial — Single Pattern Expansions (8 prompts)
+### T1: Trivial — Single Pattern Expansions (9 prompts)
 
 These map directly to known patterns and should exercise the builder convenience layer (`chain()`, `review_loop()`, `map_reduce()`) and expanded intent compiler (32-1, 32-2). If these fail, the generation path has fundamental issues.
 
@@ -14,12 +16,13 @@ These map directly to known patterns and should exercise the builder convenience
 |----|--------|-----------------|---------------|
 | t1-01 | "Build a 3-step chain: research, analyze, summarize" | chain | 3 LLM |
 | t1-02 | "Create a 5-step pipeline: gather data, clean it, analyze, visualize, report" | chain | 5 LLM |
-| t1-03 | "Build a review loop: writer drafts, reviewer critiques, loop until approved" | review_loop | 3 (writer + reviewer + gate) |
+| t1-03 | "Build a review loop: writer drafts, reviewer verifies citations, loop until `citations_verified` is true" | review_loop (custom criteria) | 3 (writer + reviewer + gate) |
 | t1-04 | "Create a fan-out workflow that processes 5 items in parallel then merges results" | fan_out | 3+ (source + for_each + body + merge) |
 | t1-05 | "Build a RAG question-answering pipeline over a document collection" | rag_qa | 2+ (RAG + LLM answer) |
 | t1-06 | "Create a data ingestion pipeline: read PDFs from a folder, index them for search" | data_ingest | 3+ (input + index + RAG) |
 | t1-07 | "Build a workflow with a single LLM node that summarizes text" | chain (1 node) | 1 LLM |
 | t1-08 | "Create a workflow that reads a file and writes a summary to another file" | chain + tools | 2-3 (read + LLM + write) |
+| t1-09 | "Build a workflow that checks whether a document is relevant; if yes summarize it, otherwise write a brief rejection note" | conditional branch | 3-4 |
 
 ### T2: Simple — Standard Multi-Node Workflows (6 prompts)
 
@@ -93,14 +96,15 @@ Reuse / adaptation prompts (T2R) have different criteria:
 
 ## Tasks
 
-- [ ] 1. Write all prompt fixtures into `tests/eval/prompts.json`
-- [ ] 2. Run the battery via the harness (33-2)
+- [x] 1. Write all prompt fixtures into `tests/eval/prompts.json`
+- [ ] 2. Run the battery via the harness *(see [eval-run-guide](../eval-run-guide.md); requires `dan-up`)*
 - [ ] 3. Review results and annotate false positives/negatives
-- [ ] 4. Compute per-tier and per-lane pass rates
-- [ ] 5. Record generation path per prompt: intent compiler vs codegen. T1 prompts should mostly use intent compiler after Phase 22 expansion.
-- [ ] 6. Check whether smart defaults (32-3) were applied: do generated T2/T3 graphs include retry policies and validation gates?
-- [ ] 7. Note which domain profiles (32-5) activated, if any (especially for t3-03 equity and t3-05 data analysis prompts)
-- [ ] 8. Summarize reuse / adaptation behavior from the T2R prompts
+- [x] 4. Compute per-tier and per-lane pass rates *(report.by_tier, report.by_lane)*
+- [x] 5. Record generation path per prompt *(report.generation_path with by_tier breakdown)*
+- [x] 6. Check whether smart defaults (32-3) were applied: do generated T2/T3 graphs include retry policies and validation gates? *(report.smart_defaults when graphs stored)*
+- [x] 7. Note which domain profiles (32-5) activated, if any *(report.domain_profiles)*
+- [x] 8. Summarize reuse / adaptation behavior from the T2R prompts *(report.reuse_adaptation: T2R entries with mutation/reuse signals)*
+- [x] 9. Specifically review 32-6 coverage: did `t1-03` use flexible review criteria without falling back to hardcoded `quality_score`, and did `t1-09` produce a simple conditional branch rather than verbose low-level gate wiring? *(report.coverage_32_6 highlights t1-03, t1-09)*
 
 ## Files
 
@@ -118,3 +122,5 @@ Reuse / adaptation prompts (T2R) have different criteria:
 - T2-T3 prompt expected node counts are approximate — the LLM may produce slightly different but valid topologies.
 - Edge cases (T5) are judged by routing correctness, not graph quality.
 - Reuse / adaptation prompts are judged by behavior and telemetry signals (e.g. memory_retrieval events from 31-20), not by forcing a specific graph shape.
+- `t1-03` is the narrow 32-6 check for configurable `review_loop()` criteria; the generated flow should not require a hardcoded `quality_score` contract.
+- `t1-09` is the narrow 32-6 check for common if/else branching convenience; a simple gate-style branch is sufficient, but it should not require obviously over-complicated topology for the common case.

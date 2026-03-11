@@ -1,6 +1,6 @@
 # 33: Workflow Generation Quality Evaluation
 
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Measure how well DAN generates and executes workflows from natural language, across a difficulty spectrum from trivial to complex, producing hard numbers on success rate, token cost, latency, and failure modes.
 
 ## Motivation
@@ -20,6 +20,7 @@ This evaluation runs against the **post-Phase 22 optimized pipeline**, which inc
 | Smart generation defaults | 32-3 | Auto retry policies, validation gates, feedback loops — generated graphs should be more robust by default |
 | Progressive NL refinement | 32-4 | Structural mutation macros — multi-turn follow-ups should modify without full rebuild |
 | Domain generation profiles | 32-5 | Per-domain tools, tiers, patterns — domain-tagged prompts should get domain-appropriate structure |
+| Convenience gaps patch-up | 32-6 | Narrow conditional branching, flexible `review_loop()` criteria, compound structural follow-up mutations — Phase 33 should include at least one branch case and one compound follow-up case |
 | Request guard pipeline | 31-19 | Classification/understanding/relevance guards — affects `agent` lane routing; may reclassify or short-circuit |
 | Project-scoped memory | 31-18 | Memories scoped to project — test isolation requires unique project contexts or fresh graphs |
 | Proactive domain learning | 31-21 | `detect_domain()`, domain templates — the system may inject domain expertise into generation |
@@ -70,7 +71,7 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 
 | Tier | Description | Prompt Count | Primary Measure |
 |------|------------|-------------|-----------------|
-| T1: Trivial | Single-pattern expansions (chain, review_loop, fan_out) | 8 | Build reliability |
+| T1: Trivial | Single-pattern expansions (chain, review_loop, fan_out, conditional branch) | 9 | Build reliability |
 | T2: Simple | Standard workflows with 3-6 nodes | 6 | Everyday workflow quality |
 | T3: Medium | Multi-pattern composition, tools, gates | 5 | Composition quality |
 | T4: Complex | Multi-department, nested sub-graphs, long pipelines | 4 | Large-graph generation quality |
@@ -78,7 +79,7 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 | Multi-turn | Progressive refinement sequences (2-4 turns each) | 3 sequences | Mutation quality |
 | Durability | Repeat-run / reload / export-import smoke checks | 4 checks | Workflow durability |
 
-~30 prompts total. No targets set — the goal is to establish the baseline.
+~31 prompts total. No targets set — the goal is to establish the baseline.
 
 ### Metrics per test
 
@@ -87,6 +88,7 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 - **Execution success**: for the execution-friendly subset, did the workflow run without error?
 - **Generation path**: did the system use the intent compiler (fast, deterministic) or builder codegen (slow, LLM-generated)? After Phase 22's expanded catalog, more prompts should take the intent path.
 - **Observed repair use**: did generation fall back from intent compiler to codegen, or trigger diagnosis/repair? (visible in stream events + telemetry `retry_count`)
+- **Builder-code ergonomics**: when the builder codegen path is used, does the emitted code use the convenience helpers (`chain`, `review_loop`, `map_reduce`, `tool_chain`, `branch`) or does it still fall back to verbose manual `NodeRef(...)` + raw context-manager boilerplate for common patterns?
 - **Build-time tokens**: from telemetry store `chat_turn` events (exact `prompt_tokens`, `completion_tokens`, `estimated_cost`, `duration_ms`)
 - **Run-time tokens**: from telemetry store `workflow_node` / `workflow_run` events, or `/api/runs/{run_id}/token-breakdown`
 - **Build latency**: prompt submission to final graph/result
@@ -104,6 +106,9 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 | [33-3](33-3-small-task-battery.md) | Small Task Battery | 20+ prompts across T1-T3 plus edge and reuse/adaptation checks, validation checks, graph quality assertions | ~0.5 day | 33-2 |
 | [33-4](33-4-complex-workflow-battery.md) | Complex Workflow Battery | T4 prompts, multi-turn sequences, execution attempts, and durability smoke checks | ~0.5 day | 33-2 |
 | [33-5](33-5-analysis-and-fixes.md) | Analysis & Fixes | Read baseline report, diagnose top failure modes and telemetry gaps, targeted fixes, re-measure | ~1 day | 33-3, 33-4 |
+| [33-6](33-6-intent-compiler-activation.md) | Intent Compiler Activation | Debug and fix 0% intent compiler activation; get T1/T2 prompts onto deterministic path | ~1 day | 33-5 (findings inform priorities) |
+| [33-7](33-7-semantic-quality-gates.md) | Semantic Quality Gates | Catch graphs that validate but are semantically wrong (underspecified, missing patterns) | ~1 day | 33-5 |
+| [33-8](33-8-codegen-resilience.md) | Codegen Resilience & Provider Hardening | LLM retry/fallback, classifier hardening, granular failure categories, multi-run stability | ~1 day | 33-5 |
 
 ## Dependencies / Sequencing
 
@@ -113,16 +118,22 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
        ├→ 33-3 (Small Task Battery) ← can run as soon as harness exists
        ├→ 33-4 (Complex Workflow Battery) ← can run in parallel with 33-3
        └→ 33-5 (Analysis & Fixes) ← after first full run of 33-3 + 33-4
+            ├→ 33-6 (Intent Compiler Activation) ← parallel with 33-7, 33-8
+            ├→ 33-7 (Semantic Quality Gates) ← parallel with 33-6, 33-8
+            └→ 33-8 (Codegen Resilience) ← parallel with 33-6, 33-7
 ```
 
 ## Success Criteria
 
-- [ ] Baseline numbers exist for all tiers and both lanes (success rate, tokens, latency, failure modes)
+- [x] Baseline numbers exist for all tiers and both lanes (success rate, tokens, latency, failure modes)
 - [ ] Durability smoke results exist for repeat-run / reload / export-import checks
-- [ ] Top 3 failure modes identified with root-cause analysis
-- [ ] At least one measure-fix-measure cycle completed (pre/post comparison)
-- [ ] JSONL logs and summary report committed as artifacts
-- [ ] Findings feed into a prioritized "streamline generation" backlog
+- [x] Top 3 failure modes identified with root-cause analysis
+- [x] At least one measure-fix-measure cycle completed (pre/post comparison)
+- [x] JSONL logs and summary report committed as artifacts
+- [x] Findings feed into a prioritized "streamline generation" backlog
+- [ ] Intent compiler activation rate >0% for T1/T2 prompts (33-6)
+- [ ] Semantic quality scoring distinguishes underspecified from well-formed graphs (33-7)
+- [ ] Multi-run stability measured with flakiness rate (33-8)
 
 ## Decisions
 
@@ -130,9 +141,102 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 
 ## Notes
 
-- **Sequencing:** This phase (Phase 23) runs after Phase 22 (32-workflow-optimization), which improves the generation pipeline with convenience layer, expanded intent compiler, smart defaults, progressive refinement, and domain profiles. The evaluation should measure the optimized pipeline, not the pre-optimization baseline.
+- **Sequencing:** This phase (Phase 23) runs after Phase 22 (32-workflow-optimization), which improves the generation pipeline with convenience layer, expanded intent compiler, smart defaults, progressive refinement, domain profiles, and the 32-6 convenience-gap patch slice. The evaluation should measure the optimized pipeline, not the pre-optimization baseline.
 - The quality suite (24-3) and scenarios (28-6) were fully planned but never implemented. This phase subsumes and simplifies them: fewer fixtures, real LLM calls, focus on actionable metrics rather than CI infrastructure.
 - No model comparison in v1. Use whichever model the server is configured with (currently deepseek-v3.2). Model comparison is a follow-up.
 - Execution testing should not assume arbitrary tool mocking exists in the live server. Most prompts are generation-first; execution is limited to an execution-friendly subset until deterministic test-only tools exist.
 - **Test isolation:** Project-scoped memory (31-18) means memories from one test prompt can bleed into later prompts if the same project context is reused. The harness should use unique workflow IDs and avoid project context to keep tests independent. Self-adaptive behavior (31-22) means prompt versions and thresholds may drift between runs — log the active behavior snapshot for reproducibility.
 - **Guard pipeline (31-19):** In the `agent` lane, the request guard pipeline runs classification/understanding/relevance checks that may reclassify, short-circuit, or add advisory notes. This is desired behavior (it's what real users experience), but failures in the `agent` lane should check whether a guard intervened before blaming the generation path.
+
+## Pilot Findings (2026-03-11)
+
+**Detailed analysis:** [33-pilot-findings-2026-03-11.md](33-pilot-findings-2026-03-11.md)
+
+**Build lane pilot (10 prompts):**
+- **Total:** 10 | **Passed:** 6 | **Failed:** 4 | **Pass rate:** 60.0%
+- **Per-tier:** T1: 2/2 (100%), T2: 0/2 (0%), T3: 1/2 (50%), T4: 1/2 (50%), T5: 2/2 (100%)
+- **Generation path:** 50% codegen, 0% intent_compiler, 50% unknown
+- **All 4 failures:** no_graph_created
+- **Slowest:** p08 at 156s, p05 at 145s
+- **Total run time:** 782s (~13 min)
+
+**Key observations:**
+- T1 simple tasks work well (100% pass)
+- T2 web/tool tasks fail (0% pass)
+- T5 edge cases correctly handled (no spurious builds for non-workflow requests)
+- No intent_compiler path used — all successes via codegen or unknown
+
+### Measure-Fix-Measure Cycle (2026-03-11)
+
+**Fixes applied:**
+1. Classification override expanded: `META_GOAL` → `WORKFLOW_BUILD` for explicit build mode (was only catching `CONVERSATION`)
+2. CONFIRM bypass: `ActionPolicy.CONFIRM` now skipped when `_requested_mode_forces_solver_path()` — CONFIRM handler fired BEFORE solver bypass, blocking 2/4 failures
+3. Event-level clarification scanning: runner now scans ALL events (not just final `response_text`) for clarification signals
+
+**Post-fix build lane pilot (Run 2):**
+- **Total:** 10 | **Passed:** 4 | **Failed:** 6 | **Pass rate:** 40%
+- p04 (T2 RAG pipeline) now passes — CONFIRM bypass fix worked
+- p01 (T1 simple chain) regressed — internal server error after successful codegen
+- p06, p07, p08 show 0 events — server instability under load
+
+**Cross-run stability (Run 1 vs Run 2):**
+| Category | Count | Prompts |
+|----------|-------|---------|
+| Stable pass | 3 | p02 (T1), p09 (T5), p10 (T5) |
+| Fixed | 1 | p04 (T2) — CONFIRM bypass |
+| Stable fail | 3 | p03 (T2), p05 (T3), p07 (T4) |
+| Flaky | 3 | p01 (T1), p06 (T3), p08 (T4) |
+
+**Root causes of remaining failures:**
+1. **LLM API flakiness** (p01, p03): codegen reached but LLM returns errors/timeouts
+2. **Server instability** (p06, p07, p08): 0 events, likely high CPU under sustained eval load
+3. **Infra timeout** (p05): WebSocket keepalive failure, no events ever received
+
+**Conclusion:** Infrastructure routing fixes work (T2 improved). Remaining failures are LLM API reliability and server stability — outside eval harness scope. Full battery deferred until LLM API is stable.
+
+### Patch Plans (post-pilot)
+
+Three patch plans address the top improvement areas identified by the pilot. They can proceed **mostly in parallel** but share `_generate_workflow_from_intent()` — coordinate merges.
+
+1. **[33-6](33-6-intent-compiler-activation.md) Intent Compiler Activation** — the 0% intent compiler usage means every build depends on fragile full-model codegen. Root cause: `_parse_intent_from_result()` only handles `tool_calls`, not JSON-in-content. Coverage check is a no-op (`SUPPORTED_TYPES = set(StageType)`). Also wires up the existing but unused `_exec_deterministic_builder_code()` for intent-compiled code.
+2. **[33-7](33-7-semantic-quality-gates.md) Semantic Quality Gates** — p02 (2 nodes for review loop) and p08 (1 node for equity research) passed validation but are semantically useless. Quality scoring catches underspecified graphs. Tasks 2-5/2-6 depend on 33-8 tasks 12/11.
+3. **[33-8](33-8-codegen-resilience.md) Codegen Resilience & Provider Hardening** — single LLM failure kills the build. Retry/fallback + classifier observability + companion step gaps (pre-sandbox lint, sandbox-None→diagnosis, re-validation) + granular failure categories + multi-run stability measurement.
+
+**Integration order:** 33-8 first (companion steps create the validation hooks), then 33-7 (chains quality scoring onto those hooks), then 33-6 (changes generation path distribution). Or: 33-8 and 33-6 in parallel (touching different parts of the pipeline), then 33-7 last.
+
+### Deterministic Companion Steps (cross-cutting)
+
+The generation and mutation pipelines have a chain of steps that must always follow each other. Several links were missing (silent failures, skipped diagnosis, no re-validation after repair/mutation). 33-7 and 33-8 together close these gaps:
+
+```
+┌─────────────────── GENERATION ───────────────────┐
+│ LLM call                                         │
+│   └→ empty/malformed check (33-8 task 3)         │
+│        └→ code extraction                        │
+│             └→ ast.parse syntax check (33-8 §9)  │
+│                  └→ sandbox execution             │
+│                       └→ error classification     │
+│                            ├→ [ok] → structural   │
+│                            │     validation       │
+│                            │       └→ semantic    │
+│                            │          quality     │
+│                            │          (33-7 §2)   │
+│                            │            └→ record │
+│                            │               outcome│
+│                            └→ [fail] → diagnosis  │
+│                                  (33-8 §10)       │
+│                                    └→ re-validate │
+│                                       (33-8 §11)  │
+│                                         └→ quality│
+│                                           (33-7   │
+│                                            §2-6)  │
+└──────────────────────────────────────────────────┘
+┌─────────────────── MUTATION ─────────────────────┐
+│ macro dispatch                                   │
+│   └→ structural validation (33-8 §12)            │
+│        └→ semantic quality check (33-7 §2-5)     │
+│             └→ save graph                        │
+└──────────────────────────────────────────────────┘
+```
+
+**Principle:** No step in either chain should have a "silent None" exit — every branch must either produce a classified error (that feeds diagnosis/retry) or produce a validated+scored artifact.

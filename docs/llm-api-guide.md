@@ -1444,21 +1444,58 @@ graph = wf.build()
 
 Returns the last node's `NodeRef`. `{topic}` in the first step is auto-detected as a graph-level input variable.
 
-### `wf.review_loop(writer_prompt, reviewer_prompt, ...) → NodeRef`
+### `wf.branch(condition, then_prompt, else_prompt, ...) → tuple[NodeRef, NodeRef, NodeRef]`
 
-Writer-reviewer loop with gate in one call.
+Conditional if/else with two LLM branches. Compiles to a `gate` node (`gate_mode="if_else"`) + then-branch LLM + else-branch LLM.
 
 ```python
-wf = workflow("reviewed_draft")
-draft = wf.review_loop(
-    writer_prompt="Write a blog post about {topic}",
-    reviewer_prompt="Review this draft for clarity and completeness",
-    max_rounds=3,
+wf = workflow("sentiment_routing")
+gate_ref, then_ref, else_ref = wf.branch(
+    condition="sentiment > 0.5",
+    then_prompt="Summarize the positive findings",
+    else_prompt="Draft an alert about negative sentiment",
+    name="sentiment_check",
 )
+upstream >> gate_ref  # wire upstream into the gate
+then_ref >> wf.llm("publish", prompt="Format for publishing")
 graph = wf.build()
 ```
 
-Internally creates: writer LLM → while_loop(reviewer LLM → gate). Optional `name`, `writer_model`, `reviewer_model` kwargs.
+Returns `(gate_ref, then_ref, else_ref)` — wire upstream into `gate_ref`, downstream from `then_ref`/`else_ref`. Optional `name`, `then_model`, `else_model` kwargs.
+
+### `wf.review_loop(writer_prompt, reviewer_prompt, ...) → NodeRef`
+
+Writer-reviewer loop with gate in one call. Supports `>>` chaining — the returned NodeRef uses `draft` as both default input and output port.
+
+```python
+wf = workflow("reviewed_draft")
+result = wf.chain(("research", "Research {topic}"), ("outline", "Create outline"))
+loop = wf.review_loop(
+    writer_prompt="Write a blog post based on the outline",
+    reviewer_prompt="Review this draft for clarity and completeness",
+    max_rounds=3,
+)
+result >> loop  # upstream output wires to loop's 'draft' input
+graph = wf.build()
+```
+
+Internally creates: writer LLM → reviewer LLM inside a while_loop with `state_defaults` for self-contained initialization. All loop input ports are optional — works standalone or chained. Optional `name`, `writer_model`, `reviewer_model` kwargs.
+
+Custom review criteria (optional — defaults preserve score-based behavior):
+
+```python
+draft = wf.review_loop(
+    writer_prompt="Write a draft with citations",
+    reviewer_prompt="Verify all citations are real",
+    condition="citations_valid == true",
+    review_fields={"citations_valid": {"type": "boolean"}, "issues": {"type": "string"}},
+    feedback_key="issues",
+)
+```
+
+- `condition` — loop condition (default: `"quality_score < 8"`).
+- `review_fields` — reviewer output schema fields (default: `{"quality_score": {"type": "integer"}, "feedback": {"type": "string"}}`).
+- `feedback_key` — which review field feeds back to the writer (default: `"feedback"`).
 
 ### `wf.map_reduce(items_expr, map_prompt, reduce_prompt, ...) → NodeRef`
 
@@ -1516,6 +1553,8 @@ Six macros in `dan.meta.structural_mutations` for modifying existing graphs with
 
 `resolve_node(graph, reference_text)` resolves natural-language node references (exact name, fuzzy match, prompt keyword, position).
 `summarize_graph(graph)` produces a compact text summary for codegen context injection.
+
+**Compound dispatch** — `dispatch_compound_mutations(graph, user_text)` extracts and applies *all* non-overlapping macro matches from one message (e.g., "add a review loop and fan out the research step" applies both macros). Executes sequentially with message-level atomic rollback: if any macro fails, the entire compound mutation reverts. Single-macro messages delegate to the original `dispatch_structural_mutation()` for backward compatibility.
 
 ### Domain Generation Profiles
 
