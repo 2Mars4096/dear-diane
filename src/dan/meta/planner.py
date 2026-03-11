@@ -539,6 +539,9 @@ result = wf.review_loop(
     writer_prompt="Write about {topic}",
     reviewer_prompt="Review for quality",
     name="review", max_rounds=3,
+    # Optional: condition="citations_valid == true",
+    # review_fields={"citations_valid": {"type": "boolean"}, "issues": {"type": "string"}},
+    # feedback_key="issues",
 )
 
 # Map-reduce — fan-out + reduce
@@ -555,6 +558,15 @@ result = wf.tool_chain(
     ("analyze", None, "Analyze results"), # LLM node (tool_id=None)
     ("save", "file_write", {"path": "out.md"}),
 )
+
+# Branch — conditional if/else with two LLM branches
+gate_ref, then_ref, else_ref = wf.branch(
+    condition="sentiment > 0.5",
+    then_prompt="Summarize the positive findings",
+    else_prompt="Draft an alert about negative sentiment",
+    name="sentiment_check",
+)
+# Wire upstream into gate_ref; downstream from then_ref / else_ref
 
 # Pipeline operator (alias for >>)
 a | b | c  # equivalent to a >> b >> c
@@ -585,7 +597,7 @@ graph = wf.build()  # -> validated Graph
 ## Rules
 
 1. Always call ``wf.build()`` and assign to ``graph``.
-2. Prefer convenience methods (``chain``, ``review_loop``, ``map_reduce``, ``tool_chain``) \
+2. Prefer convenience methods (``chain``, ``review_loop``, ``map_reduce``, ``tool_chain``, ``branch``) \
 for common patterns. Use low-level ``wf.llm()`` + ``>>`` only for non-linear topologies.
 3. Use explicit ``input_ports`` and ``output_ports`` on nodes.
 4. Wire edges explicitly with ``wf.edge()`` for non-trivial data flow.

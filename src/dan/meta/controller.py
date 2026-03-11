@@ -311,12 +311,22 @@ class MetaController:
 
         built_ids: list[str] = []
         run_ids: list[str] = []
+        handoffs: dict[str, Any] = {}
 
         for spec in ordered:
             await self._emit("META_WORKFLOW_PLANNING", session, {"workflow": spec.name})
 
             if self._planner:
                 plan_context: dict[str, Any] = {}
+                _deps = getattr(spec, 'depends_on', None) or []
+                if _deps:
+                    _upstream = {d: handoffs[d] for d in _deps if d in handoffs}
+                    if _upstream:
+                        _sections = []
+                        _per = max(200, 1500 // len(_upstream))
+                        for _dn, _dh in _upstream.items():
+                            _sections.append(_dh.to_prompt_context(budget=_per))
+                        plan_context["upstream_handoffs"] = "## Upstream Results\n" + "\n".join(_sections)
                 if spec.required_tools:
                     plan_context["required_tools"] = spec.required_tools
                 if spec.required_skills:
@@ -337,6 +347,7 @@ class MetaController:
                     built_ids.append(wf_id)
                     session.workflow_ids.append(wf_id)
 
+                    _wf_result: dict[str, Any] | None = None
                     if self._run_workflow:
                         try:
                             result = await self._run_workflow(
@@ -345,9 +356,19 @@ class MetaController:
                             run_id = result.get("run_id", "") if isinstance(result, dict) else ""
                             run_ids.append(run_id)
                             session.run_ids.append(run_id)
+                            _wf_result = result if isinstance(result, dict) else {"status": "completed"}
                         except Exception as exc:
                             logger.warning("Workflow %s execution failed: %s", spec.name, exc)
                             run_ids.append("")
+                            _wf_result = {"status": "failed", "errors": [str(exc)]}
+                    try:
+                        from dan.server.concierge.boundary_handoff import WorkflowDepAssembler
+                        _handoff = WorkflowDepAssembler.assemble(
+                            _wf_result or {"status": "completed"}, spec.name,
+                        )
+                        handoffs[spec.name] = _handoff
+                    except Exception:
+                        logger.debug("Workflow handoff assembly failed for %s", spec.name, exc_info=True)
 
         return SystemManifest(
             plan=plan,

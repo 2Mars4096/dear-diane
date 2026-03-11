@@ -510,7 +510,8 @@ def resolve_node(graph: dict, reference_text: str) -> list[str]:
 # Macro dispatcher
 # ---------------------------------------------------------------------------
 
-_MACRO_KEYWORDS_UNSORTED: dict[str, str] = {
+# Longest-first so "remove the review loop" matches before "review loop"
+_MACRO_KEYWORDS: dict[str, str] = dict(sorted({
     "add review loop": "wrap_in_review_loop",
     "add a review loop": "wrap_in_review_loop",
     "review loop": "wrap_in_review_loop",
@@ -526,12 +527,7 @@ _MACRO_KEYWORDS_UNSORTED: dict[str, str] = {
     "remove loop": "unwrap_loop",
     "unwrap loop": "unwrap_loop",
     "remove the review loop": "unwrap_loop",
-}
-
-# longest-first so "remove the review loop" matches before "review loop"
-_MACRO_KEYWORDS: dict[str, str] = dict(
-    sorted(_MACRO_KEYWORDS_UNSORTED.items(), key=lambda kv: -len(kv[0]))
-)
+}.items(), key=lambda kv: -len(kv[0])))
 
 _MACRO_FUNCTIONS = {
     "wrap_in_review_loop": wrap_in_review_loop,
@@ -549,7 +545,93 @@ class DispatchResult:
     matched: bool
     macro_name: str | None = None
     result: MutationMacroResult | None = None
+    results: list[MutationMacroResult] = field(default_factory=list)
+    macro_names: list[str] = field(default_factory=list)
     error: str | None = None
+
+
+def _extract_number(text: str) -> int | None:
+    """Extract a numeric parameter (rounds, parallelism, etc.) from text."""
+    m = re.search(
+        r"(?:with\s+)?(\d+)\s*(?:rounds?|iterations?|times|workers?|parallel)", text,
+    )
+    if m:
+        return int(m.group(1))
+    m = re.search(
+        r"(?:parallelism|max.?rounds?|iterations?)\s*(?:=|of|:)?\s*(\d+)", text,
+    )
+    return int(m.group(1)) if m else None
+
+
+def _resolve_targets(
+    graph: dict, text_lower: str, *, target_node_hint: str | None,
+) -> list[str]:
+    """Resolve target node IDs from hint or NL text."""
+    if target_node_hint:
+        return resolve_node(graph, target_node_hint)
+    for pat in (
+        r"(?:after|to|on|around)\s+(?:the\s+)?(.+?)(?:\s+step|\s+node)",
+        r"(?:the\s+)?(.+?)\s+(?:step|node)",
+    ):
+        m = re.search(pat, text_lower)
+        if m:
+            ids = resolve_node(graph, m.group(1).strip())
+            if ids:
+                return ids
+    return []
+
+
+def _execute_macro(
+    graph: dict,
+    macro_name: str,
+    text_lower: str,
+    target_node_ids: list[str],
+    extracted_number: int | None,
+) -> MutationMacroResult:
+    """Run a single macro against the graph. Raises on unexpected error."""
+    if macro_name == "wrap_in_review_loop":
+        kwargs: dict[str, Any] = {}
+        if extracted_number is not None:
+            kwargs["max_rounds"] = extracted_number
+        return wrap_in_review_loop(
+            graph, target_node_ids[0] if target_node_ids else "", **kwargs,
+        )
+    if macro_name == "fan_out_node":
+        kwargs = {}
+        if extracted_number is not None:
+            kwargs["parallelism"] = extracted_number
+        return fan_out_node(
+            graph, target_node_ids[0] if target_node_ids else "", **kwargs,
+        )
+    if macro_name == "insert_validator":
+        if len(target_node_ids) >= 2:
+            return insert_validator(graph, target_node_ids[0], target_node_ids[1])
+        if target_node_ids:
+            up_edges = _get_upstream_edges(graph, target_node_ids[0])
+            if up_edges:
+                return insert_validator(
+                    graph, up_edges[0]["source_node_id"], target_node_ids[0],
+                )
+            return MutationMacroResult(
+                success=False, error="Cannot determine where to insert validator",
+            )
+        return MutationMacroResult(success=False, error="No target node for validator")
+    if macro_name == "insert_tool":
+        tool_match = re.search(r"(?:tool|step)\s+(\w+)", text_lower)
+        tool_id = tool_match.group(1) if tool_match else "web_search"
+        pos = "before" if "before" in text_lower else "after"
+        return insert_tool(
+            graph, target_node_ids[0] if target_node_ids else "", tool_id, position=pos,
+        )
+    if macro_name == "parallelize":
+        if len(target_node_ids) >= 2:
+            return parallelize(graph, target_node_ids[:min(len(target_node_ids), 5)])
+        return MutationMacroResult(
+            success=False, error="Need at least 2 nodes to parallelize",
+        )
+    if macro_name == "unwrap_loop":
+        return unwrap_loop(graph, target_node_ids[0] if target_node_ids else "")
+    return MutationMacroResult(success=False, error=f"Unknown macro: {macro_name}")
 
 
 def dispatch_structural_mutation(
@@ -571,37 +653,11 @@ def dispatch_structural_mutation(
             macro_name = name
             break
 
-    if macro_name is None:
+    if macro_name is None or macro_name not in _MACRO_FUNCTIONS:
         return DispatchResult(matched=False)
 
-    macro_fn = _MACRO_FUNCTIONS.get(macro_name)
-    if macro_fn is None:
-        return DispatchResult(matched=False)
-
-    extracted_number: int | None = None
-    num_match = re.search(r"(?:with\s+)?(\d+)\s*(?:rounds?|iterations?|times|workers?|parallel)", text_lower)
-    if num_match:
-        extracted_number = int(num_match.group(1))
-    else:
-        num_match = re.search(r"(?:parallelism|max.?rounds?|iterations?)\s*(?:=|of|:)?\s*(\d+)", text_lower)
-        if num_match:
-            extracted_number = int(num_match.group(1))
-
-    target_node_ids: list[str] = []
-    if target_node_hint:
-        target_node_ids = resolve_node(graph, target_node_hint)
-    else:
-        patterns = [
-            r"(?:after|to|on|around)\s+(?:the\s+)?(.+?)(?:\s+step|\s+node)",
-            r"(?:the\s+)?(.+?)\s+(?:step|node)",
-        ]
-        for pat in patterns:
-            m = re.search(pat, text_lower)
-            if m:
-                ref = m.group(1).strip()
-                target_node_ids = resolve_node(graph, ref)
-                if target_node_ids:
-                    break
+    extracted_number = _extract_number(text_lower)
+    target_node_ids = _resolve_targets(graph, text_lower, target_node_hint=target_node_hint)
 
     if not target_node_ids and macro_name not in ("parallelize",):
         nodes = graph.get("nodes", [])
@@ -609,52 +665,106 @@ def dispatch_structural_mutation(
             target_node_ids = [nodes[-1]["id"]]
 
     try:
-        if macro_name == "wrap_in_review_loop":
-            kwargs: dict[str, Any] = {}
-            if extracted_number is not None:
-                kwargs["max_rounds"] = extracted_number
-            result = wrap_in_review_loop(graph, target_node_ids[0] if target_node_ids else "", **kwargs)
-        elif macro_name == "fan_out_node":
-            kwargs = {}
-            if extracted_number is not None:
-                kwargs["parallelism"] = extracted_number
-            result = fan_out_node(graph, target_node_ids[0] if target_node_ids else "", **kwargs)
-        elif macro_name == "insert_validator":
-            if len(target_node_ids) >= 2:
-                result = insert_validator(graph, target_node_ids[0], target_node_ids[1])
-            elif target_node_ids:
-                up_edges = _get_upstream_edges(graph, target_node_ids[0])
-                if up_edges:
-                    result = insert_validator(graph, up_edges[0]["source_node_id"], target_node_ids[0])
-                else:
-                    result = MutationMacroResult(success=False, error="Cannot determine where to insert validator")
-            else:
-                result = MutationMacroResult(success=False, error="No target node for validator")
-        elif macro_name == "insert_tool":
-            tool_match = re.search(r"(?:tool|step)\s+(\w+)", text_lower)
-            tool_id = tool_match.group(1) if tool_match else "web_search"
-            pos = "before" if "before" in text_lower else "after"
-            result = insert_tool(graph, target_node_ids[0] if target_node_ids else "", tool_id, position=pos)
-        elif macro_name == "parallelize":
-            if len(target_node_ids) >= 2:
-                result = parallelize(graph, target_node_ids[:min(len(target_node_ids), 5)])
-            else:
-                result = MutationMacroResult(success=False, error="Need at least 2 nodes to parallelize")
-        elif macro_name == "unwrap_loop":
-            result = unwrap_loop(graph, target_node_ids[0] if target_node_ids else "")
-        else:
-            return DispatchResult(matched=False)
+        result = _execute_macro(graph, macro_name, text_lower, target_node_ids, extracted_number)
     except Exception as exc:
-        return DispatchResult(
-            matched=True,
-            macro_name=macro_name,
-            error=str(exc),
-        )
+        return DispatchResult(matched=True, macro_name=macro_name, error=str(exc))
+
+    return DispatchResult(matched=True, macro_name=macro_name, result=result)
+
+
+def dispatch_compound_mutations(
+    graph: dict,
+    user_text: str,
+    *,
+    target_node_hint: str | None = None,
+) -> DispatchResult:
+    """Extract and apply all non-overlapping structural macros from one message.
+
+    Unlike ``dispatch_structural_mutation`` which stops at the first match,
+    this function collects every non-overlapping keyword match, then executes
+    them sequentially with message-level atomic rollback.
+    """
+    text_lower = user_text.lower()
+
+    matches: list[tuple[int, int, str, str]] = []
+    for keyword, macro_name in _MACRO_KEYWORDS.items():
+        start = text_lower.find(keyword)
+        if start != -1:
+            matches.append((start, start + len(keyword), keyword, macro_name))
+
+    if not matches:
+        return DispatchResult(matched=False)
+
+    matches.sort(key=lambda m: (m[0], -(m[1] - m[0])))
+    non_overlapping: list[tuple[int, int, str, str]] = []
+    last_end = -1
+    for start, end, keyword, macro_name in matches:
+        if start >= last_end:
+            non_overlapping.append((start, end, keyword, macro_name))
+            last_end = end
+
+    seen_macros: set[str] = set()
+    unique_matches: list[tuple[int, int, str, str]] = []
+    for match in non_overlapping:
+        if match[3] not in seen_macros:
+            seen_macros.add(match[3])
+            unique_matches.append(match)
+
+    if len(unique_matches) <= 1:
+        return dispatch_structural_mutation(graph, user_text, target_node_hint=target_node_hint)
+
+    snapshot = copy.deepcopy(graph)
+    applied_results: list[MutationMacroResult] = []
+    applied_names: list[str] = []
+
+    for idx, (_start, _end, _keyword, macro_name) in enumerate(unique_matches):
+        if macro_name not in _MACRO_FUNCTIONS:
+            continue
+
+        seg_end = unique_matches[idx + 1][0] if idx + 1 < len(unique_matches) else len(text_lower)
+        segment = text_lower[_start:seg_end]
+
+        extracted_number = _extract_number(segment)
+        target_node_ids = _resolve_targets(graph, text_lower, target_node_hint=target_node_hint)
+
+        if not target_node_ids and macro_name not in ("parallelize",):
+            nodes = graph.get("nodes", [])
+            if nodes:
+                target_node_ids = [nodes[-1]["id"]]
+
+        try:
+            result = _execute_macro(graph, macro_name, segment, target_node_ids, extracted_number)
+
+            if not result.success:
+                graph.clear()
+                graph.update(snapshot)
+                return DispatchResult(
+                    matched=True,
+                    macro_names=applied_names + [macro_name],
+                    error=f"Compound mutation failed at '{macro_name}': {result.error}",
+                )
+
+            applied_results.append(result)
+            applied_names.append(macro_name)
+
+        except Exception as exc:
+            graph.clear()
+            graph.update(snapshot)
+            return DispatchResult(
+                matched=True,
+                macro_names=applied_names + [macro_name],
+                error=f"Compound mutation exception at '{macro_name}': {exc}",
+            )
+
+    if not applied_results:
+        return DispatchResult(matched=False)
 
     return DispatchResult(
         matched=True,
-        macro_name=macro_name,
-        result=result,
+        macro_name=applied_names[0] if len(applied_names) == 1 else None,
+        macro_names=applied_names,
+        result=applied_results[0] if len(applied_results) == 1 else None,
+        results=applied_results,
     )
 
 

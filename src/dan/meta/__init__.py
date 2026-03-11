@@ -38,6 +38,15 @@ from dan.meta.generation_defaults import (
     detect_suppressions,
     get_domain_profile,
 )
+from dan.meta.graph_quality import (
+    GraphQualityReport,
+    QualityCheck,
+    check_node_count,
+    check_pattern_presence,
+    check_topology,
+    check_tool_coverage,
+    compute_quality_report,
+)
 from dan.meta.intent_compiler import COVERAGE_CATALOG, CoverageChecker, CoverageResult, DOMAIN_PATTERN_PREFERENCES, IntentCompiler
 from dan.meta.intent_extraction import (
     INTENT_EXTRACTION_SYSTEM_PROMPT,
@@ -89,6 +98,8 @@ __all__ = [
     "GenerationError",
     "GenerationErrorType",
     "GenerationStage",
+    "GraphQualityReport",
+    "QualityCheck",
     "INTENT_EXTRACTION_SYSTEM_PROMPT",
     "INTENT_FEW_SHOT_EXAMPLES",
     "IntentCompiler",
@@ -120,6 +131,11 @@ __all__ = [
     "WorkflowSpec",
     "build_domain_prompt_context",
     "build_intent_tool_schema",
+    "check_node_count",
+    "check_pattern_presence",
+    "check_topology",
+    "check_tool_coverage",
+    "compute_quality_report",
     "clear_profile_cache",
     "detect_suppressions",
     "dispatch_structural_mutation",

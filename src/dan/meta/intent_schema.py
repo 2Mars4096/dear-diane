@@ -27,6 +27,7 @@ class StageType(str, Enum):
     tool_call = "tool_call"
     code_execution = "code_execution"
     human_approval = "human_approval"
+    conditional = "conditional"
 
 
 class DataSourceType(str, Enum):
@@ -59,6 +60,14 @@ class ReviewRequirement(BaseModel):
     max_iterations: int = Field(default=3, ge=1, le=20)
 
 
+class ConditionalRequirement(BaseModel):
+    """Specifies the branches of a conditional stage."""
+
+    condition: str = "result == true"
+    then_description: str = ""
+    else_description: str = ""
+
+
 # ---------------------------------------------------------------------------
 # Stage intent
 # ---------------------------------------------------------------------------
@@ -74,6 +83,7 @@ class StageIntent(BaseModel):
     outputs: list[str] = Field(default_factory=list)
     config: dict = Field(default_factory=dict)
     review: ReviewRequirement | None = None
+    conditional: ConditionalRequirement | None = None
     parallelism: int = Field(default=1, ge=1)
 
     @model_validator(mode="after")
@@ -82,6 +92,15 @@ class StageIntent(BaseModel):
             raise ValueError(
                 f"Stage '{self.name}' has stage_type 'review_loop' "
                 "but no 'review' field — ReviewRequirement is required"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _conditional_requires_conditional(self) -> StageIntent:
+        if self.stage_type == StageType.conditional and self.conditional is None:
+            raise ValueError(
+                f"Stage '{self.name}' has stage_type 'conditional' "
+                "but no 'conditional' field — ConditionalRequirement is required"
             )
         return self
 

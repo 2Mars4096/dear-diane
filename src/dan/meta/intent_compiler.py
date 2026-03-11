@@ -43,12 +43,12 @@ COVERAGE_CATALOG: dict[str, dict] = {
         "composable": True,
     },
     "data_pipeline": {
-        "description": "Ingest → process → analyze",
+        "description": "Ingest / code execution / analysis (also: code_analysis)",
         "stage_types": [StageType.tool_call, StageType.code_execution, StageType.transform],
         "composable": True,
     },
     "tool_augmented": {
-        "description": "LLM + tool calls",
+        "description": "LLM + tool calls (also: tool_chain, web_briefing)",
         "stage_types": [StageType.tool_call, StageType.transform],
         "composable": True,
     },
@@ -57,29 +57,14 @@ COVERAGE_CATALOG: dict[str, dict] = {
         "stage_types": [StageType.human_approval],
         "composable": True,
     },
-    "tool_chain": {
-        "description": "Sequential tool and LLM calls",
-        "stage_types": [StageType.tool_call, StageType.transform],
-        "composable": True,
-    },
     "comparison": {
         "description": "Fan-out items then compare/rank",
         "stage_types": [StageType.fan_out, StageType.transform],
         "composable": True,
     },
     "research_review": {
-        "description": "Research chain followed by review loop",
+        "description": "Research chain followed by review/improvement loop",
         "stage_types": [StageType.transform, StageType.review_loop],
-        "composable": True,
-    },
-    "web_briefing": {
-        "description": "Web search then analysis chain",
-        "stage_types": [StageType.tool_call, StageType.transform],
-        "composable": True,
-    },
-    "code_analysis": {
-        "description": "File read + code execution + analysis",
-        "stage_types": [StageType.tool_call, StageType.code_execution, StageType.transform],
         "composable": True,
     },
     "document_pipeline": {
@@ -92,9 +77,9 @@ COVERAGE_CATALOG: dict[str, dict] = {
         "stage_types": [StageType.tool_call, StageType.fan_out, StageType.transform],
         "composable": True,
     },
-    "iterative_improvement": {
-        "description": "Transform then goal-directed improvement loop",
-        "stage_types": [StageType.transform, StageType.review_loop],
+    "conditional_branch": {
+        "description": "If-else branching with then/else LLM branches",
+        "stage_types": [StageType.conditional],
         "composable": True,
     },
 }
@@ -102,9 +87,9 @@ COVERAGE_CATALOG: dict[str, dict] = {
 DOMAIN_PATTERN_PREFERENCES: dict[str, list[str]] = {
     "paper_rendering": ["research_review", "fan_out_fan_in", "rag_qa", "linear_chain"],
     "literature_review": ["research_review", "fan_out_fan_in", "rag_qa", "linear_chain"],
-    "equity_research": ["web_briefing", "code_analysis", "research_review", "tool_chain"],
-    "data_analysis": ["data_pipeline", "tool_chain", "tool_augmented", "code_analysis"],
-    "code_generation": ["tool_chain", "iterative_improvement", "linear_chain"],
+    "equity_research": ["tool_augmented", "data_pipeline", "research_review"],
+    "data_analysis": ["data_pipeline", "tool_augmented", "linear_chain"],
+    "code_generation": ["tool_augmented", "research_review", "linear_chain"],
 }
 
 
@@ -234,7 +219,7 @@ class IntentCompiler:
         lines: list[str] = []
 
         needs_noderef = any(
-            s.stage_type in (StageType.review_loop, StageType.fan_out)
+            s.stage_type in (StageType.fan_out,)
             for s in intent.stages
         )
 
@@ -250,7 +235,12 @@ class IntentCompiler:
             entry_var, exit_var, code_lines = self._compile_stage(stage, intent)
             lines.extend(code_lines)
             if prev_exit:
-                lines.append(f"{prev_exit} >> {entry_var}")
+                if prev_exit.startswith("__both__:"):
+                    _, branch_a, branch_b = prev_exit.split(":")
+                    lines.append(f"{branch_a} >> {entry_var}")
+                    lines.append(f"{branch_b} >> {entry_var}")
+                else:
+                    lines.append(f"{prev_exit} >> {entry_var}")
             prev_exit = exit_var
             lines.append("")
 
@@ -272,6 +262,7 @@ class IntentCompiler:
             StageType.tool_call: self._compile_tool_call,
             StageType.code_execution: self._compile_code_execution,
             StageType.human_approval: self._compile_human_approval,
+            StageType.conditional: self._compile_conditional,
         }
         return dispatch[stage.stage_type](stage, intent)
 
@@ -293,23 +284,17 @@ class IntentCompiler:
 
         condition = _escape(stage.review.condition)
         max_iter = stage.review.max_iterations
-        draft_id = f"{stage.name}_draft"
-        reviewer_id = f"{stage.name}_reviewer"
-        draft_var = _var_name(draft_id)
-        reviewer_var = _var_name(reviewer_id)
         reviewer_prompt = _escape(stage.review.reviewer_prompt)
         draft_prompt = _escape(stage.description or f"Generate draft for: {stage.name}")
 
         lines = [
-            (
-                f'with wf.while_loop("{stage.name}", '
-                f'condition="{condition}", '
-                f"max_iterations={max_iter}) as body:"
-            ),
-            f'    {draft_var} = body.llm("{draft_id}", prompt="{draft_prompt}")',
-            f'    {reviewer_var} = body.llm("{reviewer_id}", prompt="{reviewer_prompt}")',
-            f"    {draft_var} >> {reviewer_var}",
-            f'{var} = NodeRef("{stage.name}", "while_loop", wf)',
+            f"{var} = wf.review_loop(",
+            f'    writer_prompt="{draft_prompt}",',
+            f'    reviewer_prompt="{reviewer_prompt}",',
+            f'    name="{stage.name}",',
+            f"    max_rounds={max_iter},",
+            f'    condition="{condition}",',
+            f")",
         ]
         return var, var, lines
 
@@ -372,6 +357,29 @@ class IntentCompiler:
         prompt = _escape(stage.description or f"Please review and approve: {stage.name}")
         lines = [f'{var} = wf.human_in_the_loop("{stage.name}", prompt="{prompt}")']
         return var, var, lines
+
+    def _compile_conditional(
+        self, stage: StageIntent, intent: WorkflowIntent
+    ) -> tuple[str, str, list[str]]:
+        assert stage.conditional is not None
+        gate_var = _var_name(f"{stage.name}_gate")
+        then_var = _var_name(f"{stage.name}_then")
+        else_var = _var_name(f"{stage.name}_else")
+        condition = _escape(stage.conditional.condition)
+        then_desc = _escape(stage.conditional.then_description or f"Handle true case for {stage.name}")
+        else_desc = _escape(stage.conditional.else_description or f"Handle false case for {stage.name}")
+        lines = [
+            f'{gate_var}, {then_var}, {else_var} = wf.branch(',
+            f'    condition="{condition}",',
+            f'    then_prompt="{then_desc}",',
+            f'    else_prompt="{else_desc}",',
+            f'    name="{stage.name}",',
+            f")",
+        ]
+        # exit_var is a sentinel — the compiler's chaining logic uses it
+        # to wire ``exit_var >> next_entry_var``.  We return a special
+        # marker so compile() can wire both branches to the next stage.
+        return gate_var, f"__both__:{then_var}:{else_var}", lines
 
     # -- composed compilation ------------------------------------------------
 
@@ -457,15 +465,17 @@ class IntentCompiler:
             )
             max_iter = s.review.max_iterations if s.review else 3
             draft_prompt = _escape(s.description or s.name)
+            condition = s.review.condition if s.review else "quality_score >= 8"
             lines.append(
                 f"{ref_var} = wf.review_loop(\n"
                 f'    writer_prompt="{draft_prompt}",\n'
                 f'    reviewer_prompt="{reviewer_prompt}",\n'
                 f'    name="{s.name}",\n'
                 f"    max_rounds={max_iter},\n"
+                f'    condition="{_escape(condition)}",\n'
                 f")"
             )
-        elif pattern in ("research_review", "iterative_improvement"):
+        elif pattern == "research_review":
             transform_stages = [
                 s for s in stages if s.stage_type == StageType.transform
             ]
@@ -491,12 +501,14 @@ class IntentCompiler:
                 )
                 mi = rs.review.max_iterations if rs.review else 3
                 dp = _escape(rs.description or rs.name)
+                rc = rs.review.condition if rs.review else "quality_score >= 8"
                 lines.append(
                     f"{ref_var} = wf.review_loop(\n"
                     f'    writer_prompt="{dp}",\n'
                     f'    reviewer_prompt="{rp}",\n'
                     f'    name="{rs.name}",\n'
                     f"    max_rounds={mi},\n"
+                    f'    condition="{_escape(rc)}",\n'
                     f")"
                 )
             else:

@@ -21,6 +21,7 @@ _STAGE_TYPE_DESCRIPTIONS: dict[str, str] = {
     StageType.tool_call: "Invoke an external tool (web search, file read, API call)",
     StageType.code_execution: "Run a Python code snippet and capture the result",
     StageType.human_approval: "Pause for human review / approval before continuing",
+    StageType.conditional: "If-else branching — route to different processing based on a condition",
 }
 
 INTENT_EXTRACTION_SYSTEM_PROMPT: str = """\
@@ -44,13 +45,18 @@ of guessing. Never fabricate details the user did not mention.
 
 Common workflow patterns (use these as guidance):
 - Linear chain: sequential transform stages
-- Review loop: draft → review → revise cycle
+- Review loop: draft → review → revise cycle → use stage_type=review_loop
 - Tool chain: sequential tool and LLM calls
 - Research + review: research stages followed by quality review
 - Comparison: process items in parallel then compare
 - Document pipeline: read → process → write
 - Code analysis: file operations + code execution + analysis
 - Iterative improvement: repeated refinement toward a goal
+
+Explicit phrase → stage_type mapping:
+- "review loop", "draft then review", "iterate until quality" → review_loop
+- "in parallel", "for each", "process items concurrently" → fan_out
+- "search and retrieve", "RAG", "look up then answer", "retrieve context" → rag_retrieval
 """.format(
     stage_types="\n".join(
         f"  - {st.value}: {desc}" for st, desc in _STAGE_TYPE_DESCRIPTIONS.items()

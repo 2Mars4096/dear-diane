@@ -105,10 +105,7 @@ def detect_suppressions(user_text: str) -> dict[str, bool]:
 # Defaults enricher (post-generation safety net)
 # ---------------------------------------------------------------------------
 
-_CONTENT_KEYWORDS = frozenset({
-    "write", "report", "paper", "memo", "draft", "article", "essay",
-    "blog", "document", "letter", "proposal",
-})
+from dan.builder._constants import CONTENT_KEYWORDS as _CONTENT_KEYWORDS
 
 _EXTERNAL_TOOLS = frozenset({
     "web_search", "web_fetch", "send_email", "http_request",

@@ -37,6 +37,7 @@ class GenerationErrorType(str, Enum):
     syntax_error = "syntax_error"
     import_error = "import_error"
     runtime_error = "runtime_error"
+    no_output = "no_output"  # sandbox returned None (timeout, crash, no graph)
     name_error = "name_error"
     build_error = "build_error"
     port_conflict = "port_conflict"
