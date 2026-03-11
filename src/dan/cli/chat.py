@@ -19,6 +19,8 @@ from typing import Any, AsyncIterator
 
 import httpx
 
+from dan.cli.adapter import _is_progress_ack_event
+
 
 def _compute_graph_revision(graph_dict: dict) -> str:
     """Approximate graph revision hash (fallback when server doesn't return one).
@@ -120,7 +122,10 @@ class ChatClient:
                     yield data
                     return
                 yield data
-                if data.get("type") == "chat_complete":
+                if (
+                    data.get("type") == "chat_complete"
+                    and not _is_progress_ack_event(data)
+                ):
                     return
 
     async def apply_mutation(
@@ -227,6 +232,25 @@ def _load_readline_history() -> None:
     except (OSError, PermissionError):
         pass
     readline.set_history_length(_MAX_READLINE_HISTORY)
+
+
+def _setup_command_completer() -> None:
+    """Set up readline tab-completion for slash commands from the registry."""
+    try:
+        from dan.server.concierge.command_registry import get_default_registry
+        candidates = get_default_registry().completion_candidates("cli")
+    except Exception:
+        candidates = []
+
+    def _completer(text: str, state: int) -> str | None:
+        if not text.startswith("/"):
+            return None
+        matches = [c for c in candidates if c.startswith(text)]
+        return matches[state] if state < len(matches) else None
+
+    readline.set_completer(_completer)
+    readline.set_completer_delims(" \t\n")
+    readline.parse_and_bind("tab: complete")
 
 
 def _save_readline_history() -> None:
@@ -488,6 +512,7 @@ async def _run_repl(
     """REPL loop: read input, POST message, stream WS events, handle mutations."""
     _undo_stack.clear()
     _load_readline_history()
+    _setup_command_completer()
     msg_queue = _InputQueue()
     history: list[dict[str, str]] = []
     client_graph_revision: str | None = None
@@ -681,6 +706,8 @@ async def _run_repl(
                             print(delta, end="", flush=True)
                         acc += delta
                 elif ev_type == "chat_complete":
+                    if _is_progress_ack_event(event):
+                        continue
                     content = acc or str(event.get("content", "") or "")
                     if stream_tokens:
                         if acc:
@@ -988,6 +1015,24 @@ async def _run_repl(
                 _print(f"Error: {e}", style="red" if console else None)
             continue
 
+        # --- Unknown slash-command suggestion ---
+        if line.startswith("/"):
+            from dan.server.concierge.command_registry import get_default_registry
+            _reg = get_default_registry()
+            if _reg.match(line) is None:
+                cmd_word = line.split()[0]
+                suggestions = _reg.suggest(line)
+                if suggestions:
+                    _print(
+                        f"Unknown command '{cmd_word}'. "
+                        f"Did you mean: {', '.join(suggestions)}?",
+                    )
+                else:
+                    _print(
+                        f"Unknown command '{cmd_word}'. Type /help for available commands.",
+                    )
+                continue
+
         # Send message
         try:
             resp = await client.send_chat_message(
@@ -1085,6 +1130,8 @@ async def _run_repl(
                             accumulated += delta
 
                     elif ev_type == "chat_complete":
+                        if _is_progress_ack_event(event):
+                            continue
                         complete_content = accumulated or str(event.get("content", "") or "")
                         if accumulated:
                             print()  # newline after streamed tokens
@@ -1350,7 +1397,11 @@ async def _run_one_shot(
             channel = resp.get("stream_channel_id")
             if channel:
                 async for event in client.stream_chat_events(channel):
-                    if event and event.get("type") == "chat_complete":
+                    if (
+                        event
+                        and event.get("type") == "chat_complete"
+                        and not _is_progress_ack_event(event)
+                    ):
                         content = event.get("content", "")
                         if content:
                             history.append({"role": "user", "content": f"/model {model}"})
@@ -1388,6 +1439,8 @@ async def _run_one_shot(
                     print(delta, end="", flush=True)
                     full_response += delta
             elif ev_type == "chat_complete":
+                if _is_progress_ack_event(event):
+                    continue
                 content = event.get("content", "")
                 if not full_response and content:
                     print(content)
@@ -1520,7 +1573,11 @@ def main() -> None:
                     channel = resp.get("stream_channel_id")
                     if channel:
                         async for event in client.stream_chat_events(channel):
-                            if event and event.get("type") == "chat_complete":
+                            if (
+                                event
+                                and event.get("type") == "chat_complete"
+                                and not _is_progress_ack_event(event)
+                            ):
                                 print(f"Model set to {args.model}")
                                 break
                 except Exception as e:

@@ -62,35 +62,58 @@ def _strip_function_call_xml(text: str) -> str:
     return _FUNCTION_CALL_XML_RE.sub("", text).strip()
 
 
-def _translate_slash_command(text: str) -> str | None:
-    """Translate truly adapter-local slash commands for server dispatch.
+def _is_progress_ack_event(event: dict[str, Any]) -> bool:
+    """Return True when an event is a non-terminal progress acknowledgment."""
+    return (
+        event.get("type") == "chat_complete"
+        and event.get("detected_mode") == "progress_ack"
+    )
 
-    Server-owned chat commands should stay as raw slash commands so the
-    registry-driven fast-command path remains available on every surface.
+
+def _translate_slash_command(text: str) -> str | None:
+    """Translate adapter-local slash commands to natural language for dispatch.
+
+    Uses the command registry to decide handling:
+    - ``adapter_local`` commands are translated to NL for the server.
+    - ``chat``/``repl`` commands return *None* so the caller forwards the
+      raw slash text to the server (registry fast-dispatch handles them).
+    - Unknown commands also return *None* (forward to server as-is).
     """
+    from dan.server.concierge.command_registry import get_default_registry
+
     text = text.strip()
     if not text.startswith("/"):
         return None
+
+    registry = get_default_registry()
+    desc = registry.match(text)
+
+    if desc is None or desc.kind != "adapter_local":
+        return None
+
     parts = text.split(None, 1)
     cmd = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
 
-    translations = {
-        "/find": f"Find the file matching '{arg}' on my computer" if arg else None,
-        "/send": f"Send me the file at {arg}" if arg else None,
-        "/show": "Show me the current workflow",
-        "/list": "List my saved workflows",
-        "/help": None,
-    }
-    return translations.get(cmd, None)
+    if cmd == "/find" and arg:
+        return f"Find the file matching '{arg}' on my computer"
+    if cmd == "/send" and arg:
+        return f"Send me the file at {arg}"
+
+    return None
 
 
 def _format_adapter_help(adapter_type: str) -> str:
-    """Return help text filtered to the current adapter surface."""
+    """Return help text filtered to the current adapter surface.
+
+    WhatsApp surfaces get plain-text formatting (no markdown).
+    """
     from dan.server.concierge.command_registry import get_default_registry
 
     registry = get_default_registry()
     surface = _surface_name_for_adapter_type(adapter_type)
+    if surface in ("whatsapp", "whatsapp-web"):
+        return registry.format_help_plain(surface)
     return registry.format_help(surface)
 
 
@@ -151,7 +174,12 @@ def _consume_chat_stream_events(
                 ops = mutation_plan.get("operations", [])
                 desc = f"{desc}\n({len(ops)} operations)"
             collected.append(f"\n📋 Mutation proposed: {desc}")
-        elif evt_type in ("chat_complete", "chat_interrupted"):
+        elif evt_type == "chat_complete":
+            if _is_progress_ack_event(event):
+                continue
+            complete_content = event.get("content", "") or ""
+            break
+        elif evt_type == "chat_interrupted":
             complete_content = event.get("content", "") or ""
             break
         elif evt_type == "chat_error":
@@ -329,6 +357,12 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
                             evt_type = event.get("type", "")
                             logger.info("WS event: %s", evt_type)
                             stream_events.append(event)
+                        if (
+                            isinstance(event, dict)
+                            and event.get("type") == "chat_complete"
+                            and _is_progress_ack_event(event)
+                        ):
+                            continue
                         if isinstance(event, dict) and event.get("type") in ("chat_complete", "chat_interrupted", "chat_error"):
                             break
                 logger.info("WS stream finished, %d events collected", len(stream_events))
