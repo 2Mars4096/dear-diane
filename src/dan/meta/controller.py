@@ -330,7 +330,9 @@ class MetaController:
                     spec.goal, plan_context=plan_context if plan_context else None
                 )
                 if plan_output.review.valid:
-                    graph_data = await self._planner.execute_plan(plan_output.plan)
+                    graph_data = await self._planner.execute_plan(
+                        plan_output.plan, domain=None, user_text=spec.goal,
+                    )
                     wf_id = graph_data.get("workflow_id", spec.name) if isinstance(graph_data, dict) else spec.name
                     built_ids.append(wf_id)
                     session.workflow_ids.append(wf_id)

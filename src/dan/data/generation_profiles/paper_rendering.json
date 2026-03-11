@@ -1,0 +1,10 @@
+{
+    "domain": "paper_rendering",
+    "description": "Academic paper generation and formatting",
+    "preferred_tools": ["file_read", "file_write"],
+    "preferred_patterns": ["linear_chain", "review_loop"],
+    "model_tier_hints": {"drafting": "standard", "formatting": "routine", "final": "premium"},
+    "default_profile": "standard",
+    "validation_hints": ["Verify LaTeX syntax validity", "Check bibliography completeness", "Ensure section structure"],
+    "prompt_hints": ["Follow IMRaD structure when appropriate", "Use proper academic tone", "Include methodology details"]
+}

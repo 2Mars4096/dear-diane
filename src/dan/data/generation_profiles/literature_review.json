@@ -1,0 +1,10 @@
+{
+    "domain": "literature_review",
+    "description": "Academic literature review and synthesis",
+    "preferred_tools": ["web_search", "pdf_read", "web_fetch"],
+    "preferred_patterns": ["research_review", "fan_out_fan_in", "rag_qa"],
+    "model_tier_hints": {"planning": "routine", "research": "standard", "synthesis": "premium"},
+    "default_profile": "robust",
+    "validation_hints": ["Check citation completeness", "Verify source diversity", "Ensure proper attribution"],
+    "prompt_hints": ["Include systematic search strategy", "Cross-reference multiple sources", "Synthesize rather than summarize"]
+}

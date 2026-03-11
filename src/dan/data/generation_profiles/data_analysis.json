@@ -1,0 +1,10 @@
+{
+    "domain": "data_analysis",
+    "description": "Data processing and analysis pipelines",
+    "preferred_tools": ["file_read", "csv_read", "python_eval", "file_write"],
+    "preferred_patterns": ["data_pipeline", "tool_chain", "tool_augmented"],
+    "model_tier_hints": {"all": "routine"},
+    "default_profile": "standard",
+    "validation_hints": ["Validate input file existence", "Check output format", "Handle missing data"],
+    "prompt_hints": ["Prefer code execution for data transformations", "Include error handling for file operations", "Output results in structured format"]
+}

@@ -528,10 +528,43 @@ with wf.orchestrator("id", completion_condition="all_done") as orch:
         sub.llm("s1", prompt="...")
 ```
 
+### Convenience methods (prefer these for common patterns)
+
+```python
+# Chain — linear sequence of LLM nodes (auto-wires >> between steps)
+result = wf.chain(("step1", "prompt1"), ("step2", "prompt2"), ("step3", "prompt3"))
+
+# Review loop — writer + reviewer with while_loop in one call
+result = wf.review_loop(
+    writer_prompt="Write about {topic}",
+    reviewer_prompt="Review for quality",
+    name="review", max_rounds=3,
+)
+
+# Map-reduce — fan-out + reduce
+result = wf.map_reduce(
+    items_expr=gen["items"],   # PortRef to items
+    map_prompt="Process each item",
+    reduce_prompt="Synthesize all results",
+    parallelism=3,
+)
+
+# Tool chain — mixed LLM and tool nodes
+result = wf.tool_chain(
+    ("search", "web_search", {}),        # tool node
+    ("analyze", None, "Analyze results"), # LLM node (tool_id=None)
+    ("save", "file_write", {"path": "out.md"}),
+)
+
+# Pipeline operator (alias for >>)
+a | b | c  # equivalent to a >> b >> c
+```
+
 ### Edge wiring
 
 ```python
 a >> b >> c                           # chain operator (default ports)
+a | b | c                             # pipeline operator (same as >>)
 b = wf.llm("b", prompt=f"Use: {a}")  # f-string magic (auto-creates edge)
 wf.edge(a["port"], b["port"])         # explicit port wiring
 ```
@@ -552,11 +585,23 @@ graph = wf.build()  # -> validated Graph
 ## Rules
 
 1. Always call ``wf.build()`` and assign to ``graph``.
-2. Use explicit ``input_ports`` and ``output_ports`` on nodes.
-3. Wire edges explicitly with ``wf.edge()`` for non-trivial data flow.
-4. Use ``NodeRef`` to reference outputs of ``for_each``, ``while_loop``, and other composite nodes.
-5. Prompt templates use ``{variable}`` placeholders matching input port names.
-6. Output ONLY Python code. No markdown fences, no explanation."""
+2. Prefer convenience methods (``chain``, ``review_loop``, ``map_reduce``, ``tool_chain``) \
+for common patterns. Use low-level ``wf.llm()`` + ``>>`` only for non-linear topologies.
+3. Use explicit ``input_ports`` and ``output_ports`` on nodes.
+4. Wire edges explicitly with ``wf.edge()`` for non-trivial data flow.
+5. Use ``NodeRef`` to reference outputs of ``for_each``, ``while_loop``, and other composite nodes.
+6. Prompt templates use ``{variable}`` placeholders matching input port names.
+7. Output ONLY Python code. No markdown fences, no explanation.
+
+## Default-wiring guidance
+
+Unless the user explicitly asks for a minimal/simple workflow:
+- Add retry policies to LLM nodes for production workflows (use node config).
+- For workflows with a clear final output, consider adding a validation step.
+- For long-form content (reports, papers, memos), wrap in a review loop.
+- Recognize suppression signals: "simple", "minimal", "without review", "no validation" → skip those defaults.
+
+__DOMAIN_CONTEXT__"""
 
     _FEW_SHOT_EXAMPLES = '''\
 ## Example 1: 3-node chain (LLM → LLM → Code)
@@ -714,11 +759,47 @@ with wf.composite("research_block",
 
 wf.edge(source["text"], wf._nodes["research_block"]["topic"])
 graph = wf.build()
+```
+
+## Example 7: Convenience methods (preferred for common patterns)
+```
+from dan.builder import workflow
+
+# Chain + review loop using convenience methods
+wf = workflow("research_with_review")
+result = wf.chain(
+    ("research", "Research the topic: {topic}"),
+    ("outline", "Create an outline from findings"),
+    ("draft", "Write a draft from the outline"),
+)
+final = wf.review_loop(
+    writer_prompt="Improve the draft based on feedback",
+    reviewer_prompt="Review for clarity and completeness",
+    max_rounds=3,
+)
+result >> final
+graph = wf.build()
+```
+
+## Example 8: Tool chain + map-reduce
+```
+from dan.builder import workflow
+
+wf = workflow("parallel_analysis")
+search = wf.tool("search", tool_id="web_search",
+                  input_ports=[{"name": "query"}])
+result = wf.map_reduce(
+    items_expr=search["result"],
+    map_prompt="Summarize this source",
+    reduce_prompt="Synthesize all summaries into a unified report",
+    parallelism=3,
+)
+graph = wf.build()
 ```'''
 
-    def build_system_prompt(self) -> str:
+    def build_system_prompt(self, *, domain_context: str = "") -> str:
         """Return the system prompt that teaches the builder DSL."""
-        return self._SYSTEM_PROMPT
+        return self._SYSTEM_PROMPT.replace("__DOMAIN_CONTEXT__", domain_context)
 
     def build_few_shot_examples(self) -> str:
         """Return compact few-shot examples covering 6 key workflow patterns."""
@@ -799,13 +880,33 @@ graph = wf.build()
         error_context: str | None = None,
         constraints: dict | None = None,
         self_knowledge_chunks: str | None = None,
+        domain: str | None = None,
+        graph_summary: str | None = None,
     ) -> tuple[str, str]:
         """Build the complete (system_prompt, user_prompt) pair.
 
         The system prompt includes the DSL reference and few-shot examples.
         The user prompt includes the goal and optional context.
         """
-        system = self.build_system_prompt() + "\n\n" + self.build_few_shot_examples()
+        domain_context = ""
+        if domain:
+            try:
+                from dan.meta.generation_defaults import (
+                    build_domain_prompt_context,
+                    get_domain_profile,
+                )
+                profile = get_domain_profile(domain)
+                if profile:
+                    domain_context = build_domain_prompt_context(profile)
+            except Exception:
+                logger.warning("Domain profile loading failed for %s", domain, exc_info=True)
+
+        system = (
+            self.build_system_prompt(domain_context=domain_context)
+            + "\n\n"
+            + self.build_few_shot_examples()
+        )
+
         user = self.build_user_prompt(
             goal,
             tools=tools,
@@ -814,6 +915,13 @@ graph = wf.build()
             constraints=constraints,
             self_knowledge_chunks=self_knowledge_chunks,
         )
+
+        if graph_summary:
+            user = (
+                f"## Existing Workflow (modify, don't rebuild from scratch)\n"
+                f"{graph_summary}\n\n{user}"
+            )
+
         return system, user
 
 
@@ -932,7 +1040,13 @@ class WorkflowPlanner:
 
         return plan_context
 
-    async def execute_plan(self, plan: PlanResult) -> dict[str, Any]:
+    async def execute_plan(
+        self,
+        plan: PlanResult,
+        *,
+        domain: str | None = None,
+        user_text: str | None = None,
+    ) -> dict[str, Any]:
         """Execute a PlanResult: load, adapt, or compile a graph.
 
         For ``GENERATE_CODE`` plans: runs the full codegen pipeline
@@ -946,7 +1060,7 @@ class WorkflowPlanner:
             return self._execute_adapt(plan)
         if isinstance(plan, GenerateCodePlan):
             try:
-                return await self._execute_generate_code(plan)
+                return await self._execute_generate_code(plan, domain=domain, user_text=user_text)
             except (ValueError, RuntimeError) as exc:
                 if _LEGACY_GENERATE_FALLBACK:
                     logger.warning(
@@ -1114,7 +1228,13 @@ class WorkflowPlanner:
             "generated": True,
         }
 
-    async def _execute_generate_code(self, plan: GenerateCodePlan) -> dict[str, Any]:
+    async def _execute_generate_code(
+        self,
+        plan: GenerateCodePlan,
+        *,
+        domain: str | None = None,
+        user_text: str | None = None,
+    ) -> dict[str, Any]:
         """Execute builder DSL code in a subprocess sandbox with full
         validation and bounded diagnosis.
 
@@ -1218,10 +1338,42 @@ class WorkflowPlanner:
         validation = validate_codegen_output(codegen.graph)
 
         if validation.success:
+            graph_data = (
+                validation.graph.model_dump(mode="json")
+                if validation.graph
+                else codegen.graph
+            )
+
+            # 32-3: Post-generation enrichment (safety net for missing defaults)
+            try:
+                from dan.meta.generation_defaults import (
+                    DefaultProfile,
+                    DefaultsEnricher,
+                    GenerationDefaults,
+                    detect_suppressions,
+                    get_domain_profile,
+                )
+
+                gen_defaults = GenerationDefaults()
+                if domain:
+                    dp = get_domain_profile(domain)
+                    if dp and dp.default_profile:
+                        gen_defaults = GenerationDefaults.from_profile(
+                            DefaultProfile(dp.default_profile)
+                        )
+                if user_text:
+                    for field, value in detect_suppressions(user_text).items():
+                        setattr(gen_defaults, field, value)
+
+                enricher = DefaultsEnricher(gen_defaults)
+                graph_data = enricher.enrich(graph_data)
+            except Exception:
+                logger.warning("DefaultsEnricher failed", exc_info=True)
+
             workflow_id = f"meta-code-{uuid.uuid4().hex[:10]}"
             return {
                 "workflow_id": workflow_id,
-                "graph": validation.graph.model_dump(mode="json") if validation.graph else codegen.graph,
+                "graph": graph_data,
                 "description": plan.description,
                 "generated": True,
                 "code_generated": True,

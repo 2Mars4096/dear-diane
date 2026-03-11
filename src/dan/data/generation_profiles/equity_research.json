@@ -1,0 +1,10 @@
+{
+    "domain": "equity_research",
+    "description": "Financial equity research and analysis",
+    "preferred_tools": ["web_search", "python_eval", "web_fetch"],
+    "preferred_patterns": ["web_briefing", "code_analysis", "research_review"],
+    "model_tier_hints": {"data_gathering": "routine", "analysis": "standard", "report": "premium"},
+    "default_profile": "robust",
+    "validation_hints": ["Cite data sources", "Verify numerical consistency", "Check for stale data"],
+    "prompt_hints": ["Include quantitative analysis", "Compare against benchmarks", "Note data recency"]
+}
