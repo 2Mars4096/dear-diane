@@ -7,6 +7,7 @@ a recurring basis.  ``/schedule add "run equity report" every day at 9am``
 from __future__ import annotations
 
 import asyncio
+import enum
 import json
 import logging
 import os
@@ -20,6 +21,169 @@ from typing import Any, Awaitable, Callable, Literal
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Scheduler authority — single-writer policy (Task 2-2)
+# ---------------------------------------------------------------------------
+
+
+class SchedulerAuthority(enum.Enum):
+    """Which process owns schedule firing."""
+
+    SERVICE = "service"  # dan-service daemon (primary)
+    SERVER = "server"  # dan-serve web server (fallback)
+
+
+def resolve_scheduler_authority() -> SchedulerAuthority:
+    """Determine which process should own schedule firing.
+
+    Checks for a running ``dan-service`` daemon via the lease file.
+    Falls back to ``SERVER`` when no daemon holds a valid lease.
+    """
+    try:
+        mgr = ScheduleLeaseManager()
+        lease = mgr.read_lease()
+        if lease is not None and not lease.is_stale and _is_pid_alive(lease.pid):
+            return SchedulerAuthority.SERVICE
+    except Exception:
+        logger.debug("Lease check failed, defaulting to SERVER", exc_info=True)
+    return SchedulerAuthority.SERVER
+
+
+# ---------------------------------------------------------------------------
+# Schedule lease / lock (Task 2-3)
+# ---------------------------------------------------------------------------
+
+_DEFAULT_LEASE_PATH = os.path.expanduser("~/.dan/schedule_lease.json")
+
+
+def _is_pid_alive(pid: int) -> bool:
+    """Check whether a process with *pid* is running."""
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+
+
+class ScheduleLease(BaseModel):
+    """Filesystem-based lease preventing double-firing across processes."""
+
+    owner_id: str
+    pid: int = 0
+    acquired_at: datetime
+    expires_at: datetime
+    stale_after_seconds: int = 120
+
+    @property
+    def is_stale(self) -> bool:
+        now = datetime.now(timezone.utc)
+        deadline = self.acquired_at + timedelta(seconds=self.stale_after_seconds)
+        return now > deadline
+
+    @property
+    def is_expired(self) -> bool:
+        return datetime.now(timezone.utc) > self.expires_at
+
+
+class ScheduleLeaseManager:
+    """Acquire / release / renew a filesystem lock for the scheduler."""
+
+    def __init__(self, path: str | None = None, stale_after_seconds: int = 120) -> None:
+        self._path = path or _DEFAULT_LEASE_PATH
+        self._stale_after = stale_after_seconds
+
+    @property
+    def path(self) -> str:
+        return self._path
+
+    def read_lease(self) -> ScheduleLease | None:
+        if not os.path.exists(self._path):
+            return None
+        try:
+            with open(self._path) as f:
+                data = json.load(f)
+            return ScheduleLease.model_validate(data)
+        except Exception:
+            return None
+
+    def acquire(self, owner_id: str, duration_seconds: int = 300) -> ScheduleLease | None:
+        """Try to acquire the lease. Returns the lease on success, None if held by another.
+
+        When a different owner holds a non-stale/non-expired lease, the owner's
+        PID is checked.  If the PID is no longer alive the lease is treated as
+        stale and the caller takes over automatically.
+        """
+        existing = self.read_lease()
+        if existing is not None and not existing.is_stale and not existing.is_expired:
+            if existing.owner_id != owner_id:
+                if _is_pid_alive(existing.pid):
+                    return None
+        now = datetime.now(timezone.utc)
+        lease = ScheduleLease(
+            owner_id=owner_id,
+            pid=os.getpid(),
+            acquired_at=now,
+            expires_at=now + timedelta(seconds=duration_seconds),
+            stale_after_seconds=self._stale_after,
+        )
+        self._write(lease)
+        return lease
+
+    def renew(self, owner_id: str, duration_seconds: int = 300) -> ScheduleLease | None:
+        """Renew an existing lease. Returns None if not held by this owner."""
+        existing = self.read_lease()
+        if existing is None or (existing.owner_id != owner_id and not existing.is_stale):
+            return None
+        now = datetime.now(timezone.utc)
+        lease = ScheduleLease(
+            owner_id=owner_id,
+            pid=os.getpid(),
+            acquired_at=now,
+            expires_at=now + timedelta(seconds=duration_seconds),
+            stale_after_seconds=self._stale_after,
+        )
+        self._write(lease)
+        return lease
+
+    def release(self, owner_id: str) -> bool:
+        """Release the lease if held by this owner."""
+        existing = self.read_lease()
+        if existing is None:
+            return True
+        if existing.owner_id != owner_id:
+            return False
+        try:
+            os.unlink(self._path)
+        except FileNotFoundError:
+            pass
+        return True
+
+    def is_held_by_current_process(self) -> bool:
+        """Return True if the current process holds a valid (non-stale) lease."""
+        lease = self.read_lease()
+        if lease is None:
+            return False
+        return lease.pid == os.getpid() and not lease.is_stale and not lease.is_expired
+
+    def _write(self, lease: ScheduleLease) -> None:
+        Path(self._path).parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(Path(self._path).parent), suffix=".tmp"
+        )
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(lease.model_dump(mode="json"), f, indent=2, default=str)
+            os.replace(tmp_path, self._path)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
 # ---------------------------------------------------------------------------
 # croniter availability
@@ -424,6 +588,12 @@ class TaskScheduler:
         Optional history store for recording run results.
     poll_interval : float
         Seconds between schedule checks (default 30).
+    lease_manager : ScheduleLeaseManager | None
+        If provided, only fire schedules when this process holds the lease.
+    authority : SchedulerAuthority
+        Whether this is the primary (SERVICE) or fallback (SERVER) scheduler.
+    event_bus : Any
+        Optional ``GlobalEventBus`` for broadcasting delivery events.
     """
 
     def __init__(
@@ -434,24 +604,66 @@ class TaskScheduler:
         ],
         history_store: ScheduleHistoryStore | None = None,
         poll_interval: float = 30.0,
+        lease_manager: ScheduleLeaseManager | None = None,
+        authority: SchedulerAuthority = SchedulerAuthority.SERVER,
+        event_bus: Any = None,
     ) -> None:
         self._store = store
         self._dispatch_fn = dispatch_fn
         self._history = history_store
         self._poll_interval = poll_interval
+        self._lease_manager = lease_manager
+        self._authority = authority
+        self._event_bus = event_bus
+        self._owner_id = f"{authority.value}-{uuid.uuid4().hex[:8]}"
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
         self._inflight_schedule_ids: set[str] = set()
+        self._inflight_tasks: set[asyncio.Task[None]] = set()
+
+    @property
+    def authority(self) -> SchedulerAuthority:
+        return self._authority
+
+    @property
+    def owner_id(self) -> str:
+        return self._owner_id
+
+    def _holds_lease(self) -> bool:
+        """Return True if this scheduler holds the lease (or no lease is required)."""
+        if self._lease_manager is None:
+            return True
+        lease = self._lease_manager.read_lease()
+        if lease is None:
+            return False
+        return (
+            lease.owner_id == self._owner_id
+            and lease.pid == os.getpid()
+            and not lease.is_stale
+        )
 
     async def start(self) -> None:
         """Start the scheduler background loop."""
+        if self._lease_manager is not None:
+            lease = self._lease_manager.acquire(self._owner_id)
+            if lease is None:
+                logger.info(
+                    "Scheduler (%s) could not acquire lease — another process holds it",
+                    self._authority.value,
+                )
+                return
+            logger.info(
+                "Scheduler (%s) acquired lease as %s",
+                self._authority.value,
+                self._owner_id,
+            )
         self._stop_event.clear()
         self._store.load()
         await self._handle_missed_runs()
         self._task = asyncio.create_task(self._loop())
 
     async def stop(self) -> None:
-        """Signal the loop to stop and wait for it to finish."""
+        """Signal the loop to stop and wait for it and inflight tasks to finish."""
         self._stop_event.set()
         if self._task is not None:
             self._task.cancel()
@@ -460,10 +672,21 @@ class TaskScheduler:
             except asyncio.CancelledError:
                 pass
             self._task = None
+        if self._inflight_tasks:
+            await asyncio.gather(*self._inflight_tasks, return_exceptions=True)
+            self._inflight_tasks.clear()
+        if self._lease_manager is not None:
+            self._lease_manager.release(self._owner_id)
 
     async def _loop(self) -> None:
         while not self._stop_event.is_set():
             try:
+                if self._lease_manager is not None:
+                    if not self._holds_lease():
+                        self._lease_manager.renew(self._owner_id)
+                        if not self._holds_lease():
+                            logger.warning("Lost schedule lease, stopping scheduler")
+                            break
                 await self._check_schedules()
             except Exception:
                 logger.exception("Scheduler tick error")
@@ -490,7 +713,9 @@ class TaskScheduler:
                 continue
             if entry.next_run <= now and entry.id not in self._inflight_schedule_ids:
                 self._inflight_schedule_ids.add(entry.id)
-                asyncio.create_task(self._fire(entry))
+                task = asyncio.create_task(self._fire(entry))
+                self._inflight_tasks.add(task)
+                task.add_done_callback(self._inflight_tasks.discard)
 
     async def _fire(self, entry: ScheduleEntry) -> None:
         """Fire a single schedule entry."""
@@ -511,10 +736,18 @@ class TaskScheduler:
             )
             record.status = "success"
             record.result_summary = str(result)[:500] if result else ""
+            await deliver_result(
+                entry, record.result_summary, event_bus=self._event_bus
+            )
         except Exception as exc:
             record.status = "error"
             record.error = str(exc)[:500]
             logger.exception("Schedule %s (%s) failed", entry.name, entry.id)
+            await apply_fallback_policy(
+                entry,
+                record.error or "Unknown error",
+                event_bus=self._event_bus,
+            )
         finally:
             record.completed_at = datetime.now(timezone.utc)
             if self._history:
@@ -545,7 +778,9 @@ class TaskScheduler:
                         entry.name,
                         entry.next_run.isoformat(),
                     )
-                    asyncio.create_task(self._fire(entry))
+                    task = asyncio.create_task(self._fire(entry))
+                    self._inflight_tasks.add(task)
+                    task.add_done_callback(self._inflight_tasks.discard)
                 else:
                     try:
                         cron_expr = parse_trigger(entry.trigger)
@@ -553,6 +788,233 @@ class TaskScheduler:
                         self._store.update(entry)
                     except Exception:
                         pass
+
+
+# ---------------------------------------------------------------------------
+# Natural language schedule creation (Task 3-5)
+# ---------------------------------------------------------------------------
+
+_NL_REMIND_RE = re.compile(
+    r"^remind\s+me\s+to\s+(.+?)\s+(every\s+.+|daily|weekly|monthly)$",
+    re.IGNORECASE,
+)
+_NL_DO_FREQ_RE = re.compile(
+    r"^(?:do|run|check|send|generate|update)\s+(.+?)\s+(daily|weekly|monthly|every\s+.+)$",
+    re.IGNORECASE,
+)
+_NL_RUN_AT_RE = re.compile(
+    r"^(?:run|do|check|send)\s+(.+?)\s+at\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)$",
+    re.IGNORECASE,
+)
+_NL_EVERY_N_RE = re.compile(
+    r"^(.+?)\s+(every\s+\d+\s+(?:hours?|minutes?|days?|h|m|d))$",
+    re.IGNORECASE,
+)
+
+_FREQ_MAP = {
+    "daily": "every day at 9am",
+    "weekly": "every 7d",
+    "monthly": "every 30d",
+}
+
+
+def parse_nl_schedule(text: str) -> tuple[str, str] | None:
+    """Extract ``(action, trigger)`` from natural language scheduling intent.
+
+    Returns *None* if the text does not match any known NL pattern.
+    Designed to be called from the concierge when a scheduling intent is detected.
+    """
+    text = text.strip()
+
+    m = _NL_REMIND_RE.match(text)
+    if m:
+        action = m.group(1).strip()
+        trigger = _FREQ_MAP.get(m.group(2).lower(), m.group(2).strip())
+        return action, trigger
+
+    m = _NL_EVERY_N_RE.match(text)
+    if m:
+        return m.group(1).strip(), m.group(2).strip()
+
+    m = _NL_RUN_AT_RE.match(text)
+    if m:
+        action = m.group(1).strip()
+        trigger = f"daily at {m.group(2).strip()}"
+        return action, trigger
+
+    m = _NL_DO_FREQ_RE.match(text)
+    if m:
+        action = m.group(1).strip()
+        trigger = _FREQ_MAP.get(m.group(2).lower(), m.group(2).strip())
+        return action, trigger
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Delivery routing (Task 4-1) + fallback policy (Task 4-2)
+# ---------------------------------------------------------------------------
+
+
+async def deliver_result(
+    entry: ScheduleEntry,
+    result: str,
+    *,
+    event_bus: Any = None,
+) -> None:
+    """Route a schedule result to the target surface via the event bus.
+
+    Emits a ``schedule_result_ready`` event that adapters (Telegram, CLI, etc.)
+    can subscribe to.
+    """
+    event = {
+        "event_type": "schedule_result_ready",
+        "schedule_id": entry.id,
+        "schedule_name": entry.name,
+        "surface": entry.delivery_target.surface,
+        "conversation_key": entry.delivery_target.conversation_key,
+        "user_id": entry.delivery_target.user_id,
+        "project_id": entry.delivery_target.project_id,
+        "thread_key": entry.delivery_target.thread_key,
+        "result": result[:2000] if result else "",
+    }
+    if event_bus is not None:
+        try:
+            event_bus.broadcast(event)
+        except Exception:
+            logger.warning(
+                "Failed to broadcast schedule_result_ready for %s", entry.name
+            )
+            await apply_fallback_policy(
+                entry,
+                f"Delivery failed: {result[:200]}",
+                event_bus=event_bus,
+            )
+            return
+    logger.debug(
+        "Delivered result for schedule %s to surface=%s",
+        entry.name,
+        entry.delivery_target.surface,
+    )
+
+
+async def apply_fallback_policy(
+    entry: ScheduleEntry,
+    error_message: str,
+    *,
+    event_bus: Any = None,
+) -> None:
+    """Apply ``delivery_target.fallback_policy`` when the target is unreachable.
+
+    Policies:
+    - ``store_and_notify``: persist result and emit a notification event.
+    - ``private_surface``: route to the user's private/default surface.
+    - ``drop``: discard silently (log only).
+    """
+    policy = entry.delivery_target.fallback_policy
+
+    if policy == "drop":
+        logger.info(
+            "Dropping failed result for schedule %s (policy=drop): %s",
+            entry.name,
+            error_message[:100],
+        )
+        return
+
+    if policy == "store_and_notify":
+        event = {
+            "event_type": "schedule_result_ready",
+            "schedule_id": entry.id,
+            "schedule_name": entry.name,
+            "surface": "notification",
+            "result": f"[fallback] Schedule '{entry.name}' failed: {error_message[:500]}",
+            "fallback": True,
+        }
+        if event_bus is not None:
+            try:
+                event_bus.broadcast(event)
+            except Exception:
+                logger.warning("Fallback notification broadcast failed for %s", entry.name)
+        logger.info(
+            "Stored fallback notification for schedule %s: %s",
+            entry.name,
+            error_message[:100],
+        )
+        return
+
+    if policy == "private_surface":
+        event = {
+            "event_type": "schedule_result_ready",
+            "schedule_id": entry.id,
+            "schedule_name": entry.name,
+            "surface": "private",
+            "user_id": entry.delivery_target.user_id,
+            "result": f"[private fallback] Schedule '{entry.name}' failed: {error_message[:500]}",
+            "fallback": True,
+        }
+        if event_bus is not None:
+            try:
+                event_bus.broadcast(event)
+            except Exception:
+                logger.warning("Private surface fallback failed for %s", entry.name)
+        logger.info(
+            "Routed to private surface for schedule %s: %s",
+            entry.name,
+            error_message[:100],
+        )
+        return
+
+
+# ---------------------------------------------------------------------------
+# Service wiring hook (Task 2-4)
+# ---------------------------------------------------------------------------
+
+
+def create_service_scheduler(
+    store: ScheduleStore,
+    dispatch_fn: Callable[[str, TriggerContext, DeliveryTarget], Awaitable[str]],
+    history_store: ScheduleHistoryStore | None = None,
+    lease_path: str | None = None,
+    event_bus: Any = None,
+) -> TaskScheduler:
+    """Factory for the dan-service daemon to create a scheduler with SERVICE authority.
+
+    Usage in a future ``src/dan/service/`` entry point::
+
+        scheduler = create_service_scheduler(store, dispatch_fn, history_store)
+        await scheduler.start()
+    """
+    lease_manager = ScheduleLeaseManager(path=lease_path)
+    return TaskScheduler(
+        store=store,
+        dispatch_fn=dispatch_fn,
+        history_store=history_store,
+        lease_manager=lease_manager,
+        authority=SchedulerAuthority.SERVICE,
+        event_bus=event_bus,
+    )
+
+
+def create_server_scheduler(
+    store: ScheduleStore,
+    dispatch_fn: Callable[[str, TriggerContext, DeliveryTarget], Awaitable[str]],
+    history_store: ScheduleHistoryStore | None = None,
+    lease_path: str | None = None,
+    event_bus: Any = None,
+) -> TaskScheduler:
+    """Factory for dan-serve to create a scheduler with SERVER (fallback) authority.
+
+    Only starts if no service daemon holds the lease.
+    """
+    lease_manager = ScheduleLeaseManager(path=lease_path)
+    return TaskScheduler(
+        store=store,
+        dispatch_fn=dispatch_fn,
+        history_store=history_store,
+        lease_manager=lease_manager,
+        authority=SchedulerAuthority.SERVER,
+        event_bus=event_bus,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -627,6 +1089,16 @@ def handle_schedule_command(
         return _cmd_resume(rest, store)
     if sub == "history":
         return _cmd_history(rest, store, history_store)
+
+    nl_result = parse_nl_schedule(text)
+    if nl_result is not None:
+        action, trigger = nl_result
+        return _cmd_add(
+            f'"{action}" {trigger}',
+            store,
+            trigger_context=default_trigger_context,
+            delivery_target=default_delivery_target,
+        )
 
     return (
         "Usage: /schedule <add|list|remove|pause|resume|history> [args]\n"

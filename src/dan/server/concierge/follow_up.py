@@ -60,6 +60,7 @@ class FollowUpConfig(BaseModel):
     quiet_hours: str | None = None
     max_per_hour: int = 3
     stale_task_hours: int = 24
+    opted_out_tasks: set[str] = Field(default_factory=set)
 
 
 def load_follow_up_config() -> FollowUpConfig:
@@ -105,6 +106,7 @@ class FollowUpQueue:
     def __init__(self) -> None:
         self._pending: list[FollowUpTrigger] = []
         self._seen_keys: set[str] = set()
+        self._opted_out_tasks: set[str] = set()
 
     def enqueue(self, trigger: FollowUpTrigger) -> bool:
         """Add a trigger. Returns False if deduplicated away."""
@@ -116,9 +118,18 @@ class FollowUpQueue:
         self._pending.sort(key=lambda t: _PRIORITY_ORDER.get(t.priority, 99))
         return True
 
-    def drain(self, max_count: int = 5) -> list[FollowUpTrigger]:
-        """Return up to *max_count* pending triggers, marking them delivered."""
+    def drain(
+        self,
+        max_count: int = 5,
+        config: FollowUpConfig | None = None,
+    ) -> list[FollowUpTrigger]:
+        """Return up to *max_count* pending triggers, marking them delivered.
+
+        Triggers whose ``task_id`` appears in *config.opted_out_tasks* are
+        silently skipped (left in queue until un-muted or expired).
+        """
         now = _utc_now()
+        opted_out = self._opted_out_tasks | (config.opted_out_tasks if config else set())
         self._pending = [
             t
             for t in self._pending
@@ -128,7 +139,9 @@ class FollowUpQueue:
         result: list[FollowUpTrigger] = []
         remaining: list[FollowUpTrigger] = []
         for t in self._pending:
-            if len(result) < max_count:
+            if t.task_id and t.task_id in opted_out:
+                remaining.append(t)
+            elif len(result) < max_count:
                 t.delivered = True
                 t.delivered_at = now
                 result.append(t)
@@ -136,6 +149,14 @@ class FollowUpQueue:
                 remaining.append(t)
         self._pending = remaining
         return result
+
+    def opt_out_task(self, task_id: str) -> None:
+        """Mute follow-ups for *task_id*."""
+        self._opted_out_tasks.add(task_id)
+
+    def opt_in_task(self, task_id: str) -> None:
+        """Un-mute follow-ups for *task_id*."""
+        self._opted_out_tasks.discard(task_id)
 
     def pending_count(self) -> int:
         now = _utc_now()
@@ -219,6 +240,62 @@ def create_schedule_result_trigger(
     )
 
 
+def create_memory_trigger(
+    memory_item: Any,
+    related_task_id: str | None = None,
+    project_id: str | None = None,
+) -> FollowUpTrigger:
+    """Create a low-priority follow-up from a memory/discovery event.
+
+    The actual memory scanning pipeline will be wired later; this factory
+    just wraps whatever summary the caller provides into a trigger.
+    """
+    summary = getattr(memory_item, "summary", None) or str(memory_item)
+    return FollowUpTrigger(
+        source="memory",
+        priority="low",
+        message=f"I found new information that may be relevant to your task: {summary}",
+        context={"memory_summary": summary},
+        task_id=related_task_id,
+        project_id=project_id,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Surface routing
+# ---------------------------------------------------------------------------
+
+
+def resolve_delivery_surface(
+    trigger: FollowUpTrigger,
+    presence_tracker: Any | None = None,
+) -> str | None:
+    """Determine the best surface for delivering a follow-up.
+
+    Resolution order:
+    1. Explicit ``target_surface`` on the trigger
+    2. Preferred surface for the trigger's project (via PresenceTracker)
+    3. Currently active surface (via PresenceTracker)
+    4. *None* — caller decides how to handle unresolvable delivery
+    """
+    if trigger.target_surface:
+        return trigger.target_surface
+
+    if presence_tracker is not None:
+        if trigger.project_id:
+            preferred = presence_tracker.get_preferred_surface(trigger.project_id)
+            if preferred is not None:
+                surface_id = getattr(preferred, "surface_id", None)
+                return surface_id or str(preferred)
+
+        active = presence_tracker.get_active_surface()
+        if active is not None:
+            surface_id = getattr(active, "surface_id", None)
+            return surface_id or str(active)
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Quiet hours
 # ---------------------------------------------------------------------------
@@ -263,6 +340,7 @@ class FollowUpDeliveryEngine:
         self._delivery_timestamps: list[datetime] = []
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        self._consecutive_tick_failures = 0
 
     @property
     def config(self) -> FollowUpConfig:
@@ -314,7 +392,7 @@ class FollowUpDeliveryEngine:
         if available <= 0:
             return []
 
-        triggers = self._queue.drain(max_count=available)
+        triggers = self._queue.drain(max_count=available, config=self._config)
         delivered: list[FollowUpTrigger] = []
         for trigger in triggers:
             try:
@@ -341,15 +419,30 @@ class FollowUpDeliveryEngine:
                 pass
             self._task = None
 
+    def _poll_interval_seconds(self) -> float:
+        """Return the next background poll interval with bounded backoff."""
+        if self._consecutive_tick_failures <= 0:
+            return 60.0
+        exponent = min(self._consecutive_tick_failures, 3)
+        return min(60.0 * (2 ** exponent), 300.0)
+
+    def _record_tick_success(self) -> None:
+        self._consecutive_tick_failures = 0
+
+    def _record_tick_failure(self) -> None:
+        self._consecutive_tick_failures += 1
+
     async def _loop(self) -> None:
         while not self._stop_event.is_set():
             try:
                 await self.deliver_pending()
+                self._record_tick_success()
             except Exception:
+                self._record_tick_failure()
                 logger.exception("Follow-up delivery tick error")
             try:
                 await asyncio.wait_for(
-                    self._stop_event.wait(), timeout=60.0
+                    self._stop_event.wait(), timeout=self._poll_interval_seconds()
                 )
                 break
             except asyncio.TimeoutError:
@@ -417,6 +510,22 @@ def handle_follow_ups_command(
     if lower == "off":
         config.enabled = False
         return "Proactive follow-ups **disabled**."
+
+    if lower.startswith("mute "):
+        task_id = args[len("mute "):].strip()
+        if not task_id:
+            return "Usage: /follow-ups mute <task_id>"
+        queue.opt_out_task(task_id)
+        config.opted_out_tasks.add(task_id)
+        return f"Follow-ups **muted** for task `{task_id}`."
+
+    if lower.startswith("unmute "):
+        task_id = args[len("unmute "):].strip()
+        if not task_id:
+            return "Usage: /follow-ups unmute <task_id>"
+        queue.opt_in_task(task_id)
+        config.opted_out_tasks.discard(task_id)
+        return f"Follow-ups **unmuted** for task `{task_id}`."
 
     pending = queue.list_pending()
     if not pending:

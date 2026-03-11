@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 import re
 import subprocess
 import time
@@ -34,6 +35,62 @@ STRATEGY_TIER_LABELS: dict[int, str] = {
     2: "approach_change",
     3: "decomposition_ensemble",
 }
+
+STRATEGY_TIER_PROMPTS: dict[int, str] = {
+    0: (
+        "Attempt a direct solution. Focus on the most straightforward approach "
+        "to achieve {metric_name} {comparison} {target_value}."
+    ),
+    1: (
+        "Previous direct attempts haven't reached the target. Try varying "
+        "parameters, hyperparameters, thresholds, or configuration values. "
+        "Small systematic changes to the existing approach."
+    ),
+    2: (
+        "Parameter variations are insufficient. Switch to a fundamentally "
+        "different method, algorithm, or architecture. Consider alternative "
+        "approaches you haven't tried."
+    ),
+    3: (
+        "Single approaches are insufficient. Decompose the problem into "
+        "sub-problems, combine multiple methods (ensemble/stacking), or use "
+        "a multi-stage pipeline."
+    ),
+}
+
+
+def get_tier_prompt(
+    tier: int,
+    goal: "GoalSpec",
+    best_result: "EvaluationResult | None",
+    recent_attempts: "list[AttemptRecord]",
+) -> str:
+    """Build a comprehensive prompt incorporating tier guidance and loop state."""
+    template = STRATEGY_TIER_PROMPTS.get(tier, STRATEGY_TIER_PROMPTS[0])
+    tier_text = template.format(
+        metric_name=goal.metric_name,
+        comparison=goal.comparison,
+        target_value=goal.target_value,
+    )
+
+    parts = [f"Strategy tier: {tier} ({STRATEGY_TIER_LABELS.get(tier, 'unknown')})", tier_text]
+
+    if best_result is not None:
+        parts.append(
+            f"Best result so far: {best_result.score} "
+            f"(passed={best_result.passed})"
+        )
+
+    if recent_attempts:
+        parts.append(f"Recent attempts ({len(recent_attempts)}):")
+        for a in recent_attempts[-5:]:
+            parts.append(
+                f"  #{a.attempt_number} tier={a.strategy_tier} "
+                f"score={a.result.score} — {a.approach_summary or 'no summary'}"
+            )
+
+    return "\n".join(parts)
+
 
 # ---------------------------------------------------------------------------
 # Pydantic v2 models
@@ -85,6 +142,17 @@ class GoalLoopState(BaseModel):
     start_time: datetime = Field(default_factory=_utc_now)
     strategy_tier: int = 0
     status: Literal["running", "success", "timeout", "stopped", "failed"] = "running"
+
+
+class GoalSession(BaseModel):
+    """Anchors a goal loop to a task/project context."""
+
+    session_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
+    goal_state: GoalLoopState
+    project_id: str | None = None
+    task_id: str | None = None
+    external_id: str | None = None
+    created_at: datetime = Field(default_factory=_utc_now)
 
 
 # ---------------------------------------------------------------------------
@@ -163,12 +231,31 @@ class ScriptEvaluator:
         self.script_path = script_path
 
     async def evaluate(self, context: dict[str, Any]) -> EvaluationResult:
+        import sys
+        script = Path(self.script_path).expanduser()
+        if not script.exists():
+            return EvaluationResult(
+                score=0.0,
+                passed=False,
+                details=f"Script evaluator path not found: {script}",
+            )
+        if not script.is_file():
+            return EvaluationResult(
+                score=0.0,
+                passed=False,
+                details=f"Script evaluator path is not a regular file: {script}",
+            )
         proc = await asyncio.create_subprocess_exec(
-            "python", self.script_path,
+            sys.executable, str(script),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_bytes, stderr_bytes = await proc.communicate()
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=300)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return EvaluationResult(score=0.0, passed=False, details="Script evaluation timed out (300s)")
         stdout_text = stdout_bytes.decode().strip()
 
         try:
@@ -204,6 +291,8 @@ class LLMJudgeEvaluator:
 class TestSuiteEvaluator:
     """Run a test command (e.g. pytest) and compute pass/fail ratio."""
 
+    __test__ = False
+
     def __init__(self, test_command: str) -> None:
         self.test_command = test_command
 
@@ -213,7 +302,12 @@ class TestSuiteEvaluator:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout_bytes, stderr_bytes = await proc.communicate()
+        try:
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=600)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return EvaluationResult(score=0.0, passed=False, details="Test suite timed out (600s)")
         combined = (stdout_bytes or b"").decode() + (stderr_bytes or b"").decode()
 
         passed_match = re.search(r"(\d+)\s+passed", combined)
@@ -320,6 +414,18 @@ class GoalLoopExecutor:
             state.attempts.append(record)
 
             self._update_best(state, record)
+
+            if not eval_result.passed:
+                try:
+                    diag = await self._diagnose_attempt(record, self.goal)
+                    record.approach_summary = (
+                        f"{record.approach_summary}  [{diag}]"
+                        if record.approach_summary
+                        else diag
+                    )
+                except Exception:
+                    logger.debug("_diagnose_attempt failed", exc_info=True)
+
             self._maybe_escalate(state)
 
             if on_progress:
@@ -373,6 +479,32 @@ class GoalLoopExecutor:
         if all(not a.result.passed for a in recent_at_tier):
             state.strategy_tier += 1
 
+    async def _diagnose_attempt(self, record: AttemptRecord, goal: GoalSpec) -> str:
+        """Run RepairClassifier (if available) for inter-attempt diagnosis."""
+        score = record.result.score
+        target = goal.target_value
+        gap = abs(score - target)
+
+        try:
+            from dan.meta.repair import RepairClassifier
+            from types import SimpleNamespace
+
+            principle = SimpleNamespace(
+                action=f"Score {score} missed target {goal.comparison} {target}",
+                repair_level="prompt_fix",
+            )
+            classifier = RepairClassifier()
+            level = classifier.classify(principle)
+            return (
+                f"Diagnosis: {level.name.lower()} — "
+                f"score {score} vs target {target}, gap of {gap:.4f}"
+            )
+        except Exception:
+            return (
+                f"Diagnosis: score {score} vs target {target}, "
+                f"gap of {gap:.4f}"
+            )
+
     def stop(self) -> None:
         """Signal the loop to stop after the current attempt."""
         self.state.status = "stopped"
@@ -388,6 +520,107 @@ def serialize_state(state: GoalLoopState) -> str:
 
 def deserialize_state(raw: str) -> GoalLoopState:
     return GoalLoopState.model_validate_json(raw)
+
+
+# ---------------------------------------------------------------------------
+# Natural language intent detection
+# ---------------------------------------------------------------------------
+
+_BEAT_PATTERN = re.compile(
+    r"(?:beat|exceed|surpass|top)\s+(\d+(?:\.\d+)?)\s+(?:on\s+)?(\w[\w\s]*?)(?:\s+(?:score|metric))?$",
+    re.IGNORECASE,
+)
+_IMPROVE_PATTERN = re.compile(
+    r"keep\s+improving\s+(?:until\s+)?(\w[\w\s]*?)\s*(?:>=?|reaches?|hits?)\s*(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+_TEST_PATTERN = re.compile(
+    r"(?:iterate\s+until\s+tests?\s+pass|get\s+tests?\s+to\s+pass)",
+    re.IGNORECASE,
+)
+_ACCURACY_PATTERN = re.compile(
+    r"(?:achieve|reach|get)\s+(\d+(?:\.\d+)?)\s*%?\s*(accuracy|coverage|precision|recall|f1)",
+    re.IGNORECASE,
+)
+_REDUCE_PATTERN = re.compile(
+    r"(?:reduce|minimize|lower|decrease)\s+(\w[\w\s]*?)\s+(?:below|under|to)\s+(\d+(?:\.\d+)?)",
+    re.IGNORECASE,
+)
+
+
+def detect_goal_intent(text: str) -> GoalSpec | None:
+    """Recognize natural-language goal-loop intents without ``/goal`` syntax.
+
+    Returns *None* if no goal intent is detected.
+    """
+    text = text.strip()
+
+    m = _TEST_PATTERN.search(text)
+    if m:
+        return GoalSpec(
+            metric_name="test_pass_rate",
+            target_value=1.0,
+            comparison=">=",
+            evaluation_mode="test_suite",
+        )
+
+    m = _BEAT_PATTERN.search(text)
+    if m:
+        target = float(m.group(1))
+        metric = m.group(2).strip()
+        return GoalSpec(metric_name=metric, target_value=target, comparison=">=")
+
+    m = _IMPROVE_PATTERN.search(text)
+    if m:
+        metric = m.group(1).strip()
+        target = float(m.group(2))
+        return GoalSpec(metric_name=metric, target_value=target, comparison=">=")
+
+    m = _ACCURACY_PATTERN.search(text)
+    if m:
+        target = float(m.group(1))
+        metric = m.group(2).strip()
+        if target > 1:
+            target /= 100.0
+        return GoalSpec(metric_name=metric, target_value=target, comparison=">=")
+
+    m = _REDUCE_PATTERN.search(text)
+    if m:
+        metric = m.group(1).strip()
+        target = float(m.group(2))
+        return GoalSpec(metric_name=metric, target_value=target, comparison="<=")
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Progress notification helper
+# ---------------------------------------------------------------------------
+
+
+def make_progress_callback(
+    notify_fn: Callable[[str], Any] | None = None,
+    interval_attempts: int = 5,
+) -> Callable[[GoalLoopState], None]:
+    """Create a callback that emits a progress message every *interval_attempts* attempts."""
+    def _callback(state: GoalLoopState) -> None:
+        n = len(state.attempts)
+        if n % interval_attempts != 0:
+            return
+        best = state.best_result.score if state.best_result else "N/A"
+        tier_label = STRATEGY_TIER_LABELS.get(state.strategy_tier, "unknown")
+        elapsed = (_utc_now() - state.start_time).total_seconds()
+        msg = (
+            f"Goal loop progress: attempt {n}/{state.goal.max_attempts}, "
+            f"best score: {best}, tier: {tier_label} "
+            f"({elapsed:.0f}s elapsed)"
+        )
+        if notify_fn is not None:
+            notify_fn(msg)
+        else:
+            logger.info(msg)
+
+    return _callback
 
 
 # ---------------------------------------------------------------------------
@@ -424,7 +657,12 @@ def _parse_goal_spec(expr: str) -> GoalSpec:
     raise ValueError(f"Could not parse goal expression: {expr!r}")
 
 
-def handle_goal_command(text: str, context: Any = None) -> str:
+def handle_goal_command(
+    text: str,
+    context: Any = None,
+    project_id: str | None = None,
+    task_id: str | None = None,
+) -> str:
     """Parse ``/goal "score >= 0.85" --timeout 24h --eval script:evaluate.py``."""
     m = _GOAL_PATTERN.search(text)
     if not m:
@@ -456,14 +694,20 @@ def handle_goal_command(text: str, context: Any = None) -> str:
                 spec.evaluation_mode = mode  # type: ignore[assignment]
 
     state = GoalLoopState(goal=spec)
+    session = GoalSession(
+        goal_state=state,
+        project_id=project_id,
+        task_id=task_id,
+    )
     if isinstance(context, dict):
         context["goal_state"] = state
+        context["goal_session"] = session
     return (
         f"Goal loop started: {spec.metric_name} {spec.comparison} {spec.target_value}\n"
         f"Timeout: {spec.timeout_seconds or 'none'}s | "
         f"Max attempts: {spec.max_attempts} | "
         f"Eval: {spec.evaluation_mode}\n"
-        f"Status: {state.status}"
+        f"Session: {session.session_id} | Status: {state.status}"
     )
 
 
