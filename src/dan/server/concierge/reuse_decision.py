@@ -24,6 +24,23 @@ class ReuseCandidate:
     success_rate: float
 
 
+def _extract_pattern_content(pattern: Any) -> str:
+    """Extract text content from a domain pattern for overlap comparison."""
+    if isinstance(pattern, dict):
+        return pattern.get("content", "") or pattern.get("text", "") or ""
+    return getattr(pattern, "content", None) or getattr(pattern, "text", None) or str(pattern)
+
+
+def _word_overlap(text_a: str, text_b: str) -> float:
+    """Jaccard-like overlap: |A ∩ B| / max(|A|, |B|) for lowercased words."""
+    def words(s: str) -> set[str]:
+        return set(w.lower() for w in (s or "").split() if len(w) > 2)
+    wa, wb = words(text_a), words(text_b)
+    if not wa or not wb:
+        return 0.0
+    return len(wa & wb) / max(len(wa), len(wb))
+
+
 def reuse_first_decision(
     memory_kernel: Any,
     query: str,
@@ -32,10 +49,13 @@ def reuse_first_decision(
     adapt_threshold: float = 0.4,
     min_success_rate: float = 0.5,
     limit: int = 10,
+    domain_patterns: list[Any] | None = None,
 ) -> tuple[Literal["reuse", "adapt", "generate"], ReuseCandidate | None]:
     """Decide REUSE/ADAPT/GENERATE from memory (29-4 §1-1 to §1-4).
 
     Returns (decision, candidate). Candidate is None for GENERATE.
+    When domain_patterns is provided and non-empty, candidates with keyword
+    overlap > 0.3 get a +0.15 score boost.
     """
     if not memory_kernel:
         return "generate", None
@@ -52,22 +72,45 @@ def reuse_first_decision(
         if not workflow_assets:
             return "generate", None
 
+        if domain_patterns:
+            def adjusted_score(si: ScoredMemoryItem) -> float:
+                adj = si.score
+                cand_content = si.item.content or ""
+                for p in domain_patterns:
+                    pc = _extract_pattern_content(p)
+                    if pc and _word_overlap(cand_content, pc) > 0.3:
+                        adj += 0.15
+                        break
+                return adj
+            workflow_assets = sorted(
+                workflow_assets, key=adjusted_score, reverse=True
+            )
+
         best = workflow_assets[0]
         workflow_id = best.item.metadata.get("workflow_id") or ""
         success_rate = float(best.item.metadata.get("success_rate", 0.5))
         if not workflow_id:
             return "generate", None
 
+        score = best.score
+        if domain_patterns:
+            cand_content = best.item.content or ""
+            for p in domain_patterns:
+                pc = _extract_pattern_content(p)
+                if pc and _word_overlap(cand_content, pc) > 0.3:
+                    score += 0.15
+                    break
+
         candidate = ReuseCandidate(
             workflow_id=workflow_id,
             content=best.item.content[:300],
-            score=best.score,
+            score=score,
             success_rate=success_rate,
         )
 
-        if best.score >= reuse_threshold and success_rate >= min_success_rate:
+        if score >= reuse_threshold and success_rate >= min_success_rate:
             return "reuse", candidate
-        if best.score >= adapt_threshold:
+        if score >= adapt_threshold:
             return "adapt", candidate
         return "generate", None
     except Exception:
@@ -82,6 +125,7 @@ async def reuse_first_decision_async(
     adapt_threshold: float = 0.4,
     min_success_rate: float = 0.5,
     limit: int = 10,
+    domain_patterns: list[Any] | None = None,
 ) -> tuple[Literal["reuse", "adapt", "generate"], ReuseCandidate | None]:
     """Async version of :func:`reuse_first_decision` (29-5 §6-2).
 
@@ -96,6 +140,7 @@ async def reuse_first_decision_async(
         adapt_threshold=adapt_threshold,
         min_success_rate=min_success_rate,
         limit=limit,
+        domain_patterns=domain_patterns,
     )
 
 

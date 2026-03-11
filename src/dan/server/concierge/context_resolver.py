@@ -56,6 +56,35 @@ class ResolvedContext(BaseModel):
     is_new_project: bool
     is_new_task: bool
     confidence: float
+    domain: str | None = None
+
+
+def _populate_domain(result: ResolvedContext, msg: SurfaceMessage) -> None:
+    """Populate domain from project or detect_domain (31-21)."""
+    if result.project.domain:
+        result.domain = result.project.domain
+    else:
+        try:
+            from .domain_learning import detect_domain
+            detected = detect_domain(msg.text, result.project)
+            if detected:
+                result.domain = detected
+        except Exception:
+            pass
+
+
+def _persist_project_domain(
+    result: ResolvedContext,
+    project_store: ProjectStore,
+) -> None:
+    """Persist newly detected project domain for later follow-up turns."""
+    if not result.domain or result.project.domain:
+        return
+    try:
+        result.project.domain = result.domain
+        project_store.save_project(result.project)
+    except Exception:
+        pass
 
 
 def _tokenize(text: str) -> list[str]:
@@ -108,13 +137,15 @@ class ProjectContextResolver:
                             task = candidate
                             break
                 if project is not None and task is not None:
-                    return ResolvedContext(
+                    result = ResolvedContext(
                         project=project,
                         task=task,
                         is_new_project=False,
                         is_new_task=False,
                         confidence=1.0,
                     )
+                    _populate_domain(result, msg)
+                    return result
 
         active_projects = self.project_store.list_active(msg.external_id)
         text = msg.text.strip()
@@ -124,13 +155,16 @@ class ProjectContextResolver:
             matched = self._match_by_label(explicit, active_projects)
             if matched is not None:
                 task, is_new_task = self._resolve_task(matched, text, msg.external_id)
-                return ResolvedContext(
+                result = ResolvedContext(
                     project=matched,
                     task=task,
                     is_new_project=False,
                     is_new_task=is_new_task,
                     confidence=1.0,
                 )
+                _populate_domain(result, msg)
+                _persist_project_domain(result, self.project_store)
+                return result
 
         if _is_continuation(text) and active_projects:
             project = active_projects[0]
@@ -138,13 +172,16 @@ class ProjectContextResolver:
             if task is None:
                 task = self.project_store.add_task(project.project_id, self._generate_label(text), msg.external_id)
                 project = self.project_store.get_project(project.project_id, msg.external_id) or project
-            return ResolvedContext(
+            result = ResolvedContext(
                 project=project,
                 task=task,
                 is_new_project=False,
                 is_new_task=False,
                 confidence=0.95,
             )
+            _populate_domain(result, msg)
+            _persist_project_domain(result, self.project_store)
+            return result
 
         workflow_match = self._match_by_link(text, active_projects)
         if workflow_match is not None:
@@ -155,13 +192,16 @@ class ProjectContextResolver:
                     self._generate_label(text, workflow_match.label),
                     msg.external_id,
                 )
-            return ResolvedContext(
+            result = ResolvedContext(
                 project=workflow_match,
                 task=task,
                 is_new_project=False,
                 is_new_task=False,
                 confidence=0.9,
             )
+            _populate_domain(result, msg)
+            _persist_project_domain(result, self.project_store)
+            return result
 
         best_project, best_score = self._best_project_match(text, active_projects)
         if best_project is None or best_score < 0.45:
@@ -169,22 +209,28 @@ class ProjectContextResolver:
             project = self.project_store.create_project(project_label, msg.external_id)
             task = self.project_store.add_task(project.project_id, project_label, msg.external_id)
             project = self.project_store.get_project(project.project_id, msg.external_id) or project
-            return ResolvedContext(
+            result = ResolvedContext(
                 project=project,
                 task=task,
                 is_new_project=True,
                 is_new_task=False,
                 confidence=0.0,
             )
+            _populate_domain(result, msg)
+            _persist_project_domain(result, self.project_store)
+            return result
 
         task, is_new_task = self._resolve_task(best_project, text, msg.external_id)
-        return ResolvedContext(
+        result = ResolvedContext(
             project=best_project,
             task=task,
             is_new_project=False,
             is_new_task=is_new_task,
             confidence=best_score,
         )
+        _populate_domain(result, msg)
+        _persist_project_domain(result, self.project_store)
+        return result
 
     def _extract_explicit_project(self, text: str) -> str | None:
         lower = text.lower().strip()
