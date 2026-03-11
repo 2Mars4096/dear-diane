@@ -128,6 +128,7 @@ class ProgressSession:
         self._current_phase_id: str | None = None
         self._start_time: float = time.monotonic()
         self._last_update_time: float = 0.0
+        self._last_phase_event_time: float = 0.0
 
     # -- phase lifecycle ----------------------------------------------------
 
@@ -181,6 +182,43 @@ class ProgressSession:
 
     def elapsed_total(self) -> float:
         return time.monotonic() - self._start_time
+
+    # -- plan disclosure (Task 3-3) ----------------------------------------
+
+    async def disclose_plan(
+        self,
+        steps: list[str],
+        estimated_time: float | None = None,
+        *,
+        offer_review: bool | None = None,
+    ) -> str | None:
+        """Emit a plan disclosure block via the renderer.
+
+        If *offer_review* is ``None``, it defaults to ``True`` for complex
+        plans (>3 steps).  When review is offered, a checkpoint is presented.
+        Returns the user's checkpoint response or ``None``.
+        """
+        if offer_review is None:
+            offer_review = len(steps) > _PLAN_REVIEW_STEP_THRESHOLD
+
+        await self.renderer.announce_plan(steps, estimated_time)
+
+        if not offer_review:
+            return None
+
+        opts = CheckpointOptions(
+            summary="Review before I start?",
+            options=[
+                CheckpointOption(
+                    label="Looks good, go ahead",
+                    value="proceed",
+                    is_default=True,
+                    is_safe_default=True,
+                ),
+                CheckpointOption(label="Let me adjust the plan", value="revise"),
+            ],
+        )
+        return await self.renderer.checkpoint(opts)
 
 
 # ---------------------------------------------------------------------------
@@ -501,29 +539,95 @@ def _preflight_threshold() -> float:
         return 10.0
 
 
+def _preflight_cost_threshold() -> float:
+    try:
+        return float(os.environ.get("DAN_PREFLIGHT_COST_THRESHOLD", "0.10"))
+    except (ValueError, TypeError):
+        return 0.10
+
+
+def _clarification_timeout(surface: str) -> float:
+    """Return the clarification timeout for *surface*.
+
+    CLI and editor surfaces default to infinite (no timeout).
+    Messaging surfaces use ``DAN_CLARIFICATION_TIMEOUT_SECONDS`` (default 300s).
+    """
+    if surface in ("cli", "editor"):
+        return float("inf")
+    try:
+        return float(os.environ.get("DAN_CLARIFICATION_TIMEOUT_SECONDS", "300"))
+    except (ValueError, TypeError):
+        return 300.0
+
+
+# ---------------------------------------------------------------------------
+# Task 4-2: Pre-flight cost/time threshold
+# ---------------------------------------------------------------------------
+
+
+def should_preflight_clarify(
+    estimated_seconds: float,
+    estimated_cost: float,
+    config: dict[str, Any] | None = None,
+) -> bool:
+    """Return ``True`` if the planned task exceeds cost or time thresholds.
+
+    Thresholds come from env vars ``DAN_PREFLIGHT_THRESHOLD_SECONDS`` and
+    ``DAN_PREFLIGHT_COST_THRESHOLD``, overridable via *config*.
+    """
+    if not _preflight_enabled():
+        return False
+
+    cfg = config or {}
+    time_threshold = cfg.get("threshold_seconds", _preflight_threshold())
+    cost_threshold = cfg.get("cost_threshold", _preflight_cost_threshold())
+
+    return estimated_seconds >= time_threshold or estimated_cost >= cost_threshold
+
+
+# ---------------------------------------------------------------------------
+# Task 4-3: Question generation (enhanced heuristics)
+# ---------------------------------------------------------------------------
+
+PREFLIGHT_QUESTION_PROMPT_TEMPLATE = """\
+Given the following plan summary and context, generate 1-2 specific clarifying
+questions that would help avoid wasted work.  Do NOT ask generic questions.
+
+Plan: {plan_summary}
+Context: {context}
+
+Questions (one per line):
+"""
+
+
 def generate_preflight_questions(
     task_description: str,
     context: dict[str, Any],
+    *,
+    plan_summary: str | None = None,
 ) -> list[str] | None:
     """Generate pre-flight clarifying questions for a task.
 
     Returns ``None`` when pre-flight is disabled or the task is below the
-    cost/time threshold.
+    cost/time threshold.  Uses heuristic rules keyed on keywords in the task
+    description and context flags.
     """
     if not _preflight_enabled():
         return None
 
     estimated_time = context.get("estimated_time", 0.0)
-    threshold = _preflight_threshold()
-    if estimated_time < threshold:
+    estimated_cost = context.get("estimated_cost", 0.0)
+    if not should_preflight_clarify(estimated_time, estimated_cost, context):
         return None
 
+    desc_lower = task_description.lower()
     questions: list[str] = []
-    if "dataset" in task_description.lower() and not context.get("columns"):
+
+    if "dataset" in desc_lower and not context.get("columns"):
         questions.append(
             "Which columns or variables should I focus on?"
         )
-    if "model" in task_description.lower() and not context.get("model_specified"):
+    if "model" in desc_lower and not context.get("model_specified"):
         questions.append(
             "Any preference on which model or method to use?"
         )
@@ -531,8 +635,262 @@ def generate_preflight_questions(
         questions.append(
             "I found multiple relevant files — which one should I use?"
         )
+    if any(kw in desc_lower for kw in ("file", "directory", "folder", "path")) and not context.get("target_directory"):
+        questions.append("Which directory or file path should I target?")
+    if any(kw in desc_lower for kw in ("analysis", "analyze", "statistics")) and not context.get("key_variables"):
+        questions.append("Which key variables or metrics matter most?")
+    if any(kw in desc_lower for kw in ("web", "url", "http", "fetch", "scrape")) and not context.get("target_url"):
+        questions.append("Which specific URL or domain should I access?")
 
-    return questions if questions else None
+    return questions[:3] if questions else None
+
+
+# ---------------------------------------------------------------------------
+# Task 4-4: Quick-confirm mode
+# ---------------------------------------------------------------------------
+
+
+def format_quick_confirm(
+    questions: list[str],
+    defaults: list[str],
+) -> InteractionRequest:
+    """Format questions with obvious defaults as a quick-confirm checkpoint.
+
+    Returns an ``InteractionRequest`` with ``advisory_checkpoint`` kind and a
+    5-second timeout so the system proceeds automatically with defaults unless
+    the user objects.
+    """
+    if not defaults:
+        defaults = ["(auto)"] * len(questions)
+
+    paired = list(zip(questions, defaults))
+    assumption_lines = [f"• {d}" for _, d in paired]
+    summary = "I'll proceed with:\n" + "\n".join(assumption_lines) + "\nOK?"
+
+    return InteractionRequest(
+        kind="advisory_checkpoint",
+        checkpoint=CheckpointOptions(
+            summary=summary,
+            options=[
+                CheckpointOption(
+                    label="Proceed with defaults",
+                    value="proceed",
+                    is_default=True,
+                    is_safe_default=True,
+                ),
+                CheckpointOption(label="Let me change something", value="change"),
+            ],
+        ),
+        timeout_seconds=5.0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 3-3: Plan disclosure
+# ---------------------------------------------------------------------------
+
+_PLAN_REVIEW_STEP_THRESHOLD = 3
+
+
+def format_plan_disclosure(
+    steps: list[str],
+    estimated_time: float | None = None,
+) -> str:
+    """Format a plan summary suitable for display to the user."""
+    header = "Plan"
+    if estimated_time is not None:
+        header += f" (~{estimated_time:.0f}s)"
+    lines = [header + ":"] + [f"  {i + 1}. {s}" for i, s in enumerate(steps)]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Task 3-5: Result checkpoint
+# ---------------------------------------------------------------------------
+
+RESULT_SUMMARY_PROMPT_TEMPLATE = """\
+Summarize the following content concisely.  The user's original question was:
+"{user_focus}"
+
+Content:
+{content}
+
+Provide a 2-3 sentence summary capturing the key findings.
+"""
+
+
+def result_checkpoint_enabled() -> bool:
+    """Return ``True`` if result checkpoints are enabled via ``DAN_RESULT_CHECKPOINT=1``."""
+    return os.environ.get("DAN_RESULT_CHECKPOINT", "0").strip() == "1"
+
+
+def should_checkpoint_result(content: str, threshold: int = 1000) -> bool:
+    """Return ``True`` if *content* is long enough to warrant a checkpoint."""
+    return len(content) > threshold
+
+
+def format_result_checkpoint(
+    content: str,
+    user_focus: str | None = None,
+) -> CheckpointOptions:
+    """Create a checkpoint offering detail-level options for a large result.
+
+    Deterministic fallback: first 500 chars + ``"..."`` as the summary.
+    """
+    preview = content[:500] + ("..." if len(content) > 500 else "")
+    focus_label = f"Show only: {user_focus}" if user_focus else "Show key findings"
+
+    return CheckpointOptions(
+        summary=preview,
+        options=[
+            CheckpointOption(label="Show full output", value="full"),
+            CheckpointOption(
+                label="Just key findings",
+                value="summary",
+                is_default=True,
+                is_safe_default=True,
+            ),
+            CheckpointOption(label=focus_label, value="focus"),
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Task 5-3: Checkpoint auto-proceed / timeout handling
+# ---------------------------------------------------------------------------
+
+
+def handle_checkpoint_timeout(checkpoint: CheckpointOptions) -> str | None:
+    """Return the safe-default value from *checkpoint*, or ``None`` if none exists.
+
+    Called when a checkpoint times out without user response.  If a safe default
+    exists the task auto-proceeds; otherwise the caller should pause the task.
+    """
+    for opt in checkpoint.options:
+        if opt.is_safe_default:
+            return opt.value
+    return None
+
+
+async def wait_for_interaction(
+    interaction: InteractionRequest,
+    session: ProgressSession,
+    surface: str,
+    *,
+    timeout_override: float | None = None,
+) -> tuple[str | None, bool]:
+    """Wait for user response at a checkpoint, with timeout handling.
+
+    Returns ``(response_value, timed_out)``.
+
+    * ``advisory_checkpoint`` — renders and returns immediately (auto-proceed).
+    * ``required_clarification`` — renders with a surface-specific timeout.
+      On timeout, returns the safe-default value if one exists, otherwise
+      ``(None, True)`` so the caller can pause the task.
+    """
+    if interaction.kind == "advisory_checkpoint":
+        response = await session.renderer.checkpoint(interaction.checkpoint)
+        return response, False
+
+    timeout = timeout_override if timeout_override is not None else _clarification_timeout(surface)
+    if timeout == float("inf"):
+        response = await session.renderer.checkpoint(interaction.checkpoint)
+        return response, False
+
+    try:
+        response = await asyncio.wait_for(
+            session.renderer.checkpoint(interaction.checkpoint),
+            timeout=timeout,
+        )
+        return response, False
+    except asyncio.TimeoutError:
+        safe = handle_checkpoint_timeout(interaction.checkpoint)
+        return safe, True
+
+
+# ---------------------------------------------------------------------------
+# Task 5-4: Result filtering
+# ---------------------------------------------------------------------------
+
+RESULT_FILTER_PROMPT_TEMPLATE = """\
+The user selected detail level "{selection}" for the following result.
+Their original question was: "{original_question}"
+
+Full content:
+{full_content}
+
+Return only the portion matching the requested detail level.
+"""
+
+
+_FILTER_STOPWORDS = frozenset({
+    "what", "about", "which", "where", "when", "that", "this", "these",
+    "those", "from", "with", "have", "does", "will", "would", "could",
+    "should", "been", "being", "into", "than", "then", "them", "they",
+    "their", "there", "here", "some", "more", "most", "also", "just",
+    "only", "very", "much", "many", "each", "every", "other", "such",
+    "your", "were", "show",
+})
+
+
+def filter_result(
+    full_content: str,
+    user_selection: str,
+    original_question: str = "",
+) -> str:
+    """Filter *full_content* based on the user's selected detail level.
+
+    Deterministic fallback — an LLM layer can wrap this for richer filtering.
+    """
+    sel = user_selection.strip().lower()
+    if sel == "full":
+        return full_content
+    if sel == "summary":
+        cutoff = min(500, len(full_content))
+        return full_content[:cutoff] + ("..." if len(full_content) > cutoff else "")
+    if sel == "focus":
+        if original_question:
+            keywords = {
+                w.lower().rstrip("?.,!:;") for w in original_question.split()
+                if len(w) > 3 and w.lower().rstrip("?.,!:;") not in _FILTER_STOPWORDS
+            }
+            keywords.discard("")
+            if keywords:
+                lines = full_content.splitlines()
+                relevant = [ln for ln in lines if any(kw in ln.lower() for kw in keywords)]
+                if relevant:
+                    return "\n".join(relevant[:30])
+        return full_content[:500] + ("..." if len(full_content) > 500 else "")
+    return full_content
+
+
+async def apply_result_filter(
+    full_content: str,
+    user_selection: str,
+    original_question: str = "",
+    *,
+    llm_fn: Callable[[str], Coroutine[Any, Any, str]] | None = None,
+) -> str:
+    """Apply detail-level filtering with optional LLM enhancement.
+
+    If *llm_fn* is provided and succeeds, uses LLM to format the output.
+    Otherwise falls back to the deterministic ``filter_result()``.
+    """
+    if user_selection.strip().lower() == "full":
+        return full_content
+
+    if llm_fn is not None:
+        try:
+            prompt = RESULT_FILTER_PROMPT_TEMPLATE.format(
+                selection=user_selection,
+                original_question=original_question,
+                full_content=full_content[:4000],
+            )
+            return await llm_fn(prompt)
+        except Exception:
+            logger.debug("LLM result filter failed, using deterministic fallback", exc_info=True)
+
+    return filter_result(full_content, user_selection, original_question)
 
 
 # ---------------------------------------------------------------------------

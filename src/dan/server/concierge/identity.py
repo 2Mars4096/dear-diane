@@ -40,6 +40,53 @@ def format_bare_prefix(*, bot_name: str | None = None) -> str:
     return f"[{get_bot_name(bot_name)}]"
 
 
+def extract_label_from_prefix(
+    text: str,
+    *,
+    bot_name: str | None = None,
+) -> tuple[str, str]:
+    """Extract project/task label from a prefix string.
+
+    Returns ``(label, remaining_text)``.  *label* is ``""`` when the text
+    has no recognised bot prefix.
+
+    Examples::
+
+        "[DAN - MyProj] hello"   → ("MyProj", "hello")
+        "[DAN - P / T] hello"    → ("P / T", "hello")
+        "[DAN] hello"            → ("", "hello")
+        "no prefix"              → ("", "no prefix")
+    """
+    name = get_bot_name(bot_name)
+    bare = f"[{name}]"
+    scoped = f"[{name} - "
+    stripped = text.strip()
+
+    if stripped.startswith(scoped):
+        end_idx = stripped.find("]", len(scoped))
+        if end_idx >= 0:
+            label = stripped[len(scoped):end_idx].strip()
+            remaining = stripped[end_idx + 1:].strip()
+            return label, remaining
+        remaining = stripped[len(scoped):].strip()
+        return "", remaining
+
+    if stripped.startswith(f"{bare} "):
+        return "", stripped[len(bare) + 1:].strip()
+
+    return "", text
+
+
+def format_compact_label(
+    project_label: str,
+    task_label: str | None = None,
+) -> str:
+    """Compact project header for Telegram: ``[Project]`` or ``[Project / Task]``."""
+    if task_label:
+        return f"[{project_label} / {task_label}]"
+    return f"[{project_label}]"
+
+
 _PREFIX_RE: re.Pattern[str] | None = None
 
 

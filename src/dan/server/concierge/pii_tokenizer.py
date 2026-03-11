@@ -18,6 +18,7 @@ import os
 import re
 import shlex
 import time
+from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any, AsyncIterator, Literal
 
@@ -180,6 +181,25 @@ def clear_pii_session(session_key: str | None) -> bool:
     return _PII_SESSIONS.pop(session_key, None) is not None
 
 
+# ---------------------------------------------------------------------------
+# ContextVar for request-scoped PIISession (31-10 §4-2)
+# ---------------------------------------------------------------------------
+
+current_pii_session: ContextVar[PIISession | None] = ContextVar(
+    "current_pii_session", default=None,
+)
+
+
+def get_current_pii_session() -> PIISession | None:
+    """Return the PIISession bound to the current async context, or None."""
+    return current_pii_session.get()
+
+
+def set_current_pii_session(session: PIISession | None) -> Token[PIISession | None]:
+    """Bind *session* to the current async context; return a reset token."""
+    return current_pii_session.set(session)
+
+
 def _normalize_placeholder(text: str) -> str:
     """Normalize a placeholder to canonical lowercase form ``[PREFIX_N]``."""
     t = text.strip().lower()
@@ -217,8 +237,32 @@ def detect_auto_pii(text: str) -> list[tuple[str, PIICategory]]:
 # ---------------------------------------------------------------------------
 
 
+_CODE_BLOCK_RE = re.compile(r"(```[\s\S]*?```|`[^`]+`)")
+
+
 def tokenize(text: str, session: PIISession, registry: SensitiveWordRegistry) -> str:
-    """Replace sensitive words and auto-detected PII with semantic placeholders."""
+    """Replace sensitive words and auto-detected PII with semantic placeholders.
+
+    When ``DAN_PII_SKIP_CODE_BLOCKS=1``, fenced and inline code blocks are
+    preserved verbatim — only the surrounding prose is tokenized.
+    """
+    if os.environ.get("DAN_PII_SKIP_CODE_BLOCKS") == "1":
+        spans = list(_CODE_BLOCK_RE.finditer(text))
+        if spans:
+            parts: list[str] = []
+            prev = 0
+            for m in spans:
+                parts.append(_tokenize_segment(text[prev:m.start()], session, registry))
+                parts.append(m.group(0))
+                prev = m.end()
+            parts.append(_tokenize_segment(text[prev:], session, registry))
+            return "".join(parts)
+
+    return _tokenize_segment(text, session, registry)
+
+
+def _tokenize_segment(text: str, session: PIISession, registry: SensitiveWordRegistry) -> str:
+    """Core tokenization — replace registry words and auto-detected PII."""
     registry_words = sorted(registry.words, key=lambda w: -len(w.value))
 
     for word in registry_words:
@@ -291,17 +335,31 @@ def _check_for_leaks(text: str, session: PIISession) -> None:
 
 
 class TokenizingProviderWrapper:
-    """Wraps an ``LLMProvider`` to tokenize outbound messages and detokenize responses."""
+    """Wraps an ``LLMProvider`` to tokenize outbound messages and detokenize responses.
+
+    If *session* is ``None``, the wrapper resolves the ``PIISession`` from the
+    ``current_pii_session`` ``ContextVar`` on each call, enabling request-scoped
+    tokenization without threading the session through every call site.
+    """
 
     def __init__(
         self,
         provider: LLMProvider,
-        session: PIISession,
-        registry: SensitiveWordRegistry,
+        session: PIISession | None = None,
+        registry: SensitiveWordRegistry | None = None,
     ) -> None:
         self._provider = provider
-        self._session = session
-        self._registry = registry
+        self._explicit_session = session
+        self._registry = registry or SensitiveWordRegistry()
+
+    @property
+    def _session(self) -> PIISession:
+        if self._explicit_session is not None:
+            return self._explicit_session
+        ctx_session = get_current_pii_session()
+        if ctx_session is not None:
+            return ctx_session
+        return PIISession()
 
     def _tokenize_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []
