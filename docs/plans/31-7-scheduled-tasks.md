@@ -1,7 +1,7 @@
 # 31-7: Scheduled Tasks
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Enable cron-style and interval-based task scheduling so DAN can run workflows, checks, and reports on a recurring basis — "run my equity report every morning at 9am."
 
 ## Problem
@@ -20,10 +20,10 @@ DAN runs as a daemon (26-2) and can process messages from any surface. But every
 
 - [x] 2. **Scheduler runtime** (core done; lease/lock and daemon wiring deferred)
   - [x] 2-1. `TaskScheduler` — asyncio background task that checks `next_run` every 30 seconds; on trigger, dispatches action as a concierge message (reuses entire existing pipeline)
-  - [ ] 2-2. Define **single scheduler authority**: `dan-service` owns schedule firing when present; `dan-serve` only runs the scheduler in single-process setups or when it successfully acquires the schedule lease
-  - [ ] 2-3. Lease/lock rule: persisted schedule-owner lease prevents duplicate firing when both server and daemon are running; add takeover on stale lease for failover
-  - [ ] 2-4. Wire into `dan-service` daemon (primary owner; schedules survive restarts via persisted store)
-  - [ ] 2-5. Wire fallback mode into `dan-serve` lifespan (only when service absent / lease acquired)
+  - [x] 2-2. Define **single scheduler authority**: `dan-service` owns schedule firing when present; `dan-serve` only runs the scheduler in single-process setups or when it successfully acquires the schedule lease
+  - [x] 2-3. Lease/lock rule: persisted schedule-owner lease prevents duplicate firing when both server and daemon are running; add takeover on stale lease for failover
+  - [x] 2-4. Wire into `dan-service` daemon (primary owner; schedules survive restarts via persisted store)
+  - [x] 2-5. Wire fallback mode into `dan-serve` lifespan (only when service absent / lease acquired)
   - [x] 2-6. Missed-run detection: if owner was down when a trigger fired, optionally run on next startup (configurable per schedule via `on_missed: Literal["run_once", "skip"] = "run_once"`). If multiple runs were missed, execute **once** with a `missed_since: datetime` context field — do not replay all missed invocations (side-effectful tasks like reports should not generate duplicates).
   - [x] 2-7. Concurrent schedule execution: each triggered task runs in its own concierge dispatch (fire-and-forget via `asyncio.create_task`)
 
@@ -32,17 +32,17 @@ DAN runs as a daemon (26-2) and can process messages from any surface. But every
   - [x] 3-2. `/schedule list` — show all schedules with next run time, last run status
   - [x] 3-3. `/schedule remove <id|name>` — delete a schedule
   - [x] 3-4. `/schedule pause <id|name>` / `/schedule resume <id|name>` — toggle enabled
-  - [ ] 3-5. Natural language: "remind me to check the portfolio every Monday" → auto-creates schedule
+  - [x] 3-5. Natural language: "remind me to check the portfolio every Monday" → auto-creates schedule
 
 - [x] 4. **Result delivery** (history done; surface routing deferred)
-  - [ ] 4-1. Route results to the `delivery_target` in `ScheduleEntry` (Telegram, WhatsApp, CLI notification, editor thread)
-  - [ ] 4-2. Fallback: if target surface is unreachable, apply `fallback_policy`; default is store result and notify via `NotificationManager`
+  - [x] 4-1. Route results to the `delivery_target` in `ScheduleEntry` (Telegram, WhatsApp, CLI notification, editor thread)
+  - [x] 4-2. Fallback: if target surface is unreachable, apply `fallback_policy`; default is store result and notify via `NotificationManager`
   - [x] 4-3. Schedule run history: persist last N results per schedule for review (`/schedule history <name>`)
 
 - [x] 5. **Tests and docs**
   - [x] 5-1. Unit tests: cron parsing, next-run computation, store CRUD, missed-run detection, delivery target parsing
   - [x] 5-2. Integration test: mock clock, verify trigger fires once and dispatches to concierge with `source_surface="schedule"`
-  - [ ] 5-3. Integration test: when both `dan-service` and `dan-serve` are present, lease/lock guarantees a schedule fires exactly once
+  - [x] 5-3. Integration test: when both `dan-service` and `dan-serve` are present, lease/lock guarantees a schedule fires exactly once
   - [x] 5-4. Update CLI docs, architecture, changelog
 
 ## Dependencies

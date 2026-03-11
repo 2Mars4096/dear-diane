@@ -1,7 +1,7 @@
 # 31-10: PII Tokenization
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Prevent sensitive personal data (names, passwords, addresses, phone numbers) from being sent to external LLM APIs by replacing them with semantic placeholders before API calls and restoring them in responses.
 
 ## Problem
@@ -33,7 +33,7 @@ Every LLM API call sends the full prompt — including any user data — to an e
 
 - [x] 4. **Integration hooks**
   - [x] 4-1. **Canonical owner:** tokenization lives at the **provider boundary** via a `TokenizingProviderWrapper` decorator that wraps any `LLMProvider`. This ensures both `LLMExecutor` (workflow) and `ChatManager` (chat) paths are covered, since `ChatManager` calls `provider.complete()` directly in ~8 places without going through `LLMExecutor`. The wrapper tokenizes all outbound message content and detokenizes inbound response text, using the `PIISession` attached to the call context.
-  - [ ] 4-2. `ChatManager` passes the `PIISession` through the provider context (e.g., via a `pii_session` kwarg or context var). `LLMExecutor` does the same. Neither rewrites payloads directly — the wrapper handles it transparently.
+  - [x] 4-2. `PIISession` accessible via `current_pii_session` `ContextVar` — `set_current_pii_session()` binds a session at the request boundary, `TokenizingProviderWrapper` resolves from the ContextVar when no explicit session is passed. Per-task isolation via standard `ContextVar` semantics.
   - [x] 4-3. Do **not** rewrite local tool-call arguments (file paths, IDs, URLs, search terms, code snippets). Tool inputs remain exact so local execution stays correct. If tool output is later assembled into an outbound LLM prompt, tokenize at that later outbound boundary.
   - [x] 4-4. Scope: only applies to external API calls — local processing, file I/O, and on-device operations are unaffected
 
@@ -45,7 +45,7 @@ Every LLM API call sends the full prompt — including any user data — to an e
 - [x] 6. **Tests and docs**
   - [x] 6-1. Unit tests: registry CRUD, tokenization (single word, multi-word, regex patterns, word boundaries, case sensitivity), detokenization, leak detection
   - [x] 6-2. Integration test: end-to-end message flow with PII — verify original words never appear in the outgoing API call
-  - [ ] 6-3. Edge cases: PII in code blocks (should tokenize?), PII in tool arguments, PII in system prompts
+  - [x] 6-3. Edge cases: PII in code blocks (tokenized by default; skipped with `DAN_PII_SKIP_CODE_BLOCKS=1` via `_CODE_BLOCK_RE` splitting in `tokenize()`), PII in tool arguments (NOT tokenized — `_tokenize_messages` skips `tool_calls` field), PII in system prompts (tokenized — all message roles processed)
   - [x] 6-4. Update architecture, changelog, `.env.example`
 
 ## Dependencies

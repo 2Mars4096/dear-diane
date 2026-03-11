@@ -1,7 +1,7 @@
 # 31-11: Cross-Session Resume
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Enable seamless task resumption across sessions — "I started a literature review yesterday, continue where I left off" works without the user reconstructing context.
 
 ## Problem
@@ -12,7 +12,7 @@ DAN has engine-level checkpoints for workflow runs and conversation memory (26-3
 
 - [x] 1. **Task state model**
   - [x] 1-1. Extend `Task` model with structured resume fields: `status: Literal["active", "paused", "blocked", "completed"]`, `completed_steps: list[str]`, `pending_steps: list[str]`, `current_blocker: str | None`, `artifacts: dict[str, str]` (key → file path or memory ID), `last_activity: datetime`
-  - [ ] 1-2. Auto-populate on task completion/pause: concierge extracts structured state from the conversation and persists it (deferred to integration)
+  - [x] 1-2. Auto-populate on task completion/pause: `_finalize_task()` extracts structured state via `auto_populate_task_state()`, compacts via `compact_task_history()`, persists via `persist_task_state()`
   - [x] 1-3. `TaskSnapshot` — serializable summary for quick-resume prompt injection
 
 - [x] 2. **Resume protocol**
@@ -24,12 +24,12 @@ DAN has engine-level checkpoints for workflow runs and conversation memory (26-3
 
 - [x] 3. **State persistence**
   - [x] 3-1. Persist task state to `ProjectStore` on every significant state change (step completion, artifact creation, blocker detection)
-  - [ ] 3-2. Compact task history: keep full detail for last 3 steps, summaries for older steps (deferred to integration)
+  - [x] 3-2. Compact task history: `compact_task_history()` keeps last 3 verbatim, older steps summarised to first sentence or 80 chars (whichever shorter)
   - [x] 3-3. Artifact references: link to workflow run IDs, file paths, memory items — don't duplicate data, reference it
 
 - [x] 4. **Tests and docs**
-  - [x] 4-1. Unit tests: task state serialization, resume prompt generation, auto-resume matching (48 tests)
-  - [ ] 4-2. Integration test: start task on one surface, resume on another (deferred to integration)
+  - [x] 4-1. Unit tests: task state serialization, resume prompt generation, auto-resume matching (71 tests)
+  - [x] 4-2. Integration test: `test_full_flow_cli_to_telegram` — creates task on CLI with conversation, auto-populates + compacts state, resumes from Telegram via `auto_resume_match()`
   - [x] 4-3. Update architecture, changelog
 
 ## Dependencies

@@ -33,11 +33,11 @@ Thirteen tools in `src/dan/tools/` are built and discoverable via `get_all_tools
   - [x] 4-1. In the tool registration path (e.g. `register_tool_capabilities()` or `register_base_capabilities()` in `capability_handlers.py`), gate the 13 new tool handlers behind `DAN_FULL_TOOLS=1`. When `0` (default), only the existing capability set is registered — backward compatible.
   - [x] 4-2. When `DAN_FULL_TOOLS=1`, register all 13 handlers from task 1. This is a one-line gate per `register_*` call.
   - [x] 4-3. Log which tools are registered at startup when `DAN_FULL_TOOLS=1`.
-- [ ] 5. Tests
-  - [ ] 5-1. Add tests for each new capability handler in `tests/test_server/test_capability_handlers.py` (or equivalent): at minimum, call with valid args and assert success; call with invalid/missing args and assert error.
-  - [ ] 5-2. Add test for `DAN_LEARNING_MODE` bundle: mock env, set `DAN_LEARNING_MODE=1`, run startup logic, assert the four vars are set; test that explicit `DAN_PROMPT_OPTIMIZATION=0` is preserved.
-  - [ ] 5-3. Add tests for introspection tools: mock `graph_store` with a minimal graph, mock `test_case_store`, call `inspect_node`, `list_test_cases`, `run_test_case` and assert expected structure.
-  - [ ] 5-4. Add test for `DAN_FULL_TOOLS` gate: when `0`, assert new tools not registered; when `1`, assert all 13 registered.
+- [x] 5. Tests
+  - [x] 5-1. Add tests for each new capability handler in `tests/test_server/test_capability_exposure.py`: call with valid args and assert success; call with invalid/missing args and assert error.
+  - [x] 5-2. Add test for `DAN_LEARNING_MODE` bundle: mock env, set `DAN_LEARNING_MODE=1`, run startup logic, assert the four vars are set; test that explicit `DAN_PROMPT_OPTIMIZATION=0` is preserved.
+  - [x] 5-3. Add tests for introspection tools: mock `graph_store` with a minimal graph, mock `test_case_store`, call `inspect_node`, `list_test_cases`, `run_test_case` and assert expected structure.
+  - [x] 5-4. Add test for `DAN_FULL_TOOLS` gate: when `0`, assert new tools not registered; when `1`, assert all 14 registered.
 
 ## Mode Summary
 

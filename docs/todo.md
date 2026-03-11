@@ -357,23 +357,36 @@
   - [x] [31-3-capability-exposure](plans/31-3-capability-exposure.md) — C. Expose 13 built-in tools (python_eval, csv_read, git tools, etc.) as chat capabilities, workflow introspection tools, `DAN_LEARNING_MODE` bundle
   - [x] [31-4-power-user-speed](plans/31-4-power-user-speed.md) — D. CLI pipe/one-shot mode (`dan ask`), memory management commands (`/memory-delete`, `/memory-forget`, `/memory-confirm`), prep timeout, file auto-read
   - [x] [31-5-defaults-and-docs](plans/31-5-defaults-and-docs.md) — E. `.env.example` overhaul (30+ vars), startup feature banner, feature bundles, `docs/cli.md` update (`dan-ask`, new flags, 8+ slash commands), `docs/llm-api-guide.md` (13 new capability tools), `docs/architecture.md`, `docs/development-plan.md`, README
-- [x] [31-6-goal-oriented-loop](plans/31-6-goal-oriented-loop.md) — F. Autonomous iteration, strategy escalation, `/goal` command *(core module/command landed; real execution-loop wiring remains in the Phase 21 live-wiring follow-up slice)*
+  - [x] [31-6-goal-oriented-loop](plans/31-6-goal-oriented-loop.md) — F. Autonomous iteration, strategy escalation, `/goal` command *(core module/command landed; real execution-loop wiring remains in the Phase 21 live-wiring follow-up slice)*
   - [x] [31-7-scheduled-tasks](plans/31-7-scheduled-tasks.md) — G. Cron/interval task scheduling, `/schedule` commands *(complete: 92 tests + lifespan background task)*
-  - [x] [31-8-plan-dependency-optimization](plans/31-8-plan-dependency-optimization.md) — H. RCPSP scheduler with critical path and LRP scheduling *(complete: 54 tests + PlanBuilder DAG emission)*
-  - [x] [31-9-completion-guard](plans/31-9-completion-guard.md) — I. Requirement extraction and completeness validation *(complete: 43 tests + response pipeline hook)*
-  - [x] [31-10-pii-tokenization](plans/31-10-pii-tokenization.md) — J. Sensitive data masking before LLM API calls *(complete: 75 tests + input/output pipeline hooks)*
-  - [x] [31-11-cross-session-resume](plans/31-11-cross-session-resume.md) — K. Task state persistence, `/resume`, auto-resume *(complete: 48 tests + session-start wiring)*
-- [x] [31-12-proactive-follow-up](plans/31-12-proactive-follow-up.md) — L. DAN-initiated follow-ups, quiet hours, rate limiting *(stale-task queue/engine landed; schedule-result and run-completion trigger emission remain in the Phase 21 live-wiring follow-up slice)*
+  - [x] [31-8-plan-dependency-optimization](plans/31-8-plan-dependency-optimization.md) — H. RCPSP scheduler with critical path and LRP scheduling *(complete: 98 unit + 25 integration tests — pre-flight validation, mid-execution dependency, LLM prompts with 5 golden examples, template deps, experience estimation, concierge execution path, workflow engine DAG conversion, /plan command, execution events)*
+  - [x] [31-9-completion-guard](plans/31-9-completion-guard.md) — I. Requirement extraction and completeness validation *(complete: 76 tests — concierge wiring with skip guards for commands/greetings/follow-ups/short responses, 7 integration tests)*
+  - [x] [31-10-pii-tokenization](plans/31-10-pii-tokenization.md) — J. Sensitive data masking before LLM API calls *(complete: 92 tests — ContextVar for request-scoped PIISession, DAN_PII_SKIP_CODE_BLOCKS support, edge-case coverage for code blocks/tool args/system prompts)*
+  - [x] [31-11-cross-session-resume](plans/31-11-cross-session-resume.md) — K. Task state persistence, `/resume`, auto-resume *(complete: 71 tests — auto-populate wiring in `_finalize_task`, compact history with first-sentence truncation, cross-surface integration test)*
+  - [x] [31-12-proactive-follow-up](plans/31-12-proactive-follow-up.md) — L. DAN-initiated follow-ups, quiet hours, rate limiting *(stale-task queue/engine landed; schedule-result and run-completion trigger emission remain in the Phase 21 live-wiring follow-up slice)*
   - [x] [31-13-multi-surface-continuity](plans/31-13-multi-surface-continuity.md) — M. Cross-surface context sharing, `/sync` command *(complete: 46 tests + presence tracking + handoff injection)*
-- [x] [31-14-progressive-response-ux](plans/31-14-progressive-response-ux.md) — N. Phase-chunked progressive disclosure, surface-adaptive verbosity *(renderers/session setup landed; phase-event wiring beyond session initialization remains in the Phase 21 live-wiring follow-up slice)*
-  - [x] [31-15-learning-evolution-optimization](plans/31-15-learning-evolution-optimization.md) — O. Tiered learning, correction memory, adaptation governance *(complete: 105 tests + lifespan tier activation)*
-- [x] [31-16-command-surface-unification](plans/31-16-command-surface-unification.md) — P. Canonical command registry, unified dispatch, `/help` *(registry/dispatch/help wiring landed; centered command-doc generation is still deferred in the plan notes)*
-- [x] [31-17-computer-control-and-browser-automation](plans/31-17-computer-control-and-browser-automation.md) — Q. Browser automation, desktop control, safety-first approvals *(policy/config/runtime-command core landed; chat capability/controller exposure remains in the Phase 21 live-wiring follow-up slice)*
+  - [x] [31-14-progressive-response-ux](plans/31-14-progressive-response-ux.md) — N. Phase-chunked progressive disclosure, surface-adaptive verbosity *(renderers/session setup landed; phase-event wiring beyond session initialization remains in the Phase 21 live-wiring follow-up slice)*
+  - [x] [31-15-learning-evolution-optimization](plans/31-15-learning-evolution-optimization.md) — O. Tiered learning, correction memory, adaptation governance *(complete: 130 tests — all 8 task groups done: tier activation with promotion gates + env overrides, node-level quality signals, correction→memory wiring, /status learning section, type-indexed MemoryKernel, planning calibration wiring)*
+  - [x] [31-16-command-surface-unification](plans/31-16-command-surface-unification.md) — P. Canonical command registry, unified dispatch, `/help` *(complete: registry-driven adapter routing, REPL tab-completion, unknown-command suggestions, WhatsApp plain-text help, health check, command-doc generation, 94 tests)*
+  - [x] [31-17-computer-control-and-browser-automation](plans/31-17-computer-control-and-browser-automation.md) — Q. Browser automation, desktop control, safety-first approvals *(policy/config/runtime-command core landed; chat capability/controller exposure remains in the Phase 21 live-wiring follow-up slice)*
+
+## Benchmark Suite — Prove Long-Tail Advantage
+> Empirically prove DAN's typed-graph architecture outperforms monolithic agents on complex, multi-step tasks. Published academic benchmarks + custom long-tail scenarios. Analysis framework built first.
+
+- [ ] [benchmark-plan](benchmark-plans/benchmark-plan.md) — master spec: thesis, metrics, baselines, execution order
+  - [ ] [bench-5-analysis-framework](benchmark-plans/bench-5-analysis-framework.md) — metrics collector, ablation controller, results DB, visualization, report generator (build first)
+  - [ ] [bench-1-worfbench](benchmark-plans/bench-1-worfbench.md) — WorFBench (ICLR 2025): workflow DAG generation from NL
+  - [ ] [bench-2-gaia](benchmark-plans/bench-2-gaia.md) — GAIA Level 3 (ICLR 2024): 6+ step real-world tasks, public leaderboard
+  - [ ] [bench-3-appworld](benchmark-plans/bench-3-appworld.md) — AppWorld (ACL 2024): complex multi-API control flow, MCP bridge
+  - [ ] [bench-4-custom-longtail](benchmark-plans/bench-4-custom-longtail.md) — custom 5-scenario suite: while-loops, hyperedges, fan-out, learning
+  - Tier 2 (future): Tau-bench, Jenova.ai, AgentBench → (not yet planned)
+  - Tier 3 (future): SWE-bench Pro, MLAgentBench, OdysseyBench, AssistantBench → (not yet planned)
 
 ## Backlog (unphased)
 
 ### strengthen workflow to make it more powerful and easier to use
-- [ ] **Next deferred cleanup slice — Phase 21 live-wiring follow-ups** — finish the still-partial runtime wiring surfaced by the full phase review: real `/goal` execution loop, scheduled/run-completion proactive follow-up triggers, phase-based progress renderer integration, and computer-use capability/controller wiring.
+- [x] **IDE-compatible skill store** — `SkillStore` scans `~/.dan/skills/` (user) + `.dan/skills/` (project) + legacy `DAN_CUSTOM_SKILLS_DIR` for `SKILL.md` files. Frontmatter superset of Cursor/Claude/Codex format. `/skill list|info|import|scan` commands. 48 tests.
+- [x] ~~**Next deferred cleanup slice — Phase 21 live-wiring follow-ups**~~ — goal loop execution wiring (`GoalLoopExecutor` now spawns from `/goal`, tier-specific prompts, RepairClassifier inter-attempt diagnosis, intent recognition), proactive follow-up trigger emission (run-completion and schedule-result triggers wired in app.py, surface routing via PresenceTracker, per-task opt-out), progressive response pipeline (instant acknowledgment before LLM prep, phase transitions on capability execution, heartbeat enhancement), computer-use capability tools (7 browser + 5 desktop tools registered as chat capabilities, observe-act-verify loop, foreground-only enforcement, abort/fail-safe), and centered command reference (`docs/commands.md` + generation script)
 
 ### Infrastructure / CI
 - [ ] **Playwright E2E browser tests** (12-6 tasks 5-6) — mode transitions, mention autocomplete, stop generation, export. Requires Playwright setup + CI pipeline.
@@ -476,13 +489,13 @@
   - [x] Capture generated `build_factor` stdout/stderr and fail fast on empty factor outputs to avoid silent “factor-only/no-plot” runs
 
 ### Execution intelligence
-- [ ] **Goal-oriented loop** — set a target metric (score, test pass, quality threshold) and loop until met or wall-clock/cost ceiling reached. Pluggable evaluation (LLM-as-judge, test suite, numeric threshold). Compose with RepairEscalator for graduated diagnosis per iteration. Checkpoint after each attempt.
-- [ ] **Timed / scheduled tasks** — `TaskScheduler` with cron-style or interval triggers stored in `~/.dan/schedules.json`. `/schedule` chat command. Each trigger fires a concierge message reusing the full pipeline. Pairs with notifications.
-- [ ] **Plan dependency-graph optimization** — decompose goals into subtask DAG with time estimates, solve resource-constrained project scheduling (critical path + list scheduling heuristic) to minimize makespan under `DAN_MAX_CONCURRENT_LLM` constraint. Wire RCPSP schedule into ParallelSubagents/topological scheduler. Time estimation: heuristic classification + historical experience memory + LLM estimate with calibration.
+- [x] **Goal-oriented loop** — ~~set a target metric~~ → completed in [31-6](plans/31-6-goal-oriented-loop.md) (concierge loop + engine GoalLoopNode)
+- [x] **Timed / scheduled tasks** — ~~TaskScheduler~~ → completed in [31-7](plans/31-7-scheduled-tasks.md) (cron/interval, lease/lock, NL parsing, result delivery)
+- [x] **Plan dependency-graph optimization** — decompose goals into subtask DAG with time estimates, solve resource-constrained project scheduling (critical path + list scheduling heuristic) to minimize makespan under `DAN_MAX_CONCURRENT_LLM` constraint. Wire RCPSP schedule into ParallelSubagents/topological scheduler. Time estimation: heuristic classification + historical experience memory + LLM estimate with calibration.
 
 ### Safety & guardrails
-- [ ] **Completion guard** — pre-delivery validation: extract requirements from user message, structured check that all asks were addressed before sending final response. `RequirementTracker` persists parsed requirements and checks them off. Flag missed items — auto-fix or report "addressed 4/5, item 5 requires X."
-- [ ] **PII / sensitive data tokenization** — user-defined sensitive word list (`~/.dan/sensitive_words.json`) + auto-detected patterns (phone, SSN, email). Replace with semantic placeholders (`[USER_NAME_1]`, `[ADDRESS_1]`) before LLM API calls, restore on response. Word-boundary-aware matching. Bidirectional scan (also check LLM responses for leaks). Only applies to external API calls, not local processing.
+- [x] **Completion guard** — ~~pre-delivery validation~~ → completed in [31-9](plans/31-9-completion-guard.md) (response pipeline wiring, skip conditions)
+- [x] **PII / sensitive data tokenization** — ~~user-defined sensitive word list~~ → completed in [31-10](plans/31-10-pii-tokenization.md) (ContextVar, code-block skip, edge cases)
 - [ ] **Cost hard limits** — `max_cost` per workflow run and per concierge session. Budget enforcer intervenes before each LLM call: downgrade model / skip optional step / checkpoint and ask user. Composes with TierPolicy and model_policy cascade.
 
 ### Workflow engine robustness (long-tail tasks)
@@ -496,9 +509,28 @@
 - [ ] **Cross-workflow coordination** — output of one workflow becomes input of another, concierge as coordinator. "Run data pipeline, then start report workflow with its outputs."
 
 ### Continuity & polish
-- [ ] **Resumable cross-session work** — structured task-level resume across sessions via Project/Task scope. "Continue where I left off" with persistent what's-done/what's-pending/current-blocker state.
-- [ ] **Proactive follow-up** — initiative layer on top of scheduled tasks + experience memory. DAN proactively reports: "The report I ran yesterday found an anomaly — want me to dig deeper?"
-- [ ] **Multi-surface task continuity** — start a task on desktop, continue on Telegram from phone, return to desktop with full context. Project scope as continuity anchor, not surface.
+- [x] **Resumable cross-session work** — ~~structured task-level resume~~ → completed in [31-11](plans/31-11-cross-session-resume.md) (auto-populate, compact history, cross-surface resume)
+- [x] **Proactive follow-up** — ~~initiative layer~~ → completed in [31-12](plans/31-12-proactive-follow-up.md) (stale-task queue, delivery engine, quiet hours)
+- [x] **Multi-surface task continuity** — ~~start a task on desktop~~ → completed in [31-13](plans/31-13-multi-surface-continuity.md) (presence tracking, handoff injection, /sync)
+- [x] **Telegram project tracing** — compact `[Project]` header in all Telegram replies (converted from `[DAN - Project]`), combined with `reply_to_message_id` threading. `_format_for_telegram()` replaces `_strip_prefix_and_html()`.
+- [x] **Adaptive progress frequency** — exponential backoff for Telegram progress updates (10s → 20s → 30s → ... → max 5min). Configurable via `DAN_TELEGRAM_PROGRESS_MAX_INTERVAL` and `DAN_TELEGRAM_PROGRESS_BACKOFF`. Sends new message instead of editing when conversation has moved on.
+- [x] **Classifier: project-status intent fix** — "project review", "project progress", "how's the project going" now correctly route to `STATUS_CHECK` instead of `CONVERSATION`/`FILE_REQUEST`. Context-aware heuristic distinguishes DAN project queries from external topic queries ("Panama canal expansion project status"). Prevents eager file sends on status questions.
+
+### Adapter abstraction & custom frontend
+> Today WhatsApp, Telegram, CLI, and the editor each carry their own rendering/routing logic. Extract a shared adapter interface so adding a new surface is minimal wiring. Then build a dedicated DAN web frontend (beyond the workflow editor) for managing bots, runs, projects, memory, and schedules in one place.
+
+- [ ] **Adapter interface extraction** — define a common `SurfaceAdapter` ABC that captures the shared contract across Telegram, WhatsApp, CLI, and editor adapters: message ingestion, reply rendering, media handling, slash-command dispatch, HumanNode resolution, presence tracking. Each existing adapter becomes a thin implementation of this interface. Reduces duplication and makes adding new surfaces (Discord, Slack, web UI) trivial.
+- [ ] **Surface capability matrix** — catalog which features each adapter supports (inline keyboards, reactions, file upload, streaming edits, forum topics, voice, polls) vs. graceful degradation. Use this to drive surface hints and feature-flag rendering logic rather than per-adapter `if` branches.
+- [ ] **DAN management frontend** — standalone web UI (separate from the workflow editor) for day-to-day operations: bot fleet status/control, active & historical runs, project/task overview, memory browser (facts, preferences, principles, corrections), schedule manager, cost dashboard, notification history. Acts as the "admin panel" that messaging surfaces can't provide.
+- [ ] **Unified adapter test harness** — shared test suite that every adapter must pass: message round-trip, slash commands, media, HumanNode prompt/response, concierge routing, error surfacing. New adapters get instant validation.
+
+### Revenue-generating autonomous workflows
+> Use DAN's always-on orchestration to run workflows that directly translate tokens/compute into money. Each path should be a self-contained loop that DAN can execute autonomously on a schedule.
+
+- [ ] **Autonomous factor generation** — continuously generate, backtest, and rank quantitative alpha factors (momentum, value, sentiment, alternative data). Loop: ideate factor → code → backtest on CRSP/Compustat → score → persist winners. Pairs with vibe research infra and scheduled tasks.
+- [ ] **Kaggle competition strategist** — monitor active Kaggle competitions, auto-scaffold projects, generate/evaluate submissions. Loop: pick competition → EDA → feature engineering → model ensemble → submit → analyze leaderboard feedback → iterate. Use DAN's iterative build/test/diagnose loop.
+- [ ] **Crypto mining orchestration** — manage mining operations (pool selection, hardware monitoring, profitability switching). DAN as the control plane for hashrate allocation and profit optimization.
+- [ ] **Revenue path discovery** — systematic search for new token-to-money conversion paths. Survey: freelance automation (Upwork/Fiverr bots), content generation pipelines, data labeling/annotation services, API-as-a-service (publish DAN workflows as paid endpoints), algorithmic trading signal subscriptions, automated research reports for sale, SEO/content farms, synthetic data generation. Evaluate each on effort-to-revenue ratio and regulatory risk.
 
 ### Future vision
 - [x] ~~**Multi-agent group chat**~~ → promoted and completed in [Phase 20](#phase-20--telegram-multi-bot-platform) (Plan 30, Telegram-first). Discord adapter deferred to future phase.

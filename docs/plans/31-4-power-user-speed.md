@@ -38,12 +38,12 @@ Power users hit friction daily: no way to run a single question and exit (`dan a
   - [x] 4-4. Add `file_delivery` action / capability: when a tool like `file_write` or `python_eval` produces an output file path, the chat response can include a `chat_file_attachment` event. In `capability_handlers.py`, after `handle_file_write` (or similar) returns a path, the chat manager should emit `ChatFileAttachmentEvent(path=..., filename=..., size=...)` so adapters receive it and call `adapter.send_file()`. Wire `file_delivery` into the tool-result handling path in `chat_manager.py` (where tool results are processed and events emitted)
   - [x] 4-5. WhatsApp adapter already has `_send_file` / `send_file`; `cli/adapter.py` already consumes `chat_file_attachment` events and calls `adapter.send_file` (lines 306–337). Ensure capability handlers can trigger this by emitting the event
 
-- [ ] 5. Tests
-  - [ ] 5-1. Tests for `dan-ask` one-shot mode: mock `ChatClient`, verify single `send_chat_message` + `stream_chat_events`, process events, assert exit without REPL. In `tests/test_cli/` or `tests/test_chat_cli.py`
-  - [ ] 5-2. Tests for `--pipe` flag: mock stdin with "hello", mock server response, assert stdout receives response text only, no prompts
-  - [ ] 5-3. Tests for `--output` flag: verify response written to specified file
-  - [ ] 5-4. Tests for `/memory-delete`, `/memory-forget`, `/memory-confirm`, `/memory-reject` in `tests/test_concierge/test_memory_commands.py` or `test_fast_commands.py`: mock MemoryKernel, verify correct methods called, response content
-  - [ ] 5-5. Tests for prep timeout: mock slow `_retrieve_memory_context` or `context_resolver.resolve`, set `DAN_CONCIERGE_PREP_TIMEOUT=0.1`, verify timeout triggers, warning logged, response still produced with partial/empty context
+- [x] 5. Tests
+  - [x] 5-1. Tests for `dan-ask` one-shot mode in `tests/test_cli/test_power_user.py`: mock `ChatClient`, verify single `send_chat_message` + `stream_chat_events`, process events, assert exit without REPL.
+  - [x] 5-2. Tests for `--pipe` flag: mock stdin with "hello", mock server response, assert stdout receives response text only, no prompts
+  - [x] 5-3. Tests for `--output` flag: verify response written to specified file
+  - [x] 5-4. Tests for `/memory-delete`, `/memory-forget`, `/memory-confirm`, `/memory-reject` in `tests/test_cli/test_power_user.py`: mock MemoryKernel, verify correct methods called, response content
+  - [x] 5-5. Tests for prep timeout: mock slow `_retrieve_memory_context`, set `DAN_CONCIERGE_PREP_TIMEOUT=0.1`, verify timeout triggers, response still produced with partial/empty context
 
 ## Decisions
 

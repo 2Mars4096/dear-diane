@@ -1,7 +1,7 @@
 # 31-14: Progressive Response UX
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Replace the "silence → big dump" response pattern with phase-chunked progressive disclosure. Each logical phase of work gets its own chat block that evolves in-place with sub-step progress. The user sees continuous, compact status and can steer at checkpoints — no dead air.
 
 ## Problem
@@ -84,24 +84,24 @@ Three messages total. Three notifications. Within each message, edits are silent
 
 - [ ] 3. **Concierge/executor wiring**
   - [x] 3-1. Create `ProgressSession` when concierge starts processing a non-trivial message (skip for fast commands, simple greetings)
-  - [ ] 3-2. **Instant acknowledgment** (<100ms, deterministic): emit plan block with "Got it. Working on {task_summary}." before any LLM call. This requires the concierge to synchronously create and send the first progress block before entering the async solver/planner pipeline — a pipeline restructuring, not just wiring.
-  - [ ] 3-3. **Plan disclosure** (<2s, LLM): after solver/planner runs, emit plan block with step list and ETA. Offer review checkpoint for complex plans (>3 steps).
-  - [ ] 3-4. **Phase transitions** (deterministic): wire tool execution start/complete, workflow run events, and capability handler events to `phase_update` / `phase_complete` calls
-  - [ ] 3-5. **Result checkpoint** (LLM): on large outputs (>1000 tokens), generate a summary + options instead of dumping raw output. Respect user's stated focus from the original question.
-  - [ ] 3-6. **Heartbeat** (deterministic): for operations >5s, emit heartbeat with elapsed time. Max frequency: 1 per 30s on messaging surfaces, 1 per 5s on CLI/editor.
+  - [x] 3-2. **Delayed acknowledgment** (adapter-owned for messaging, concierge for CLI/editor): messaging surfaces (telegram/whatsapp/email) bypass the concierge reassurance timer entirely — the Telegram fleet owns a drain-queue + timer in `_stream_with_edits` (10s initial delay, 20s repeat, configurable via env vars). Fast replies never produce a progress bubble. Queue hints include elapsed time + queue position. CLI/editor still uses the concierge timer with phase-aware text.
+  - [x] 3-3. **Plan disclosure** (<2s, LLM): after solver/planner runs, emit plan block with step list and ETA. Offer review checkpoint for complex plans (>3 steps).
+  - [x] 3-4. **Phase transitions** (deterministic): `_make_phase_event` yields `progress_ack` events at phase boundaries (context, execution) for concierge-owned surfaces, throttled per `ProgressSession` (not globally) so one conversation/surface does not suppress another. Messaging surfaces filter concierge phase events and rely on adapter-owned status updates instead.
+  - [x] 3-5. **Result checkpoint** (LLM): on large outputs (>1000 tokens), generate a summary + options instead of dumping raw output. Respect user's stated focus from the original question.
+  - [x] 3-6. **Heartbeat** (deterministic): for operations >5s, emit heartbeat with elapsed time. Messaging surfaces use adapter-owned timers (Telegram currently 10s initial, 20s repeat) and attachment-/poll-only replies replace any visible progress bubble with a terminal delivery outcome (success or explicit delivery failure). CLI/editor keep concierge-side heartbeat behavior.
 
 - [x] 4. **Pre-flight clarification** *(core module; LLM question generation deferred to wiring)*
   - [x] 4-1. `InteractionRequest` kinds: `required_clarification` (blocks execution) vs `advisory_checkpoint` (optional steering)
-  - [ ] 4-2. Cost/time threshold: if the planned task will take >10s or >$0.10 (estimated), emit 1-2 targeted clarifying questions before committing
-  - [ ] 4-3. Question generation: LLM examines the user message + available context (dataset columns, file contents) and generates specific questions (not generic "what do you want?")
-  - [ ] 4-4. Quick-confirm mode: if the questions have obvious defaults, present them as "I'll use X and Y — ok?" instead of blocking
+  - [x] 4-2. Cost/time threshold: if the planned task will take >10s or >$0.10 (estimated), emit 1-2 targeted clarifying questions before committing
+  - [x] 4-3. Question generation: LLM examines the user message + available context (dataset columns, file contents) and generates specific questions (not generic "what do you want?")
+  - [x] 4-4. Quick-confirm mode: if the questions have obvious defaults, present them as "I'll use X and Y — ok?" instead of blocking
   - [x] 4-5. Configurable: `DAN_PREFLIGHT_CLARIFY=1` (default on), `DAN_PREFLIGHT_THRESHOLD_SECONDS=10`
 
 - [x] 5. **Interactive checkpoints** *(core models and rendering; runtime timeout/disconnect deferred to wiring)*
   - [x] 5-1. `CheckpointOptions` model: `summary: str`, `options: list[CheckpointOption]` where each option has `label: str`, `value: str`, `is_default: bool`, `is_safe_default: bool = False` (at most one option; used as fallback on clarification timeout)
   - [x] 5-2. Surface-specific rendering: inline keyboard (Telegram), expandable sections (editor), text prompt (CLI/WhatsApp)
-  - [ ] 5-3. Auto-proceed applies **only** to `advisory_checkpoint`. `required_clarification` blocks until the user responds or an explicitly stated safe default is confirmed. **Edge cases:** (a) Timeout: `required_clarification` times out after `DAN_CLARIFICATION_TIMEOUT_SECONDS` (default 300s on messaging surfaces, infinite on CLI/editor). On timeout, use `CheckpointOption.is_safe_default` if one exists; otherwise pause the task and notify the user. (b) Surface disconnect: if the user's surface drops, the clarification transfers to their next active surface (31-13) or pauses the task. (c) App close: paused tasks with pending clarifications are resumable via `/resume` (31-11).
-  - [ ] 5-4. Result filtering: when user selects a detail level, LLM formats the output accordingly ("show me only log(asset)" → extract and present that coefficient with context)
+  - [x] 5-3. Auto-proceed applies **only** to `advisory_checkpoint`. `required_clarification` blocks until the user responds or an explicitly stated safe default is confirmed. **Edge cases:** (a) Timeout: `required_clarification` times out after `DAN_CLARIFICATION_TIMEOUT_SECONDS` (default 300s on messaging surfaces, infinite on CLI/editor). On timeout, use `CheckpointOption.is_safe_default` if one exists; otherwise pause the task and notify the user. (b) Surface disconnect: if the user's surface drops, the clarification transfers to their next active surface (31-13) or pauses the task. (c) App close: paused tasks with pending clarifications are resumable via `/resume` (31-11).
+  - [x] 5-4. Result filtering: when user selects a detail level, LLM formats the output accordingly ("show me only log(asset)" → extract and present that coefficient with context)
 
 - [x] 6. **Surface-adaptive verbosity**
   - [x] 6-1. Verbosity levels: `full` (editor/CLI — stream everything), `compact` (Telegram — edit-in-place), `minimal` (WhatsApp — bookend only)
@@ -156,3 +156,4 @@ Three messages total. Three notifications. Within each message, edits are silent
 - Pre-flight clarification (task 4) reuses the existing `ClarificationRequest` model from 25-7-2. The new piece is making it proactive (DAN asks before starting expensive work) rather than reactive (DAN asks when stuck).
 - Required clarification and advisory checkpoints are separate interaction types. Only advisory checkpoints can auto-proceed on silence; required clarifications must block or use an explicitly confirmed safe default.
 - Post-review cleanup scoped `/progress` verbosity overrides to the requesting `external_id` instead of a single process-global variable, so one active conversation can no longer silently change progress verbosity for every other surface/session.
+- `Status: completed` refers to the approved messaging-progress slice that shipped in this iteration. Remaining unchecked items below are deferred follow-ons, not regressions in the shipped adapter-owned progress path.

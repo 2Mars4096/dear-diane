@@ -39,11 +39,11 @@ Model selection is frozen at startup: `ChatManager._chat_model` is set once from
   - [x] 5-1. In `src/dan/server/chat_manager.py`, add `{model_name}` to the surface hint template. `SURFACE_HINTS` values (lines 428–468) are static strings; instead, interpolate at use site in `_build_messages` (around line 2799): append a line like "Current model: {model_name}" to the surface hint, or add a separate block. Use `self._chat_model` as the value
   - [x] 5-2. Ensure the model line is included in the system prompt so the LLM can truthfully answer "what model are you?"
 
-- [ ] 6. Tests
-  - [ ] 6-1. Add tests for `/model` in `tests/` (e.g. `tests/test_concierge_fast_commands.py` or similar): parsing, validation against ProviderRegistry, state update, `--save` persistence
-  - [ ] 6-2. Add tests for TierPolicy activation: `DAN_ENABLE_TIER_POLICY=1` sets `default_model_policy` in EngineConfig; `DAN_TIER_MAP` override is applied
-  - [ ] 6-3. Add tests for `get_config`: output structure, redaction of API keys, feature detection
-  - [ ] 6-4. Add tests for `set_config` model change: when `DAN_CHAT_MODEL` is set, `ChatManager._chat_model` is updated in-memory
+- [x] 6. Tests
+  - [x] 6-1. Add tests for `/model` in `tests/test_concierge/test_model_control.py`: parsing, validation against ProviderRegistry, state update, `--save` persistence
+  - [x] 6-2. Add tests for TierPolicy activation: `DAN_ENABLE_TIER_POLICY=1` sets `default_model_policy` in EngineConfig; `DAN_TIER_MAP` override is applied
+  - [x] 6-3. Add tests for `get_config`: output structure, redaction of API keys, feature detection
+  - [x] 6-4. Add tests for `set_config` model change: when `DAN_CHAT_MODEL` is set, `ChatManager._chat_model` is updated in-memory
 
 ## Decisions
 

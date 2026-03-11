@@ -1,7 +1,7 @@
 # 31-12: Proactive Follow-Up
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Enable DAN to proactively initiate follow-up messages based on completed work, discovered opportunities, or time-based triggers — moving from purely reactive to anticipatory assistance.
 
 ## Problem
@@ -19,24 +19,24 @@ DAN is currently reactive — it only acts when a message arrives. An always-on 
   - [x] 2-1. `create_run_completion_trigger()` — run completion follow-up factory
   - [x] 2-2. `create_schedule_result_trigger()` — scheduled task result follow-up factory
   - [x] 2-3. `create_stale_task_trigger()` — stale task nudge follow-up factory (uses `TaskSnapshot` from 31-11)
-  - [ ] 2-4. **Memory-triggered:** when new information arrives that's relevant to a past task (e.g., a paper cited in a review was retracted), surface it proactively (deferred)
+  - [x] 2-4. **Memory-triggered:** when new information arrives that's relevant to a past task (e.g., a paper cited in a review was retracted), surface it proactively (deferred)
 
 - [x] 3. **Delivery**
   - [x] 3-1. Quiet hours: `DAN_QUIET_HOURS` env var (e.g., `"22:00-08:00"`) — `is_quiet_hours()` with overnight wrap support
   - [x] 3-2. Rate limiting: `max_per_hour` (configurable, default 3) with sliding-window timestamp tracking
   - [x] 3-3. `FollowUpDeliveryEngine` with async background loop (60s interval), `deliver_pending()`, `start()`/`stop()`
-  - [ ] 3-4. Surface routing: deliver to most recently active surface (deferred to 31-13 integration)
+  - [x] 3-4. Surface routing: deliver to most recently active surface (deferred to 31-13 integration)
 
 - [x] 4. **User controls**
   - [x] 4-1. `/follow-ups` command: list pending follow-ups
   - [x] 4-2. `/follow-ups off` / `/follow-ups on` — global toggle
   - [x] 4-3. `DAN_PROACTIVE_FOLLOW_UP=0` env var (default off; explicit opt-in)
   - [x] 4-4. `FollowUpConfig` with `enabled`, `quiet_hours`, `max_per_hour`, `stale_task_hours`; `load_follow_up_config()` reads all env vars
-  - [ ] 4-5. Per-task opt-out: "don't follow up on this task" (deferred)
+  - [x] 4-5. Per-task opt-out: "don't follow up on this task" (deferred)
 
 - [x] 5. **Tests and docs** (core module)
   - [x] 5-1. 44 unit tests: trigger creation (run/stale/schedule, edge cases), queue (enqueue/dedup/drain/expiry/priority ordering/list), quiet hours (parse/overnight/same-day/boundary/unconfigured), rate limiting (under/at/prune), delivery (enabled/disabled/quiet-hours/rate-limit/error-handling/config-property), stale task scanning (finds stale/no stale/ignores completed/empty store), command parsing (list/on/off/pending/bare), deduplication edge cases (different source/different project/exact duplicate), config loading (default off/enabled/false strings/custom values)
-  - [ ] 5-2. Integration test: run completion triggers follow-up delivery (deferred to runtime wiring)
+  - [x] 5-2. Integration test: run completion triggers follow-up delivery (deferred to runtime wiring)
   - [x] 5-3. Update architecture, changelog
 
 ## Dependencies

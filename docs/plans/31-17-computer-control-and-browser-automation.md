@@ -1,7 +1,7 @@
 # 31-17: Computer Control & Browser Automation
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed (all tasks)
 **Goal:** Give DAN a disciplined first computer-use layer: Playwright-first browser automation for web tasks, explicit browser-owned native-dialog handoff, a minimal macOS desktop fallback, and a safety-first allowlist/config model. Treat broad arbitrary desktop automation, external vision export, rich policy editing commands, and deeper lease/audit hardening as follow-on slices after the core path is reliable.
 
 ## Problem
@@ -68,43 +68,43 @@ This avoids the two bad extremes:
   - [x] 2-1. `BrowserController` protocol: `open(url)`, `click(selector)`, `type(selector, text)`, `fill(selector, text)`, `select(selector, value)`, `wait_for(selector|network|idle)`, `extract_text(selector|page)`, `screenshot()`, `download()`, `upload()`, `list_tabs()`, `switch_tab()`
   - [x] 2-2. Playwright-first backend (`PlaywrightBrowserController`) — do **not** use Selenium as the primary path; Playwright is more reliable for modern web apps, waits, downloads, and multi-tab handling
   - [x] 2-3. Browser session model: persistent context per task (cookies, tabs, downloads, current URL) with explicit cleanup on task end. Add `BrowserSessionContext` / handoff token so browser-owned native dialogs can be tied to an approved domain/session.
-  - [ ] 2-4. Native dialog boundary: if a browser action triggers a native file picker or save dialog, hand off to the desktop layer instead of failing. Desktop handoff is allowed **only** for explicitly modeled browser-owned native surfaces (file pickers, save dialogs, permission sheets, browser chrome), not arbitrary content inside the browser window.
+  - [x] 2-4. Native dialog boundary: if a browser action triggers a native file picker or save dialog, hand off to the desktop layer instead of failing. Desktop handoff is allowed **only** for explicitly modeled browser-owned native surfaces (file pickers, save dialogs, permission sheets, browser chrome), not arbitrary content inside the browser window.
   - [x] 2-5. Domain allowlist enforcement: browser automation only acts on domains allowed by `ComputerControlConfig`
 
 - [x] 3. **Desktop automation layer**
   - [x] 3-1. `DesktopController` protocol: `screenshot(region=None)`, `ocr(region=None)`, `list_windows()`, `focus_window(title|app)`, `launch_app(app_name)`, `move_mouse(x, y)`, `click(button="left")`, `double_click()`, `right_click()`, `drag(start, end)`, `type_text(text)`, `hotkey(keys)`, `scroll(dx, dy)`, `clipboard_read()`, `clipboard_write(text)`
   - [x] 3-2. macOS backend first: Accessibility API + Quartz events + AppleScript where useful. Reuse/upgrade existing `screenshot` and `clipboard` tools rather than duplicating them.
-  - [ ] 3-3. Cross-platform interface now, partial backend later: define protocol + capability contracts for Windows/Linux even if v1 only fully implements macOS. Non-macOS backends are follow-on work, not part of the first implementation.
-  - [ ] 3-4. Window/app allowlist enforcement: `input`, `window`, and `system` chunks only work inside approved apps/windows. **Critical rule:** desktop control inside browser-owned content areas is denied by default; only browser-triggered native dialog handoffs with a valid `BrowserSessionContext` token are allowed.
-  - [ ] 3-5. File-dialog support: save/open/upload flows via desktop backend so browser workflows can cross the native boundary
+  - [x] 3-3. Cross-platform interface now, partial backend later: define protocol + capability contracts for Windows/Linux even if v1 only fully implements macOS. Non-macOS backends are follow-on work, not part of the first implementation.
+  - [x] 3-4. Window/app allowlist enforcement: `input`, `window`, and `system` chunks only work inside approved apps/windows. **Critical rule:** desktop control inside browser-owned content areas is denied by default; only browser-triggered native dialog handoffs with a valid `BrowserSessionContext` token are allowed.
+  - [x] 3-5. File-dialog support: save/open/upload flows via desktop backend so browser workflows can cross the native boundary
   - [x] 3-6. macOS permission doctor: detect and explain missing Screen Recording, Accessibility, and Apple Events permissions; provide startup capability probe and degraded-mode reporting
-  - [ ] 3-7. Stable app identity: match apps/windows by bundle ID where possible, not just display name/title, to avoid spoofing and fragile app matching
-  - [ ] 3-8. **V1 scope guard:** keep the first implementation narrow: browser automation + explicit native-dialog handoff + minimal desktop primitives (`observe`, `focus`, `click`, `type`, `hotkey`) on macOS. Broader arbitrary cross-app workflows are a follow-on slice after the safety/lease model proves reliable
+  - [x] 3-7. Stable app identity: match apps/windows by bundle ID where possible, not just display name/title, to avoid spoofing and fragile app matching
+  - [x] 3-8. **V1 scope guard:** keep the first implementation narrow: browser automation + explicit native-dialog handoff + minimal desktop primitives (`observe`, `focus`, `click`, `type`, `hotkey`) on macOS. Broader arbitrary cross-app workflows are a follow-on slice after the safety/lease model proves reliable
 
 - [x] 4. **Perception and verification loop**
   - [x] 4-1. `UIObservation` model: `surface_type: Literal["browser", "desktop"]`, `screenshot_path: str | None`, `ocr_text: str | None`, `window_title: str | None`, `page_url: str | None`, `elements: list[ObservedElement] | None`
   - [x] 4-2. `ObservedElement` model: `label`, `role`, `bounds`, `confidence`, `selector: str | None` so browser/native targets can be handled uniformly
-  - [ ] 4-3. Execution loop: **observe -> act -> verify**. After every click/type/hotkey, re-observe and confirm the expected state changed; otherwise retry or escalate
-  - [ ] 4-4. Use deterministic methods first: DOM selectors first, then local OS/UI tree access (Accessibility / AX on macOS), then local OCR, then vision-model interpretation as fallback-only for ambiguous UIs.
-  - [ ] 4-5. Privacy boundary for external models:
+  - [x] 4-3. Execution loop: **observe -> act -> verify**. After every click/type/hotkey, re-observe and confirm the expected state changed; otherwise retry or escalate
+  - [x] 4-4. Use deterministic methods first: DOM selectors first, then local OS/UI tree access (Accessibility / AX on macOS), then local OCR, then vision-model interpretation as fallback-only for ambiguous UIs.
+  - [x] 4-5. Privacy boundary for external models:
     - OCR text sent to an external LLM goes through 31-10 provider-boundary tokenization
     - Raw screenshots / image crops do **not** become safe just because 31-10 exists; image export requires a separate high-risk `vision_export` approval path
     - v1 default: local OCR only; external vision fallback is disabled unless the user explicitly enables it **and** `DAN_PII_PROTECTION=1`
-  - [ ] 4-6. Follow-on slice: add local pre-send redaction/cropping for screenshots (region selection, blur/redaction overlays). v1 sidesteps most of this by keeping OCR local and keeping external vision export disabled by default.
+  - [x] 4-6. Follow-on slice: add local pre-send redaction/cropping for screenshots (region selection, blur/redaction overlays). v1 sidesteps most of this by keeping OCR local and keeping external vision export disabled by default.
 
-- [ ] 5. **Tool surface and concierge integration**
-  - [ ] 5-1. New capability tools:
+- [x] 5. **Tool surface and concierge integration**
+  - [x] 5-1. New capability tools:
     - `browser_open`, `browser_click`, `browser_type`, `browser_fill`, `browser_select`, `browser_wait`, `browser_extract`, `browser_screenshot`, `browser_tabs`, `browser_download`, `browser_upload`
     - `desktop_observe`, `desktop_windows`, `desktop_focus`, `desktop_launch`, `desktop_click`, `desktop_drag`, `desktop_type`, `desktop_hotkey`, `desktop_scroll`
   - [x] 5-2. `ComputerUseController`: high-level runtime helper that chooses browser actions when the target is in the DOM, then falls back to desktop control when the task crosses into native UI
-  - [ ] 5-3. **V1 command surface (minimal):**
+  - [x] 5-3. **V1 command surface (minimal):**
     - `/computer status`
     - `/computer doctor`
     - `/computer approve <request-id>` (text fallback only for a pending approval request)
     Config/policy edits stay in `~/.dan/computer_control.json` and env vars for v1. Follow-on slice: `/computer allow|deny ...` once 31-16 command infrastructure is in place and the core runtime is proven.
-  - [ ] 5-4. Registry note (31-16): register `/computer` via `CommandDescriptor` if 31-16 has landed. Otherwise, wire a temporary fast-command shim with a TODO for registry migration. Treat `/computer` as a **policy/diagnostics** command family, not the imperative execution layer itself.
-  - [ ] 5-5. Progress integration (31-14): computer-use tasks emit phase updates like "opening browser", "filling form", "waiting for download", "switching to file dialog", "verification failed; retrying"
-  - [ ] 5-6. Approval integration: reuse 31-14's `required_clarification` / checkpoint model for sensitive/destructive/system actions. Surface-native buttons should be preferred; `/computer approve <request-id>` is only the text fallback. Pending approvals must survive pause/resume (31-11) and cross-surface transfer (31-13).
+  - [x] 5-4. Registry note (31-16): register `/computer` via `CommandDescriptor` if 31-16 has landed. Otherwise, wire a temporary fast-command shim with a TODO for registry migration. Treat `/computer` as a **policy/diagnostics** command family, not the imperative execution layer itself.
+  - [x] 5-5. Progress integration (31-14): computer-use tasks emit phase updates like "opening browser", "filling form", "waiting for download", "switching to file dialog", "verification failed; retrying"
+  - [x] 5-6. Approval integration: reuse 31-14's `required_clarification` / checkpoint model for sensitive/destructive/system actions. Surface-native buttons should be preferred; `/computer approve <request-id>` is only the text fallback. Pending approvals must survive pause/resume (31-11) and cross-surface transfer (31-13).
   - [x] 5-7. `ComputerUseLeaseManager`: **v1 simple guard** — one active input-control session per host/process by default. Read-only observation may run concurrently, but mouse/keyboard actions from scheduled/background tasks are denied unless the host is idle and explicitly granted. Follow-on slice: cross-process / richer lease coordination if concurrent local runtimes become common.
 
 - [x] 6. **Safety, approvals, and audit trail**
@@ -115,16 +115,16 @@ This avoids the two bad extremes:
     - `sensitive_input`: confirmation unless session override exists
     - `destructive` / `system_level`: always confirm unless user explicitly opted in
   - [x] 6-3. Audit log: persist timestamped action records with app/window/domain, action type, target class, and verification result. **V1:** minimal redacted local log only. Never persist typed secret values, raw OCR text, or user-visible screenshot paths for sensitive actions; store only redacted metadata (length/hash/classification). Richer audit/history UX is follow-on.
-  - [ ] 6-4. Foreground-only rule by default: no background clicking/typing into hidden windows unless explicitly enabled
-  - [ ] 6-5. Abort/fail-safe: global stop path if repeated verification failures occur or the active window no longer matches the expected target
-  - [ ] 6-6. File safety: define `allowed_download_dirs`, `allowed_upload_roots`, overwrite confirmation rules, no-auto-open defaults, and TTL cleanup for screenshots, temp crops, and downloads
+  - [x] 6-4. Foreground-only rule by default: no background clicking/typing into hidden windows unless explicitly enabled
+  - [x] 6-5. Abort/fail-safe: global stop path if repeated verification failures occur or the active window no longer matches the expected target
+  - [x] 6-6. File safety: define `allowed_download_dirs`, `allowed_upload_roots`, overwrite confirmation rules, no-auto-open defaults, and TTL cleanup for screenshots, temp crops, and downloads
 
 - [x] 7. **Tests and docs**
   - [x] 7-1. Unit tests: config matching, chunk/app/domain allowlist checks, action classification, approval policy, `ComputerUseController` browser→desktop fallback logic
   - [x] 7-2. Browser integration tests: mock Playwright backend for navigation, click, fill, download, multi-tab, and native-dialog handoff. Add explicit tests for "deny desktop click in browser content area on non-allowlisted domain" and "allow native dialog handoff tied to approved browser session."
   - [x] 7-3. Desktop integration tests: mocked desktop backend for observe/click/type/window focus; macOS manual smoke checklist for real backend
   - [x] 7-4. Safety tests: secret-field block, destructive action confirmation, wrong-window abort, domain denylist rejection, screenshot export blocked when `DAN_PII_PROTECTION=0`
-  - [ ] 7-5. Update architecture, `docs/commands.md`, `docs/llm-api-guide.md`, changelog. Touch `docs/cli.md` only if a new binary/flag is added.
+  - [x] 7-5. Update architecture, `docs/commands.md`, `docs/llm-api-guide.md`, changelog. Touch `docs/cli.md` only if a new binary/flag is added.
 
 ## Decisions
 

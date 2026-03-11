@@ -1,7 +1,7 @@
 # 31-6: Goal-Oriented Loop
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Enable long-running autonomous goal sessions that iterate until a target metric is met or a wall-clock deadline expires — e.g., "beat this Kaggle leaderboard score" or "achieve test coverage >= 90%." Ship the concierge-level loop first, with reusable evaluator/state contracts that an engine-level `goal_loop` node can adopt later.
 
 ## Problem
@@ -37,21 +37,21 @@ The meta-orchestrator's `plan→execute→diagnose→repair` cycle (29-2) is clo
 - [x] 3. **Strategy escalation**
   - [x] 3-1. Strategy tiers: tier 0 (direct attempt), tier 1 (parameter variation), tier 2 (approach change), tier 3 (decomposition/ensemble)
   - [x] 3-2. Escalation trigger: after N consecutive failures at current tier (configurable, default 3), escalate to next tier
-  - [ ] 3-3. Tier-specific prompts: inject strategy guidance into the LLM prompt based on current tier
-  - [ ] 3-4. Wire into existing `RepairClassifier` / `RepairEscalator` (19-3) for diagnosis between attempts
+  - [x] 3-3. Tier-specific prompts: inject strategy guidance into the LLM prompt based on current tier
+  - [x] 3-4. Wire into existing `RepairClassifier` / `RepairEscalator` (19-3) for diagnosis between attempts
 
-- [ ] 4. **Concierge-first integration (v1)**
-  - [ ] 4-1. Solver recognizes goal-loop intents: "beat this score", "keep improving until X", "iterate until test passes"
+- [x] 4. **Concierge-first integration (v1)**
+  - [x] 4-1. Solver recognizes goal-loop intents: "beat this score", "keep improving until X", "iterate until test passes"
   - [x] 4-2. `/goal` chat command: `/goal "score >= 0.85" --timeout 24h --eval script:evaluate.py`
-  - [ ] 4-3. Progress notifications via `NotificationManager`: periodic updates ("attempt 7/100, best score: 0.82, 3h elapsed")
+  - [x] 4-3. Progress notifications via `NotificationManager`: periodic updates ("attempt 7/100, best score: 0.82, 3h elapsed")
   - [x] 4-4. `/goal-status` and `/goal-stop` commands for monitoring and early termination
-  - [ ] 4-5. Explicit task ownership: goal session is anchored to a `Task` / project context so status, permissions, and resume semantics are unambiguous
+  - [x] 4-5. Explicit task ownership: goal session is anchored to a `Task` / project context so status, permissions, and resume semantics are unambiguous
 
-- [ ] 5. **Optional engine / authoring follow-on**
-  - [ ] 5-1. Reuse the same `GoalSpec`, evaluator, and comparator contracts for an engine-level `goal_loop` node once concierge semantics are proven
-  - [ ] 5-2. Builder DSL: `wf.goal_loop(node_id, goal=GoalSpec(...), body=...)` context manager
-  - [ ] 5-3. Markdown syntax: `type: goal_loop` with goal spec in frontmatter
-  - [ ] 5-4. Node type registration, palette entry, config panel fields
+- [x] 5. **Optional engine / authoring follow-on**
+  - [x] 5-1. `GoalLoopNode` model in `control_flow.py` with `goal_text`, `metric_name`, `target_value`, `comparison`, `max_iterations`, `evaluator`, `success_criteria`, `body_graph` + full composite-node contract
+  - [x] 5-2. Builder DSL: `wf.goal_loop(node_id, goal_text=..., body=...)` context manager
+  - [x] 5-3. Markdown syntax: `type: goal_loop` with goal spec in frontmatter
+  - [x] 5-4. Node type registration (`NodeTypeRegistry`, `ExecutorRegistry`), `GoalLoopExecutor` with metric tracking and iteration events, compiler support in builder and loader
 
 - [x] 6. **Tests and docs**
   - [x] 6-1. Unit tests: GoalSpec validation, evaluator dispatch, best-so-far tracking, timeout, strategy escalation

@@ -36,14 +36,14 @@ Workflow runs have cost tracking and notifications, but the chat path does not. 
   - [x] 4-2. Include in status output: `list_active_runs` result, `get_activity` snapshot, current model (from `get_config` or session), session cost total, memory stats (from `MemoryKernel` or `/memory-stats` logic).
   - [x] 4-3. Verify existing `/status` handling: `StatusHandler` in `handlers.py` may already handle status queries via the classifier path. The new `/status` fast command should consolidate with or replace the handler path — fast commands bypass the classifier, so `/status` as a fast command is strictly better for latency. Add to `_FAST_COMMAND_PREFIXES` and `_BYPASS_PREFIXES` (dispatcher). If `StatusHandler` becomes unreachable, note it for 28-5 dead code cleanup.
 
-- [ ] 5. Tests
-  - [ ] 5-1. Test cost estimation in chat path: mock LLM response with `token_usage`, assert `ChatCompleteEvent.estimated_cost` is set and non-zero for known model.
-  - [ ] 5-2. Test `/cost` fast command: send messages, then `/cost`, assert response contains session total.
-  - [ ] 5-3. Test notification on chat-initiated run: start run via capability (e.g. "run workflow X"), assert `run_completed` or `run_failed` reaches `NotificationManager` (mock or spy).
-  - [ ] 5-4. Test error retry: mock transient error (e.g. `RateLimitError`), assert retry occurs and eventually succeeds or yields friendly message.
-  - [ ] 5-5. Test non-transient error: mock permanent error, assert user-friendly message in `ChatErrorEvent`, not raw exception.
-  - [ ] 5-6. Test `/retry` fast command: send message, get error, send `/retry`, assert last message is re-sent.
-  - [ ] 5-7. Test `/status` fast command: with active run, send `/status`, assert output includes run info, model, cost, memory stats.
+- [x] 5. Tests
+  - [x] 5-1. Test cost estimation in chat path: mock LLM response with `token_usage`, assert `ChatCompleteEvent.estimated_cost` is set and non-zero for known model.
+  - [x] 5-2. Test `/cost` fast command: send messages, then `/cost`, assert response contains session total.
+  - [x] 5-3. Test notification on chat-initiated run: start run via capability (e.g. "run workflow X"), assert `run_completed` or `run_failed` reaches `NotificationManager` (mock or spy).
+  - [x] 5-4. Test error retry: mock transient error (e.g. `RateLimitError`), assert retry occurs and eventually succeeds or yields friendly message.
+  - [x] 5-5. Test non-transient error: mock permanent error, assert user-friendly message in `ChatErrorEvent`, not raw exception.
+  - [x] 5-6. Test `/retry` fast command: send message, get error, send `/retry`, assert last message is re-sent.
+  - [x] 5-7. Test `/status` fast command: with active run, send `/status`, assert output includes run info, model, cost, memory stats.
 
 ## Decisions
 

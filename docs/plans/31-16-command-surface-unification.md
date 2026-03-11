@@ -1,7 +1,7 @@
 # 31-16: Command Surface Unification
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Create one canonical command model for DAN across CLI binaries, REPL, chat, and messaging surfaces — a single registry that drives dispatch, help text, availability checks, and docs. Eliminate the current fragmentation where command metadata is scattered across runtime code, adapter translation tables, Telegram menus, and docs/cli.md.
 
 ## Problem
@@ -18,37 +18,37 @@ The result: users can't discover which commands work on their current surface, a
 
 ## Tasks
 
-- [ ] 1. **Command taxonomy**
-  - [ ] 1-1. Define 4 command kinds: `binary` (shell entry points like `dan-serve`), `repl` (REPL-only like `/run`, `/show`, `/undo`), `chat` (slash commands handled by concierge — work on all surfaces), `adapter_local` (handled by the adapter before server dispatch, like `/find`, `/send`)
-  - [ ] 1-2. For each existing command, classify its kind, supported surfaces, arguments, state requirements (e.g., requires active workflow, requires server, requires daemon), and handler owner
-  - [ ] 1-3. Produce a canonical command inventory as a structured data file (Python module or JSON) that becomes the single source of truth
+- [x] 1. **Command taxonomy**
+  - [x] 1-1. Define 4 command kinds: `binary` (shell entry points like `dan-serve`), `repl` (REPL-only like `/run`, `/show`, `/undo`), `chat` (slash commands handled by concierge — work on all surfaces), `adapter_local` (handled by the adapter before server dispatch, like `/find`, `/send`)
+  - [x] 1-2. For each existing command, classify its kind, supported surfaces, arguments, state requirements (e.g., requires active workflow, requires server, requires daemon), and handler owner
+  - [x] 1-3. Produce a canonical command inventory as a structured data file (Python module or JSON) that becomes the single source of truth
 
-- [ ] 2. **CommandRegistry**
-  - [ ] 2-1. `CommandDescriptor` model: `name: str`, `aliases: list[str]`, `kind: Literal["binary", "repl", "chat", "adapter_local"]`, `surfaces: list[str]` (cli, editor, telegram, whatsapp, whatsapp-web, email, all), `args_schema: str | None` (brief arg syntax like `<name>`, `<id> [--force]`), `help_text: str`, `examples: list[str]`, `handler: str` (dotted path to callable, e.g. `"dan.server.concierge.runtime.Concierge._handle_model_command"`), `requires: list[str]` (e.g., "active_workflow", "server", "daemon", "pii_enabled"), `group: str` (e.g., "workflow", "memory", "model", "scheduling", "safety", "status", "learning"), `subcommands: dict[str, SubcommandDescriptor] | None` (for commands like `/schedule add|list|remove`, `/pii add|list|remove|clear-session`, `/mcp install|list|remove|tools`), `hidden: bool = False` (suppress from `/help` and `set_my_commands` — for internal pseudo-commands like preference confirmation words), `is_async: bool = True` (whether the handler is a coroutine — default async; dispatch awaits accordingly)
-  - [ ] 2-1b. `SubcommandDescriptor` model: `name: str`, `args_schema: str | None`, `help_text: str`, `handler: str | None` (if None, parent handler dispatches internally based on subcommand name). Parent command's `handler` is called when no subcommand matches.
-  - [ ] 2-2. `CommandRegistry` — singleton loaded at startup. Provides: `get(name) -> CommandDescriptor | None`, `list_by_kind(kind)`, `list_by_surface(surface)`, `list_by_group(group)`, `is_available(name, surface, state) -> bool`
-  - [ ] 2-3. Populate registry with all existing commands (binary, REPL, chat, adapter_local) from the taxonomy in task 1
-  - [ ] 2-4. Replace `_FAST_COMMAND_PREFIXES` tuple in `runtime.py` with `registry.list_by_kind("chat")` — no more manual prefix maintenance
+- [x] 2. **CommandRegistry**
+  - [x] 2-1. `CommandDescriptor` model: `name: str`, `aliases: list[str]`, `kind: Literal["binary", "repl", "chat", "adapter_local"]`, `surfaces: list[str]` (cli, editor, telegram, whatsapp, whatsapp-web, email, all), `args_schema: str | None` (brief arg syntax like `<name>`, `<id> [--force]`), `help_text: str`, `examples: list[str]`, `handler: str` (dotted path to callable, e.g. `"dan.server.concierge.runtime.Concierge._handle_model_command"`), `requires: list[str]` (e.g., "active_workflow", "server", "daemon", "pii_enabled"), `group: str` (e.g., "workflow", "memory", "model", "scheduling", "safety", "status", "learning"), `subcommands: dict[str, SubcommandDescriptor] | None` (for commands like `/schedule add|list|remove`, `/pii add|list|remove|clear-session`, `/mcp install|list|remove|tools`), `hidden: bool = False` (suppress from `/help` and `set_my_commands` — for internal pseudo-commands like preference confirmation words), `is_async: bool = True` (whether the handler is a coroutine — default async; dispatch awaits accordingly)
+  - [x] 2-1b. `SubcommandDescriptor` model: `name: str`, `args_schema: str | None`, `help_text: str`, `handler: str | None` (if None, parent handler dispatches internally based on subcommand name). Parent command's `handler` is called when no subcommand matches.
+  - [x] 2-2. `CommandRegistry` — singleton loaded at startup. Provides: `get(name) -> CommandDescriptor | None`, `list_by_kind(kind)`, `list_by_surface(surface)`, `list_by_group(group)`, `is_available(name, surface, state) -> bool`
+  - [x] 2-3. Populate registry with all existing commands (binary, REPL, chat, adapter_local) from the taxonomy in task 1
+  - [x] 2-4. Replace `_FAST_COMMAND_PREFIXES` tuple in `runtime.py` with `registry.list_by_kind("chat")` — no more manual prefix maintenance
 
-- [ ] 3. **Concierge dispatch integration**
-  - [ ] 3-1. `_is_fast_command()` checks registry instead of hardcoded tuple
-  - [ ] 3-2. `_try_fast_command()` dispatches via registry handler lookup instead of a chain of if/elif blocks. Each handler is a callable registered in the descriptor (or discovered by module path).
-  - [ ] 3-3. New commands from 31-6+ just register a `CommandDescriptor` — no manual wiring in `_try_fast_command()` needed
-  - [ ] 3-4. Keep backward compat: existing commands work identically; only the dispatch path changes
+- [x] 3. **Concierge dispatch integration**
+  - [x] 3-1. `_is_fast_command()` checks registry instead of hardcoded tuple
+  - [x] 3-2. `_try_fast_command()` dispatches via registry handler lookup instead of a chain of if/elif blocks. Each handler is a callable registered in the descriptor (or discovered by module path).
+  - [x] 3-3. New commands from 31-6+ just register a `CommandDescriptor` — no manual wiring in `_try_fast_command()` needed
+  - [x] 3-4. Keep backward compat: existing commands work identically; only the dispatch path changes
 
-- [ ] 4. **Adapter surface integration**
-  - [ ] 4-1. Replace the handwritten `_translate_slash_command()` dict in `cli/adapter.py` with registry lookup: if command is `adapter_local`, handle locally; if command is `chat`, forward to server; if command is unknown, forward to server (concierge handles unknowns gracefully)
-  - [ ] 4-2. Generate `/help` response from `registry.list_by_surface(current_surface)` filtered by `hidden=False` so help text is always complete and current. Support filtered help: `/help memory`, `/help scheduling` shows only that group.
-  - [ ] 4-3. Generate Telegram `set_my_commands()` list from `registry.list_by_surface("telegram")` filtered by `hidden=False` — bot command menu stays in sync automatically. UX note: Telegram menus work best with 10-12 commands; if more are available, pick the top-priority commands for the menu and make the rest discoverable via `/help`.
-  - [ ] 4-4. Generate WhatsApp-compatible help text from registry (plain text, no buttons)
+- [x] 4. **Adapter surface integration**
+  - [x] 4-1. Replace the handwritten `_translate_slash_command()` dict in `cli/adapter.py` with registry lookup: if command is `adapter_local`, handle locally; if command is `chat`, forward to server; if command is unknown, forward to server (concierge handles unknowns gracefully)
+  - [x] 4-2. Generate `/help` response from `registry.list_by_surface(current_surface)` filtered by `hidden=False` so help text is always complete and current. Support filtered help: `/help memory`, `/help scheduling` shows only that group.
+  - [x] 4-3. Generate Telegram `set_my_commands()` list from `registry.list_by_surface("telegram")` filtered by `hidden=False` — bot command menu stays in sync automatically. UX note: Telegram menus work best with 10-12 commands; if more are available, pick the top-priority commands for the menu and make the rest discoverable via `/help`.
+  - [x] 4-4. Generate WhatsApp-compatible help text from registry (plain text, no buttons)
 
-- [ ] 5. **REPL integration**
-  - [ ] 5-1. `dan-chat` REPL `/help` output derived from `registry.list_by_kind("repl") + registry.list_by_kind("chat")` for the CLI surface
-  - [ ] 5-2. Tab-completion candidates derived from registry command names + aliases
-  - [ ] 5-3. Command not-found message: if user types an unknown `/command`, suggest the closest match from registry (Levenshtein distance or prefix match)
+- [x] 5. **REPL integration**
+  - [x] 5-1. `dan-chat` REPL `/help` output derived from `registry.list_by_kind("repl") + registry.list_by_kind("chat")` for the CLI surface
+  - [x] 5-2. Tab-completion candidates derived from registry command names + aliases
+  - [x] 5-3. Command not-found message: if user types an unknown `/command`, suggest the closest match from registry (Levenshtein distance or prefix match)
 
-- [ ] 6. **Centered command docs**
-  - [ ] 6-1. New `docs/commands.md` — the canonical command reference, organized by group:
+- [x] 6. **Centered command docs**
+  - [x] 6-1. New `docs/commands.md` — the canonical command reference, organized by group:
     - **Workflow** (`/run`, `/run-node`, `/run-subgraph`, `/show`, `/save`, `/saveas`, `/list`, `/open`, `/new`, `/rename`, `/undo`)
     - **Model & Config** (`/model`, `/cost`, `/status`, `/retry`)
     - **Memory** (`/memory-stats`, `/memory-search`, `/memory-delete`, `/memory-forget`, `/memory-confirm`, `/memory-reject`)
@@ -62,21 +62,21 @@ The result: users can't discover which commands work on their current surface, a
     - **File & Navigation** (`/find`, `/send`, `/cancel`) — adapter-local commands
     - **Session** (`/help`, `/exit`) — cross-surface or REPL-only
     Note: `set_config` / `get_config` are LLM-invokable capability tools, not slash commands — they belong in `docs/llm-api-guide.md`, not here. `/save` appears once under Workflow (not duplicated in Integration).
-  - [ ] 6-2. Each command entry: name, aliases, surfaces where available (icons or badges), arguments, description, example, related commands
-  - [ ] 6-3. Surface availability matrix at the top: which command groups work on which surfaces
-  - [ ] 6-4. `docs/cli.md` stays as the binary reference (dan-serve, dan-chat, dan-run, etc.) but links to `docs/commands.md` for slash/REPL commands instead of duplicating them
-  - [ ] 6-5. Generation script: `scripts/generate_command_docs.py` reads the registry and produces `docs/commands.md` so docs can never drift from the registry. Run it in CI; manual editing of generated sections is discouraged.
+  - [x] 6-2. Each command entry: name, aliases, surfaces where available (icons or badges), arguments, description, example, related commands
+  - [x] 6-3. Surface availability matrix at the top: which command groups work on which surfaces
+  - [x] 6-4. `docs/cli.md` stays as the binary reference (dan-serve, dan-chat, dan-run, etc.) but links to `docs/commands.md` for slash/REPL commands instead of duplicating them
+  - [x] 6-5. Generation script: `scripts/generate_command_docs.py` reads the registry and produces `docs/commands.md` so docs can never drift from the registry. Run it in CI; manual editing of generated sections is discouraged.
 
-- [ ] 7. **Future command registration contract**
-  - [ ] 7-1. Document the "how to add a new command" contract: create a `CommandDescriptor`, register it in the module's `__init__` or a dedicated `commands.py`, and the registry auto-discovers it at startup
-  - [ ] 7-2. Add a startup health check: registry scans for commands whose `handler` dotted path can't be resolved (module import or attribute lookup failure) — log a warning
-  - [ ] 7-3. Add a CI/test check: `test_command_registry.py` that asserts every registered command has a handler, valid surfaces, and non-empty help text
+- [x] 7. **Future command registration contract**
+  - [x] 7-1. Document the "how to add a new command" contract: create a `CommandDescriptor`, register it in the module's `__init__` or a dedicated `commands.py`, and the registry auto-discovers it at startup
+  - [x] 7-2. Add a startup health check: registry scans for commands whose `handler` dotted path can't be resolved (module import or attribute lookup failure) — log a warning
+  - [x] 7-3. Add a CI/test check: `test_command_registry.py` that asserts every registered command has a handler, valid surfaces, and non-empty help text
 
-- [ ] 8. **Tests and docs**
-  - [ ] 8-1. Unit tests: registry population, lookup by kind/surface/group, availability checks, unknown-command suggestions
-  - [ ] 8-2. Integration test: add a mock command descriptor, verify it appears in `/help` output, concierge dispatch, and adapter forwarding
-  - [ ] 8-3. Regression test: existing commands (`/model`, `/cost`, `/status`, `/retry`, `/memory-*`, `/mcp`) still dispatch correctly through registry path
-  - [ ] 8-4. Update architecture.md, changelog
+- [x] 8. **Tests and docs**
+  - [x] 8-1. Unit tests: registry population, lookup by kind/surface/group, availability checks, unknown-command suggestions
+  - [x] 8-2. Integration test: add a mock command descriptor, verify it appears in `/help` output, concierge dispatch, and adapter forwarding
+  - [x] 8-3. Regression test: existing commands (`/model`, `/cost`, `/status`, `/retry`, `/memory-*`, `/mcp`) still dispatch correctly through registry path
+  - [x] 8-4. Update architecture.md, changelog
 
 ## Decisions
 

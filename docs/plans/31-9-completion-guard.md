@@ -1,7 +1,7 @@
 # 31-9: Completion Guard
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Validate that DAN has addressed every requirement in the user's message before sending the final response — no silent omissions.
 
 ## Problem
@@ -28,9 +28,9 @@ The #1 frustration with LLM agents is partial completion: the user asks for 5 th
     - `follow_up`: for missed `action` / `deliverable` requirements — return follow-up message with missed items for re-entry through solver pipeline
   - [x] 3-3. Anti-loop: max 1 auto-fix attempt (`_MAX_AUTO_FIX_ATTEMPTS = 1`); if still incomplete after retry, pass through as-is
 
-- [ ] 4. **Concierge wiring**
-  - [ ] 4-1. Hook into `Concierge._process_inner()` — after all tool calls and execution steps complete but before yielding the final text event. Note: this should be part of a `ResponsePostProcessor` pipeline alongside PII detokenization (31-10) and unsourced claims checking (25-12).
-  - [ ] 4-2. Skip for fast commands, simple greetings, and follow-up messages (only check on initial substantive responses)
+- [x] 4. **Concierge wiring**
+  - [x] 4-1. Hook into `Concierge._post_process_response()` — after all tool calls and execution steps complete but before yielding the final text event. Short responses (< 50 chars) skip the guard. Exception-safe with logged failures.
+  - [x] 4-2. Skip for `/` commands, simple greetings (`_GREETING_TOKENS`), follow-up phrases (`_FOLLOW_UP_PHRASES`: confirm, go ahead, do it, proceed, continue, sounds good, etc.), clarification answers, resume context, numeric selections, and short responses (< 50 chars)
   - [x] 4-3. Persist `CompletionReport` for analytics: track completion rate over time (`CompletionStats`)
   - [x] 4-4. `/completion` command: show completion stats (total checks, pass rate, common miss patterns)
 
