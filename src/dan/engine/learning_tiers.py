@@ -27,14 +27,25 @@ _TIER_FEATURES: dict[int, set[str]] = {
     0: {
         "memory", "post_run_learning", "reuse_scoring",
         "preference_evolution", "memory_extraction",
+        # 31-22: tier 0 observe features
+        "parameter_outcome_tracking", "prompt_effectiveness_logging",
+        "pattern_accumulation", "retrieval_correlation_tracking",
     },
     1: {
         "topology_suggestions", "model_recommendations",
         "prompt_variant_proposals", "domain_learning", "domain_validation",
+        # 31-22: tier 1 advise features
+        "threshold_proposal", "prompt_variant_proposal",
+        "intent_discovery_proposal", "domain_discovery_proposal",
+        "model_tier_proposal",
     },
     2: {
         "ab_prompt_promotion", "skill_refinement",
         "auto_adaptation", "domain_template_upgrade",
+        # 31-22: tier 2 auto-apply features
+        "threshold_calibration", "prompt_selection", "prompt_rewrite",
+        "intent_auto_promotion", "domain_auto_discovery",
+        "model_tier_auto_tuning",
     },
 }
 
@@ -48,6 +59,15 @@ _FEATURE_ENV_OVERRIDES: dict[str, str] = {
     "domain_learning": "DAN_DOMAIN_LEARNING",
     "domain_validation": "DAN_DOMAIN_VALIDATION",
     "domain_template_upgrade": "DAN_DOMAIN_TEMPLATE_UPGRADE",
+    # 31-22 additions
+    "parameter_outcome_tracking": "DAN_PARAM_TRACKING",
+    "threshold_proposal": "DAN_THRESHOLD_PROPOSAL",
+    "threshold_calibration": "DAN_THRESHOLD_CALIBRATION",
+    "prompt_variant_proposal": "DAN_PROMPT_PROPOSAL",
+    "prompt_selection": "DAN_PROMPT_SELECTION",
+    "intent_discovery_proposal": "DAN_INTENT_DISCOVERY",
+    "domain_discovery_proposal": "DAN_DOMAIN_DISCOVERY",
+    "model_tier_proposal": "DAN_MODEL_TIER_PROPOSAL",
 }
 
 
@@ -112,6 +132,97 @@ def features_enabled_at_tier(tier: int | None = None) -> set[str]:
     return base
 
 
+# ---------------------------------------------------------------------------
+# Safety Invariants
+# ---------------------------------------------------------------------------
+
+SAFETY_INVARIANTS: dict[str, Any] = {
+    "max_calibration_step_pct": 0.20,
+    "regression_detection_threshold": 0.15,
+    "min_measurement_window": 10,
+    "max_measurement_window": 20,
+    "max_domain_keyword_expansion": 3,
+    "taxonomy_additions_only": True,
+    "domain_additions_only": True,
+    "prompt_tier1_append_only": True,
+}
+
+
+def check_safety_invariants(proposed_change: dict) -> tuple[bool, str]:
+    """Validate a proposed self-modification against hard safety bounds.
+
+    Returns ``(True, "")`` if the change respects all invariants,
+    or ``(False, reason)`` if any invariant is violated.
+    """
+    step_pct = proposed_change.get("step_pct")
+    if step_pct is not None and step_pct > SAFETY_INVARIANTS["max_calibration_step_pct"]:
+        return False, (
+            f"step_pct {step_pct} exceeds max_calibration_step_pct "
+            f"({SAFETY_INVARIANTS['max_calibration_step_pct']})"
+        )
+
+    category = proposed_change.get("category", "")
+    is_removal = proposed_change.get("is_removal", False)
+    if is_removal and category in ("taxonomy", "domain"):
+        return False, (
+            f"Removals are not allowed for category '{category}' — "
+            f"{'taxonomy' if category == 'taxonomy' else 'domain'}_additions_only is enforced"
+        )
+
+    is_structural_rewrite = proposed_change.get("is_structural_rewrite", False)
+    tier = proposed_change.get("tier", 0)
+    if is_structural_rewrite and tier < 2:
+        return False, (
+            f"Structural prompt rewrites require tier 2 (current tier: {tier}) — "
+            f"prompt_tier1_append_only is enforced"
+        )
+
+    measurement_window = proposed_change.get("measurement_window")
+    if measurement_window is not None:
+        min_w = SAFETY_INVARIANTS["min_measurement_window"]
+        max_w = SAFETY_INVARIANTS["max_measurement_window"]
+        if measurement_window < min_w or measurement_window > max_w:
+            return False, (
+                f"measurement_window {measurement_window} outside allowed range "
+                f"[{min_w}, {max_w}]"
+            )
+
+    keyword_expansion_count = proposed_change.get("keyword_expansion_count")
+    if keyword_expansion_count is not None:
+        max_kw = SAFETY_INVARIANTS["max_domain_keyword_expansion"]
+        if keyword_expansion_count > max_kw:
+            return False, (
+                f"keyword_expansion_count {keyword_expansion_count} exceeds "
+                f"max_domain_keyword_expansion ({max_kw})"
+            )
+
+    return True, ""
+
+
+def validate_adaptation_safety(candidate: Any, tier: int) -> tuple[bool, str]:
+    """Validate an AdaptationCandidate against safety invariants.
+
+    Extracts relevant fields from the candidate and delegates to
+    ``check_safety_invariants``.  Uses ``Any`` type to avoid circular
+    imports with the adaptation registry.
+    """
+    proposed: dict[str, Any] = {"tier": tier}
+
+    for attr in (
+        "step_pct", "is_removal", "category",
+        "is_structural_rewrite", "measurement_window",
+        "keyword_expansion_count",
+    ):
+        if hasattr(candidate, attr):
+            proposed[attr] = getattr(candidate, attr)
+
+    if isinstance(candidate, dict):
+        proposed.update(candidate)
+        proposed["tier"] = tier
+
+    return check_safety_invariants(proposed)
+
+
 def check_tier_promotion_gates(
     health_counters: "LearningHealthCounters",
     model_recommender_precision: float | None = None,
@@ -166,6 +277,63 @@ def check_tier_promotion_gates(
     }
 
 
+def check_tier_1_to_2_promotion_gates(
+    health_counters: "LearningHealthCounters",
+    approved_proposals_with_positive_outcome: int = 0,
+    false_positive_adaptations_last_50: int = 0,
+    categories_with_sufficient_evidence: int = 0,
+) -> dict[str, bool | str]:
+    """Check whether gates for promoting tier 1 → 2 are met.
+
+    Returns a dict with each gate's pass/fail status plus a human-readable
+    summary.  This is a manual check function — it does NOT perform
+    automated promotion.
+
+    Gates:
+      (a) health counters >= 95% success over 100+ events
+      (b) at least 5 tier-1 proposals approved by user with net positive outcome
+      (c) no false-positive adaptations in last 50 interactions
+      (d) AdaptableParameterRegistry shows >= 3 parameter categories with
+          sufficient evidence
+    """
+    summary = health_counters.get_summary()
+    total_attempted = sum(c["attempted"] for c in summary.values())
+    total_succeeded = sum(c["succeeded"] for c in summary.values())
+    success_rate = total_succeeded / max(total_attempted, 1)
+
+    gate_a = total_attempted >= 100 and success_rate >= 0.95
+    gate_b = approved_proposals_with_positive_outcome >= 5
+    gate_c = false_positive_adaptations_last_50 == 0
+    gate_d = categories_with_sufficient_evidence >= 3
+
+    all_pass = gate_a and gate_b and gate_c and gate_d
+
+    lines = [
+        f"Gate A (health >= 95% on 100+ events): "
+        f"{'PASS' if gate_a else 'FAIL'} "
+        f"({success_rate:.1%} on {total_attempted} events)",
+        f"Gate B (>= 5 approved proposals with positive outcome): "
+        f"{'PASS' if gate_b else 'FAIL'} "
+        f"({approved_proposals_with_positive_outcome} approved)",
+        f"Gate C (no false-positive adaptations in last 50): "
+        f"{'PASS' if gate_c else 'FAIL'} "
+        f"({false_positive_adaptations_last_50} false positives)",
+        f"Gate D (>= 3 parameter categories with evidence): "
+        f"{'PASS' if gate_d else 'FAIL'} "
+        f"({categories_with_sufficient_evidence} categories)",
+        f"Overall: {'READY for tier 2 promotion' if all_pass else 'NOT ready — fix failing gates'}",
+    ]
+
+    return {
+        "gate_a_health": gate_a,
+        "gate_b_approved_proposals": gate_b,
+        "gate_c_no_false_positives": gate_c,
+        "gate_d_parameter_evidence": gate_d,
+        "all_pass": all_pass,
+        "summary": "\n".join(lines),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Health Counters
 # ---------------------------------------------------------------------------
@@ -177,6 +345,7 @@ _LEARNING_PATHS = [
     "model_tracking",
     "topology_tracking",
     "skill_tracking",
+    "behavior_calibration",  # 31-22
 ]
 
 OutcomeKind = Literal["success", "skip", "fail"]

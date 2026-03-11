@@ -43,6 +43,9 @@ class CorrectionRecord(BaseModel):
     actions: list[dict] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+    # 31-22 task 4-3: prompt-scoped correction attribution
+    active_prompt_key: str | None = None
+
 
 # ---------------------------------------------------------------------------
 # Pattern tables

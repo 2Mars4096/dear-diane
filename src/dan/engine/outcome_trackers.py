@@ -27,7 +27,7 @@ import os
 import random
 import time
 from collections import Counter, defaultdict
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -51,6 +51,21 @@ _ENV_TOPOLOGY_LEARNING = "DAN_TOPOLOGY_LEARNING"
 
 def _is_enabled(env_var: str) -> bool:
     return os.environ.get(env_var, "0") == "1"
+
+
+# ---------------------------------------------------------------------------
+# Tier 0 evidence features (31-22 §4-7)
+# Documents which learning_tiers features are tier-0 (passive evidence
+# collection).  These are already registered in _TIER_FEATURES[0] in
+# learning_tiers.py — this constant exists for cross-module documentation.
+# ---------------------------------------------------------------------------
+
+TIER_0_EVIDENCE_FEATURES = frozenset({
+    "parameter_outcome_tracking",
+    "prompt_effectiveness_logging",
+    "pattern_accumulation",
+    "retrieval_correlation_tracking",
+})
 
 
 # ===================================================================
@@ -125,7 +140,11 @@ class PromptTracker:
     """Record (node_id, prompt_hash, input_summary, output_summary, outcome,
     tokens, latency) per LLM execution.
 
-    Only applies to workflow LLM nodes, not chat system prompts.
+    Supports two scopes:
+      - ``"workflow"`` (default): tracks workflow node prompts, keyed by node_id.
+      - ``"system"``: tracks DAN's own system prompts, keyed by BehaviorStore
+        prompt key (e.g. ``prompts/classifier.classification_system``).
+
     Gated by ``DAN_PROMPT_OPTIMIZATION=1``.
     """
 
@@ -150,6 +169,7 @@ class PromptTracker:
         quality_score: float | None = None,
         retry_count: int = 0,
         schema_valid_first_try: bool = True,
+        scope: Literal["workflow", "system"] = "workflow",
     ) -> MemoryItem | None:
         if not _is_enabled(_ENV_PROMPT_OPT):
             return None
@@ -157,18 +177,28 @@ class PromptTracker:
         if quality_score is None:
             quality_score = compute_node_quality(outcome, retry_count, schema_valid_first_try)
 
-        content = (
-            f"Prompt execution for node {node_id}: "
-            f"outcome={'success' if outcome else 'failure'}, "
-            f"quality={quality_score:.2f}, "
-            f"tokens={tokens_used}, latency={latency_ms:.0f}ms"
-        )
+        if scope == "system":
+            content = (
+                f"System prompt outcome for {node_id}: "
+                f"outcome={'success' if outcome else 'failure'}, "
+                f"quality={quality_score:.2f}"
+            )
+            tags = [f"{self.TAG_PREFIX}:system", f"prompt_key:{node_id}"]
+        else:
+            content = (
+                f"Prompt execution for node {node_id}: "
+                f"outcome={'success' if outcome else 'failure'}, "
+                f"quality={quality_score:.2f}, "
+                f"tokens={tokens_used}, latency={latency_ms:.0f}ms"
+            )
+            tags = [self.TAG_PREFIX, f"node:{node_id}"]
+
         return self.memory_kernel.store(MemoryItem(
             content=content,
             memory_type=MemoryType.EPISODE,
             scope=MemoryScope.WORKFLOW,
             lifecycle=MemoryLifecycle.ACTIVE,
-            tags=[self.TAG_PREFIX, f"node:{node_id}"],
+            tags=tags,
             metadata={
                 "tracker": self.TAG_PREFIX,
                 "node_id": node_id,
@@ -181,6 +211,7 @@ class PromptTracker:
                 "schema_valid_first_try": schema_valid_first_try,
                 "tokens_used": tokens_used,
                 "latency_ms": latency_ms,
+                "scope": scope,
                 "recorded_at": time.time(),
             },
         ))
@@ -202,6 +233,152 @@ class PromptTracker:
                 if len(results) >= limit:
                     break
         return results
+
+    def record_system_prompt_outcome(
+        self,
+        prompt_key: str,
+        outcome: bool,
+        quality_score: float = 1.0,
+    ) -> MemoryItem | None:
+        """Record outcome for a system prompt (not workflow node)."""
+        if not _is_enabled(_ENV_PROMPT_OPT):
+            return None
+
+        content = (
+            f"System prompt outcome for {prompt_key}: "
+            f"outcome={'success' if outcome else 'failure'}, "
+            f"quality={quality_score:.2f}"
+        )
+        return self.memory_kernel.store(MemoryItem(
+            content=content,
+            memory_type=MemoryType.EPISODE,
+            scope=MemoryScope.WORKFLOW,
+            lifecycle=MemoryLifecycle.ACTIVE,
+            tags=[f"{self.TAG_PREFIX}:system", f"prompt_key:{prompt_key}"],
+            metadata={
+                "tracker": self.TAG_PREFIX,
+                "prompt_key": prompt_key,
+                "outcome": outcome,
+                "quality_score": quality_score,
+                "scope": "system",
+                "recorded_at": time.time(),
+            },
+        ))
+
+    def get_system_prompt_history(
+        self,
+        prompt_key: str,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Retrieve system-scope prompt tracking records."""
+        if not _is_enabled(_ENV_PROMPT_OPT):
+            return []
+
+        items = self.memory_kernel.list_by_type(
+            MemoryType.EPISODE, scope=MemoryScope.WORKFLOW, limit=500,
+        )
+        results: list[dict[str, Any]] = []
+        for item in items:
+            if (
+                item.metadata.get("tracker") == self.TAG_PREFIX
+                and item.metadata.get("scope") == "system"
+                and item.metadata.get("prompt_key") == prompt_key
+            ):
+                results.append(item.metadata)
+                if len(results) >= limit:
+                    break
+        return results
+
+    # -- 31-22 §6-4: tier-aware prompt variant proposals --------------------
+
+    def propose_prompt_variant(
+        self,
+        prompt_key: str,
+        adaptation_registry: Any = None,
+        min_negative_signals: int = 20,
+    ) -> dict | None:
+        """Propose a prompt variant when enough negative signals have accumulated.
+
+        Behaviour depends on the active learning tier:
+          - Tier 0 (logging only): returns info dict without creating a candidate.
+          - Tier 1 (``prompt_variant_proposal``): creates a pending
+            ``AdaptationCandidate`` in the registry.
+          - Tier 2 (``prompt_rewrite``): creates an auto-apply candidate.
+        """
+        from dan.engine.learning_tiers import is_feature_enabled
+
+        history = self.get_system_prompt_history(prompt_key, limit=500)
+        total_count = len(history)
+        negatives = [r for r in history if r.get("outcome") is False]
+        negative_count = len(negatives)
+
+        if negative_count < min_negative_signals:
+            return None
+
+        failure_rate = negative_count / max(total_count, 1)
+        sample_failures = negatives[:3]
+
+        result: dict[str, Any] = {
+            "prompt_key": prompt_key,
+            "negative_count": negative_count,
+            "total_count": total_count,
+            "failure_rate": failure_rate,
+            "proposal_id": None,
+        }
+
+        tier1 = is_feature_enabled("prompt_variant_proposal")
+        tier2 = is_feature_enabled("prompt_rewrite")
+
+        if tier1 or tier2:
+            from dan.engine.adaptation_registry import AdaptationCandidate
+
+            candidate = AdaptationCandidate(
+                source="prompt_opt",
+                parameter_key=prompt_key,
+                description=(
+                    f"{negative_count}/{total_count} negative signals "
+                    f"(rate={failure_rate:.2f}). "
+                    f"Sample failures: {[s.get('output_summary', s.get('content', ''))[:80] for s in sample_failures]}"
+                ),
+                status="pending",
+                auto_apply=tier2,
+            )
+            if adaptation_registry is not None:
+                adaptation_registry.add(candidate)
+            result["proposal_id"] = candidate.id
+
+        return result
+
+    # -- 31-22 §6-5: regression detection for prompt variants ---------------
+
+    def check_prompt_regression(
+        self,
+        prompt_key: str,
+        baseline_failure_rate: float,
+        window_size: int = 20,
+        regression_threshold: float = 0.15,
+    ) -> dict | None:
+        """Detect regression by comparing recent failure rate against a baseline.
+
+        Returns a regression report dict when the current failure rate exceeds
+        ``baseline_failure_rate + regression_threshold``, otherwise ``None``.
+        """
+        history = self.get_system_prompt_history(prompt_key, limit=window_size)
+        if not history:
+            return None
+
+        failures = sum(1 for r in history if r.get("outcome") is False)
+        current_failure_rate = failures / len(history)
+
+        if current_failure_rate > baseline_failure_rate + regression_threshold:
+            return {
+                "prompt_key": prompt_key,
+                "baseline_failure_rate": baseline_failure_rate,
+                "current_failure_rate": current_failure_rate,
+                "delta": current_failure_rate - baseline_failure_rate,
+                "regression_detected": True,
+            }
+        return None
 
 
 # ===================================================================
