@@ -51,6 +51,8 @@ After 20 phases of infrastructure, the platform is deep but rough around the edg
 | 31-15 | [Learning & Evolution Optimization](31-15-learning-evolution-optimization.md) | Tiered learning activation, upgraded quality signals, correction memory loop, learning health visibility, unified adaptation governance, storage backend abstraction, planning-time calibration | 3-4d |
 | 31-16 | [Command Surface Unification](31-16-command-surface-unification.md) | Canonical command registry, unified dispatch, surface-aware `/help`, centered `docs/commands.md`, adapter/REPL integration | 2-3d |
 | 31-17 | [Computer Control & Browser Automation](31-17-computer-control-and-browser-automation.md) | Narrow v1: Playwright-first browser automation, browser-owned native-dialog handoff, minimal macOS desktop fallback, and safety-first policy | 5-7d |
+| 31-20 | [Unified Telemetry & Analytics](31-20-unified-telemetry.md) | Single TelemetryEvent model + SQLite store for chat turns, workflow nodes, guard checks, tool calls. Per-turn timing, project-level cost rollup, `/analytics` command, JSONL/CSV export | 2-3d |
+| 31-21 | [Proactive Domain Learning](31-21-proactive-domain-learning.md) | Domain detection, post-task reflection, extraction templates, correction-to-domain bridge, pre-task expertise injection, domain-aware validation, template evolution, success pattern generalization | 3-4d |
 
 Order: 31-1 through 31-5 completed. For 31-6 through 31-17:
 - **Foundation (land first):** 31-16 (command registry) — **must** land before any plan introducing new commands. If that's not practical, those plans include fallback wiring instructions with an explicit TODO for registry migration.

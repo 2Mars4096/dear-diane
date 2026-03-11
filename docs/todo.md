@@ -369,6 +369,19 @@
   - [x] [31-15-learning-evolution-optimization](plans/31-15-learning-evolution-optimization.md) — O. Tiered learning, correction memory, adaptation governance *(complete: 130 tests — all 8 task groups done: tier activation with promotion gates + env overrides, node-level quality signals, correction→memory wiring, /status learning section, type-indexed MemoryKernel, planning calibration wiring)*
   - [x] [31-16-command-surface-unification](plans/31-16-command-surface-unification.md) — P. Canonical command registry, unified dispatch, `/help` *(complete: registry-driven adapter routing, REPL tab-completion, unknown-command suggestions, WhatsApp plain-text help, health check, command-doc generation, 94 tests)*
   - [x] [31-17-computer-control-and-browser-automation](plans/31-17-computer-control-and-browser-automation.md) — Q. Browser automation, desktop control, safety-first approvals *(policy/config/runtime-command core landed; chat capability/controller exposure remains in the Phase 21 live-wiring follow-up slice)*
+  - [ ] [31-21-proactive-domain-learning](plans/31-21-proactive-domain-learning.md) — R. Domain detection, post-task domain reflection, extraction templates, correction-to-domain bridge, pre-task expertise injection, domain-aware validation, template evolution (meta-learning), success pattern generalization
+
+## Phase 22 — Workflow Generation Quality Evaluation
+> Measure how well DAN generates and executes workflows from natural language. Establish
+> baseline numbers on success rate, token cost, latency, and failure modes across a difficulty
+> spectrum. Manual pilot first, then automated battery, then targeted fixes.
+
+- [ ] [32-generation-quality-eval](plans/32-generation-quality-eval.md) — workflow generation quality evaluation: dual-lane measurement, durability, analysis
+  - [ ] [32-1-manual-pilot](plans/32-1-manual-pilot.md) — A. 10 prompts through live system (`agent` vs `build`), rough baseline
+  - [ ] [32-2-test-harness](plans/32-2-test-harness.md) — B. Automated runner, audit reader, JSONL logging, metrics, report
+  - [ ] [32-3-small-task-battery](plans/32-3-small-task-battery.md) — C. Small-task battery (patterns, composition, edge cases, reuse/adapt smoke tests)
+  - [ ] [32-4-complex-workflow-battery](plans/32-4-complex-workflow-battery.md) — D. Complex workflows, multi-turn refinement, durability smoke checks
+  - [ ] [32-5-analysis-and-fixes](plans/32-5-analysis-and-fixes.md) — E. Failure triage, telemetry gaps, top fixes, re-measure
 
 ## Benchmark Suite — Prove Long-Tail Advantage
 > Empirically prove DAN's typed-graph architecture outperforms monolithic agents on complex, multi-step tasks. Published academic benchmarks + custom long-tail scenarios. Analysis framework built first.
@@ -387,6 +400,12 @@
 ### strengthen workflow to make it more powerful and easier to use
 - [x] **IDE-compatible skill store** — `SkillStore` scans `~/.dan/skills/` (user) + `.dan/skills/` (project) + legacy `DAN_CUSTOM_SKILLS_DIR` for `SKILL.md` files. Frontmatter superset of Cursor/Claude/Codex format. `/skill list|info|import|scan` commands. 48 tests.
 - [x] ~~**Next deferred cleanup slice — Phase 21 live-wiring follow-ups**~~ — goal loop execution wiring (`GoalLoopExecutor` now spawns from `/goal`, tier-specific prompts, RepairClassifier inter-attempt diagnosis, intent recognition), proactive follow-up trigger emission (run-completion and schedule-result triggers wired in app.py, surface routing via PresenceTracker, per-task opt-out), progressive response pipeline (instant acknowledgment before LLM prep, phase transitions on capability execution, heartbeat enhancement), computer-use capability tools (7 browser + 5 desktop tools registered as chat capabilities, observe-act-verify loop, foreground-only enforcement, abort/fail-safe), and centered command reference (`docs/commands.md` + generation script)
+- [ ] **Optimize workflow generation quality** — improve the NL→workflow pipeline end-to-end so generated workflows are more powerful and easier to use out of the box. Key areas:
+  - **Smarter template selection** — expand the intent compiler's template catalog beyond common patterns; auto-detect domain (research, quant, data pipeline, content) and select best-fit skeleton.
+  - **Richer default wiring** — generated workflows should include validation gates, retry policies, and feedback loops by default where appropriate, not just linear chains.
+  - **One-shot usability** — generated workflows should run successfully on first attempt more often; tighten the codegen→validate→smoke-test loop, improve error messages when they don't.
+  - **Progressive complexity** — start simple but make it easy to layer on power (add a review loop, fan out, plug in tools) via NL follow-ups without regenerating from scratch.
+  - **Domain-specific generation profiles** — pre-configured generation settings for common domains (academic research, equity analysis, data ETL, content pipelines) with domain-appropriate tools, models, and structure.
 
 ### Infrastructure / CI
 - [ ] **Playwright E2E browser tests** (12-6 tasks 5-6) — mode transitions, mention autocomplete, stop generation, export. Requires Playwright setup + CI pipeline.
@@ -496,6 +515,8 @@
 ### Safety & guardrails
 - [x] **Completion guard** — ~~pre-delivery validation~~ → completed in [31-9](plans/31-9-completion-guard.md) (response pipeline wiring, skip conditions)
 - [x] **PII / sensitive data tokenization** — ~~user-defined sensitive word list~~ → completed in [31-10](plans/31-10-pii-tokenization.md) (ContextVar, code-block skip, edge cases)
+- [x] [31-19-request-guard-pipeline](plans/31-19-request-guard-pipeline.md) — **Request Guard Pipeline**: inter-step guards (classification coherence, understanding coherence, response relevance), entity grounding (scan messages against ProjectStore to recognize known projects/tasks), system-prompt clarification rules, loop composition (understand → execute → verify phases). Fixes misinterpretation errors where DAN acts on wrong assumptions instead of asking.
+- [x] [31-20-unified-telemetry](plans/31-20-unified-telemetry.md) — **Unified Telemetry & Analytics**: single `TelemetryEvent` model + SQLite-backed `TelemetryStore` for all chat turns, workflow nodes, guard checks, classifications, tool calls. Per-turn timing, project-level cost rollup, cross-session analytics. `/analytics` command with grouping (model/surface/day/project) and JSONL/CSV export.
 - [ ] **Cost hard limits** — `max_cost` per workflow run and per concierge session. Budget enforcer intervenes before each LLM call: downgrade model / skip optional step / checkpoint and ask user. Composes with TierPolicy and model_policy cascade.
 
 ### Workflow engine robustness (long-tail tasks)
@@ -515,6 +536,8 @@
 - [x] **Telegram project tracing** — compact `[Project]` header in all Telegram replies (converted from `[DAN - Project]`), combined with `reply_to_message_id` threading. `_format_for_telegram()` replaces `_strip_prefix_and_html()`.
 - [x] **Adaptive progress frequency** — exponential backoff for Telegram progress updates (10s → 20s → 30s → ... → max 5min). Configurable via `DAN_TELEGRAM_PROGRESS_MAX_INTERVAL` and `DAN_TELEGRAM_PROGRESS_BACKOFF`. Sends new message instead of editing when conversation has moved on.
 - [x] **Classifier: project-status intent fix** — "project review", "project progress", "how's the project going" now correctly route to `STATUS_CHECK` instead of `CONVERSATION`/`FILE_REQUEST`. Context-aware heuristic distinguishes DAN project queries from external topic queries ("Panama canal expansion project status"). Prevents eager file sends on status questions.
+- [x] **Project-scoped memory (31-18)** — Memories stored during a project conversation are tagged with `project_id` and `scope=PROJECT`. Retrieval filters by active project, keeping `USER`/`GLOBAL` items visible everywhere. Enables per-project file paths, style rules, and domain conventions that don't bleed across projects.
+- [x] **`/project` command** — Explicit project management via `/project list|info|set|memory|delete`. Replaces context-based project-status classifier heuristic. No more false-positive file sends on "any updates on the kaggle project".
 
 ### Adapter abstraction & custom frontend
 > Today WhatsApp, Telegram, CLI, and the editor each carry their own rendering/routing logic. Extract a shared adapter interface so adding a new surface is minimal wiring. Then build a dedicated DAN web frontend (beyond the workflow editor) for managing bots, runs, projects, memory, and schedules in one place.
