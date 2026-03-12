@@ -231,11 +231,12 @@ class ConcurrentDispatcher:
         try:
             async for event in self._concierge.process(msg):
                 await target.put(event)
-        except Exception:
+        except Exception as exc:
             logger.exception("Concierge.process() failed")
+            error_kind = type(exc).__name__
             await target.put(ChatCompleteEvent(
                 message_id=uuid.uuid4().hex[:12],
-                content="An internal error occurred while processing your message.",
+                content=f"An error occurred ({error_kind}). Please try again or check server logs.",
                 token_usage={},
                 context_window=0,
                 graph_revision="",
@@ -257,11 +258,12 @@ class ConcurrentDispatcher:
             try:
                 async for event in self._concierge.process(queued_msg):
                     await bus.put(event)
-            except Exception:
+            except Exception as exc:
                 logger.exception("Failed processing queued message for project %s", project_id)
+                error_kind = type(exc).__name__
                 await bus.put(ChatCompleteEvent(
                     message_id=uuid.uuid4().hex[:12],
-                    content="An internal error occurred while processing a queued message.",
+                    content=f"An error occurred ({error_kind}). Please try again.",
                     token_usage={},
                     context_window=0,
                     graph_revision="",
@@ -318,11 +320,12 @@ class ConcurrentDispatcher:
         try:
             async for event in self._concierge.process(msg):
                 await bus.put(event)
-        except Exception:
+        except Exception as exc:
             logger.exception("Failed processing overflow message for project %s", project_id)
+            error_kind = type(exc).__name__
             await bus.put(ChatCompleteEvent(
                 message_id=uuid.uuid4().hex[:12],
-                content="An internal error occurred.",
+                content=f"An error occurred ({error_kind}). Please try again.",
                 token_usage={},
                 context_window=0,
                 graph_revision="",

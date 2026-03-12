@@ -24,7 +24,7 @@ from dan.server.capability_handlers import (
 from dan.server.chat_manager import ChatStreamEvent
 
 from .classifier import ClassificationResult, IntentCategory, search_local_files
-from .classifier import _looks_like_direct_web_lookup
+from .classifier import _looks_like_complex_direct_task, _looks_like_direct_web_lookup
 from .context_resolver import ResolvedContext
 from .identity import format_prefix
 from .models import SurfaceMessage
@@ -76,7 +76,13 @@ class HandlerRegistry:
         self._handlers[intent] = handler
 
     def get(self, intent: IntentCategory) -> Handler:
-        return self._handlers[intent]
+        handler = self._handlers.get(intent)
+        if handler is None:
+            logger.warning("No handler for intent %s, falling back to CONVERSATION", intent)
+            handler = self._handlers.get(IntentCategory.CONVERSATION)
+        if handler is None:
+            raise KeyError(f"No handler registered for intent {intent!r} and no fallback available")
+        return handler
 
 
 def _workflow_id_from(msg: SurfaceMessage, context: ResolvedContext) -> str:
@@ -754,17 +760,29 @@ class DirectTaskHandler:
         context: ResolvedContext,
         classification: ClassificationResult,
     ) -> HandlerResult:
+        cleaned = msg.text.lower().strip()
+        is_complex_direct_task = _looks_like_complex_direct_task(cleaned)
+        task_mode = "agent" if is_complex_direct_task else "conversation"
+        extra_instructions = _chat_system_instructions(msg)
+        if is_complex_direct_task:
+            extra_instructions = (
+                f"{extra_instructions}\n\n"
+                "This is a complex direct task, not a workflow-editing request. "
+                "Do not propose or apply graph mutations. Use capability tools to research, "
+                "read, and write the requested artifact, then summarize progress/results clearly."
+            ).strip()
         events = self.chat_manager.send_message_with_tools(
             workflow_id=_workflow_id_from(msg, context),
             message=msg.text,
             history=_message_history(msg, context),
             thread_id=str(msg.metadata.get("thread_id") or "") or None,
             client_graph_revision=msg.metadata.get("client_graph_revision"),
-            mode="conversation",
+            mode=task_mode,
             cancel_event=msg.metadata.get("cancel_event"),
             debug_context=str(msg.metadata.get("debug_context") or ""),
             prompt_context=_build_prompt_from_package(msg, context),
             mentions=msg.metadata.get("mentions") or [],
+            allow_mutation_tool=not is_complex_direct_task,
             surface=msg.surface,
             audit_metadata={
                 "project_id": context.project.project_id,
@@ -772,7 +790,7 @@ class DirectTaskHandler:
                 "intent": classification.intent.value,
                 "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
             },
-            extra_system_instructions=_chat_system_instructions(msg),
+            extra_system_instructions=extra_instructions,
         )
         return HandlerResult(events=events)
 

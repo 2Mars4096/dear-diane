@@ -176,6 +176,55 @@ _FILE_RETRIEVAL_START_RE = re.compile(
 )
 
 
+_COMPLEX_TASK_SCOPE_TERMS = (
+    "comprehensive",
+    "detailed",
+    "in-depth",
+    "thorough",
+    "complete",
+    "full ",
+    "long-form",
+)
+
+_COMPLEX_TASK_RESEARCH_TERMS = (
+    "cite",
+    "citation",
+    "citations",
+    "reference",
+    "references",
+    "bibliography",
+    "figure",
+    "figures",
+    "search online",
+    "searching online",
+    "download",
+    "gather",
+    "collect",
+    "source",
+    "sources",
+)
+
+
+def _looks_like_complex_direct_task(clean: str) -> bool:
+    """True for larger research/write tasks that should avoid quick-task routing.
+
+    These requests are still ``DIRECT_TASK`` overall, but they need the fuller
+    agent lane instead of the concierge's cheap non-build fast path.
+    """
+    if not clean or _FILE_RETRIEVAL_START_RE.search(clean):
+        return False
+    has_artifact_request = bool(
+        _CREATIVE_VERBS_RE.search(clean) and _OUTPUT_NOUNS_RE.search(clean)
+    )
+    if not has_artifact_request:
+        return False
+    has_scope_cue = any(term in clean for term in _COMPLEX_TASK_SCOPE_TERMS)
+    has_research_cue = any(term in clean for term in _COMPLEX_TASK_RESEARCH_TERMS)
+    has_format_cue = bool(_FORMAT_SPEC_RE.search(clean))
+    has_multi_step_cue = bool(_MULTI_ACTION_RE.search(clean))
+    return has_scope_cue or has_research_cue or has_format_cue or has_multi_step_cue
+
+
 def _looks_like_path_scoped_task(clean: str, *, has_path: bool) -> bool:
     """Return True when a filesystem path is context for a task, not a file lookup target.
 
@@ -294,10 +343,11 @@ def search_local_files(query: str, search_dirs: list[Path], *, limit: int = 10) 
 
 def _has_filesystem_path(text: str) -> bool:
     """Return True if the text contains something that looks like a filesystem path."""
+    stripped = re.sub(r"https?://[^\s]+", "", text)
     return bool(re.search(
         r"(?:~|/)[A-Za-z0-9._~/-]+/[A-Za-z0-9._~-]+"
         r"|[A-Za-z][A-Za-z0-9._-]*/[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+",
-        text,
+        stripped,
     ))
 
 
