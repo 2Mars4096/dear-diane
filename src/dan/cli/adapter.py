@@ -777,7 +777,16 @@ def _build_whatsapp_web_parser(sub: Any) -> None:
     p = sub.add_parser("whatsapp-web", help="Start WhatsApp Web adapter (personal QR pairing)")
     _add_common_args(p)
     p.add_argument("--db-path", default="", help="SQLite DB path for session (default: ~/.dan/whatsapp-web/session.sqlite3)")
-    p.add_argument("--allowed-jids", nargs="*", default=[], help="Restrict to these phone JIDs (e.g. 1234567890)")
+    p.add_argument(
+        "--allowed-jids",
+        nargs="*",
+        default=[],
+        help=(
+            "Exact phone numbers/JIDs allowed for WhatsApp Web "
+            "(blocks inbound + outbound to others; e.g. 1234567890 or "
+            "1234567890@s.whatsapp.net)"
+        ),
+    )
     p.set_defaults(adapter_type="whatsapp-web")
 
 

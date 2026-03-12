@@ -68,6 +68,12 @@ class WhatsAppWebAdapter:
 
     def __init__(self, config: WhatsAppWebAdapterConfig) -> None:
         self.config = config
+        self._allowed_jid_tokens = {
+            token
+            for jid in config.allowed_jids
+            for token in self._allowlist_tokens(jid)
+            if token
+        }
         self._client: Any = None
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._last_progress: dict[str, float] = {}
@@ -274,6 +280,9 @@ class WhatsAppWebAdapter:
         path = Path(file_path)
         if not path.exists():
             return {"ok": False, "error": f"File not found: {file_path}"}
+        if not self._is_allowed(jid):
+            logger.warning("Blocked WhatsApp file send to disallowed jid %s", jid)
+            return {"ok": False, "error": f"Recipient not allowed: {jid}"}
 
         file_type = self._classify_file(path)
         ok, warning = self._check_file_size(path, file_type)
@@ -462,6 +471,9 @@ class WhatsAppWebAdapter:
             sender_jid = self._jid_to_str(source.Sender)
             chat_jid = self._jid_to_str(source.Chat)
 
+            if not self._is_allowed(chat_jid):
+                return
+
             msg = event.Message
             text = ""
             attachment_path: str | None = None
@@ -571,9 +583,6 @@ class WhatsAppWebAdapter:
                 if self._is_recent_outbound_echo(chat_jid, text):
                     return
 
-            if not self._is_allowed(sender_jid):
-                return
-
             external_id = chat_jid
 
             sid = self._session_map.get(external_id)
@@ -592,9 +601,37 @@ class WhatsAppWebAdapter:
     # -- internal helpers ---------------------------------------------------
 
     def _is_allowed(self, jid: str) -> bool:
-        if not self.config.allowed_jids:
+        if not self._allowed_jid_tokens:
             return True
-        return any(allowed in jid for allowed in self.config.allowed_jids)
+        return any(
+            token in self._allowed_jid_tokens
+            for token in self._allowlist_tokens(jid)
+        )
+
+    @staticmethod
+    def _allowlist_tokens(jid: str) -> tuple[str, str]:
+        """Return up to two canonical tokens for allowlist matching.
+
+        Only ``s.whatsapp.net`` JIDs (the phone-number namespace) produce a
+        bare-number token so that ``123@lid`` or ``123@g.us`` never match an
+        allowlist entry of ``123`` or ``123@s.whatsapp.net``.
+        """
+        normalized = (jid or "").strip().lower()
+        if not normalized:
+            return ("", "")
+        if "@" not in normalized:
+            user = normalized.split(":", 1)[0]
+            full = f"{user}@s.whatsapp.net" if user else ""
+            return (full, user)
+
+        user, server = normalized.split("@", 1)
+        if server == "s.whatsapp.net":
+            user = user.split(":", 1)[0]
+            full = f"{user}@{server}" if user else ""
+            return (full, user)
+
+        full = f"{user}@{server}" if user else ""
+        return (full, "")
 
     def register_session(self, session_id: str, jid: str) -> None:
         self._session_map[jid] = session_id
@@ -677,6 +714,9 @@ class WhatsAppWebAdapter:
         """
         if self._client is None:
             return
+        if not self._is_allowed(jid):
+            logger.warning("Blocked WhatsApp fallback send to disallowed jid %s", jid)
+            return
         try:
             recipient = self._resolve_recipient(jid)
             self._record_outbound_message(jid, text)
@@ -687,6 +727,9 @@ class WhatsAppWebAdapter:
     async def _send_text(self, jid: str, text: str) -> None:
         if self._client is None:
             logger.error("_send_text called but client is None")
+            return
+        if not self._is_allowed(jid):
+            logger.warning("Blocked WhatsApp send to disallowed jid %s", jid)
             return
         try:
             from neonize.utils import build_jid  # noqa: F401 — ensure available
