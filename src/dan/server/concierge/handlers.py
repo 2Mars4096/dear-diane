@@ -110,6 +110,70 @@ def _message_history(msg: SurfaceMessage, context: ResolvedContext) -> list[dict
     return trimmed_request or project_history
 
 
+def _surface_identity_instructions(msg: SurfaceMessage) -> str:
+    surface_context = msg.metadata.get("surface_context")
+    if not isinstance(surface_context, dict):
+        return ""
+
+    identity = surface_context.get("identity")
+    lines: list[str] = []
+
+    if isinstance(identity, dict):
+        lines.append("## Surface identity")
+        name = str(identity.get("name") or "").strip()
+        username = str(identity.get("username") or "").strip()
+        personality = str(identity.get("personality") or "").strip()
+        role = str(identity.get("role") or "").strip()
+        project_focus = identity.get("project_focus") or []
+
+        if name and username:
+            lines.append(f"- Reply as bot `{name}` (`@{username}`)")
+        elif name:
+            lines.append(f"- Reply as bot `{name}`")
+
+        if role:
+            lines.append(f"- Surface role: {role}")
+
+        if personality:
+            lines.append(f"- Keep the persona aligned with: {personality}")
+
+        focus_items = [str(item).strip() for item in project_focus if str(item).strip()]
+        if focus_items:
+            lines.append(f"- Primary project focus: {', '.join(focus_items[:5])}")
+
+    peers = surface_context.get("peers") or []
+    peer_labels: list[str] = []
+    for peer in peers[:5]:
+        if not isinstance(peer, dict):
+            continue
+        peer_name = str(peer.get("name") or "").strip()
+        peer_username = str(peer.get("username") or "").strip()
+        if peer_name and peer_username:
+            peer_labels.append(f"{peer_name} (@{peer_username})")
+        elif peer_name:
+            peer_labels.append(peer_name)
+    if peer_labels:
+        if not lines:
+            lines.append("## Surface identity")
+        lines.append(
+            "- Other bots on this surface: "
+            + ", ".join(peer_labels)
+            + ". Mention them only when routing context matters."
+        )
+
+    adapter_instructions = str(surface_context.get("adapter_instructions") or "").strip()
+    if adapter_instructions:
+        lines.append("## Surface delivery instructions")
+        lines.append(adapter_instructions)
+
+    return "\n".join(lines) if lines else ""
+
+
+def _chat_system_instructions(msg: SurfaceMessage, *extra_blocks: str) -> str:
+    blocks = [_surface_identity_instructions(msg), *extra_blocks]
+    return "\n\n".join(block.strip() for block in blocks if block and block.strip())
+
+
 def _project_prompt_context(context: ResolvedContext) -> str:
     return (
         f"Current project: {context.project.label}. Summary: {context.project.summary or '(none)'}\n"
@@ -653,7 +717,10 @@ class FileHandler:
             prompt_context=_build_prompt_from_package(msg, context),
             mentions=msg.metadata.get("mentions") or [],
             surface=msg.surface,
-            extra_system_instructions=_INLINE_DOCUMENT_SYSTEM_INSTRUCTIONS,
+            extra_system_instructions=_chat_system_instructions(
+                msg,
+                _INLINE_DOCUMENT_SYSTEM_INSTRUCTIONS,
+            ),
         )
         return HandlerResult(events=events)
 
@@ -705,6 +772,7 @@ class DirectTaskHandler:
                 "intent": classification.intent.value,
                 "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
             },
+            extra_system_instructions=_chat_system_instructions(msg),
         )
         return HandlerResult(events=events)
 
@@ -904,6 +972,7 @@ class ExperienceHandler:
                     "intent": classification.intent.value,
                     "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
                 },
+                extra_system_instructions=_chat_system_instructions(msg),
             )
             return HandlerResult(events=events)
         return HandlerResult(content=result.message)
@@ -963,6 +1032,7 @@ class ConversationHandler:
                 "intent": classification.intent.value,
                 "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
             },
+            extra_system_instructions=_chat_system_instructions(msg),
         )
         return HandlerResult(events=events)
 
@@ -1006,6 +1076,7 @@ class WorkflowBuildHandler:
                 "intent": classification.intent.value,
                 "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
             },
+            extra_system_instructions=_chat_system_instructions(msg),
         )
         return HandlerResult(
             events=events,

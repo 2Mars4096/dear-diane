@@ -306,6 +306,32 @@ def guard_understanding(ctx: GuardContext) -> GuardResult:
 # Guard 3: response relevance
 # ---------------------------------------------------------------------------
 
+_RECOVERY_OFFER_PHRASES = (
+    "would you like me to", "shall i search", "can i search", "can i look up",
+    "would you like", "or continue with", "want me to search", "search for",
+)
+
+
+def _response_offers_recovery(response: str) -> bool:
+    """True if the response offers to correct course (search, clarify, choose)."""
+    r = response.lower()
+    return any(p in r for p in _RECOVERY_OFFER_PHRASES)
+
+
+def _entity_mentioned_in_response(
+    response_lower: str, matched_projects: list[Project]
+) -> bool:
+    """True if response addresses any matched project (full label or significant words)."""
+    for p in matched_projects:
+        label_lower = p.label.lower()
+        if label_lower in response_lower:
+            return True
+        # Multi-word labels: any significant word (e.g. "ondas" from "Kaggle ONDAS")
+        for word in re.findall(r"[a-z]{3,}", label_lower):
+            if word in response_lower:
+                return True
+    return False
+
 
 def guard_response_relevance(ctx: GuardContext) -> GuardResult:
     if not _GUARD_PIPELINE_ENABLED or not _GUARD_RELEVANCE_ENABLED:
@@ -313,37 +339,59 @@ def guard_response_relevance(ctx: GuardContext) -> GuardResult:
     if ctx.response_content is None or len(ctx.response_content) < 50:
         return GuardResult(passed=True)
 
+    response_lower = ctx.response_content.lower()
+
+    # If response offers to correct course (search, clarify, choose), treat as passed.
+    # Appending "I may have misunderstood" would be redundant and confusing.
+    if _response_offers_recovery(ctx.response_content):
+        return GuardResult(passed=True)
+
     user_words = _extract_content_words(ctx.message.text)
     response_words = _extract_content_words(ctx.response_content)
 
-    flagged = False
+    topic_fail = False
+    entity_fail = False
     notes: list[str] = []
 
     if len(user_words) >= 3 and response_words:
         overlap = len(user_words & response_words)
         fraction = overlap / len(user_words)
         if fraction < 0.25:
-            flagged = True
+            topic_fail = True
             notes.append(f"topic match {fraction:.2f} below 0.25")
 
     if ctx.entity_ctx.matched_projects:
-        response_lower = ctx.response_content.lower()
-        entity_mentioned = any(
-            p.label.lower() in response_lower for p in ctx.entity_ctx.matched_projects
+        entity_mentioned = _entity_mentioned_in_response(
+            response_lower, ctx.entity_ctx.matched_projects
         )
         if not entity_mentioned:
-            flagged = True
+            entity_fail = True
             notes.append("matched project entities absent from response")
 
-    if flagged:
-        note = "I may have misunderstood your question."
+    if not topic_fail and not entity_fail:
+        return GuardResult(passed=True)
+
+    # Tiered note: avoid harsh "I may have misunderstood" when only one dimension fails.
+    if entity_fail and not topic_fail:
+        # Topic overlap ok but entity absent — project hint only, no self-undermining.
+        note = ""
         if ctx.entity_ctx.matched_projects:
             labels = ", ".join(p.label for p in ctx.entity_ctx.matched_projects[:2])
             first_label = ctx.entity_ctx.matched_projects[0].label
-            note += (
-                f" Did you mean to ask about your {labels} project?"
+            note = (
+                f"Did you mean to ask about your {labels} project?"
                 f" Try `/project info {first_label}`."
             )
+        return GuardResult(
+            passed=False,
+            action="proceed",
+            notes=notes,
+            short_circuit_response=note if note else None,
+        )
+
+    if topic_fail and not entity_fail:
+        # Entity present but topic overlap low — softer note, avoid repeating "misunderstood".
+        note = "Want me to focus on the main topic of your question?"
         return GuardResult(
             passed=False,
             action="proceed",
@@ -351,4 +399,18 @@ def guard_response_relevance(ctx: GuardContext) -> GuardResult:
             short_circuit_response=note,
         )
 
-    return GuardResult(passed=True)
+    # Both fail — full note with project hint when applicable.
+    note = "I may have misunderstood your question."
+    if ctx.entity_ctx.matched_projects:
+        labels = ", ".join(p.label for p in ctx.entity_ctx.matched_projects[:2])
+        first_label = ctx.entity_ctx.matched_projects[0].label
+        note += (
+            f" Did you mean to ask about your {labels} project?"
+            f" Try `/project info {first_label}`."
+        )
+    return GuardResult(
+        passed=False,
+        action="proceed",
+        notes=notes,
+        short_circuit_response=note,
+    )

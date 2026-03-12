@@ -146,6 +146,94 @@ def _looks_like_direct_web_lookup(clean: str) -> bool:
     return _looks_like_external_fact_query(clean)
 
 
+_CREATIVE_VERBS_RE = re.compile(
+    r"\b(write|create|generate|build|draft|compose|prepare|produce|compile|render|develop|design|make)\b"
+)
+
+_OUTPUT_NOUNS_RE = re.compile(
+    r"\b(report|paper|document|thesis|manuscript|presentation|analysis|article|essay|brief"
+    r"|memo|plan|proposal|guide|manual|chapter|book|newsletter|whitepaper|script|code"
+    r"|program|website|app|tool|dashboard|chart|table|diagram|slide|deck|template|outline"
+    r"|bibliography|survey|overview|assessment|evaluation|forecast|strategy|framework"
+    r"|specification|specification|portfolio|brochure|flyer|infographic|readme)\b"
+)
+
+_FORMAT_SPEC_RE = re.compile(
+    r"\b(?:in|as|using|into|to)\s+(?:tex|latex|markdown|md|pdf|html|docx|word|powerpoint|pptx|csv|json|beamer)\b"
+)
+
+_MULTI_ACTION_RE = re.compile(
+    r"\b(?:download|search|scrape|fetch|gather|collect|cite|reference|browse|crawl)\b"
+    r".*\b(?:and|then|also)\b"
+)
+
+_HELP_ME_TASK_RE = re.compile(
+    r"\bhelp\s+me\b.*\b(?:write|create|generate|build|draft|make|prepare|produce|do|finish|complete|start)\b"
+)
+
+_FILE_RETRIEVAL_START_RE = re.compile(
+    r"^(?:find|locate|search for|look for|where is|send me|get me|open|read)\b"
+)
+
+
+def _looks_like_path_scoped_task(clean: str, *, has_path: bool) -> bool:
+    """Return True when a filesystem path is context for a task, not a file lookup target.
+
+    Catches messages like "help me write a report in /path" or
+    "/path — generate a comprehensive analysis in tex" that should
+    route to DIRECT_TASK instead of FILE_REQUEST.
+    """
+    if not has_path:
+        return False
+
+    # Strong task signals: override any retrieval-word coincidences
+    if _HELP_ME_TASK_RE.search(clean):
+        return True
+    if _FORMAT_SPEC_RE.search(clean):
+        return True
+    if _MULTI_ACTION_RE.search(clean):
+        return True
+
+    # File-retrieval starts: if the sentence leads with a retrieval verb, it's a lookup
+    if _FILE_RETRIEVAL_START_RE.match(clean):
+        return False
+
+    # Strip filesystem paths so verb-like words in filenames (e.g. "draft.pdf")
+    # don't falsely trigger creative-verb detection.
+    text_sans_paths = re.sub(
+        r"(?:~|/)[A-Za-z0-9._~/-]+", " ", clean,
+    ).strip()
+
+    # Pure file-review actions without any creative verb → file lookup
+    if any(
+        phrase in clean
+        for phrase in ("summary of", "summarize", "review", "read ", "analyze", "open ")
+    ):
+        if not _CREATIVE_VERBS_RE.search(text_sans_paths):
+            return False
+
+    # Create/write + folder/directory
+    if re.search(r"\b(create|make|mkdir|set up)\b.*\b(folder|directory)\b", clean):
+        return True
+    # Creative verb + output noun (write a report, generate an analysis, etc.)
+    if _CREATIVE_VERBS_RE.search(text_sans_paths) and _OUTPUT_NOUNS_RE.search(text_sans_paths):
+        return True
+    # Creative verb + explicit file type keyword
+    if re.search(
+        r"\b(create|make|write|save|render|generate|draft|prepare|produce|compile)\b.*"
+        r"\b(tex file|latex file|pdf file|markdown file|file)\b",
+        clean,
+    ):
+        return True
+    # Starts with create/write/save + path
+    if re.search(
+        r"^(create|write|save)\s+(?:~|/|[A-Za-z][A-Za-z0-9._-]*/)[A-Za-z0-9._~/-]+",
+        clean,
+    ):
+        return True
+    return False
+
+
 def _score_file_match(query_norm: str, query_tokens: list[str], path: Path) -> float:
     filename_norm = _normalize_search_text(path.name)
     if not filename_norm:
@@ -260,13 +348,6 @@ def classify_intent(
             raw_text=text,
         )
 
-    if has_path:
-        return ClassificationResult(
-            intent=IntentCategory.FILE_REQUEST,
-            confidence=0.9,
-            raw_text=text,
-        )
-
     if any(phrase in clean for phrase in _STATUS_PHRASES):
         return ClassificationResult(intent=IntentCategory.STATUS_CHECK, confidence=0.95, raw_text=text)
 
@@ -313,6 +394,20 @@ def classify_intent(
         )
     ):
         return ClassificationResult(intent=IntentCategory.WORKFLOW_BUILD, confidence=0.9, raw_text=text)
+
+    if _looks_like_path_scoped_task(clean, has_path=has_path):
+        return ClassificationResult(
+            intent=IntentCategory.DIRECT_TASK,
+            confidence=0.9,
+            raw_text=text,
+        )
+
+    if has_path:
+        return ClassificationResult(
+            intent=IntentCategory.FILE_REQUEST,
+            confidence=0.65,
+            raw_text=text,
+        )
 
     file_prefixes = (
         "send me the ",

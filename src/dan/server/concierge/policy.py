@@ -71,6 +71,13 @@ _MESSAGING_SURFACES = {"telegram", "whatsapp", "whatsapp-web", "email"}
 _SIMPLE_MUTATION_KEYWORDS = ("add", "edit", "modify", "change", "update", "rename", "move", "remove")
 
 
+def _surface_kind(surface: str) -> str:
+    key = (surface or "").strip().lower()
+    if ":" in key:
+        key = key.split(":", 1)[0]
+    return key
+
+
 def estimate_action_cost(
     intent: IntentCategory, text: str, context: Any = None,
 ) -> float:
@@ -119,7 +126,7 @@ def resolve_policy(
     if estimated_cost > cost_confirm_threshold:
         action = ActionPolicy.CONFIRM
 
-    if surface in _MESSAGING_SURFACES and intent in _MUTATION_INTENTS:
+    if _surface_kind(surface) in _MESSAGING_SURFACES and intent in _MUTATION_INTENTS:
         action = ActionPolicy.CONFIRM
 
     return action, execution

@@ -430,6 +430,17 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
     ))
 
     # -- Build commands ----------------------------------------------------
+    # 32-7 §4-4: /build forces workflow-build mode (reusable artifact)
+    registry.register(CommandDescriptor(
+        name="/build",
+        aliases=["/workflow"],
+        kind="chat",
+        surfaces=["all"],
+        args_schema="<goal>",
+        help_text="Force workflow-build mode for the current task (creates a reusable artifact)",
+        examples=["/build Research X and summarize Y", "/build Create a data pipeline"],
+        group="workflow",
+    ))
     registry.register(CommandDescriptor(
         name="/build-status",
         kind="chat",

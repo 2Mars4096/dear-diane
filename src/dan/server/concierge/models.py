@@ -16,6 +16,9 @@ class SurfaceMessage(BaseModel):
     surface: str
     external_id: str
     text: str
+    surface_type: str = ""
+    surface_id: str = ""
+    session_id: str = ""
     attachments: list[str] = Field(default_factory=list)
     timestamp: datetime = Field(default_factory=_utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)

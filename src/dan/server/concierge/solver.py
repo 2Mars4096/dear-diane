@@ -217,7 +217,14 @@ class GoalResolver:
         if _needs_live_data(text) and mode == ExecutionMode.CONVERSATION_SYNTHESIS:
             mode = ExecutionMode.DIRECT_ACTION
         candidates = planning_ctx.get("workflow_candidates") or []
-        if candidates and mode in (ExecutionMode.DIRECT_ACTION, ExecutionMode.WORKFLOW_BUILD):
+        # 33-9 E.11: Don't override WORKFLOW_BUILD to WORKFLOW_REUSE when the
+        # classifier is confident the user wants a fresh build. This was
+        # causing the agent lane to intercept build requests with stale reuse.
+        _confident_build = (
+            classification.intent == IntentCategory.WORKFLOW_BUILD
+            and classification.confidence >= 0.7
+        )
+        if candidates and mode in (ExecutionMode.DIRECT_ACTION, ExecutionMode.WORKFLOW_BUILD) and not _confident_build:
             mode = ExecutionMode.WORKFLOW_REUSE
         return SolverDecision(
             user_goal=text,
