@@ -156,7 +156,7 @@ def _consume_chat_stream_events(
             continue
         evt_type = event.get("type", "")
         if evt_type == "chat_token":
-            token = event.get("token", "")
+            token = event.get("delta", event.get("token", ""))
             collected.append(token)
         elif evt_type == "chat_tool_call_start":
             last_tool_name = str(event.get("tool_name", "") or "").strip()
@@ -301,16 +301,12 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
         try:
             wf_id = await _ensure_scratch(shared_http, ext_id)
 
-            history = conversation_history.get(ext_id, [])
-            history.append({"role": "user", "content": txt})
+            history = list(conversation_history.get(ext_id, []))
+            user_turn = {"role": "user", "content": txt}
+            history.append(user_turn)
             if len(history) > 40:
                 history = history[-40:]
             conversation_history[ext_id] = history
-
-            history_with_context = [
-                {"role": "system", "content": _ADAPTER_CONTEXT},
-                *history,
-            ]
 
             if att_path and att_path.lower().endswith(".pdf"):
                 txt = f"Please review this PDF: {att_path}\n{txt}" if txt else f"Please review this PDF: {att_path}"
@@ -318,17 +314,39 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
             body: dict[str, Any] = {
                 "workflow_id": wf_id,
                 "message": txt,
-                "history": history_with_context,
+                "history": history,
                 "thread_id": str(ext_id),
                 "mode": "auto",
                 "surface": _surface_name_for_adapter_type(adapter_type),
+                "surface_context": {
+                    "identity": {
+                        "name": _bot,
+                        "role": "messaging_assistant",
+                        "personality": configured_personality or "",
+                        "project_focus": configured_projects or [],
+                    },
+                    "adapter_instructions": _ADAPTER_CONTEXT,
+                },
             }
             if att_path:
                 body["attachment_path"] = att_path
 
             resp = await shared_http.post("/api/chat/message", json=body)
             if resp.status_code != 200:
-                await adapter.send_prompt(ext_id, f"Error: {resp.text}", None)
+                if history and history[-1] == user_turn:
+                    history.pop()
+                    conversation_history[ext_id] = history
+                logger.warning(
+                    "Chat-mode request failed for %s: status=%s body=%s",
+                    ext_id,
+                    resp.status_code,
+                    resp.text,
+                )
+                await adapter.send_prompt(
+                    ext_id,
+                    "Sorry, something went wrong — please try again.",
+                    None,
+                )
                 return
 
             payload = resp.json()
@@ -348,23 +366,63 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
             try:
                 import websockets
                 ws_url = server_url.replace("http://", "ws://").replace("https://", "wss://")
-                url = f"{ws_url}/api/chat/{channel_id}/events"
-                logger.info("Connecting to WS: %s", url)
-                async with websockets.connect(url, ping_interval=None, ping_timeout=None) as ws:
-                    async for ws_msg in ws:
-                        event = json.loads(ws_msg)
-                        if isinstance(event, dict):
-                            evt_type = event.get("type", "")
-                            logger.info("WS event: %s", evt_type)
-                            stream_events.append(event)
-                        if (
-                            isinstance(event, dict)
-                            and event.get("type") == "chat_complete"
-                            and _is_progress_ack_event(event)
-                        ):
-                            continue
-                        if isinstance(event, dict) and event.get("type") in ("chat_complete", "chat_interrupted", "chat_error"):
+
+                progress_sent = False
+
+                async def _send_progress() -> None:
+                    nonlocal progress_sent
+                    await asyncio.sleep(5)
+                    if not progress_sent:
+                        progress_sent = True
+                        try:
+                            await adapter.send_prompt(ext_id, "\u23f3 Working on it...", None)
+                        except Exception:
+                            pass
+
+                progress_task = asyncio.create_task(_send_progress())
+
+                try:
+                    next_channel: str | None = channel_id
+                    seen_channels: set[str] = set()
+
+                    while next_channel:
+                        current_channel = next_channel
+                        next_channel = None
+                        if current_channel in seen_channels:
+                            logger.warning("Skipping repeated queued channel redirect")
                             break
+                        seen_channels.add(current_channel)
+                        url = f"{ws_url}/api/chat/{current_channel}/events"
+                        logger.info("Connecting to WS: %s", url)
+                        async with websockets.connect(url, ping_interval=None, ping_timeout=None) as ws:
+                            async for ws_msg in ws:
+                                event = json.loads(ws_msg)
+                                if isinstance(event, dict):
+                                    evt_type = event.get("type", "")
+                                    if evt_type == "chat_queued":
+                                        redirected = str(event.get("stream_channel_id") or "").strip()
+                                        if redirected and redirected not in seen_channels:
+                                            next_channel = redirected
+                                            break
+                                        continue
+                                    logger.info("WS event: %s", evt_type)
+                                    stream_events.append(event)
+                                if (
+                                    isinstance(event, dict)
+                                    and event.get("type") == "chat_complete"
+                                    and _is_progress_ack_event(event)
+                                ):
+                                    continue
+                                if isinstance(event, dict) and event.get("type") in ("chat_complete", "chat_interrupted", "chat_error"):
+                                    break
+                            else:
+                                break
+                finally:
+                    progress_task.cancel()
+                    try:
+                        await progress_task
+                    except asyncio.CancelledError:
+                        pass
                 logger.info("WS stream finished, %d events collected", len(stream_events))
             except ImportError:
                 logger.error("websockets not installed — cannot stream chat events")
@@ -432,6 +490,17 @@ async def _run_adapter_chat_mode(adapter: Any, config: Any, adapter_type: str = 
                         )
                     except Exception as exc:
                         logger.warning("Failed to send poll: %s", exc)
+                else:
+                    question = pr.get("question", "")
+                    options = pr.get("options", [])
+                    if question and options:
+                        lines = [question, ""]
+                        for i, opt in enumerate(options, 1):
+                            lines.append(f"{i}. {opt}")
+                        try:
+                            await adapter.send_prompt(ext_id, "\n".join(lines), None)
+                        except Exception as exc:
+                            logger.warning("Failed to send poll text fallback: %s", exc)
 
         except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
             logger.warning("Chat-mode server unavailable for %s: %s", ext_id, exc)

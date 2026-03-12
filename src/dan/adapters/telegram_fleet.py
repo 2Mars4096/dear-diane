@@ -35,7 +35,6 @@ from dan.adapters.telegram_config import (
     save_fleet_config,
 )
 from dan.adapters.telegram_router import MessageRouter, RoutableBot
-from dan.server.concierge.identity import format_bare_prefix, get_bot_name
 
 logger = logging.getLogger(__name__)
 _FLEET_LOCK_FILE = Path.home() / ".dan" / "telegram" / "fleet.lock"
@@ -275,6 +274,41 @@ class BotFleet:
         lane_key, _timestamp = entry
         return lane_key
 
+    def _lookup_reply_to_bot(self, chat_id: int, message_id: int | None) -> str | None:
+        """Extract the bot name from a previously tracked outbound message.
+
+        Lane keys follow the format ``{chat_id}:{thread}:{bot_name}`` (or
+        ``{chat_id}:{thread}:{bot_name}:m{msg_id}`` in private chats).
+        The third segment is always the bot name.
+        """
+        lane_key = self._lookup_message_lane(chat_id, message_id)
+        if lane_key is None:
+            return None
+        parts = lane_key.split(":")
+        if len(parts) >= 3:
+            return parts[2]
+        return None
+
+    def _build_surface_context(self, bot: BotInstance) -> dict[str, Any]:
+        peers = [
+            {
+                "name": peer.name,
+                "username": peer.bot_username,
+            }
+            for peer in self._bots.values()
+            if peer.name != bot.name and peer.bot_username
+        ]
+        return {
+            "identity": {
+                "name": bot.name,
+                "role": "messaging_assistant",
+                "username": bot.bot_username,
+                "personality": bot.personality,
+                "project_focus": list(bot.projects),
+            },
+            "peers": peers,
+        }
+
     def _remember_outbound_message(
         self,
         chat_id: int,
@@ -457,6 +491,9 @@ class BotFleet:
                 return
 
             routable_bots = self._routable_bots()
+            reply_to_bot = self._lookup_reply_to_bot(
+                ctx.chat_id, ctx.reply_to_message_id,
+            )
             winner = self._router.route(
                 text=text,
                 mentions=ctx.mentions,
@@ -467,6 +504,7 @@ class BotFleet:
                 from_user_id=ctx.from_user_id,
                 bots=routable_bots,
                 receiving_bot_username=bot.bot_username,
+                reply_to_bot=reply_to_bot,
             )
 
             if winner is None:
@@ -546,6 +584,7 @@ class BotFleet:
                         "I received your voice message but couldn't transcribe it. "
                         "Please send as text.",
                         reply_to=ctx.message_id,
+                        thread_id=ctx.thread_id,
                     )
                     self._remember_outbound_message(
                         ctx.chat_id,
@@ -568,37 +607,14 @@ class BotFleet:
 
             user_turn = {"role": "user", "content": msg_text}
             history = await self._append_history_turn(lane_key, user_turn)
-
-            _bare = format_bare_prefix(bot_name=bot.name.upper())
-            identity_block = (
-                f"You are {bot.name}, a {bot.personality or 'helpful'} assistant. "
-                f"Short replies (1-3 sentences). Answer directly — no {_bare} prefix."
-            )
-            if bot.projects:
-                identity_block += (
-                    f" You focus on these projects: {', '.join(bot.projects)}."
-                )
-            other_names = [
-                f"{b.name} (@{b.bot_username})"
-                for b in self._bots.values()
-                if b.name != bot.name
-            ]
-            if other_names:
-                identity_block += (
-                    f" Other bots in this group: {', '.join(other_names)}."
-                )
-
-            history_with_context = [
-                {"role": "system", "content": identity_block},
-                *history,
-            ]
             body: dict[str, Any] = {
                 "workflow_id": wf_id,
                 "message": msg_text,
-                "history": history_with_context,
+                "history": history,
                 "thread_id": conversation_key,
                 "mode": "auto",
                 "surface": surface,
+                "surface_context": self._build_surface_context(bot),
             }
             if att_path:
                 body["attachment_path"] = att_path
@@ -610,6 +626,15 @@ class BotFleet:
                     await bot.adapter.set_reaction(
                         ctx.chat_id, ctx.message_id, "❌",
                     )
+                try:
+                    await bot.adapter._send_text(
+                        ctx.chat_id,
+                        "Sorry, I couldn't process that — please try again.",
+                        reply_to=ctx.message_id,
+                        thread_id=ctx.thread_id,
+                    )
+                except Exception:
+                    pass
                 return
 
             payload = resp.json()
@@ -625,6 +650,7 @@ class BotFleet:
                         content,
                         lane_key=lane_key,
                         already_cleaned=True,
+                        thread_id=ctx.thread_id,
                     )
                     await self._append_assistant_turn(lane_key, content)
                 if settings.use_reactions:
@@ -660,6 +686,15 @@ class BotFleet:
             logger.exception("Fleet dispatch failed for %s: %s", bot.name, exc)
             if user_turn is not None:
                 await self._remove_history_turn(lane_key, user_turn)
+            try:
+                await bot.adapter._send_text(
+                    ctx.chat_id,
+                    "Sorry, something went wrong — please try again.",
+                    reply_to=ctx.message_id,
+                    thread_id=ctx.thread_id,
+                )
+            except Exception:
+                pass
             if settings.use_reactions:
                 await bot.adapter.set_reaction(
                     ctx.chat_id, ctx.message_id, "❌",
@@ -731,6 +766,7 @@ class BotFleet:
                 reply_to=(
                     ctx.message_id if edit_target is None else None
                 ),
+                thread_id=ctx.thread_id,
             )
             if new_id is not None:
                 progress_msg_id = new_id
@@ -789,7 +825,7 @@ class BotFleet:
 
                 if evt_type == "chat_token":
                     got_content = True
-                    collected_tokens.append(event.get("token", ""))
+                    collected_tokens.append(event.get("delta", event.get("token", "")))
                     now = time.monotonic()
                     if now - last_edit_time >= edit_interval:
                         text = _format_for_telegram(
@@ -803,6 +839,7 @@ class BotFleet:
                                     ctx.chat_id,
                                     finalized,
                                     current_msg_id,
+                                    thread_id=ctx.thread_id,
                                 )
                                 sent_prefix_len += len(finalized)
                                 current_msg_id = None
@@ -817,6 +854,7 @@ class BotFleet:
                                         if current_msg_id is None
                                         else None
                                     ),
+                                    thread_id=ctx.thread_id,
                                 )
                                 self._remember_outbound_message(
                                     ctx.chat_id,
@@ -839,6 +877,7 @@ class BotFleet:
                             is_anonymous=event.get("is_anonymous", False),
                             allows_multiple=event.get("allows_multiple", False),
                             reply_to=ctx.message_id,
+                            thread_id=ctx.thread_id,
                         )
                         if poll_id:
                             delivered_poll_count += 1
@@ -861,6 +900,7 @@ class BotFleet:
                                     if current_msg_id is None
                                     else None
                                 ),
+                                thread_id=ctx.thread_id,
                             )
                             self._remember_outbound_message(
                                 ctx.chat_id,
@@ -917,6 +957,7 @@ class BotFleet:
             if used_complete and current_msg_id is not None:
                 current_msg_id = await bot.adapter.send_or_edit(
                     ctx.chat_id, clean[:4096], current_msg_id,
+                    thread_id=ctx.thread_id,
                 )
                 self._remember_outbound_message(
                     ctx.chat_id,
@@ -925,19 +966,25 @@ class BotFleet:
                 )
                 remaining = clean[4096:]
                 for chunk in _split_message(remaining):
-                    sent_message_id = await bot.adapter.send_or_edit(ctx.chat_id, chunk)
+                    sent_message_id = await bot.adapter.send_or_edit(
+                        ctx.chat_id, chunk, thread_id=ctx.thread_id,
+                    )
                     self._remember_outbound_message(
                         ctx.chat_id,
                         sent_message_id,
                         lane_key=lane_key,
                     )
             elif used_complete:
-                await self._send_reply(bot, ctx, clean, lane_key=lane_key, already_cleaned=True)
+                await self._send_reply(
+                    bot, ctx, clean, lane_key=lane_key,
+                    already_cleaned=True, thread_id=ctx.thread_id,
+                )
             else:
                 remaining = clean[sent_prefix_len:]
                 if current_msg_id is not None and remaining:
                     current_msg_id = await bot.adapter.send_or_edit(
                         ctx.chat_id, remaining[:4096], current_msg_id,
+                        thread_id=ctx.thread_id,
                     )
                     self._remember_outbound_message(
                         ctx.chat_id,
@@ -948,21 +995,30 @@ class BotFleet:
                     remaining = clean[sent_prefix_len:]
                 if remaining:
                     for chunk in _split_message(remaining):
-                        sent_message_id = await bot.adapter.send_or_edit(ctx.chat_id, chunk)
+                        sent_message_id = await bot.adapter.send_or_edit(
+                            ctx.chat_id, chunk, thread_id=ctx.thread_id,
+                        )
                         self._remember_outbound_message(
                             ctx.chat_id,
                             sent_message_id,
                             lane_key=lane_key,
                         )
                 elif current_msg_id is None:
-                    await self._send_reply(bot, ctx, clean, lane_key=lane_key, already_cleaned=True)
+                    await self._send_reply(
+                        bot, ctx, clean, lane_key=lane_key,
+                        already_cleaned=True, thread_id=ctx.thread_id,
+                    )
 
         delivered_file_count = 0
         failed_file_count = 0
         for fp in file_paths:
             if bot.adapter:
                 try:
-                    sent_message_id = await bot.adapter._send_file_to_chat(ctx.chat_id, fp)
+                    sent_message_id = await bot.adapter._send_file_to_chat(
+                        ctx.chat_id,
+                        fp,
+                        thread_id=ctx.thread_id,
+                    )
                     self._remember_outbound_message(
                         ctx.chat_id,
                         sent_message_id,
@@ -1001,6 +1057,7 @@ class BotFleet:
                         ctx.chat_id,
                         delivery_status,
                         current_msg_id,
+                        thread_id=ctx.thread_id,
                     )
                     self._remember_outbound_message(
                         ctx.chat_id,
@@ -1013,6 +1070,7 @@ class BotFleet:
                         ctx,
                         delivery_status,
                         lane_key=lane_key,
+                        thread_id=ctx.thread_id,
                     )
                 full = delivery_status
 
@@ -1058,12 +1116,19 @@ class BotFleet:
 
         if full_reply:
             clean = _format_for_telegram(full_reply)
-            await self._send_reply(bot, ctx, clean, lane_key=lane_key, already_cleaned=True)
+            await self._send_reply(
+                bot, ctx, clean, lane_key=lane_key,
+                already_cleaned=True, thread_id=ctx.thread_id,
+            )
 
         for fp in file_paths:
             if bot.adapter:
                 try:
-                    sent_message_id = await bot.adapter._send_file_to_chat(ctx.chat_id, fp)
+                    sent_message_id = await bot.adapter._send_file_to_chat(
+                        ctx.chat_id,
+                        fp,
+                        thread_id=ctx.thread_id,
+                    )
                     self._remember_outbound_message(
                         ctx.chat_id,
                         sent_message_id,
@@ -1086,6 +1151,7 @@ class BotFleet:
                         is_anonymous=pr.get("is_anonymous", False),
                         allows_multiple=pr.get("allows_multiple", False),
                         reply_to=ctx.message_id,
+                        thread_id=ctx.thread_id,
                     )
                 except Exception as exc:
                     logger.warning("Failed to send poll: %s", exc)
@@ -1200,6 +1266,7 @@ class BotFleet:
         *,
         lane_key: str | None = None,
         already_cleaned: bool = False,
+        thread_id: int | None = None,
     ) -> None:
         assert bot.adapter is not None
         from dan.server.concierge.actions import (
@@ -1213,6 +1280,7 @@ class BotFleet:
             reply_to = ctx.message_id if i == 0 else None
             sent_message_id = await bot.adapter._send_text(
                 ctx.chat_id, part, reply_to=reply_to,
+                thread_id=thread_id,
             )
             self._remember_outbound_message(
                 ctx.chat_id,

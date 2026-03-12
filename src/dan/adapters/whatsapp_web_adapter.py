@@ -82,6 +82,9 @@ class WhatsAppWebAdapter:
     def set_message_callback(self, callback: Callable[[str, str], Any] | None) -> None:
         self._on_new_message = callback
 
+    async def _sleep(self, seconds: float) -> None:
+        await asyncio.sleep(seconds)
+
     # -- lifecycle ----------------------------------------------------------
 
     async def start(self) -> None:
@@ -119,16 +122,51 @@ class WhatsAppWebAdapter:
             )
 
         self._event_loop = asyncio.get_running_loop()
-        self._connect_task = self._event_loop.run_in_executor(
-            None, self._client.connect,
-        )
         self._running = True
+        self._connect_task = asyncio.create_task(self._connect_with_retry())
         logger.info("WhatsApp Web adapter starting (db: %s)", db_path)
         print(
             "\n  Scan the QR code above with WhatsApp > Linked Devices > Link a Device\n"
             "  (If already paired, connection will resume automatically.)\n",
             file=sys.stderr,
         )
+
+    async def _connect_with_retry(self) -> None:
+        """Connect to WhatsApp with exponential backoff on disconnect."""
+        max_retries = 10
+        base_delay = 2.0
+        max_delay = 300.0
+
+        consecutive_failures = 0
+        while self._running:
+            if not self._running:
+                return
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self._client.connect)
+                if not self._running:
+                    return
+                consecutive_failures = 0
+                logger.info("WhatsApp connection ended, will reconnect")
+            except Exception as exc:
+                if not self._running:
+                    return
+                consecutive_failures += 1
+                logger.warning(
+                    "WhatsApp connection failed (attempt %d): %s",
+                    consecutive_failures,
+                    exc,
+                )
+                if consecutive_failures >= max_retries:
+                    logger.error(
+                        "WhatsApp reconnection failed after %d consecutive attempts",
+                        max_retries,
+                    )
+                    return
+
+            delay = min(base_delay * (2 ** max(consecutive_failures - 1, 0)), max_delay)
+            logger.info("Reconnecting in %.0fs...", delay)
+            await self._sleep(delay)
 
     async def stop(self) -> None:
         self._running = False
@@ -630,6 +668,22 @@ class WhatsAppWebAdapter:
 
         return build_jid(user)
 
+    def _send_text_fallback(self, jid: str, text: str) -> None:
+        """Best-effort fallback after retry exhaustion.
+
+        This uses the same client, but strips prefixes/chunking and sends a short
+        plain-text apology. Even when the original message fails, a smaller
+        fallback can still succeed for content-specific send errors.
+        """
+        if self._client is None:
+            return
+        try:
+            recipient = self._resolve_recipient(jid)
+            self._record_outbound_message(jid, text)
+            self._client.send_message(recipient, text)
+        except Exception:
+            logger.exception("WhatsApp fallback send also failed for %s", jid)
+
     async def _send_text(self, jid: str, text: str) -> None:
         if self._client is None:
             logger.error("_send_text called but client is None")
@@ -639,16 +693,28 @@ class WhatsAppWebAdapter:
         except ImportError:
             logger.error("neonize not available for sending")
             return
-        try:
-            recipient = self._resolve_recipient(jid)
-            prefixed = f"{self._reply_prefix()}{text}"
-            for chunk in _split_message(prefixed):
-                self._record_outbound_message(jid, chunk)
-                logger.info("Sending WhatsApp message to %s (%d chars)", jid, len(chunk))
-                resp = self._client.send_message(recipient, chunk)
-                logger.info("send_message response ID: %s", getattr(resp, "ID", "?"))
-        except Exception:
-            logger.exception("Failed to send WhatsApp message to %s", jid)
+
+        recipient = self._resolve_recipient(jid)
+        prefixed = f"{self._reply_prefix()}{text}"
+        for chunk in _split_message(prefixed):
+            self._record_outbound_message(jid, chunk)
+            logger.info("Sending WhatsApp message to %s (%d chars)", jid, len(chunk))
+            for attempt in range(2):
+                try:
+                    resp = self._client.send_message(recipient, chunk)
+                    logger.info("send_message response ID: %s", getattr(resp, "ID", "?"))
+                    break
+                except Exception:
+                    if attempt == 0:
+                        logger.warning("WhatsApp send failed, retrying in 2s...")
+                        await self._sleep(2)
+                    else:
+                        logger.exception("Failed to send WhatsApp message to %s after retry", jid)
+                        self._send_text_fallback(
+                            jid,
+                            "Sorry, I couldn't deliver that response. Please try again.",
+                        )
+                        return
 
 
 def _split_message(text: str, max_len: int = _MAX_MESSAGE_LENGTH) -> list[str]:
@@ -665,8 +731,10 @@ def _split_message(text: str, max_len: int = _MAX_MESSAGE_LENGTH) -> list[str]:
             split_at = text.rfind(" ", 0, max_len)
         if split_at == -1:
             split_at = max_len
+        elif split_at == 0:
+            split_at = max_len
         chunks.append(text[:split_at])
-        text = text[split_at:].lstrip("\n")
+        text = text[split_at:].lstrip("\n ")
     return chunks
 
 

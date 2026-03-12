@@ -82,8 +82,8 @@ class TelegramAdapter:
         self._on_topic_created: Callable[[int, int, str], Any] | None = None
         self._callback_with_context: bool = False
         self._running = False
-        self._session_map: dict[int, str] = {}
-        self._chat_map: dict[str, int] = {}
+        self._session_map: dict[str, str] = {}
+        self._chat_map: dict[str, tuple[int, int | None]] = {}
         self._poll_futures: dict[str, asyncio.Future[list[int]]] = {}
         self._poll_sessions: dict[str, str] = {}
         self.bot_username: str = ""
@@ -204,11 +204,12 @@ class TelegramAdapter:
         prompt: str,
         schema: dict[str, Any] | None = None,
     ) -> int | None:
-        chat_id = self._chat_id_from_session(session_id)
-        if chat_id is None:
+        target = self._chat_target_from_session(session_id)
+        if target is None:
             logger.warning("send_prompt: unknown session %s", session_id)
             return None
-        msg_id = await self._send_text(chat_id, prompt)
+        chat_id, thread_id = target
+        msg_id = await self._send_text(chat_id, prompt, thread_id=thread_id)
         if msg_id is not None:
             self._last_bot_message_id[chat_id] = msg_id
         return msg_id
@@ -222,14 +223,15 @@ class TelegramAdapter:
         mode: str = "selection",
         callback_prefix: str = "",
     ) -> None:
-        chat_id = self._chat_id_from_session(session_id)
-        if chat_id is None:
+        target = self._chat_target_from_session(session_id)
+        if target is None:
             return
+        chat_id, thread_id = target
 
         try:
             from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         except ImportError:
-            await self._send_text(chat_id, prompt)
+            await self._send_text(chat_id, prompt, thread_id=thread_id)
             return
 
         if mode == "selection" and 2 <= len(options) <= 10:
@@ -253,19 +255,25 @@ class TelegramAdapter:
             ]
 
         markup = InlineKeyboardMarkup(buttons)
-        msg = await self._application.bot.send_message(
-            chat_id=chat_id, text=prompt, reply_markup=markup,
-        )
+        kwargs: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": prompt,
+            "reply_markup": markup,
+        }
+        if thread_id is not None:
+            kwargs["message_thread_id"] = thread_id
+        msg = await self._application.bot.send_message(**kwargs)
         self._schedule_keyboard_expiry(chat_id, msg.message_id)
 
     async def send_result(self, session_id: str, result: dict[str, Any]) -> None:
-        chat_id = self._chat_id_from_session(session_id)
-        if chat_id is None:
+        target = self._chat_target_from_session(session_id)
+        if target is None:
             return
+        chat_id, thread_id = target
         lines = ["Workflow Result\n"]
         for key, value in result.items():
             lines.append(f"{key}: {value}")
-        await self._send_text(chat_id, "\n".join(lines))
+        await self._send_text(chat_id, "\n".join(lines), thread_id=thread_id)
 
     async def send_progress(self, session_id: str, message: str) -> None:
         now = time.monotonic()
@@ -273,33 +281,58 @@ class TelegramAdapter:
         if now - last < self.config.progress_throttle:
             return
         self._last_progress[session_id] = now
-        chat_id = self._chat_id_from_session(session_id)
-        if chat_id is not None:
-            await self._send_text(chat_id, f"⏳ {message}")
+        target = self._chat_target_from_session(session_id)
+        if target is not None:
+            chat_id, thread_id = target
+            await self._send_text(chat_id, f"⏳ {message}", thread_id=thread_id)
 
-    async def send_file(self, session_id: str, file_path: str) -> None:
-        chat_id = self._chat_id_from_session(session_id)
-        if chat_id is None:
+    async def send_file(
+        self,
+        session_id: str,
+        file_path: str,
+        *,
+        thread_id: int | None = None,
+    ) -> None:
+        target = self._chat_target_from_session(session_id)
+        if target is None:
             return
-        await self._send_file_to_chat(chat_id, file_path)
+        chat_id, mapped_thread_id = target
+        await self._send_file_to_chat(
+            chat_id,
+            file_path,
+            thread_id=thread_id if thread_id is not None else mapped_thread_id,
+        )
 
-    async def _send_file_to_chat(self, chat_id: int, file_path: str) -> int | None:
+    async def _send_file_to_chat(
+        self,
+        chat_id: int,
+        file_path: str,
+        *,
+        thread_id: int | None = None,
+    ) -> int | None:
         path = Path(file_path)
         if not path.exists():
-            await self._application.bot.send_message(
-                chat_id=chat_id, text=f"File not found: {file_path}",
-            )
+            kwargs: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": f"File not found: {file_path}",
+            }
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+            await self._application.bot.send_message(**kwargs)
             return None
 
         size_mb = path.stat().st_size / (1024 * 1024)
         if size_mb > 50:
-            await self._application.bot.send_message(
-                chat_id=chat_id,
-                text=(
+            kwargs = {
+                "chat_id": chat_id,
+                "text": (
                     f"File too large to send ({size_mb:.1f} MB). "
                     "Telegram limits bot uploads to 50 MB."
                 ),
-            )
+            }
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+            await self._application.bot.send_message(**kwargs)
             return None
 
         mime_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
@@ -307,16 +340,23 @@ class TelegramAdapter:
 
         if mime_type.startswith("image/") and size_mb <= 10:
             with open(path, "rb") as f:
-                msg = await self._application.bot.send_photo(
-                    chat_id=chat_id, photo=f, caption=caption,
-                )
+                kwargs = {"chat_id": chat_id, "photo": f, "caption": caption}
+                if thread_id is not None:
+                    kwargs["message_thread_id"] = thread_id
+                msg = await self._application.bot.send_photo(**kwargs)
                 self._last_bot_message_id[chat_id] = msg.message_id
                 return msg.message_id
         else:
             with open(path, "rb") as f:
-                msg = await self._application.bot.send_document(
-                    chat_id=chat_id, document=f, caption=caption, filename=path.name,
-                )
+                kwargs = {
+                    "chat_id": chat_id,
+                    "document": f,
+                    "caption": caption,
+                    "filename": path.name,
+                }
+                if thread_id is not None:
+                    kwargs["message_thread_id"] = thread_id
+                msg = await self._application.bot.send_document(**kwargs)
                 self._last_bot_message_id[chat_id] = msg.message_id
                 return msg.message_id
 
@@ -361,6 +401,7 @@ class TelegramAdapter:
         message_id: int | None = None,
         *,
         reply_to: int | None = None,
+        thread_id: int | None = None,
     ) -> int | None:
         """Send a new message or edit an existing one. Returns message_id."""
         if not text:
@@ -377,6 +418,8 @@ class TelegramAdapter:
                 kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
                 if reply_to:
                     kwargs["reply_to_message_id"] = reply_to
+                if thread_id is not None:
+                    kwargs["message_thread_id"] = thread_id
                 msg = await self._send_message_with_reply_fallback(**kwargs)
                 return msg.message_id
         except Exception as exc:
@@ -386,9 +429,12 @@ class TelegramAdapter:
                     return message_id
                 logger.debug("Edit failed (%s), sending new message", exc)
                 try:
-                    msg = await self._application.bot.send_message(
-                        chat_id=chat_id, text=text,
-                    )
+                    kwargs: dict[str, Any] = {"chat_id": chat_id, "text": text}
+                    if reply_to:
+                        kwargs["reply_to_message_id"] = reply_to
+                    if thread_id is not None:
+                        kwargs["message_thread_id"] = thread_id
+                    msg = await self._send_message_with_reply_fallback(**kwargs)
                     return msg.message_id
                 except Exception:
                     pass
@@ -405,6 +451,7 @@ class TelegramAdapter:
         is_anonymous: bool = False,
         allows_multiple: bool = False,
         reply_to: int | None = None,
+        thread_id: int | None = None,
     ) -> str | None:
         if len(options) < 2 or len(options) > 10:
             return None
@@ -418,6 +465,8 @@ class TelegramAdapter:
             }
             if reply_to:
                 kwargs["reply_to_message_id"] = reply_to
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
             msg = await self._application.bot.send_poll(**kwargs)
             self._last_bot_message_id[chat_id] = msg.message_id
             return msg.poll.id if msg.poll else None
@@ -434,15 +483,17 @@ class TelegramAdapter:
         is_anonymous: bool = False,
         allows_multiple: bool = False,
     ) -> str | None:
-        chat_id = self._chat_id_from_session(session_id)
-        if chat_id is None:
+        target = self._chat_target_from_session(session_id)
+        if target is None:
             return None
+        chat_id, thread_id = target
         poll_id = await self.send_poll(
             chat_id,
             question,
             options,
             is_anonymous=is_anonymous,
             allows_multiple=allows_multiple,
+            thread_id=thread_id,
         )
         if poll_id:
             self._poll_sessions[poll_id] = session_id
@@ -596,7 +647,8 @@ class TelegramAdapter:
         if not self._is_allowed(update.effective_chat.id):
             return
         chat_id = update.effective_chat.id
-        sid = self._session_id_from_chat(chat_id)
+        thread_id = getattr(update.message, "message_thread_id", None)
+        sid = self._session_id_from_chat(chat_id, thread_id)
         if sid and sid in self._pending:
             await update.message.reply_text(
                 "A task is running and waiting for your input.",
@@ -610,7 +662,8 @@ class TelegramAdapter:
         if not self._is_allowed(update.effective_chat.id):
             return
         chat_id = update.effective_chat.id
-        sid = self._session_id_from_chat(chat_id)
+        thread_id = getattr(update.message, "message_thread_id", None)
+        sid = self._session_id_from_chat(chat_id, thread_id)
         if sid:
             fut = self._pending.pop(sid, None)
             if fut and not fut.done():
@@ -641,7 +694,8 @@ class TelegramAdapter:
         chat_id = update.effective_chat.id
         msg = update.message
         text = msg.text or ""
-        sid = self._session_id_from_chat(chat_id)
+        ctx = self._build_context(msg)
+        sid = self._session_id_from_chat(chat_id, ctx.thread_id)
 
         if sid and sid in self._pending:
             fut = self._pending.get(sid)
@@ -650,10 +704,7 @@ class TelegramAdapter:
                 return
 
         if self._on_new_message is not None:
-            ctx = self._build_context(msg)
-            reply_ctx = self._build_reply_prefix(msg)
-            full_text = f"{reply_ctx}{text}" if reply_ctx else text
-            await self._fire_callback(str(chat_id), full_text, ctx)
+            await self._fire_callback(self._session_key(chat_id, ctx.thread_id), text, ctx)
 
     async def _cmd_pin(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update.effective_chat.id):
@@ -719,7 +770,8 @@ class TelegramAdapter:
         chat_id = update.effective_chat.id
         msg = update.message
         text = msg.text or ""
-        sid = self._session_id_from_chat(chat_id)
+        ctx = self._build_context(msg)
+        sid = self._session_id_from_chat(chat_id, ctx.thread_id)
 
         if sid and sid in self._pending:
             fut = self._pending.get(sid)
@@ -728,10 +780,7 @@ class TelegramAdapter:
                 return
 
         if self._on_new_message is not None:
-            ctx = self._build_context(msg)
-            reply_ctx = self._build_reply_prefix(msg)
-            full_text = f"{reply_ctx}{text}" if reply_ctx else text
-            await self._fire_callback(str(chat_id), full_text, ctx)
+            await self._fire_callback(self._session_key(chat_id, ctx.thread_id), text, ctx)
 
     async def _on_media_message(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update.effective_chat.id):
@@ -743,7 +792,9 @@ class TelegramAdapter:
             if self._on_new_message:
                 ctx = self._build_context(msg)
                 await self._fire_callback(
-                    str(chat_id), "[User sent a sticker]", ctx,
+                    self._session_key(chat_id, ctx.thread_id),
+                    "[User sent a sticker]",
+                    ctx,
                 )
             return
 
@@ -755,7 +806,9 @@ class TelegramAdapter:
             if self._on_new_message:
                 ctx = self._build_context(msg)
                 await self._fire_callback(
-                    str(chat_id), f"[User shared contact: {name}]", ctx,
+                    self._session_key(chat_id, ctx.thread_id),
+                    f"[User shared contact: {name}]",
+                    ctx,
                 )
             return
 
@@ -763,7 +816,7 @@ class TelegramAdapter:
             if self._on_new_message:
                 ctx = self._build_context(msg)
                 await self._fire_callback(
-                    str(chat_id),
+                    self._session_key(chat_id, ctx.thread_id),
                     f"[User shared location: {msg.location.latitude}, "
                     f"{msg.location.longitude}]",
                     ctx,
@@ -812,7 +865,6 @@ class TelegramAdapter:
             return
 
         caption = msg.caption or ""
-        reply_ctx = self._build_reply_prefix(msg)
 
         if media_type in ("voice", "audio"):
             text = f"[Voice note: {local_path}]"
@@ -823,12 +875,9 @@ class TelegramAdapter:
             if caption:
                 text = f"{text}\n{caption}"
 
-        if reply_ctx:
-            text = f"{reply_ctx}{text}"
-
         if self._on_new_message:
             ctx = self._build_context(msg)
-            await self._fire_callback(str(chat_id), text, ctx)
+            await self._fire_callback(self._session_key(chat_id, ctx.thread_id), text, ctx)
 
     async def _on_callback_query(self, update: Any, context: Any) -> None:
         query = update.callback_query
@@ -843,7 +892,8 @@ class TelegramAdapter:
         if ":" in data and not data.startswith("__"):
             clean_data = data.split(":", 1)[1]
 
-        sid = self._session_id_from_chat(chat_id)
+        thread_id = getattr(query.message, "message_thread_id", None)
+        sid = self._session_id_from_chat(chat_id, thread_id)
         if sid and sid in self._pending:
             fut = self._pending.get(sid)
             if fut and not fut.done():
@@ -891,40 +941,78 @@ class TelegramAdapter:
             return True
         return chat_id in self.config.allowed_chat_ids
 
-    def register_session(self, session_id: str, chat_id: int) -> None:
-        self._session_map[chat_id] = session_id
-        self._chat_map[session_id] = chat_id
+    @staticmethod
+    def _session_key(chat_id: int, thread_id: int | None = None) -> str:
+        if thread_id is None:
+            return str(chat_id)
+        return f"{chat_id}:{thread_id}"
+
+    @staticmethod
+    def _parse_session_target(target: int | str) -> tuple[int, int | None]:
+        if isinstance(target, int):
+            return target, None
+        raw = str(target).strip()
+        if ":" in raw:
+            chat_raw, thread_raw = raw.split(":", 1)
+            return int(chat_raw), int(thread_raw) if thread_raw else None
+        return int(raw), None
+
+    def register_session(self, session_id: str, chat_id: int | str) -> None:
+        target = self._parse_session_target(chat_id)
+        session_key = self._session_key(*target)
+        self._session_map[session_key] = session_id
+        self._chat_map[session_id] = target
 
     def unregister_session(self, session_id: str) -> None:
-        chat_id = self._chat_map.pop(session_id, None)
-        if chat_id is not None:
-            self._session_map.pop(chat_id, None)
+        target = self._chat_map.pop(session_id, None)
+        if target is not None:
+            self._session_map.pop(self._session_key(*target), None)
 
-    def _session_id_from_chat(self, chat_id: int) -> str | None:
-        return self._session_map.get(chat_id)
+    def _session_id_from_chat(
+        self,
+        chat_id: int,
+        thread_id: int | None = None,
+    ) -> str | None:
+        session_id = self._session_map.get(self._session_key(chat_id, thread_id))
+        if session_id is None and thread_id is not None:
+            session_id = self._session_map.get(self._session_key(chat_id))
+        return session_id
 
     def _chat_id_from_session(self, session_id: str) -> int | None:
+        target = self._chat_map.get(session_id)
+        if target is None:
+            return None
+        return target[0]
+
+    def _chat_target_from_session(
+        self,
+        session_id: str,
+    ) -> tuple[int, int | None] | None:
         return self._chat_map.get(session_id)
 
     async def _send_text(
         self, chat_id: int, text: str, reply_to: int | None = None,
+        thread_id: int | None = None,
     ) -> int | None:
         if self._application is None:
             return None
         last_msg_id = None
         for chunk in _split_message(text):
             last_msg_id = await self._try_send_markdown(
-                chat_id, chunk, reply_to=reply_to,
+                chat_id, chunk, reply_to=reply_to, thread_id=thread_id,
             )
             reply_to = None
         return last_msg_id
 
     async def _try_send_markdown(
         self, chat_id: int, text: str, *, reply_to: int | None = None,
+        thread_id: int | None = None,
     ) -> int | None:
         kwargs: dict[str, Any] = {"chat_id": chat_id}
         if reply_to:
             kwargs["reply_to_message_id"] = reply_to
+        if thread_id is not None:
+            kwargs["message_thread_id"] = thread_id
 
         if self.config.try_markdown and "```" in text:
             try:
