@@ -1,0 +1,882 @@
+{
+  "nodes": [
+    {
+      "id": "node_input",
+      "node_type": "input",
+      "name": "\ud83d\udccc Company Input",
+      "description": "",
+      "input_ports": [],
+      "output_ports": [
+        {
+          "name": "input",
+          "schema": {}
+        },
+        {
+          "name": "company_name",
+          "schema": {}
+        },
+        {
+          "name": "ticker",
+          "schema": {}
+        },
+        {
+          "name": "exchange",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 300.0
+      },
+      "ui": {},
+      "metadata": {},
+      "variables": [
+        {
+          "default": "",
+          "description": "Full company name, e.g. Apple Inc.",
+          "name": "company_name"
+        },
+        {
+          "default": "",
+          "description": "Stock ticker symbol, e.g. AAPL",
+          "name": "ticker"
+        },
+        {
+          "default": "",
+          "description": "Exchange, e.g. NASDAQ",
+          "name": "exchange"
+        }
+      ],
+      "config": {
+        "variables": [
+          {
+            "default": "",
+            "description": "Full company name (e.g. Apple Inc.)",
+            "name": "company_name"
+          },
+          {
+            "default": "",
+            "description": "Stock ticker symbol (e.g. AAPL)",
+            "name": "ticker"
+          },
+          {
+            "default": "",
+            "description": "Exchange where the stock is listed (e.g. NASDAQ)",
+            "name": "exchange"
+          }
+        ]
+      }
+    },
+    {
+      "id": "node_news_tool",
+      "node_type": "tool_operator",
+      "name": "\ud83d\udcf0 News Fetcher",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "result",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 220.0,
+        "y": 100.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tool_id": "web_search",
+      "tool_config": {
+        "num_results": 10,
+        "query_template": "Latest news and press releases for {{company_name}} {{ticker}} stock",
+        "recency_days": 30
+      },
+      "config": {
+        "tool_config": {
+          "max_results": 20,
+          "query": "{{ticker}} {{company_name}} latest news earnings analyst sentiment",
+          "sources": [
+            "financial_news",
+            "press_releases",
+            "social_media"
+          ]
+        },
+        "tool_id": "web_search"
+      }
+    },
+    {
+      "id": "node_fin_tool",
+      "node_type": "tool_operator",
+      "name": "\ud83d\udcca Financial Data Fetcher",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "result",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 220.0,
+        "y": 300.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tool_id": "web_search",
+      "tool_config": {
+        "num_results": 10,
+        "query_template": "{{ticker}} {{exchange}} financial statements revenue earnings EPS P/E ratio balance sheet cash flow"
+      },
+      "config": {
+        "tool_config": {
+          "data_points": [
+            "price",
+            "market_cap",
+            "pe_ratio",
+            "eps",
+            "revenue",
+            "ebitda",
+            "debt_equity",
+            "free_cash_flow",
+            "dividend_yield",
+            "52w_high_low",
+            "beta"
+          ],
+          "exchange": "{{exchange}}",
+          "ticker": "{{ticker}}"
+        },
+        "tool_id": "financial_data"
+      }
+    },
+    {
+      "id": "node_reports_tool",
+      "node_type": "tool_operator",
+      "name": "\ud83d\udccb Analyst Reports & Grades",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "result",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 220.0,
+        "y": 500.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tool_id": "web_search",
+      "tool_config": {
+        "num_results": 10,
+        "query_template": "{{ticker}} analyst rating price target buy sell hold recommendation Wall Street"
+      },
+      "config": {
+        "tool_config": {
+          "max_results": 15,
+          "query": "{{ticker}} {{company_name}} analyst rating price target research report",
+          "sources": [
+            "analyst_reports",
+            "broker_ratings",
+            "sec_filings"
+          ]
+        },
+        "tool_id": "web_search"
+      }
+    },
+    {
+      "id": "node_reduce",
+      "node_type": "reduce",
+      "name": "\ud83d\udd00 Data Aggregator",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "result",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 460.0,
+        "y": 300.0
+      },
+      "ui": {},
+      "metadata": {},
+      "reducer": "Combine news results, financial data, and analyst reports into a single structured research context object with keys: news, financials, analyst_reports.",
+      "config": {
+        "reducer": "Merge all tool outputs into a structured research context with sections: [news], [financials], [analyst_reports]"
+      }
+    },
+    {
+      "id": "node_fundamental",
+      "node_type": "llm_operator",
+      "name": "\ud83d\udcc8 Fundamental Analyst",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 680.0,
+        "y": 100.0
+      },
+      "ui": {},
+      "metadata": {},
+      "model": "gpt-4o",
+      "prompt_template": "Using the following financial data for {{company_name}} ({{ticker}}):\n\n{{financials}}\n\nPerform a thorough fundamental analysis covering:\n1. Revenue & earnings growth trends\n2. Profitability margins (gross, operating, net)\n3. Balance sheet strength (debt, liquidity, equity)\n4. Cash flow quality (FCF yield, capex)\n5. Valuation multiples (P/E, EV/EBITDA, P/S) vs sector peers\n6. Key risks and red flags\n\nProvide a structured summary with a preliminary fundamental outlook (Positive / Neutral / Negative).",
+      "system_prompt": "You are a senior equity research analyst specializing in fundamental analysis. Be rigorous, data-driven, and concise.",
+      "temperature": 0.2,
+      "config": {
+        "model": "gpt-4o",
+        "prompt_template": "Given the following research data:\n{input}\n\nPerform a thorough fundamental analysis covering:\n1. Revenue & earnings trends\n2. Balance sheet health (debt, cash, liquidity)\n3. Valuation multiples (P/E, EV/EBITDA, P/B)\n4. Growth outlook and competitive moat\n5. Key risks\n\nReturn a structured fundamental analysis report.",
+        "system_prompt": "You are a senior equity research analyst specializing in fundamental analysis."
+      }
+    },
+    {
+      "id": "node_sentiment",
+      "node_type": "llm_operator",
+      "name": "\ud83d\uddde\ufe0f Sentiment Analyst",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 680.0,
+        "y": 300.0
+      },
+      "ui": {},
+      "metadata": {},
+      "model": "gpt-4o",
+      "prompt_template": "Analyze the following recent news and press releases for {{company_name}} ({{ticker}}):\n\n{{news}}\n\nProvide:\n1. Key themes and events (earnings, M&A, product launches, regulatory, macro)\n2. Overall sentiment score (Bullish / Neutral / Bearish) with reasoning\n3. Short-term catalysts (next 1\u20133 months)\n4. Long-term narrative impact\n5. Any red flags or controversy",
+      "system_prompt": "You are an expert in financial news analysis and market sentiment. Identify signal from noise.",
+      "temperature": 0.3,
+      "config": {
+        "model": "gpt-4o",
+        "prompt_template": "Given the following research data:\n{input}\n\nAnalyze market sentiment:\n1. Overall news tone (bullish / bearish / neutral)\n2. Key catalysts or risk events mentioned\n3. Social and media sentiment trends\n4. Insider or institutional activity signals\n\nReturn a structured sentiment analysis report.",
+        "system_prompt": "You are an expert in market sentiment and news analysis for equities."
+      }
+    },
+    {
+      "id": "node_consensus",
+      "node_type": "llm_operator",
+      "name": "\ud83c\udfe6 Analyst Consensus",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 680.0,
+        "y": 500.0
+      },
+      "ui": {},
+      "metadata": {},
+      "model": "gpt-4o",
+      "prompt_template": "Review the following analyst reports, ratings, and price targets for {{company_name}} ({{ticker}}):\n\n{{analyst_reports}}\n\nSummarize:\n1. Consensus rating (Buy / Hold / Sell) and distribution\n2. Average and range of price targets\n3. Bull case vs bear case arguments from analysts\n4. Recent rating changes or upgrades/downgrades\n5. Key metrics analysts are focused on",
+      "system_prompt": "You are a research aggregator who synthesizes Wall Street analyst opinions and price targets.",
+      "temperature": 0.2,
+      "config": {
+        "model": "gpt-4o",
+        "prompt_template": "Given the following research data:\n{input}\n\nSummarize the analyst consensus:\n1. Current ratings distribution (Buy / Hold / Sell counts)\n2. Average and range of price targets\n3. Recent rating changes or upgrades/downgrades\n4. Key themes from analyst reports\n\nReturn a structured consensus summary.",
+        "system_prompt": "You are a research aggregator specializing in sell-side analyst opinions."
+      }
+    },
+    {
+      "id": "node_synthesis",
+      "node_type": "llm_operator",
+      "name": "\ud83e\udde0 Research Synthesizer",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 920.0,
+        "y": 300.0
+      },
+      "ui": {},
+      "metadata": {},
+      "model": "gpt-4o",
+      "prompt_template": "Synthesize the following three research dimensions for {{company_name}} ({{ticker}}) into a unified investment thesis:\n\n## Fundamental Analysis\n{{fundamental_analysis}}\n\n## News & Sentiment\n{{sentiment_analysis}}\n\n## Analyst Consensus\n{{consensus_review}}\n\nProduce:\n1. Integrated investment thesis (3\u20135 sentences)\n2. Key supporting arguments (bulls)\n3. Key risk factors (bears)\n4. Conviction level (High / Medium / Low)\n5. Preliminary recommendation: BUY / HOLD / SELL\n6. Suggested price target range and time horizon",
+      "system_prompt": "You are a chief investment officer synthesizing multiple research dimensions into a coherent investment thesis. Be balanced, evidence-based, and decisive.",
+      "temperature": 0.3,
+      "config": {
+        "model": "gpt-4o",
+        "prompt_template": "You have the following analysis inputs:\n{input}\n\nSynthesize all findings into a cohesive investment thesis covering:\n1. Bull case\n2. Bear case\n3. Base case\n4. Key catalysts to watch\n5. Preliminary investment stance\n\nReturn a well-structured synthesis document.",
+        "system_prompt": "You are a chief equity research officer synthesizing multi-source analysis."
+      }
+    },
+    {
+      "id": "node_validator",
+      "node_type": "validator",
+      "name": "\u2705 Report Validator",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "data",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "valid",
+          "schema": {}
+        },
+        {
+          "name": "invalid",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 1140.0,
+        "y": 300.0
+      },
+      "ui": {},
+      "metadata": {},
+      "validation_rules": [],
+      "on_failure": "route",
+      "strict_mode": false,
+      "config": {
+        "on_failure": "route"
+      }
+    },
+    {
+      "id": "node_final_report",
+      "node_type": "llm_operator",
+      "name": "\ud83d\udcdd Final Report Generator",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 1580.0,
+        "y": 150.0
+      },
+      "ui": {},
+      "metadata": {},
+      "model": "gpt-4o",
+      "prompt_template": "Write a complete equity research report for {{company_name}} ({{ticker}}, {{exchange}}) based on the following validated investment thesis:\n\n{{synthesis}}\n\nFormat the report with these sections:\n\n# {{company_name}} ({{ticker}}) \u2014 Equity Research Report\n\n## Executive Summary\n- **Recommendation**: BUY / HOLD / SELL\n- **Price Target**: $XX \u2013 $XX (12-month)\n- **Current Price**: [from data]\n- **Upside/Downside**: XX%\n\n## Company Overview\n## Investment Thesis\n## Financial Analysis\n### Revenue & Earnings\n### Margins & Profitability\n### Balance Sheet & Cash Flow\n### Valuation\n## News & Catalysts\n## Analyst Consensus\n## Risk Factors\n## Conclusion & Recommendation\n\nBe specific, cite data points, and maintain a professional tone throughout.",
+      "system_prompt": "You are a senior equity research analyst writing a professional, publication-ready research report. Use clear structure, precise language, and actionable conclusions.",
+      "temperature": 0.2,
+      "config": {
+        "model": "gpt-4o",
+        "prompt_template": "Based on the validated research synthesis below:\n{input}\n\nWrite a complete equity research report including:\n1. Executive Summary\n2. Company Overview\n3. Investment Thesis\n4. Fundamental Analysis\n5. Sentiment & News Analysis\n6. Analyst Consensus\n7. Valuation\n8. Risks\n9. \u2705 Final Recommendation: BUY / HOLD / SELL with a 12-month price target\n\nUse a professional, formal tone suitable for institutional investors.",
+        "system_prompt": "You are a senior equity research analyst writing a formal investment report."
+      }
+    },
+    {
+      "id": "node_human",
+      "node_type": "human_in_the_loop",
+      "name": "\ud83d\udc64 Analyst Review & Approval",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "response",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 1800.0,
+        "y": 150.0
+      },
+      "ui": {},
+      "metadata": {},
+      "prompt": "The equity research report for {{company_name}} ({{ticker}}) is ready for your review. Please approve, request revisions, or override the recommendation.",
+      "timeout_seconds": 86400,
+      "default_action": "approve",
+      "config": {
+        "default_action": "approve",
+        "prompt": "Please review the equity research report above. Approve to publish, or provide feedback for revision.",
+        "timeout_seconds": 86400
+      }
+    },
+    {
+      "id": "node_fallback",
+      "node_type": "llm_operator",
+      "name": "\ud83d\udd27 Revision & Fallback",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 1580.0,
+        "y": 500.0
+      },
+      "ui": {},
+      "metadata": {},
+      "model": "gpt-4o",
+      "prompt_template": "The investment thesis for {{company_name}} ({{ticker}}) did not pass validation. Review the synthesis below and identify:\n\n{{synthesis}}\n\n1. What critical data is missing?\n2. What additional sources should be consulted?\n3. What clarifying questions need answers?\n\nProduce a structured gap analysis and recommended next steps.",
+      "system_prompt": "You are a research assistant identifying gaps in equity research data.",
+      "temperature": 0.3,
+      "config": {
+        "model": "gpt-4o",
+        "prompt_template": "The following research synthesis failed validation or requires improvement:\n{input}\n\nIdentify what is missing or weak, fill in the gaps, and return an improved, complete synthesis document ready for final report generation.",
+        "system_prompt": "You are a research quality editor."
+      }
+    },
+    {
+      "id": "node_analysis_merge",
+      "node_type": "reduce",
+      "name": "Analysis Merge",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "result",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 900.0,
+        "y": 400.0
+      },
+      "ui": {},
+      "metadata": {},
+      "reducer": "concat"
+    },
+    {
+      "id": "node_loop_gate",
+      "node_type": "gate",
+      "name": "Fallback Loop Guard",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "continue",
+          "schema": {}
+        },
+        {
+          "name": "done",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 1400.0,
+        "y": 650.0
+      },
+      "ui": {},
+      "metadata": {},
+      "gate_mode": "while",
+      "condition": "needs_revision == True",
+      "max_iterations": 3
+    },
+    {
+      "id": "node_final_output",
+      "node_type": "llm_operator",
+      "name": "Final Output Formatter",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "schema": {},
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {}
+        }
+      ],
+      "position": {
+        "x": 1800.0,
+        "y": 400.0
+      },
+      "ui": {},
+      "metadata": {},
+      "model": "gpt-4o",
+      "prompt_template": "Given the analyst report and the human reviewer's feedback, produce the final polished equity research report:\n\nReport: {input}\n\nHuman Feedback: {response}",
+      "system_prompt": "You are a senior equity research editor. Incorporate reviewer feedback and finalize the report.",
+      "temperature": 0.7
+    }
+  ],
+  "edges": [
+    {
+      "id": "node_input.input->node_news_tool.input",
+      "edge_type": "data",
+      "source_node_id": "node_input",
+      "source_port": "input",
+      "target_node_id": "node_news_tool",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_input.input->node_fin_tool.input",
+      "edge_type": "data",
+      "source_node_id": "node_input",
+      "source_port": "input",
+      "target_node_id": "node_fin_tool",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_input.input->node_reports_tool.input",
+      "edge_type": "data",
+      "source_node_id": "node_input",
+      "source_port": "input",
+      "target_node_id": "node_reports_tool",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_news_tool.result->node_reduce.input",
+      "edge_type": "data",
+      "source_node_id": "node_news_tool",
+      "source_port": "result",
+      "target_node_id": "node_reduce",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_fin_tool.result->node_reduce.input",
+      "edge_type": "data",
+      "source_node_id": "node_fin_tool",
+      "source_port": "result",
+      "target_node_id": "node_reduce",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_reports_tool.result->node_reduce.input",
+      "edge_type": "data",
+      "source_node_id": "node_reports_tool",
+      "source_port": "result",
+      "target_node_id": "node_reduce",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_reduce.result->node_fundamental.input",
+      "edge_type": "data",
+      "source_node_id": "node_reduce",
+      "source_port": "result",
+      "target_node_id": "node_fundamental",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_reduce.result->node_sentiment.input",
+      "edge_type": "data",
+      "source_node_id": "node_reduce",
+      "source_port": "result",
+      "target_node_id": "node_sentiment",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_reduce.result->node_consensus.input",
+      "edge_type": "data",
+      "source_node_id": "node_reduce",
+      "source_port": "result",
+      "target_node_id": "node_consensus",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_synthesis.text->node_validator.data",
+      "edge_type": "data",
+      "source_node_id": "node_synthesis",
+      "source_port": "text",
+      "target_node_id": "node_validator",
+      "target_port": "data",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_final_report.text->node_human.input",
+      "edge_type": "data",
+      "source_node_id": "node_final_report",
+      "source_port": "text",
+      "target_node_id": "node_human",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_validator.invalid->node_fallback.input",
+      "edge_type": "control",
+      "source_node_id": "node_validator",
+      "source_port": "invalid",
+      "target_node_id": "node_fallback",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_fundamental.text->node_analysis_merge.input",
+      "edge_type": "data",
+      "source_node_id": "node_fundamental",
+      "source_port": "text",
+      "target_node_id": "node_analysis_merge",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_sentiment.text->node_analysis_merge.input",
+      "edge_type": "data",
+      "source_node_id": "node_sentiment",
+      "source_port": "text",
+      "target_node_id": "node_analysis_merge",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_consensus.text->node_analysis_merge.input",
+      "edge_type": "data",
+      "source_node_id": "node_consensus",
+      "source_port": "text",
+      "target_node_id": "node_analysis_merge",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_analysis_merge.result->node_synthesis.input",
+      "edge_type": "data",
+      "source_node_id": "node_analysis_merge",
+      "source_port": "result",
+      "target_node_id": "node_synthesis",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_fallback.text->node_loop_gate.input",
+      "edge_type": "data",
+      "source_node_id": "node_fallback",
+      "source_port": "text",
+      "target_node_id": "node_loop_gate",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_loop_gate.continue->node_synthesis.input",
+      "edge_type": "control",
+      "source_node_id": "node_loop_gate",
+      "source_port": "continue",
+      "target_node_id": "node_synthesis",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_validator.valid->node_final_report.input",
+      "edge_type": "control",
+      "source_node_id": "node_validator",
+      "source_port": "valid",
+      "target_node_id": "node_final_report",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_input.company_name->node_fundamental.input",
+      "edge_type": "data",
+      "source_node_id": "node_input",
+      "source_port": "company_name",
+      "target_node_id": "node_fundamental",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_input.company_name->node_sentiment.input",
+      "edge_type": "data",
+      "source_node_id": "node_input",
+      "source_port": "company_name",
+      "target_node_id": "node_sentiment",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_input.ticker->node_consensus.input",
+      "edge_type": "data",
+      "source_node_id": "node_input",
+      "source_port": "ticker",
+      "target_node_id": "node_consensus",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_input.ticker->node_synthesis.input",
+      "edge_type": "data",
+      "source_node_id": "node_input",
+      "source_port": "ticker",
+      "target_node_id": "node_synthesis",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_loop_gate.done->node_final_report.input",
+      "edge_type": "control",
+      "source_node_id": "node_loop_gate",
+      "source_port": "done",
+      "target_node_id": "node_final_report",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_fallback.text->node_synthesis.input",
+      "edge_type": "data",
+      "source_node_id": "node_fallback",
+      "source_port": "text",
+      "target_node_id": "node_synthesis",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_final_report.text->node_final_output.input",
+      "edge_type": "data",
+      "source_node_id": "node_final_report",
+      "source_port": "text",
+      "target_node_id": "node_final_output",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "node_human.response->node_final_output.input",
+      "edge_type": "data",
+      "source_node_id": "node_human",
+      "source_port": "response",
+      "target_node_id": "node_final_output",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {}
+    }
+  ],
+  "metadata": {
+    "updated_at": "2026-03-12T16:48:59Z",
+    "name": "equity-research-financials-sentiment-memo",
+    "created_at": "2026-03-06T11:51:04Z",
+    "forked_from": "deep-research-equity-research"
+  },
+  "entry_points": [
+    "node_input",
+    "node_final_report",
+    "node_fallback"
+  ],
+  "exit_points": [
+    "node_validator",
+    "node_loop_gate",
+    "node_final_output"
+  ]
+}

@@ -1,0 +1,418 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "private_company_due_diligence_memo",
+    "description": "",
+    "created_at": null,
+    "updated_at": "2026-03-12T00:46:36Z",
+    "tags": [],
+    "forked_from": "eval-p03-build-f570cd81"
+  },
+  "nodes": [
+    {
+      "id": "web_search",
+      "name": "web_search",
+      "description": "",
+      "input_ports": [],
+      "output_ports": [
+        {
+          "name": "result",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "tool_operator",
+      "tool_id": "web_search",
+      "tool_config": {}
+    },
+    {
+      "id": "filter_top_results",
+      "name": "filter_top_results",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "llm_operator",
+      "model": "",
+      "prompt_template": "Filter search results to identify the top 3 most relevant articles",
+      "system_prompt": "",
+      "temperature": 0.7,
+      "max_tokens": null,
+      "output_json_schema": null,
+      "model_policy": null,
+      "tools": [],
+      "max_tool_rounds": 10,
+      "target_input_tokens": null,
+      "summarize_inputs": null,
+      "jit_tool_loading": false,
+      "agent_context_tools": false,
+      "prune_fields": [],
+      "input_format": "json",
+      "semantic_cache": false,
+      "history_policy": null,
+      "task_tier": null
+    },
+    {
+      "id": "read_articles",
+      "name": "read_articles",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "results",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "for_each",
+      "body_graph": "read_articles_body",
+      "parallelism": 3,
+      "merge_strategy": "append",
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "compaction_rule": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "timeout_seconds": null,
+        "stagnation_threshold": null
+      },
+      "projections": [],
+      "boundary_contract": null
+    },
+    {
+      "id": "extract_key_info",
+      "name": "extract_key_info",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "results",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "for_each",
+      "body_graph": "extract_key_info_body",
+      "parallelism": 3,
+      "merge_strategy": "append",
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "compaction_rule": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "timeout_seconds": null,
+        "stagnation_threshold": null
+      },
+      "projections": [],
+      "boundary_contract": null
+    },
+    {
+      "id": "compile_briefing",
+      "name": "compile_briefing",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "llm_operator",
+      "model": "",
+      "prompt_template": "Compile a comprehensive briefing from all article summaries",
+      "system_prompt": "",
+      "temperature": 0.7,
+      "max_tokens": null,
+      "output_json_schema": null,
+      "model_policy": null,
+      "tools": [],
+      "max_tool_rounds": 10,
+      "target_input_tokens": null,
+      "summarize_inputs": null,
+      "jit_tool_loading": false,
+      "agent_context_tools": false,
+      "prune_fields": [],
+      "input_format": "json",
+      "semantic_cache": false,
+      "history_policy": null,
+      "task_tier": null
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_web_search__filter_top_results_0",
+      "source_node_id": "web_search",
+      "source_port": "result",
+      "target_node_id": "filter_top_results",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data",
+      "spread": false
+    },
+    {
+      "id": "edge_filter_top_results__read_articles_1",
+      "source_node_id": "filter_top_results",
+      "source_port": "text",
+      "target_node_id": "read_articles",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data",
+      "spread": false
+    },
+    {
+      "id": "edge_read_articles__extract_key_info_2",
+      "source_node_id": "read_articles",
+      "source_port": "results",
+      "target_node_id": "extract_key_info",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data",
+      "spread": false
+    },
+    {
+      "id": "edge_extract_key_info__compile_briefing_3",
+      "source_node_id": "extract_key_info",
+      "source_port": "results",
+      "target_node_id": "compile_briefing",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data",
+      "spread": false
+    }
+  ],
+  "sub_graphs": {
+    "read_articles_body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "read_articles_body",
+        "description": "",
+        "created_at": null,
+        "updated_at": null,
+        "tags": []
+      },
+      "nodes": [
+        {
+          "id": "read_articles_proc",
+          "name": "read_articles_proc",
+          "description": "",
+          "input_ports": [],
+          "output_ports": [],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "tags": [],
+          "retry_policy": null,
+          "read_set": [],
+          "write_set": [],
+          "memoize": false,
+          "cache_ttl": null,
+          "node_type": "llm_operator",
+          "model": "",
+          "prompt_template": "Read and extract content from the top 3 articles",
+          "system_prompt": "",
+          "temperature": 0.7,
+          "max_tokens": null,
+          "output_json_schema": null,
+          "model_policy": null,
+          "tools": [],
+          "max_tool_rounds": 10,
+          "target_input_tokens": null,
+          "summarize_inputs": null,
+          "jit_tool_loading": false,
+          "agent_context_tools": false,
+          "prune_fields": [],
+          "input_format": "json",
+          "semantic_cache": false,
+          "history_policy": null,
+          "task_tier": null
+        }
+      ],
+      "edges": [],
+      "sub_graphs": {},
+      "entry_points": [
+        "read_articles_proc"
+      ],
+      "exit_points": [
+        "read_articles_proc"
+      ],
+      "shared_context": [],
+      "artifact_refs": [],
+      "hyperedges": []
+    },
+    "extract_key_info_body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "extract_key_info_body",
+        "description": "",
+        "created_at": null,
+        "updated_at": null,
+        "tags": []
+      },
+      "nodes": [
+        {
+          "id": "extract_key_info_proc",
+          "name": "extract_key_info_proc",
+          "description": "",
+          "input_ports": [],
+          "output_ports": [],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "tags": [],
+          "retry_policy": null,
+          "read_set": [],
+          "write_set": [],
+          "memoize": false,
+          "cache_ttl": null,
+          "node_type": "llm_operator",
+          "model": "",
+          "prompt_template": "Extract key information from each article (summary, date, source, key points)",
+          "system_prompt": "",
+          "temperature": 0.7,
+          "max_tokens": null,
+          "output_json_schema": null,
+          "model_policy": null,
+          "tools": [],
+          "max_tool_rounds": 10,
+          "target_input_tokens": null,
+          "summarize_inputs": null,
+          "jit_tool_loading": false,
+          "agent_context_tools": false,
+          "prune_fields": [],
+          "input_format": "json",
+          "semantic_cache": false,
+          "history_policy": null,
+          "task_tier": null
+        }
+      ],
+      "edges": [],
+      "sub_graphs": {},
+      "entry_points": [
+        "extract_key_info_proc"
+      ],
+      "exit_points": [
+        "extract_key_info_proc"
+      ],
+      "shared_context": [],
+      "artifact_refs": [],
+      "hyperedges": []
+    }
+  },
+  "entry_points": [
+    "web_search"
+  ],
+  "exit_points": [
+    "compile_briefing"
+  ],
+  "shared_context": [],
+  "artifact_refs": [],
+  "hyperedges": []
+}

@@ -1,0 +1,317 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "content_review_loop_workflow",
+    "description": "",
+    "created_at": null,
+    "updated_at": "2026-03-12T16:15:05Z",
+    "tags": [],
+    "forked_from": "eval-p02-build-38a7263a"
+  },
+  "nodes": [
+    {
+      "id": "initial_draft",
+      "name": "initial_draft",
+      "description": "",
+      "input_ports": [],
+      "output_ports": [
+        {
+          "name": "text",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "llm_operator",
+      "model": "",
+      "prompt_template": "Writer creates the initial draft of the content based on requirements",
+      "system_prompt": "",
+      "temperature": 0.7,
+      "max_tokens": null,
+      "output_json_schema": null,
+      "model_policy": null,
+      "tools": [],
+      "max_tool_rounds": 10,
+      "target_input_tokens": null,
+      "summarize_inputs": null,
+      "jit_tool_loading": false,
+      "agent_context_tools": false,
+      "prune_fields": [],
+      "input_format": "json",
+      "semantic_cache": false,
+      "history_policy": null,
+      "task_tier": null
+    },
+    {
+      "id": "content_review_loop_loop",
+      "name": "content_review_loop_loop",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "draft",
+          "json_schema": {},
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "quality_score",
+          "json_schema": {},
+          "required": false,
+          "description": ""
+        },
+        {
+          "name": "feedback",
+          "json_schema": {},
+          "required": false,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "draft",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "quality_score",
+          "json_schema": {},
+          "description": ""
+        },
+        {
+          "name": "feedback",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "while_loop",
+      "condition": "content_quality >= 8 AND feedback_resolved == true",
+      "body_graph": "content_review_loop_loop_body",
+      "max_iterations": 5,
+      "state_schema": {
+        "draft": {
+          "type": "string"
+        },
+        "quality_score": {
+          "type": "integer"
+        },
+        "feedback": {
+          "type": "string"
+        }
+      },
+      "state_defaults": {
+        "draft": "",
+        "quality_score": 0,
+        "feedback": ""
+      },
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "compaction_rule": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "timeout_seconds": null,
+        "stagnation_threshold": null
+      },
+      "projections": [],
+      "feedback_selector": null,
+      "artifact_ports": null,
+      "boundary_contract": null
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_initial_draft__content_review_loop_loop_0",
+      "source_node_id": "initial_draft",
+      "source_port": "text",
+      "target_node_id": "content_review_loop_loop",
+      "target_port": "draft",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data",
+      "spread": false
+    }
+  ],
+  "sub_graphs": {
+    "content_review_loop_loop_body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "content_review_loop_loop_body",
+        "description": "",
+        "created_at": null,
+        "updated_at": null,
+        "tags": []
+      },
+      "nodes": [
+        {
+          "id": "content_review_loop_writer",
+          "name": "content_review_loop_writer",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "feedback",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [
+            {
+              "name": "text",
+              "json_schema": {},
+              "description": ""
+            }
+          ],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "tags": [],
+          "retry_policy": null,
+          "read_set": [],
+          "write_set": [],
+          "memoize": false,
+          "cache_ttl": null,
+          "node_type": "llm_operator",
+          "model": "",
+          "prompt_template": "Iterative review cycle where reviewer provides feedback and writer revises until content is approved\n\nPrevious feedback: {feedback}",
+          "system_prompt": "",
+          "temperature": 0.7,
+          "max_tokens": null,
+          "output_json_schema": null,
+          "model_policy": null,
+          "tools": [],
+          "max_tool_rounds": 10,
+          "target_input_tokens": null,
+          "summarize_inputs": null,
+          "jit_tool_loading": false,
+          "agent_context_tools": false,
+          "prune_fields": [],
+          "input_format": "json",
+          "semantic_cache": false,
+          "history_policy": null,
+          "task_tier": null
+        },
+        {
+          "id": "content_review_loop_reviewer",
+          "name": "content_review_loop_reviewer",
+          "description": "",
+          "input_ports": [
+            {
+              "name": "text",
+              "json_schema": {},
+              "required": true,
+              "description": ""
+            }
+          ],
+          "output_ports": [],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "tags": [],
+          "retry_policy": null,
+          "read_set": [],
+          "write_set": [],
+          "memoize": false,
+          "cache_ttl": null,
+          "node_type": "llm_operator",
+          "model": "",
+          "prompt_template": "Review the content for quality, accuracy, tone, and adherence to requirements. Provide specific, actionable feedback on what needs improvement.",
+          "system_prompt": "",
+          "temperature": 0.7,
+          "max_tokens": null,
+          "output_json_schema": {
+            "type": "object",
+            "properties": {
+              "quality_score": {
+                "type": "integer"
+              },
+              "feedback": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "quality_score",
+              "feedback"
+            ]
+          },
+          "model_policy": null,
+          "tools": [],
+          "max_tool_rounds": 10,
+          "target_input_tokens": null,
+          "summarize_inputs": null,
+          "jit_tool_loading": false,
+          "agent_context_tools": false,
+          "prune_fields": [],
+          "input_format": "json",
+          "semantic_cache": false,
+          "history_policy": null,
+          "task_tier": null
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge_content_review_loop_writer__content_review_loop_reviewer_0",
+          "source_node_id": "content_review_loop_writer",
+          "source_port": "text",
+          "target_node_id": "content_review_loop_reviewer",
+          "target_port": "text",
+          "ui": {},
+          "metadata": {},
+          "edge_type": "data",
+          "spread": false
+        }
+      ],
+      "sub_graphs": {},
+      "entry_points": [
+        "content_review_loop_writer"
+      ],
+      "exit_points": [
+        "content_review_loop_reviewer"
+      ],
+      "shared_context": [],
+      "artifact_refs": [],
+      "hyperedges": []
+    }
+  },
+  "entry_points": [
+    "initial_draft"
+  ],
+  "exit_points": [
+    "content_review_loop_loop"
+  ],
+  "shared_context": [],
+  "artifact_refs": [],
+  "hyperedges": []
+}
