@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage } from "electron";
+import { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -101,6 +101,11 @@ ipcMain.handle("fs:readDir", async (_event, dirPath: string) => {
 ipcMain.handle("fs:stat", async (_event, filePath: string) => {
   const stat = fs.statSync(filePath);
   return { size: stat.size, mtime: stat.mtimeMs, isDirectory: stat.isDirectory() };
+});
+
+ipcMain.handle("shell:openPath", async (_event, filePath: string) => {
+  const error = await shell.openPath(filePath);
+  return error === "";
 });
 
 // --- App lifecycle ---

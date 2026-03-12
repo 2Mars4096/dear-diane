@@ -22,6 +22,14 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export interface ServerHealth {
+  status: string;
+  pid: number;
+  timestamp: number;
+}
+
+export const getServerHealth = () => request<ServerHealth>("/health");
+
 // -- Graph CRUD --------------------------------------------------------------
 
 export interface GraphListItem {
@@ -31,29 +39,39 @@ export interface GraphListItem {
   updated_at: string | null;
 }
 
+export interface GraphResponse {
+  graph_id: string;
+  data: Record<string, unknown>;
+  graph_revision?: string | null;
+}
+
 export const listGraphs = () =>
   request<{ graphs: GraphListItem[]; last_opened: string | null }>("/graphs");
 
 export const getGraph = (id: string, options?: { layout?: boolean }) =>
-  request<{ graph_id: string; data: Record<string, unknown> }>(
+  request<GraphResponse>(
     `/graphs/${id}${options?.layout ? "?layout=true" : ""}`,
   );
 
 export const createGraph = (graphId: string, data?: Record<string, unknown>) =>
-  request<{ graph_id: string; data: Record<string, unknown> }>("/graphs", {
+  request<GraphResponse>("/graphs", {
     method: "POST",
     body: JSON.stringify({ graph_id: graphId, data }),
   });
 
 export const updateGraph = (id: string, data: Record<string, unknown>) =>
-  request<{ graph_id: string; status: string }>(`/graphs/${id}`, {
+  request<{ graph_id: string; status: string; graph_revision?: string | null }>(
+    `/graphs/${id}`,
+    {
     method: "PUT",
     body: JSON.stringify(data),
-  });
+    },
+  );
 
 export interface ApplyMutationResult {
   success: boolean;
   new_graph: Record<string, unknown> | null;
+  graph_revision?: string | null;
   errors: Array<{ op_index?: number; op_type?: string; message?: string }>;
   warnings?: string[];
   diagnostics?: string[];

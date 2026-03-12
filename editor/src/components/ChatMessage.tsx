@@ -1,5 +1,7 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { Check, X, Loader2, RotateCcw, ChevronRight, ChevronDown, Copy, Wrench } from "lucide-react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
 import hljs from "../lib/hljs";
 import type { ChatMessage } from "../types/chat";
 import {
@@ -7,7 +9,9 @@ import {
   navigateToMention,
   type MentionRef,
 } from "../lib/mentionParser";
+import { shouldShowAssistantLoadingPlaceholder } from "../lib/chatStreamLifecycle";
 import { useGraphStore } from "../store/useGraphStore";
+import { groupToolCallsForDisplay } from "../lib/toolCallPresentation";
 import ToolCallCard from "./ToolCallCard";
 import RunOutputBlock from "./RunOutputBlock";
 
@@ -19,6 +23,14 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+function renderKatex(tex: string, displayMode: boolean): string {
+  try {
+    return katex.renderToString(tex, { displayMode, throwOnError: false, strict: false });
+  } catch {
+    return `<code>${escapeHtml(tex)}</code>`;
+  }
+}
+
 function applyInlineMarkdown(line: string): string {
   return line
     .replace(
@@ -26,6 +38,7 @@ function applyInlineMarkdown(line: string): string {
       '<code class="bg-gray-100 text-gray-800 px-1 py-0.5 rounded text-[12px] font-mono">$1</code>',
     )
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
+    .replace(/~~(.+?)~~/g, "<del>$1</del>")
     .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text: string, url: string) => {
       if (/^\s*javascript\s*:/i.test(url)) return escapeHtml(text);
@@ -46,17 +59,19 @@ function renderMentionHtml(name: string, type: string, id: string): string {
 }
 
 function renderMarkdown(raw: string): string {
+  const preserved: string[] = [];
+  const ph = (html: string) => {
+    preserved.push(html);
+    return `\x00PH${preserved.length - 1}\x00`;
+  };
+
+  // 1. Extract mentions before escaping
   let text = raw.replace(
     /@\[([^\]]+)\]\((node|workflow|subgraph|file|code|docs|chat):([^)]+)\)/g,
-    (_, name, type, id) => `\x01MENTION:${name}:${type}:${id}\x01`,
-  );
-  text = escapeHtml(text);
-  text = text.replace(
-    /\x01MENTION:([^:]+):([^:]+):([^\x01]+)\x01/g,
-    (_, name, type, id) => renderMentionHtml(name, type, id),
+    (_, name, type, id) => ph(renderMentionHtml(name, type, id)),
   );
 
-  const codeBlocks: string[] = [];
+  // 2. Extract fenced code blocks before escaping
   text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
     const rawCode = code.trimEnd();
     let highlighted: string;
@@ -66,29 +81,51 @@ function renderMarkdown(raw: string): string {
           ? hljs.highlight(rawCode, { language: lang }).value
           : hljs.highlightAuto(rawCode).value;
     } catch {
-      highlighted = rawCode;
+      highlighted = escapeHtml(rawCode);
     }
     const langLabel = lang ? `<span class="text-[10px] text-gray-400 font-sans">${lang}</span>` : "";
-    const copyBtn = `<button data-copy-code="${codeBlocks.length}" class="text-[10px] text-gray-400 hover:text-gray-200 font-sans transition-colors">Copy</button>`;
-    codeBlocks.push(
+    const idx = preserved.length;
+    const copyBtn = `<button data-copy-code="${idx}" class="text-[10px] text-gray-400 hover:text-gray-200 font-sans transition-colors">Copy</button>`;
+    return ph(
       `<div class="my-2 rounded-lg overflow-hidden border border-gray-700/50">` +
         `<div class="flex items-center justify-between px-3 py-1.5 bg-gray-800 border-b border-gray-700/50">${langLabel}${copyBtn}</div>` +
         `<pre class="bg-gray-900 text-gray-100 p-3 overflow-x-auto text-[12px] leading-relaxed font-mono m-0"><code>${highlighted}</code></pre>` +
-        `<input type="hidden" data-code-raw="${codeBlocks.length}" value="${rawCode.replace(/"/g, "&quot;")}" />` +
+        `<input type="hidden" data-code-raw="${idx}" value="${rawCode.replace(/"/g, "&quot;")}" />` +
       `</div>`,
     );
-    return `\x00CB${codeBlocks.length - 1}\x00`;
   });
 
+  // 3. Extract block math ($$...$$) before escaping
+  text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) =>
+    ph(`<div class="my-2 overflow-x-auto">${renderKatex(tex.trim(), true)}</div>`),
+  );
+
+  // 4. Extract inline math ($...$) before escaping — avoid greediness across lines
+  text = text.replace(/(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_, tex) =>
+    ph(renderKatex(tex.trim(), false)),
+  );
+
+  // 5. Now HTML-escape everything that's left
+  text = escapeHtml(text);
+
+  // 6. Block-level rendering
   const blocks = text.split(/\n{2,}/);
   const rendered = blocks
     .map((block) => {
       const trimmed = block.trim();
       if (!trimmed) return "";
-      if (/^\x00CB\d+\x00$/.test(trimmed)) return trimmed;
+
+      // Preserved placeholder on its own
+      if (/^\x00PH\d+\x00$/.test(trimmed)) return trimmed;
 
       const lines = trimmed.split("\n");
 
+      // Horizontal rule
+      if (lines.length === 1 && /^[-*_]{3,}$/.test(trimmed)) {
+        return `<hr class="my-3 border-gray-200" />`;
+      }
+
+      // Heading
       if (lines.length === 1) {
         const hm = trimmed.match(/^(#{1,6})\s+(.+)$/);
         if (hm) {
@@ -105,6 +142,13 @@ function renderMarkdown(raw: string): string {
         }
       }
 
+      // Blockquote
+      if (lines.every((l) => /^&gt;\s?/.test(l))) {
+        const inner = lines.map((l) => applyInlineMarkdown(l.replace(/^&gt;\s?/, ""))).join("<br/>");
+        return `<blockquote class="my-2 pl-3 border-l-2 border-indigo-300 text-gray-600 italic">${inner}</blockquote>`;
+      }
+
+      // Unordered list
       if (lines.every((l) => /^[-*]\s/.test(l))) {
         const items = lines
           .map((l) => `<li>${applyInlineMarkdown(l.replace(/^[-*]\s/, ""))}</li>`)
@@ -112,6 +156,7 @@ function renderMarkdown(raw: string): string {
         return `<ul class="my-1 ml-4 list-disc space-y-0.5">${items}</ul>`;
       }
 
+      // Ordered list
       if (lines.every((l) => /^\d+\.\s/.test(l))) {
         const items = lines
           .map((l) => `<li>${applyInlineMarkdown(l.replace(/^\d+\.\s/, ""))}</li>`)
@@ -119,6 +164,7 @@ function renderMarkdown(raw: string): string {
         return `<ol class="my-1 ml-4 list-decimal space-y-0.5">${items}</ol>`;
       }
 
+      // Table
       if (isTable(lines)) {
         return renderTable(lines);
       }
@@ -127,9 +173,10 @@ function renderMarkdown(raw: string): string {
     })
     .join("");
 
+  // 7. Restore all preserved blocks
   let result = rendered;
-  codeBlocks.forEach((block, i) => {
-    result = result.replace(`\x00CB${i}\x00`, block);
+  preserved.forEach((html, i) => {
+    result = result.replaceAll(`\x00PH${i}\x00`, html);
   });
   return result;
 }
@@ -358,12 +405,17 @@ function ToolCallGroup({
   mutationStatus?: ChatMessage["mutationStatus"];
   onPreviewMutation?: () => void;
 }) {
+  const displayToolCalls = useMemo(
+    () => groupToolCallsForDisplay(toolCalls),
+    [toolCalls],
+  );
   const allDone = toolCalls.every((tc) => tc.status !== "running");
   const [expanded, setExpanded] = useState(false);
   const hasErrors = toolCalls.some((tc) => tc.status === "error");
-  const totalMs = toolCalls.reduce((s, tc) => s + (tc.durationMs ?? 0), 0);
-  const durationLabel = totalMs < 1000 ? `${totalMs}ms` : `${(totalMs / 1000).toFixed(1)}s`;
-  const latest = toolCalls[toolCalls.length - 1];
+  const durations = toolCalls.map((tc) => tc.durationMs ?? 0);
+  const wallClockMs = durations.length > 0 ? Math.max(...durations) : 0;
+  const durationLabel = wallClockMs < 1000 ? `${wallClockMs}ms` : `${(wallClockMs / 1000).toFixed(1)}s`;
+  const latest = displayToolCalls[displayToolCalls.length - 1]?.toolCall;
   const latestRunning = latest && latest.status === "running";
 
   return (
@@ -377,7 +429,11 @@ function ToolCallGroup({
         {expanded ? <ChevronDown size={10} className="text-gray-400" /> : <ChevronRight size={10} className="text-gray-400" />}
         <Wrench size={10} className="text-gray-400" />
         <span className="font-medium text-gray-600">
-          {toolCalls.length === 1 ? toolCalls[0].toolName : `${toolCalls.length} tool calls`}
+          {displayToolCalls.length === 1
+            ? displayToolCalls[0].fileReadGroup
+              ? `read ${displayToolCalls[0].fileReadGroup.label}`
+              : displayToolCalls[0].toolCall.toolName
+            : `${displayToolCalls.length} tool calls`}
         </span>
         {allDone ? (
           hasErrors
@@ -395,18 +451,20 @@ function ToolCallGroup({
       </button>
       {expanded && (
         <div className="ml-2 mt-0.5">
-          {toolCalls.map((tc) => {
+          {displayToolCalls.map((item) => {
+            const tc = item.toolCall;
             const isMut = tc.toolName === "plan_graph_mutations";
             const ops = isMut && mutationPlan
               ? ((mutationPlan as Record<string, unknown>).operations as Array<{ op: string; name?: string; node_id?: string; node_type?: string }>) ?? []
               : undefined;
             return (
               <ToolCallCard
-                key={tc.id}
+                key={item.key}
                 toolCall={tc}
                 mutationStatus={isMut ? mutationStatus : undefined}
                 onPreviewChanges={isMut && mutationStatus === "proposed" ? onPreviewMutation : undefined}
                 operations={ops}
+                fileReadGroup={item.fileReadGroup}
               />
             );
           })}
@@ -469,6 +527,32 @@ export default function ChatMessageBubble({
     return p + c > 0 ? p + c : null;
   })();
 
+  const [elapsed, setElapsed] = useState<number | null>(null);
+  const frozenElapsed = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!isStreaming || isUser) {
+      if (elapsed !== null && frozenElapsed.current === null) {
+        frozenElapsed.current = elapsed;
+      }
+      return;
+    }
+    frozenElapsed.current = null;
+    const start = message.timestamp;
+    const tick = () => setElapsed(Math.round((Date.now() - start) / 100) / 10);
+    tick();
+    const id = setInterval(tick, 100);
+    return () => clearInterval(id);
+  }, [isStreaming, isUser, message.timestamp]);
+
+  const displayElapsed = isStreaming && !isUser ? elapsed : frozenElapsed.current;
+  const showLoadingPlaceholder = shouldShowAssistantLoadingPlaceholder({
+    isUser,
+    isStreaming: Boolean(isStreaming),
+    content: message.content,
+    toolCallCount: message.toolCalls?.length ?? 0,
+  });
+
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3`}>
       <div
@@ -476,9 +560,15 @@ export default function ChatMessageBubble({
           isUser
             ? "bg-indigo-50 text-gray-900 rounded-2xl rounded-br-md"
             : "bg-gray-50 text-gray-900 rounded-2xl rounded-bl-md"
-        } px-3.5 py-2.5 shadow-xs`}
+        } px-3.5 py-2.5 shadow-xs${isStreaming && !isUser ? " dan-streaming-bubble" : ""}`}
       >
-        {isUser && !hasMentions ? (
+        {showLoadingPlaceholder ? (
+          <div className="flex items-center gap-1.5 py-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:0ms]" />
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:150ms]" />
+            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:300ms]" />
+          </div>
+        ) : isUser && !hasMentions ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : isUser && hasMentions ? (
           <div
@@ -494,10 +584,6 @@ export default function ChatMessageBubble({
           />
         )}
 
-        {isStreaming && !isUser && (
-          <span className="inline-block w-1.5 h-3.5 bg-indigo-400 rounded-sm animate-pulse ml-0.5 align-text-bottom" />
-        )}
-
         {message.toolCalls && message.toolCalls.length > 0 && (
           <ToolCallGroup
             toolCalls={message.toolCalls}
@@ -505,6 +591,23 @@ export default function ChatMessageBubble({
             mutationStatus={message.mutationStatus}
             onPreviewMutation={onPreviewMutation ? () => onPreviewMutation(message) : undefined}
           />
+        )}
+
+        {message.attachments && message.attachments.length > 0 && (
+          <div className="mt-2 space-y-1">
+            {message.attachments.map((att, idx) => (
+              <div
+                key={`${att.path}-${idx}`}
+                className="text-xs rounded-md border border-gray-200 bg-white/70 px-2 py-1"
+              >
+                <span className="font-medium">📎 {att.filename}</span>
+                {typeof att.size === "number" && (
+                  <span className="text-gray-500"> ({Math.round(att.size / 1024)}KB)</span>
+                )}
+                {att.path && <span className="text-gray-500"> — <code>{att.path}</code></span>}
+              </div>
+            ))}
+          </div>
         )}
 
         {/* Run output block (structured events) */}
@@ -534,6 +637,11 @@ export default function ChatMessageBubble({
           </span>
 
           <div className="flex items-center gap-2">
+            {displayElapsed !== null && (
+              <span className={`text-[10px] tabular-nums ${isStreaming && !isUser ? "text-indigo-400" : "text-gray-400"}`}>
+                {displayElapsed.toFixed(1)}s
+              </span>
+            )}
             {tokens !== null && (
               <span className="text-[10px] text-gray-400">
                 {tokens.toLocaleString()} tokens

@@ -13,14 +13,22 @@ export interface ChatMessage {
   content: string;
   timestamp: number;
   tokenUsage?: { prompt: number; completion: number } | null;
+  estimatedCost?: number | null;
   mutationPlan?: unknown | null;
   dryRunResult?: Record<string, unknown> | null;
   mutationId?: string | null;
   mutationStatus?: "proposed" | "applied" | "partial" | "rejected" | "reverted" | null;
-  runRef?: { runId: string; scope: string; status: string } | null;
+  runRef?: {
+    runId: string;
+    scope: string;
+    status: string;
+    targetNodeId?: string;
+    targetSubgraphKey?: string;
+  } | null;
   mentions?: Array<{ name: string; type: string; id: string }>;
   toolCalls?: ToolCallInfo[];
   runEvents?: RunEventPayload[];
+  attachments?: Array<{ path: string; filename: string; size?: number }>;
 }
 
 export interface ChatThread {
@@ -50,12 +58,17 @@ export interface ChatStreamEvent {
     | "chat_run_event"
     | "chat_interrupted"
     | "chat_tool_call_start"
-    | "chat_tool_call_result";
+    | "chat_tool_call_result"
+    | "chat_graph_created"
+    | "chat_validation_result"
+    | "chat_file_attachment"
+    | "ping";
   delta?: string;
   accumulated?: string;
   message_id?: string;
   content?: string;
   token_usage?: { prompt: number; completion: number };
+  estimated_cost?: number | null;
   context_window?: number;
   graph_revision?: string;
   revision_mismatch?: boolean;
@@ -73,4 +86,9 @@ export interface ChatStreamEvent {
   stream_channel_id?: string;
   correlation_id?: string;
   queue_position?: number;
+  success?: boolean;
+  errors?: string[];
+  path?: string;
+  filename?: string;
+  size?: number;
 }

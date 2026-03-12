@@ -52,43 +52,23 @@ import {
   type MentionRef,
 } from "../lib/mentionParser";
 import {
+  deriveDraftThreadTitleFromMessage,
   getDisplayThreadTitle,
   normalizeThreadTitleInput,
 } from "../lib/chatThreadTitle";
-
-function normalizeForCanonicalJson(value: unknown): unknown {
-  if (Array.isArray(value)) {
-    return value.map((item) => normalizeForCanonicalJson(item));
-  }
-  if (value && typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    const normalized: Record<string, unknown> = {};
-    for (const key of Object.keys(obj).sort()) {
-      const v = obj[key];
-      if (v === undefined) continue;
-      normalized[key] = normalizeForCanonicalJson(v);
-    }
-    return normalized;
-  }
-  return value;
-}
-
-async function computeClientGraphRevision(
-  graph: unknown,
-): Promise<string | undefined> {
-  try {
-    if (!globalThis.crypto?.subtle) return undefined;
-    const canonical = JSON.stringify(normalizeForCanonicalJson(graph));
-    const data = new TextEncoder().encode(canonical);
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
-    const hex = Array.from(new Uint8Array(digest))
-      .map((b) => b.toString(16).padStart(2, "0"))
-      .join("");
-    return hex.slice(0, 16);
-  } catch {
-    return undefined;
-  }
-}
+import {
+  fromBackendMessage,
+  safeTokenUsage,
+  toBackendMessage,
+} from "../lib/chatMessagePersistence";
+import { createThreadPersistenceCoordinator } from "../lib/threadPersistenceCoordinator";
+import {
+  getStreamDisconnectError,
+  getStreamReconnectDelayMs,
+  isAssistantBubbleStreaming,
+  shouldReconnectStream,
+} from "../lib/chatStreamLifecycle";
+import { deriveGraphRevisionSource, getClientGraphRevision } from "../lib/chatGraphRevision";
 
 const DEFAULT_WIDTH = 380;
 const MIN_WIDTH = 280;
@@ -141,82 +121,6 @@ const MODE_CONFIG: Record<ChatMode, { label: string; icon: typeof Sparkles; colo
   auto: { label: "Auto", icon: PencilLine, color: "violet" },
 };
 
-// ---------------------------------------------------------------------------
-// Backend ↔ frontend message conversion
-// ---------------------------------------------------------------------------
-
-function safeTokenUsage(tu: unknown): { prompt: number; completion: number } | null {
-  if (!tu || typeof tu !== "object") return null;
-  const raw = tu as Record<string, unknown>;
-  const p = typeof raw.prompt === "number" ? raw.prompt : 0;
-  const c = typeof raw.completion === "number" ? raw.completion : 0;
-  return p + c > 0 ? { prompt: p, completion: c } : null;
-}
-
-function toBackendMessage(m: ChatMessage): Record<string, unknown> {
-  return {
-    id: m.id,
-    role: m.role,
-    content: m.content,
-    timestamp: new Date(m.timestamp).toISOString(),
-    token_usage: m.tokenUsage
-      ? { prompt: m.tokenUsage.prompt, completion: m.tokenUsage.completion }
-      : null,
-    mutation_plan: m.mutationPlan ?? null,
-    dry_run_result: m.dryRunResult ?? null,
-    mutation_id: m.mutationId ?? null,
-    mutation_status: m.mutationStatus ?? null,
-    run_ref: m.runRef
-      ? {
-          run_id: m.runRef.runId,
-          scope: m.runRef.scope,
-          status: m.runRef.status,
-        }
-      : null,
-    mentions: m.mentions ?? [],
-    tool_calls: m.toolCalls?.map((tc) => ({
-      id: tc.id,
-      tool_name: tc.toolName,
-      args_preview: tc.argsPreview,
-      status: tc.status,
-      output_preview: tc.outputPreview ?? null,
-      duration_ms: tc.durationMs ?? null,
-    })) ?? [],
-    run_events: m.runEvents ?? [],
-  };
-}
-
-function fromBackendMessage(m: Record<string, unknown>): ChatMessage {
-  const tu = m.token_usage as Record<string, number> | null;
-  const rr = m.run_ref as Record<string, string> | null;
-  const rawTc = m.tool_calls as Array<Record<string, unknown>> | undefined;
-  return {
-    id: m.id as string,
-    role: m.role as ChatMessage["role"],
-    content: m.content as string,
-    timestamp: new Date(m.timestamp as string).getTime(),
-    tokenUsage: tu ? { prompt: tu.prompt, completion: tu.completion } : null,
-    mutationPlan: m.mutation_plan ?? null,
-    dryRunResult: (m.dry_run_result as Record<string, unknown>) ?? null,
-    mutationId: (m.mutation_id as string) ?? null,
-    mutationStatus:
-      (m.mutation_status as ChatMessage["mutationStatus"]) ?? null,
-    runRef: rr
-      ? { runId: rr.run_id, scope: rr.scope, status: rr.status }
-      : null,
-    mentions: (m.mentions as ChatMessage["mentions"]) ?? [],
-    toolCalls: rawTc?.map((tc) => ({
-      id: tc.id as string,
-      toolName: (tc.tool_name as string) ?? "",
-      argsPreview: (tc.args_preview as string) ?? "",
-      status: (tc.status as ToolCallInfo["status"]) ?? "success",
-      outputPreview: tc.output_preview as string | undefined,
-      durationMs: tc.duration_ms as number | undefined,
-    })),
-    runEvents: (m.run_events as ChatMessage["runEvents"]) ?? undefined,
-  };
-}
-
 function relativeTimeShort(iso: string): string {
   const diff = Date.now() - new Date(iso).getTime();
   const sec = Math.floor(diff / 1000);
@@ -240,6 +144,8 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   const rawGraphId = useGraphStore((s) => s.graphId);
   const graphId = rawGraphId || (fullScreen ? "_scratch" : null);
   const danGraph = useGraphStore((s) => s.danGraph);
+  const graphRevision = useGraphStore((s) => s.graphRevision);
+  const isGraphDirty = useGraphStore((s) => s.dirty);
   const loadGraph = useGraphStore((s) => s.loadGraph);
   const pushSnapshot = useGraphStore((s) => s.pushSnapshot);
   const chatMode = useGraphStore((s) => s.chatMode);
@@ -305,13 +211,101 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   const activeThreadIdRef = useRef<string | null>(null);
   const prevGraphIdRef = useRef<string | null>(null);
   const activeChannelIdRef = useRef<string | null>(null);
+  const activeRunChannelIdRef = useRef<string | null>(null);
+  const graphIdRef = useRef<string | null>(graphId);
+  const persistenceCoordinatorRef = useRef<
+    ReturnType<typeof createThreadPersistenceCoordinator<ChatMessage[]>> | null
+  >(null);
+  if (!persistenceCoordinatorRef.current) {
+    persistenceCoordinatorRef.current =
+      createThreadPersistenceCoordinator<ChatMessage[]>({
+        persist: async (workflowId, threadId, nextMessages, options) => {
+          try {
+            await api.updateChatThread(workflowId, threadId, {
+              messages: nextMessages.map(toBackendMessage),
+            });
+          } catch (err: unknown) {
+            if (!options?.silent) {
+              console.warn(
+                options?.label ?? "Failed to save thread:",
+                err,
+              );
+            }
+          }
+        },
+      });
+  }
   activeChannelIdRef.current = activeChannelId;
+  graphIdRef.current = graphId;
 
   activeThreadIdRef.current = activeThreadId;
 
   // -------------------------------------------------------------------------
   // Thread persistence helpers
   // -------------------------------------------------------------------------
+
+  const persistThreadMessages = useCallback(
+    (
+      workflowId: string | null,
+      threadId: string | null | undefined,
+      nextMessages: ChatMessage[],
+      options?: { silent?: boolean; label?: string },
+    ) => {
+      if (!workflowId || !threadId) return;
+      void persistenceCoordinatorRef.current?.persistNow(
+        workflowId,
+        threadId,
+        nextMessages,
+        options,
+      );
+    },
+    [],
+  );
+
+  const scheduleThreadPersist = useCallback(
+    (
+      workflowId: string | null,
+      threadId: string | null | undefined,
+      nextMessages: ChatMessage[],
+      delayMs = 5_000,
+    ) => {
+      if (!workflowId || !threadId) return;
+      persistenceCoordinatorRef.current?.schedule(
+        workflowId,
+        threadId,
+        nextMessages,
+        delayMs,
+        { silent: true },
+      );
+    },
+    [],
+  );
+
+  const flushScheduledThreadPersist = useCallback(
+    (
+      fallbackWorkflowId?: string | null,
+      fallbackThreadId?: string | null,
+      fallbackMessages?: ChatMessage[],
+    ) => {
+      void persistenceCoordinatorRef.current?.flushPending(
+        fallbackWorkflowId && fallbackThreadId && fallbackMessages
+          ? {
+              workflowId: fallbackWorkflowId,
+              threadId: fallbackThreadId,
+              value: fallbackMessages,
+              options: { silent: true },
+            }
+          : undefined,
+      );
+    },
+    [],
+  );
+
+  useEffect(() => {
+    return () => {
+      persistenceCoordinatorRef.current?.dispose();
+    };
+  }, []);
 
   const fetchThreads = useCallback(async (wfId: string) => {
     setLoadingThreads(true);
@@ -331,6 +325,35 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
     }
   }, []);
 
+  const refreshActiveThreadTitle = useCallback(
+    async (wfId: string, threadId: string) => {
+      try {
+        const data = await api.getChatThread(wfId, threadId);
+        const nextTitle = getDisplayThreadTitle(data.title as string, "");
+        if (!nextTitle) return;
+        if (activeThreadIdRef.current !== threadId) return;
+        setThreadTitle(nextTitle);
+        setThreads((prev) =>
+          prev.map((thread) =>
+            thread.id === threadId
+              ? {
+                  ...thread,
+                  title: nextTitle,
+                  updated_at:
+                    typeof data.updated_at === "string"
+                      ? data.updated_at
+                      : thread.updated_at,
+                }
+              : thread,
+          ),
+        );
+      } catch {
+        // Best-effort title refresh.
+      }
+    },
+    [],
+  );
+
   const loadThread = useCallback(
     async (wfId: string, threadId: string) => {
       try {
@@ -348,6 +371,62 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
       }
     },
     [],
+  );
+
+  const probeBackendAvailability = useCallback(async () => {
+    try {
+      await api.getServerHealth();
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const restoreThreadSnapshotFromServer = useCallback(
+    async (wfId: string | null, threadId: string | null) => {
+      if (!wfId || !threadId) return false;
+      try {
+        const data = await api.getChatThread(wfId, threadId);
+        const backendMsgs = (data.messages ?? []) as Record<string, unknown>[];
+        if (activeThreadIdRef.current === threadId) {
+          setMessages(backendMsgs.map(fromBackendMessage));
+          setThreadTitle(getDisplayThreadTitle((data.title as string) || "", ""));
+          const storedMode = (data.mode as ChatMode) || "agent";
+          useGraphStore.getState().setChatMode(storedMode);
+        }
+        setThreads((prev) =>
+          prev.map((thread) =>
+            thread.id === threadId
+              ? {
+                  ...thread,
+                  title:
+                    typeof data.title === "string" && data.title.trim()
+                      ? data.title
+                      : thread.title,
+                  updated_at:
+                    typeof data.updated_at === "string"
+                      ? data.updated_at
+                      : thread.updated_at,
+                }
+              : thread,
+          ),
+        );
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [],
+  );
+
+  const classifyBackendDisconnectState = useCallback(
+    async (closeCode: number, hadTransportError: boolean) => {
+      if (closeCode === 4004) return "restarted" as const;
+      const backendAvailable = await probeBackendAvailability();
+      if (!backendAvailable) return "unavailable" as const;
+      return hadTransportError ? ("restarted" as const) : ("unknown" as const);
+    },
+    [probeBackendAvailability],
   );
 
   // -------------------------------------------------------------------------
@@ -441,6 +520,14 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   }, [messages]);
 
   useEffect(() => {
+    if (!error && !staleRevision) return;
+    const timer = window.setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [error, staleRevision]);
+
+  useEffect(() => {
     if (chatFocusTrigger > 0) {
       setChatOpen(true);
       setShowThreadList(false);
@@ -531,8 +618,15 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
 
   // Clean up WebSocket on unmount
   useEffect(() => {
-    return () => wsRef.current?.close();
-  }, []);
+    return () => {
+      flushScheduledThreadPersist(
+        graphIdRef.current,
+        activeThreadIdRef.current,
+        messagesRef.current,
+      );
+      wsRef.current?.close();
+    };
+  }, [flushScheduledThreadPersist]);
 
   // -------------------------------------------------------------------------
   // Mutation preference + run stream helpers
@@ -554,94 +648,173 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
 
   const attachRunStream = useCallback(
     (
-      streamChannelId: string,
+      initialStreamChannelId: string,
       assistantId: string,
       capturedGraphId: string | null,
       initialRunRef?: { runId: string; scope: string; status: string } | null,
+      options?: { reconnectCount?: number },
     ) => {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
-      const runWs = new WebSocket(
-        `${proto}//${location.host}/api/chat/${streamChannelId}/events`,
-      );
-      wsRef.current = runWs;
-      setActiveChannelId(null); // run streams are observational, not stoppable via chat stop route
-      setIsStreaming(false);
-      setIsRunStreaming(true);
+      const connectRunStream = (streamChannelId: string, reconnectCount = 0) => {
+        activeRunChannelIdRef.current = streamChannelId;
+        const runWs = new WebSocket(
+          `${proto}//${location.host}/api/chat/${streamChannelId}/events`,
+        );
+        wsRef.current = runWs;
+        setActiveChannelId(null); // run streams are observational, not stoppable via chat stop route
+        setIsStreaming(false);
+        setIsRunStreaming(true);
+        let runWsClosedIntentionally = false;
+        let runWsHadTransportError = false;
 
-      runWs.onmessage = (ev) => {
-        try {
-          const parsed = JSON.parse(ev.data);
-          if (parsed.type === "chat_run_event" && parsed.run_event) {
-            const re = parsed.run_event as {
-              event_type: string;
-              node_id?: string | null;
-              summary: string;
-              detail?: Record<string, unknown>;
-            };
-            setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantId
-                  ? {
-                      ...m,
-                      content: m.content ? `${m.content}\n${re.summary}` : re.summary,
-                      runEvents: [
-                        ...(m.runEvents || []),
-                        {
-                          type: "run_event",
-                          event_type: re.event_type,
-                          node_id: re.node_id,
-                          summary: re.summary,
-                          detail: re.detail,
-                        },
-                      ],
-                      runRef: m.runRef
-                        ? {
-                            ...m.runRef,
-                            status:
-                              re.event_type === "run_completed"
-                                ? "completed"
-                                : re.event_type === "run_failed"
-                                  ? "failed"
-                                  : re.event_type === "run_cancelled"
-                                    ? "cancelled"
-                                    : m.runRef.status,
-                          }
-                        : initialRunRef ?? m.runRef,
-                    }
-                  : m,
-              ),
-            );
-            if (
-              re.event_type === "run_completed" ||
-              re.event_type === "run_failed" ||
-              re.event_type === "run_cancelled"
-            ) {
-              setIsRunStreaming(false);
+        runWs.onmessage = (ev) => {
+          try {
+            const parsed = JSON.parse(ev.data);
+            if (parsed.type === "chat_run_event" && parsed.run_event) {
+              const re = parsed.run_event as {
+                event_type: string;
+                node_id?: string | null;
+                summary: string;
+                detail?: Record<string, unknown>;
+              };
+              const isTerminalRunEvent =
+                re.event_type === "run_completed" ||
+                re.event_type === "run_failed" ||
+                re.event_type === "run_cancelled";
               setMessages((prev) => {
+                const updated = prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        content: m.content ? `${m.content}\n${re.summary}` : re.summary,
+                        runEvents: [
+                          ...(m.runEvents || []),
+                          {
+                            type: "run_event",
+                            event_type: re.event_type,
+                            node_id: re.node_id,
+                            summary: re.summary,
+                            detail: re.detail,
+                          },
+                        ],
+                        runRef: m.runRef
+                          ? {
+                              ...m.runRef,
+                              status:
+                                re.event_type === "run_completed"
+                                  ? "completed"
+                                  : re.event_type === "run_failed"
+                                    ? "failed"
+                                    : re.event_type === "run_cancelled"
+                                      ? "cancelled"
+                                      : m.runRef.status,
+                            }
+                          : initialRunRef ?? m.runRef,
+                      }
+                    : m,
+                );
                 const tid = activeThreadIdRef.current;
-                if (tid && capturedGraphId) {
-                  api
-                    .updateChatThread(capturedGraphId, tid, {
-                      messages: prev.map(toBackendMessage),
-                    })
-                    .catch((err: unknown) =>
-                      console.warn("Failed to save thread:", err),
-                    );
+                if (isTerminalRunEvent) {
+                  persistThreadMessages(capturedGraphId, tid, updated);
+                } else {
+                  scheduleThreadPersist(capturedGraphId, tid, updated);
                 }
-                return prev;
+                return updated;
               });
-              runWs.close();
+              if (isTerminalRunEvent) {
+                runWsClosedIntentionally = true;
+                activeRunChannelIdRef.current = null;
+                setIsRunStreaming(false);
+                runWs.close();
+              }
             }
+          } catch {
+            /* ignore parse errors */
           }
-        } catch {
-          /* ignore parse errors */
-        }
+        };
+
+        runWs.onerror = () => {
+          runWsHadTransportError = true;
+          flushScheduledThreadPersist(
+            capturedGraphId,
+            activeThreadIdRef.current,
+            messagesRef.current,
+          );
+        };
+        runWs.onclose = (event) => {
+          flushScheduledThreadPersist(
+            capturedGraphId,
+            activeThreadIdRef.current,
+            messagesRef.current,
+          );
+          if (
+            shouldReconnectStream({
+              closedIntentionally: runWsClosedIntentionally,
+              activeChannelId: activeRunChannelIdRef.current,
+              channelId: streamChannelId,
+              reconnectCount,
+              closeCode: event.code,
+              hadTransportError: runWsHadTransportError,
+            })
+          ) {
+            window.setTimeout(() => {
+              connectRunStream(streamChannelId, reconnectCount + 1);
+            }, getStreamReconnectDelayMs(reconnectCount));
+            return;
+          }
+          if (
+            runWsClosedIntentionally ||
+            event.code === 1000 ||
+            event.code === 1005
+          ) {
+            if (activeRunChannelIdRef.current === streamChannelId) {
+              activeRunChannelIdRef.current = null;
+            }
+            setIsRunStreaming(false);
+            return;
+          }
+          if (activeRunChannelIdRef.current === streamChannelId) {
+            activeRunChannelIdRef.current = null;
+          }
+          setIsRunStreaming(false);
+          void (async () => {
+            const backendState = await classifyBackendDisconnectState(
+              event.code,
+              runWsHadTransportError,
+            );
+            const disconnectError = getStreamDisconnectError({
+              closedIntentionally: runWsClosedIntentionally,
+              closeCode: event.code,
+              hadTransportError: runWsHadTransportError,
+              streamLabel: "Run stream connection",
+              recoveryHint:
+                backendState === "unavailable"
+                  ? "Wait a few seconds for DAN to come back, then ask for status or rerun."
+                  : "Ask for status or rerun if needed.",
+              backendState,
+            });
+            if (disconnectError) {
+              setError(disconnectError);
+              useGraphStore.getState().addToast({
+                type: "error",
+                message:
+                  backendState === "unavailable"
+                    ? "Local DAN backend unavailable"
+                    : "Run stream disconnected",
+              });
+            }
+          })();
+        };
       };
 
-      runWs.onerror = () => setIsRunStreaming(false);
-      runWs.onclose = () => setIsRunStreaming(false);
+      connectRunStream(initialStreamChannelId, options?.reconnectCount ?? 0);
     },
-    [],
+    [
+      classifyBackendDisconnectState,
+      flushScheduledThreadPersist,
+      persistThreadMessages,
+      scheduleThreadPersist,
+    ],
   );
 
   // -------------------------------------------------------------------------
@@ -703,14 +876,12 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
       let threadId = activeThreadIdRef.current;
       if (!threadId && graphId) {
         try {
-          const autoTitle =
-            content.length > 50 ? content.slice(0, 50) + "…" : content;
-          const data = await api.createChatThread(graphId, autoTitle);
+          const draftTitle = deriveDraftThreadTitleFromMessage(content);
+          const data = await api.createChatThread(graphId, draftTitle);
           threadId = (data as Record<string, unknown>).id as string;
           setActiveThreadId(threadId);
-          setThreadTitle(
-            content.length > 40 ? content.slice(0, 40) + "…" : content,
-          );
+          activeThreadIdRef.current = threadId;
+          setThreadTitle(draftTitle);
           setShowThreadList(false);
         } catch (err) {
           console.warn("Failed to create thread:", err);
@@ -746,10 +917,21 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
       setDetectedMode(null);
 
       const capturedGraphId = graphId;
-      const currentDanGraph = useGraphStore.getState().danGraph;
+      const graphState = useGraphStore.getState();
+      const currentDanGraph = isGraphDirty
+        ? deriveGraphRevisionSource({
+            baseGraph: graphState.danGraph,
+            nodes: graphState.nodes,
+            edges: graphState.edges,
+            layerStack: graphState.layerStack,
+            loopGroups: graphState.loopGroups,
+          })
+        : graphState.danGraph;
       const clientGraphRevision = currentDanGraph
-        ? await computeClientGraphRevision(currentDanGraph)
-        : undefined;
+        ? await getClientGraphRevision(currentDanGraph, graphRevision, {
+            preferLocal: isGraphDirty,
+          })
+        : graphRevision ?? undefined;
 
       try {
         const res = await fetch("/api/chat/message", {
@@ -794,16 +976,11 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                 ? { ...m, content: `Run failed: ${errMsg}` }
                 : m,
             );
-            const tid = activeThreadIdRef.current;
-            if (tid && capturedGraphId) {
-              api
-                .updateChatThread(capturedGraphId, tid, {
-                  messages: updated.map(toBackendMessage),
-                })
-                .catch((err: unknown) =>
-                  console.warn("Failed to save thread:", err),
-                );
-            }
+            persistThreadMessages(
+              capturedGraphId,
+              threadId ?? activeThreadIdRef.current,
+              updated,
+            );
             return updated;
           });
           setIsStreaming(false);
@@ -816,8 +993,8 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
             scope: (resBody.scope as string) ?? "full",
             status: "running",
           };
-          setMessages((prev) =>
-            prev.map((m) =>
+          setMessages((prev) => {
+            const updated = prev.map((m) =>
               m.id === assistantId
                 ? {
                     ...m,
@@ -825,8 +1002,14 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                     runRef: initialRunRef,
                   }
                 : m,
-            ),
-          );
+            );
+            persistThreadMessages(
+              capturedGraphId,
+              threadId ?? activeThreadIdRef.current,
+              updated,
+            );
+            return updated;
+          });
 
           if (resBody.stream_channel_id) {
             attachRunStream(
@@ -845,17 +1028,43 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           message_id: string;
           stream_channel_id: string;
         };
+
+        {
+          const tid = threadId;
+          if (tid && capturedGraphId) {
+            const snapshot = [
+              ...(historyOverride ?? messagesRef.current),
+              userMsg,
+              assistantMsg,
+            ];
+            persistThreadMessages(capturedGraphId, tid, snapshot, {
+              label: "Failed to save initial messages:",
+            });
+            setTimeout(() => {
+              void refreshActiveThreadTitle(capturedGraphId, tid);
+            }, 1200);
+            setTimeout(() => {
+              void refreshActiveThreadTitle(capturedGraphId, tid);
+            }, 3500);
+          }
+        }
+
         const proto = location.protocol === "https:" ? "wss:" : "ws:";
         const seenStreamChannels = new Set<string>();
 
-        const connectToChatStream = (channelId: string) => {
-          if (seenStreamChannels.has(channelId)) {
+        const connectToChatStream = (
+          channelId: string,
+          options?: { reconnectCount?: number },
+        ) => {
+          const reconnectCount = options?.reconnectCount ?? 0;
+          const isReconnect = reconnectCount > 0;
+          if (!isReconnect && seenStreamChannels.has(channelId)) {
             setError("Chat stream redirect loop detected");
             setIsStreaming(false);
             setActiveChannelId(null);
             return;
           }
-          seenStreamChannels.add(channelId);
+          if (!isReconnect) seenStreamChannels.add(channelId);
           setActiveChannelId(channelId);
 
           const ws = new WebSocket(
@@ -863,6 +1072,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           );
           wsRef.current = ws;
           let wsClosedIntentionally = false;
+          let wsHadTransportError = false;
 
           ws.onmessage = (e) => {
             try {
@@ -872,8 +1082,8 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                 const queuePosition =
                   typeof evt.queue_position === "number" ? evt.queue_position : 0;
 
-                setMessages((prev) =>
-                  prev.map((m) =>
+                setMessages((prev) => {
+                  const updated = prev.map((m) =>
                     m.id === assistantId
                       ? {
                           ...m,
@@ -883,8 +1093,14 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                               : "Queued behind an earlier message...",
                         }
                       : m,
-                  ),
-                );
+                  );
+                  scheduleThreadPersist(
+                    capturedGraphId,
+                    threadId ?? activeThreadIdRef.current,
+                    updated,
+                  );
+                  return updated;
+                });
 
                 if (nextChannel && nextChannel !== channelId) {
                   runStreamHandoffRef.current = true;
@@ -895,8 +1111,8 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                 return;
               }
             if (evt.type === "chat_token") {
-              setMessages((prev) =>
-                prev.map((m) =>
+              setMessages((prev) => {
+                const updated = prev.map((m) =>
                   m.id === assistantId
                     ? {
                         ...m,
@@ -904,8 +1120,14 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                           evt.accumulated ?? m.content + (evt.delta ?? ""),
                       }
                     : m,
-                ),
-              );
+                );
+                scheduleThreadPersist(
+                  capturedGraphId,
+                  threadId ?? activeThreadIdRef.current,
+                  updated,
+                );
+                return updated;
+              });
             } else if (evt.type === "chat_complete") {
               const isProgressAck = evt.detected_mode === "progress_ack";
               if (evt.context_window) setContextWindow(evt.context_window);
@@ -915,22 +1137,27 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                   m.id === assistantId
                     ? {
                         ...m,
-                        content: evt.content ?? m.content,
+                        content: (evt.content || m.content),
                         tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
+                        estimatedCost:
+                          typeof evt.estimated_cost === "number"
+                            ? evt.estimated_cost
+                            : m.estimatedCost ?? null,
                       }
                     : m,
                 );
-                if (!isProgressAck) {
-                  const tid = activeThreadIdRef.current;
-                  if (tid && capturedGraphId) {
-                    api
-                      .updateChatThread(capturedGraphId, tid, {
-                        messages: updated.map(toBackendMessage),
-                      })
-                      .catch((err: unknown) =>
-                        console.warn("Failed to save thread:", err),
-                      );
-                  }
+                if (isProgressAck) {
+                  scheduleThreadPersist(
+                    capturedGraphId,
+                    threadId ?? activeThreadIdRef.current,
+                    updated,
+                  );
+                } else {
+                  persistThreadMessages(
+                    capturedGraphId,
+                    threadId ?? activeThreadIdRef.current,
+                    updated,
+                  );
                 }
                 return updated;
               });
@@ -978,16 +1205,11 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                       })()
                     : m,
                 );
-                const tid = activeThreadIdRef.current;
-                if (tid && capturedGraphId) {
-                  api
-                    .updateChatThread(capturedGraphId, tid, {
-                      messages: updated.map(toBackendMessage),
-                    })
-                    .catch((err: unknown) =>
-                      console.warn("Failed to save thread:", err),
-                    );
-                }
+                persistThreadMessages(
+                  capturedGraphId,
+                  threadId ?? activeThreadIdRef.current,
+                  updated,
+                );
                 return updated;
               });
               setIsStreaming(false);
@@ -1018,16 +1240,11 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                       }
                     : m,
                 );
-                const tid = activeThreadIdRef.current;
-                if (tid && capturedGraphId) {
-                  api
-                    .updateChatThread(capturedGraphId, tid, {
-                      messages: updated.map(toBackendMessage),
-                    })
-                    .catch((err: unknown) =>
-                      console.warn("Failed to save thread:", err),
-                    );
-                }
+                persistThreadMessages(
+                  capturedGraphId,
+                  threadId ?? activeThreadIdRef.current,
+                  updated,
+                );
                 return updated;
               });
               setIsStreaming(false);
@@ -1036,8 +1253,8 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               ws.close();
               if (capturedGraphId) void fetchThreads(capturedGraphId);
             } else if (evt.type === "chat_tool_call_start") {
-              setMessages((prev) =>
-                prev.map((m) =>
+              setMessages((prev) => {
+                const updated = prev.map((m) =>
                   m.id === assistantId
                     ? {
                         ...m,
@@ -1052,11 +1269,17 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                         ],
                       }
                     : m,
-                ),
-              );
+                );
+                scheduleThreadPersist(
+                  capturedGraphId,
+                  threadId ?? activeThreadIdRef.current,
+                  updated,
+                );
+                return updated;
+              });
             } else if (evt.type === "chat_tool_call_result") {
-              setMessages((prev) =>
-                prev.map((m) =>
+              setMessages((prev) => {
+                const updated = prev.map((m) =>
                   m.id === assistantId
                     ? {
                         ...m,
@@ -1072,12 +1295,62 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                         ),
                       }
                     : m,
-                ),
-              );
+                );
+                scheduleThreadPersist(
+                  capturedGraphId,
+                  threadId ?? activeThreadIdRef.current,
+                  updated,
+                );
+                return updated;
+              });
+            } else if (evt.type === "chat_graph_created") {
+              if (capturedGraphId) void loadGraph(capturedGraphId);
+            } else if (evt.type === "chat_validation_result") {
+              if (evt.success === false && evt.errors?.length) {
+                const errSummary = (evt.errors as string[]).slice(0, 3).join("; ");
+                useGraphStore
+                  .getState()
+                  .addToast({ type: "error", message: `Validation failed: ${errSummary}` });
+              }
+            } else if (evt.type === "chat_file_attachment") {
+              setMessages((prev) => {
+                const updated = prev.map((m) =>
+                  m.id === assistantId
+                    ? {
+                        ...m,
+                        attachments: (m.attachments || []).some(
+                          (attachment) => attachment.path === (evt.path ?? ""),
+                        )
+                          ? (m.attachments || [])
+                          : [
+                              ...(m.attachments || []),
+                              {
+                                path: evt.path ?? "",
+                                filename: evt.filename ?? "File",
+                                size: evt.size,
+                              },
+                            ],
+                      }
+                    : m,
+                );
+                scheduleThreadPersist(
+                  capturedGraphId,
+                  threadId ?? activeThreadIdRef.current,
+                  updated,
+                );
+                return updated;
+              });
+            } else if (evt.type === "ping") {
+              // WS keepalive — no-op
             } else if (evt.type === "chat_error") {
               if (evt.error?.includes("revision_mismatch")) {
                 setStaleRevision(true);
               }
+              flushScheduledThreadPersist(
+                capturedGraphId,
+                threadId ?? activeThreadIdRef.current,
+                messagesRef.current,
+              );
               setError(evt.error ?? "Unknown error");
               setIsStreaming(false);
               setActiveChannelId(null);
@@ -1098,31 +1371,95 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           };
 
           ws.onerror = () => {
-            wsClosedIntentionally = true;
-            setError("WebSocket connection failed");
-            setIsStreaming(false);
-            setActiveChannelId(null);
+            wsHadTransportError = true;
+            flushScheduledThreadPersist(
+              capturedGraphId,
+              threadId ?? activeThreadIdRef.current,
+              messagesRef.current,
+            );
           };
 
           ws.onclose = (event) => {
+            flushScheduledThreadPersist(
+              capturedGraphId,
+              threadId ?? activeThreadIdRef.current,
+              messagesRef.current,
+            );
             if (runStreamHandoffRef.current) {
               runStreamHandoffRef.current = false;
               return;
             }
             if (
-              !wsClosedIntentionally &&
-              event.code !== 1000 &&
-              event.code !== 1005
+              shouldReconnectStream({
+                closedIntentionally: wsClosedIntentionally,
+                activeChannelId: activeChannelIdRef.current,
+                channelId,
+                reconnectCount,
+                closeCode: event.code,
+                hadTransportError: wsHadTransportError,
+              })
             ) {
-              setError(
-                "Connection lost — your response may be incomplete. Click Retry to resend.",
-              );
-              useGraphStore
-                .getState()
-                .addToast({ type: "error", message: "Chat stream disconnected" });
+              window.setTimeout(() => {
+                connectToChatStream(channelId, {
+                  reconnectCount: reconnectCount + 1,
+                });
+              }, getStreamReconnectDelayMs(reconnectCount));
+              return;
+            }
+            if (
+              wsClosedIntentionally ||
+              event.code === 1000 ||
+              event.code === 1005
+            ) {
+              setIsStreaming(false);
+              setActiveChannelId(null);
+              return;
             }
             setIsStreaming(false);
             setActiveChannelId(null);
+            void (async () => {
+              const activeThreadForRecovery =
+                threadId ?? activeThreadIdRef.current ?? null;
+              const backendState = await classifyBackendDisconnectState(
+                event.code,
+                wsHadTransportError,
+              );
+              const restoredSnapshot =
+                backendState === "unavailable"
+                  ? false
+                  : await restoreThreadSnapshotFromServer(
+                      capturedGraphId,
+                      activeThreadForRecovery,
+                    );
+              const disconnectError = getStreamDisconnectError({
+                closedIntentionally: wsClosedIntentionally,
+                closeCode: event.code,
+                hadTransportError: wsHadTransportError,
+                backendState,
+                restoredSnapshot,
+                recoveryHint:
+                  backendState === "unavailable"
+                    ? "Wait a few seconds for DAN to come back, then click Retry."
+                    : "Click Retry to continue from the latest saved thread state.",
+              });
+              if (disconnectError) {
+                setError(disconnectError);
+                useGraphStore.getState().addToast({
+                  type: "error",
+                  message:
+                    backendState === "unavailable"
+                      ? "Local DAN backend unavailable"
+                      : backendState === "restarted"
+                        ? restoredSnapshot
+                          ? "Recovered latest saved chat snapshot"
+                          : "Chat stream lost after backend restart"
+                        : "Chat stream disconnected",
+                });
+              }
+              if (capturedGraphId && backendState !== "unavailable") {
+                void fetchThreads(capturedGraphId);
+              }
+            })();
           };
         };
 
@@ -1132,10 +1469,36 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           err instanceof Error ? err.message : "Failed to send message";
         setError(msg);
         setIsStreaming(false);
-        setMessages((prev) => prev.filter((m) => m.id !== assistantId));
+        setMessages((prev) => {
+          const updated = prev.filter((m) => m.id !== assistantId);
+          persistThreadMessages(
+            capturedGraphId,
+            threadId ?? activeThreadIdRef.current,
+            updated,
+            { silent: true },
+          );
+          return updated;
+        });
       }
     },
-    [inputText, isStreaming, graphId],
+    [
+      attachRunStream,
+      deriveDraftThreadTitleFromMessage,
+      flushScheduledThreadPersist,
+      fullScreen,
+      graphId,
+      graphRevision,
+      isGraphDirty,
+      inputText,
+      isStreaming,
+      mutationConfirmMode,
+      persistThreadMessages,
+      refreshActiveThreadTitle,
+      restoreThreadSnapshotFromServer,
+      scheduleThreadPersist,
+      classifyBackendDisconnectState,
+      fetchThreads,
+    ],
   );
 
   const retryLast = useCallback(() => {
@@ -1771,7 +2134,12 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                   onRevert={() => handleRevert(m.id)}
                   onPreviewMutation={chatMode === "ask" ? undefined : handlePreviewMutation}
                   onCopyMarkdown={() => handleCopyMessage(m)}
-                  isStreaming={isStreaming && i === messages.length - 1 && m.role === "assistant"}
+                  isStreaming={isAssistantBubbleStreaming({
+                    role: m.role,
+                    isLastMessage: i === messages.length - 1,
+                    isStreaming,
+                    isRunStreaming,
+                  })}
                 />
                 {chatMode === "plan" &&
                   m.role === "assistant" &&
@@ -1788,8 +2156,6 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                   )}
               </div>
             ))}
-
-            {isStreaming && messages[messages.length - 1]?.content === "" && <StreamingDots />}
 
             {fullScreen && escalation && (
               <EscalationBanner suggestion={escalation} onDismiss={() => setEscalation(null)} />
@@ -2373,16 +2739,3 @@ function PlanApprovalButtons({
   );
 }
 
-function StreamingDots() {
-  return (
-    <div className="flex justify-start mb-3">
-      <div className="bg-gray-50 rounded-2xl rounded-bl-md px-3.5 py-3 shadow-xs">
-        <div className="flex items-center gap-1.5">
-          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:0ms]" />
-          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:150ms]" />
-          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:300ms]" />
-        </div>
-      </div>
-    </div>
-  );
-}

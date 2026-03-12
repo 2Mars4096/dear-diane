@@ -83,6 +83,7 @@ export interface TabInfo {
 interface TabSnapshot {
   graphId: string | null;
   danGraph: DanGraph | null;
+  graphRevision: string | null;
   dirty: boolean;
   nodes: Node[];
   edges: Edge[];
@@ -118,6 +119,7 @@ interface GraphState {
   // -- Graph identity
   graphId: string | null;
   danGraph: DanGraph | null;
+  graphRevision: string | null;
   graphList: api.GraphListItem[];
   dirty: boolean;
 
@@ -344,6 +346,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     return {
       graphId: s.graphId,
       danGraph: s.danGraph ? structuredClone(s.danGraph) : null,
+      graphRevision: s.graphRevision,
       dirty: s.dirty,
       nodes: structuredClone(s.nodes),
       edges: structuredClone(s.edges),
@@ -380,6 +383,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
     set({
       graphId: snapshot.graphId,
       danGraph: snapshot.danGraph,
+      graphRevision: snapshot.graphRevision,
       dirty: snapshot.dirty,
       nodes: snapshot.nodes,
       edges: snapshot.edges,
@@ -430,6 +434,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   return {
   graphId: null,
   danGraph: null,
+  graphRevision: null,
   graphList: [],
   dirty: false,
   nodes: [],
@@ -516,7 +521,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   loadGraph: async (graphId: string) => {
     set({ loadingGraph: true });
     try {
-      const { data } = await api.getGraph(graphId, { layout: true });
+      const { data, graph_revision } = await api.getGraph(graphId, { layout: true });
       const danGraph = data as unknown as DanGraph;
       let { nodes, edges } = danGraphToReactFlow(danGraph);
 
@@ -537,7 +542,19 @@ export const useGraphStore = create<GraphState>((set, get) => {
         edges = injected.edges;
       }
 
-      set({ graphId, danGraph, nodes, edges, loopGroups: loadedGroups, dirty: false, selectedNodeId: null, selectedEdgeId: null, layerStack: [], validationErrors: {} });
+      set({
+        graphId,
+        danGraph,
+        graphRevision: graph_revision ?? null,
+        nodes,
+        edges,
+        loopGroups: loadedGroups,
+        dirty: false,
+        selectedNodeId: null,
+        selectedEdgeId: null,
+        layerStack: [],
+        validationErrors: {},
+      });
       const { activeTabId: atId } = get();
       if (atId) {
         const gName = danGraph.metadata?.name ?? graphId;
@@ -615,8 +632,15 @@ export const useGraphStore = create<GraphState>((set, get) => {
         }
         updated = deepSetSubGraph(danGraph, layerStack, updatedSub);
       }
-      await api.updateGraph(graphId, updated as unknown as Record<string, unknown>);
-      set({ danGraph: updated, dirty: false });
+      const response = await api.updateGraph(
+        graphId,
+        updated as unknown as Record<string, unknown>,
+      );
+      set({
+        danGraph: updated,
+        graphRevision: response.graph_revision ?? get().graphRevision ?? null,
+        dirty: false,
+      });
       get().addToast({ type: "success", message: "Graph saved" });
 
       // Run server-side validation after successful save
@@ -1902,6 +1926,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       activeTabId: tabId,
       graphId: isBlank ? null : s.graphId,
       danGraph: isBlank ? null : s.danGraph,
+      graphRevision: isBlank ? null : s.graphRevision,
       nodes: isBlank ? [] : s.nodes,
       edges: isBlank ? [] : s.edges,
       dirty: false,
@@ -1973,6 +1998,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       activeTabId: tabId,
       graphId: null,
       danGraph,
+      graphRevision: null,
       nodes,
       edges,
       dirty: true,

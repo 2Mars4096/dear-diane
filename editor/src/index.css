@@ -68,3 +68,26 @@ body {
     transform: translateX(0);
   }
 }
+
+/* -- Chat: streaming shimmer bar ------------------------------------------ */
+
+@keyframes dan-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+.dan-streaming-bubble {
+  position: relative;
+  overflow: hidden;
+}
+
+.dan-streaming-bubble::after {
+  content: "";
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, #818cf8, #6366f1, #818cf8, transparent);
+  animation: dan-shimmer 1.5s ease-in-out infinite;
+}

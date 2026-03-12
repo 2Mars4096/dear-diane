@@ -17,6 +17,9 @@ interface ElectronAPI {
     readDir: (dirPath: string) => Promise<Array<{ name: string; isDirectory: boolean }>>;
     stat: (filePath: string) => Promise<{ size: number; mtime: number; isDirectory: boolean }>;
   };
+  shell: {
+    openPath: (filePath: string) => Promise<boolean>;
+  };
 }
 
 declare global {
@@ -84,5 +87,19 @@ export const nativeFs = {
       return window.electronAPI.fs.readDir(dirPath);
     }
     return null;
+  },
+};
+
+export const nativeShell = {
+  async openPath(filePath: string): Promise<boolean> {
+    if (window.electronAPI) {
+      return window.electronAPI.shell.openPath(filePath);
+    }
+    try {
+      window.open(encodeURI(`file://${filePath}`), "_blank", "noopener,noreferrer");
+      return true;
+    } catch {
+      return false;
+    }
   },
 };

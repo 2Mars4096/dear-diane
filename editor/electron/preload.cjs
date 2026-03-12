@@ -15,4 +15,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     readDir: (dirPath) => ipcRenderer.invoke("fs:readDir", dirPath),
     stat: (filePath) => ipcRenderer.invoke("fs:stat", filePath),
   },
+
+  shell: {
+    openPath: (filePath) => ipcRenderer.invoke("shell:openPath", filePath),
+  },
 });

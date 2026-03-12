@@ -7,8 +7,12 @@ import {
   ChevronRight,
   Wrench,
   Clock,
+  ExternalLink,
+  FileText,
 } from "lucide-react";
 import type { ToolCallInfo } from "../types/chat";
+import { nativeShell } from "../lib/electronBridge";
+import type { FileReadGroupInfo } from "../lib/toolCallPresentation";
 
 const STATUS_ICON = {
   running: <Loader2 size={11} className="animate-spin text-blue-500" />,
@@ -21,6 +25,7 @@ interface ToolCallCardProps {
   mutationStatus?: "proposed" | "applied" | "partial" | "rejected" | "reverted" | null;
   onPreviewChanges?: () => void;
   operations?: Array<{ op: string; name?: string; node_id?: string; node_type?: string }>;
+  fileReadGroup?: FileReadGroupInfo;
 }
 
 export default function ToolCallCard({
@@ -28,6 +33,7 @@ export default function ToolCallCard({
   mutationStatus,
   onPreviewChanges,
   operations,
+  fileReadGroup,
 }: ToolCallCardProps) {
   const [expanded, setExpanded] = useState(false);
 
@@ -44,7 +50,16 @@ export default function ToolCallCard({
     : mutationStatus === "rejected" ? "Rejected"
     : null;
 
-  const hasDetails = !!(toolCall.argsPreview || toolCall.outputPreview || (operations && operations.length > 0));
+  const hasDetails = !!(
+    fileReadGroup ||
+    toolCall.argsPreview ||
+    toolCall.outputPreview ||
+    (operations && operations.length > 0)
+  );
+
+  const openFilePath = async (filePath: string) => {
+    await nativeShell.openPath(filePath);
+  };
 
   return (
     <div className="my-1">
@@ -56,7 +71,14 @@ export default function ToolCallCard({
       >
         {hasDetails && (expanded ? <ChevronDown size={10} className="text-gray-400" /> : <ChevronRight size={10} className="text-gray-400" />)}
         <Wrench size={10} className="text-gray-400" />
-        <span className="font-medium text-gray-600">{toolCall.toolName}</span>
+        <span className="font-medium text-gray-600">
+          {fileReadGroup ? `read ${fileReadGroup.label}` : toolCall.toolName}
+        </span>
+        {fileReadGroup && fileReadGroup.readCount > 1 && (
+          <span className="text-[9px] font-medium px-1 py-0.5 rounded bg-indigo-50 text-indigo-600">
+            {fileReadGroup.readCount}x
+          </span>
+        )}
         {icon}
         {duration && (
           <span className="flex items-center gap-0.5 text-[10px] text-gray-400 tabular-nums">
@@ -83,7 +105,31 @@ export default function ToolCallCard({
 
       {expanded && (
         <div className="ml-4 mt-1 mb-1 pl-3 border-l-2 border-gray-100 space-y-1">
-          {toolCall.argsPreview && (
+          {fileReadGroup && (
+            <div className="space-y-1">
+              <div>
+                <span className="text-[10px] text-gray-400">File</span>
+                <button
+                  type="button"
+                  onClick={() => openFilePath(fileReadGroup.path)}
+                  className="mt-0.5 inline-flex items-center gap-1 text-[10px] text-indigo-600 hover:text-indigo-800 underline break-all text-left"
+                >
+                  <FileText size={10} />
+                  <span>{fileReadGroup.path}</span>
+                  <ExternalLink size={10} />
+                </button>
+              </div>
+              <div>
+                <span className="text-[10px] text-gray-400">
+                  {fileReadGroup.readCount > 1 ? "Reads" : "Range"}
+                </span>
+                <div className="text-[10px] text-gray-600 bg-gray-50 rounded p-1.5 mt-0.5 leading-relaxed">
+                  {fileReadGroup.summaries.join(", ")}
+                </div>
+              </div>
+            </div>
+          )}
+          {!fileReadGroup && toolCall.argsPreview && (
             <div>
               <span className="text-[10px] text-gray-400">Args</span>
               <pre className="text-[10px] text-gray-600 bg-gray-50 rounded p-1.5 overflow-x-auto whitespace-pre-wrap font-mono leading-relaxed mt-0.5">
