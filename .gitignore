@@ -80,6 +80,7 @@ graphs/meta-*.json
 
 # Editor build output (pre-built before packaging)
 editor/dist/
+editor/dist-electron/
 
 # JavaScript / TypeScript artifacts (future editor)
 node_modules/
@@ -95,3 +96,4 @@ pnpm-debug.log*
 .claude/
 /tests/*
 !/tests/test_domain_learning.py
+!/tests/test_chat_manager_codegen_resilience.py
