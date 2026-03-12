@@ -1,0 +1,26 @@
+import { contextBridge, ipcRenderer } from "electron";
+
+/**
+ * Exposes native APIs to the renderer process through a safe bridge.
+ * The renderer accesses these via window.electronAPI.
+ * When running as a web app (no Electron), window.electronAPI is undefined
+ * and the app falls back to browser APIs.
+ */
+contextBridge.exposeInMainWorld("electronAPI", {
+  isElectron: true,
+
+  dialog: {
+    openFile: (options: { filters?: Array<{ name: string; extensions: string[] }>; multiple?: boolean }) =>
+      ipcRenderer.invoke("dialog:openFile", options),
+    openDirectory: () => ipcRenderer.invoke("dialog:openDirectory"),
+    saveFile: (options: { defaultPath?: string; filters?: Array<{ name: string; extensions: string[] }> }) =>
+      ipcRenderer.invoke("dialog:saveFile", options),
+  },
+
+  fs: {
+    readFile: (filePath: string) => ipcRenderer.invoke("fs:readFile", filePath),
+    writeFile: (filePath: string, content: string) => ipcRenderer.invoke("fs:writeFile", filePath, content),
+    readDir: (dirPath: string) => ipcRenderer.invoke("fs:readDir", dirPath),
+    stat: (filePath: string) => ipcRenderer.invoke("fs:stat", filePath),
+  },
+});

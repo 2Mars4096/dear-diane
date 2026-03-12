@@ -33,6 +33,7 @@ import type { ChatThreadSummary } from "../lib/api";
 import * as api from "../lib/api";
 import type { ApplyMutationResult } from "../lib/api";
 import ChatMessageBubble from "./ChatMessage";
+import EscalationBanner, { detectEscalation } from "./EscalationBanner";
 import GraphDiffPreview from "./GraphDiffPreview";
 import MentionAutocomplete from "./MentionAutocomplete";
 import {
@@ -50,6 +51,10 @@ import {
   parseMentions,
   type MentionRef,
 } from "../lib/mentionParser";
+import {
+  getDisplayThreadTitle,
+  normalizeThreadTitleInput,
+} from "../lib/chatThreadTitle";
 
 function normalizeForCanonicalJson(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -140,6 +145,14 @@ const MODE_CONFIG: Record<ChatMode, { label: string; icon: typeof Sparkles; colo
 // Backend ↔ frontend message conversion
 // ---------------------------------------------------------------------------
 
+function safeTokenUsage(tu: unknown): { prompt: number; completion: number } | null {
+  if (!tu || typeof tu !== "object") return null;
+  const raw = tu as Record<string, unknown>;
+  const p = typeof raw.prompt === "number" ? raw.prompt : 0;
+  const c = typeof raw.completion === "number" ? raw.completion : 0;
+  return p + c > 0 ? { prompt: p, completion: c } : null;
+}
+
 function toBackendMessage(m: ChatMessage): Record<string, unknown> {
   return {
     id: m.id,
@@ -219,15 +232,20 @@ function relativeTimeShort(iso: string): string {
 // Main component
 // ---------------------------------------------------------------------------
 
-export default function ChatPanel() {
-  const graphId = useGraphStore((s) => s.graphId);
+interface ChatPanelProps {
+  fullScreen?: boolean;
+}
+
+export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
+  const rawGraphId = useGraphStore((s) => s.graphId);
+  const graphId = rawGraphId || (fullScreen ? "_scratch" : null);
   const danGraph = useGraphStore((s) => s.danGraph);
   const loadGraph = useGraphStore((s) => s.loadGraph);
   const pushSnapshot = useGraphStore((s) => s.pushSnapshot);
   const chatMode = useGraphStore((s) => s.chatMode);
   const chatFocusTrigger = useGraphStore((s) => s.chatFocusTrigger);
 
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(fullScreen);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isStreaming, setIsStreaming] = useState(false);
   const [isRunStreaming, setIsRunStreaming] = useState(false);
@@ -243,7 +261,7 @@ export default function ChatPanel() {
 
   const [threads, setThreads] = useState<ChatThreadSummary[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const [showThreadList, setShowThreadList] = useState(true);
+  const [showThreadList, setShowThreadList] = useState(!fullScreen);
   const [loadingThreads, setLoadingThreads] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [threadTitle, setThreadTitle] = useState("");
@@ -259,6 +277,7 @@ export default function ChatPanel() {
   const [staleRevision, setStaleRevision] = useState(false);
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [detectedMode, setDetectedMode] = useState<string | null>(null);
+  const [escalation, setEscalation] = useState<{ targetMode: import("../store/useAppStore").AppMode; reason: string } | null>(null);
   const [mutationConfirmMode, setMutationConfirmMode] = useState<boolean>(() =>
     readMutationConfirmPreference(),
   );
@@ -299,6 +318,10 @@ export default function ChatPanel() {
     try {
       const { threads: list } = await api.listChatThreads(wfId);
       setThreads(list);
+      const active = list.find((t) => t.id === activeThreadIdRef.current);
+      if (active?.title) {
+        setThreadTitle(active.title);
+      }
       return list;
     } catch (err) {
       console.warn("Failed to fetch threads:", err);
@@ -368,6 +391,11 @@ export default function ChatPanel() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatOpen, graphId]);
+
+  useEffect(() => {
+    if (!showThreadList || !graphId) return;
+    void fetchThreads(graphId);
+  }, [showThreadList, graphId, fetchThreads]);
 
   // -------------------------------------------------------------------------
   // Keyboard shortcut: Cmd/Ctrl+Shift+M to cycle chat modes
@@ -647,16 +675,20 @@ export default function ChatPanel() {
 
   const lastPromptTokens = (() => {
     for (let i = messages.length - 1; i >= 0; i--) {
-      if (messages[i].role === "assistant" && messages[i].tokenUsage) {
-        return messages[i].tokenUsage!.prompt;
+      const tu = messages[i].tokenUsage;
+      if (messages[i].role === "assistant" && tu && typeof tu.prompt === "number") {
+        return tu.prompt;
       }
     }
     return 0;
   })();
 
   const totalTokens = messages.reduce((sum, m) => {
-    if (!m.tokenUsage) return sum;
-    return sum + m.tokenUsage.prompt + m.tokenUsage.completion;
+    const tu = m.tokenUsage;
+    if (!tu) return sum;
+    const p = typeof tu.prompt === "number" ? tu.prompt : 0;
+    const c = typeof tu.completion === "number" ? tu.completion : 0;
+    return sum + p + c;
   }, 0);
 
   // -------------------------------------------------------------------------
@@ -704,6 +736,11 @@ export default function ChatPanel() {
       setInputText("");
       setIsStreaming(true);
       setError(null);
+
+      if (fullScreen) {
+        const esc = detectEscalation(content);
+        if (esc) setEscalation(esc);
+      }
       setStaleRevision(false);
       setBuildJustCompleted(false);
       setDetectedMode(null);
@@ -808,18 +845,55 @@ export default function ChatPanel() {
           message_id: string;
           stream_channel_id: string;
         };
-        setActiveChannelId(stream_channel_id);
-
         const proto = location.protocol === "https:" ? "wss:" : "ws:";
-        const ws = new WebSocket(
-          `${proto}//${location.host}/api/chat/${stream_channel_id}/events`,
-        );
-        wsRef.current = ws;
-        let wsClosedIntentionally = false;
+        const seenStreamChannels = new Set<string>();
 
-        ws.onmessage = (e) => {
-          try {
-            const evt: ChatStreamEvent = JSON.parse(e.data);
+        const connectToChatStream = (channelId: string) => {
+          if (seenStreamChannels.has(channelId)) {
+            setError("Chat stream redirect loop detected");
+            setIsStreaming(false);
+            setActiveChannelId(null);
+            return;
+          }
+          seenStreamChannels.add(channelId);
+          setActiveChannelId(channelId);
+
+          const ws = new WebSocket(
+            `${proto}//${location.host}/api/chat/${channelId}/events`,
+          );
+          wsRef.current = ws;
+          let wsClosedIntentionally = false;
+
+          ws.onmessage = (e) => {
+            try {
+              const evt: ChatStreamEvent = JSON.parse(e.data);
+              if (evt.type === "chat_queued") {
+                const nextChannel = (evt.stream_channel_id ?? "").trim();
+                const queuePosition =
+                  typeof evt.queue_position === "number" ? evt.queue_position : 0;
+
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId
+                      ? {
+                          ...m,
+                          content:
+                            queuePosition > 1
+                              ? `Queued behind ${queuePosition} earlier messages...`
+                              : "Queued behind an earlier message...",
+                        }
+                      : m,
+                  ),
+                );
+
+                if (nextChannel && nextChannel !== channelId) {
+                  runStreamHandoffRef.current = true;
+                  wsClosedIntentionally = true;
+                  ws.close();
+                  connectToChatStream(nextChannel);
+                }
+                return;
+              }
             if (evt.type === "chat_token") {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -833,47 +907,55 @@ export default function ChatPanel() {
                 ),
               );
             } else if (evt.type === "chat_complete") {
+              const isProgressAck = evt.detected_mode === "progress_ack";
               if (evt.context_window) setContextWindow(evt.context_window);
-              if (evt.detected_mode) setDetectedMode(evt.detected_mode);
+              if (evt.detected_mode && !isProgressAck) setDetectedMode(evt.detected_mode);
               setMessages((prev) => {
                 const updated = prev.map((m) =>
                   m.id === assistantId
                     ? {
                         ...m,
                         content: evt.content ?? m.content,
-                        tokenUsage: evt.token_usage ?? null,
+                        tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
                       }
                     : m,
                 );
-                const tid = activeThreadIdRef.current;
-                if (tid && capturedGraphId) {
-                  api
-                    .updateChatThread(capturedGraphId, tid, {
-                      messages: updated.map(toBackendMessage),
-                    })
-                    .catch((err: unknown) =>
-                      console.warn("Failed to save thread:", err),
-                    );
+                if (!isProgressAck) {
+                  const tid = activeThreadIdRef.current;
+                  if (tid && capturedGraphId) {
+                    api
+                      .updateChatThread(capturedGraphId, tid, {
+                        messages: updated.map(toBackendMessage),
+                      })
+                      .catch((err: unknown) =>
+                        console.warn("Failed to save thread:", err),
+                      );
+                  }
                 }
                 return updated;
               });
-              wsClosedIntentionally = true;
-              if (evt.stream_channel_id) {
-                runStreamHandoffRef.current = true;
-                ws.close();
-                const runId = parseRunIdFromStreamChannel(evt.stream_channel_id);
-                attachRunStream(
-                  evt.stream_channel_id,
-                  assistantId,
-                  capturedGraphId,
-                  runId
-                    ? { runId, scope: "full", status: "running" }
-                    : null,
-                );
+              if (isProgressAck) {
+                // Progress/reassurance update — keep streaming
               } else {
-                ws.close();
-                setIsStreaming(false);
-                setActiveChannelId(null);
+                wsClosedIntentionally = true;
+                if (evt.stream_channel_id) {
+                  runStreamHandoffRef.current = true;
+                  ws.close();
+                  const runId = parseRunIdFromStreamChannel(evt.stream_channel_id);
+                  attachRunStream(
+                    evt.stream_channel_id,
+                    assistantId,
+                    capturedGraphId,
+                    runId
+                      ? { runId, scope: "full", status: "running" }
+                      : null,
+                  );
+                } else {
+                  ws.close();
+                  setIsStreaming(false);
+                  setActiveChannelId(null);
+                  if (capturedGraphId) void fetchThreads(capturedGraphId);
+                }
               }
             } else if (evt.type === "chat_mutation") {
               if (evt.context_window) setContextWindow(evt.context_window);
@@ -889,7 +971,7 @@ export default function ChatPanel() {
                           evt.dry_run_result ?? null,
                           evt.message_id ?? null,
                           evt.content ?? m.content,
-                          evt.token_usage ?? null,
+                          safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
                         );
                         nextMutationMessage = built;
                         return built;
@@ -912,6 +994,7 @@ export default function ChatPanel() {
               setActiveChannelId(null);
               wsClosedIntentionally = true;
               ws.close();
+              if (capturedGraphId) void fetchThreads(capturedGraphId);
               if (
                 nextMutationMessage &&
                 shouldAutoApplyMutation(
@@ -931,7 +1014,7 @@ export default function ChatPanel() {
                     ? {
                         ...m,
                         content: (evt.content || m.content) + "\n\n*[generation stopped]*",
-                        tokenUsage: evt.token_usage ?? null,
+                        tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
                       }
                     : m,
                 );
@@ -951,6 +1034,7 @@ export default function ChatPanel() {
               setActiveChannelId(null);
               wsClosedIntentionally = true;
               ws.close();
+              if (capturedGraphId) void fetchThreads(capturedGraphId);
             } else if (evt.type === "chat_tool_call_start") {
               setMessages((prev) =>
                 prev.map((m) =>
@@ -999,36 +1083,50 @@ export default function ChatPanel() {
               setActiveChannelId(null);
               wsClosedIntentionally = true;
               ws.close();
-            }
+              if (capturedGraphId) void fetchThreads(capturedGraphId);
+              }
 
+              if (
+                (evt.type === "chat_complete" || evt.type === "chat_mutation") &&
+                evt.revision_mismatch
+              ) {
+                setStaleRevision(true);
+              }
+            } catch {
+              /* ignore parse errors */
+            }
+          };
+
+          ws.onerror = () => {
+            wsClosedIntentionally = true;
+            setError("WebSocket connection failed");
+            setIsStreaming(false);
+            setActiveChannelId(null);
+          };
+
+          ws.onclose = (event) => {
+            if (runStreamHandoffRef.current) {
+              runStreamHandoffRef.current = false;
+              return;
+            }
             if (
-              (evt.type === "chat_complete" || evt.type === "chat_mutation") &&
-              evt.revision_mismatch
+              !wsClosedIntentionally &&
+              event.code !== 1000 &&
+              event.code !== 1005
             ) {
-              setStaleRevision(true);
+              setError(
+                "Connection lost — your response may be incomplete. Click Retry to resend.",
+              );
+              useGraphStore
+                .getState()
+                .addToast({ type: "error", message: "Chat stream disconnected" });
             }
-          } catch {
-            /* ignore parse errors */
-          }
+            setIsStreaming(false);
+            setActiveChannelId(null);
+          };
         };
 
-        ws.onerror = () => {
-          wsClosedIntentionally = true;
-          setError("WebSocket connection failed");
-          setIsStreaming(false);
-        };
-
-        ws.onclose = (event) => {
-          if (runStreamHandoffRef.current) {
-            runStreamHandoffRef.current = false;
-            return;
-          }
-          if (!wsClosedIntentionally && event.code !== 1000 && event.code !== 1005) {
-            setError("Connection lost — your response may be incomplete. Click Retry to resend.");
-            useGraphStore.getState().addToast({ type: "error", message: "Chat stream disconnected" });
-          }
-          setIsStreaming(false);
-        };
+        connectToChatStream(stream_channel_id);
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : "Failed to send message";
@@ -1059,7 +1157,7 @@ export default function ChatPanel() {
       }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        sendMessage();
+        sendMessage(e.currentTarget.value);
       }
     },
     [sendMessage, mentionQuery],
@@ -1150,6 +1248,23 @@ export default function ChatPanel() {
     setSessionMarkers({});
   }, []);
 
+  useEffect(() => {
+    if (!fullScreen) return;
+    const handler = (e: globalThis.KeyboardEvent) => {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod) return;
+      if (e.key.toLowerCase() === "n" && !e.shiftKey) {
+        e.preventDefault();
+        handleNewChat();
+      } else if (e.key.toLowerCase() === "l" && e.shiftKey) {
+        e.preventDefault();
+        setShowThreadList((prev) => !prev);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [fullScreen, handleNewChat]);
+
   const handleBackToList = useCallback(async () => {
     const tid = activeThreadIdRef.current;
     if (tid && graphId && messages.length > 0) {
@@ -1193,21 +1308,64 @@ export default function ChatPanel() {
     [graphId, activeThreadId, fetchThreads],
   );
 
+  const handleRenameThread = useCallback(
+    async (threadId: string, newTitle: string) => {
+      if (!graphId) return;
+      const trimmed = normalizeThreadTitleInput(newTitle);
+      if (!trimmed) return;
+      try {
+        await api.updateChatThread(graphId, threadId, {
+          title: trimmed,
+        });
+        setThreads((prev) =>
+          prev.map((thread) =>
+            thread.id === threadId
+              ? {
+                  ...thread,
+                  title: trimmed,
+                  updated_at: new Date().toISOString(),
+                }
+              : thread,
+          ),
+        );
+        if (activeThreadIdRef.current === threadId) {
+          setThreadTitle(trimmed);
+        }
+      } catch (err) {
+        console.warn("Failed to rename thread:", err);
+      }
+    },
+    [graphId],
+  );
+
   const handleTitleSave = useCallback(
     async (newTitle: string) => {
       setEditingTitle(false);
-      const trimmed = newTitle.trim();
+      const trimmed = normalizeThreadTitleInput(newTitle);
+      if (!trimmed) return;
+      if (trimmed === threadTitle) return;
       setThreadTitle(trimmed);
       if (!graphId || !activeThreadId) return;
       try {
         await api.updateChatThread(graphId, activeThreadId, {
           title: trimmed,
         });
+        setThreads((prev) =>
+          prev.map((thread) =>
+            thread.id === activeThreadId
+              ? {
+                  ...thread,
+                  title: trimmed,
+                  updated_at: new Date().toISOString(),
+                }
+              : thread,
+          ),
+        );
       } catch (err) {
         console.warn("Failed to update title:", err);
       }
     },
-    [graphId, activeThreadId],
+    [graphId, activeThreadId, threadTitle],
   );
 
   const handlePreviewMutation = useCallback((message: ChatMessage) => {
@@ -1400,17 +1558,414 @@ export default function ChatPanel() {
   // Expanded panel
   // -------------------------------------------------------------------------
 
+  // -------------------------------------------------------------------------
+  // Shared conversation content (used in both fullScreen and sidebar layouts)
+  // -------------------------------------------------------------------------
+  const conversationHeader = fullScreen ? (
+    <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 flex-shrink-0 bg-gray-50/30">
+      <div className="flex items-center gap-2 min-w-0 flex-1">
+        <button
+          onClick={() => setShowThreadList(!showThreadList)}
+          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+            showThreadList ? "bg-gray-200 text-gray-700" : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+          }`}
+          title="Chat history (⌘⇧L)"
+        >
+          <History size={13} />
+          <span>History</span>
+        </button>
+        <div className="w-px h-4 bg-gray-200" />
+        {editingTitle ? (
+          <input
+            autoFocus
+            defaultValue={threadTitle}
+            onBlur={(e) => handleTitleSave(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleTitleSave((e.target as HTMLInputElement).value);
+              if (e.key === "Escape") setEditingTitle(false);
+            }}
+            className="text-sm font-semibold text-gray-800 bg-gray-50 border border-gray-200 rounded px-1.5 py-0.5 outline-none focus:border-indigo-300 min-w-0 flex-1"
+          />
+        ) : (
+          <div className="flex items-center gap-1 min-w-0 flex-1">
+            <span
+              onClick={() => activeThreadId && setEditingTitle(true)}
+              className={`text-sm font-semibold text-gray-800 truncate transition-colors ${
+                activeThreadId
+                  ? "cursor-pointer hover:text-indigo-600"
+                  : ""
+              }`}
+              title={activeThreadId ? "Rename chat title" : undefined}
+            >
+              {getDisplayThreadTitle(threadTitle, "New conversation")}
+            </span>
+            {activeThreadId && (
+              <button
+                onClick={() => setEditingTitle(true)}
+                className="text-gray-300 hover:text-indigo-500 p-0.5 rounded transition-colors flex-shrink-0"
+                title="Rename chat title"
+              >
+                <PencilLine size={12} />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {(lastPromptTokens > 0 || totalTokens > 0) && (
+          <span className="text-[10px] text-gray-400 tabular-nums" title={`${totalTokens.toLocaleString()} total tokens used`}>
+            {contextWindow > 0 && lastPromptTokens > 0
+              ? `~${formatTokenCount(lastPromptTokens)} / ${formatTokenCount(contextWindow)}`
+              : `${totalTokens.toLocaleString()} tok`}
+          </span>
+        )}
+        <button onClick={() => handleExport("md")} className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors" title="Export as Markdown">
+          <Download size={13} />
+        </button>
+        <button
+          onClick={handleNewChat}
+          className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors"
+          title="New chat (⌘N)"
+        >
+          <Plus size={13} />
+          <span>New</span>
+        </button>
+      </div>
+    </div>
+  ) : (
+    <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 flex-shrink-0">
+      <div className="flex items-center gap-2 min-w-0 flex-1">
+        <button
+          onClick={handleBackToList}
+          className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors flex-shrink-0"
+          title="Back to threads"
+        >
+          <ArrowLeft size={14} />
+        </button>
+        {editingTitle ? (
+          <input
+            autoFocus
+            defaultValue={threadTitle}
+            onBlur={(e) => handleTitleSave(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleTitleSave((e.target as HTMLInputElement).value);
+              if (e.key === "Escape") setEditingTitle(false);
+            }}
+            className="text-sm font-semibold text-gray-800 bg-gray-50 border border-gray-200 rounded px-1.5 py-0.5 outline-none focus:border-indigo-300 min-w-0 flex-1"
+          />
+        ) : (
+          <div className="flex items-center gap-1 min-w-0 flex-1">
+            <span
+              onClick={() => activeThreadId && setEditingTitle(true)}
+              className={`text-sm font-semibold text-gray-800 truncate transition-colors ${
+                activeThreadId
+                  ? "cursor-pointer hover:text-indigo-600"
+                  : ""
+              }`}
+              title={activeThreadId ? "Rename chat title" : undefined}
+            >
+              {getDisplayThreadTitle(threadTitle, "Untitled chat")}
+            </span>
+            {activeThreadId && (
+              <button
+                onClick={() => setEditingTitle(true)}
+                className="text-gray-300 hover:text-indigo-500 p-0.5 rounded transition-colors flex-shrink-0"
+                title="Rename chat title"
+              >
+                <PencilLine size={12} />
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {(lastPromptTokens > 0 || totalTokens > 0) && (
+          <span className="text-[10px] text-gray-400 tabular-nums" title={`${totalTokens.toLocaleString()} total tokens used`}>
+            {contextWindow > 0 && lastPromptTokens > 0
+              ? `~${formatTokenCount(lastPromptTokens)} / ${formatTokenCount(contextWindow)}`
+              : `${totalTokens.toLocaleString()} tok`}
+          </span>
+        )}
+        <button onClick={() => handleExport("md")} className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors" title="Export as Markdown">
+          <Download size={13} />
+        </button>
+        <button onClick={() => setChatOpen(false)} className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors">
+          <X size={14} />
+        </button>
+      </div>
+    </div>
+  );
+
+  const modeSelector = (
+    <div className={`flex items-center gap-1 px-3 py-1.5 border-b border-gray-100 bg-gray-50/50 flex-shrink-0 ${fullScreen ? "justify-center" : ""}`}>
+      <div className={`flex items-center gap-1 ${fullScreen ? "max-w-3xl w-full" : ""}`}>
+        {(["auto", "agent", "ask", "plan", "debug"] as const).map((m) => {
+          const cfg = MODE_CONFIG[m];
+          const Icon = cfg.icon;
+          const active = chatMode === m;
+          return (
+            <button
+              key={m}
+              onClick={() => {
+                useGraphStore.getState().setChatMode(m);
+                if (m !== "auto") setDetectedMode(null);
+                const tid = activeThreadIdRef.current;
+                const gid = graphId;
+                if (tid && gid) {
+                  api.updateChatThread(gid, tid, { mode: m }).catch(() => {});
+                }
+              }}
+              className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
+                active
+                  ? "bg-white text-gray-800 shadow-sm border border-gray-200"
+                  : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+              }`}
+            >
+              <Icon size={11} />
+              {cfg.label}
+              {m === "auto" && active && detectedMode && (
+                <span className="text-[9px] text-violet-600 font-normal">
+                  → {detectedMode.charAt(0).toUpperCase() + detectedMode.slice(1)}
+                </span>
+              )}
+            </button>
+          );
+        })}
+        {!fullScreen && (
+          <div className="ml-auto">
+            <button
+              onClick={toggleMutationConfirmMode}
+              className={`flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md transition-colors ${
+                mutationConfirmMode
+                  ? "bg-amber-50 text-amber-700 border border-amber-200"
+                  : "bg-emerald-50 text-emerald-700 border border-emerald-200"
+              }`}
+              title={mutationConfirmMode ? "Review diffs before applying" : "Auto-apply mutations"}
+            >
+              {mutationConfirmMode ? <PencilLine size={11} /> : <CheckCircle2 size={11} />}
+              {mutationConfirmMode ? "Review diffs" : "Auto-apply"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+
+  const messagesArea = (
+    <div className={`flex-1 overflow-y-auto py-4 min-h-0 ${fullScreen ? "px-4" : "px-3"}`}>
+      <div className={fullScreen ? "max-w-3xl mx-auto" : ""}>
+        {messages.length === 0 ? (
+          <EmptyState
+            onSelect={(t) => sendMessage(t)}
+            mode={chatMode}
+            isEmptyGraph={(danGraph?.nodes?.length ?? 0) === 0}
+            fullScreen={fullScreen}
+          />
+        ) : (
+          <>
+            {messages.map((m, i) => (
+              <div key={m.id}>
+                <ChatMessageBubble
+                  message={m}
+                  sessionMarker={sessionMarkers[m.id]}
+                  onRevert={() => handleRevert(m.id)}
+                  onPreviewMutation={chatMode === "ask" ? undefined : handlePreviewMutation}
+                  onCopyMarkdown={() => handleCopyMessage(m)}
+                  isStreaming={isStreaming && i === messages.length - 1 && m.role === "assistant"}
+                />
+                {chatMode === "plan" &&
+                  m.role === "assistant" &&
+                  !m.mutationPlan &&
+                  m.content &&
+                  i === messages.length - 1 &&
+                  !isStreaming && (
+                    <PlanApprovalButtons
+                      onApprove={() =>
+                        sendMessage("Approved. Please generate the mutation plan now.", undefined, "agent")
+                      }
+                      onRevise={() => textareaRef.current?.focus()}
+                    />
+                  )}
+              </div>
+            ))}
+
+            {isStreaming && messages[messages.length - 1]?.content === "" && <StreamingDots />}
+
+            {fullScreen && escalation && (
+              <EscalationBanner suggestion={escalation} onDismiss={() => setEscalation(null)} />
+            )}
+
+            {previewingMessage && !previewingMessage.dryRunResult?.new_graph && (
+              <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
+                <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 text-center">
+                  <p className="text-sm text-gray-500 mb-4">
+                    Preview unavailable — the proposed changes may have been saved before this feature, or the graph has changed.
+                  </p>
+                  <button
+                    onClick={() => { setPreviewingMessage(null); setApplyError(null); }}
+                    className="px-4 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {previewingMessage && previewingMessage.dryRunResult?.new_graph && danGraph && (
+              <GraphDiffPreview
+                diff={computeGraphDiff(
+                  danGraph as unknown as Record<string, unknown>,
+                  previewingMessage.dryRunResult.new_graph as Record<string, unknown>,
+                )}
+                onApplyAll={handleApplyMutation}
+                onApplySelected={() => {}}
+                onReject={handleRejectMutation}
+                onClose={() => { setPreviewingMessage(null); setApplyError(null); }}
+                allowPartialApply={false}
+                disabled={isApplying}
+                mutationSource={(previewingMessage.mutationPlan as Record<string, unknown> | undefined)?.metadata
+                  ? ((previewingMessage.mutationPlan as Record<string, unknown>).metadata as Record<string, unknown>)?.source as string | undefined
+                  : undefined}
+                applyError={applyError}
+              />
+            )}
+
+            {staleRevision && (
+              <div className="flex items-center gap-2 mb-3 px-2 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
+                <span className="flex-1">Graph changed since your last message — context may be stale.</span>
+                <button onClick={() => setStaleRevision(false)} className="text-amber-500 hover:text-amber-700 text-xs font-medium flex-shrink-0">Dismiss</button>
+              </div>
+            )}
+
+            {error && (
+              <div className="flex items-start gap-2 mb-3 px-2 py-2 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
+                <span className="flex-1">{error}</span>
+                <button onClick={retryLast} className="flex items-center gap-1 text-red-600 hover:text-red-800 font-medium text-xs flex-shrink-0">
+                  <RotateCcw size={12} /> Retry
+                </button>
+              </div>
+            )}
+          </>
+        )}
+        {buildJustCompleted && graphId && (
+          <div className="flex flex-col items-center gap-2 my-4 px-4 py-3 bg-green-50 rounded-xl border border-green-100">
+            <span className="text-xs text-green-700 font-medium">Workflow built successfully</span>
+            <button
+              onClick={() => { setBuildJustCompleted(false); useGraphStore.getState().startRun(); }}
+              className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shadow-sm"
+            >
+              <Play size={12} /> Run this workflow
+            </button>
+            <span className="text-[10px] text-gray-400">or continue chatting to refine</span>
+          </div>
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+    </div>
+  );
+
+  const inputArea = (
+    <div className={`flex-shrink-0 border-t border-gray-200 ${fullScreen ? "px-4 py-4 bg-white" : "p-3"}`}>
+      <div className={fullScreen ? "max-w-3xl mx-auto" : ""}>
+        <div className={`flex items-end gap-2 border border-gray-200 rounded-xl px-3 py-2.5 focus-within:shadow-md focus-within:border-indigo-300 transition-all ${fullScreen ? "shadow-sm" : "focus-within:shadow-sm"}`}>
+          <textarea
+            ref={textareaRef}
+            value={inputText}
+            onChange={(e) => { setInputText(e.target.value); requestAnimationFrame(checkMention); }}
+            onKeyDown={handleKeyDown}
+            onKeyUp={checkMention}
+            onClick={checkMention}
+            placeholder={
+              fullScreen
+                ? "Message DAN… (@ to mention, / for commands)"
+                : chatMode === "ask" ? "Ask about your workflow…"
+                : chatMode === "plan" ? "Describe what changes to plan…"
+                : chatMode === "debug" ? "Describe the issue or ask to diagnose…"
+                : chatMode === "auto" ? "Type anything — mode auto-detected… (@ to mention)"
+                : "Ask about your workflow… (@ to mention)"
+            }
+            rows={1}
+            disabled={isStreaming}
+            className={`flex-1 resize-none text-gray-900 placeholder-gray-400 bg-transparent outline-none max-h-[160px] leading-snug disabled:opacity-50 ${fullScreen ? "text-[15px] min-h-[28px]" : "text-sm min-h-[24px]"}`}
+          />
+          {mentionQuery !== null && (
+            <MentionAutocomplete
+              query={mentionQuery}
+              anchorRect={mentionAnchor}
+              onSelect={handleMentionSelect}
+              onDismiss={dismissMention}
+            />
+          )}
+          {isStreaming || isRunStreaming ? (
+            isStreaming && activeChannelId ? (
+              <button onClick={handleStop} className="text-red-500 hover:text-red-700 transition-colors p-0.5 flex-shrink-0" title="Stop generation">
+                <Square size={fullScreen ? 18 : 16} />
+              </button>
+            ) : (
+              <span className="text-gray-300 p-0.5 flex-shrink-0" title="Waiting for run updates">
+                <Loader2 size={fullScreen ? 18 : 16} className="animate-spin" />
+              </span>
+            )
+          ) : (
+            <button
+              onClick={() => sendMessage()}
+              disabled={!inputText.trim()}
+              className="text-indigo-500 hover:text-indigo-700 disabled:text-gray-300 transition-colors p-0.5 flex-shrink-0"
+            >
+              <Send size={fullScreen ? 18 : 16} />
+            </button>
+          )}
+        </div>
+        <div className="text-[10px] text-gray-400 mt-1.5 px-1">
+          Enter to send · Shift+Enter for newline{fullScreen ? " · Cmd+K command palette" : ""}
+        </div>
+      </div>
+    </div>
+  );
+
+  // -------------------------------------------------------------------------
+  // Full-screen layout: thread sidebar + conversation side-by-side
+  // -------------------------------------------------------------------------
+  if (fullScreen) {
+    return (
+      <div className="flex h-full w-full bg-white">
+        {showThreadList && (
+          <div className="w-72 flex-shrink-0 border-r border-gray-200 flex flex-col">
+            <ThreadListView
+              threads={threads}
+              loading={loadingThreads}
+              onNewChat={handleNewChat}
+              onSelectThread={(id) => { handleSelectThread(id); setShowThreadList(false); }}
+              onDeleteThread={handleDeleteThread}
+              onRenameThread={handleRenameThread}
+              onPinThread={handlePinThread}
+              onClose={() => setShowThreadList(false)}
+              searchQuery={searchQuery}
+              searchResults={searchResults}
+              isSearching={isSearching}
+              onSearch={handleSearch}
+            />
+          </div>
+        )}
+        <div className="flex flex-col flex-1 min-w-0">
+          {conversationHeader}
+          {modeSelector}
+          {messagesArea}
+          {inputArea}
+        </div>
+      </div>
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Sidebar layout: toggle between thread list and conversation
+  // -------------------------------------------------------------------------
   return (
-    <div
-      className="flex flex-shrink-0 h-full border-l border-gray-200 bg-white"
-      style={{ width: panelWidth }}
-    >
-      {/* Resize handle */}
+    <div className="flex flex-shrink-0 h-full border-l border-gray-200 bg-white" style={{ width: panelWidth }}>
       <div
         onMouseDown={onResizeStart}
         className="w-1 cursor-col-resize hover:bg-indigo-200 active:bg-indigo-300 transition-colors flex-shrink-0"
       />
-
       <div className="flex flex-col flex-1 min-w-0">
         {showThreadList ? (
           <ThreadListView
@@ -1419,6 +1974,7 @@ export default function ChatPanel() {
             onNewChat={handleNewChat}
             onSelectThread={handleSelectThread}
             onDeleteThread={handleDeleteThread}
+            onRenameThread={handleRenameThread}
             onPinThread={handlePinThread}
             onClose={() => setChatOpen(false)}
             searchQuery={searchQuery}
@@ -1428,325 +1984,10 @@ export default function ChatPanel() {
           />
         ) : (
           <>
-            {/* Active chat header */}
-            <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 flex-shrink-0">
-              <div className="flex items-center gap-2 min-w-0 flex-1">
-                <button
-                  onClick={handleBackToList}
-                  className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors flex-shrink-0"
-                  title="Back to threads"
-                >
-                  <ArrowLeft size={14} />
-                </button>
-                {editingTitle ? (
-                  <input
-                    autoFocus
-                    defaultValue={threadTitle}
-                    onBlur={(e) => handleTitleSave(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter")
-                        handleTitleSave(
-                          (e.target as HTMLInputElement).value,
-                        );
-                      if (e.key === "Escape") setEditingTitle(false);
-                    }}
-                    className="text-sm font-semibold text-gray-800 bg-gray-50 border border-gray-200 rounded px-1.5 py-0.5 outline-none focus:border-indigo-300 min-w-0 flex-1"
-                  />
-                ) : (
-                  <span
-                    onClick={() => setEditingTitle(true)}
-                    className="text-sm font-semibold text-gray-800 truncate cursor-pointer hover:text-indigo-600 transition-colors"
-                    title="Click to rename"
-                  >
-                    {threadTitle || "Untitled chat"}
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                {(lastPromptTokens > 0 || totalTokens > 0) && (
-                  <span
-                    className="text-[10px] text-gray-400 tabular-nums"
-                    title={`${totalTokens.toLocaleString()} total tokens used`}
-                  >
-                    {contextWindow > 0 && lastPromptTokens > 0
-                      ? `~${formatTokenCount(lastPromptTokens)} / ${formatTokenCount(contextWindow)}`
-                      : `${totalTokens.toLocaleString()} tok`}
-                  </span>
-                )}
-                <button
-                  onClick={() => handleExport("md")}
-                  className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors"
-                  title="Export as Markdown"
-                >
-                  <Download size={13} />
-                </button>
-                <button
-                  onClick={() => setChatOpen(false)}
-                  className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            </div>
-
-            {/* Mode selector */}
-            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-gray-100 bg-gray-50/50 flex-shrink-0">
-              {(["auto", "agent", "ask", "plan", "debug"] as const).map((m) => {
-                const cfg = MODE_CONFIG[m];
-                const Icon = cfg.icon;
-                const active = chatMode === m;
-                return (
-                  <button
-                    key={m}
-                    onClick={() => {
-                      useGraphStore.getState().setChatMode(m);
-                      if (m !== "auto") setDetectedMode(null);
-                      const tid = activeThreadIdRef.current;
-                      const gid = graphId;
-                      if (tid && gid) {
-                        api.updateChatThread(gid, tid, { mode: m }).catch(() => {});
-                      }
-                    }}
-                    className={`flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md transition-colors ${
-                      active
-                        ? "bg-white text-gray-800 shadow-sm border border-gray-200"
-                        : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
-                    }`}
-                  >
-                    <Icon size={11} />
-                    {cfg.label}
-                    {m === "auto" && active && detectedMode && (
-                      <span className="text-[9px] text-violet-600 font-normal">
-                        → {detectedMode.charAt(0).toUpperCase() + detectedMode.slice(1)}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-              <div className="ml-auto">
-                <button
-                  onClick={toggleMutationConfirmMode}
-                  className={`flex items-center gap-1 px-2 py-1 text-[11px] font-medium rounded-md transition-colors ${
-                    mutationConfirmMode
-                      ? "bg-amber-50 text-amber-700 border border-amber-200"
-                      : "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                  }`}
-                  title={
-                    mutationConfirmMode
-                      ? "Review diffs before applying chat mutations"
-                      : "Auto-apply chat mutations"
-                  }
-                >
-                  {mutationConfirmMode ? <PencilLine size={11} /> : <CheckCircle2 size={11} />}
-                  {mutationConfirmMode ? "Review diffs" : "Auto-apply"}
-                </button>
-              </div>
-            </div>
-
-            {/* Messages area */}
-            <div className="flex-1 overflow-y-auto px-3 py-3 min-h-0">
-              {messages.length === 0 ? (
-                <EmptyState
-                  onSelect={(t) => sendMessage(t)}
-                  mode={chatMode}
-                  isEmptyGraph={(danGraph?.nodes?.length ?? 0) === 0}
-                />
-              ) : (
-                <>
-                  {messages.map((m, i) => (
-                    <div key={m.id}>
-                      <ChatMessageBubble
-                        message={m}
-                        sessionMarker={sessionMarkers[m.id]}
-                        onRevert={() => handleRevert(m.id)}
-                        onPreviewMutation={chatMode === "ask" ? undefined : handlePreviewMutation}
-                        onCopyMarkdown={() => handleCopyMessage(m)}
-                      />
-                      {/* Plan mode: approval buttons on the latest assistant plan proposal */}
-                      {chatMode === "plan" &&
-                        m.role === "assistant" &&
-                        !m.mutationPlan &&
-                        m.content &&
-                        i === messages.length - 1 &&
-                        !isStreaming && (
-                          <PlanApprovalButtons
-                            onApprove={() =>
-                              sendMessage(
-                                "Approved. Please generate the mutation plan now.",
-                                undefined,
-                                "agent",
-                              )
-                            }
-                            onRevise={() => textareaRef.current?.focus()}
-                          />
-                        )}
-                    </div>
-                  ))}
-
-                  {isStreaming &&
-                    messages[messages.length - 1]?.content === "" && (
-                      <StreamingDots />
-                    )}
-
-                  {previewingMessage &&
-                    !previewingMessage.dryRunResult?.new_graph && (
-                      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-sm">
-                        <div className="bg-white rounded-xl shadow-2xl max-w-sm w-full p-6 text-center">
-                          <p className="text-sm text-gray-500 mb-4">
-                            Preview unavailable — the proposed changes may have
-                            been saved before this feature, or the graph has
-                            changed.
-                          </p>
-                          <button
-                            onClick={() => {
-                              setPreviewingMessage(null);
-                              setApplyError(null);
-                            }}
-                            className="px-4 py-2 text-xs font-medium text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-                          >
-                            Close
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                  {previewingMessage &&
-                    previewingMessage.dryRunResult?.new_graph &&
-                    danGraph && (
-                      <GraphDiffPreview
-                        diff={computeGraphDiff(
-                          danGraph as unknown as Record<string, unknown>,
-                          previewingMessage.dryRunResult.new_graph as Record<
-                            string,
-                            unknown
-                          >,
-                        )}
-                        onApplyAll={handleApplyMutation}
-                        onApplySelected={() => {}}
-                        onReject={handleRejectMutation}
-                        onClose={() => {
-                          setPreviewingMessage(null);
-                          setApplyError(null);
-                        }}
-                        allowPartialApply={false}
-                        disabled={isApplying}
-                        mutationSource={(previewingMessage.mutationPlan as Record<string, unknown> | undefined)?.metadata
-                          ? ((previewingMessage.mutationPlan as Record<string, unknown>).metadata as Record<string, unknown>)?.source as string | undefined
-                          : undefined}
-                        applyError={applyError}
-                      />
-                    )}
-
-                  {staleRevision && (
-                    <div className="flex items-center gap-2 mb-3 px-2 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
-                      <span className="flex-1">
-                        Graph changed since your last message — context may be stale.
-                      </span>
-                      <button
-                        onClick={() => setStaleRevision(false)}
-                        className="text-amber-500 hover:text-amber-700 text-xs font-medium flex-shrink-0"
-                      >
-                        Dismiss
-                      </button>
-                    </div>
-                  )}
-
-                  {error && (
-                    <div className="flex items-start gap-2 mb-3 px-2 py-2 bg-red-50 border border-red-200 rounded-xl text-sm text-red-700">
-                      <span className="flex-1">{error}</span>
-                      <button
-                        onClick={retryLast}
-                        className="flex items-center gap-1 text-red-600 hover:text-red-800 font-medium text-xs flex-shrink-0"
-                      >
-                        <RotateCcw size={12} />
-                        Retry
-                      </button>
-                    </div>
-                  )}
-                </>
-              )}
-              {buildJustCompleted && graphId && (
-                <div className="flex flex-col items-center gap-2 my-4 px-4 py-3 bg-green-50 rounded-xl border border-green-100">
-                  <span className="text-xs text-green-700 font-medium">Workflow built successfully</span>
-                  <button
-                    onClick={() => {
-                      setBuildJustCompleted(false);
-                      useGraphStore.getState().startRun();
-                    }}
-                    className="flex items-center gap-1.5 px-4 py-2 text-xs font-medium text-white bg-indigo-600 hover:bg-indigo-700 rounded-lg transition-colors shadow-sm"
-                  >
-                    <Play size={12} />
-                    Run this workflow
-                  </button>
-                  <span className="text-[10px] text-gray-400">or continue chatting to refine</span>
-                </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
-
-            {/* Input area */}
-            <div className="flex-shrink-0 border-t border-gray-200 p-3">
-              <div className="flex items-end gap-2 border border-gray-200 rounded-xl px-3 py-2 focus-within:shadow-sm focus-within:border-indigo-300 transition-shadow">
-                <textarea
-                  ref={textareaRef}
-                  value={inputText}
-                  onChange={(e) => {
-                    setInputText(e.target.value);
-                    requestAnimationFrame(checkMention);
-                  }}
-                  onKeyDown={handleKeyDown}
-                  onKeyUp={checkMention}
-                  onClick={checkMention}
-                  placeholder={
-                    chatMode === "ask" ? "Ask about your workflow…"
-                    : chatMode === "plan" ? "Describe what changes to plan…"
-                    : chatMode === "debug" ? "Describe the issue or ask to diagnose…"
-                    : chatMode === "auto" ? "Type anything — mode auto-detected… (@ to mention)"
-                    : "Ask about your workflow… (@ to mention)"
-                  }
-                  rows={1}
-                  disabled={isStreaming}
-                  className="flex-1 resize-none text-sm text-gray-900 placeholder-gray-400 bg-transparent outline-none min-h-[24px] max-h-[160px] leading-snug disabled:opacity-50"
-                />
-                {mentionQuery !== null && (
-                  <MentionAutocomplete
-                    query={mentionQuery}
-                    anchorRect={mentionAnchor}
-                    onSelect={handleMentionSelect}
-                    onDismiss={dismissMention}
-                  />
-                )}
-                {isStreaming || isRunStreaming ? (
-                  isStreaming && activeChannelId ? (
-                    <button
-                      onClick={handleStop}
-                      className="text-red-500 hover:text-red-700 transition-colors p-0.5 flex-shrink-0"
-                      title="Stop generation"
-                    >
-                      <Square size={16} />
-                    </button>
-                  ) : (
-                    <span
-                      className="text-gray-300 p-0.5 flex-shrink-0"
-                      title="Waiting for run updates"
-                    >
-                      <Loader2 size={16} className="animate-spin" />
-                    </span>
-                  )
-                ) : (
-                  <button
-                    onClick={() => sendMessage()}
-                    disabled={!inputText.trim()}
-                    className="text-indigo-500 hover:text-indigo-700 disabled:text-gray-300 transition-colors p-0.5 flex-shrink-0"
-                  >
-                    <Send size={16} />
-                  </button>
-                )}
-              </div>
-              <div className="text-[10px] text-gray-400 mt-1 px-1">
-                Enter to send · Shift+Enter for newline
-              </div>
-            </div>
+            {conversationHeader}
+            {modeSelector}
+            {messagesArea}
+            {inputArea}
           </>
         )}
       </div>
@@ -1764,6 +2005,7 @@ function ThreadListView({
   onNewChat,
   onSelectThread,
   onDeleteThread,
+  onRenameThread,
   onPinThread,
   onClose,
   searchQuery,
@@ -1776,8 +2018,9 @@ function ThreadListView({
   onNewChat: () => void;
   onSelectThread: (id: string) => void;
   onDeleteThread: (id: string) => void;
+  onRenameThread: (id: string, title: string) => void;
   onPinThread: (id: string, pinned: boolean) => void;
-  onClose: () => void;
+  onClose?: () => void;
   searchQuery: string;
   searchResults: Array<{
     thread_id: string;
@@ -1814,12 +2057,14 @@ function ThreadListView({
           >
             <Plus size={14} />
           </button>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors"
-          >
-            <X size={14} />
-          </button>
+          {onClose && (
+            <button
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors"
+            >
+              <X size={14} />
+            </button>
+          )}
         </div>
       </div>
 
@@ -1898,6 +2143,7 @@ function ThreadListView({
                 thread={t}
                 onSelect={() => onSelectThread(t.id)}
                 onDelete={() => onDeleteThread(t.id)}
+                onRename={(title) => onRenameThread(t.id, title)}
                 onPin={() =>
                   onPinThread(
                     t.id,
@@ -1921,17 +2167,33 @@ function ThreadRow({
   thread,
   onSelect,
   onDelete,
+  onRename,
   onPin,
   pinned,
 }: {
   thread: ChatThreadSummary;
   onSelect: () => void;
   onDelete: () => void;
+  onRename: (title: string) => void;
   onPin: () => void;
   pinned: boolean;
 }) {
-  const title = thread.title || "Untitled chat";
+  const title = getDisplayThreadTitle(thread.title, "Untitled chat");
   const displayTitle = title.length > 40 ? title.slice(0, 40) + "…" : title;
+  const [editing, setEditing] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(title);
+
+  useEffect(() => {
+    setDraftTitle(title);
+  }, [title]);
+
+  const commitRename = useCallback(() => {
+    const trimmed = normalizeThreadTitleInput(draftTitle);
+    setEditing(false);
+    setDraftTitle(title);
+    if (!trimmed || trimmed === title) return;
+    onRename(trimmed);
+  }, [draftTitle, onRename, title]);
 
   return (
     <div
@@ -1940,7 +2202,26 @@ function ThreadRow({
     >
       {pinned && <Pin size={10} className="text-indigo-400 flex-shrink-0" />}
       <div className="flex-1 min-w-0">
-        <div className="text-sm text-gray-800 truncate">{displayTitle}</div>
+        {editing ? (
+          <input
+            autoFocus
+            value={draftTitle}
+            onChange={(e) => setDraftTitle(e.target.value)}
+            onBlur={commitRename}
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => {
+              e.stopPropagation();
+              if (e.key === "Enter") commitRename();
+              if (e.key === "Escape") {
+                setEditing(false);
+                setDraftTitle(title);
+              }
+            }}
+            className="w-full text-sm text-gray-800 bg-white border border-gray-200 rounded px-1.5 py-0.5 outline-none focus:border-indigo-300"
+          />
+        ) : (
+          <div className="text-sm text-gray-800 truncate">{displayTitle}</div>
+        )}
         <div className="flex items-center gap-2 mt-0.5">
           <span className="text-[10px] text-gray-400">
             {thread.message_count} msg
@@ -1953,6 +2234,16 @@ function ThreadRow({
         </div>
       </div>
       <div className="flex items-center gap-0.5">
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setEditing(true);
+          }}
+          className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-indigo-500 p-0.5 rounded transition-all"
+          title="Rename"
+        >
+          <PencilLine size={12} />
+        </button>
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -1978,7 +2269,7 @@ function ThreadRow({
   );
 }
 
-function EmptyState({ onSelect, mode, isEmptyGraph }: { onSelect: (text: string) => void; mode: ChatMode; isEmptyGraph?: boolean }) {
+function EmptyState({ onSelect, mode, isEmptyGraph, fullScreen }: { onSelect: (text: string) => void; mode: ChatMode; isEmptyGraph?: boolean; fullScreen?: boolean }) {
   const cfg = MODE_CONFIG[mode];
   const Icon = cfg.icon;
 
@@ -1989,6 +2280,33 @@ function EmptyState({ onSelect, mode, isEmptyGraph }: { onSelect: (text: string)
     debug: DEBUG_PROMPTS,
     auto: isEmptyGraph ? BUILD_PROMPTS : EXAMPLE_PROMPTS,
   };
+
+  if (fullScreen) {
+    const prompts = promptsMap[mode];
+    return (
+      <div className="flex flex-col items-center justify-center h-full text-center px-4 pb-20">
+        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center mb-5 shadow-lg">
+          <MessageSquare size={28} className="text-white" />
+        </div>
+        <h2 className="text-xl font-semibold text-gray-800 mb-2">What can I help you with?</h2>
+        <p className="text-sm text-gray-400 mb-8 max-w-md">
+          Ask me anything — research, analysis, coding, writing. I can build multi-step workflows, search the web, read files, and more.
+        </p>
+        <div className="grid grid-cols-2 gap-2 max-w-lg w-full">
+          {prompts.slice(0, 4).map((prompt) => (
+            <button
+              key={prompt}
+              onClick={() => onSelect(prompt)}
+              className="text-left text-sm text-gray-600 bg-gray-50 hover:bg-indigo-50 hover:text-indigo-700 border border-gray-100 hover:border-indigo-200 rounded-xl px-4 py-3 transition-all"
+            >
+              {prompt}
+            </button>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   const titleMap: Record<ChatMode, string> = {
     agent: isEmptyGraph ? "Build a Workflow" : "Workflow Assistant",
     ask: "Ask About Your Workflow",
@@ -2059,10 +2377,10 @@ function StreamingDots() {
   return (
     <div className="flex justify-start mb-3">
       <div className="bg-gray-50 rounded-2xl rounded-bl-md px-3.5 py-3 shadow-xs">
-        <div className="flex gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:0ms]" />
-          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:150ms]" />
-          <span className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce [animation-delay:300ms]" />
+        <div className="flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:0ms]" />
+          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:150ms]" />
+          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:300ms]" />
         </div>
       </div>
     </div>

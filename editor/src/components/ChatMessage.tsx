@@ -1,5 +1,5 @@
-import { useMemo, useCallback } from "react";
-import { Check, X, Loader2, RotateCcw, ChevronRight, Copy } from "lucide-react";
+import { useState, useMemo, useCallback } from "react";
+import { Check, X, Loader2, RotateCcw, ChevronRight, ChevronDown, Copy, Wrench } from "lucide-react";
 import hljs from "../lib/hljs";
 import type { ChatMessage } from "../types/chat";
 import {
@@ -58,17 +58,24 @@ function renderMarkdown(raw: string): string {
 
   const codeBlocks: string[] = [];
   text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
+    const rawCode = code.trimEnd();
     let highlighted: string;
     try {
       highlighted =
         lang && hljs.getLanguage(lang)
-          ? hljs.highlight(code.trimEnd(), { language: lang }).value
-          : hljs.highlightAuto(code.trimEnd()).value;
+          ? hljs.highlight(rawCode, { language: lang }).value
+          : hljs.highlightAuto(rawCode).value;
     } catch {
-      highlighted = code.trimEnd();
+      highlighted = rawCode;
     }
+    const langLabel = lang ? `<span class="text-[10px] text-gray-400 font-sans">${lang}</span>` : "";
+    const copyBtn = `<button data-copy-code="${codeBlocks.length}" class="text-[10px] text-gray-400 hover:text-gray-200 font-sans transition-colors">Copy</button>`;
     codeBlocks.push(
-      `<pre class="bg-gray-900 text-gray-100 rounded-lg p-3 my-2 overflow-x-auto text-[12px] leading-relaxed font-mono"><code>${highlighted}</code></pre>`,
+      `<div class="my-2 rounded-lg overflow-hidden border border-gray-700/50">` +
+        `<div class="flex items-center justify-between px-3 py-1.5 bg-gray-800 border-b border-gray-700/50">${langLabel}${copyBtn}</div>` +
+        `<pre class="bg-gray-900 text-gray-100 p-3 overflow-x-auto text-[12px] leading-relaxed font-mono m-0"><code>${highlighted}</code></pre>` +
+        `<input type="hidden" data-code-raw="${codeBlocks.length}" value="${rawCode.replace(/"/g, "&quot;")}" />` +
+      `</div>`,
     );
     return `\x00CB${codeBlocks.length - 1}\x00`;
   });
@@ -100,22 +107,20 @@ function renderMarkdown(raw: string): string {
 
       if (lines.every((l) => /^[-*]\s/.test(l))) {
         const items = lines
-          .map(
-            (l) =>
-              `<li>${applyInlineMarkdown(l.replace(/^[-*]\s/, ""))}</li>`,
-          )
+          .map((l) => `<li>${applyInlineMarkdown(l.replace(/^[-*]\s/, ""))}</li>`)
           .join("");
         return `<ul class="my-1 ml-4 list-disc space-y-0.5">${items}</ul>`;
       }
 
       if (lines.every((l) => /^\d+\.\s/.test(l))) {
         const items = lines
-          .map(
-            (l) =>
-              `<li>${applyInlineMarkdown(l.replace(/^\d+\.\s/, ""))}</li>`,
-          )
+          .map((l) => `<li>${applyInlineMarkdown(l.replace(/^\d+\.\s/, ""))}</li>`)
           .join("");
         return `<ol class="my-1 ml-4 list-decimal space-y-0.5">${items}</ol>`;
+      }
+
+      if (isTable(lines)) {
+        return renderTable(lines);
       }
 
       return `<p class="my-1">${lines.map((l) => applyInlineMarkdown(l)).join("<br/>")}</p>`;
@@ -127,6 +132,40 @@ function renderMarkdown(raw: string): string {
     result = result.replace(`\x00CB${i}\x00`, block);
   });
   return result;
+}
+
+function isTable(lines: string[]): boolean {
+  if (lines.length < 2) return false;
+  const hasHeader = lines[0].includes("|");
+  const hasDivider = /^\|?\s*[-:]+[-|:\s]+$/.test(lines[1]);
+  return hasHeader && hasDivider;
+}
+
+function renderTable(lines: string[]): string {
+  const parseRow = (line: string) =>
+    line.split("|").map((c) => c.trim()).filter((_, i, a) => i > 0 && i < a.length - (line.endsWith("|") ? 1 : 0));
+
+  const headers = parseRow(lines[0]);
+  const aligns: Array<"left" | "center" | "right"> = parseRow(lines[1]).map((c) => {
+    if (c.startsWith(":") && c.endsWith(":")) return "center";
+    if (c.endsWith(":")) return "right";
+    return "left";
+  });
+  const rows = lines.slice(2).map(parseRow);
+
+  const thCells = headers
+    .map((h, i) => `<th class="px-3 py-2 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-200" style="text-align:${aligns[i] || "left"}">${applyInlineMarkdown(h)}</th>`)
+    .join("");
+  const tbody = rows
+    .map(
+      (row) =>
+        `<tr class="hover:bg-gray-50 transition-colors">${row
+          .map((c, i) => `<td class="px-3 py-2 text-sm border-b border-gray-100" style="text-align:${aligns[i] || "left"}">${applyInlineMarkdown(c)}</td>`)
+          .join("")}</tr>`,
+    )
+    .join("");
+
+  return `<div class="my-2 overflow-x-auto rounded-lg border border-gray-200"><table class="min-w-full divide-y divide-gray-200"><thead class="bg-gray-50"><tr>${thCells}</tr></thead><tbody>${tbody}</tbody></table></div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -305,6 +344,76 @@ interface ChatMessageProps {
   onRevert?: () => void;
   onPreviewMutation?: (message: ChatMessage) => void;
   onCopyMarkdown?: () => void;
+  isStreaming?: boolean;
+}
+
+function ToolCallGroup({
+  toolCalls,
+  mutationPlan,
+  mutationStatus,
+  onPreviewMutation,
+}: {
+  toolCalls: import("../types/chat").ToolCallInfo[];
+  mutationPlan: unknown;
+  mutationStatus?: ChatMessage["mutationStatus"];
+  onPreviewMutation?: () => void;
+}) {
+  const allDone = toolCalls.every((tc) => tc.status !== "running");
+  const [expanded, setExpanded] = useState(false);
+  const hasErrors = toolCalls.some((tc) => tc.status === "error");
+  const totalMs = toolCalls.reduce((s, tc) => s + (tc.durationMs ?? 0), 0);
+  const durationLabel = totalMs < 1000 ? `${totalMs}ms` : `${(totalMs / 1000).toFixed(1)}s`;
+  const latest = toolCalls[toolCalls.length - 1];
+  const latestRunning = latest && latest.status === "running";
+
+  return (
+    <div className="my-1.5">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-md text-[11px] transition-colors cursor-pointer hover:bg-gray-100 ${
+          hasErrors ? "bg-red-50/50" : "bg-gray-50/70"
+        }`}
+      >
+        {expanded ? <ChevronDown size={10} className="text-gray-400" /> : <ChevronRight size={10} className="text-gray-400" />}
+        <Wrench size={10} className="text-gray-400" />
+        <span className="font-medium text-gray-600">
+          {toolCalls.length === 1 ? toolCalls[0].toolName : `${toolCalls.length} tool calls`}
+        </span>
+        {allDone ? (
+          hasErrors
+            ? <X size={11} className="text-red-500" />
+            : <Check size={11} className="text-emerald-500" />
+        ) : (
+          <Loader2 size={11} className="animate-spin text-blue-500" />
+        )}
+        {allDone && <span className="text-[10px] text-gray-400 tabular-nums">{durationLabel}</span>}
+        {!allDone && latest && (
+          <span className="text-[10px] text-gray-400 italic truncate max-w-[180px]">
+            {latestRunning ? latest.toolName : `done: ${latest.toolName}`}
+          </span>
+        )}
+      </button>
+      {expanded && (
+        <div className="ml-2 mt-0.5">
+          {toolCalls.map((tc) => {
+            const isMut = tc.toolName === "plan_graph_mutations";
+            const ops = isMut && mutationPlan
+              ? ((mutationPlan as Record<string, unknown>).operations as Array<{ op: string; name?: string; node_id?: string; node_type?: string }>) ?? []
+              : undefined;
+            return (
+              <ToolCallCard
+                key={tc.id}
+                toolCall={tc}
+                mutationStatus={isMut ? mutationStatus : undefined}
+                onPreviewChanges={isMut && mutationStatus === "proposed" ? onPreviewMutation : undefined}
+                operations={ops}
+              />
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function ChatMessageBubble({
@@ -313,6 +422,7 @@ export default function ChatMessageBubble({
   onRevert,
   onPreviewMutation,
   onCopyMarkdown,
+  isStreaming,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
   const store = useGraphStore();
@@ -326,22 +436,38 @@ export default function ChatMessageBubble({
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
-      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>(
-        "[data-mention-type]",
-      );
-      if (!btn) return;
-      const type = btn.dataset.mentionType as MentionRef["type"];
-      const id = btn.dataset.mentionId!;
-      const name = btn.textContent?.replace(/^@/, "") ?? "";
+      const target = e.target as HTMLElement;
+
+      const copyBtn = target.closest<HTMLButtonElement>("[data-copy-code]");
+      if (copyBtn) {
+        const idx = copyBtn.dataset.copyCode;
+        const hidden = copyBtn.closest("div")?.parentElement?.querySelector<HTMLInputElement>(`[data-code-raw="${idx}"]`);
+        if (hidden) {
+          navigator.clipboard.writeText(hidden.value).then(() => {
+            copyBtn.textContent = "Copied!";
+            setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
+          });
+        }
+        return;
+      }
+
+      const mentionBtn = target.closest<HTMLButtonElement>("[data-mention-type]");
+      if (!mentionBtn) return;
+      const type = mentionBtn.dataset.mentionType as MentionRef["type"];
+      const id = mentionBtn.dataset.mentionId!;
+      const name = mentionBtn.textContent?.replace(/^@/, "") ?? "";
       navigateToMention({ name, type, id }, store);
     },
     [store],
   );
 
-  const tokens =
-    message.tokenUsage
-      ? message.tokenUsage.prompt + message.tokenUsage.completion
-      : null;
+  const tokens = (() => {
+    const tu = message.tokenUsage;
+    if (!tu) return null;
+    const p = typeof tu.prompt === "number" ? tu.prompt : 0;
+    const c = typeof tu.completion === "number" ? tu.completion : 0;
+    return p + c > 0 ? p + c : null;
+  })();
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3`}>
@@ -368,31 +494,18 @@ export default function ChatMessageBubble({
           />
         )}
 
-        {/* Tool call cards */}
-        {message.toolCalls?.map((tc) => {
-          const isMutationTool = tc.toolName === "plan_graph_mutations";
-          const ops = isMutationTool && message.mutationPlan
-            ? ((message.mutationPlan as Record<string, unknown>).operations as Array<{
-                op: string;
-                name?: string;
-                node_id?: string;
-                node_type?: string;
-              }>) ?? []
-            : undefined;
-          return (
-            <ToolCallCard
-              key={tc.id}
-              toolCall={tc}
-              mutationStatus={isMutationTool ? message.mutationStatus : undefined}
-              onPreviewChanges={
-                isMutationTool && message.mutationStatus === "proposed"
-                  ? () => onPreviewMutation?.(message)
-                  : undefined
-              }
-              operations={ops}
-            />
-          );
-        })}
+        {isStreaming && !isUser && (
+          <span className="inline-block w-1.5 h-3.5 bg-indigo-400 rounded-sm animate-pulse ml-0.5 align-text-bottom" />
+        )}
+
+        {message.toolCalls && message.toolCalls.length > 0 && (
+          <ToolCallGroup
+            toolCalls={message.toolCalls}
+            mutationPlan={message.mutationPlan}
+            mutationStatus={message.mutationStatus}
+            onPreviewMutation={onPreviewMutation ? () => onPreviewMutation(message) : undefined}
+          />
+        )}
 
         {/* Run output block (structured events) */}
         {message.runEvents && message.runEvents.length > 0 && (

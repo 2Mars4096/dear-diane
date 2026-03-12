@@ -44,6 +44,7 @@ export interface ChatStreamEvent {
   type:
     | "chat_token"
     | "chat_complete"
+    | "chat_queued"
     | "chat_error"
     | "chat_mutation"
     | "chat_run_event"
@@ -70,4 +71,6 @@ export interface ChatStreamEvent {
   duration_ms?: number;
   detected_mode?: string;
   stream_channel_id?: string;
+  correlation_id?: string;
+  queue_position?: number;
 }

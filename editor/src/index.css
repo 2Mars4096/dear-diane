@@ -12,6 +12,13 @@ body {
   width: 100vw;
 }
 
+.app-drag-region {
+  -webkit-app-region: drag;
+}
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
 /* -- 5-1: Drill-in / drill-out layer transition animation ------------------- */
 
 @keyframes dan-layer-fade-in {
