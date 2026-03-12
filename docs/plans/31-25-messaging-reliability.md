@@ -119,6 +119,7 @@ Task 0 lands first — it normalizes identifiers and the history contract, which
 - Poll text fallback renders as numbered list matching clarification format
 - Post-review hardening tightened contract validation (reject conflicting/partial identifiers and malformed `surface=":"` alias), restored adapter delivery instructions via `surface_context`, and completed Telegram file-threading / edit-fallback coverage
 - WhatsApp post-review patch added best-effort fallback apology, outbound-echo suppression for that apology, early abort after retry exhaustion, and fixed an infinite-loop edge case in `_split_message()` for leading-space remainders
+- WhatsApp live-smoke safety now reuses `allowed_jids` as an exact inbound/outbound allowlist; canonical matching accepts bare numbers and strips `:device` suffixes from `s.whatsapp.net` JIDs so self-chat runs stay pinned to one recipient. Inbound guard moved to `chat_jid` (before media download) and non-phone-server JIDs (`@lid`, `@g.us`) no longer cross-match phone allowlist entries.
 
 ## Notes
 - The portal is already `POST /api/chat/message` — this plan does not change the URL, just normalizes the schema and adapter usage.
@@ -130,3 +131,4 @@ Task 0 lands first — it normalizes identifiers and the history contract, which
 - Forum-topic support may have low real-world impact but is a clean fix worth landing.
 - Code changes and focused regression suites are complete; only live Telegram/WhatsApp smoke verification (`5-2`) remains open.
 - Post-review verification: `84` targeted messaging tests and `73` adapter regression tests pass with no linter errors.
+- Additional self-only WhatsApp guard verification: `tests/test_adapters/test_whatsapp_web.py` (`27`) + `tests/test_cli_whatsapp_messaging.py` (`15`) = `42` passing tests confirm exact allowlist matching, outbound blocking, cross-server rejection, chat-level inbound guard, and media-download short-circuit for disallowed JIDs.

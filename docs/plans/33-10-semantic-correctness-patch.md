@@ -1,7 +1,7 @@
 # 33-10: Semantic Correctness Patch
 
 **Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Fix the contract bugs and eval blind spots that make "passing" graphs fail at runtime. The pipeline produces correct topology; this plan makes the content inside each node correct too.
 
 ## Problem
@@ -28,62 +28,62 @@ Six focused patches, ordered by impact. Each is independently shippable. No new 
 
 ### A. Fix review-loop condition contract (Critical)
 
-- [ ] 1. **Unify condition semantics**
-  - [ ] 1-1. Change `ReviewRequirement.condition` default from `"quality_score >= 8"` to `"quality_score < 8"` in `intent_schema.py` to match the builder's continue-while convention.
-  - [ ] 1-2. Update all few-shot examples in `intent_extraction.py` that use `"quality_score >= 8"` to `"quality_score < 8"`.
-  - [ ] 1-3. Update the `_pattern_review_loop()` default in `structural_mutations.py` (`"needs_revision == True"` → `"quality_score < 8"` for consistency with builder).
-  - [ ] 1-4. Add a normalization step in `IntentCompiler._build_review_loop()` and `_compile_review_loop()`: if the condition uses `>=` or `>` with a numeric threshold, flip to `<` / `<=` (stop-condition → continue-condition). Log a warning when normalization fires.
+- [x] 1. **Unify condition semantics**
+  - [x] 1-1. Change `ReviewRequirement.condition` default from `"quality_score >= 8"` to `"quality_score < 8"` in `intent_schema.py` to match the builder's continue-while convention.
+  - [x] 1-2. Update all few-shot examples in `intent_extraction.py` that use `"quality_score >= 8"` to `"quality_score < 8"`.
+  - [x] 1-3. Update the `_pattern_review_loop()` default in `structural_mutations.py` (`"needs_revision == True"` → `"quality_score < 8"` for consistency with builder).
+  - [x] 1-4. Add a normalization step in `IntentCompiler._build_review_loop()` and `_compile_review_loop()`: if the condition uses `>=` or `>` with a numeric threshold, flip to `<` / `<=` (stop-condition → continue-condition). Log a warning when normalization fires.
 
-- [ ] 2. **Validate condition variables against state schema**
-  - [ ] 2-1. `Builder.review_loop()` already defines its state schema as `{"draft": str, "quality_score": int, "feedback": str}` plus any custom `review_fields`. Add a validation step that checks whether the condition string references only variables present in the state schema. If it references unknown variables (e.g., `content_approved`, `citations_verified`, `bug_count`), replace with the default `"quality_score < 8"` and log a warning.
-  - [ ] 2-2. Add unit tests: condition with valid variable passes through; condition with unknown variable gets normalized; `>=` polarity gets flipped.
+- [x] 2. **Validate condition variables against state schema**
+  - [x] 2-1. `Builder.review_loop()` already defines its state schema as `{"draft": str, "quality_score": int, "feedback": str}` plus any custom `review_fields`. Add a validation step that checks whether the condition string references only variables present in the state schema. If it references unknown variables (e.g., `content_approved`, `citations_verified`, `bug_count`), replace with the default `"quality_score < 8"` and log a warning.
+  - [x] 2-2. Add unit tests: condition with valid variable passes through; condition with unknown variable gets normalized; `>=` polarity gets flipped.
 
 ### B. Enforce fixture expectations in eval pass/fail (Critical)
 
-- [ ] 3. **Add expectation-fit gate to `_determine_status()`**
-  - [ ] 3-1. When `fixture.expected` is non-empty and a graph was created, check:
+- [x] 3. **Add expectation-fit gate to `_determine_status()`**
+  - [x] 3-1. When `fixture.expected` is non-empty and a graph was created, check:
     - `graph_summary.node_count >= expected.min_nodes` (if set)
     - `graph_summary.node_count <= expected.max_nodes` (if set)
     - Required `expected.node_types` are present in `graph_summary.node_types` (if set)
     - Required `expected.topology` features are present: `"review_loop"` requires `has_loop`, `"fan_out"` requires `has_fan_out`, `"chain"` requires `node_count >= 2` (if set)
-  - [ ] 3-2. Graphs that fail expectation checks get `status="failed"`, `failure_mode="expectation_mismatch"` with details in a new `expectation_errors` field on `EvalRecord`.
-  - [ ] 3-3. Add `expectation_errors: list[str]` field to `EvalRecord`.
-  - [ ] 3-4. Report generator: add expectation-mismatch breakdown table.
+  - [x] 3-2. Graphs that fail expectation checks get `status="failed"`, `failure_mode="expectation_mismatch"` with details in a new `expectation_errors` field on `EvalRecord`.
+  - [x] 3-3. Add `expectation_errors: list[str]` field to `EvalRecord`.
+  - [x] 3-4. Report generator: add expectation-mismatch breakdown table.
 
 ### C. Eliminate unsafe tool_id and code defaults (High)
 
-- [ ] 4. **Replace `web_search` fallback with explicit failure**
-  - [ ] 4-1. In `IntentCompiler._compile_tool_call()` and `_build_tool_call()`, when `stage.config` has no `tool_id`: instead of defaulting to `"web_search"`, attempt to infer the correct tool from the stage `name` and `description` using a simple keyword map (e.g., "read file" → `file_read`, "CSV" → `csv_read`, "PDF" → `pdf_read`, "email" → `send_email`, "search" → `web_search`). If no match, use `"web_search"` but add a quality concern to the stage.
-  - [ ] 4-2. In `structural_mutations.py` `_try_macro_from_text()`, same pattern: infer tool from text before defaulting.
+- [x] 4. **Replace `web_search` fallback with explicit failure**
+  - [x] 4-1. In `IntentCompiler._compile_tool_call()` and `_build_tool_call()`, when `stage.config` has no `tool_id`: instead of defaulting to `"web_search"`, attempt to infer the correct tool from the stage `name` and `description` using a simple keyword map (e.g., "read file" → `file_read`, "CSV" → `csv_read`, "PDF" → `pdf_read`, "email" → `send_email`, "search" → `web_search`). If no match, use `"web_search"` but add a quality concern to the stage.
+  - [x] 4-2. In `structural_mutations.py` `_try_macro_from_text()`, same pattern: infer tool from text before defaulting.
 
-- [ ] 5. **Replace `result = 'done'` stub with description-based code generation**
-  - [ ] 5-1. In `IntentCompiler._compile_code_execution()` and `_build_code_execution()`, when `stage.config` has no `code`: instead of `"result = 'done'"`, generate a minimal template from the stage description. E.g., if description is "compute statistics", emit `result = {"status": "computed", "description": "<stage.description>"}`. Still a placeholder, but at least descriptive and distinguishable from a no-op.
-  - [ ] 5-2. Add a quality flag when code is auto-generated from description (not user-provided). The quality gate can warn "code node uses auto-generated placeholder".
+- [x] 5. **Replace `result = 'done'` stub with description-based code generation**
+  - [x] 5-1. In `IntentCompiler._compile_code_execution()` and `_build_code_execution()`, when `stage.config` has no `code`: instead of `"result = 'done'"`, generate a minimal template from the stage description. E.g., if description is "compute statistics", emit `result = {"status": "computed", "description": "<stage.description>"}`. Still a placeholder, but at least descriptive and distinguishable from a no-op.
+  - [x] 5-2. Add a quality flag when code is auto-generated from description (not user-provided). The quality gate can warn "code node uses auto-generated placeholder".
 
 ### D. Inject tool catalog into codegen prompt (High)
 
-- [ ] 6. **Include registered tool IDs in the codegen system prompt**
-  - [ ] 6-1. In `planner.py` `CodegenPromptBuilder`, query the `ToolRegistry` (or `discovery.discover_tools()`) to get the list of registered tool IDs with their one-line descriptions.
-  - [ ] 6-2. Append a "## Available Tools" section to the codegen system prompt: `"When creating tool nodes, use one of these registered tool_ids: file_read (read file contents), csv_read (parse CSV), pdf_read (extract PDF text), web_search (search the web), send_email (send email), ..."`. Cap at ~20 tools to avoid prompt bloat.
-  - [ ] 6-3. Add an instruction: "Do NOT invent tool_ids. If no registered tool matches the needed capability, use `wf.code()` with inline Python instead of `wf.tool()` with a made-up tool_id."
+- [x] 6. **Include registered tool IDs in the codegen system prompt**
+  - [x] 6-1. In `planner.py` `CodegenPromptBuilder`, query the `ToolRegistry` (or `discovery.discover_tools()`) to get the list of registered tool IDs with their one-line descriptions.
+  - [x] 6-2. Append a "## Available Tools" section to the codegen system prompt: `"When creating tool nodes, use one of these registered tool_ids: file_read (read file contents), csv_read (parse CSV), pdf_read (extract PDF text), web_search (search the web), send_email (send email), ..."`. Cap at ~20 tools to avoid prompt bloat.
+  - [x] 6-3. Add an instruction: "Do NOT invent tool_ids. If no registered tool matches the needed capability, use `wf.code()` with inline Python instead of `wf.tool()` with a made-up tool_id."
 
 ### E. Add LLM-as-judge scoring to eval harness (Medium)
 
-- [ ] 7. **Automated semantic quality assessment**
-  - [ ] 7-1. Add a `--judge` flag to the eval CLI. When enabled, after each graph is produced, send the prompt + graph JSON to an LLM judge (use the configured chat model) with a scoring rubric:
+- [x] 7. **Automated semantic quality assessment**
+  - [x] 7-1. Add a `--judge` flag to the eval CLI. When enabled, after each graph is produced, send the prompt + graph JSON to an LLM judge (use the configured chat model) with a scoring rubric:
     - **Prompt faithfulness** (0-10): Does the graph structure match what the prompt asked for?
     - **Node specificity** (0-10): Are node prompts specific enough to produce useful output?
     - **Data flow correctness** (0-10): Do edges, ports, and template variables connect correctly?
     - **Executability** (0-10): Would this graph produce useful output if run?
-  - [ ] 7-2. Store judge scores in `EvalRecord` as `judge_scores: dict[str, int] | None`.
-  - [ ] 7-3. Report generator: add judge score summary (avg per tier, worst 5 graphs).
-  - [ ] 7-4. Do NOT use judge scores for pass/fail — keep them advisory. The structural + expectation gates (tasks 3, B) are the hard gates.
+  - [x] 7-2. Store judge scores in `EvalRecord` as `judge_scores: dict[str, int] | None`.
+  - [x] 7-3. Report generator: add judge score summary (avg per tier, worst 5 graphs).
+  - [x] 7-4. Do NOT use judge scores for pass/fail — keep them advisory. The structural + expectation gates (tasks 3, B) are the hard gates.
 
 ### F. Intent extraction tool-awareness (Medium)
 
-- [ ] 8. **Teach intent extraction about available tools**
-  - [ ] 8-1. In `extract_workflow_intent()`, include the available tool IDs in the system prompt so the LLM can set correct `config.tool_id` values in `tool_call` stages instead of omitting them.
-  - [ ] 8-2. Update the few-shot examples in `INTENT_FEW_SHOT_EXAMPLES` to use a variety of tool IDs beyond just `web_search` and `file_read`. Add examples with `csv_read`, `pdf_read`, `python_eval`, `shell_command`.
+- [x] 8. **Teach intent extraction about available tools**
+  - [x] 8-1. In `extract_workflow_intent()`, include the available tool IDs in the system prompt so the LLM can set correct `config.tool_id` values in `tool_call` stages instead of omitting them.
+  - [x] 8-2. Update the few-shot examples in `INTENT_FEW_SHOT_EXAMPLES` to use a variety of tool IDs beyond just `web_search` and `file_read`. Add examples with `csv_read`, `pdf_read`, `python_eval`, `shell_command`.
 
 ## Key Files
 
@@ -102,13 +102,13 @@ Six focused patches, ordered by impact. Each is independently shippable. No new 
 
 ## Success Criteria
 
-- [ ] Review loops use correct continue-while semantics — no more `quality_score >= 8` passed as a continue condition
-- [ ] Conditions referencing unknown state variables are normalized to the safe default
-- [ ] Eval pass rate drops (honestly) when expectation-fit gate is enabled — graphs with wrong topology or node count are caught
-- [ ] Tool nodes use contextually appropriate tool_ids, not universal `web_search`
-- [ ] Code nodes have at least descriptive placeholders, not `result = 'done'`
-- [ ] Codegen LLM knows which tools are available
-- [ ] LLM-as-judge scoring is available via `--judge` and produces actionable per-graph assessments
+- [x] Review loops use correct continue-while semantics — no more `quality_score >= 8` passed as a continue condition
+- [x] Conditions referencing unknown state variables are normalized to the safe default
+- [x] Eval pass rate drops (honestly) when expectation-fit gate is enabled — graphs with wrong topology or node count are caught
+- [x] Tool nodes use contextually appropriate tool_ids, not universal `web_search`
+- [x] Code nodes have at least descriptive placeholders, not `result = 'done'`
+- [x] Codegen LLM knows which tools are available
+- [x] LLM-as-judge scoring is available via `--judge` and produces actionable per-graph assessments
 - [ ] Re-run battery with expectation gate: expect pass rate to drop to ~30-35% (honest baseline), then climb as A/C/D/F fixes take effect
 
 ## Implementation Order
@@ -129,7 +129,8 @@ A and B are independent and can be done in parallel. C, D, and F are related and
 
 ## Decisions
 
-- (filled in during execution)
+- Review-condition normalization stays conservative by defaulting unknown or malformed conditions to `quality_score < 8` instead of guessing at custom state variables or partially parsed stop-conditions.
+- Tool inference should only match phrase-level, word-boundary keywords; generic fallbacks like bare `file` are too risky because they create false positives (`profile` → `file_read`).
 
 ## Notes
 
@@ -139,3 +140,5 @@ A and B are independent and can be done in parallel. C, D, and F are related and
 - The LLM-as-judge (E) is explicitly advisory, not a gate. Using LLM judgment for pass/fail would introduce non-determinism into the eval. Keep it as a diagnostic signal.
 - Code-node stubs (C.5) are a partial fix. The real solution is either teaching the codegen LLM to write real Python (prompt engineering) or falling back to `llm_operator` when real code isn't available. The template approach in 5-1 at least makes stubs distinguishable.
 - The tool inference map (C.4-1) should be kept small and conservative — only map unambiguous keywords. Ambiguous cases should stay as `web_search` with a quality warning rather than risk wrong tool assignment.
+- Final follow-up hardening extended review-condition normalization to negate whole threshold-based stop expressions (`and`/`or`, reversed threshold forms like `8 <= quality_score`) while preserving quoted literals and falling back safely on malformed expressions.
+- Final code-review patches fixed edge cases in composed compilation wiring (bypassing conditional gates), orphaned subgraphs in loop unwrapping, JSON extraction regex fragility, and parallelize macro truncation.

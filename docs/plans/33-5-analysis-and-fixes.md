@@ -1,7 +1,7 @@
 # 33-5: Analysis & Fixes
 
 **Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
-**Status:** completed
+**Status:** in-progress
 **Goal:** Analyze the baseline results from 33-3 and 33-4, identify the top failure modes, apply targeted fixes, and re-measure to confirm improvement.
 
 ## Process
@@ -39,6 +39,10 @@ For each failure mode, categorize by root cause:
 | `wrong_path` | Intent compiler was used but codegen would have been better (or vice versa) — after Phase 22 expansion, check path selection logic | intent_compiler.py, planner.py |
 | `missing_defaults` | Graph validates but lacks smart defaults (no retry policy, no validation gates) that Phase 22 (32-3) should have auto-wired | generation_defaults.py |
 | `wrong_domain` | Domain detection (31-21) assigned wrong domain or no domain, leading to incorrect profile selection (32-5) | domain_learning.py, domain profiles |
+| `expectation_mismatch` | Graph validates but doesn't match fixture expectations (min_nodes, topology, node_types) — 33-10 B | Codegen prompt, intent compiler patterns, fixture ranges |
+| `codegen_failed` | Codegen reached, code extracted, but sandbox execution failed | codegen prompt, builder API, sandbox |
+| `wrong_tool_id` | Tool node has incorrect `tool_id` (e.g. `web_search` for a CSV-reading task) — 33-10 C | `_TOOL_KEYWORD_MAP`, intent extraction |
+| `condition_polarity` | Review-loop condition is backwards (stop-when-satisfied vs continue-while) — 33-10 A | intent_compiler.py, codegen prompt |
 
 > **Note:** The unified telemetry store (31-20) records exact tokens, cost, duration, model, retry count, and parent-child event correlation for every LLM call. This eliminates the "observability gap" failure category from earlier drafts. If a metric still can't be measured, file a bug against the telemetry emission sites rather than treating it as a test-harness concern.
 
@@ -89,6 +93,36 @@ Write up:
 - [x] 8. Produce comparison report *(baseline vs post-fix in [33-generation-quality-eval](33-generation-quality-eval.md#measure-fix-measure-cycle-2026-03-11))*
 - [x] 9. Update docs: bugs.md (root causes found), todo.md (remaining work), changelog.md *(bugs.md: Phase 33 root causes triage section added)*
 
+### Cycle 3: Post-33-9/33-10 analysis (2026-03-12)
+
+**Context:** Pipeline has received 33-6 (intent compiler activation), 33-7 (semantic quality gates), 33-8 (codegen resilience), 33-9 (build path trustworthiness), and 33-10 partial (semantic correctness — B, C, F done; A, D, E pending). Fixture expectation enforcement (33-10 B) is now active, producing an honest baseline. Tool keyword inference (33-10 C) and tool-aware extraction (33-10 F) should improve tool-node quality.
+
+**Prior baseline (Cycle 2):** 54.9% pass (51 records), 20/23 failures were `no_graph_created`. Intent compiler 29.4% activation. 72% of failures were `timeout_planning`.
+
+- [ ] 10. Generate post-33-9/33-10 report from re-run JSONL
+  - [ ] 10-1. Overall pass rate (expected: lower than 54.9% due to fixture enforcement)
+  - [ ] 10-2. Per-tier pass rates with comparison to Cycle 2
+  - [ ] 10-3. Failure mode distribution — specifically track new `expectation_mismatch` category
+  - [ ] 10-4. Intent compiler activation rate per tier (target: T1 >80%, T2 >60%)
+  - [ ] 10-5. Tool_id correctness rate for tool-node prompts
+- [ ] 11. Triage new failure modes
+  - [ ] 11-1. Separate `expectation_mismatch` into "fixture too strict" vs "generation genuinely wrong"
+  - [ ] 11-2. Widen fixture ranges for reasonable alternative topologies
+  - [ ] 11-3. Identify any remaining `no_graph_created` that should be sub-classified
+- [ ] 12. Compare honest baseline to prior "passing" rate
+  - [ ] 12-1. Document the gap between structural-only validation and expectation-fit validation
+  - [ ] 12-2. Identify which "previously passing" graphs now fail — are they genuine quality issues?
+- [ ] 13. Assess 33-10 A/D/E impact
+  - [ ] 13-1. How many graphs have review-loop condition polarity bugs? (informs 33-10 A priority)
+  - [ ] 13-2. How many graphs have wrong tool_ids despite keyword map? (informs 33-10 D — codegen tool catalog)
+  - [ ] 13-3. Would LLM-as-judge (33-10 E) catch issues that fixture expectations miss?
+- [ ] 14. Produce Cycle 3 comparison report
+  - [ ] 14-1. Cycle 2 vs Cycle 3 comparison table
+  - [ ] 14-2. Updated failure mode histogram
+  - [ ] 14-3. Recommendations for 33-10 remaining patches (A, D, E)
+  - [ ] 14-4. Decision: is generation quality trending toward daily usability?
+- [ ] 15. Update docs: bugs.md, todo.md, changelog.md
+
 ## Files
 
 | File | Action |
@@ -110,7 +144,10 @@ Write up:
 - Prompt tweaks (changing the codegen system prompt, adding few-shot examples) are the lowest-risk, highest-impact fixes. Code changes to the builder or validator should only happen if the prompt fix can't address the issue.
 - The unified telemetry store (31-20) should provide exact build-phase tokens, cost, and duration via `chat_turn` events. If data gaps exist, the fix belongs in the telemetry emission sites (concierge, run_manager), not in the test harness.
 - This plan is explicitly time-boxed: 1 day for analysis + fixes + re-run. If generation quality needs more than 1 day of fixes, that becomes a separate plan.
-- **Phase 22 feedback loop:** If the analysis reveals that convenience layer methods aren't being used (prompts still produce verbose code), or the expanded intent compiler isn't activating on expected patterns, or smart defaults aren't being applied, or the new 32-6 ergonomics still fall back to verbose branching / hardcoded `quality_score` / single-macro-only follow-ups — these are issues in the Phase 22 implementation, not in the generation pipeline per se. File as bugs against the relevant 32-X component.
-- **Remaining verbosity signal:** If builder codegen still frequently emits manual `NodeRef(...)` recovery after `for_each` / `while_loop` / `parallel_subagents` / `orchestrator`, that is likely the next post-33 ergonomics slice (context-manager ref ergonomics), not a generic model-quality issue.
-- **Guard pipeline (31-19) false positives:** If `guard_short_circuit` appears for legitimate build requests, the guard threshold or entity grounding may need tuning. This feeds back into self-adaptive behavior (31-22) parameter calibration.
-- **Self-adaptive behavior (31-22):** If `DAN_BEHAVIOR_TIER >= 1`, check whether any behavior proposals were generated during the battery run. These might indicate the system is already learning from the test prompts — which is useful signal but could also introduce non-determinism between runs.
+- **Cycle 3 framing:** The key question for Cycle 3 is NOT "did pass rate go up" — fixture enforcement (33-10 B) will likely lower the headline number. The key question is: "of the graphs that pass the honest baseline, are they semantically correct?" The gap between Cycle 2 pass rate (54.9%) and Cycle 3 honest pass rate shows how many false-positive passes existed before.
+- **Expectation mismatch triage:** Not all `expectation_mismatch` failures are generation bugs. Some fixture ranges may be too narrow for valid alternative topologies. The analysis step should separate "fixture needs widening" from "generation genuinely wrong." Widen ranges and re-run if needed.
+- **33-10 remaining patches:** The re-run will reveal how much value the remaining 33-10 patches (A: condition polarity, D: codegen tool catalog, E: LLM-as-judge) would add. If most failures are `expectation_mismatch` from fixture strictness, the fixes are different than if most are `wrong_tool_id` or `condition_polarity`.
+- **Phase 22 feedback loop:** If convenience layer methods aren't being used, or the intent compiler isn't activating on expected patterns, or smart defaults aren't being applied — file as bugs against the relevant 32-X component.
+- **Remaining verbosity signal:** If builder codegen still frequently emits manual `NodeRef(...)` recovery, that is likely the next post-33 ergonomics slice.
+- **Guard pipeline (31-19) false positives:** If `guard_short_circuit` appears for legitimate build requests, tune guard thresholds.
+- **Self-adaptive behavior (31-22):** If `DAN_BEHAVIOR_TIER >= 1`, log whether behavior proposals were generated during the battery run.

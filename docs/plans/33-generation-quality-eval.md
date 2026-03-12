@@ -140,8 +140,13 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 - [x] Eval harness failure modes use granular categories instead of opaque `no_graph_created` bucket — implemented in 33-9 G.14: 7 subcategories (stream_error, routing_blocked, llm_error, correct_refusal, timeout_codegen, timeout_planning, codegen_failed)
 - [ ] Post-33-9 battery pass rate ≥65% (from current 55%) — 46.7% build lane in post-implementation battery (72% of failures are LLM API timeout_planning, not pipeline issues)
 - [ ] Post-33-10 battery with expectation-fit gate produces an honest baseline (expect ~30-35%) and climbs as semantic fixes land
-- [ ] Review-loop condition polarity bug fixed — no more backwards continue-while semantics (33-10 A)
-- [ ] Eval pass/fail enforces fixture expectations (min_nodes, topology, node_types) (33-10 B)
+- [x] Review-loop condition polarity bug fixed — `ReviewRequirement.condition` default flipped, `_normalize_review_condition()` validates/corrects polarity (33-10 A)
+- [x] Eval pass/fail enforces fixture expectations (min_nodes, topology, node_types) — `_determine_status()` returns `expectation_mismatch` on violations (33-10 B)
+- [x] Tool keyword inference removes unsafe `web_search` default — `_TOOL_KEYWORD_MAP` with 30+ mappings (33-10 C)
+- [x] Codegen prompt includes tool catalog — 17 registered tool_ids with descriptions injected (33-10 D)
+- [x] Intent extraction tool-aware — 19 tool_ids in extraction system prompt, few-shot with csv/email/code (33-10 F)
+- [ ] LLM-as-judge scoring validates semantic correctness beyond structural checks (33-10 E — implemented, pending eval run)
+- [ ] Cycle 3 re-run with all 33-10 patches produces honest baseline and informs remaining priorities
 
 ## Decisions
 

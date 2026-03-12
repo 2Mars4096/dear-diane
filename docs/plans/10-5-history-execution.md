@@ -12,6 +12,9 @@
     - `role: "user" | "assistant" | "system"`
     - `content: str` (plain text with serialized mentions `@[name](type:id)`)
     - `mentions: list[Mention]` (resolved mention references)
+    - `tool_calls: list[dict]` (persisted tool trace shown in chat UI)
+    - `run_events: list[dict]` (execution status blocks streamed into chat)
+    - `attachments: list[dict]` (file/artifact chips such as generated reports)
     - `mutation_plan: MutationPlan | None` (if assistant suggested graph changes)
     - `mutation_id: str | None` (stable identifier for mutation proposal/application lifecycle)
     - `mutation_status: "proposed" | "applied" | "partial" | "rejected" | "reverted" | None`
@@ -65,12 +68,13 @@
   - [ ] 7-4. Document clear boundary: this plan handles persistence/rendering, while 10-6 handles run intent detection, scoped execution API, and event fan-out. *(deferred — docs task)*
 
 - [ ] 8. Tests *(deferred to 12-6)*
-  - [ ] 8-1. `ChatStore` tests: create/read/update/delete threads, persistence to disk, load on startup
+  - [x] 8-1. `ChatStore` tests: create/read/update/delete threads, persistence to disk, load on startup
   - [ ] 8-2. Chat endpoint tests: thread CRUD via httpx test client
   - [ ] 8-3. Graph delta tracking: verify mutation metadata (`mutation_plan`, `mutation_id`, `mutation_status`) stored in messages
   - [ ] 8-4. Auto-restore: verify thread loaded on tab switch, cascading delete on workflow delete
   - [ ] 8-5. Session-only rollback metadata: verify markers work before reload and are cleared/disabled after reload
   - [ ] 8-6. Frontend: verify thread list, mutation badges, and execution placeholder blocks (component test or manual)
+  - [x] 8-7. Frontend serializer regression: preserve `tool_calls`, `run_events`, and `attachments` across save/load mapping.
 
 - [ ] 9. Docs sync *(deferred — update when features land)*
   - [ ] 9-1. `architecture.md`: add `ChatStore`, chat persistence directory, chat endpoints to API table, and integration boundary with 10-6 scoped execution
@@ -88,6 +92,7 @@
 
 - **Deferred to Phase 7.2:** Cascade delete (→ 12-5), offline resilience (→ 12-1), graph delta tracking UI — changes badge (→ 12-4), export thread (→ 12-5), execution block helpers (→ 12-4), all tests (→ 12-6), docs sync (→ when features land). Thread timeline (5-3) moved to Backlog as stretch goal.
 - Chat history persistence follows the same filesystem pattern as `GraphStore`. JSON files in a `chats/` directory, one file per thread. Simple, no database dependency, version-controllable.
+- Post-completion follow-up hardened the persistence contract so thread reloads preserve tool traces, run events, `estimated_cost`, scoped `run_ref` targets, and attachment chips. Shared mapping now lives in `editor/src/lib/chatMessagePersistence.ts`, with regressions in both Python and Vitest suites.
 - Run-from-chat is intentionally split into 10-6 so backend execution scope design (full/node/sub-graph) is specified in detail and tested independently.
 - Session-only rollback keeps implementation simple and aligned with current in-memory undo stack; durable rollback/versioning can be a future enhancement.
 - Thread timeline view (stretch) would make the conversation a visual history of graph evolution. Powerful for understanding how a workflow was iteratively built. Defer to post-MVP.

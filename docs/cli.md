@@ -314,6 +314,10 @@ dan-up --port 9000    # custom port
 2. Starts `dan-serve` in the background, writes PID file, polls `/health` until ready.
 3. Drops into `dan-chat` connected to the running server.
 
+**Logs:**
+- `dan-up` writes the background server process to `~/.dan/logs/server.log`.
+- The server now emits `dan.*` application logs there at `INFO`, so chat-manager/tool-loop diagnostics show up alongside uvicorn lines when you need to debug a stall.
+
 ---
 
 ## `dan-down`
@@ -373,6 +377,7 @@ dan-service logs -n 100                 # last 100 lines
 - Logs written to `~/.dan/logs/server.stdout.log` and `server.stderr.log`.
 - Rotation: keeps last 5 files (`.1` through `.5`). Rotated on each service start.
 - Total budget: 50 MB default, configurable via `DAN_LOG_MAX_SIZE` env var (bytes).
+- `dan-up` uses `~/.dan/logs/server.log` for its manual background start path.
 
 ---
 

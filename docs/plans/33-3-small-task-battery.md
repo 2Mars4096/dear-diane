@@ -4,7 +4,20 @@
 **Status:** in-progress
 **Goal:** Define and run 20+ small-to-medium workflow generation prompts that exercise each major pattern family, reuse/adaptation behavior, and composition quality, establishing the baseline success rate for everyday use cases.
 
-**Pilot subset:** The 10-prompt manual pilot (33-1) ran successfully in build lane with 60% pass rate. See [33-generation-quality-eval](33-generation-quality-eval.md#pilot-findings-2026-03-11) for results.
+**Prior run (2026-03-12):** 51 records, 54.9% pass (build lane). T1 55%, T2 75%, T2R 0%, T3 59%, T4 50%, T5 50%. Intent compiler 29.4%. See [33-generation-quality-eval](33-generation-quality-eval.md#post-patch-full-battery-2026-03-12).
+
+**Re-run context:** Pipeline has received significant patches since the prior run — 33-9 (build path trustworthiness) and 33-10 (semantic correctness). Key changes affecting this battery:
+
+| Patch | What changed | Expected impact on re-run |
+|---|---|---|
+| 33-10 B | Fixture expectation enforcement: `_determine_status()` now checks `min_nodes`, `topology`, `node_types` against fixtures | Pass rate will drop for graphs that previously "passed" structurally but didn't match expectations (honest baseline ~30-35%) |
+| 33-10 C | Tool keyword inference: `_TOOL_KEYWORD_MAP` (30+ mappings) auto-assigns `tool_id` based on prompt keywords | Tool nodes (t2-01, t2-03, t2-04, t3-*) should have correct `tool_id` instead of defaulting to `web_search` |
+| 33-10 F | Intent extraction tool-awareness: extraction prompt lists 19 registered tool_ids | Better tool-node typing in intent extraction stage |
+| 33-10 A | Review-loop condition polarity fix (PENDING) | t1-03 review loop may still have backwards continue-while semantics until this lands |
+| 33-9 E | Agent-lane routing: CONFIRM bypass, reuse suppression, solver heuristic | Agent lane should work at ~20% (was 0%) |
+| 33-9 A | Generation summary events: `ChatGenerationSummaryEvent` with path, retries, wall-clock | Better diagnostics in JSONL records |
+| 33-9 C | Node count calibration from 42 eval graphs | Codegen should produce better-sized graphs |
+| 33-6 | Intent compiler activation: T1/T2 use deterministic path (68% activation) | T1/T2 should pass reliably when intent compiler activates (100% pass rate historically) |
 
 ## Prompt Catalog
 
@@ -72,39 +85,65 @@ These test boundary conditions: ambiguous intent, non-workflow requests, over-sp
 
 ## Validation Criteria
 
-For each prompt, the harness checks:
+The harness now enforces a **two-gate validation** (structural + expectation-fit) per 33-10 B:
 
+### Gate 1: Structural validity
 1. **Graph created?** — Did a new graph appear in the store?
 2. **Validates?** — Does `validate_graph()` pass on the generated graph?
-3. **Topology match?** — Does the graph contain the expected semantic must-haves (loops, fan-out, tool nodes, code nodes) per the fixture?
-4. **Node count reasonable?** — Is the node count within a broad expected range?
-5. **Node types correct?** — Are the expected node types present (llm, tool, code, for_each, gate, etc.)?
-6. **Connected / coherent?** — Are there no obvious disconnected fragments or isolated nodes in the generated workflow?
 
-For prompts marked `lane: both`, the harness compares:
+### Gate 2: Fixture expectation fit (33-10 B — NOW ENFORCED)
+3. **Node count in range?** — Is `node_count` between fixture `expected.min_nodes` and `expected.max_nodes`? Graphs outside this range fail with `expectation_mismatch`.
+4. **Node types present?** — Does `graph_summary.node_types` contain every type listed in `expected.node_types`? Missing types → `expectation_mismatch`.
+5. **Topology features?** — Does the graph match `expected.topology` constraints:
+   - `review_loop` → `has_loop` must be true
+   - `fan_out` → `has_fan_out` must be true
+   - `chain` → `node_count >= 2`
+   - `tools` → at least one tool-type node present
+   - Mismatches → `expectation_mismatch`
 
-7. **Routing delta** — Did `agent` lane fail while `build` lane succeed? That indicates a routing problem rather than a generation problem.
+### Semantic checks (when applicable)
+6. **Tool_id correctness?** — After 33-10 C, tool nodes should have correct `tool_id` (not default `web_search`). Check tool-heavy prompts (t2-01, t2-03, t2-04) for appropriate tool assignment.
+7. **Review-loop condition?** — t1-03 should use flexible custom criteria (`citations_verified`), not hardcoded `quality_score`. After 33-10 A lands, condition polarity should be correct (continue-while, not stop-when).
+8. **Code node quality?** — After 33-10 C, code nodes should have descriptive placeholder code, not `result = 'done'` stubs.
 
-Edge cases (T5) have different criteria:
+### Lane comparison
+9. **Routing delta** — Did `agent` lane fail while `build` lane succeed? That indicates a routing problem rather than a generation problem.
+
+### Edge cases (T5)
 - t5-01: No graph created, response asks for clarification
 - t5-02, t5-03: No graph created, response answers the question
 - t5-04: Either a reasonable complex graph OR a clarification/simplification response
 
-Reuse / adaptation prompts (T2R) have different criteria:
+### Reuse / adaptation (T2R)
 - Prefer observable reuse/adaptation behavior over exact topology matching
 - Record whether the system appears to modify an existing workflow, references a similar prior workflow, or still builds from scratch
+- T2R remains 0% in prior runs — experience-reuse path has upstream blockers
 
 ## Tasks
 
+### Initial run (completed)
 - [x] 1. Write all prompt fixtures into `tests/eval/prompts.json`
 - [x] 2. Run the battery via the harness *(2026-03-12: full run on port 8000, 51 records, 54.9% pass)*
-- [ ] 3. Review results and annotate false positives/negatives
 - [x] 4. Compute per-tier and per-lane pass rates *(report.by_tier, report.by_lane)*
 - [x] 5. Record generation path per prompt *(report.generation_path with by_tier breakdown)*
-- [x] 6. Check whether smart defaults (32-3) were applied: do generated T2/T3 graphs include retry policies and validation gates? *(report.smart_defaults when graphs stored)*
-- [x] 7. Note which domain profiles (32-5) activated, if any *(report.domain_profiles)*
-- [x] 8. Summarize reuse / adaptation behavior from the T2R prompts *(report.reuse_adaptation: T2R entries with mutation/reuse signals)*
-- [x] 9. Specifically review 32-6 coverage: did `t1-03` use flexible review criteria without falling back to hardcoded `quality_score`, and did `t1-09` produce a simple conditional branch rather than verbose low-level gate wiring? *(report.coverage_32_6 highlights t1-03, t1-09)*
+- [x] 6. Check whether smart defaults (32-3) were applied *(report.smart_defaults)*
+- [x] 7. Note which domain profiles (32-5) activated *(report.domain_profiles)*
+- [x] 8. Summarize reuse / adaptation behavior from T2R *(report.reuse_adaptation)*
+- [x] 9. Review 32-6 coverage for t1-03, t1-09 *(report.coverage_32_6)*
+
+### Post-33-9/33-10 re-run
+- [ ] 10. Re-run full battery (`python -m tests.eval --lane build`)
+  - [ ] 10-1. Compare pass rates against prior run (54.9% overall, expect drop from fixture enforcement)
+  - [ ] 10-2. Identify new `expectation_mismatch` failures — these are graphs that previously "passed" but don't match fixture expectations
+  - [ ] 10-3. Check tool_id correctness on tool-heavy prompts (t2-01, t2-03, t2-04, t3-*)
+  - [ ] 10-4. Check review-loop condition polarity on t1-03 (33-10 A status)
+  - [ ] 10-5. Check code node placeholders are descriptive (not `result = 'done'`)
+- [ ] 11. Review results and annotate false positives/negatives
+  - [ ] 11-1. Are any `expectation_mismatch` failures actually reasonable alternative topologies? Widen fixture ranges if so.
+  - [ ] 11-2. Are any passing graphs semantically wrong despite matching expectations? Note for 33-10 E (LLM-as-judge).
+- [ ] 12. Record generation summary data (33-9 A): path, retries, wall-clock per prompt
+- [ ] 13. Measure intent compiler activation rate per tier (target: T1 >80%, T2 >60%)
+- [ ] 14. Run with `--runs 3` on T1 tier to measure flakiness baseline
 
 ## Files
 
@@ -118,9 +157,14 @@ Reuse / adaptation prompts (T2R) have different criteria:
 
 ## Notes
 
-- T1 prompts should be near-100% pass rate in `build` lane. If they fail there, the generation path has a core problem. These should also use the intent compiler path (not codegen) after the Phase 22 expansion to 15+ patterns.
-- T2-T3 prompt expected node counts are approximate — the LLM may produce slightly different but valid topologies.
+- **Fixture enforcement impact:** With 33-10 B active, the honest pass rate is expected to drop from ~55% to ~30-35%. This is not a regression — it reveals graphs that previously passed structural validation but didn't actually match the prompt's intent. The delta between old and new pass rates shows how many false-positive "passes" existed.
+- T1 prompts should be near-100% pass rate when the intent compiler activates (historically 100%). If T1 fails in `build` lane, check whether intent compiler activated or fell back to codegen.
+- T2-T3 prompt expected node counts are approximate — the LLM may produce slightly different but valid topologies. If `expectation_mismatch` fires on a reasonable alternative topology, widen the fixture `min_nodes`/`max_nodes` range.
 - Edge cases (T5) are judged by routing correctness, not graph quality.
-- Reuse / adaptation prompts are judged by behavior and telemetry signals (e.g. memory_retrieval events from 31-20), not by forcing a specific graph shape.
-- `t1-03` is the narrow 32-6 check for configurable `review_loop()` criteria; the generated flow should not require a hardcoded `quality_score` contract.
-- `t1-09` is the narrow 32-6 check for common if/else branching convenience; a simple gate-style branch is sufficient, but it should not require obviously over-complicated topology for the common case.
+- Reuse / adaptation prompts (T2R) are judged by behavior and telemetry signals, not by forcing a specific graph shape. T2R remains 0% pass — experience-reuse path has upstream blockers.
+- `t1-03` is the narrow 32-6 check for configurable `review_loop()` criteria; the generated flow should not require a hardcoded `quality_score` contract. Also check condition polarity (33-10 A).
+- `t1-09` is the narrow 32-6 check for common if/else branching convenience; a simple gate-style branch is sufficient.
+- **Tool_id inference (33-10 C):** Prompts mentioning file operations, CSV, PDF, email, code execution should produce tool nodes with correct `tool_id` (e.g. `file_read`, `csv_read`, `pdf_read`, `send_email`, `code_execution`) instead of defaulting to `web_search`. The `_TOOL_KEYWORD_MAP` has 30+ keyword→tool_id mappings.
+- **Intent extraction tool-awareness (33-10 F):** The extraction prompt now lists 19 registered tool_ids. This should improve tool-node typing at the intent stage, before codegen even runs.
+- **Generation summary (33-9 A):** Each record should now include `ChatGenerationSummaryEvent` data with path, retries, and wall-clock. Use this to diagnose slow builds and path selection issues.
+- **Main bottleneck from prior runs:** 72% of failures were `timeout_planning` (LLM API reliability), not pipeline logic issues. If this persists in the re-run, it's an infrastructure constraint, not a quality issue.

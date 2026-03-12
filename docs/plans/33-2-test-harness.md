@@ -86,6 +86,28 @@ Pytest is for deterministic pass/fail assertions. This harness measures *quality
 | `tests/eval/prompts.json` | Create — prompt fixtures (from 33-3 and 33-4) |
 | `tests/eval/results/` | Create (gitignored) — output directory |
 
+## Post-33-9/33-10 Harness Enhancements
+
+The harness has been extended with capabilities from 33-6 through 33-10:
+
+| Capability | Source | Implementation |
+|---|---|---|
+| Fixture expectation enforcement | 33-10 B | `_check_expectations()` checks `min_nodes`, `max_nodes`, `node_types`, `topology` against fixture `expected`; `_determine_status()` returns `expectation_mismatch` on violations |
+| Granular failure categories | 33-9 G | `_classify_no_graph()` subcategories: `stream_error`, `routing_blocked`, `llm_error`, `correct_refusal`, `timeout_codegen`, `timeout_planning`, `codegen_failed` |
+| Generation summary events | 33-9 A | `ChatGenerationSummaryEvent` captured in stream with path, retries, wall-clock |
+| Multi-run flakiness | 33-8 | `--runs N` flag for multi-run stability measurement |
+| LLM-as-judge scoring | 33-10 E | `--judge` flag for advisory semantic scoring (pending implementation) |
+| `chat_queued` redirect handling | 33-pilot | `stream_events()` follows channel redirects via loop (mirrors `telegram_fleet`) |
+| Tool-aware intent extraction | 33-10 F | Extraction prompt lists 19 registered tool_ids — reflected in higher tool-node quality |
+| Pre-generation latency tracking | 33-9 D | `pre_generation_ms` captured in records |
+
+### New CLI flags (since initial build)
+
+- `--runs N` — run each prompt N times, compute flakiness rate
+- `--judge` — enable LLM-as-judge semantic scoring (33-10 E)
+- `--durability` — run D1-D4 durability smoke checks on first valid graph
+- `--no-store-graphs` — disable graph JSON storage
+
 ## Decisions
 
 - (filled in during execution)

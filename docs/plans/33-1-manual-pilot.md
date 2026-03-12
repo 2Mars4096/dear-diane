@@ -4,6 +4,8 @@
 **Status:** completed
 **Goal:** Send 5-10 workflow-building prompts through the live DAN system, observe what happens in both `agent` and `build` lanes, and establish a rough baseline before building automation.
 
+**Superseded by:** Post-33-9/33-10 pipeline improvements and full battery runs. The pilot baseline (60% pass, 0% intent compiler) is historical — the pipeline now has intent compiler activation (68%), tool-aware extraction, fixture expectation enforcement, and granular failure categories. Re-run via 33-3/33-4/33-5.
+
 ## Why manual first
 
 Building a test harness without knowing the rough baseline is premature optimization. If generation works 90% of the time, the harness needs different instrumentation than if it works 20% of the time. 30 minutes of manual testing tells us which world we're in.

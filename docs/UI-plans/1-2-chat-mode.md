@@ -63,7 +63,7 @@ Chat mode is the entry point for all users. It should have zero learning curve. 
 - [x] 3-5. **Graceful degradation:** If user declines mode switch (dismiss), chat continues normally
 
 ### 4. Conversation Management
-- [ ] 4-1. New conversation button + keyboard shortcut (Cmd+N)
+- [x] 4-1. New conversation button + keyboard shortcut (Cmd+N)
 - [ ] 4-2. Conversation search: full-text across all threads
 - [ ] 4-3. Pin/star conversations for quick access
 - [ ] 4-4. Export conversation: Markdown, PDF, JSON
@@ -99,6 +99,12 @@ Chat mode is the entry point for all users. It should have zero learning curve. 
 - Queued turns may be redirected onto a replacement `stream_channel_id`; the chat renderer must follow `chat_queued` handoffs so the same thread bubble continues streaming instead of stalling on an empty placeholder
 - Thread titles are server-owned: use a readable first-message fallback immediately, then replace it asynchronously with a micro-tier generated title from the first user message only; manual renames lock the title against future auto-updates
 - Renaming should be explicit, not hidden: expose a visible pencil action on the active thread header and in each history row instead of relying only on clicking title text
+- First-turn persistence must happen before the stream finishes: save the initial user+assistant turn as soon as the stream is accepted so server-side title generation can run immediately instead of waiting for terminal events
+- Streaming persistence should be incremental but not noisy: debounce partial saves during token/run-event streaming, persist milestone updates (tool results, attachments, mutations) immediately, and flush pending snapshots on disconnect/error so chat history survives mid-stream failures
+- Local desktop reconnects should distinguish backend outages from stream loss: retry transient socket failures with exponential backoff, but if the backend comes back after a restart and the live stream is gone, reload the latest saved thread snapshot and surface a backend-specific recovery message instead of a generic disconnect
+- Recovery UI must stay actionable when it appears late: if disconnect/stale-state banners are inserted after the last streamed message, auto-scroll them into view so the sticky composer does not hide the retry/dismiss actions
+- Client-side draft titles should avoid raw prompt noise: strip filesystem paths and conversational wrappers from the first visible title immediately, then refresh against the server-authored title shortly after the first save so the active header does not stay stuck on a path-heavy prompt during streaming
+- Tool traces should collapse repeated low-signal reads: if `file_read` hits the same path multiple times in one turn, present it once with merged ranges and an open-file link instead of spamming near-identical cards for each line-range read
 
 ## Notes
 - Chat mode should feel indistinguishable from a best-in-class chat UI (Claude/ChatGPT) for simple tasks

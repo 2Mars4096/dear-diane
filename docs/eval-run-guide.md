@@ -66,6 +66,26 @@ PYTHONPATH=src python -m tests.eval --execution-path auto --lane build
 
 The flag sets `DAN_EVAL_EXECUTION_PATH` and stores `execution_path_requested` in records. For the server to honor it, start the server with matching `DAN_DIRECT_BUILD` (e.g. `DAN_DIRECT_BUILD=off` for codegen).
 
+### Overnight full run (all prompts + execution + durability + 3 runs for flakiness)
+
+```bash
+PYTHONPATH=src python -m tests.eval --lane build --execute --durability --runs 3 2>&1 | tee tests/eval/results/overnight.log
+```
+
+This runs every prompt 3 times, attempts execution on valid graphs, and runs durability checks. Takes 30-60 minutes depending on LLM API speed.
+
+### Practical real-world tasks only
+
+```bash
+PYTHONPATH=src python -m tests.eval --lane build --tag practical
+```
+
+### Filter by tag (repeatable)
+
+```bash
+PYTHONPATH=src python -m tests.eval --lane build --tag multi_turn --tag practical
+```
+
 ## Output
 
 - JSONL: `tests/eval/results/{timestamp}_run.jsonl`
