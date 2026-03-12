@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 SCREENSHOT_DIR = os.path.expanduser("~/.dan/screenshots")
+PROFILE_DIR = os.path.expanduser("~/.dan/browser-profiles")
 MAX_SCREENSHOTS = 50
 
 
@@ -115,6 +116,7 @@ class PlaywrightBrowserController:
         *,
         allowed_domains: list[Any] | None = None,
         headless: bool = True,
+        profile: str | None = None,
     ) -> None:
         if not is_playwright_available():
             raise ImportError(
@@ -123,21 +125,43 @@ class PlaywrightBrowserController:
         self.session = session
         self._allowed_domains = allowed_domains or []
         self._headless = headless
+        self._profile = profile
         self._playwright: Any = None
         self._browser: Any = None
         self._page: Any = None
         self._context: Any = None
 
     async def _ensure_browser(self) -> Any:
-        """Lazily launch browser and page."""
+        """Lazily launch browser and page.
+
+        When *profile* is set, uses ``launch_persistent_context`` so cookies,
+        localStorage, and login sessions survive across restarts.  Log in once
+        interactively (``headless=False``) and every later automated run reuses
+        that auth state.
+        """
         if self._page is not None:
             return self._page
         from playwright.async_api import async_playwright  # type: ignore[import-untyped]
 
         self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(headless=self._headless)
-        self._context = await self._browser.new_context()
-        self._page = await self._context.new_page()
+
+        if self._profile:
+            user_data_dir = os.path.join(PROFILE_DIR, self._profile)
+            os.makedirs(user_data_dir, exist_ok=True)
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                user_data_dir,
+                headless=self._headless,
+            )
+            self._page = (
+                self._context.pages[0]
+                if self._context.pages
+                else await self._context.new_page()
+            )
+        else:
+            self._browser = await self._playwright.chromium.launch(headless=self._headless)
+            self._context = await self._browser.new_context()
+            self._page = await self._context.new_page()
+
         return self._page
 
     def _check_domain(self, url: str) -> None:
@@ -260,6 +284,10 @@ class PlaywrightBrowserController:
         if self._browser:
             await self._browser.close()
             self._browser = None
+            self._page = None
+            self._context = None
+        elif self._context:
+            await self._context.close()
             self._page = None
             self._context = None
         if self._playwright:

@@ -19,6 +19,13 @@ ToolFunction = Callable[..., Awaitable[Any]]
 
 _TOOL_MODULES = [
     "audio_transcribe",
+    "browser_click",
+    "browser_extract",
+    "browser_fill",
+    "browser_open",
+    "browser_screenshot",
+    "browser_type",
+    "browser_wait",
     "clipboard",
     "compress",
     "csv_read",
