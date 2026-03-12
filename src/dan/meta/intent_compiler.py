@@ -2,19 +2,29 @@
 
 The ``IntentCompiler`` takes a validated ``WorkflowIntent`` and produces
 executable Python code that uses the ``dan.builder`` DSL to construct a
-``Graph``.  A ``CoverageChecker`` pre-validates whether all stages can be
-compiled deterministically; when coverage is partial the caller can fall
-back to the LLM-based codegen path (plan 24-1).
+``Graph``.  Alternatively, ``build_graph()`` constructs a ``Graph`` object
+directly in-process without emitting code strings (plan 32-7).
+
+A ``CoverageChecker`` pre-validates whether all stages can be compiled
+deterministically; when coverage is partial the caller can fall back to
+the LLM-based codegen path (plan 24-1).
 """
 
 from __future__ import annotations
 
+import logging
 import re
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
 from dan.meta.intent_schema import StageIntent, StageType, WorkflowIntent
+
+if TYPE_CHECKING:
+    from dan.builder.refs import NodeRef
+    from dan.models.graph import Graph
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -109,89 +119,19 @@ class CoverageResult(BaseModel):
 
 
 class CoverageChecker:
-    """Pre-validates whether all stages in a WorkflowIntent are compilable.
-
-    Phase 14 rule: if ANY stage is unsupported the entire intent falls back
-    to builder codegen (24-1).  No partial compilation.
-    """
+    """Vestigial pass-through for compatibility. The real gate is IntentCompiler.compile()."""
 
     SUPPORTED_TYPES: set[StageType] = set(StageType)
 
     def check(self, intent: WorkflowIntent, *, try_compose: bool = True) -> CoverageResult:
-        """Validate that every stage type in *intent* is in ``SUPPORTED_TYPES``.
-
-        When ``try_compose`` is True and single-pattern match fails, attempts
-        decomposition into constituent catalog patterns (max 3).
-        """
-        supported: list[str] = []
-        unsupported: list[str] = []
-
-        for stage in intent.stages:
-            if stage.stage_type in self.SUPPORTED_TYPES:
-                supported.append(stage.name)
-            else:
-                unsupported.append(stage.name)
-
-        fully_covered = len(unsupported) == 0
-
-        if fully_covered:
-            recommendation = "compile"
-        elif try_compose:
-            decomposition = self._try_decompose(intent)
-            if decomposition is not None and len(decomposition) <= 3:
-                return CoverageResult(
-                    fully_covered=True,
-                    supported_stages=supported + unsupported,
-                    unsupported_stages=[],
-                    recommendation="compose",
-                    constituent_patterns=decomposition,
-                )
-            recommendation = "fallback"
-        else:
-            recommendation = "fallback"
-
+        """Always returns fully_covered=True. Kept for API compatibility; real gate is IntentCompiler.compile()."""
+        stage_names = [s.name for s in intent.stages]
         return CoverageResult(
-            fully_covered=fully_covered,
-            supported_stages=supported,
-            unsupported_stages=unsupported,
-            recommendation=recommendation,
+            fully_covered=True,
+            supported_stages=stage_names,
+            unsupported_stages=[],
+            recommendation="compile",
         )
-
-    def _try_decompose(self, intent: WorkflowIntent) -> list[str] | None:
-        """Try to decompose an intent into constituent catalog patterns (max 3)."""
-        stage_types = [s.stage_type for s in intent.stages]
-        if not stage_types:
-            return None
-
-        patterns: list[str] = []
-        i = 0
-        while i < len(stage_types):
-            matched = False
-            for length in range(min(len(stage_types) - i, 4), 0, -1):
-                segment = stage_types[i : i + length]
-                pattern = self._match_segment(segment)
-                if pattern:
-                    patterns.append(pattern)
-                    i += length
-                    matched = True
-                    break
-            if not matched:
-                return None
-            if len(patterns) > 3:
-                return None
-        return patterns if patterns else None
-
-    def _match_segment(self, segment: list[StageType]) -> str | None:
-        """Match a sequence of stage types to a catalog pattern."""
-        for name, entry in COVERAGE_CATALOG.items():
-            cat_types = entry["stage_types"]
-            if len(cat_types) == len(segment) and all(
-                ct == st for ct, st in zip(cat_types, segment)
-            ):
-                return name
-            if len(cat_types) == 1 and all(st == cat_types[0] for st in segment):
-                return name
-        return None
 
     def describe_coverage(self) -> str:
         """Return a human-readable summary of supported patterns."""
@@ -204,6 +144,32 @@ class CoverageChecker:
             f"Supported stage types: {', '.join(st.value for st in sorted(self.SUPPORTED_TYPES, key=lambda s: s.value))}"
         )
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Direct-build error (plan 32-7)
+# ---------------------------------------------------------------------------
+
+
+class DirectBuildError(Exception):
+    """Raised when in-process Graph construction fails.
+
+    Carries enough context for the caller to log, diagnose, and fall back
+    to the codegen path.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage_name: str | None = None,
+        stage_type: str | None = None,
+        underlying: BaseException | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.stage_name = stage_name
+        self.stage_type = stage_type
+        self.underlying = underlying
 
 
 # ---------------------------------------------------------------------------
@@ -380,6 +346,317 @@ class IntentCompiler:
         # to wire ``exit_var >> next_entry_var``.  We return a special
         # marker so compile() can wire both branches to the next stage.
         return gate_var, f"__both__:{then_var}:{else_var}", lines
+
+    # -- direct in-process graph construction (plan 32-7) --------------------
+
+    def build_graph(
+        self, intent: WorkflowIntent, *, domain: str | None = None,
+    ) -> Graph:
+        """Construct a ``Graph`` directly by calling the builder API in-process.
+
+        Same dispatch logic as ``compile()`` but produces a ``Graph`` object
+        without emitting or executing code strings.  Raises
+        ``DirectBuildError`` on failure so the caller can fall back to codegen.
+        """
+        from dan.builder import workflow as wf_factory
+        from dan.builder.refs import NodeRef
+
+        wf = wf_factory(_slugify(intent.goal[:50]))
+
+        prev_ref: NodeRef | None = None
+        prev_is_branch = False
+        branch_refs: tuple[NodeRef, NodeRef] | None = None
+
+        for stage in intent.stages:
+            try:
+                entry_ref, exit_ref = self._build_stage(stage, wf)
+            except DirectBuildError:
+                raise
+            except Exception as exc:
+                raise DirectBuildError(
+                    f"Failed to build stage '{stage.name}' ({stage.stage_type.value}): {exc}",
+                    stage_name=stage.name,
+                    stage_type=stage.stage_type.value,
+                    underlying=exc,
+                ) from exc
+
+            if prev_ref is not None:
+                if prev_is_branch and branch_refs is not None:
+                    branch_refs[0] >> entry_ref
+                    branch_refs[1] >> entry_ref
+                else:
+                    prev_ref >> entry_ref
+
+            if isinstance(exit_ref, tuple):
+                prev_is_branch = True
+                branch_refs = exit_ref
+                prev_ref = exit_ref[0]
+            else:
+                prev_is_branch = False
+                branch_refs = None
+                prev_ref = exit_ref
+
+        try:
+            return wf.build()
+        except Exception as exc:
+            raise DirectBuildError(
+                f"Graph compilation failed: {exc}", underlying=exc,
+            ) from exc
+
+    def _build_stage(
+        self, stage: StageIntent, wf: Any,
+    ) -> tuple[NodeRef, NodeRef | tuple[NodeRef, NodeRef]]:
+        """Dispatch to stage-type-specific builder.
+
+        Returns ``(entry_ref, exit_ref)`` where ``exit_ref`` is either a
+        single ``NodeRef`` or a ``(then_ref, else_ref)`` tuple for
+        conditional stages.
+        """
+        dispatch = {
+            StageType.transform: self._build_transform,
+            StageType.review_loop: self._build_review_loop,
+            StageType.fan_out: self._build_fan_out,
+            StageType.rag_retrieval: self._build_rag_retrieval,
+            StageType.tool_call: self._build_tool_call,
+            StageType.code_execution: self._build_code_execution,
+            StageType.human_approval: self._build_human_approval,
+            StageType.conditional: self._build_conditional,
+        }
+        handler = dispatch.get(stage.stage_type)
+        if handler is None:
+            raise DirectBuildError(
+                f"Unsupported stage type: {stage.stage_type.value}",
+                stage_name=stage.name,
+                stage_type=stage.stage_type.value,
+            )
+        return handler(stage, wf)
+
+    def _build_transform(
+        self, stage: StageIntent, wf: Any,
+    ) -> tuple[NodeRef, NodeRef]:
+        prompt = stage.description or f"Process: {stage.name}"
+        ref = wf.llm(stage.name, prompt=prompt)
+        return ref, ref
+
+    def _build_review_loop(
+        self, stage: StageIntent, wf: Any,
+    ) -> tuple[NodeRef, NodeRef]:
+        assert stage.review is not None
+        draft_prompt = stage.description or f"Generate draft for: {stage.name}"
+        ref = wf.review_loop(
+            writer_prompt=draft_prompt,
+            reviewer_prompt=stage.review.reviewer_prompt,
+            name=stage.name,
+            max_rounds=stage.review.max_iterations,
+            condition=stage.review.condition,
+        )
+        return ref, ref
+
+    def _build_fan_out(
+        self, stage: StageIntent, wf: Any,
+    ) -> tuple[NodeRef, NodeRef]:
+        from dan.builder.refs import NodeRef as NR
+
+        parallelism = max(stage.parallelism, 1)
+        proc_prompt = stage.description or f"Process item for: {stage.name}"
+        with wf.for_each(stage.name, parallelism=parallelism) as body:
+            body.llm(f"{stage.name}_proc", prompt=proc_prompt)
+        ref = NR(stage.name, "for_each", wf)
+        return ref, ref
+
+    def _build_rag_retrieval(
+        self, stage: StageIntent, wf: Any,
+    ) -> tuple[NodeRef, NodeRef]:
+        collection = stage.config.get("collection", "default")
+        retrieve_id = f"{stage.name}_retrieve"
+        answer_id = f"{stage.name}_answer"
+        answer_prompt = (
+            stage.description
+            or "Answer the question using the retrieved context."
+        )
+        retrieve_ref = wf.rag(retrieve_id, collection=collection)
+        answer_ref = wf.llm(answer_id, prompt=answer_prompt)
+        retrieve_ref >> answer_ref
+        return retrieve_ref, answer_ref
+
+    def _build_tool_call(
+        self, stage: StageIntent, wf: Any,
+    ) -> tuple[NodeRef, NodeRef]:
+        tool_id = stage.config.get("tool_id", "web_search")
+        ref = wf.tool(stage.name, tool_id=tool_id)
+        return ref, ref
+
+    def _build_code_execution(
+        self, stage: StageIntent, wf: Any,
+    ) -> tuple[NodeRef, NodeRef]:
+        code = stage.config.get("code", "result = 'done'")
+        ref = wf.code(stage.name, code=code)
+        return ref, ref
+
+    def _build_human_approval(
+        self, stage: StageIntent, wf: Any,
+    ) -> tuple[NodeRef, NodeRef]:
+        prompt = stage.description or f"Please review and approve: {stage.name}"
+        ref = wf.human_in_the_loop(stage.name, prompt=prompt)
+        return ref, ref
+
+    def _build_conditional(
+        self, stage: StageIntent, wf: Any,
+    ) -> tuple[NodeRef, tuple[NodeRef, NodeRef]]:
+        assert stage.conditional is not None
+        condition = stage.conditional.condition
+        then_desc = (
+            stage.conditional.then_description
+            or f"Handle true case for {stage.name}"
+        )
+        else_desc = (
+            stage.conditional.else_description
+            or f"Handle false case for {stage.name}"
+        )
+        gate_ref, then_ref, else_ref = wf.branch(
+            condition=condition,
+            then_prompt=then_desc,
+            else_prompt=else_desc,
+            name=stage.name,
+        )
+        return gate_ref, (then_ref, else_ref)
+
+    # -- composed direct build (plan 32-7) ------------------------------------
+
+    def build_graph_composed(
+        self,
+        intent: WorkflowIntent,
+        constituent_patterns: list[str],
+        *,
+        domain: str | None = None,
+    ) -> Graph:
+        """Build a multi-pattern intent by calling convenience methods directly.
+
+        Mirrors ``compile_composed()`` but produces a ``Graph`` in-process.
+        """
+        from dan.builder import workflow as wf_factory
+        from dan.builder.refs import NodeRef as NR
+
+        wf = wf_factory(_slugify(intent.goal[:50]))
+        segments = self._partition_stages(intent.stages, constituent_patterns)
+        prev_ref: NodeRef | None = None
+
+        for seg_idx, (pattern, stages) in enumerate(segments):
+            try:
+                ref = self._build_segment(pattern, stages, seg_idx, wf, prev_ref)
+            except DirectBuildError:
+                raise
+            except Exception as exc:
+                raise DirectBuildError(
+                    f"Failed to build segment {seg_idx} (pattern={pattern}): {exc}",
+                    stage_name=stages[0].name if stages else None,
+                    stage_type=pattern,
+                    underlying=exc,
+                ) from exc
+            prev_ref = ref
+
+        try:
+            return wf.build()
+        except Exception as exc:
+            raise DirectBuildError(
+                f"Graph compilation failed: {exc}", underlying=exc,
+            ) from exc
+
+    def _build_segment(
+        self,
+        pattern: str,
+        stages: list[StageIntent],
+        seg_idx: int,
+        wf: Any,
+        prev_ref: NodeRef | None,
+    ) -> NodeRef:
+        """Build a single segment using convenience methods where possible."""
+        from dan.builder.refs import NodeRef as NR
+
+        ref: NodeRef | None = None
+
+        if pattern == "linear_chain" and len(stages) >= 2:
+            steps = tuple(
+                (s.name, s.description or s.name) for s in stages
+            )
+            ref = wf.chain(*steps)
+        elif pattern == "review_loop" and stages:
+            s = stages[0]
+            reviewer_prompt = (
+                s.review.reviewer_prompt if s.review else "Review for quality"
+            )
+            max_iter = s.review.max_iterations if s.review else 3
+            draft_prompt = s.description or s.name
+            condition = s.review.condition if s.review else "quality_score >= 8"
+            ref = wf.review_loop(
+                writer_prompt=draft_prompt,
+                reviewer_prompt=reviewer_prompt,
+                name=s.name,
+                max_rounds=max_iter,
+                condition=condition,
+            )
+        elif pattern == "research_review":
+            transform_stages = [
+                s for s in stages if s.stage_type == StageType.transform
+            ]
+            review_stages = [
+                s for s in stages if s.stage_type == StageType.review_loop
+            ]
+            chain_ref = None
+            if transform_stages:
+                steps = tuple(
+                    (s.name, s.description or s.name) for s in transform_stages
+                )
+                chain_ref = wf.chain(*steps)
+            if review_stages:
+                rs = review_stages[0]
+                rp = (
+                    rs.review.reviewer_prompt
+                    if rs.review
+                    else "Review for quality"
+                )
+                mi = rs.review.max_iterations if rs.review else 3
+                dp = rs.description or rs.name
+                rc = rs.review.condition if rs.review else "quality_score >= 8"
+                ref = wf.review_loop(
+                    writer_prompt=dp,
+                    reviewer_prompt=rp,
+                    name=rs.name,
+                    max_rounds=mi,
+                    condition=rc,
+                )
+                if chain_ref is not None:
+                    chain_ref >> ref
+            else:
+                ref = chain_ref
+        elif pattern == "fan_out_fan_in" and stages:
+            s = stages[0]
+            proc_prompt = s.description or s.name
+            with wf.for_each(
+                s.name, parallelism=max(s.parallelism, 1)
+            ) as body:
+                body.llm(f"{s.name}_proc", prompt=proc_prompt)
+            ref = NR(s.name, "for_each", wf)
+        else:
+            for s in stages:
+                entry, exit_ref = self._build_stage(
+                    s, wf,
+                )[:2]
+                if isinstance(exit_ref, tuple):
+                    ref = exit_ref[0]
+                else:
+                    ref = exit_ref
+
+        if ref is None:
+            raise DirectBuildError(
+                f"Segment {seg_idx} produced no nodes",
+                stage_type=pattern,
+            )
+
+        if prev_ref is not None:
+            prev_ref >> ref
+
+        return ref
 
     # -- composed compilation ------------------------------------------------
 

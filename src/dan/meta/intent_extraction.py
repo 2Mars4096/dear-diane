@@ -7,7 +7,13 @@ compiler path (24-2): extract → coverage check → compile or fallback.
 
 from __future__ import annotations
 
+import json
+import logging
+from typing import Any, Callable, Awaitable
+
 from dan.meta.intent_schema import StageType, WorkflowIntent
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # System prompt
@@ -189,3 +195,58 @@ INTENT_FEW_SHOT_EXAMPLES: list[dict] = [
         },
     },
 ]
+
+
+# ---------------------------------------------------------------------------
+# Shared intent extraction helper (plan 32-7, task 3-2)
+# ---------------------------------------------------------------------------
+
+
+async def extract_workflow_intent(
+    llm_complete: Callable[..., Awaitable[Any]],
+    goal_text: str,
+    *,
+    model: str | None = None,
+) -> WorkflowIntent | None:
+    """Extract a WorkflowIntent from goal text using LLM function calling.
+
+    Parameters
+    ----------
+    llm_complete : callable
+        ``async (system_prompt, user_prompt, model, temperature, tools) -> response``.
+        Should return the raw LLM response that includes ``tool_calls``.
+    goal_text : str
+        The user's goal description.
+    model : str, optional
+        Model to use for extraction.
+
+    Returns ``None`` if extraction fails or intent is invalid.
+    """
+    tool_schema = build_intent_tool_schema()
+
+    try:
+        response = await llm_complete(
+            INTENT_EXTRACTION_SYSTEM_PROMPT,
+            goal_text,
+            model,
+            0.3,
+            [tool_schema],
+        )
+
+        if hasattr(response, "tool_calls") and response.tool_calls:
+            for tc in response.tool_calls:
+                if tc.function.name == "emit_workflow_intent":
+                    args = json.loads(tc.function.arguments)
+                    return WorkflowIntent.model_validate(args)
+
+        if isinstance(response, str):
+            try:
+                data = json.loads(response)
+                return WorkflowIntent.model_validate(data)
+            except (json.JSONDecodeError, Exception):
+                pass
+
+    except Exception:
+        logger.debug("Intent extraction failed", exc_info=True)
+
+    return None

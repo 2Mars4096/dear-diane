@@ -35,6 +35,9 @@ class GraphQualityReport(BaseModel):
     pattern_presence: QualityCheck | None = None
     tool_coverage: QualityCheck | None = None
     topology: QualityCheck | None = None
+    complexity_tier: str | None = None
+    expected_node_range_min: int | None = None
+    expected_node_range_max: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +56,26 @@ _TIER_MIN_NODES: dict[str, int] = {
 
 
 # ---------------------------------------------------------------------------
+# Node ranges and quality thresholds by complexity tier
+# ---------------------------------------------------------------------------
+
+_NODE_RANGE_BY_TIER: dict[str, tuple[int, int]] = {
+    # Calibrated from 42 eval-tier graphs on 2026-03-12
+    "T1": (2, 5),
+    "T2": (3, 8),
+    "T3": (4, 10),
+    "T4": (6, 15),
+}
+
+_TIER_QUALITY_THRESHOLD: dict[str, int] = {
+    "T1": 30,
+    "T2": 40,
+    "T3": 50,
+    "T4": 60,
+}
+
+
+# ---------------------------------------------------------------------------
 # Pattern keywords → expected graph features
 # ---------------------------------------------------------------------------
 
@@ -60,7 +83,7 @@ _TIER_MIN_NODES: dict[str, int] = {
 _PATTERN_KEYWORDS: dict[str, list[tuple[str, list[str]]]] = {
     "review loop": [
         ("gate_or_loop", ["gate", "while_loop", "goal_loop"]),
-        ("loop_edge", ["control"]),  # control edges for loop-back
+        ("loop_edge", ["control"]),
     ],
     "in parallel": [
         ("fan_out", ["for_each", "parallel_subagents"]),
@@ -71,10 +94,19 @@ _PATTERN_KEYWORDS: dict[str, list[tuple[str, list[str]]]] = {
     "rag": [
         ("rag_node", ["rag_operator"]),
     ],
-    "code": [
+    "execute code": [
+        ("code_node", ["code_operator"]),
+    ],
+    "run code": [
         ("code_node", ["code_operator"]),
     ],
     "code execution": [
+        ("code_node", ["code_operator"]),
+    ],
+    "run the code": [
+        ("code_node", ["code_operator"]),
+    ],
+    "code block": [
         ("code_node", ["code_operator"]),
     ],
 }
@@ -85,16 +117,34 @@ _PATTERN_KEYWORDS: dict[str, list[tuple[str, list[str]]]] = {
 # ---------------------------------------------------------------------------
 
 _TOOL_KEYWORDS: dict[str, list[str]] = {
-    "web search": ["tool_operator", "llm_operator"],  # tool-augmented LLM or tool node
+    "web search": ["tool_operator", "llm_operator"],
     "web_search": ["tool_operator", "llm_operator"],
+    "search the web": ["tool_operator", "llm_operator"],
     "pdf": ["tool_operator", "rag_operator"],
-    "file": ["tool_operator", "rag_operator", "code_operator"],
-    "code execution": ["code_operator"],
+    "read a file": ["tool_operator", "rag_operator", "code_operator"],
+    "read file": ["tool_operator", "rag_operator", "code_operator"],
+    "write a file": ["tool_operator", "code_operator"],
+    "write file": ["tool_operator", "code_operator"],
+    "from a folder": ["tool_operator", "rag_operator"],
+    "from folder": ["tool_operator", "rag_operator"],
+    "ingest": ["tool_operator", "rag_operator"],
 }
 
 
 # ---------------------------------------------------------------------------
-# Check primitives
+# Simple-pattern keywords (for is_acceptable_simple_graph)
+# ---------------------------------------------------------------------------
+
+_SIMPLE_PATTERN_KEYWORDS: dict[str, list[str]] = {
+    "chain": ["chain", "pipeline", "sequence", "sequential"],
+    "fan_out": ["parallel", "in parallel", "fan out", "fan-out", "simultaneously"],
+    "review_loop": ["review loop", "review cycle", "feedback loop", "revision loop"],
+    "conditional": ["conditional branch", "conditional", "if-then", "branching"],
+}
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
 # ---------------------------------------------------------------------------
 
 
@@ -123,6 +173,205 @@ def _edge_source_target(edge: dict) -> tuple[str, str]:
     return str(src), str(tgt)
 
 
+def _out_in_counts(
+    nodes: list[dict], edges: list[dict],
+) -> tuple[dict[str, int], dict[str, int]]:
+    """Return per-node (outgoing, incoming) edge counts."""
+    node_ids = {n.get("id", "") for n in nodes if isinstance(n, dict) and n.get("id")}
+    out: dict[str, int] = {nid: 0 for nid in node_ids}
+    inc: dict[str, int] = {nid: 0 for nid in node_ids}
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        src, tgt = _edge_source_target(e)
+        if src in node_ids:
+            out[src] = out.get(src, 0) + 1
+        if tgt in node_ids:
+            inc[tgt] = inc.get(tgt, 0) + 1
+    return out, inc
+
+
+def _is_chain_topology(nodes: list[dict], edges: list[dict]) -> bool:
+    """True when every node has at most one outgoing and one incoming edge."""
+    out, inc = _out_in_counts(nodes, edges)
+    return (
+        len(out) >= 2
+        and all(c <= 1 for c in out.values())
+        and all(c <= 1 for c in inc.values())
+    )
+
+
+def _has_fan_out(nodes: list[dict], edges: list[dict]) -> bool:
+    """True when at least one node fans out to 2+ targets or a fan-out node type exists."""
+    node_types = {n.get("node_type", "") for n in nodes if isinstance(n, dict)}
+    if node_types & {"for_each", "parallel_subagents"}:
+        return True
+    out, _ = _out_in_counts(nodes, edges)
+    return any(c >= 2 for c in out.values())
+
+
+def _has_cycle(nodes: list[dict], edges: list[dict]) -> bool:
+    """True when the directed graph contains at least one cycle."""
+    node_ids = {n.get("id", "") for n in nodes if isinstance(n, dict) and n.get("id")}
+    adj: dict[str, list[str]] = {nid: [] for nid in node_ids}
+    for e in edges:
+        if not isinstance(e, dict):
+            continue
+        src, tgt = _edge_source_target(e)
+        if src in node_ids and tgt in node_ids:
+            adj[src].append(tgt)
+
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = {nid: WHITE for nid in node_ids}
+
+    def _dfs(v: str) -> bool:
+        color[v] = GRAY
+        for u in adj[v]:
+            if color[u] == GRAY:
+                return True
+            if color[u] == WHITE and _dfs(u):
+                return True
+        color[v] = BLACK
+        return False
+
+    return any(color[v] == WHITE and _dfs(v) for v in node_ids)
+
+
+def _has_gate_node(nodes: list[dict]) -> bool:
+    """True when the graph contains a gate, while_loop, or goal_loop node."""
+    return any(
+        n.get("node_type", "") in ("gate", "while_loop", "goal_loop")
+        for n in nodes
+        if isinstance(n, dict)
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shared prompt-complexity primitives (P1-3)
+# ---------------------------------------------------------------------------
+
+
+def estimate_prompt_complexity(prompt_text: str) -> str:
+    """Return complexity tier: 'T1', 'T2', 'T3', or 'T4'.
+
+    Heuristic based on word count, explicit step mentions, tool keywords,
+    and pattern keywords. This is the single shared signal that 33-9 and
+    other modules should consume.
+    """
+    prompt_lower = (prompt_text or "").lower()
+    words = len(prompt_lower.split())
+
+    steps_match = re.search(r"(\d+)\s*step", prompt_lower)
+    step_count = int(steps_match.group(1)) if steps_match else 0
+
+    pattern_hits = sum(1 for kw in _PATTERN_KEYWORDS if kw in prompt_lower)
+    tool_hits = sum(1 for kw in _TOOL_KEYWORDS if kw in prompt_lower)
+
+    t4_phrases = (
+        "parallel teams", "departments", "multi-source", "multi-department",
+        "multi-team", "cross-functional",
+    )
+
+    if (
+        words >= 50
+        or step_count >= 5
+        or any(p in prompt_lower for p in t4_phrases)
+        or (pattern_hits >= 2 and tool_hits >= 2)
+    ):
+        return "T4"
+
+    if (
+        words >= 30
+        or step_count >= 4
+        or (pattern_hits + tool_hits) >= 3
+    ):
+        return "T3"
+
+    if any(kw in prompt_lower for kw in ("simple", "basic", "quick")):
+        return "T1"
+
+    if words < 15 and pattern_hits <= 1 and tool_hits == 0:
+        return "T1"
+
+    return "T2"
+
+
+def expected_node_range(prompt_text: str, tier: str | None = None) -> tuple[int, int]:
+    """Return (min_nodes, max_nodes) expected for this prompt.
+
+    Uses estimate_prompt_complexity() when tier is None.
+    Returns calibrated ranges: T1 (2,5), T2 (3,8), T3 (4,10), T4 (6,15).
+    """
+    if tier is None:
+        tier = estimate_prompt_complexity(prompt_text)
+    return _NODE_RANGE_BY_TIER.get(tier.upper().strip(), (2, 4))
+
+
+# ---------------------------------------------------------------------------
+# Tier-adaptive quality thresholds (P1-1)
+# ---------------------------------------------------------------------------
+
+
+def tier_quality_threshold(tier: str | None, prompt_text: str) -> int:
+    """Return the recommended quality-gate threshold for the given tier.
+
+    When *tier* is None the tier is inferred from *prompt_text* via
+    estimate_prompt_complexity().  Per-tier thresholds: T1->30, T2->40,
+    T3->50, T4->60.
+    """
+    if tier is None:
+        tier = estimate_prompt_complexity(prompt_text)
+    return _TIER_QUALITY_THRESHOLD.get(tier.upper().strip(), 40)
+
+
+# ---------------------------------------------------------------------------
+# Acceptable simple-graph exemption (P1-2)
+# ---------------------------------------------------------------------------
+
+
+def is_acceptable_simple_graph(graph_dict: dict, prompt_text: str) -> bool:
+    """Return True when the graph is a correct simple single-pattern output.
+
+    The quality gate should be skipped entirely when this returns True.
+    Conditions:
+    - The prompt matches exactly one simple pattern (chain, fan_out,
+      review_loop, conditional).
+    - The graph has the expected topology for that pattern.
+    - The node count falls within the T1/T2 range (2-6).
+    """
+    prompt_lower = (prompt_text or "").lower()
+
+    matched: list[str] = []
+    for pattern, keywords in _SIMPLE_PATTERN_KEYWORDS.items():
+        if any(kw in prompt_lower for kw in keywords):
+            matched.append(pattern)
+
+    if len(matched) != 1:
+        return False
+
+    pattern = matched[0]
+    nodes, edges = _get_nodes_edges(graph_dict)
+    count = len(nodes)
+
+    if count < 2 or count > 6:
+        return False
+
+    if pattern == "chain":
+        return _is_chain_topology(nodes, edges)
+    if pattern == "fan_out":
+        return _has_fan_out(nodes, edges)
+    if pattern == "review_loop":
+        return _has_gate_node(nodes) or _has_cycle(nodes, edges)
+    if pattern == "conditional":
+        return _has_gate_node(nodes)
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Check primitives
+# ---------------------------------------------------------------------------
+
+
 def check_node_count(
     graph_dict: dict,
     prompt_text: str,
@@ -130,34 +379,19 @@ def check_node_count(
 ) -> QualityCheck:
     """Check if node count is adequate for the prompt.
 
-    When tier is provided: T1≥2, T2≥3, T3≥4, T4≥6.
-    When tier is None: infer from prompt (N steps→≥N nodes, simple/quick tolerate fewer).
+    Uses expected_node_range() as single source of truth. For eval-harness
+    tiers (T5, T2R, pilot) that aren't in the node-range table, falls back
+    to _TIER_MIN_NODES.
     """
     nodes, _ = _get_nodes_edges(graph_dict)
     count = len(nodes)
-    prompt_lower = (prompt_text or "").lower()
 
-    if tier:
-        tier_upper = tier.upper().strip()
-        min_nodes = _TIER_MIN_NODES.get(tier_upper, 2)
+    if tier and tier.upper().strip() in _NODE_RANGE_BY_TIER:
+        min_nodes, _ = expected_node_range(prompt_text, tier)
+    elif tier:
+        min_nodes = _TIER_MIN_NODES.get(tier.upper().strip(), 2)
     else:
-        # Infer from prompt
-        steps_match = re.search(r"(\d+)\s*step", prompt_lower)
-        if steps_match:
-            min_nodes = max(2, int(steps_match.group(1)))
-        elif any(kw in prompt_lower for kw in ("simple", "quick", "basic")):
-            min_nodes = 2
-        else:
-            # Heuristic: word count suggests complexity
-            words = len(prompt_lower.split())
-            if words < 15:
-                min_nodes = 2
-            elif words < 30:
-                min_nodes = 3
-            elif words < 50:
-                min_nodes = 4
-            else:
-                min_nodes = 5
+        min_nodes, _ = expected_node_range(prompt_text)
 
     if count >= min_nodes:
         return QualityCheck(
@@ -176,15 +410,15 @@ def check_node_count(
     return QualityCheck(
         score=score,
         explanation=f"Node count {count} below minimum {min_nodes} for prompt complexity",
-        concerns=[f"Only {count} node(s), expected ≥{min_nodes}"],
+        concerns=[f"Only {count} node(s), expected >={min_nodes}"],
     )
 
 
 def check_pattern_presence(graph_dict: dict, prompt_text: str) -> QualityCheck:
     """Check that prompt-implied patterns are present in the graph.
 
-    Keywords: "review loop"→gate/loop, "in parallel"→ForEach/fan-out,
-    "RAG"→RAG node, "code"→Code node.
+    Keywords: "review loop"->gate/loop, "in parallel"->ForEach/fan-out,
+    "RAG"->RAG node, "code"->Code node.
     """
     nodes, edges = _get_nodes_edges(graph_dict)
     prompt_lower = (prompt_text or "").lower()
@@ -202,16 +436,16 @@ def check_pattern_presence(graph_dict: dict, prompt_text: str) -> QualityCheck:
             if pattern_name == "loop_edge":
                 has_control = "control" in edge_types
                 if has_control:
-                    present.append(f"{keyword}→control edges")
+                    present.append(f"{keyword}->control edges")
                 else:
-                    missing.append(f"{keyword}→control/loop edges")
+                    missing.append(f"{keyword}->control/loop edges")
                     concerns.append(f"Prompt mentions '{keyword}' but no control edges for loop")
             else:
                 found = any(t in node_types for t in expected_node_or_edge_types)
                 if found:
-                    present.append(f"{keyword}→{pattern_name}")
+                    present.append(f"{keyword}->{pattern_name}")
                 else:
-                    missing.append(f"{keyword}→{expected_node_or_edge_types[0]}")
+                    missing.append(f"{keyword}->{expected_node_or_edge_types[0]}")
                     concerns.append(
                         f"Prompt mentions '{keyword}' but graph lacks "
                         f"{', '.join(expected_node_or_edge_types)}"
@@ -324,7 +558,6 @@ def check_topology(graph_dict: dict) -> QualityCheck:
             concerns.append(f"Isolated nodes: {', '.join(sorted(isolated)[:5])}")
             score -= 20
         elif len(reachable) < count:
-            # Disconnected components
             concerns.append("Graph has disconnected components")
             score -= 15
 
@@ -333,7 +566,6 @@ def check_topology(graph_dict: dict) -> QualityCheck:
     exit_points = graph_dict.get("exit_points", [])
     has_input = any(n.get("node_type") == "input" for n in nodes if isinstance(n, dict))
     if not entry_points and not has_input and count > 1:
-        # Not necessarily bad — builder may use implicit entry
         pass
 
     if concerns:
@@ -355,6 +587,8 @@ def compute_quality_report(
     All inputs are raw dicts. Uses Graph.model_validate() only when needed
     (topology may need it for full validation; we work with raw dict for speed).
     """
+    if graph_dict is None:
+        return GraphQualityReport(overall_score=0, concerns=["Graph dict is None"])
     node_check = check_node_count(graph_dict, prompt_text, tier)
     pattern_check = check_pattern_presence(graph_dict, prompt_text)
     tool_check = check_tool_coverage(graph_dict, prompt_text)
@@ -369,6 +603,9 @@ def compute_quality_report(
     scores = [node_check.score, pattern_check.score, tool_check.score, topo_check.score]
     overall = int(sum(scores) / len(scores)) if scores else 0
 
+    complexity = estimate_prompt_complexity(prompt_text)
+    nr_min, nr_max = expected_node_range(prompt_text, tier)
+
     return GraphQualityReport(
         overall_score=overall,
         concerns=all_concerns,
@@ -376,4 +613,7 @@ def compute_quality_report(
         pattern_presence=pattern_check,
         tool_coverage=tool_check,
         topology=topo_check,
+        complexity_tier=complexity,
+        expected_node_range_min=nr_min,
+        expected_node_range_max=nr_max,
     )

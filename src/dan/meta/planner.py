@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import uuid
 from dataclasses import dataclass, field as dc_field
@@ -277,6 +278,7 @@ class GenerateCodePlan(BaseModel):
     action: Literal["GENERATE_CODE"] = "GENERATE_CODE"
     code: str = ""
     description: str = ""
+    intent: Any | None = None
 
 
 PlanResult = ReusePlan | AdaptPlan | GeneratePlan | GenerateCodePlan
@@ -894,11 +896,15 @@ graph = wf.build()
         self_knowledge_chunks: str | None = None,
         domain: str | None = None,
         graph_summary: str | None = None,
+        complexity_hint: str | None = None,
     ) -> tuple[str, str]:
         """Build the complete (system_prompt, user_prompt) pair.
 
         The system prompt includes the DSL reference and few-shot examples.
         The user prompt includes the goal and optional context.
+
+        When *complexity_hint* is provided it is appended to the user prompt
+        so the LLM has an explicit node-count target.
         """
         domain_context = ""
         if domain:
@@ -933,6 +939,9 @@ graph = wf.build()
                 f"## Existing Workflow (modify, don't rebuild from scratch)\n"
                 f"{graph_summary}\n\n{user}"
             )
+
+        if complexity_hint:
+            user += f"\n\n[Complexity guidance: {complexity_hint}]"
 
         return system, user
 
@@ -1070,6 +1079,15 @@ class WorkflowPlanner:
             return self._execute_reuse(plan)
         if isinstance(plan, AdaptPlan):
             return self._execute_adapt(plan)
+        if isinstance(plan, GenerateCodePlan) and getattr(plan, "intent", None) is not None:
+            direct_build_mode = os.environ.get("DAN_DIRECT_BUILD", "on").lower()
+            if direct_build_mode != "off":
+                try:
+                    return await self.execute_plan_direct(plan, domain=domain, user_text=user_text)
+                except Exception as exc:
+                    if direct_build_mode == "only":
+                        raise
+                    logger.warning("Direct build failed, falling back to codegen: %s", exc)
         if isinstance(plan, GenerateCodePlan):
             try:
                 return await self._execute_generate_code(plan, domain=domain, user_text=user_text)
@@ -1109,7 +1127,77 @@ class WorkflowPlanner:
             return self._execute_generate(plan)
         raise TypeError(f"Unknown plan type: {type(plan)}")
 
+    async def execute_plan_direct(
+        self,
+        plan: GenerateCodePlan,
+        *,
+        domain: str | None = None,
+        user_text: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a graph directly from intent without LLM codegen."""
+        from dan.meta.intent_compiler import DirectBuildError, IntentCompiler
+        from dan.meta.intent_schema import WorkflowIntent
+
+        if not isinstance(getattr(plan, "intent", None), WorkflowIntent):
+            raise ValueError("No intent attached to plan")
+
+        graph = IntentCompiler().build_graph(plan.intent, domain=domain)
+        graph_data = graph.model_dump(mode="json")
+
+        validation = validate_codegen_output(graph_data)
+        if not validation.success and validation.fatal_errors:
+            raise DirectBuildError(
+                stage_name="validation",
+                stage_type="validate",
+                underlying=ValueError(
+                    "; ".join(e.message for e in validation.fatal_errors)
+                ),
+            )
+
+        graph_data = self._enrich_graph(graph_data, domain, user_text)
+
+        return {
+            "workflow_id": f"direct-{uuid.uuid4().hex[:10]}",
+            "graph_data": graph_data,
+            "success": True,
+            "description": plan.description,
+            "direct_build": True,
+        }
+
     # -- Internal helpers --------------------------------------------------
+
+    def _enrich_graph(
+        self,
+        graph_data: dict,
+        domain: str | None,
+        user_text: str | None,
+    ) -> dict:
+        """Apply post-generation enrichment defaults to a graph dict."""
+        try:
+            from dan.meta.generation_defaults import (
+                DefaultProfile,
+                DefaultsEnricher,
+                GenerationDefaults,
+                detect_suppressions,
+                get_domain_profile,
+            )
+
+            gen_defaults = GenerationDefaults()
+            if domain:
+                dp = get_domain_profile(domain)
+                if dp and dp.default_profile:
+                    gen_defaults = GenerationDefaults.from_profile(
+                        DefaultProfile(dp.default_profile)
+                    )
+            if user_text:
+                for field, value in detect_suppressions(user_text).items():
+                    setattr(gen_defaults, field, value)
+
+            enricher = DefaultsEnricher(gen_defaults)
+            graph_data = enricher.enrich(graph_data)
+        except Exception:
+            logger.warning("DefaultsEnricher failed", exc_info=True)
+        return graph_data
 
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
         if self._llm_call is None:
@@ -1357,30 +1445,7 @@ class WorkflowPlanner:
             )
 
             # 32-3: Post-generation enrichment (safety net for missing defaults)
-            try:
-                from dan.meta.generation_defaults import (
-                    DefaultProfile,
-                    DefaultsEnricher,
-                    GenerationDefaults,
-                    detect_suppressions,
-                    get_domain_profile,
-                )
-
-                gen_defaults = GenerationDefaults()
-                if domain:
-                    dp = get_domain_profile(domain)
-                    if dp and dp.default_profile:
-                        gen_defaults = GenerationDefaults.from_profile(
-                            DefaultProfile(dp.default_profile)
-                        )
-                if user_text:
-                    for field, value in detect_suppressions(user_text).items():
-                        setattr(gen_defaults, field, value)
-
-                enricher = DefaultsEnricher(gen_defaults)
-                graph_data = enricher.enrich(graph_data)
-            except Exception:
-                logger.warning("DefaultsEnricher failed", exc_info=True)
+            graph_data = self._enrich_graph(graph_data, domain, user_text)
 
             workflow_id = f"meta-code-{uuid.uuid4().hex[:10]}"
             return {

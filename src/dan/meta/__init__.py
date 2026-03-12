@@ -1,5 +1,10 @@
 """dan.meta — autonomous workflow planning, execution, and graduated repair."""
 
+from dan.meta.config import (
+    get_materialize_threshold,
+    is_direct_build_enabled,
+    is_direct_build_only,
+)
 from dan.meta.architect import (
     RoutingConfig,
     SystemArchitect,
@@ -38,6 +43,10 @@ from dan.meta.generation_defaults import (
     detect_suppressions,
     get_domain_profile,
 )
+from dan.meta.graph_materializer import (
+    graph_to_builder_code,
+    materialize_graph,
+)
 from dan.meta.graph_quality import (
     GraphQualityReport,
     QualityCheck,
@@ -46,6 +55,10 @@ from dan.meta.graph_quality import (
     check_topology,
     check_tool_coverage,
     compute_quality_report,
+    estimate_prompt_complexity,
+    expected_node_range,
+    is_acceptable_simple_graph,
+    tier_quality_threshold,
 )
 from dan.meta.intent_compiler import COVERAGE_CATALOG, CoverageChecker, CoverageResult, DOMAIN_PATTERN_PREFERENCES, IntentCompiler
 from dan.meta.intent_extraction import (
@@ -72,6 +85,9 @@ from dan.meta.structural_mutations import (
 )
 
 __all__ = [
+    "get_materialize_threshold",
+    "is_direct_build_enabled",
+    "is_direct_build_only",
     "ArtifactMapper",
     "ArtifactType",
     "AutoFixApplier",
@@ -100,6 +116,8 @@ __all__ = [
     "GenerationStage",
     "GraphQualityReport",
     "QualityCheck",
+    "graph_to_builder_code",
+    "materialize_graph",
     "INTENT_EXTRACTION_SYSTEM_PROMPT",
     "INTENT_FEW_SHOT_EXAMPLES",
     "IntentCompiler",
