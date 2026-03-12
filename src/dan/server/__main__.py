@@ -1,9 +1,28 @@
 """CLI entry point: ``python -m dan.server`` or ``dan-serve``."""
 
 import argparse
+import copy
+import os
 from pathlib import Path
+from typing import Any
 
 import uvicorn
+
+
+def build_uvicorn_log_config(level: str | None = None) -> dict[str, Any]:
+    """Configure uvicorn so DAN app logs are emitted at INFO by default."""
+    resolved_level = (level or os.environ.get("DAN_LOG_LEVEL", "INFO")).upper()
+    config = copy.deepcopy(uvicorn.config.LOGGING_CONFIG)
+    config["disable_existing_loggers"] = False
+    config.setdefault("root", {})
+    config["root"]["level"] = resolved_level
+    config.setdefault("loggers", {})
+    config["loggers"]["dan"] = {
+        "handlers": ["default"],
+        "level": resolved_level,
+        "propagate": False,
+    }
+    return config
 
 
 def main() -> None:
@@ -33,6 +52,7 @@ def main() -> None:
         reload=reload,
         reload_dirs=reload_dirs,
         reload_excludes=reload_excludes,
+        log_config=build_uvicorn_log_config(),
     )
 
 

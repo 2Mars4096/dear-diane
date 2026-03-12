@@ -7,6 +7,8 @@ pattern.  Part of plan 31-22 (Self-Adaptive Behavior).
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import threading
@@ -412,25 +414,58 @@ class ParameterDecisionLogger:
         outcome: str | None = None,
         metadata: dict | None = None,
     ) -> None:
-        event = {
-            "type": "parameter_decision",
-            "parameter_key": parameter_key,
-            "parameter_value": parameter_value,
-            "decision": decision,
-            "outcome": outcome,
-            "metadata": metadata or {},
-            "timestamp": time.time(),
-        }
+        from dan.server.telemetry import TelemetryEvent
+
+        event = TelemetryEvent(
+            event_type="parameter_decision",
+            parameter_key=parameter_key,
+            parameter_value=str(parameter_value),
+            metadata={
+                "decision": decision,
+                "outcome": outcome,
+                **(metadata or {}),
+            },
+        )
         if self._store is not None:
             try:
                 if hasattr(self._store, "record"):
-                    self._store.record(event)
+                    result = self._store.record(event)
+                    if inspect.isawaitable(result):
+                        self._dispatch_async_record(result)
                 elif hasattr(self._store, "append"):
-                    self._store.append(event)
+                    self._store.append({
+                        "type": "parameter_decision",
+                        "parameter_key": parameter_key,
+                        "parameter_value": parameter_value,
+                        "decision": decision,
+                        "outcome": outcome,
+                        "metadata": metadata or {},
+                        "timestamp": time.time(),
+                    })
             except Exception:
                 logger.debug("Telemetry store write failed", exc_info=True)
         else:
             logger.debug("parameter_decision: key=%s decision=%s", parameter_key, decision)
+
+    @staticmethod
+    def _dispatch_async_record(awaitable: Any) -> None:
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            asyncio.run(awaitable)
+            return
+
+        task = loop.create_task(awaitable)
+
+        def _log_task_failure(done_task: asyncio.Task[Any]) -> None:
+            try:
+                exc = done_task.exception()
+            except asyncio.CancelledError:
+                return
+            if exc is not None:
+                logger.debug("Telemetry async record failed", exc_info=exc)
+
+        task.add_done_callback(_log_task_failure)
 
 
 # ---------------------------------------------------------------------------

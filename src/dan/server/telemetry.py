@@ -39,6 +39,7 @@ EventType = Literal[
     "memory_retrieval",
     "tool_call",
     "intent_extraction",
+    "parameter_decision",
 ]
 
 # Filterable columns used by query/aggregate.
@@ -329,6 +330,8 @@ CREATE TABLE IF NOT EXISTS events (
     success INTEGER DEFAULT 1,
     retry_count INTEGER DEFAULT 0,
     guard_action TEXT,
+    parameter_key TEXT,
+    parameter_value TEXT,
     metadata TEXT DEFAULT '{}'
 );
 
@@ -349,6 +352,7 @@ INSERT OR IGNORE INTO events (
     prompt_tokens, completion_tokens, total_tokens,
     estimated_cost, duration_ms,
     success, retry_count, guard_action,
+    parameter_key, parameter_value,
     metadata
 ) VALUES (
     :id, :timestamp, :event_type,
@@ -358,6 +362,7 @@ INSERT OR IGNORE INTO events (
     :prompt_tokens, :completion_tokens, :total_tokens,
     :estimated_cost, :duration_ms,
     :success, :retry_count, :guard_action,
+    :parameter_key, :parameter_value,
     :metadata
 )
 """
@@ -406,6 +411,12 @@ class SQLiteTelemetryStore(TelemetryStore):
     def _init_db(self) -> None:
         conn = self._get_conn()
         conn.executescript(_SCHEMA_SQL)
+        existing_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()
+        }
+        for column_name in ("parameter_key", "parameter_value"):
+            if column_name not in existing_columns:
+                conn.execute(f"ALTER TABLE events ADD COLUMN {column_name} TEXT")
         conn.commit()
 
     # -- Sync helpers (run in thread) ----------------------------------------

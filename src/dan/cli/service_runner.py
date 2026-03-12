@@ -14,6 +14,7 @@ from pathlib import Path
 def run_server(host: str = "127.0.0.1", port: int = 8000) -> None:
     """Start the DAN server with log rotation and PID setup."""
     from dan.cli.service import _rotate_logs, LOGS_DIR, PID_FILE
+    from dan.server.__main__ import build_uvicorn_log_config
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     _rotate_logs()
@@ -29,6 +30,7 @@ def run_server(host: str = "127.0.0.1", port: int = 8000) -> None:
             host=host,
             port=port,
             reload=False,
+            log_config=build_uvicorn_log_config(),
         )
     finally:
         try:
