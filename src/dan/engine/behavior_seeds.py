@@ -109,6 +109,35 @@ def register_seed_heuristics(
         ))
 
 
+def register_seed_execution(
+    store: BehaviorStore,
+    registry: AdaptableParameterRegistry,
+) -> None:
+    """Register execution config seeds (plan 32-7 direct execution)."""
+    from dan.engine.behavior_store import AdaptableParameter
+
+    store.register_seed("execution/direct_build_enabled", True)
+    store.register_seed("execution/materialize_threshold", 3)
+
+    registry.register(AdaptableParameter(
+        key="execution/direct_build_enabled",
+        category="execution",
+        evidence_type="parameter_decision",
+        min_evidence_count=10,
+        risk_level="low",
+        description="Enable direct in-process graph build (DAN_DIRECT_BUILD: on/off/only)",
+    ))
+    registry.register(AdaptableParameter(
+        key="execution/materialize_threshold",
+        category="execution",
+        evidence_type="parameter_decision",
+        min_evidence_count=10,
+        risk_level="low",
+        bounds={"min": 1, "max": 20, "max_step_pct": 0.20},
+        description="Minimum node count for post-hoc materialization (DAN_MATERIALIZE_THRESHOLD)",
+    ))
+
+
 def register_all_seeds(
     store: BehaviorStore,
     registry: AdaptableParameterRegistry,
@@ -116,6 +145,7 @@ def register_all_seeds(
     """Register all seed defaults — called once during Concierge startup."""
     register_seed_prompts(store, registry)
     register_seed_heuristics(store, registry)
+    register_seed_execution(store, registry)
     register_memory_ranking_params(registry)
 
 

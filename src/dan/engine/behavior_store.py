@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
 
-_CATEGORIES = ("prompts", "heuristics", "taxonomy", "domains", "models", "retrieval_policy")
+_CATEGORIES = ("prompts", "heuristics", "taxonomy", "domains", "models", "retrieval_policy", "execution")
 _MAX_PREVIOUS_VERSIONS = 10
 _MAX_SUMMARY_CHARS = 200
 _MAX_STEP_PCT = 0.20
@@ -272,7 +272,7 @@ class BehaviorStore:
 
 class AdaptableParameter(BaseModel):
     key: str
-    category: Literal["thresholds", "prompts", "taxonomy", "domains", "models", "retrieval_policy"]
+    category: Literal["thresholds", "prompts", "taxonomy", "domains", "models", "retrieval_policy", "execution"]
     evidence_type: Literal[
         "parameter_decision",
         "correction_attribution",
