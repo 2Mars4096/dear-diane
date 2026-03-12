@@ -12,9 +12,13 @@ the LLM-based codegen path (plan 24-1).
 
 from __future__ import annotations
 
+import ast
+import json
 import logging
 import re
-from typing import TYPE_CHECKING, Literal
+import tokenize
+from io import StringIO
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -25,6 +29,229 @@ if TYPE_CHECKING:
     from dan.models.graph import Graph
 
 logger = logging.getLogger(__name__)
+
+_REVIEW_LOOP_STATE_VARS = {"draft", "quality_score", "feedback"}
+_CONDITION_KEYWORDS = {
+    "and", "or", "not", "true", "false", "True", "False", "is", "in", "None", "none",
+}
+
+_TOOL_KEYWORD_MAP: dict[str, str] = {
+    "read file": "file_read",
+    "load file": "file_read",
+    "write file": "file_write",
+    "save file": "file_write",
+    "copy file": "file_copy",
+    "move file": "file_move",
+    "delete file": "file_delete",
+    "list files": "list_directory",
+    "csv": "csv_read",
+    "spreadsheet": "spreadsheet_read",
+    "excel": "spreadsheet_read",
+    "pdf": "pdf_read",
+    "web search": "web_search",
+    "browse": "web_search",
+    "search": "web_search",
+    "fetch": "web_fetch",
+    "http": "http_request",
+    "api": "http_request",
+    "email": "send_email",
+    "mail": "send_email",
+    "shell": "shell_command",
+    "command": "shell_command",
+    "terminal": "shell_command",
+    "directory": "list_directory",
+    "python": "python_eval",
+    "run code": "python_eval",
+    "execute code": "python_eval",
+    "translate": "text_translate",
+    "transcribe": "audio_transcribe",
+    "image": "image_describe",
+    "screenshot": "browser_screenshot",
+    "git": "git_status",
+    "notify": "notify",
+}
+
+
+def _infer_tool_id(name: str, description: str) -> str:
+    """Infer a tool_id from stage name/description using conservative keyword matching."""
+    text = re.sub(r"[_\-]+", " ", f"{name} {description}".lower())
+    for keyword, tool_id in sorted(
+        _TOOL_KEYWORD_MAP.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        pattern = r"\b" + r"\s+".join(re.escape(part) for part in keyword.split()) + r"\b"
+        if re.search(pattern, text):
+            return tool_id
+    logger.warning(
+        "No tool keyword match for stage '%s'; falling back to web_search",
+        name or description,
+    )
+    return "web_search"
+
+
+def _mask_string_literals(text: str) -> tuple[str, list[str]]:
+    """Replace string literals with placeholders so normalization ignores them."""
+    placeholders: list[str] = []
+    out_parts: list[str] = []
+    last_index = 0
+    line_offsets = [0]
+    for line in text.splitlines(keepends=True):
+        line_offsets.append(line_offsets[-1] + len(line))
+    try:
+        for tok in tokenize.generate_tokens(StringIO(text).readline):
+            if tok.type != tokenize.STRING:
+                continue
+            start = line_offsets[tok.start[0] - 1] + tok.start[1]
+            end = line_offsets[tok.end[0] - 1] + tok.end[1]
+            placeholder = f"__STR{len(placeholders)}__"
+            placeholders.append(tok.string)
+            out_parts.append(text[last_index:start])
+            out_parts.append(placeholder)
+            last_index = end
+    except tokenize.TokenError:
+        return text, []
+    out_parts.append(text[last_index:])
+    return "".join(out_parts), placeholders
+
+
+def _restore_string_literals(text: str, placeholders: list[str]) -> str:
+    restored = text
+    for idx in range(len(placeholders) - 1, -1, -1):
+        literal = placeholders[idx]
+        restored = restored.replace(f"__STR{idx}__", literal)
+    return restored
+
+
+def _normalize_condition_keywords_for_ast(text: str) -> str:
+    return re.sub(r"\btrue\b", "True", re.sub(r"\bfalse\b", "False", text, flags=re.IGNORECASE), flags=re.IGNORECASE)
+
+
+def _negate_compare(node: ast.Compare) -> ast.expr:
+    if len(node.ops) != 1:
+        return ast.UnaryOp(op=ast.Not(), operand=node)
+    op = node.ops[0]
+    inverted: ast.cmpop
+    if isinstance(op, ast.Gt):
+        inverted = ast.LtE()
+    elif isinstance(op, ast.GtE):
+        inverted = ast.Lt()
+    elif isinstance(op, ast.Lt):
+        inverted = ast.GtE()
+    elif isinstance(op, ast.LtE):
+        inverted = ast.Gt()
+    elif isinstance(op, ast.Eq):
+        inverted = ast.NotEq()
+    elif isinstance(op, ast.NotEq):
+        inverted = ast.Eq()
+    elif isinstance(op, ast.Is):
+        inverted = ast.IsNot()
+    elif isinstance(op, ast.IsNot):
+        inverted = ast.Is()
+    elif isinstance(op, ast.In):
+        inverted = ast.NotIn()
+    elif isinstance(op, ast.NotIn):
+        inverted = ast.In()
+    else:
+        return ast.UnaryOp(op=ast.Not(), operand=node)
+    return ast.Compare(
+        left=node.left,
+        ops=[inverted],
+        comparators=node.comparators,
+    )
+
+
+def _negate_condition_ast(node: ast.expr) -> ast.expr:
+    if isinstance(node, ast.BoolOp):
+        flipped_op = ast.Or() if isinstance(node.op, ast.And) else ast.And()
+        return ast.BoolOp(
+            op=flipped_op,
+            values=[_negate_condition_ast(value) for value in node.values],
+        )
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return node.operand
+    if isinstance(node, ast.Compare):
+        return _negate_compare(node)
+    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+        return ast.Constant(value=not node.value)
+    if isinstance(node, ast.Name):
+        return ast.UnaryOp(op=ast.Not(), operand=node)
+    return ast.UnaryOp(op=ast.Not(), operand=node)
+
+
+def _negate_stop_condition(condition: str) -> str | None:
+    try:
+        parsed = ast.parse(_normalize_condition_keywords_for_ast(condition), mode="eval")
+    except SyntaxError:
+        return None
+    negated = _negate_condition_ast(parsed.body)
+    return ast.unparse(ast.fix_missing_locations(negated))
+
+
+def _normalize_review_condition(
+    condition: str,
+    state_vars: set[str] | None = None,
+) -> str:
+    """Normalize review-loop conditions to builder continue-while semantics."""
+    normalized = (condition or "").strip() or "quality_score < 8"
+    masked, placeholders = _mask_string_literals(normalized)
+
+    stop_condition = normalized
+    stop_like = re.search(
+        r"("
+        r"\b[A-Za-z_][A-Za-z0-9_]*\b\s*(>=|>)\s*-?\d+(?:\.\d+)?"
+        r"|"
+        r"-?\d+(?:\.\d+)?\s*(<=|<)\s*\b[A-Za-z_][A-Za-z0-9_]*\b"
+        r")",
+        masked,
+    )
+    if stop_like:
+        negated = _negate_stop_condition(masked)
+        if negated:
+            normalized = _restore_string_literals(negated, placeholders)
+        else:
+            logger.warning(
+                "Review-loop condition looked like a stop-condition but could not be parsed; replacing with default: %s",
+                stop_condition,
+            )
+            return "quality_score < 8"
+    if normalized != stop_condition:
+        logger.warning(
+            "Normalizing review-loop condition from stop-condition to continue-while: %s -> %s",
+            stop_condition,
+            normalized,
+        )
+
+    allowed = state_vars or _REVIEW_LOOP_STATE_VARS
+    try:
+        parsed = ast.parse(normalized, mode="eval")
+        identifiers = {
+            node.id
+            for node in ast.walk(parsed)
+            if isinstance(node, ast.Name) and node.id not in _CONDITION_KEYWORDS
+        }
+    except SyntaxError:
+        stripped = re.sub(r"'[^']*'|\"[^\"]*\"", "", normalized)
+        identifiers = {
+            ident
+            for ident in re.findall(r"\b[A-Za-z_][A-Za-z0-9_]*\b", stripped)
+            if ident not in _CONDITION_KEYWORDS
+        }
+    unknown = identifiers - allowed
+    if unknown:
+        logger.warning(
+            "Review-loop condition references unknown variables %s (known: %s); replacing with default",
+            unknown,
+            allowed,
+        )
+        return "quality_score < 8"
+    return normalized
+
+
+def _placeholder_code(description: str) -> str:
+    """Create valid Python placeholder code for code-execution stages."""
+    payload = {"status": "placeholder", "task": description}
+    return f"result = {json.dumps(payload)}"
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +475,7 @@ class IntentCompiler:
         var = _var_name(stage.name)
         assert stage.review is not None  # guaranteed by model validator
 
-        condition = _escape(stage.review.condition)
+        condition = _escape(_normalize_review_condition(stage.review.condition))
         max_iter = stage.review.max_iterations
         reviewer_prompt = _escape(stage.review.reviewer_prompt)
         draft_prompt = _escape(stage.description or f"Generate draft for: {stage.name}")
@@ -303,7 +530,10 @@ class IntentCompiler:
         self, stage: StageIntent, intent: WorkflowIntent
     ) -> tuple[str, str, list[str]]:
         var = _var_name(stage.name)
-        tool_id = stage.config.get("tool_id", "web_search")
+        tool_id = stage.config.get("tool_id") or _infer_tool_id(
+            stage.name,
+            stage.description or "",
+        )
         lines = [f'{var} = wf.tool("{stage.name}", tool_id="{_escape(tool_id)}")']
         return var, var, lines
 
@@ -311,7 +541,14 @@ class IntentCompiler:
         self, stage: StageIntent, intent: WorkflowIntent
     ) -> tuple[str, str, list[str]]:
         var = _var_name(stage.name)
-        code = stage.config.get("code", "result = 'done'")
+        code = stage.config.get("code")
+        if not code:
+            desc = stage.description or stage.name
+            logger.warning(
+                "Auto-generating placeholder code for stage '%s'",
+                stage.name,
+            )
+            code = _placeholder_code(desc)
         escaped_code = _escape(code)
         lines = [f'{var} = wf.code("{stage.name}", code="{escaped_code}")']
         return var, var, lines
@@ -448,7 +685,7 @@ class IntentCompiler:
             reviewer_prompt=stage.review.reviewer_prompt,
             name=stage.name,
             max_rounds=stage.review.max_iterations,
-            condition=stage.review.condition,
+            condition=_normalize_review_condition(stage.review.condition),
         )
         return ref, ref
 
@@ -482,14 +719,24 @@ class IntentCompiler:
     def _build_tool_call(
         self, stage: StageIntent, wf: Any,
     ) -> tuple[NodeRef, NodeRef]:
-        tool_id = stage.config.get("tool_id", "web_search")
+        tool_id = stage.config.get("tool_id") or _infer_tool_id(
+            stage.name,
+            stage.description or "",
+        )
         ref = wf.tool(stage.name, tool_id=tool_id)
         return ref, ref
 
     def _build_code_execution(
         self, stage: StageIntent, wf: Any,
     ) -> tuple[NodeRef, NodeRef]:
-        code = stage.config.get("code", "result = 'done'")
+        code = stage.config.get("code")
+        if not code:
+            desc = stage.description or stage.name
+            logger.warning(
+                "Auto-generating placeholder code for stage '%s'",
+                stage.name,
+            )
+            code = _placeholder_code(desc)
         ref = wf.code(stage.name, code=code)
         return ref, ref
 
@@ -539,7 +786,7 @@ class IntentCompiler:
 
         wf = wf_factory(_slugify(intent.goal[:50]))
         segments = self._partition_stages(intent.stages, constituent_patterns)
-        prev_ref: NodeRef | None = None
+        prev_ref: NodeRef | tuple[NodeRef, NodeRef] | None = None
 
         for seg_idx, (pattern, stages) in enumerate(segments):
             try:
@@ -568,12 +815,12 @@ class IntentCompiler:
         stages: list[StageIntent],
         seg_idx: int,
         wf: Any,
-        prev_ref: NodeRef | None,
-    ) -> NodeRef:
+        prev_ref: NodeRef | tuple[NodeRef, NodeRef] | None,
+    ) -> NodeRef | tuple[NodeRef, NodeRef]:
         """Build a single segment using convenience methods where possible."""
         from dan.builder.refs import NodeRef as NR
 
-        ref: NodeRef | None = None
+        ref: NodeRef | tuple[NodeRef, NodeRef] | None = None
 
         if pattern == "linear_chain" and len(stages) >= 2:
             steps = tuple(
@@ -587,7 +834,9 @@ class IntentCompiler:
             )
             max_iter = s.review.max_iterations if s.review else 3
             draft_prompt = s.description or s.name
-            condition = s.review.condition if s.review else "quality_score >= 8"
+            condition = _normalize_review_condition(
+                s.review.condition if s.review else "quality_score < 8"
+            )
             ref = wf.review_loop(
                 writer_prompt=draft_prompt,
                 reviewer_prompt=reviewer_prompt,
@@ -617,7 +866,9 @@ class IntentCompiler:
                 )
                 mi = rs.review.max_iterations if rs.review else 3
                 dp = rs.description or rs.name
-                rc = rs.review.condition if rs.review else "quality_score >= 8"
+                rc = _normalize_review_condition(
+                    rs.review.condition if rs.review else "quality_score < 8"
+                )
                 ref = wf.review_loop(
                     writer_prompt=dp,
                     reviewer_prompt=rp,
@@ -638,14 +889,14 @@ class IntentCompiler:
                 body.llm(f"{s.name}_proc", prompt=proc_prompt)
             ref = NR(s.name, "for_each", wf)
         else:
+            first_entry_ref = None
             for s in stages:
                 entry, exit_ref = self._build_stage(
                     s, wf,
                 )[:2]
-                if isinstance(exit_ref, tuple):
-                    ref = exit_ref[0]
-                else:
-                    ref = exit_ref
+                if first_entry_ref is None:
+                    first_entry_ref = entry
+                ref = exit_ref
 
         if ref is None:
             raise DirectBuildError(
@@ -654,7 +905,12 @@ class IntentCompiler:
             )
 
         if prev_ref is not None:
-            prev_ref >> ref
+            entry_ref = first_entry_ref if 'first_entry_ref' in locals() and first_entry_ref else ref
+            if isinstance(prev_ref, tuple):
+                prev_ref[0] >> entry_ref
+                prev_ref[1] >> entry_ref
+            else:
+                prev_ref >> entry_ref
 
         return ref
 
@@ -742,7 +998,9 @@ class IntentCompiler:
             )
             max_iter = s.review.max_iterations if s.review else 3
             draft_prompt = _escape(s.description or s.name)
-            condition = s.review.condition if s.review else "quality_score >= 8"
+            condition = _normalize_review_condition(
+                s.review.condition if s.review else "quality_score < 8"
+            )
             lines.append(
                 f"{ref_var} = wf.review_loop(\n"
                 f'    writer_prompt="{draft_prompt}",\n'
@@ -778,7 +1036,9 @@ class IntentCompiler:
                 )
                 mi = rs.review.max_iterations if rs.review else 3
                 dp = _escape(rs.description or rs.name)
-                rc = rs.review.condition if rs.review else "quality_score >= 8"
+                rc = _normalize_review_condition(
+                    rs.review.condition if rs.review else "quality_score < 8"
+                )
                 lines.append(
                     f"{ref_var} = wf.review_loop(\n"
                     f'    writer_prompt="{dp}",\n'
@@ -799,15 +1059,24 @@ class IntentCompiler:
                 f'{ref_var} = NodeRef("{s.name}", "for_each", wf)'
             )
         else:
+            first_entry_var = None
             for s in stages:
                 entry, exit_, stage_lines = self._compile_stage(
                     s, WorkflowIntent(goal="", stages=stages)
                 )
+                if first_entry_var is None:
+                    first_entry_var = entry
                 lines.extend(stage_lines)
                 ref_var = exit_
 
         if prev_ref_var and lines:
-            lines.insert(0, f"{prev_ref_var} >> {ref_var}")
+            entry_var = first_entry_var if 'first_entry_var' in locals() and first_entry_var else ref_var
+            if prev_ref_var.startswith("__both__:"):
+                _, branch_a, branch_b = prev_ref_var.split(":")
+                lines.insert(0, f"{branch_b} >> {entry_var}")
+                lines.insert(0, f"{branch_a} >> {entry_var}")
+            else:
+                lines.insert(0, f"{prev_ref_var} >> {entry_var}")
 
         return ref_var, lines
 

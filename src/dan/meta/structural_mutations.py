@@ -95,6 +95,17 @@ def _add_data_edge(graph: dict, src_id: str, src_port: str, tgt_id: str, tgt_por
     })
 
 
+def _add_control_edge(graph: dict, src_id: str, src_port: str, tgt_id: str, tgt_port: str) -> None:
+    if "edges" not in graph:
+        graph["edges"] = {"data": [], "control": [], "context": []}
+    graph["edges"].setdefault("control", []).append({
+        "source_node_id": src_id,
+        "source_port": src_port,
+        "target_node_id": tgt_id,
+        "target_port": tgt_port,
+    })
+
+
 def _gen_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:6]}"
 
@@ -156,6 +167,14 @@ def wrap_in_review_loop(
             "prompt_template": reviewer_prompt,
             "system_prompt": "",
             "temperature": 0.3,
+            "output_json_schema": {
+                "type": "object",
+                "properties": {
+                    "quality_score": {"type": "integer"},
+                    "feedback": {"type": "string"},
+                },
+                "required": ["quality_score", "feedback"],
+            },
         },
     }
 
@@ -164,7 +183,7 @@ def wrap_in_review_loop(
         "node_type": "gate",
         "config": {
             "name": "review_gate",
-            "condition": "quality_score >= 8",
+            "condition": "quality_score < 8",
             "gate_mode": "while",
             "max_iterations": max_rounds,
         },
@@ -172,18 +191,30 @@ def wrap_in_review_loop(
 
     graph["nodes"].extend([reviewer_node, gate_node])
 
-    _add_data_edge(graph, node_id, "text", reviewer_id, "text")
-    _add_data_edge(graph, reviewer_id, "text", gate_id, "data")
+    if node.get("node_type") == "llm_operator":
+        config = node.setdefault("config", {})
+        prompt_template = str(config.get("prompt_template", ""))
+        if "{feedback}" not in prompt_template:
+            sep = "\n\n" if prompt_template else ""
+            config["prompt_template"] = (
+                f"{prompt_template}{sep}Reviewer feedback: {{feedback}}"
+            )
+
+    _add_data_edge(graph, node_id, "text", reviewer_id, "input")
+    _add_data_edge(graph, node_id, "text", gate_id, "input")
+    _add_data_edge(graph, reviewer_id, "quality_score", gate_id, "quality_score")
+    _add_data_edge(graph, reviewer_id, "feedback", node_id, "feedback")
+    _add_control_edge(graph, gate_id, "continue", node_id, "input")
 
     for edge in downstream:
         graph["edges"]["data"].remove(edge)
-        _add_data_edge(graph, gate_id, "true", edge["target_node_id"], edge["target_port"])
+        _add_data_edge(graph, gate_id, "done", edge["target_node_id"], edge["target_port"])
 
     return MutationMacroResult(
         success=True,
         graph_dict=graph,
         nodes_added=[reviewer_id, gate_id],
-        edges_added=2 + len(downstream),
+        edges_added=5 + len(downstream),
         edges_removed=len(downstream),
     )
 
@@ -430,6 +461,13 @@ def unwrap_loop(
     upstream = _get_upstream_edges(graph, loop_node_id)
     downstream = _get_downstream_edges(graph, loop_node_id)
 
+    # Remove associated subgraphs to prevent orphans
+    config = node.get("config", {})
+    for key in ("body_graph", "then_graph", "else_graph", "sub_graph"):
+        sg_id = config.get(key)
+        if sg_id and "sub_graphs" in graph and sg_id in graph["sub_graphs"]:
+            del graph["sub_graphs"][sg_id]
+
     graph["nodes"] = [n for n in graph["nodes"] if n["id"] != loop_node_id]
     _remove_edges_involving(graph, loop_node_id)
 
@@ -618,14 +656,23 @@ def _execute_macro(
         return MutationMacroResult(success=False, error="No target node for validator")
     if macro_name == "insert_tool":
         tool_match = re.search(r"(?:tool|step)\s+(\w+)", text_lower)
-        tool_id = tool_match.group(1) if tool_match else "web_search"
+        if tool_match:
+            tool_id = tool_match.group(1)
+        else:
+            from dan.meta.intent_compiler import _infer_tool_id
+
+            tool_id = _infer_tool_id("", text_lower)
         pos = "before" if "before" in text_lower else "after"
         return insert_tool(
             graph, target_node_ids[0] if target_node_ids else "", tool_id, position=pos,
         )
     if macro_name == "parallelize":
         if len(target_node_ids) >= 2:
-            return parallelize(graph, target_node_ids[:min(len(target_node_ids), 5)])
+            truncated = len(target_node_ids) > 5
+            res = parallelize(graph, target_node_ids[:5])
+            if truncated and res.success:
+                res.error = (res.error + "; " if res.error else "") + f"Warning: truncated to 5 nodes (requested {len(target_node_ids)})"
+            return res
         return MutationMacroResult(
             success=False, error="Need at least 2 nodes to parallelize",
         )

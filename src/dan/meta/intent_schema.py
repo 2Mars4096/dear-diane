@@ -56,7 +56,7 @@ class ReviewRequirement(BaseModel):
     """Specifies how a review-loop stage evaluates quality."""
 
     reviewer_prompt: str = "Review the output for quality and correctness."
-    condition: str = "quality_score >= 8"
+    condition: str = "quality_score < 8"
     max_iterations: int = Field(default=3, ge=1, le=20)
 
 

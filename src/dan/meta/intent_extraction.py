@@ -12,6 +12,7 @@ import logging
 from typing import Any, Callable, Awaitable
 
 from dan.meta.intent_schema import StageType, WorkflowIntent
+from dan.meta.tool_catalog import render_tool_id_list
 
 logger = logging.getLogger(__name__)
 
@@ -117,7 +118,7 @@ INTENT_FEW_SHOT_EXAMPLES: list[dict] = [
                     "description": "Review and revise draft",
                     "review": {
                         "reviewer_prompt": "Check for clarity, citations, and logical flow",
-                        "condition": "quality_score >= 8",
+                        "condition": "quality_score < 8",
                         "max_iterations": 3,
                     },
                 },
@@ -185,13 +186,46 @@ INTENT_FEW_SHOT_EXAMPLES: list[dict] = [
                     "description": "Review comparison report",
                     "review": {
                         "reviewer_prompt": "Check for factual accuracy and completeness",
-                        "condition": "quality_score >= 8",
+                        "condition": "quality_score < 8",
                         "max_iterations": 2,
                     },
                 },
             ],
             "global_inputs": ["topic"],
             "global_outputs": ["comparison_report"],
+        },
+    },
+    {
+        "user": "Build a pipeline that reads a CSV file, runs Python analysis, generates a chart, and emails the report",
+        "intent": {
+            "goal": "Data analysis pipeline with CSV input and email output",
+            "stages": [
+                {
+                    "name": "read_data",
+                    "stage_type": "tool_call",
+                    "description": "Read CSV data file",
+                    "config": {"tool_id": "csv_read"},
+                },
+                {
+                    "name": "analyze",
+                    "stage_type": "code_execution",
+                    "description": "Run statistical analysis and generate chart",
+                    "config": {"code": "import json; result = {'statistics': 'computed', 'chart_path': 'chart.png'}"},
+                },
+                {
+                    "name": "write_report",
+                    "stage_type": "transform",
+                    "description": "Write analysis report from statistics",
+                },
+                {
+                    "name": "send_report",
+                    "stage_type": "tool_call",
+                    "description": "Email the final report",
+                    "config": {"tool_id": "send_email"},
+                },
+            ],
+            "global_inputs": ["data_path", "recipient_email"],
+            "global_outputs": ["report"],
         },
     },
 ]
@@ -223,10 +257,18 @@ async def extract_workflow_intent(
     Returns ``None`` if extraction fails or intent is invalid.
     """
     tool_schema = build_intent_tool_schema()
+    system_prompt = (
+        INTENT_EXTRACTION_SYSTEM_PROMPT
+        + "\n\nAvailable tool_ids for tool_call stages (use these exact IDs): "
+        + render_tool_id_list()
+        + ". "
+        + "Do NOT invent tool_ids not in this list. If no tool matches, use "
+        + "code_execution with inline Python instead."
+    )
 
     try:
         response = await llm_complete(
-            INTENT_EXTRACTION_SYSTEM_PROMPT,
+            system_prompt,
             goal_text,
             model,
             0.3,

@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from dan.meta.discovery import DiscoveryResult, DiscoveryService
+from dan.meta.tool_catalog import render_tool_catalog_markdown
 
 if TYPE_CHECKING:
     from dan.meta.diagnosis import DiagnosisResult, GenerationError
@@ -615,6 +616,14 @@ Unless the user explicitly asks for a minimal/simple workflow:
 - For long-form content (reports, papers, memos), wrap in a review loop.
 - Recognize suppression signals: "simple", "minimal", "without review", "no validation" → skip those defaults.
 
+## Available Tools
+
+When creating tool nodes with `wf.tool(id, tool_id=...)`, use ONLY these registered tool_ids:
+
+__AVAILABLE_TOOLS__
+
+Do NOT invent tool_ids not in this list. If no registered tool matches the needed capability, use `wf.code()` with inline Python instead of `wf.tool()` with a made-up tool_id.
+
 __DOMAIN_CONTEXT__"""
 
     _FEW_SHOT_EXAMPLES = '''\
@@ -813,7 +822,11 @@ graph = wf.build()
 
     def build_system_prompt(self, *, domain_context: str = "") -> str:
         """Return the system prompt that teaches the builder DSL."""
-        return self._SYSTEM_PROMPT.replace("__DOMAIN_CONTEXT__", domain_context)
+        return (
+            self._SYSTEM_PROMPT
+            .replace("__AVAILABLE_TOOLS__", render_tool_catalog_markdown())
+            .replace("__DOMAIN_CONTEXT__", domain_context)
+        )
 
     def build_few_shot_examples(self) -> str:
         """Return compact few-shot examples covering 6 key workflow patterns."""
