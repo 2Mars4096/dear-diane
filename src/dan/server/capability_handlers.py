@@ -80,8 +80,9 @@ WEB_SEARCH_CAPABILITY_SCHEMA = build_tool_schema(
     name="web_search",
     description=(
         "Search the web for current information. Use when the user asks about "
-        "live data: stock prices, exchange rates, weather, sports scores, "
-        "recent events, or any time-sensitive facts you don't have."
+        "live data, recent events, or facts you don't have. "
+        "For research tasks, use fetch_content=true to automatically read "
+        "the top result — saves a separate web_fetch call."
     ),
     parameters={
         "type": "object",
@@ -89,6 +90,14 @@ WEB_SEARCH_CAPABILITY_SCHEMA = build_tool_schema(
             "query": {
                 "type": "string",
                 "description": "Search query — be specific and include relevant keywords.",
+            },
+            "num_results": {
+                "type": "integer",
+                "description": "Number of results to return (1-10). Default 3. Use 1 for quick lookups, more for research.",
+            },
+            "fetch_content": {
+                "type": "boolean",
+                "description": "If true, automatically fetch and include content from the top result. Saves a separate web_fetch call.",
             },
         },
         "required": ["query"],
@@ -103,9 +112,11 @@ async def handle_web_search(
     query = args.get("query", "").strip()
     if not query:
         return CapabilityResult(success=False, message="No search query provided.")
+    num = min(10, max(1, args.get("num_results") or 3))
+    fetch_content = bool(args.get("fetch_content", False))
     try:
         from dan.tools.web_search import web_search
-        result = await web_search(query=query, num_results=5)
+        result = await web_search(query=query, num_results=num)
     except ImportError:
         return CapabilityResult(
             success=False,
@@ -119,7 +130,7 @@ async def handle_web_search(
         return CapabilityResult(success=True, message="No web results found for that query.")
 
     lines = []
-    for item in results[:5]:
+    for item in results[:num]:
         title = item.get("title", "").strip()
         snippet = item.get("snippet", "").strip()
         url = item.get("url", "").strip()
@@ -127,9 +138,26 @@ async def handle_web_search(
         if parts:
             lines.append(" — ".join(parts))
 
+    message = "\n\n".join(lines)
+
+    if fetch_content and results:
+        top_url = results[0].get("url", "").strip()
+        if top_url:
+            try:
+                from dan.tools.web_fetch import web_fetch
+                fetched = await web_fetch(url=top_url)
+                content = fetched.get("content", "")
+                content = _sanitize_web_content(content)
+                if len(content) > 6000:
+                    content = content[:6000] + "\n[...truncated]"
+                if content.strip():
+                    message += f"\n\n--- Content from {top_url} ---\n{content}"
+            except Exception:
+                pass
+
     return CapabilityResult(
         success=True,
-        message="\n\n".join(lines),
+        message=message,
         data=result,
     )
 
@@ -139,9 +167,9 @@ async def handle_web_search(
 FILE_READ_CAPABILITY_SCHEMA = build_tool_schema(
     name="file_read",
     description=(
-        "Read a text file and return its contents. Accepts absolute paths "
-        "(~/Dropbox/..., /Users/...) or workspace-relative paths. "
-        "Use when the user references a specific file to read, review, or analyze."
+        "Read a text file. Supports line ranges and keyword grep to read only "
+        "what you need instead of loading the entire file. For large files, "
+        "use grep first to find relevant sections, then read those line ranges."
     ),
     parameters={
         "type": "object",
@@ -149,6 +177,18 @@ FILE_READ_CAPABILITY_SCHEMA = build_tool_schema(
             "path": {
                 "type": "string",
                 "description": "Path to the file (absolute or relative to workspace).",
+            },
+            "start_line": {
+                "type": "integer",
+                "description": "Start reading from this line (1-based). Omit to start from beginning.",
+            },
+            "end_line": {
+                "type": "integer",
+                "description": "Stop reading at this line (inclusive). Omit to read to end.",
+            },
+            "grep": {
+                "type": "string",
+                "description": "Only return lines containing this keyword/pattern (case-insensitive). Returns matching lines with their line numbers and 2 lines of context.",
             },
         },
         "required": ["path"],
@@ -179,16 +219,234 @@ async def handle_file_read(
         resolved = _resolve_user_path(raw_path)
         if not resolved.is_file():
             return CapabilityResult(success=False, message=f"File not found: {raw_path}")
-        content = resolved.read_text(encoding="utf-8", errors="replace")
+
+        start_line = args.get("start_line")
+        end_line = args.get("end_line")
+        grep_pattern = (args.get("grep") or "").strip()
+
+        raw = resolved.read_text(encoding="utf-8", errors="replace")
+        lines = raw.splitlines()
+        total_lines = len(lines)
+        file_size = resolved.stat().st_size
+
+        if grep_pattern:
+            pat = _re.compile(_re.escape(grep_pattern), _re.IGNORECASE)
+            context_lines = 2
+            matched_ranges: list[tuple[int, int]] = []
+            for i, line in enumerate(lines):
+                if pat.search(line):
+                    lo = max(0, i - context_lines)
+                    hi = min(total_lines - 1, i + context_lines)
+                    if matched_ranges and lo <= matched_ranges[-1][1] + 1:
+                        matched_ranges[-1] = (matched_ranges[-1][0], hi)
+                    else:
+                        matched_ranges.append((lo, hi))
+
+            if not matched_ranges:
+                return CapabilityResult(
+                    success=True,
+                    message=f"No matches for '{grep_pattern}' in {resolved.name} ({total_lines} lines).",
+                    data={
+                        "path": str(resolved),
+                        "size": file_size,
+                        "total_lines": total_lines,
+                        "matches": 0,
+                        "truncated": False,
+                    },
+                )
+
+            parts: list[str] = []
+            match_count = 0
+            for lo, hi in matched_ranges[:30]:
+                parts.append(f"--- lines {lo + 1}-{hi + 1} ---")
+                for j in range(lo, hi + 1):
+                    marker = ">" if pat.search(lines[j]) else " "
+                    parts.append(f"{marker} {j + 1:>6}| {lines[j]}")
+                    if marker == ">":
+                        match_count += 1
+                parts.append("")
+
+            content = "\n".join(parts)
+            truncated = False
+            if len(content) > _FILE_READ_MAX:
+                content = content[:_FILE_READ_MAX] + "\n[...truncated]"
+                truncated = True
+            header = f"grep '{grep_pattern}' in {resolved.name}: {match_count} matches across {len(matched_ranges)} regions ({total_lines} total lines)\n\n"
+            return CapabilityResult(
+                success=True,
+                message=header + content,
+                data={
+                    "path": str(resolved),
+                    "size": file_size,
+                    "total_lines": total_lines,
+                    "matches": match_count,
+                    "truncated": truncated,
+                },
+            )
+
+        if start_line is not None or end_line is not None:
+            sl = max(0, (start_line or 1) - 1)
+            el = min(total_lines, end_line or total_lines)
+            selected = lines[sl:el]
+            numbered = [f"{sl + i + 1:>6}| {line}" for i, line in enumerate(selected)]
+            content = "\n".join(numbered)
+            truncated = False
+            if len(content) > _FILE_READ_MAX:
+                content = content[:_FILE_READ_MAX] + "\n[...truncated]"
+                truncated = True
+            header = f"{resolved.name} lines {sl + 1}-{el} of {total_lines}\n\n"
+            return CapabilityResult(
+                success=True,
+                message=header + content,
+                data={
+                    "path": str(resolved),
+                    "size": file_size,
+                    "total_lines": total_lines,
+                    "requested_start_line": sl + 1,
+                    "requested_end_line": el,
+                    "returned_start_line": sl + 1 if selected else None,
+                    "returned_end_line": el if selected and not truncated else None,
+                    "truncated": truncated,
+                },
+            )
+
+        content = raw
+        truncated = False
         if len(content) > _FILE_READ_MAX:
             content = content[:_FILE_READ_MAX] + f"\n\n[truncated — file is {len(content):,} chars, showing first {_FILE_READ_MAX:,}]"
+            truncated = True
         return CapabilityResult(
             success=True,
             message=content,
-            data={"path": str(resolved), "size": resolved.stat().st_size},
+            data={
+                "path": str(resolved),
+                "size": file_size,
+                "total_lines": total_lines,
+                "requested_start_line": 1,
+                "requested_end_line": total_lines,
+                "returned_start_line": 1,
+                "returned_end_line": total_lines if not truncated else None,
+                "truncated": truncated,
+            },
         )
     except Exception as exc:
         return CapabilityResult(success=False, message=f"Failed to read file: {exc}")
+
+
+FILE_GREP_CAPABILITY_SCHEMA = build_tool_schema(
+    name="file_grep",
+    description=(
+        "Search for a keyword or pattern across files in a directory. "
+        "Returns matching lines with filenames, line numbers, and context. "
+        "Use this to find relevant sections before reading specific line ranges with file_read."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "path": {
+                "type": "string",
+                "description": "Directory to search in (absolute or relative).",
+            },
+            "pattern": {
+                "type": "string",
+                "description": "Keyword or regex pattern to search for (case-insensitive).",
+            },
+            "glob": {
+                "type": "string",
+                "description": "File glob filter, e.g. '*.tex', '*.py', '*.md'. Default: all text files.",
+            },
+        },
+        "required": ["path", "pattern"],
+    },
+)
+
+_TEXT_EXTENSIONS = frozenset({
+    ".txt", ".md", ".tex", ".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css",
+    ".json", ".yaml", ".yml", ".toml", ".cfg", ".ini", ".sh", ".bash", ".zsh",
+    ".r", ".R", ".do", ".ado", ".sas", ".csv", ".tsv", ".xml", ".sql", ".bib",
+    ".rst", ".org", ".log", ".env", ".gitignore", ".dockerignore", ".makefile",
+    ".c", ".h", ".cpp", ".hpp", ".java", ".go", ".rs", ".rb", ".pl", ".lua",
+    ".swift", ".kt", ".scala", ".m", ".mm", ".hs", ".jl", ".ex", ".exs",
+})
+
+
+async def handle_file_grep(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    raw_path = args.get("path", "").strip()
+    pattern_str = args.get("pattern", "").strip()
+    glob_filter = args.get("glob", "").strip()
+    if not raw_path or not pattern_str:
+        return CapabilityResult(success=False, message="Both path and pattern are required.")
+    try:
+        resolved = _resolve_user_path(raw_path)
+        if not resolved.is_dir():
+            return CapabilityResult(success=False, message=f"Directory not found: {raw_path}")
+
+        try:
+            pat = _re.compile(pattern_str, _re.IGNORECASE)
+        except _re.error:
+            pat = _re.compile(_re.escape(pattern_str), _re.IGNORECASE)
+        results: list[str] = []
+        files_searched = 0
+        files_matched = 0
+
+        iterator = resolved.rglob(glob_filter) if glob_filter else resolved.rglob("*")
+        for filepath in sorted(iterator):
+            if not filepath.is_file():
+                continue
+            if not glob_filter and filepath.suffix.lower() not in _TEXT_EXTENSIONS:
+                continue
+            files_searched += 1
+            try:
+                lines = filepath.read_text(encoding="utf-8", errors="replace").splitlines()
+            except Exception:
+                continue
+
+            matched_ranges: list[tuple[int, int]] = []
+            for i, line in enumerate(lines):
+                if pat.search(line):
+                    lo = max(0, i - 1)
+                    hi = min(len(lines) - 1, i + 1)
+                    if matched_ranges and lo <= matched_ranges[-1][1] + 1:
+                        matched_ranges[-1] = (matched_ranges[-1][0], hi)
+                    else:
+                        matched_ranges.append((lo, hi))
+
+            file_matches: list[str] = []
+            for lo, hi in matched_ranges:
+                for j in range(lo, hi + 1):
+                    marker = ">" if pat.search(lines[j]) else " "
+                    file_matches.append(f"{marker} {j + 1:>5}| {lines[j]}")
+                file_matches.append("")
+
+            if file_matches:
+                files_matched += 1
+                rel = filepath.relative_to(resolved) if filepath.is_relative_to(resolved) else filepath
+                results.append(f"── {rel} ──\n" + "\n".join(file_matches))
+
+            if files_searched > 500 or len(results) > 30:
+                break
+
+        if not results:
+            return CapabilityResult(
+                success=True,
+                message=f"No matches for '{pattern_str}' in {files_searched} files under {resolved.name}/",
+                data={"path": str(resolved), "files_searched": files_searched, "matches": 0},
+            )
+
+        content = "\n\n".join(results)
+        if len(content) > _FILE_READ_MAX:
+            content = content[:_FILE_READ_MAX] + "\n[...truncated]"
+        header = f"grep '{pattern_str}' in {resolved.name}/: {files_matched} files matched ({files_searched} searched)\n\n"
+        return CapabilityResult(
+            success=True,
+            message=header + content,
+            data={"path": str(resolved), "files_searched": files_searched, "files_matched": files_matched},
+        )
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"Search failed: {exc}")
 
 
 PDF_READ_CAPABILITY_SCHEMA = build_tool_schema(
@@ -923,11 +1181,19 @@ async def handle_list_directory(args: dict[str, Any], ctx: CapabilityContext) ->
             iterator = resolved.rglob(glob_pattern) if recursive else resolved.glob(glob_pattern)
         else:
             iterator = resolved.rglob("*") if recursive else resolved.iterdir()
+        import datetime as _dt
         entries = []
         for p in sorted(iterator):
             kind = "dir" if p.is_dir() else "file"
-            size = p.stat().st_size if p.is_file() else 0
-            entries.append(f"  {kind}  {size:>8}  {p.name}")
+            try:
+                st = p.stat()
+                size = st.st_size if p.is_file() else 0
+                mtime = _dt.datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
+            except OSError:
+                size = 0
+                mtime = "            "
+            rel = p.relative_to(resolved) if p.is_relative_to(resolved) else p.name
+            entries.append(f"  {kind}  {size:>8}  {mtime}  {rel}")
             if len(entries) >= 200:
                 entries.append(f"  ... (truncated at 200 entries)")
                 break
@@ -943,12 +1209,17 @@ WEB_FETCH_CAPABILITY_SCHEMA = build_tool_schema(
     name="web_fetch",
     description=(
         "Fetch content from a URL and return it as text. "
-        "Use when the user shares a link and asks to read, summarize, or extract info from it."
+        "Use when the user shares a link and asks to read, summarize, or extract info from it. "
+        "Use extract_only to get just the specific content you need and save context tokens."
     ),
     parameters={
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "URL to fetch."},
+            "extract_only": {
+                "type": "string",
+                "description": "If set, only return content matching this keyword (case-insensitive grep). Useful for pulling specific data from large pages.",
+            },
         },
         "required": ["url"],
     },
@@ -959,11 +1230,30 @@ async def handle_web_fetch(args: dict[str, Any], ctx: CapabilityContext) -> Capa
     url = args.get("url", "").strip()
     if not url:
         return CapabilityResult(success=False, message="No URL provided.")
+    extract_only = (args.get("extract_only") or "").strip()
     try:
         from dan.tools.web_fetch import web_fetch
         result = await web_fetch(url=url)
         content = result.get("content", "")
         content = _sanitize_web_content(content)
+
+        if extract_only:
+            pat = _re.compile(_re.escape(extract_only), _re.IGNORECASE)
+            lines = content.splitlines()
+            kept: list[str] = []
+            for i, line in enumerate(lines):
+                if pat.search(line):
+                    lo = max(0, i - 2)
+                    hi = min(len(lines) - 1, i + 2)
+                    for j in range(lo, hi + 1):
+                        if lines[j] not in kept[-5:]:
+                            kept.append(lines[j])
+                    kept.append("")
+            if kept:
+                content = f"Extracted lines matching '{extract_only}':\n\n" + "\n".join(kept)
+            else:
+                content = f"No content matching '{extract_only}' found on this page."
+
         if len(content) > _FILE_READ_MAX:
             content = content[:_FILE_READ_MAX] + "\n\n[truncated]"
         return CapabilityResult(success=True, message=content, data=result)
@@ -3167,6 +3457,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_web_search,
         modes=["ask", "agent", "build", "mutate", "conversation", "debug"],
         category="web",
+        cacheable=True,
     )
     registry.register(
         "file_read",
@@ -3174,6 +3465,15 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_file_read,
         modes=list(ALL_MODES),
         category="file",
+        cacheable=True,
+    )
+    registry.register(
+        "file_grep",
+        FILE_GREP_CAPABILITY_SCHEMA,
+        handle_file_grep,
+        modes=list(ALL_MODES),
+        category="file",
+        cacheable=True,
     )
     registry.register(
         "pdf_read",
@@ -3181,6 +3481,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_pdf_read,
         modes=list(ALL_MODES),
         category="file",
+        cacheable=True,
     )
     registry.register(
         "current_datetime",
@@ -3230,6 +3531,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_get_config,
         modes=list(ALL_MODES),
         category="system",
+        cacheable=True,
     )
     registry.register(
         "list_directory",
@@ -3237,6 +3539,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_list_directory,
         modes=list(ALL_MODES),
         category="file",
+        cacheable=True,
     )
     registry.register(
         "spreadsheet_read",
@@ -3244,6 +3547,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_spreadsheet_read,
         modes=list(ALL_MODES),
         category="data",
+        cacheable=True,
     )
     registry.register(
         "web_fetch",
@@ -3251,6 +3555,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_web_fetch,
         modes=list(ALL_MODES),
         category="web",
+        cacheable=True,
     )
     registry.register(
         "file_write",
@@ -3279,6 +3584,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_text_chunk,
         modes=list(ALL_MODES),
         category="text",
+        cacheable=True,
     )
     registry.register(
         "text_translate",
@@ -3307,6 +3613,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_json_extract,
         modes=list(ALL_MODES),
         category="text",
+        cacheable=True,
     )
     registry.register(
         "regex_match",
@@ -3314,6 +3621,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_regex_match,
         modes=list(ALL_MODES),
         category="text",
+        cacheable=True,
     )
 
 # ── Extra tools (DAN_FULL_TOOLS) ───────────────────────────────────
@@ -3789,6 +4097,7 @@ def register_tool_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_csv_read,
         modes=["agent", "conversation"],
         category="extra",
+        cacheable=True,
     )
 
 
@@ -3834,6 +4143,7 @@ def register_tool_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_git_status,
         modes=["agent", "ask", "debug"],
         category="extra",
+        cacheable=True,
     )
 
 
@@ -3843,6 +4153,7 @@ def register_tool_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_git_diff,
         modes=["agent", "ask", "debug"],
         category="extra",
+        cacheable=True,
     )
 
 
@@ -3852,6 +4163,7 @@ def register_tool_capabilities(registry: ChatCapabilityRegistry) -> None:
         handle_git_log,
         modes=["agent", "ask", "debug"],
         category="extra",
+        cacheable=True,
     )
 
 

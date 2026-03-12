@@ -55,6 +55,7 @@ from dan.server.graph_mutator import GraphMutator, MutationPlan
 from dan.server.graph_store import GraphStore, _validate_graph_id
 from dan.server.run_manager import RunManager, RunStatus
 from dan.server.run_store import RunStore
+from dan.server.chat_stream_buffer import ReconnectableChatStream
 from dan.server.terminal_output import collect_terminal_content
 from dan.server.test_cases import NodeTestCase, TestCaseRunResult, TestCaseStore
 from dan.server.scoped_run import (
@@ -2104,7 +2105,11 @@ async def create_graph(req: CreateGraphRequest):
     if _graph_store.get_graph(req.graph_id) is not None:
         raise HTTPException(status_code=409, detail=f"Graph '{req.graph_id}' already exists")
     data = _graph_store.create_graph(req.graph_id, req.data)
-    return {"graph_id": req.graph_id, "data": data}
+    return {
+        "graph_id": req.graph_id,
+        "data": data,
+        "graph_revision": compute_graph_revision(data),
+    }
 
 
 _gate_migration_enabled = os.environ.get("DAN_GATE_MIGRATION_ENABLED", "").lower() in (
@@ -2126,11 +2131,16 @@ async def get_graph(graph_id: str, layout: bool = False):
     if _gate_migration_enabled and isinstance(data, dict):
         from dan.migration.gate_migration import migrate_graph
         data = migrate_graph(data)
+    graph_revision = compute_graph_revision(data) if isinstance(data, dict) else None
     if (layout or _layout_on_load) and isinstance(data, dict):
         from dan.server.layout import apply_layout
         data = apply_layout(data)
     _graph_store.set_last_opened(graph_id)
-    return {"graph_id": graph_id, "data": data}
+    return {
+        "graph_id": graph_id,
+        "data": data,
+        "graph_revision": graph_revision,
+    }
 
 
 @app.put("/api/graphs/{graph_id}")
@@ -2140,7 +2150,11 @@ async def update_graph(graph_id: str, body: dict[str, Any]):
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     _graph_store.save_graph(graph_id, body)
-    return {"graph_id": graph_id, "status": "saved"}
+    return {
+        "graph_id": graph_id,
+        "status": "saved",
+        "graph_revision": compute_graph_revision(body),
+    }
 
 
 @app.delete("/api/graphs/{graph_id}")
@@ -3702,17 +3716,58 @@ async def meta_session_events_ws(websocket: WebSocket, session_id: str):
 # Chat — message endpoint + WebSocket streaming
 # ------------------------------------------------------------------
 
-_chat_streams: dict[str, tuple[asyncio.Queue, float]] = {}
+_chat_streams: dict[str, tuple[ReconnectableChatStream, float]] = {}
+_chat_produce_tasks: dict[str, asyncio.Task] = {}
 _CHAT_STREAM_TTL_SECONDS = 120.0
+_CHAT_STREAM_MAX_BUFFERED_EVENTS = 128
+
+
+def _register_chat_stream(
+    channel_id: str,
+    queue: ReconnectableChatStream,
+    *,
+    task: asyncio.Task | None = None,
+) -> None:
+    _chat_streams[channel_id] = (queue, time.monotonic())
+    if task is not None:
+        _chat_produce_tasks[channel_id] = task
+
+
+def _touch_chat_stream(channel_id: str) -> None:
+    entry = _chat_streams.get(channel_id)
+    if entry is None:
+        return
+    queue, _ = entry
+    _chat_streams[channel_id] = (queue, time.monotonic())
+
+
+async def _put_chat_stream_event(
+    channel_id: str,
+    queue: ReconnectableChatStream,
+    event: Any,
+) -> None:
+    await queue.put(event)
+    _touch_chat_stream(channel_id)
 
 
 def _reap_stale_chat_streams() -> None:
     """Remove chat stream entries older than TTL (guards against leaked queues)."""
     import time
     now = time.monotonic()
-    stale = [k for k, (_, ts) in _chat_streams.items() if now - ts > _CHAT_STREAM_TTL_SECONDS]
+    stale = []
+    for k, (queue, ts) in _chat_streams.items():
+        task = _chat_produce_tasks.get(k)
+        if queue.has_consumer:
+            continue
+        if task is not None and not task.done():
+            continue
+        if now - ts > _CHAT_STREAM_TTL_SECONDS:
+            stale.append(k)
     for k in stale:
         _chat_streams.pop(k, None)
+        task = _chat_produce_tasks.pop(k, None)
+        if task is not None and not task.done():
+            task.cancel()
 
 
 class StopRequest(BaseModel):
@@ -3746,8 +3801,10 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
         return await _handle_run_command(req, run_cmd)
 
     stream_channel_id = f"chat-{uuid.uuid4().hex[:10]}"
-    queue: asyncio.Queue = asyncio.Queue()
-    _chat_streams[stream_channel_id] = (queue, time.monotonic())
+    queue = ReconnectableChatStream(
+        max_buffered_events=_CHAT_STREAM_MAX_BUFFERED_EVENTS
+    )
+    _register_chat_stream(stream_channel_id, queue)
     cancel_event = _chat_manager.register_stream(stream_channel_id)
 
     structured_mentions = [
@@ -3841,8 +3898,9 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                     queued_channel = payload.get("stream_channel_id", "")
                     if queued_channel:
                         _reap_stale_chat_streams()
-                        queued_q: asyncio.Queue = asyncio.Queue()
-                        _chat_streams[queued_channel] = (queued_q, time.monotonic())
+                        queued_q = ReconnectableChatStream(
+                            max_buffered_events=_CHAT_STREAM_MAX_BUFFERED_EVENTS
+                        )
 
                         async def _pipe_queued(ch: str, qq: asyncio.Queue) -> None:
                             bus = _dispatcher.get_response_bus(ch)
@@ -3853,17 +3911,18 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                                     bus_event = await bus.get()
                                     if bus_event is None:
                                         break
-                                    await qq.put(bus_event.model_dump())
+                                    await _put_chat_stream_event(ch, qq, bus_event.model_dump())
                             except Exception:
                                 logger.warning("Queued stream pipe error for %s", ch, exc_info=True)
                             finally:
-                                await qq.put(None)
+                                await _put_chat_stream_event(ch, qq, None)
                                 _dispatcher.cleanup_response_bus(ch)
 
                         _pipe_task = asyncio.create_task(_pipe_queued(queued_channel, queued_q))
+                        _register_chat_stream(queued_channel, queued_q, task=_pipe_task)
                         _dispatcher._track_task(_pipe_task)
                     payload["status"] = "queued"
-                    await queue.put(payload)
+                    await _put_chat_stream_event(stream_channel_id, queue, payload)
                     continue
 
                 if detected_mode and evt_type in (
@@ -3878,8 +3937,9 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                 ):
                     run_id = run_stream_id[4:]
                     _reap_stale_chat_streams()
-                    run_queue: asyncio.Queue = asyncio.Queue()
-                    _chat_streams[run_stream_id] = (run_queue, time.monotonic())
+                    run_queue = ReconnectableChatStream(
+                        max_buffered_events=_CHAT_STREAM_MAX_BUFFERED_EVENTS
+                    )
 
                     async def _pipe_tool_run_events() -> None:
                         rq = _run_manager.subscribe(run_id)
@@ -3903,33 +3963,47 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                                         for buf in evt.get("buffered_events", []):
                                             blk = map_run_event_to_chat_block(buf, "full", None)
                                             if blk is not None:
-                                                await run_queue.put({"type": "chat_run_event", "run_event": blk})
+                                                await _put_chat_stream_event(
+                                                    run_stream_id,
+                                                    run_queue,
+                                                    {"type": "chat_run_event", "run_event": blk},
+                                                )
                                         break
                                     continue
                                 blk = map_run_event_to_chat_block(evt, "full", None)
                                 if blk is not None:
-                                    await run_queue.put({"type": "chat_run_event", "run_event": blk})
+                                    await _put_chat_stream_event(
+                                        run_stream_id,
+                                        run_queue,
+                                        {"type": "chat_run_event", "run_event": blk},
+                                    )
                                 if etype in ("run_completed", "run_failed", "run_cancelled"):
                                     break
                         except Exception:
                             logger.debug("Run event pipe error for %s", run_id, exc_info=True)
                         finally:
                             _run_manager.unsubscribe(run_id, rq)
-                            await run_queue.put(None)
+                            await _put_chat_stream_event(run_stream_id, run_queue, None)
                             # Keep channel mapping until WS consumer drains it
                             # (or TTL reaper removes stale entries) to avoid
                             # races where fast runs finish before client subscribes.
 
-                    asyncio.create_task(_pipe_tool_run_events())
-                await queue.put(payload)
+                    pipe_task = asyncio.create_task(_pipe_tool_run_events())
+                    _register_chat_stream(run_stream_id, run_queue, task=pipe_task)
+                await _put_chat_stream_event(stream_channel_id, queue, payload)
         except Exception as exc:
             logger.exception("Chat _produce() error for channel %s", stream_channel_id)
-            await queue.put({"type": "chat_error", "error": str(exc)})
+            await _put_chat_stream_event(
+                stream_channel_id,
+                queue,
+                {"type": "chat_error", "error": str(exc)},
+            )
         finally:
             _chat_manager.unregister_stream(stream_channel_id)
-            await queue.put(None)
+            await _put_chat_stream_event(stream_channel_id, queue, None)
 
-    asyncio.create_task(_produce())
+    produce_task = asyncio.create_task(_produce())
+    _register_chat_stream(stream_channel_id, queue, task=produce_task)
     return {"message_id": uuid.uuid4().hex[:12], "stream_channel_id": stream_channel_id, "status": "processing"}
 
 
@@ -3964,8 +4038,10 @@ async def _handle_run_command(
 
     _reap_stale_chat_streams()
     stream_channel_id = f"run-{uuid.uuid4().hex[:10]}"
-    queue: asyncio.Queue = asyncio.Queue()
-    _chat_streams[stream_channel_id] = (queue, _time.monotonic())
+    queue = ReconnectableChatStream(
+        max_buffered_events=_CHAT_STREAM_MAX_BUFFERED_EVENTS
+    )
+    _register_chat_stream(stream_channel_id, queue)
 
     run_target = run_cmd.get("target_node_id") or run_cmd.get("target_subgraph_key")
 
@@ -3985,21 +4061,30 @@ async def _handle_run_command(
                         for buf_evt in event.get("buffered_events", []):
                             blk = map_run_event_to_chat_block(buf_evt, scope, run_target)
                             if blk is not None:
-                                await queue.put({"type": "chat_run_event", "run_event": blk})
+                                await _put_chat_stream_event(
+                                    stream_channel_id,
+                                    queue,
+                                    {"type": "chat_run_event", "run_event": blk},
+                                )
                         break
                     continue
                 chat_block = map_run_event_to_chat_block(event, scope, run_target)
                 if chat_block is not None:
-                    await queue.put({"type": "chat_run_event", "run_event": chat_block})
+                    await _put_chat_stream_event(
+                        stream_channel_id,
+                        queue,
+                        {"type": "chat_run_event", "run_event": chat_block},
+                    )
                 if event_type in ("run_completed", "run_failed", "run_cancelled"):
                     break
         except Exception:
             logger.debug("Run event pipe error for %s", record.run_id, exc_info=True)
         finally:
             rm.unsubscribe(record.run_id, run_queue)
-            await queue.put(None)
+            await _put_chat_stream_event(stream_channel_id, queue, None)
 
-    asyncio.create_task(_pipe_run_events())
+    pipe_task = asyncio.create_task(_pipe_run_events())
+    _register_chat_stream(stream_channel_id, queue, task=pipe_task)
 
     return {
         "type": "run_started",
@@ -4018,20 +4103,54 @@ async def chat_events_ws(websocket: WebSocket, channel_id: str):
         await websocket.close(code=4004)
         return
     queue, _ = entry
+    disconnected_early = False
+    current_event: Any | None = None
     await websocket.accept()
+    queue.attach_consumer()
+    queue.prime_reconnect_snapshot()
     try:
         while True:
-            event = await queue.get()
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=25.0)
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "ping"})
+                continue
+            current_event = event
             if event is None:
                 break
             await websocket.send_json(event)
+            current_event = None
+            _touch_chat_stream(channel_id)
         await websocket.close()
     except WebSocketDisconnect:
-        pass
+        disconnected_early = True
+        if current_event is not None:
+            queue.requeue_front(current_event)
+            current_event = None
+            _touch_chat_stream(channel_id)
     except Exception:
+        if current_event is not None:
+            disconnected_early = True
+            queue.requeue_front(current_event)
+            current_event = None
+            _touch_chat_stream(channel_id)
         logger.debug("Chat WebSocket error for channel %s", channel_id, exc_info=True)
     finally:
+        queue.detach_consumer()
+        task = _chat_produce_tasks.get(channel_id)
+        if disconnected_early and (
+            (task is not None and not task.done()) or queue.has_reconnect_state()
+        ):
+            # Keep the queue/producer alive briefly so the client can reconnect
+            # to the same stream after a transient browser/electron disconnect,
+            # even if the producer already exited and only the buffered tail or
+            # terminal snapshot remains.
+            _chat_streams[channel_id] = (queue, time.monotonic())
+            return
         _chat_streams.pop(channel_id, None)
+        task = _chat_produce_tasks.pop(channel_id, None)
+        if task is not None and not task.done():
+            task.cancel()
 
 
 # ------------------------------------------------------------------
@@ -4090,15 +4209,22 @@ async def update_chat_thread(workflow_id: str, thread_id: str, body: dict[str, A
         if thread is None:
             raise HTTPException(status_code=404, detail="Thread not found")
     if "messages" in body:
-        thread.messages = [
+        latest_thread = _chat_store.get_thread(workflow_id, thread_id)
+        if latest_thread is None:
+            raise HTTPException(status_code=404, detail="Thread not found")
+        latest_thread.messages = [
             StoreChatMessage.model_validate(m) for m in body["messages"]
         ]
+        latest_thread.updated_at = datetime.now(timezone.utc)
+        _chat_store.save_thread(latest_thread)
         ensure_fallback_title(_chat_store, workflow_id, thread_id)
         refreshed = _chat_store.get_thread(workflow_id, thread_id)
         if refreshed is not None:
             thread = refreshed
         meta = _chat_store.get_thread_meta(workflow_id, thread_id)
         first_user_present = any(msg.role == "user" for msg in thread.messages)
+        if first_user_present:
+            meta.pop("title_generation_failed", None)
         if (
             first_user_present
             and not meta.get("title_locked")
@@ -4111,8 +4237,6 @@ async def update_chat_thread(workflow_id: str, thread_id: str, body: dict[str, A
             schedule_title_generation = True
     if "mode" in body:
         _chat_store.set_mode(workflow_id, thread_id, body["mode"])
-    thread.updated_at = datetime.now(timezone.utc)
-    _chat_store.save_thread(thread)
     if schedule_title_generation and _chat_manager is not None:
         providers = getattr(_chat_manager, "_providers", None)
         chat_model = str(getattr(_chat_manager, "_chat_model", "") or "")
@@ -5153,6 +5277,12 @@ async def stop_adapter(req: AdapterStopRequest):
     _adapter_surface_types.pop(req.adapter_id, None)
 
     return {"status": "stopped", "adapter_id": req.adapter_id}
+
+
+@app.get("/api/health")
+async def health():
+    """Minimal liveness probe for desktop/editor reconnect flows."""
+    return {"status": "ok", "pid": os.getpid(), "timestamp": time.time()}
 
 
 @app.get("/api/adapters/status")

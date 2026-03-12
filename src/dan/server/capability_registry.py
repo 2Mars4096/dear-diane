@@ -71,6 +71,7 @@ class _RegisteredTool:
     handler: CapabilityHandler
     modes: set[str]
     category: str = ""
+    cacheable: bool = False
 
 
 class ChatCapabilityRegistry:
@@ -87,6 +88,7 @@ class ChatCapabilityRegistry:
         *,
         modes: list[str] | None = None,
         category: str = "",
+        cacheable: bool = False,
     ) -> None:
         mode_set = set(modes) if modes else set(ALL_MODES)
         self._tools[name] = _RegisteredTool(
@@ -95,6 +97,7 @@ class ChatCapabilityRegistry:
             handler=handler,
             modes=mode_set,
             category=category,
+            cacheable=cacheable,
         )
 
     def unregister(self, name: str) -> bool:
@@ -119,6 +122,10 @@ class ChatCapabilityRegistry:
     def is_available(self, name: str, mode: str) -> bool:
         tool = self._tools.get(name)
         return tool is not None and mode in tool.modes
+
+    def is_cacheable(self, name: str) -> bool:
+        tool = self._tools.get(name)
+        return bool(tool and tool.cacheable)
 
     def list_tool_names(self, mode: str | None = None) -> list[str]:
         if mode is None:

@@ -14,7 +14,7 @@ import re
 import time
 import uuid
 from contextvars import ContextVar
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 from pydantic import BaseModel, Field
 
@@ -47,6 +47,7 @@ except ValueError:
     _MUTATION_AUTO_RETRY_MAX = 2
 _MAX_CONTEXT_RATIO = float(os.environ.get("DAN_CHAT_MAX_CONTEXT_RATIO", "0.8"))
 _RECENT_MESSAGES_COUNT = int(os.environ.get("DAN_CHAT_RECENT_MESSAGES", "10"))
+_LLM_CALL_TIMEOUT_SECONDS = float(os.environ.get("DAN_LLM_CALL_TIMEOUT", "120"))
 
 __all__ = [
     "NodeSummary",
@@ -507,6 +508,13 @@ def generate_capability_reference() -> str:
         "file_read, pdf_read, list_directory accept absolute paths (~/Dropbox/...)."
     )
     lines.append(
+        "For large files: use file_read with grep to find sections, then read specific line ranges."
+    )
+    lines.append(
+        "For long outputs (reports, code, documents): use file_write to save to disk "
+        "section by section (mode=append). Do NOT put long content in chat — write it to a file."
+    )
+    lines.append(
         "Read-only modes (ask/plan): lookup + browse + file read + web read only."
     )
     lines.append("{mcp_block}")
@@ -653,6 +661,64 @@ When asked for research reports, literature reviews, equity analysis, or deep-di
 EMPTY_GRAPH_SUMMARY_PLACEHOLDER = (
     "Workflow is empty (0 nodes, 0 edges). Create from scratch using plan_graph_mutations."
 )
+
+# ---------------------------------------------------------------------------
+# Tool result cleaning — strip markup boilerplate before feeding back to LLM
+# ---------------------------------------------------------------------------
+
+_HTML_TAG_RE = re.compile(r"<(script|style|nav|footer|header|noscript)\b[^>]*>[\s\S]*?</\1>", re.IGNORECASE)
+_HTML_ALL_TAGS_RE = re.compile(r"<[^>]+>")
+_LATEX_PREAMBLE_RE = re.compile(
+    r"^.*?\\begin\{document\}", re.DOTALL,
+)
+_LATEX_BOILERPLATE_RE = re.compile(
+    r"\\(?:documentclass|usepackage|newcommand|renewcommand|setlength|pagestyle"
+    r"|geometry|fancyhf|bibliographystyle)\b[^\n]*\n?",
+)
+_REPEATED_BLANK_LINES_RE = re.compile(r"\n{3,}")
+_DENSE_NAV_LINKS_RE = re.compile(
+    r"(?:^[ \t]*\[[^\]]{1,60}\]\(https?://[^)]+\)\s*){4,}",
+    re.MULTILINE,
+)
+_IMG_MARKDOWN_RE = re.compile(r"!\[[^\]]*\]\([^)]+\)")
+_BARE_IMG_URL_RE = re.compile(
+    r"^\s*\(?https?://[^\s)]+\.(?:png|jpg|jpeg|gif|webp|svg|ico)\b[^\s)]*\)?\s*$",
+    re.MULTILINE | re.IGNORECASE,
+)
+
+
+def _clean_tool_result(tool_name: str, content: str, limit: int = 4000) -> str:
+    """Clean tool output before feeding it back to the LLM as context.
+
+    Strips markup boilerplate (HTML tags, LaTeX preambles, image links,
+    navigation blocks) that burn tokens without adding semantic value.
+    Data, quotes, and meaningful text are preserved verbatim.
+    """
+    if not content:
+        return content
+
+    if tool_name in ("web_fetch", "web_search"):
+        content = _HTML_TAG_RE.sub("", content)
+        content = _HTML_ALL_TAGS_RE.sub("", content)
+        content = _IMG_MARKDOWN_RE.sub("", content)
+        content = _BARE_IMG_URL_RE.sub("", content)
+        content = _DENSE_NAV_LINKS_RE.sub("[...navigation removed...]", content)
+
+    if tool_name in ("file_read", "file_grep"):
+        if "\\documentclass" in content or "\\begin{document}" in content:
+            m = _LATEX_PREAMBLE_RE.search(content)
+            if m:
+                content = content[m.end():]
+            content = _LATEX_BOILERPLATE_RE.sub("", content)
+            content = content.replace("\\end{document}", "")
+
+        if content.lstrip().startswith(("<!DOCTYPE", "<html", "<?xml")):
+            content = _HTML_TAG_RE.sub("", content)
+            content = _HTML_ALL_TAGS_RE.sub("", content)
+
+    content = _REPEATED_BLANK_LINES_RE.sub("\n\n", content)
+    return content.strip()[:limit]
+
 
 # ---------------------------------------------------------------------------
 # Source extraction helper
@@ -986,6 +1052,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "gpt-4o-mini": 128_000,
     "gpt-4-turbo": 128_000,
     "gpt-4": 8_192,
+    "gpt-5.4": 1_000_000,
     "gpt-3.5-turbo": 16_385,
     "o1": 200_000,
     "o1-mini": 128_000,
@@ -993,28 +1060,55 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
     "o3": 200_000,
     "o3-mini": 200_000,
     "o4-mini": 200_000,
+    "claude-opus-4-6": 200_000,
     "claude-sonnet-4-6": 200_000,
     "claude-3-5-sonnet": 200_000,
     "claude-3-opus": 200_000,
     "claude-3-haiku": 200_000,
+    "gemini-3.1": 1_048_576,
     "gemini-1.5-pro": 1_000_000,
     "gemini-1.5-flash": 1_000_000,
     "gemini-2.0-flash": 1_000_000,
+    "glm-4.7": 200_000,
+    "glm-5": 200_000,
+    "minimax-m2.5": 204_800,
+    "kimi-k2.5": 256_000,
     "deepseek-chat": 64_000,
     "deepseek-reasoner": 64_000,
 }
 
 _DEFAULT_CONTEXT_WINDOW = 128_000
+_NORMALIZED_CONTEXT_WINDOWS: list[tuple[str, int]] = sorted(
+    (
+        (re.sub(r"[^a-z0-9]+", "", key.lower()), window)
+        for key, window in MODEL_CONTEXT_WINDOWS.items()
+    ),
+    key=lambda item: len(item[0]),
+    reverse=True,
+)
 
 
 def _get_context_window(model: str) -> int:
     """Look up the context window for a model, with prefix fallback."""
-    if model in MODEL_CONTEXT_WINDOWS:
-        return MODEL_CONTEXT_WINDOWS[model]
-    for key, window in MODEL_CONTEXT_WINDOWS.items():
-        if model.startswith(key):
+    normalized = re.sub(r"[^a-z0-9]+", "", model.lower())
+    for key, window in _NORMALIZED_CONTEXT_WINDOWS:
+        if normalized.startswith(key):
             return window
     return _DEFAULT_CONTEXT_WINDOW
+
+
+def _completion_max_tokens(model: str, *, target_ratio: float = 0.5) -> int:
+    """Reserve a generous but bounded output budget for chat completions."""
+    context_window = _get_context_window(model)
+    if context_window >= 1_000_000:
+        soft_cap = 64_000
+    elif context_window >= 200_000:
+        soft_cap = 48_000
+    elif context_window >= 128_000:
+        soft_cap = 32_000
+    else:
+        soft_cap = 16_384
+    return min(soft_cap, int(context_window * target_ratio))
 
 
 def estimate_tokens(text: str, model: str = "") -> int:
@@ -1045,6 +1139,119 @@ def _truncate_assistant_message(text: str) -> str:
     if len(sentences) <= 3:
         return text
     return f"{sentences[0]} [...] {sentences[-1]}"
+
+
+_TOOL_SCHEMA_OVERHEAD_TOKENS = 2000
+
+
+def _compact_context(
+    messages: list[dict[str, Any]],
+    model: str,
+    *,
+    target_ratio: float = 0.55,
+) -> list[dict[str, Any]]:
+    """Dynamically compact messages to fit within target_ratio of context window.
+
+    Accounts for tool schema overhead (~2K tokens) that isn't in messages.
+
+    Strategy (applied in order until budget is met):
+    1. Truncate tool results (oldest first, preserve most recent 2)
+    2. Summarize old assistant messages to first+last sentence
+    3. Drop oldest non-system bundles (keep system + last 6 bundles)
+
+    Important: assistant messages that contain `tool_calls` and their following
+    `tool` responses are treated as an atomic bundle so the transcript stays
+    valid for tool-calling models. Any orphan `tool` messages are dropped so a
+    previously malformed transcript does not keep propagating invalid tool-call
+    state through later follow-up completions.
+    """
+    context_window = _get_context_window(model)
+    budget = int(context_window * target_ratio) - _TOOL_SCHEMA_OVERHEAD_TOKENS
+    if budget < 4000:
+        budget = 4000
+
+    msgs: list[dict[str, Any]] = []
+    allow_tool_messages = False
+    for msg in messages:
+        role = msg.get("role")
+        if role == "tool":
+            if allow_tool_messages:
+                msgs.append(msg)
+            else:
+                logger.debug("Dropping orphan tool message during context compaction")
+            continue
+        msgs.append(msg)
+        allow_tool_messages = (
+            role == "assistant"
+            and isinstance(msg.get("tool_calls"), list)
+            and bool(msg.get("tool_calls"))
+        )
+
+    def _est() -> int:
+        total = 0
+        for m in msgs:
+            c = m.get("content")
+            if isinstance(c, str):
+                total += 4 + estimate_tokens(c, model)
+            tc = m.get("tool_calls")
+            if isinstance(tc, list):
+                total += len(json.dumps(tc, default=str)) // 4
+        return total
+
+    if _est() <= budget:
+        return msgs
+
+    tool_indices = [i for i, m in enumerate(msgs) if m.get("role") == "tool"]
+    for cap in (1500, 500, 200):
+        for i in tool_indices[:-2]:
+            content = msgs[i].get("content", "")
+            if len(content) > cap:
+                msgs[i] = {**msgs[i], "content": content[:cap] + "\n[...truncated]"}
+        if _est() <= budget:
+            logger.debug("Context compacted at pass 1 (cap=%d), %d tokens", cap, _est())
+            return msgs
+
+    assistant_indices = [i for i, m in enumerate(msgs) if m.get("role") == "assistant"]
+    for i in assistant_indices[:-2]:
+        content = msgs[i].get("content", "")
+        if len(content) > 200:
+            msgs[i] = {**msgs[i], "content": _truncate_assistant_message(content)}
+    if _est() <= budget:
+        logger.debug("Context compacted at pass 2, %d tokens", _est())
+        return msgs
+
+    system = [m for m in msgs if m.get("role") == "system"]
+    non_system = [m for m in msgs if m.get("role") != "system"]
+
+    bundles: list[list[dict[str, Any]]] = []
+    i = 0
+    while i < len(non_system):
+        msg = non_system[i]
+        bundle = [msg]
+        if msg.get("role") == "assistant" and isinstance(msg.get("tool_calls"), list) and msg.get("tool_calls"):
+            i += 1
+            while i < len(non_system) and non_system[i].get("role") == "tool":
+                bundle.append(non_system[i])
+                i += 1
+            bundles.append(bundle)
+            continue
+        bundles.append(bundle)
+        i += 1
+
+    keep_tail = min(6, len(bundles))
+    dropped = len(bundles) - keep_tail
+    if dropped > 0:
+        summary = f"[{dropped} earlier exchanges compacted to fit context window]"
+        kept_tail: list[dict[str, Any]] = [{"role": "user", "content": summary}]
+        for bundle in bundles[-keep_tail:]:
+            kept_tail.extend(bundle)
+        msgs = system + kept_tail
+        logger.info(
+            "Context compaction pass 3: dropped %d bundles, %d remain, ~%d tokens",
+            dropped, len(msgs), _est(),
+        )
+
+    return msgs
 
 
 def compact_history(
@@ -1498,13 +1705,52 @@ def serialize_for_prompt(summary: GraphSummary, max_tokens: int = 4000) -> str:
 
 
 def _normalize_usage(raw: dict[str, int] | None) -> dict[str, int]:
-    """Normalize provider usage dicts to {prompt, completion} keys."""
+    """Normalize provider usage dicts to both UI and telemetry keys."""
     if not raw:
         return {}
+    prompt = int(raw.get("prompt", 0) or raw.get("prompt_tokens", 0) or 0)
+    completion = int(
+        raw.get("completion", 0) or raw.get("completion_tokens", 0) or 0
+    )
+    total = int(raw.get("total_tokens", 0) or (prompt + completion))
+    cached_input_tokens = int(raw.get("cached_input_tokens", 0) or 0)
+    cache_write_tokens = int(raw.get("cache_write_tokens", 0) or 0)
     return {
-        "prompt": raw.get("prompt", 0) or raw.get("prompt_tokens", 0) or 0,
-        "completion": raw.get("completion", 0) or raw.get("completion_tokens", 0) or 0,
+        "prompt": prompt,
+        "completion": completion,
+        "prompt_tokens": prompt,
+        "completion_tokens": completion,
+        "total_tokens": total,
+        "cached_input_tokens": cached_input_tokens,
+        "cache_write_tokens": cache_write_tokens,
     }
+
+
+def _merge_usage_totals(total: dict[str, int], raw: dict[str, int] | None) -> dict[str, int]:
+    """Accumulate provider usage dicts across multiple LLM calls."""
+    if not raw:
+        return total
+    prior_prompt = int(total.get("prompt", 0) or total.get("prompt_tokens", 0) or 0)
+    prior_completion = int(
+        total.get("completion", 0) or total.get("completion_tokens", 0) or 0
+    )
+    prior_total = int(total.get("total_tokens", 0) or (prior_prompt + prior_completion))
+    normalized = _normalize_usage(raw)
+    merged = dict(total)
+    merged_prompt = prior_prompt + normalized.get("prompt", 0)
+    merged_completion = prior_completion + normalized.get("completion", 0)
+    merged["prompt"] = merged_prompt
+    merged["completion"] = merged_completion
+    merged["prompt_tokens"] = merged_prompt
+    merged["completion_tokens"] = merged_completion
+    merged["total_tokens"] = prior_total + normalized.get("total_tokens", 0)
+    merged["cached_input_tokens"] = int(merged.get("cached_input_tokens", 0) or 0) + normalized.get(
+        "cached_input_tokens", 0
+    )
+    merged["cache_write_tokens"] = int(merged.get("cache_write_tokens", 0) or 0) + normalized.get(
+        "cache_write_tokens", 0
+    )
+    return merged
 
 
 _JSON_BLOCK_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.DOTALL)
@@ -2217,7 +2463,8 @@ class ChatManager:
         debug_context: str = "",
         prompt_context: str = "",
         mentions: list[Any] | None = None,
-        max_tool_turns: int = 10,
+        max_tool_turns: int = 24,
+        allow_mutation_tool: bool = True,
         surface: str | None = None,
         audit_metadata: dict[str, Any] | None = None,
         extra_system_instructions: str = "",
@@ -2267,6 +2514,7 @@ class ChatManager:
             use_codegen = (
                 is_empty_graph
                 and _DAN_USE_CODEGEN_BUILD == "1"
+                and allow_mutation_tool
                 and mode in ("agent", "build", "mutate")
             )
             if use_codegen:
@@ -2350,6 +2598,7 @@ class ChatManager:
             # -- 32-4: Structural mutation macro fast path ------------------
             if (
                 not is_empty_graph
+                and allow_mutation_tool
                 and mode in ("agent", "build", "mutate")
                 and graph_dict is not None
             ):
@@ -2507,50 +2756,127 @@ class ChatManager:
                 pii_session_key=thread_id or workflow_id,
             )
             message_id = uuid.uuid4().hex[:12]
+            usage_totals: dict[str, int] = {}
+            completion_max_tokens = _completion_max_tokens(self._chat_model)
 
             from dan.server.capability_registry import READ_ONLY_MODES
 
-            all_tools: list[dict[str, Any]] = [MUTATION_TOOL_SCHEMA]
+            all_tools: list[dict[str, Any]] = []
             if self._capability_registry is not None:
                 all_tools = list(self._capability_registry.get_tools(mode))
-                if mode not in READ_ONLY_MODES:
-                    all_tools.append(MUTATION_TOOL_SCHEMA)
+            if allow_mutation_tool and mode not in READ_ONLY_MODES:
+                all_tools.append(MUTATION_TOOL_SCHEMA)
+
+            async def _iter_guarded_complete(
+                *,
+                request_kwargs: dict[str, Any],
+                interrupted_content: str | Callable[[], str] | None = None,
+                emit_progress_ack: bool = False,
+            ) -> AsyncIterator[ChatStreamEvent | CompletionResult]:
+                complete_task: asyncio.Task[CompletionResult] | None = None
+                try:
+                    complete_task = asyncio.create_task(
+                        asyncio.wait_for(
+                            provider.complete(**request_kwargs),
+                            timeout=_LLM_CALL_TIMEOUT_SECONDS,
+                        )
+                    )
+                    while True:
+                        cancel_wait_task: asyncio.Task[bool] | None = None
+                        try:
+                            wait_set: set[asyncio.Task[Any]] = {complete_task}
+                            if cancel_event is not None:
+                                cancel_wait_task = asyncio.create_task(cancel_event.wait())
+                                wait_set.add(cancel_wait_task)
+                            done, pending = await asyncio.wait(
+                                wait_set,
+                                timeout=25.0,
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if (
+                                cancel_wait_task is not None
+                                and cancel_wait_task in done
+                                and cancel_event
+                                and cancel_event.is_set()
+                            ):
+                                complete_task.cancel()
+                                try:
+                                    await complete_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                                content = (
+                                    interrupted_content()
+                                    if callable(interrupted_content)
+                                    else (interrupted_content or "")
+                                )
+                                yield ChatInterruptedEvent(
+                                    message_id=message_id,
+                                    content=content,
+                                    token_usage={},
+                                )
+                                return
+                            if complete_task in done:
+                                for task in pending:
+                                    task.cancel()
+                                break
+                            if emit_progress_ack:
+                                yield ChatCompleteEvent(
+                                    message_id=message_id,
+                                    content="",
+                                    token_usage={},
+                                    context_window=_get_context_window(self._chat_model),
+                                    graph_revision=revision,
+                                    revision_mismatch=revision_mismatch,
+                                    detected_mode="progress_ack",
+                                )
+                            for task in pending:
+                                task.cancel()
+                        finally:
+                            if cancel_wait_task is not None and not cancel_wait_task.done():
+                                cancel_wait_task.cancel()
+                    yield await complete_task
+                except Exception:
+                    if complete_task is not None and not complete_task.done():
+                        complete_task.cancel()
+                    raise
 
             try:
                 # Retry loop for transient errors
                 for attempt in range(2):
                     try:
-                        complete_task: asyncio.Task[CompletionResult] = asyncio.create_task(
-                            provider.complete(
-                                messages=messages,
-                                model=self._chat_model,
-                                temperature=0.7,
-                                tools=all_tools,
-                                tool_choice="auto",
-                            ),
+                        result: CompletionResult | None = None
+                        async for step in _iter_guarded_complete(
+                            request_kwargs={
+                                "messages": messages,
+                                "model": self._chat_model,
+                                "temperature": 0.7,
+                                "max_tokens": completion_max_tokens,
+                                "tools": all_tools,
+                                "tool_choice": "auto",
+                            },
+                            interrupted_content="",
+                            emit_progress_ack=True,
+                        ):
+                            if isinstance(step, CompletionResult):
+                                result = step
+                            else:
+                                yield step
+                                if isinstance(step, ChatInterruptedEvent):
+                                    return
+                        if result is None:
+                            raise RuntimeError("Initial tool completion produced no result")
+                        usage_totals = _merge_usage_totals(usage_totals, result.usage)
+                        _init_fr = getattr(result, "finish_reason", "") or ""
+                        _init_usage = result.usage or {}
+                        logger.info(
+                            "Initial LLM call: finish_reason=%s, has_text=%s, has_tools=%s, "
+                            "prompt_tokens=%s, completion_tokens=%s",
+                            _init_fr or "n/a",
+                            bool((result.text or "").strip()),
+                            bool(result.tool_calls),
+                            _init_usage.get("prompt_tokens", "?"),
+                            _init_usage.get("completion_tokens", "?"),
                         )
-                        cancel_wait_task: asyncio.Task[bool] | None = None
-                        if cancel_event is not None:
-                            cancel_wait_task = asyncio.create_task(cancel_event.wait())
-                            done, pending = await asyncio.wait(
-                                {complete_task, cancel_wait_task},
-                                return_when=asyncio.FIRST_COMPLETED,
-                            )
-                            if cancel_wait_task in done and cancel_event.is_set():
-                                complete_task.cancel()
-                                try:
-                                    await complete_task
-                                except asyncio.CancelledError:
-                                    pass
-                                yield ChatInterruptedEvent(
-                                    message_id=message_id,
-                                    content="",
-                                    token_usage={},
-                                )
-                                return
-                            for task in pending:
-                                task.cancel()
-                        result: CompletionResult = await complete_task
                         break
                     except Exception as e:
                         if attempt == 0 and ("timeout" in str(e).lower() or "rate" in str(e).lower() or "connection" in str(e).lower()):
@@ -2559,8 +2885,19 @@ class ChatManager:
                             continue
                         raise
             except Exception as exc:
-                logger.debug(
-                    "Tool-calling complete() failed (%s), falling back to stream",
+                if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+                    logger.warning("Initial tool-calling complete() timed out: %s", exc)
+                    yield ChatCompleteEvent(
+                        message_id=message_id,
+                        content="The language model took too long to begin responding. Please try again, continue from the saved file, or switch to a faster model.",
+                        token_usage={},
+                        context_window=_get_context_window(self._chat_model),
+                        graph_revision=revision,
+                        revision_mismatch=revision_mismatch,
+                    )
+                    return
+                logger.warning(
+                    "Tool-calling complete() failed (%s), falling back to text-only stream",
                     exc,
                 )
                 async for event in self._stream_with_json_fallback(
@@ -2570,6 +2907,7 @@ class ChatManager:
                     user_message=message,
                     cancel_event=cancel_event,
                     mode=mode,
+                    allow_mutation_tool=allow_mutation_tool,
                 ):
                     yield event
                 return
@@ -2578,6 +2916,43 @@ class ChatManager:
             combined_text_parts: list[str] = []
             last_stream_channel_id: str | None = None
             audit_tool_records: list[dict[str, Any]] = []
+            emitted_attachment_paths: set[str] = set()
+            tool_result_cache: dict[str, CapabilityResult] = {}
+            file_read_cache: dict[str, list[tuple[int, float, CapabilityResult]]] = {}
+
+            def _tool_cache_key(tool_name: str, args: dict[str, Any]) -> str:
+                try:
+                    return f"{tool_name}:{json.dumps(args or {}, sort_keys=True, default=str)}"
+                except Exception:
+                    return f"{tool_name}:{str(args)}"
+
+            def _copy_capability_result(result_obj: CapabilityResult) -> CapabilityResult:
+                return (
+                    dataclasses.replace(result_obj)
+                    if dataclasses.is_dataclass(result_obj)
+                    else result_obj
+                )
+
+            def _normalize_file_read_range(args: dict[str, Any]) -> tuple[str | None, int, float] | None:
+                if not isinstance(args, dict):
+                    return None
+                if args.get("grep"):
+                    return None
+                path = str(args.get("path") or args.get("file_path") or args.get("filepath") or "").strip()
+                if not path:
+                    return None
+                start_line = args.get("start_line")
+                end_line = args.get("end_line")
+                try:
+                    start = int(start_line) if start_line is not None else 1
+                except (TypeError, ValueError):
+                    start = 1
+                try:
+                    end = int(end_line) if end_line is not None else float("inf")
+                except (TypeError, ValueError):
+                    end = float("inf")
+                return path, start, end
+
             for _turn in range(max_tool_turns):
                 if cancel_event and cancel_event.is_set():
                     yield ChatInterruptedEvent(
@@ -2587,12 +2962,90 @@ class ChatManager:
                     )
                     return
                 cap_calls = self._extract_all_capability_tool_calls(result, mode)
-                mutation_data = self._extract_mutation_from_result(result) if not cap_calls else None
+                mutation_data = (
+                    self._extract_mutation_from_result(result)
+                    if allow_mutation_tool and not cap_calls
+                    else None
+                )
 
-                # No tools called → final text response
+                # No tools called → check if response is truly complete
                 if not cap_calls and mutation_data is None:
+                    fr = getattr(result, "finish_reason", "") or ""
+                    was_truncated = fr in ("length", "max_tokens")
+
+                    if was_truncated and _turn < max_tool_turns - 1:
+                        logger.info(
+                            "Turn %d: finish_reason=%s, output truncated — injecting continuation",
+                            _turn, fr,
+                        )
+                        partial = result.text or ""
+                        if partial:
+                            combined_text_parts.append(partial)
+                        messages.append({"role": "assistant", "content": partial})
+                        messages.append({"role": "user", "content": "Continue from where you left off. Keep using file_write to save your output."})
+                        messages = _compact_context(messages, self._chat_model)
+                        try:
+                            continuation_result: CompletionResult | None = None
+                            async for step in _iter_guarded_complete(
+                                request_kwargs={
+                                    "messages": messages,
+                                    "model": self._chat_model,
+                                    "temperature": 0.7,
+                                    "max_tokens": completion_max_tokens,
+                                    "tools": all_tools,
+                                    "tool_choice": "auto",
+                                },
+                                interrupted_content=lambda: "\n\n".join(combined_text_parts)
+                                if combined_text_parts
+                                else "",
+                                emit_progress_ack=True,
+                            ):
+                                if isinstance(step, CompletionResult):
+                                    continuation_result = step
+                                else:
+                                    yield step
+                                    if isinstance(step, ChatInterruptedEvent):
+                                        return
+                            if continuation_result is None:
+                                raise RuntimeError("Continuation completion produced no result")
+                            result = continuation_result
+                            usage_totals = _merge_usage_totals(usage_totals, result.usage)
+                            _cont_fr = getattr(result, "finish_reason", "") or ""
+                            _cont_usage = result.usage or {}
+                            logger.info(
+                                "Continuation turn %d: finish_reason=%s, has_text=%s, has_tools=%s, "
+                                "prompt_tokens=%s, completion_tokens=%s",
+                                _turn, _cont_fr or "n/a",
+                                bool((result.text or "").strip()),
+                                bool(result.tool_calls),
+                                _cont_usage.get("prompt_tokens", "?"),
+                                _cont_usage.get("completion_tokens", "?"),
+                            )
+                        except Exception as exc:
+                            logger.warning("Continuation call failed: %s", exc)
+                            # Don't continue with stale result — exit the loop
+                            content = "\n\n".join(combined_text_parts) if combined_text_parts else ""
+                            if not content.strip():
+                                content = f"Response was truncated and continuation failed ({type(exc).__name__}). Please try again."
+                            yield ChatTokenEvent(delta=content, accumulated=content)
+                            yield ChatCompleteEvent(
+                                message_id=message_id,
+                                content=content,
+                                token_usage={},
+                                context_window=_get_context_window(self._chat_model),
+                                graph_revision=revision,
+                                revision_mismatch=revision_mismatch,
+                                stream_channel_id=last_stream_channel_id,
+                            )
+                            return
+                        continue
+
                     content = result.text or ""
-                    normalized_usage = _normalize_usage(result.usage)
+                    if not content.strip() and combined_text_parts:
+                        content = "\n\n".join(combined_text_parts)
+                    if not content.strip():
+                        content = "I wasn't able to generate a response. Please try rephrasing your request."
+                    normalized_usage = _normalize_usage(usage_totals or result.usage)
                     if content:
                         yield ChatTokenEvent(delta=content, accumulated=content)
                     self._record_conversation_summary(
@@ -2625,6 +3078,7 @@ class ChatManager:
                         context_window=_get_context_window(self._chat_model),
                         graph_revision=revision,
                         revision_mismatch=revision_mismatch,
+                        stream_channel_id=last_stream_channel_id,
                     )
                     return
 
@@ -2683,13 +3137,29 @@ class ChatManager:
                                 },
                             ]
                             try:
-                                retry_result: CompletionResult = await provider.complete(
-                                    messages=retry_messages,
-                                    model=self._chat_model,
-                                    temperature=0.5,
-                                    tools=[MUTATION_TOOL_SCHEMA],
-                                    tool_choice="auto",
-                                )
+                                retry_result: CompletionResult | None = None
+                                async for step in _iter_guarded_complete(
+                                    request_kwargs={
+                                        "messages": retry_messages,
+                                        "model": self._chat_model,
+                                        "temperature": 0.5,
+                                        "max_tokens": completion_max_tokens,
+                                        "tools": [MUTATION_TOOL_SCHEMA],
+                                        "tool_choice": "auto",
+                                    },
+                                    interrupted_content=lambda: "\n\n".join(combined_text_parts)
+                                    if combined_text_parts
+                                    else "",
+                                    emit_progress_ack=True,
+                                ):
+                                    if isinstance(step, CompletionResult):
+                                        retry_result = step
+                                    else:
+                                        yield step
+                                        if isinstance(step, ChatInterruptedEvent):
+                                            return
+                                if retry_result is None:
+                                    raise RuntimeError("Auto-retry completion produced no result")
                             except Exception as retry_exc:
                                 logger.debug("Auto-retry LLM call failed: %s", retry_exc)
                                 break
@@ -2757,13 +3227,29 @@ class ChatManager:
                                 ),
                             })
                             try:
-                                replan_result = await provider.complete(
-                                    messages=replan_messages,
-                                    model=self._chat_model,
-                                    temperature=0.5,
-                                    tools=[MUTATION_TOOL_SCHEMA],
-                                    tool_choice="auto",
-                                )
+                                replan_result: CompletionResult | None = None
+                                async for step in _iter_guarded_complete(
+                                    request_kwargs={
+                                        "messages": replan_messages,
+                                        "model": self._chat_model,
+                                        "temperature": 0.5,
+                                        "max_tokens": completion_max_tokens,
+                                        "tools": [MUTATION_TOOL_SCHEMA],
+                                        "tool_choice": "auto",
+                                    },
+                                    interrupted_content=lambda: "\n\n".join(combined_text_parts)
+                                    if combined_text_parts
+                                    else "",
+                                    emit_progress_ack=True,
+                                ):
+                                    if isinstance(step, CompletionResult):
+                                        replan_result = step
+                                    else:
+                                        yield step
+                                        if isinstance(step, ChatInterruptedEvent):
+                                            return
+                                if replan_result is None:
+                                    raise RuntimeError("Replan completion produced no result")
                                 replan_mutation = self._extract_mutation_from_result(
                                     replan_result,
                                 )
@@ -2824,6 +3310,12 @@ class ChatManager:
                     )
                     return
 
+                # Emit the LLM's planning text before executing tool calls
+                # so the UI shows what the assistant is doing
+                planning_text = (result.text or "").strip()
+                if planning_text:
+                    yield ChatTokenEvent(delta=planning_text, accumulated=planning_text)
+
                 # Capability tools → execute, build tool result messages, loop
                 tool_result_messages: list[dict[str, Any]] = []
                 raw_tool_calls = []
@@ -2838,6 +3330,7 @@ class ChatManager:
                         raw_tool_calls.append(tc)
 
                 pending_capabilities: list[dict[str, Any]] = []
+                dedupe_sources: dict[str, int] = {}
                 for idx, (cap_name, cap_args) in enumerate(cap_calls):
                     cap_call_id = f"tc_{uuid.uuid4().hex[:10]}"
                     args_preview = json.dumps(cap_args)[:200] if cap_args else ""
@@ -2854,12 +3347,53 @@ class ChatManager:
                         "raw_tool_call_id": raw_tool_calls[idx].get("id", cap_call_id)
                         if idx < len(raw_tool_calls) else cap_call_id,
                     })
+                    tool_is_cacheable = bool(
+                        self._capability_registry is not None
+                        and self._capability_registry.is_cacheable(cap_name)
+                    )
+                    cache_key = _tool_cache_key(cap_name, cap_args) if tool_is_cacheable else None
+                    pending_capabilities[-1]["tool_is_cacheable"] = tool_is_cacheable
+                    pending_capabilities[-1]["cache_key"] = cache_key
+                    if cache_key is not None and cache_key in dedupe_sources:
+                        pending_capabilities[-1]["dedupe_from"] = dedupe_sources[cache_key]
+                    elif cache_key is not None:
+                        dedupe_sources[cache_key] = len(pending_capabilities) - 1
 
                 async def _execute_capability_call(
                     pending: dict[str, Any],
                 ) -> dict[str, Any]:
                     cap_start = time.monotonic()
                     ctx = self._capability_context
+                    tool_name = pending["tool_name"]
+                    tool_is_cacheable = bool(pending.get("tool_is_cacheable"))
+                    cache_key = pending.get("cache_key") or _tool_cache_key(
+                        pending["tool_name"], pending["args"]
+                    )
+                    cached_result = tool_result_cache.get(cache_key) if tool_is_cacheable else None
+                    if (
+                        cached_result is None
+                        and tool_is_cacheable
+                        and pending["tool_name"] == "file_read"
+                    ):
+                        normalized_range = _normalize_file_read_range(pending["args"])
+                        if normalized_range is not None:
+                            path, start, end = normalized_range
+                            for cached_start, cached_end, prior_result in file_read_cache.get(path, []):
+                                if cached_start <= start and cached_end >= end:
+                                    cached_result = prior_result
+                                    break
+                    if cached_result is not None:
+                        cap_result = _copy_capability_result(cached_result)
+                        cap_status = "success" if cap_result.success else "error"
+                        cap_preview = cap_result.output_preview or cap_result.message[:500]
+                        return {
+                            **pending,
+                            "cap_result": cap_result,
+                            "duration_ms": 0,
+                            "status": cap_status,
+                            "output_preview": cap_preview,
+                            "cache_hit": True,
+                        }
                     try:
                         if ctx is not None and self._capability_registry is not None:
                             ctx = dataclasses.replace(ctx, workflow_id=workflow_id)
@@ -2886,18 +3420,76 @@ class ChatManager:
                     cap_elapsed = int((time.monotonic() - cap_start) * 1000)
                     cap_status = "success" if cap_result.success else "error"
                     cap_preview = cap_result.output_preview or cap_result.message[:500]
+                    if cap_result.success and tool_is_cacheable:
+                        tool_result_cache[cache_key] = _copy_capability_result(cap_result)
+                        if pending["tool_name"] == "file_read":
+                            normalized_range = _normalize_file_read_range(pending["args"])
+                            if normalized_range is not None:
+                                path, start, end = normalized_range
+                                cap_data = (
+                                    cap_result.data
+                                    if isinstance(cap_result.data, dict)
+                                    else {}
+                                )
+                                cached_start = cap_data.get("returned_start_line")
+                                cached_end = cap_data.get("returned_end_line")
+                                truncated = bool(cap_data.get("truncated"))
+                                if (
+                                    isinstance(cached_start, int)
+                                    and isinstance(cached_end, int)
+                                    and not truncated
+                                ):
+                                    file_read_cache.setdefault(path, []).append(
+                                        (
+                                            cached_start,
+                                            cached_end,
+                                            _copy_capability_result(cap_result),
+                                        )
+                                    )
+                    elif cap_result.success and not tool_is_cacheable:
+                        tool_result_cache.clear()
+                        file_read_cache.clear()
                     return {
                         **pending,
                         "cap_result": cap_result,
                         "duration_ms": cap_elapsed,
                         "status": cap_status,
                         "output_preview": cap_preview,
+                        "cache_hit": False,
                     }
 
-                capability_results = await asyncio.gather(*[
+                unique_pending_capabilities = [
+                    pending for pending in pending_capabilities
+                    if pending.get("dedupe_from") is None
+                ]
+                unique_results = await asyncio.gather(*[
                     _execute_capability_call(pending)
-                    for pending in pending_capabilities
+                    for pending in unique_pending_capabilities
                 ])
+                unique_result_by_index: dict[int, dict[str, Any]] = {
+                    pending_capabilities.index(pending): result_payload
+                    for pending, result_payload in zip(
+                        unique_pending_capabilities,
+                        unique_results,
+                        strict=False,
+                    )
+                }
+                capability_results: list[dict[str, Any]] = []
+                for idx, pending in enumerate(pending_capabilities):
+                    source_idx = pending.get("dedupe_from")
+                    if source_idx is None:
+                        capability_results.append(unique_result_by_index[idx])
+                        continue
+                    source = unique_result_by_index[source_idx]
+                    cap_result = _copy_capability_result(source["cap_result"])
+                    capability_results.append({
+                        **pending,
+                        "cap_result": cap_result,
+                        "duration_ms": 0,
+                        "status": source["status"],
+                        "output_preview": source["output_preview"],
+                        "cache_hit": True,
+                    })
 
                 for pending in capability_results:
                     cap_result = pending["cap_result"]
@@ -2916,9 +3508,15 @@ class ChatManager:
                         if not file_path and isinstance(cap_result.data.get("result"), dict):
                             file_path = cap_result.data["result"].get("path") or cap_result.data["result"].get("file_path")
                             
-                        if file_path and isinstance(file_path, str) and os.path.isfile(file_path):
+                        if (
+                            file_path
+                            and isinstance(file_path, str)
+                            and os.path.isfile(file_path)
+                            and file_path not in emitted_attachment_paths
+                        ):
                             try:
                                 stat = os.stat(file_path)
+                                emitted_attachment_paths.add(file_path)
                                 yield ChatFileAttachmentEvent(
                                     path=file_path,
                                     filename=os.path.basename(file_path),
@@ -2956,7 +3554,7 @@ class ChatManager:
                     tool_result_messages.append({
                         "role": "tool",
                         "tool_call_id": pending["raw_tool_call_id"],
-                        "content": cap_result.message[:4000],
+                        "content": _clean_tool_result(cap_name, cap_result.message),
                     })
 
                 messages.append({
@@ -2966,17 +3564,62 @@ class ChatManager:
                 })
                 messages.extend(tool_result_messages)
 
+                messages = _compact_context(messages, self._chat_model)
+
                 try:
-                    result = await provider.complete(
-                        messages=messages,
-                        model=self._chat_model,
-                        temperature=0.7,
-                        tools=all_tools,
-                        tool_choice="auto",
+                    followup_result: CompletionResult | None = None
+                    async for step in _iter_guarded_complete(
+                        request_kwargs={
+                            "messages": messages,
+                            "model": self._chat_model,
+                            "temperature": 0.7,
+                            "max_tokens": completion_max_tokens,
+                            "tools": all_tools,
+                            "tool_choice": "auto",
+                        },
+                        interrupted_content=lambda: "\n\n".join(combined_text_parts)
+                        if combined_text_parts
+                        else "",
+                        emit_progress_ack=True,
+                    ):
+                        if isinstance(step, CompletionResult):
+                            followup_result = step
+                        else:
+                            yield step
+                            if isinstance(step, ChatInterruptedEvent):
+                                return
+                    if followup_result is None:
+                        raise RuntimeError("Tool-loop follow-up produced no result")
+                    result = followup_result
+                    usage_totals = _merge_usage_totals(usage_totals, result.usage)
+                    fr = getattr(result, "finish_reason", "") or ""
+                    usage = result.usage or {}
+                    has_tools = bool(result.tool_calls)
+                    has_text = bool((result.text or "").strip())
+                    logger.info(
+                        "Tool loop turn %d: finish_reason=%s, has_text=%s, has_tools=%s, "
+                        "prompt_tokens=%s, completion_tokens=%s, context_msgs=%d",
+                        _turn, fr or "n/a", has_text, has_tools,
+                        usage.get("prompt_tokens", "?"),
+                        usage.get("completion_tokens", "?"),
+                        len(messages),
                     )
                 except Exception as exc:
-                    logger.warning("Multi-turn complete() failed at turn %d: %s", _turn, exc)
+                    is_timeout = isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+                    logger.warning(
+                        "Multi-turn complete() %s at turn %d: %s",
+                        "timed out" if is_timeout else "failed",
+                        _turn, exc,
+                    )
                     combined_content = "\n\n".join(combined_text_parts)
+                    if not combined_content.strip():
+                        if is_timeout:
+                            combined_content = (
+                                "The language model took too long to respond after using tools. "
+                                "Your file was saved successfully. Please try asking me to continue or summarize."
+                            )
+                        else:
+                            combined_content = "I encountered an error generating a response after using tools. Please try again."
                     self._record_conversation_summary(
                         workflow_id=workflow_id,
                         user_message=message,
@@ -3005,8 +3648,120 @@ class ChatManager:
                     )
                     return
 
-            # Turn cap reached — yield combined results
+            # Turn cap reached — prefer one final no-tools synthesis if the
+            # model is still requesting more tools, so the user gets the best
+            # partial answer available instead of a hard stop note alone.
+            final_cap_calls = self._extract_all_capability_tool_calls(result, mode)
+            turn_cap_note: str | None = None
+            if final_cap_calls:
+                turn_cap_note = (
+                    f"I reached the tool-call limit ({max_tool_turns}) while still gathering data, "
+                    "so this answer may be partial."
+                )
+                try:
+                    synthesis_messages = _compact_context(
+                        messages
+                        + [
+                            {
+                                "role": "user",
+                                "content": (
+                                    "Stop gathering new data. Based only on the information already "
+                                    "collected in this conversation, write the best partial answer "
+                                    "you can. Do not call more tools. Make clear which key gaps or "
+                                    "uncertainties remain because the tool-call limit was reached."
+                                ),
+                            }
+                        ],
+                        self._chat_model,
+                    )
+                    synthesis: CompletionResult | None = None
+                    async for step in _iter_guarded_complete(
+                        request_kwargs={
+                            "messages": synthesis_messages,
+                            "model": self._chat_model,
+                            "temperature": 0.7,
+                            "max_tokens": completion_max_tokens,
+                        },
+                        interrupted_content=lambda: "\n\n".join(combined_text_parts)
+                        if combined_text_parts
+                        else "",
+                        emit_progress_ack=True,
+                    ):
+                        if isinstance(step, CompletionResult):
+                            synthesis = step
+                        else:
+                            yield step
+                            if isinstance(step, ChatInterruptedEvent):
+                                return
+                    if synthesis is None:
+                        raise RuntimeError("Tool-turn-cap synthesis produced no result")
+                    usage_totals = _merge_usage_totals(usage_totals, synthesis.usage)
+                    if not (synthesis.text or "").strip():
+                        raise RuntimeError("Tool-turn-cap synthesis returned empty text")
+                    result = synthesis
+                    messages = synthesis_messages
+                except Exception:
+                    logger.debug("Synthesis call at tool-turn cap failed", exc_info=True)
+                    final_content = "\n\n".join(combined_text_parts)
+                    note = (
+                        f"I reached the tool-call limit ({max_tool_turns}) while still gathering data. "
+                        "Please ask me to continue, or narrow the task so I can finish in fewer steps."
+                    )
+                    if final_content.strip():
+                        final_content = final_content + "\n\n" + note
+                    else:
+                        final_content = note
+                    token_usage = _normalize_usage(usage_totals or result.usage)
+                    yield ChatCompleteEvent(
+                        message_id=message_id,
+                        content=final_content,
+                        token_usage=token_usage,
+                        estimated_cost=estimate_cost(
+                            self._chat_model,
+                            token_usage.get("prompt", 0),
+                            token_usage.get("completion", 0),
+                        ),
+                        context_window=_get_context_window(self._chat_model),
+                        graph_revision=revision,
+                        revision_mismatch=revision_mismatch,
+                        stream_channel_id=last_stream_channel_id,
+                    )
+                    return
+
+            # Turn cap reached — force a synthesis call if the last response was tool-only
+            if not (result.text or "").strip() and combined_text_parts:
+                try:
+                    synthesis: CompletionResult | None = None
+                    async for step in _iter_guarded_complete(
+                        request_kwargs={
+                            "messages": messages,
+                            "model": self._chat_model,
+                            "temperature": 0.7,
+                            "max_tokens": completion_max_tokens,
+                        },
+                        interrupted_content=lambda: "\n\n".join(combined_text_parts)
+                        if combined_text_parts
+                        else "",
+                        emit_progress_ack=True,
+                    ):
+                        if isinstance(step, CompletionResult):
+                            synthesis = step
+                        else:
+                            yield step
+                            if isinstance(step, ChatInterruptedEvent):
+                                return
+                    if synthesis is None:
+                        raise RuntimeError("Synthesis completion produced no result")
+                    usage_totals = _merge_usage_totals(usage_totals, synthesis.usage)
+                    if (synthesis.text or "").strip():
+                        result = synthesis
+                except Exception:
+                    logger.debug("Synthesis call at max turns failed", exc_info=True)
             final_content = result.text or "\n\n".join(combined_text_parts)
+            if not final_content.strip():
+                final_content = "I completed all tool operations but couldn't generate a final summary. Please ask me to summarize the results."
+            if turn_cap_note and turn_cap_note not in final_content:
+                final_content = final_content.rstrip() + "\n\n" + turn_cap_note
             self._record_conversation_summary(
                 workflow_id=workflow_id,
                 user_message=message,
@@ -3024,7 +3779,7 @@ class ChatManager:
                 surface=surface,
                 audit_metadata=audit_metadata,
             )
-            token_usage = _normalize_usage(result.usage)
+            token_usage = _normalize_usage(usage_totals or result.usage)
             cost = estimate_cost(self._chat_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
             if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
                 final_content += f"\n\n[~${cost:.4f}]"
@@ -3037,6 +3792,7 @@ class ChatManager:
                 context_window=_get_context_window(self._chat_model),
                 graph_revision=revision,
                 revision_mismatch=revision_mismatch,
+                stream_channel_id=last_stream_channel_id,
             )
 
         except KeyError as exc:
@@ -3088,6 +3844,7 @@ class ChatManager:
         user_message: str,
         cancel_event: asyncio.Event | None = None,
         mode: str = "agent",
+        allow_mutation_tool: bool = True,
     ) -> AsyncIterator[ChatStreamEvent]:
         final_content = ""
         token_usage: dict[str, int] = {}
@@ -3119,7 +3876,7 @@ class ChatManager:
             )
             return
 
-        mutation_data = _try_parse_mutation_json(final_content)
+        mutation_data = _try_parse_mutation_json(final_content) if allow_mutation_tool else None
         if mutation_data is not None:
             try:
                 plan = MutationPlan.model_validate({

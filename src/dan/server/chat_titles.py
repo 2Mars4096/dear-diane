@@ -21,6 +21,41 @@ _TITLE_SYSTEM_PROMPT = (
     "Use 2 to 6 words when possible. Be concrete, not generic. "
     "Do not use quotes, markdown, prefixes, or ending punctuation."
 )
+_PATH_RE = re.compile(r"(?:^|[\s(])((?:~?/|/)[^\s,;:()]+)")
+_LEADING_REQUEST_RE = re.compile(
+    r"^(?:"
+    r"can you|could you|would you|please|"
+    r"i need you to|"
+    r"in this folder"
+    r")[\s,:-]*",
+    flags=re.IGNORECASE,
+)
+_HELP_ME_ACTION_RE = re.compile(
+    r"^help me\s+(?=(?:write|create|build|draft|prepare|analyze|review|research|summarize)\b)",
+    flags=re.IGNORECASE,
+)
+_LEADING_ACTION_RE = re.compile(
+    r"^(?:write|create|build|draft|prepare|analyze|review|research|summarize)\s+"
+    r"(?:(?:me|us)\s+)?(?:(?:a|an|the)\s+)?",
+    flags=re.IGNORECASE,
+)
+
+
+def _clean_title_seed(text: str) -> str:
+    clean = " ".join(text.split()).strip()
+    clean = re.sub(r"^#{1,6}\s+", "", clean)
+    clean = re.sub(r"^\*\*(.+?)\*\*", r"\1", clean)
+    clean = _PATH_RE.sub(" ", clean)
+    clean = " ".join(clean.split()).strip(" ,:-")
+    previous = None
+    while clean and clean != previous:
+        previous = clean
+        clean = _LEADING_REQUEST_RE.sub("", clean).strip(" ,:-")
+    parts = re.split(r"[.;,]", clean, maxsplit=1)
+    clean = parts[0].strip() if parts else clean
+    clean = _HELP_ME_ACTION_RE.sub("", clean).strip(" ,:-")
+    clean = _LEADING_ACTION_RE.sub("", clean).strip(" ,:-")
+    return " ".join(clean.split()).strip()
 
 
 def _first_user_message(thread: ChatThread) -> str:
@@ -31,7 +66,7 @@ def _first_user_message(thread: ChatThread) -> str:
 
 
 def _truncate_title(text: str, max_chars: int = _FALLBACK_TITLE_CHARS) -> str:
-    clean = " ".join(text.split()).strip()
+    clean = _clean_title_seed(text)
     if not clean:
         return "New chat"
     if len(clean) <= max_chars:

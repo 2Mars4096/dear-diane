@@ -41,6 +41,9 @@ class ChatMessage(BaseModel):
     role: Literal["user", "assistant", "system"]
     content: str
     mentions: list[Mention] = Field(default_factory=list)
+    tool_calls: list[dict[str, Any]] = Field(default_factory=list)
+    run_events: list[dict[str, Any]] = Field(default_factory=list)
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
     mutation_plan: dict[str, Any] | None = None
     dry_run_result: dict[str, Any] | None = None
     mutation_id: str | None = None
