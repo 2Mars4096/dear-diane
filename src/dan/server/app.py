@@ -28,7 +28,7 @@ load_dotenv()
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from dan.builder.decompiler import decompile as decompile_to_python
 from dan.engine.executor import EngineConfig
@@ -45,6 +45,11 @@ from dan.server.chat_manager import (
 )
 from dan.server.mention_resolver import MentionRef, MentionResolver, CodeResolver
 from dan.server.chat_store import ChatMessage as StoreChatMessage, ChatStore
+from dan.server.chat_titles import (
+    autogenerate_thread_title,
+    ensure_fallback_title,
+    mark_manual_title,
+)
 from dan.server.exec import execute_python
 from dan.server.graph_mutator import GraphMutator, MutationPlan
 from dan.server.graph_store import GraphStore, _validate_graph_id
@@ -1902,6 +1907,12 @@ async def lifespan(app: FastAPI):
     await _shutdown_mcp_bridge_for_server(_mcp_bridge)
     _mcp_bridge = None
 
+    try:
+        from dan.tools._browser_session import close_controller
+        await close_controller()
+    except Exception:
+        logger.debug("Browser session shutdown failed", exc_info=True)
+
 
 app = FastAPI(title="Deep Agent Network", version="0.1.0", lifespan=lifespan)
 
@@ -1967,7 +1978,87 @@ class ChatMessageRequest(BaseModel):
     mode: Literal["ask", "agent", "plan", "debug", "auto", "mutate", "build", "conversation"] = "agent"
     mentions: list[ChatMentionRef] = []
     surface: str | None = None
+    surface_type: str | None = None
+    surface_id: str | None = None
+    session_id: str | None = None
     attachment_path: str | None = None
+    surface_context: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _normalize_identifiers(self) -> "ChatMessageRequest":
+        surface = (self.surface or "").strip() or None
+        surface_type = (self.surface_type or "").strip() or None
+        surface_id = (self.surface_id or "").strip() or None
+        session_id = (self.session_id or "").strip() or None
+        thread_id = (self.thread_id or "").strip() or None
+
+        if surface and ":" in surface:
+            parsed_type, parsed_id = surface.split(":", 1)
+            if not parsed_type or not parsed_id:
+                raise ValueError(
+                    "surface must use the canonical 'surface_type:surface_id' format",
+                )
+            if surface_type and surface_type != parsed_type:
+                raise ValueError(
+                    "surface conflicts with surface_type; provide matching values",
+                )
+            if surface_id and surface_id != parsed_id:
+                raise ValueError(
+                    "surface conflicts with surface_id; provide matching values",
+                )
+            surface_type = surface_type or parsed_type
+            surface_id = surface_id or parsed_id
+
+        if bool(surface_type) != bool(surface_id):
+            raise ValueError(
+                "surface_type and surface_id must be provided together",
+            )
+
+        if surface_type and surface_id:
+            canonical_surface = f"{surface_type}:{surface_id}"
+            if surface and surface != canonical_surface:
+                raise ValueError(
+                    "surface must match the canonical '{surface_type}:{surface_id}' alias",
+                )
+            surface = canonical_surface
+
+        if session_id and thread_id and session_id != thread_id:
+            raise ValueError(
+                "session_id conflicts with thread_id; provide matching values",
+            )
+        session_id = session_id or thread_id
+        thread_id = thread_id or session_id
+
+        self.surface = surface
+        self.surface_type = surface_type
+        self.surface_id = surface_id
+        self.session_id = session_id
+        self.thread_id = thread_id
+
+        allowed_history_roles = {"user", "assistant"}
+        filtered = [
+            m for m in self.history
+            if m.get("role") in allowed_history_roles
+        ]
+        stripped_system = sum(1 for m in self.history if m.get("role") == "system")
+        stripped_invalid = len(self.history) - len(filtered) - stripped_system
+        if stripped_system or stripped_invalid:
+            _log = logging.getLogger(__name__)
+            if stripped_system:
+                _log.warning(
+                    "Stripped %d system message(s) from chat history — "
+                    "system messages must not be injected via the history field",
+                    stripped_system,
+                )
+            if stripped_invalid:
+                _log.warning(
+                    "Stripped %d non-user/assistant message(s) from chat history — "
+                    "history only accepts 'user' and 'assistant' roles",
+                    stripped_invalid,
+                )
+            self.history = filtered
+
+        return self
 
 
 class ApplyMutationRequest(BaseModel):
@@ -3696,7 +3787,10 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
 
                 _surface_msg = SurfaceMessage(
                     surface=req.surface or "server",
-                    external_id=req.thread_id or req.workflow_id or "server-chat",
+                    surface_type=req.surface_type or "",
+                    surface_id=req.surface_id or "",
+                    session_id=req.session_id or req.thread_id or "",
+                    external_id=req.session_id or req.thread_id or req.workflow_id or "server-chat",
                     text=req.message,
                     metadata={
                         "workflow_id": req.workflow_id,
@@ -3709,6 +3803,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                         "mentions": structured_mentions,
                         "cancel_event": cancel_event,
                         "selected_path": req.attachment_path,
+                        "surface_context": req.surface_context,
                     },
                 )
                 if _dispatcher is not None:
@@ -3971,6 +4066,11 @@ async def create_chat_thread(workflow_id: str, body: dict[str, Any] | None = Non
     title = (body or {}).get("title", "")
     thread = _chat_store.create_thread(workflow_id, title=title)
     mode = _chat_store._normalize_mode((body or {}).get("mode"))
+    if str(title or "").strip():
+        meta = _chat_store.get_thread_meta(workflow_id, thread.id)
+        meta["title_source"] = "fallback"
+        meta["title_generation_started"] = False
+        _chat_store.set_thread_meta(workflow_id, thread.id, meta)
     if mode != "agent":
         _chat_store.set_mode(workflow_id, thread.id, mode)
     data = thread.model_dump(mode="json")
@@ -3983,16 +4083,58 @@ async def update_chat_thread(workflow_id: str, thread_id: str, body: dict[str, A
     thread = _chat_store.get_thread(workflow_id, thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
+    schedule_title_generation = False
     if "title" in body:
-        thread.title = body["title"]
+        mark_manual_title(workflow_id=workflow_id, thread_id=thread_id, store=_chat_store, title=str(body["title"] or ""))
+        thread = _chat_store.get_thread(workflow_id, thread_id)
+        if thread is None:
+            raise HTTPException(status_code=404, detail="Thread not found")
     if "messages" in body:
         thread.messages = [
             StoreChatMessage.model_validate(m) for m in body["messages"]
         ]
+        ensure_fallback_title(_chat_store, workflow_id, thread_id)
+        refreshed = _chat_store.get_thread(workflow_id, thread_id)
+        if refreshed is not None:
+            thread = refreshed
+        meta = _chat_store.get_thread_meta(workflow_id, thread_id)
+        first_user_present = any(msg.role == "user" for msg in thread.messages)
+        if (
+            first_user_present
+            and not meta.get("title_locked")
+            and meta.get("title_source") != "generated"
+            and not meta.get("title_generation_started")
+            and not meta.get("title_generation_failed")
+        ):
+            meta["title_generation_started"] = True
+            _chat_store.set_thread_meta(workflow_id, thread_id, meta)
+            schedule_title_generation = True
     if "mode" in body:
         _chat_store.set_mode(workflow_id, thread_id, body["mode"])
     thread.updated_at = datetime.now(timezone.utc)
     _chat_store.save_thread(thread)
+    if schedule_title_generation and _chat_manager is not None:
+        providers = getattr(_chat_manager, "_providers", None)
+        chat_model = str(getattr(_chat_manager, "_chat_model", "") or "")
+
+        async def _generate_title() -> None:
+            try:
+                await autogenerate_thread_title(
+                    _chat_store,
+                    workflow_id,
+                    thread_id,
+                    providers=providers,
+                    chat_model=chat_model,
+                    mark_started=False,
+                )
+            except Exception:
+                logger.debug("Background thread title generation failed", exc_info=True)
+                meta = _chat_store.get_thread_meta(workflow_id, thread_id)
+                meta["title_generation_started"] = False
+                meta["title_generation_failed"] = True
+                _chat_store.set_thread_meta(workflow_id, thread_id, meta)
+
+        asyncio.create_task(_generate_title())
     return {"status": "updated"}
 
 
@@ -4892,10 +5034,20 @@ async def _send_adapter_text(adapter: MessagingAdapter, external_id: str, text: 
             await adapter._send_text(external_id, text)
         else:
             try:
-                chat_id = int(external_id)
+                thread_id: int | None = None
+                if ":" in str(external_id):
+                    chat_raw, thread_raw = str(external_id).split(":", 1)
+                    chat_id = int(chat_raw)
+                    thread_id = int(thread_raw) if thread_raw else None
+                else:
+                    chat_id = int(external_id)
             except (ValueError, TypeError):
                 chat_id = external_id  # type: ignore[assignment]
-            await adapter._send_text(chat_id, text)
+                thread_id = None
+            if isinstance(chat_id, int):
+                await adapter._send_text(chat_id, text, thread_id=thread_id)
+            else:
+                await adapter._send_text(chat_id, text)
     elif hasattr(adapter, "send_prompt"):
         sid = None
         if hasattr(adapter, "_session_map"):

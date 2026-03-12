@@ -64,6 +64,7 @@ __all__ = [
     "ChatValidationResultEvent",
     "ChatGraphCreatedEvent",
     "ChatGraphQualityEvent",
+    "ChatGenerationSummaryEvent",
     "ChatStreamEvent",
     "MUTATION_TOOL_SCHEMA",
     "ChatManager",
@@ -433,6 +434,7 @@ _CATEGORY_ORDER = [
     ("file", "File"),
     ("document", "Document"),
     ("web", "Web"),
+    ("browser", "Browser"),
     ("system", "System"),
     ("communication", "Communication"),
     ("text", "Text"),
@@ -1295,6 +1297,17 @@ class ChatMultiPartEvent(BaseModel):
     parts: list[str]
 
 
+class ChatGenerationSummaryEvent(BaseModel):
+    type: str = "chat_generation_summary"
+    path_taken: str = "none"
+    retries_used: dict[str, int] = Field(default_factory=dict)
+    quality_score: int | None = None
+    wall_clock_ms: int = 0
+    fallback_chain: list[str] = Field(default_factory=list)
+    node_count: int | None = None
+    complexity_tier: str | None = None
+
+
 ChatStreamEvent = (
     ChatTokenEvent
     | ChatCompleteEvent
@@ -1312,6 +1325,7 @@ ChatStreamEvent = (
     | ChatFileAttachmentEvent
     | ChatPollRequestEvent
     | ChatMultiPartEvent
+    | ChatGenerationSummaryEvent
 )
 
 
@@ -2297,9 +2311,20 @@ class ChatManager:
                         edge_count=new_summary.edge_count,
                         graph_revision=new_summary.revision,
                     )
+                    # A.1-2: enrich response text with path info for non-trivial paths
+                    _gen_summary_evt = next(
+                        (e for e in codegen_events if isinstance(e, ChatGenerationSummaryEvent)),
+                        None,
+                    )
+                    _path_suffix = ""
+                    if _gen_summary_evt is not None:
+                        _wall_s = _gen_summary_evt.wall_clock_ms / 1000
+                        _path = _gen_summary_evt.path_taken
+                        if len(_gen_summary_evt.fallback_chain) > 1 or _wall_s > 10:
+                            _path_suffix = f" Built via {_path} in {_wall_s:.1f}s."
                     summary_message = (
                         f"Workflow created with {new_summary.node_count} nodes "
-                        f"and {new_summary.edge_count} edges."
+                        f"and {new_summary.edge_count} edges.{_path_suffix}"
                     )
                     self._record_conversation_summary(
                         workflow_id=workflow_id,
@@ -3412,18 +3437,144 @@ class ChatManager:
         4. If codegen fails: invoke diagnosis loop
         5. Return validated graph dict or None
         """
+        from dan.meta.diagnosis import GenerationError, GenerationErrorType, GenerationStage
         from dan.meta.intent_compiler import CoverageChecker, IntentCompiler
         from dan.meta.intent_extraction import (
             INTENT_EXTRACTION_SYSTEM_PROMPT,
             build_intent_tool_schema,
         )
         from dan.meta.intent_schema import WorkflowIntent
-        from dan.meta.graph_quality import compute_quality_report
+        from dan.meta.graph_quality import (
+            compute_quality_report,
+            estimate_prompt_complexity,
+            expected_node_range,
+            is_acceptable_simple_graph,
+            tier_quality_threshold,
+        )
         from dan.meta.planner import CodegenPromptBuilder, validate_codegen_output
 
         events: list[ChatStreamEvent] = []
-        _quality_threshold = int(os.environ.get("DAN_GRAPH_QUALITY_THRESHOLD", "0") or "0")
+        _max_gen_seconds = int(os.environ.get("DAN_MAX_GENERATION_SECONDS", "120") or "120")
+        _gen_start = time.monotonic()
+
+        def _deadline_exceeded() -> bool:
+            return (time.monotonic() - _gen_start) > _max_gen_seconds
+
+        def _elapsed_ms() -> int:
+            return int((time.monotonic() - _gen_start) * 1000)
+
+        def _elapsed_s() -> float:
+            return time.monotonic() - _gen_start
+
+        # -- B.3-4: complexity signal consumption ---------------------------
+        complexity_tier = estimate_prompt_complexity(user_message)
+        min_nodes, max_nodes = expected_node_range(user_message, tier=complexity_tier)
+        _fast_path_slow_s = float(os.environ.get("DAN_INTENT_FAST_PATH_SLOW_SECONDS", "15.0") or "15.0")
+
+        # -- A: fallback chain + retry tracking ----------------------------
+        fallback_chain: list[str] = []
+        retries_used: dict[str, int] = {
+            "intent_extraction": 0,
+            "codegen": 0,
+            "sandbox": 0,
+        }
+        _last_quality_score: int | None = None
+        _result_node_count: int | None = None
+        _path_taken = "none"
+        _progress_emitted = False
+
+        def _emit_progress(phase: str) -> None:
+            nonlocal _progress_emitted
+            elapsed = _elapsed_s()
+            if elapsed > 60:
+                msg = f"This is taking longer than usual. {phase} ({elapsed:.0f}s elapsed)"
+            elif elapsed > 10:
+                msg = f"Generating workflow... ({elapsed:.0f}s, {phase})"
+            else:
+                return
+            events.append(ChatCompleteEvent(
+                message_id=uuid.uuid4().hex[:12],
+                content=msg,
+                token_usage={},
+                context_window=0,
+                graph_revision="",
+                detected_mode="progress_generation",
+            ))
+            _progress_emitted = True
+
+        def _build_summary_event() -> ChatGenerationSummaryEvent:
+            return ChatGenerationSummaryEvent(
+                path_taken=_path_taken,
+                retries_used=retries_used,
+                quality_score=_last_quality_score,
+                wall_clock_ms=_elapsed_ms(),
+                fallback_chain=list(fallback_chain),
+                node_count=_result_node_count,
+                complexity_tier=complexity_tier,
+            )
+
+        def _fit_check(graph_dict: dict) -> None:
+            """C.6: Post-generation fit check — flag underspecified graphs."""
+            nonlocal _result_node_count
+            nodes = graph_dict.get("nodes", [])
+            count = len(nodes) if isinstance(nodes, list) else 0
+            _result_node_count = count
+            if count < min_nodes * 0.5:
+                logger.warning(
+                    "Underspecified graph: %d nodes, expected %d-%d",
+                    count, min_nodes, max_nodes,
+                )
+
+        _quality_threshold_override = int(os.environ.get("DAN_GRAPH_QUALITY_THRESHOLD", "0") or "0")
         provider = self._resolve_provider(pii_session_key=workflow_id)
+
+        def _quality_error_for_graph(graph_dict: dict, *, warning_message: str) -> GenerationError | None:
+            nonlocal _last_quality_score
+            if is_acceptable_simple_graph(graph_dict, user_message):
+                return None
+            report = compute_quality_report(graph_dict, user_message, tier=None)
+            _last_quality_score = report.overall_score
+            events.append(ChatGraphQualityEvent(
+                score=report.overall_score,
+                concerns=report.concerns,
+            ))
+            threshold = _quality_threshold_override if _quality_threshold_override > 0 else tier_quality_threshold(None, user_message)
+            if threshold > 0 and report.overall_score < threshold:
+                logger.warning(
+                    warning_message,
+                    report.overall_score,
+                    threshold,
+                )
+                return GenerationError(
+                    stage=GenerationStage.validation,
+                    error_type=GenerationErrorType.unknown,
+                    message=f"Quality score {report.overall_score} below threshold {threshold}",
+                    recoverable=True,
+                )
+            return None
+
+        def _sandbox_failure_error(codegen_result: Any) -> GenerationError:
+            err_msg = ""
+            err_type = GenerationErrorType.no_output
+            if codegen_result is not None:
+                err_msg = (getattr(codegen_result, "error_message", None) or "").strip()
+                raw_type = str(getattr(codegen_result, "error_type", "") or "").strip().lower()
+                try:
+                    err_type = GenerationErrorType(raw_type)
+                except ValueError:
+                    if "import" in raw_type:
+                        err_type = GenerationErrorType.import_error
+                    elif "name" in raw_type:
+                        err_type = GenerationErrorType.name_error
+                    elif raw_type:
+                        err_type = GenerationErrorType.runtime_error
+            return GenerationError(
+                stage=GenerationStage.sandbox,
+                error_type=err_type,
+                message=err_msg or "Builder code produced no graph output",
+                source_line=getattr(codegen_result, "error_line", None),
+                recoverable=True,
+            )
 
         detected_domain: str | None = None
         try:
@@ -3453,6 +3604,7 @@ class ChatManager:
                 if (not (intent_result.text or "").strip() and
                         not (intent_result.tool_calls or [])):
                     if attempt == 0:
+                        retries_used["intent_extraction"] += 1
                         logger.warning(
                             "Intent extraction empty response, retrying (attempt %d)",
                             attempt + 1,
@@ -3467,6 +3619,7 @@ class ChatManager:
                 break
             except Exception as exc:
                 if attempt == 0 and _is_transient_llm_error(exc):
+                    retries_used["intent_extraction"] += 1
                     logger.warning(
                         "Intent extraction transient error (attempt %d): %s",
                         attempt + 1, exc,
@@ -3517,20 +3670,41 @@ class ChatManager:
 
         # -- Step 2: intent-compiler fast path ----------------------------
         if intent is not None and coverage_fully_covered:
+            fallback_chain.append("intent_compiler")
             try:
                 compiler = IntentCompiler()
-                if coverage_recommendation == "compose" and coverage_patterns:
-                    builder_code = compiler.compile_composed(
-                        intent, coverage_patterns, domain=detected_domain,
-                    )
-                else:
-                    builder_code = compiler.compile(intent, domain=detected_domain)
-                events.append(ChatCodeGeneratedEvent(
-                    code_snippet=builder_code[:500],
-                    source="intent_compiler",
-                ))
+                graph_dict = None
 
-                graph_dict = self._exec_deterministic_builder_code(builder_code)
+                # 32-7 §3-9: direct graph construction (no codegen string)
+                try:
+                    from dan.meta.intent_compiler import DirectBuildError
+                    if coverage_recommendation == "compose" and coverage_patterns:
+                        graph_obj = compiler.build_graph_composed(
+                            intent, coverage_patterns, domain=detected_domain,
+                        )
+                    else:
+                        graph_obj = compiler.build_graph(intent, domain=detected_domain)
+                    graph_dict = graph_obj.model_dump(mode="json")
+                    events.append(ChatCodeGeneratedEvent(
+                        code_snippet=f"# Direct build: {len(graph_obj.nodes)} nodes",
+                        source="intent_compiler",
+                    ))
+                except (DirectBuildError, Exception) as _build_exc:
+                    logger.debug("build_graph() failed (%s), falling back to compile()", _build_exc)
+                    graph_dict = None
+                    if coverage_recommendation == "compose" and coverage_patterns:
+                        builder_code = compiler.compile_composed(
+                            intent, coverage_patterns, domain=detected_domain,
+                        )
+                    else:
+                        builder_code = compiler.compile(intent, domain=detected_domain)
+                    if builder_code and builder_code.strip():
+                        events.append(ChatCodeGeneratedEvent(
+                            code_snippet=builder_code[:500],
+                            source="intent_compiler",
+                        ))
+                        graph_dict = self._exec_deterministic_builder_code(builder_code)
+
                 if graph_dict is not None:
                     validation = validate_codegen_output(graph_dict)
                     events.append(ChatValidationResultEvent(
@@ -3539,52 +3713,108 @@ class ChatManager:
                         errors=[e.message for e in validation.errors[:5]],
                     ))
                     if validation.success and validation.graph is not None:
-                        report = compute_quality_report(graph_dict, user_message, tier=None)
-                        events.append(ChatGraphQualityEvent(
-                            score=report.overall_score,
-                            concerns=report.concerns,
-                        ))
-                        if _quality_threshold > 0 and report.overall_score < _quality_threshold:
-                            logger.warning(
-                                "Graph quality %d below threshold %d, falling back to codegen",
-                                report.overall_score,
-                                _quality_threshold,
-                            )
-                        else:
+                        quality_error = _quality_error_for_graph(
+                            graph_dict,
+                            warning_message="Graph quality %d below threshold %d, falling back to codegen",
+                        )
+                        if quality_error is None:
+                            _path_taken = "intent_compiler"
+                            _fit_check(graph_dict)
+                            # B.3-4: slow path warning
+                            ic_elapsed = _elapsed_s()
+                            if ic_elapsed > _fast_path_slow_s:
+                                logger.warning(
+                                    "Intent compiler slow path: %.1fs (threshold: %.1fs)",
+                                    ic_elapsed, _fast_path_slow_s,
+                                )
                             self._record_gen_outcome("intent_compiler", success=True, pattern=workflow_id)
+                            events.append(_build_summary_event())
                             return graph_dict, events
                     self._record_gen_outcome(
                         "intent_compiler", success=False,
-                        error_type=validation.errors[0].error_type if validation.errors else "validation",
+                        error_type=validation.errors[0].error_type.value if validation.errors else "validation",
                         fix_needed=True,
                         pattern=workflow_id,
                     )
                     logger.info(
-                        "Intent-compiled graph failed validation (%d errors), "
-                        "falling back to codegen",
+                        "Intent compiler: validation failed (%d errors); falling back to codegen",
                         len(validation.errors),
                     )
+                else:
+                    logger.info(
+                        "Intent compiler: produced no graph; falling back to codegen",
+                    )
+                    self._record_gen_outcome(
+                        "intent_compiler", success=False,
+                        error_type="no_graph",
+                        pattern=workflow_id,
+                    )
             except Exception as exc:
-                logger.info("Intent compilation failed: %s", exc)
+                stage_types = [s.stage_type.value for s in intent.stages] if intent else []
+                logger.warning(
+                    "Intent compiler failed (stages=%s): %s, falling through to codegen",
+                    stage_types, exc,
+                )
+                # A.2: fallback narration
+                logger.info(
+                    "Intent compiler: %s; falling back to codegen", exc,
+                )
+                self._record_gen_outcome(
+                    "intent_compiler", success=False,
+                    error_type="compile_exception",
+                    pattern=workflow_id,
+                )
 
         # -- Step 3: builder codegen fallback (retry on transient, max 2) ---
-        from dan.meta.diagnosis import GenerationError, GenerationErrorType, GenerationStage
+        if _deadline_exceeded():
+            elapsed = time.monotonic() - _gen_start
+            logger.warning("Generation deadline exceeded before codegen (%.1fs / %ds budget)", elapsed, _max_gen_seconds)
+            self._record_gen_outcome("codegen", success=False, error_type="generation_timeout", pattern=workflow_id)
+            _path_taken = "none"
+            events.append(ChatValidationResultEvent(
+                success=False,
+                error_count=1,
+                errors=[f"Generation timed out after {elapsed:.0f}s (budget: {_max_gen_seconds}s)"],
+            ))
+            events.append(_build_summary_event())
+            return None, events
+
+        fallback_chain.append("codegen")
+        # F.12: progress checkpoint before codegen LLM call
+        _emit_progress("codegen in progress")
 
         gen_stats_hint = self._get_generation_stats_hint()
         codegen_builder = CodegenPromptBuilder()
         error_ctx = f"Intent extraction produced: {intent.goal}" if intent else None
         if gen_stats_hint:
             error_ctx = f"{error_ctx}\n\n{gen_stats_hint}" if error_ctx else gen_stats_hint
+
+        # C.5: node count guidance in codegen prompt
+        complexity_hint = (
+            f"This is a {complexity_tier} prompt. "
+            f"The generated graph should have {min_nodes}-{max_nodes} nodes."
+        )
+        if min_nodes >= 3:
+            complexity_hint += (
+                f" A 1-node or 2-node graph is likely underspecified."
+            )
+
         system_prompt, user_prompt = codegen_builder.build_full_prompt(
             goal=user_message,
             error_context=error_ctx,
             domain=detected_domain,
+            complexity_hint=complexity_hint,
         )
         codegen_errors: list[Any] = []
         builder_code = ""
         codegen_retries = 0
         max_codegen_retries = 2
         backoff = [2.0, 4.0]
+        terminal_codegen_failure: str | None = None
+        terminal_codegen_message = ""
+        # F.13: track consecutive identical error types for early termination
+        _last_codegen_error_type: str | None = None
+        _consecutive_same_error = 0
 
         for cg_attempt in range(max_codegen_retries + 1):
             try:
@@ -3598,28 +3828,71 @@ class ChatManager:
                 )
                 raw_text = codegen_result.text or ""
                 if not raw_text.strip():
+                    _cur_err = "empty_response"
+                    if _cur_err == _last_codegen_error_type:
+                        _consecutive_same_error += 1
+                    else:
+                        _consecutive_same_error = 1
+                    _last_codegen_error_type = _cur_err
+                    if _consecutive_same_error >= 2:
+                        terminal_codegen_failure = "no_output"
+                        terminal_codegen_message = "Same error (empty response) 2 times in a row — failing fast"
+                        logger.info("Codegen early termination: %s", terminal_codegen_message)
+                        break
                     if cg_attempt < max_codegen_retries:
                         codegen_retries += 1
+                        retries_used["codegen"] += 1
                         logger.warning(
                             "Codegen empty response, retrying (attempt %d, delay %.0fs)",
                             cg_attempt + 1, backoff[cg_attempt],
                         )
                         await asyncio.sleep(backoff[cg_attempt])
                         continue
+                    terminal_codegen_failure = "no_output"
+                    terminal_codegen_message = "Codegen returned empty builder code after retries"
                 builder_code = self._extract_code_from_response(raw_text)
                 if not builder_code or not builder_code.strip():
+                    _cur_err = "empty_code"
+                    if _cur_err == _last_codegen_error_type:
+                        _consecutive_same_error += 1
+                    else:
+                        _consecutive_same_error = 1
+                    _last_codegen_error_type = _cur_err
+                    if _consecutive_same_error >= 2:
+                        terminal_codegen_failure = "no_output"
+                        terminal_codegen_message = "Same error (empty code) 2 times in a row — failing fast"
+                        logger.info("Codegen early termination: %s", terminal_codegen_message)
+                        break
                     if cg_attempt < max_codegen_retries:
                         codegen_retries += 1
+                        retries_used["codegen"] += 1
                         logger.warning(
                             "Codegen produced empty/whitespace code, retrying (attempt %d)",
                             cg_attempt + 1,
                         )
                         await asyncio.sleep(backoff[cg_attempt])
                         continue
+                    terminal_codegen_failure = "no_output"
+                    terminal_codegen_message = "Codegen returned empty builder code after retries"
+                _last_codegen_error_type = None
+                _consecutive_same_error = 0
                 break
             except Exception as exc:
+                _cur_err = type(exc).__name__
+                if _cur_err == _last_codegen_error_type:
+                    _consecutive_same_error += 1
+                else:
+                    _consecutive_same_error = 1
+                _last_codegen_error_type = _cur_err
+                if _consecutive_same_error >= 2:
+                    terminal_codegen_failure = "llm_error"
+                    terminal_codegen_message = f"Same error type ({_cur_err}) 2 times in a row — failing fast: {exc}"
+                    logger.info("Codegen early termination: %s", terminal_codegen_message)
+                    self._record_gen_outcome("codegen", success=False, error_type="llm_error", pattern=workflow_id)
+                    break
                 if cg_attempt < max_codegen_retries and _is_transient_llm_error(exc):
                     codegen_retries += 1
+                    retries_used["codegen"] += 1
                     logger.warning(
                         "Codegen transient error (attempt %d): %s",
                         cg_attempt + 1, exc,
@@ -3628,7 +3901,25 @@ class ChatManager:
                     continue
                 logger.debug("Codegen LLM call failed: %s", exc)
                 self._record_gen_outcome("codegen", success=False, error_type="llm_error", pattern=workflow_id)
+                terminal_codegen_failure = "llm_error"
+                terminal_codegen_message = str(exc)
                 break
+
+        if not builder_code and terminal_codegen_failure in {"no_output", "llm_error"}:
+            _path_taken = "codegen"
+            if terminal_codegen_failure == "no_output":
+                user_error = f"Codegen returned empty response after {codegen_retries} retries. The LLM did not produce any builder code."
+                self._record_gen_outcome("codegen", success=False, error_type="no_output", pattern=workflow_id)
+            else:
+                user_error = f"Codegen LLM call failed: {terminal_codegen_message}. Try again or simplify the prompt."
+            events.append(ChatValidationResultEvent(
+                success=False,
+                error_count=1,
+                errors=[user_error],
+            ))
+            logger.info("Generation completed in %.1fs", time.monotonic() - _gen_start)
+            events.append(_build_summary_event())
+            return None, events
 
         if builder_code:
             events.append(ChatCodeGeneratedEvent(
@@ -3660,6 +3951,8 @@ class ChatManager:
                 self._record_gen_outcome("codegen", success=False, error_type="syntax_error", pattern=workflow_id)
 
             if syntax_error is None:
+                # F.12: progress checkpoint before sandbox
+                _emit_progress("sandbox validation")
                 graph_dict, sandbox_codegen = await self._sandbox_exec_builder_code(builder_code)
                 if graph_dict is not None:
                     validation = validate_codegen_output(graph_dict)
@@ -3669,95 +3962,132 @@ class ChatManager:
                         errors=[e.message for e in validation.errors[:5]],
                     ))
                     if validation.success and validation.graph is not None:
-                        report = compute_quality_report(graph_dict, user_message, tier=None)
-                        events.append(ChatGraphQualityEvent(
-                            score=report.overall_score,
-                            concerns=report.concerns,
-                        ))
-                        if _quality_threshold > 0 and report.overall_score < _quality_threshold:
-                            logger.warning(
-                                "Graph quality %d below threshold %d, falling back to diagnosis",
-                                report.overall_score,
-                                _quality_threshold,
-                            )
-                            codegen_errors = [
-                                GenerationError(
-                                    stage=GenerationStage.validation,
-                                    error_type=GenerationErrorType.unknown,
-                                    message=f"Quality score {report.overall_score} below threshold {_quality_threshold}",
-                                    recoverable=True,
-                                )
-                            ]
-                        else:
+                        quality_error = _quality_error_for_graph(
+                            graph_dict,
+                            warning_message="Graph quality %d below threshold %d, falling back to diagnosis",
+                        )
+                        if quality_error is None:
+                            _path_taken = "codegen"
+                            _fit_check(graph_dict)
                             self._record_gen_outcome("codegen", success=True, pattern=workflow_id)
+                            events.append(_build_summary_event())
                             return graph_dict, events
+                        codegen_errors = [quality_error]
                     self._record_gen_outcome(
                         "codegen", success=False,
-                        error_type=validation.errors[0].error_type if validation.errors else "validation",
+                        error_type=(
+                            codegen_errors[0].error_type.value if codegen_errors
+                            else validation.errors[0].error_type.value if validation.errors
+                            else "validation"
+                        ),
                         fix_needed=True,
                         pattern=workflow_id,
                     )
                     if not codegen_errors:
                         codegen_errors = validation.errors
                 else:
-                    # graph_dict is None — sandbox returned no graph (Task 3-3, 10)
-                    # sandbox_codegen may be None when sandbox raised (e.g. timeout); err_msg empty
-                    err_msg = sandbox_codegen.error_message or "" if sandbox_codegen else ""
+                    sandbox_error = _sandbox_failure_error(sandbox_codegen)
+                    retries_used["sandbox"] += 1
+                    err_msg = sandbox_error.message
                     is_timeout = "timeout" in err_msg.lower() or "timed out" in err_msg.lower()
                     if is_timeout:
-                        logger.warning("Sandbox timeout, retrying sandbox once")
-                        await asyncio.sleep(2.0)
-                        graph_dict, sandbox_codegen = await self._sandbox_exec_builder_code(builder_code)
-                        if graph_dict is not None:
-                            validation = validate_codegen_output(graph_dict)
-                            events.append(ChatValidationResultEvent(
-                                success=validation.success,
-                                error_count=len(validation.errors),
-                                errors=[e.message for e in validation.errors[:5]],
-                            ))
-                            if validation.success and validation.graph is not None:
-                                self._record_gen_outcome("codegen", success=True, pattern=workflow_id)
-                                return graph_dict, events
-                            codegen_errors = validation.errors
-                            self._record_gen_outcome(
-                                "codegen", success=False,
-                                error_type=validation.errors[0].error_type if validation.errors else "validation",
-                                fix_needed=True,
-                                pattern=workflow_id,
-                            )
-                        else:
+                        is_execution_timeout = (
+                            "execution" in err_msg.lower()
+                            or "code" in err_msg.lower()
+                            or "runtime" in err_msg.lower()
+                        )
+                        if is_execution_timeout:
+                            logger.warning("Sandbox execution timeout — builder code likely has infinite loop, skipping retry")
                             codegen_errors = [
                                 GenerationError(
                                     stage=GenerationStage.sandbox,
-                                    error_type=GenerationErrorType.no_output,
-                                    message="Builder code produced no graph output",
+                                    error_type=GenerationErrorType.runtime_error,
+                                    message="Builder code execution timed out (possible infinite loop)",
                                     recoverable=True,
                                 ),
                             ]
-                            self._record_gen_outcome("codegen", success=False, error_type="no_output", pattern=workflow_id)
+                            self._record_gen_outcome("codegen", success=False, error_type="execution_timeout", pattern=workflow_id)
                             events.append(ChatValidationResultEvent(
                                 success=False,
                                 error_count=1,
-                                errors=["Builder code produced no graph output"],
+                                errors=["Builder code execution timed out. The generated code may contain an infinite loop."],
                             ))
+                        else:
+                            logger.warning("Sandbox process startup timeout, retrying sandbox once")
+                            await asyncio.sleep(2.0)
+                            graph_dict, sandbox_codegen = await self._sandbox_exec_builder_code(builder_code)
+                            if graph_dict is not None:
+                                validation = validate_codegen_output(graph_dict)
+                                events.append(ChatValidationResultEvent(
+                                    success=validation.success,
+                                    error_count=len(validation.errors),
+                                    errors=[e.message for e in validation.errors[:5]],
+                                ))
+                                if validation.success and validation.graph is not None:
+                                    quality_error = _quality_error_for_graph(
+                                        graph_dict,
+                                        warning_message="Graph quality %d below threshold %d, falling back to diagnosis",
+                                    )
+                                    if quality_error is None:
+                                        _path_taken = "codegen"
+                                        _fit_check(graph_dict)
+                                        self._record_gen_outcome("codegen", success=True, pattern=workflow_id)
+                                        events.append(_build_summary_event())
+                                        return graph_dict, events
+                                    codegen_errors = [quality_error]
+                                else:
+                                    codegen_errors = validation.errors
+                                self._record_gen_outcome(
+                                    "codegen", success=False,
+                                    error_type=codegen_errors[0].error_type.value if codegen_errors else "validation",
+                                    fix_needed=True,
+                                    pattern=workflow_id,
+                                )
+                            else:
+                                sandbox_error = _sandbox_failure_error(sandbox_codegen)
+                                codegen_errors = [
+                                    sandbox_error,
+                                ]
+                                self._record_gen_outcome("codegen", success=False, error_type=sandbox_error.error_type.value, pattern=workflow_id)
+                                events.append(ChatValidationResultEvent(
+                                    success=False,
+                                    error_count=1,
+                                    errors=[sandbox_error.message],
+                                ))
                     else:
                         codegen_errors = [
-                            GenerationError(
-                                stage=GenerationStage.sandbox,
-                                error_type=GenerationErrorType.no_output,
-                                message="Builder code produced no graph output",
-                                recoverable=True,
-                            ),
+                            sandbox_error,
                         ]
-                        self._record_gen_outcome("codegen", success=False, error_type="no_output", pattern=workflow_id)
+                        self._record_gen_outcome("codegen", success=False, error_type=sandbox_error.error_type.value, pattern=workflow_id)
                         events.append(ChatValidationResultEvent(
                             success=False,
                             error_count=1,
-                            errors=["Builder code produced no graph output"],
+                            errors=[sandbox_error.message],
                         ))
 
         # -- Step 4: diagnosis loop ----------------------------------------
+        if _deadline_exceeded():
+            elapsed = time.monotonic() - _gen_start
+            logger.warning("Generation deadline exceeded before diagnosis (%.1fs / %ds budget)", elapsed, _max_gen_seconds)
+            self._record_gen_outcome("diagnosis", success=False, error_type="generation_timeout", pattern=workflow_id)
+            _path_taken = "codegen"
+            events.append(ChatValidationResultEvent(
+                success=False,
+                error_count=1,
+                errors=[f"Generation timed out after {elapsed:.0f}s (budget: {_max_gen_seconds}s)"],
+            ))
+            events.append(_build_summary_event())
+            return None, events
+
         if builder_code and codegen_errors:
+            fallback_chain.append("diagnosis")
+            # A.2: fallback narration — codegen → diagnosis
+            error_summary = codegen_errors[0].message if codegen_errors else "unknown error"
+            logger.info("Codegen: %s; attempting diagnosis repair", error_summary)
+
+            # F.12: progress checkpoint before diagnosis
+            _emit_progress("diagnosis repair")
+
             try:
                 from dan.meta.diagnosis import DiagnosisLoop, GenerationError
 
@@ -3791,7 +4121,6 @@ class ChatManager:
                     llm_complete=_llm_complete,
                 )
                 if diag_result.success and diag_result.final_graph:
-                    # Task 11: post-diagnosis re-validation (don't hardcode success)
                     validation = validate_codegen_output(diag_result.final_graph)
                     events.append(ChatValidationResultEvent(
                         success=validation.success,
@@ -3799,23 +4128,58 @@ class ChatManager:
                         errors=[e.message for e in validation.errors[:5]],
                     ))
                     if validation.success and validation.graph is not None:
-                        # 33-7 task 2-6: post-diagnosis quality check
                         try:
-                            report = compute_quality_report(
-                                diag_result.final_graph, user_message, tier=None
+                            quality_error = _quality_error_for_graph(
+                                diag_result.final_graph,
+                                warning_message="Graph quality %d below threshold %d, rejecting repaired graph",
                             )
-                            events.append(ChatGraphQualityEvent(
-                                score=report.overall_score,
-                                concerns=report.concerns,
-                            ))
+                            if quality_error is not None:
+                                # F.13: early termination — check consecutive low quality
+                                if _last_quality_score is not None and _last_quality_score <= 20:
+                                    logger.warning(
+                                        "Diagnosis produced consecutive low-quality graphs (score=%d), terminating",
+                                        _last_quality_score,
+                                    )
+                                    events.append(ChatValidationResultEvent(
+                                        success=False,
+                                        error_count=1,
+                                        errors=[
+                                            "Unable to generate a graph that meets quality requirements "
+                                            "for this prompt. Try simplifying the request or breaking "
+                                            "it into smaller workflows."
+                                        ],
+                                    ))
+                                self._record_gen_outcome(
+                                    "diagnosis",
+                                    success=False,
+                                    error_type=quality_error.error_type.value,
+                                    fix_needed=True,
+                                    pattern=workflow_id,
+                                )
+                                _path_taken = "diagnosis_repair"
+                                events.append(_build_summary_event())
+                                return None, events
                         except Exception:
                             pass
+                        _path_taken = "diagnosis_repair"
+                        _fit_check(diag_result.final_graph)
                         self._record_gen_outcome("diagnosis", success=True, fix_needed=True, pattern=workflow_id)
+                        events.append(_build_summary_event())
                         return diag_result.final_graph, events
                 self._record_gen_outcome("diagnosis", success=False, error_type="repair_failed", fix_needed=True, pattern=workflow_id)
             except Exception as exc:
                 logger.debug("Diagnosis loop failed: %s", exc)
 
+        if not any(isinstance(e, ChatValidationResultEvent) and not e.success for e in events):
+            events.append(ChatValidationResultEvent(
+                success=False,
+                error_count=1,
+                errors=["Workflow generation failed. No graph was produced."],
+            ))
+
+        _path_taken = _path_taken or ("codegen" if "codegen" in fallback_chain else "none")
+        logger.info("Generation completed in %.1fs", time.monotonic() - _gen_start)
+        events.append(_build_summary_event())
         return None, events
 
     # ------------------------------------------------------------------
@@ -3965,8 +4329,15 @@ class ChatManager:
                 return codegen_result.graph, None
             return None, codegen_result
         except Exception as exc:
+            from dan.meta.planner import CodegenResult
+
             logger.debug("Sandbox builder code execution failed: %s", exc)
-            return None, None
+            return None, CodegenResult(
+                success=False,
+                source_code=code,
+                error_type="runtime_error",
+                error_message=str(exc),
+            )
 
     @staticmethod
     def _extract_code_from_response(text: str) -> str:
