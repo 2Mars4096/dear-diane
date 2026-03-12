@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, AsyncIterator
 
-from dan.providers import CompletionResult, ProviderConfig, StreamChunk
+from dan.providers import (
+    CompletionResult,
+    ProviderConfig,
+    StreamChunk,
+    resolve_provider_timeout,
+)
 
 
 class GoogleProvider:
@@ -20,6 +26,7 @@ class GoogleProvider:
             )
         genai.configure(api_key=config.api_key)
         self._genai = genai
+        self._timeout_seconds = resolve_provider_timeout(config)
 
     @staticmethod
     def apply_cache_hints(
@@ -77,12 +84,21 @@ class GoogleProvider:
         chat = gm.start_chat(history=history[:-1] if len(history) > 1 else [])
 
         last_msg = history[-1]["parts"][0] if history else ""
-        resp = await chat.send_message_async(
-            last_msg, generation_config=gen_config,
+        resp = await asyncio.wait_for(
+            chat.send_message_async(last_msg, generation_config=gen_config),
+            timeout=self._timeout_seconds,
         )
         text = resp.text or ""
         usage = self._extract_usage(resp)
-        return CompletionResult(text=text, usage=usage, model=model)
+        finish_reason = ""
+        try:
+            candidates = getattr(resp, "candidates", None) or []
+            if candidates:
+                fr = getattr(candidates[0], "finish_reason", None)
+                finish_reason = str(fr.name).lower() if fr else ""
+        except Exception:
+            pass
+        return CompletionResult(text=text, usage=usage, model=model, finish_reason=finish_reason)
 
     async def stream(
         self,
@@ -107,13 +123,14 @@ class GoogleProvider:
 
         last_msg = history[-1]["parts"][0] if history else ""
         accumulated = ""
-        resp = await chat.send_message_async(
-            last_msg, generation_config=gen_config, stream=True,
-        )
-        async for chunk in resp:
-            delta = chunk.text or ""
-            accumulated += delta
-            yield StreamChunk(delta=delta, accumulated=accumulated)
+        async with asyncio.timeout(self._timeout_seconds):
+            resp = await chat.send_message_async(
+                last_msg, generation_config=gen_config, stream=True,
+            )
+            async for chunk in resp:
+                delta = chunk.text or ""
+                accumulated += delta
+                yield StreamChunk(delta=delta, accumulated=accumulated)
 
         usage = self._extract_usage(resp)
         yield StreamChunk(

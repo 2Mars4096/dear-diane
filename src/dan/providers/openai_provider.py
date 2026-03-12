@@ -6,16 +6,23 @@ from typing import Any, AsyncIterator
 
 from openai import AsyncOpenAI, APIError, APITimeoutError, RateLimitError
 
-from dan.providers import CompletionResult, ProviderConfig, StreamChunk
+from dan.providers import (
+    CompletionResult,
+    ProviderConfig,
+    StreamChunk,
+    resolve_provider_timeout,
+)
 
 
 class OpenAIProvider:
     """Provider for OpenAI and any OpenAI-compatible endpoint (e.g. vectorengine.ai)."""
 
     def __init__(self, config: ProviderConfig) -> None:
+        self._timeout_seconds = resolve_provider_timeout(config)
         self._client = AsyncOpenAI(
             api_key=config.api_key,
             base_url=config.base_url,
+            timeout=self._timeout_seconds,
         )
 
     @classmethod
@@ -23,6 +30,10 @@ class OpenAIProvider:
         """Wrap an existing AsyncOpenAI client (for backward compat / test injection)."""
         instance = object.__new__(cls)
         instance._client = client
+        timeout = getattr(client, "timeout", None)
+        instance._timeout_seconds = (
+            float(timeout) if isinstance(timeout, (int, float)) else None
+        )
         return instance
 
     @staticmethod
@@ -57,6 +68,8 @@ class OpenAIProvider:
         }
         if max_tokens is not None:
             call_kwargs["max_tokens"] = max_tokens
+        if self._timeout_seconds is not None:
+            call_kwargs.setdefault("timeout", self._timeout_seconds)
 
         resp = await self._client.chat.completions.create(**call_kwargs)
         message = resp.choices[0].message
@@ -76,9 +89,11 @@ class OpenAIProvider:
                 for tc in message.tool_calls
             ]
         cached_input = (usage or {}).get("cached_input_tokens", 0)
+        finish_reason = getattr(resp.choices[0], "finish_reason", "") or ""
         return CompletionResult(
             text=text, usage=usage, model=model, tool_calls=tool_calls,
             cached_input_tokens=cached_input,
+            finish_reason=finish_reason,
         )
 
     async def stream(
@@ -99,6 +114,8 @@ class OpenAIProvider:
         }
         if max_tokens is not None:
             call_kwargs["max_tokens"] = max_tokens
+        if self._timeout_seconds is not None:
+            call_kwargs.setdefault("timeout", self._timeout_seconds)
 
         stream = await self._client.chat.completions.create(**call_kwargs)
         accumulated = ""

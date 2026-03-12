@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from dan.providers import CompletionResult, ProviderConfig, StreamChunk
+from dan.providers import (
+    CompletionResult,
+    ProviderConfig,
+    StreamChunk,
+    resolve_provider_timeout,
+)
 
 
 class AnthropicProvider:
@@ -18,7 +23,11 @@ class AnthropicProvider:
                 "AnthropicProvider requires the 'anthropic' package. "
                 "Install with: pip install anthropic"
             )
-        self._client = AsyncAnthropic(api_key=config.api_key)
+        self._timeout_seconds = resolve_provider_timeout(config)
+        self._client = AsyncAnthropic(
+            api_key=config.api_key,
+            timeout=self._timeout_seconds,
+        )
 
     _CACHE_TOKEN_THRESHOLD = 1024
 
@@ -89,6 +98,7 @@ class AnthropicProvider:
         }
         if system_text:
             call_kwargs["system"] = system_text
+        call_kwargs.setdefault("timeout", self._timeout_seconds)
 
         resp = await self._client.messages.create(**call_kwargs)
         text = ""
@@ -97,10 +107,12 @@ class AnthropicProvider:
                 text += getattr(block, "text", "")
         usage = self._extract_usage(resp)
         cached_input, cache_write = self._extract_cache_tokens(resp)
+        finish_reason = getattr(resp, "stop_reason", "") or ""
         return CompletionResult(
             text=text, usage=usage, model=model,
             cached_input_tokens=cached_input,
             cache_write_tokens=cache_write,
+            finish_reason=finish_reason,
         )
 
     async def stream(
@@ -121,6 +133,7 @@ class AnthropicProvider:
         }
         if system_text:
             call_kwargs["system"] = system_text
+        call_kwargs.setdefault("timeout", self._timeout_seconds)
 
         accumulated = ""
         async with self._client.messages.stream(**call_kwargs) as stream:

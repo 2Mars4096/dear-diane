@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import os
 from typing import Any, AsyncIterator, Protocol, runtime_checkable
 
 from dan.providers.capabilities import ModelCapabilityRegistry  # noqa: F401
@@ -20,6 +21,7 @@ class CompletionResult:
     tool_calls: list[dict[str, Any]] | None = None
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
+    finish_reason: str = ""
 
 
 def apply_cache_hints(
@@ -53,6 +55,32 @@ class ProviderConfig:
     base_url: str | None = None
     default_model: str | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+def resolve_provider_timeout(
+    config: ProviderConfig,
+    *,
+    default_seconds: float = 120.0,
+) -> float:
+    """Resolve the default request timeout for a provider instance.
+
+    Priority:
+    1. ``config.extra["timeout_seconds"]``
+    2. ``DAN_PROVIDER_TIMEOUT``
+    3. ``DAN_LLM_CALL_TIMEOUT``
+    4. ``default_seconds``
+    """
+    raw = (
+        (config.extra or {}).get("timeout_seconds")
+        or os.environ.get("DAN_PROVIDER_TIMEOUT")
+        or os.environ.get("DAN_LLM_CALL_TIMEOUT")
+        or default_seconds
+    )
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        return default_seconds
+    return timeout if timeout > 0 else default_seconds
 
 
 @runtime_checkable
