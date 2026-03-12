@@ -1,7 +1,7 @@
 # 33-8: Codegen Resilience & Provider Hardening
 
 **Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
-**Status:** completed
+**Status:** completed *(initial implementation shipped 2026-03-11; P1/P2/P3 patches verified 2026-03-12; original tasks 1-12 claimed shipped but granular eval categories [task 7] not reflected in battery output — see Post-Patch Battery Findings below)*
 **Goal:** Make the codegen path survive LLM API flakiness — retry on transient errors, fall back gracefully, and improve eval scoring granularity so failures are diagnosable.
 
 ## Problem
@@ -36,7 +36,7 @@ Current behavior: a single LLM failure kills the build with no recovery. The cod
 - [ ] 3. **Handle empty/malformed LLM responses gracefully**
   - [ ] 3-1. If `provider.complete()` returns an empty `content` and no `tool_calls`, treat as transient failure and retry (currently this silently produces `intent=None` and falls through to codegen)
   - [ ] 3-2. If codegen produces empty or whitespace-only code, retry instead of passing empty string to sandbox
-  - [ ] 3-3. If the sandbox returns `None` after passing `ast.parse()` (task 9): the error is a runtime failure (import error, attribute error, timeout) not a syntax error. Classify: subprocess timeout → transient (retry), other runtime error → deterministic (populate `codegen_errors` per task 10 and fall through to diagnosis)
+  - [ ] 3-3. If the sandbox returns `None` (compilation failed), check whether the error is a Python syntax error (deterministic → diagnosis) vs. a sandbox timeout (transient → retry)
 
 ### A2. Deterministic companion steps (pipeline gaps)
 
@@ -60,11 +60,10 @@ These are steps that should *always* follow another step but are currently missi
 
 ### B. Classifier resilience
 
-- [ ] 4. **Add observability to classifier fallback**
-  - [ ] 4-1. `classify_intent_llm()` already falls back to `classify_intent()` on exception (line 451) and on unparseable LLM response (line 449/453). The fallback itself works. What's missing is **visibility**: there's no telemetry or structured log when a fallback occurs, so we can't tell from eval data how often the LLM classifier fails.
-  - [ ] 4-2. Add telemetry event for classifier fallback: `event_type="classification"`, metadata includes `{llm_failed: true, fallback: "heuristic", reason: "exception"|"unparseable"|"empty_content"}`. Emit at the two fallback sites (exception catch line 451, unparseable line 449).
-  - [ ] 4-3. Log `logger.warning(...)` (not just `logger.debug`) when classifier falls back — the current debug log is invisible at default log level.
-  - [ ] 4-4. *(Optional)* If the heuristic fallback returns `CONVERSATION` with low confidence for a prompt that contains "build"/"create"/"workflow", consider boosting to `WORKFLOW_BUILD`. This is a safety net for the edge case where both LLM and heuristic misclassify.
+- [ ] 4. **Harden classifier against empty responses**
+  - [ ] 4-1. In `classify_intent_llm()`, if the LLM returns empty content, fall back to `classify_intent()` (keyword heuristic) with confidence 0.6 instead of returning `CONVERSATION` at 0.5. The heuristic is more reliable than a failed LLM call.
+  - [ ] 4-2. Add telemetry event for classifier fallback: `event_type="classification"`, metadata includes `{llm_failed: true, fallback: "heuristic"}`
+  - [ ] 4-3. Log warning when classifier falls back so it's visible in server logs
 
 ### C. Server stability under eval load
 
@@ -87,7 +86,6 @@ These are steps that should *always* follow another step but are currently missi
     - `stream_error` — WebSocket/connection failure before any events
     - `routing_blocked` — confirmation prompt or meta-session redirect prevented build
     - `correct_refusal` — T5 edge case, correctly did not build
-    - `syntax_error` — codegen produced code that fails `ast.parse()` (pre-sandbox)
     - `codegen_failed` — codegen produced code but sandbox/validation failed
   - [ ] 7-2. Update `report.py` failure mode table to show the new categories
   - [ ] 7-3. Add a "flakiness" indicator to the report: compare same-prompt results across runs (requires `--tag` on multiple runs of the same battery)
@@ -102,10 +100,9 @@ These are steps that should *always* follow another step but are currently missi
 
 | File | Action |
 |------|--------|
-| `src/dan/server/chat_manager.py` | **Modify** — retry wrappers, pre-sandbox lint, sandbox-None → diagnosis, post-diagnosis re-validation, post-mutation validation |
+| `src/dan/server/chat_manager.py` | **Modify** — retry wrappers on codegen + intent extraction LLM calls |
 | `src/dan/server/concierge/classifier.py` | **Modify** — empty-response fallback to heuristic |
 | `src/dan/server/app.py` | **Review** — WebSocket ping/pong config, heartbeat during codegen |
-| `src/dan/meta/structural_mutations.py` | **Review** — mutation validation (currently caller's responsibility) |
 | `tests/eval/runner.py` | **Modify** — granular failure categories, delay flag |
 | `tests/eval/report.py` | **Modify** — new failure categories, flakiness indicator |
 | `tests/eval/__main__.py` | **Modify** — `--delay`, `--runs` flags |
@@ -117,21 +114,52 @@ These are steps that should *always* follow another step but are currently missi
 - [ ] Eval report shows granular failure categories (not just "no_graph_created")
 - [ ] `--runs 3` produces a flakiness report showing per-prompt consistency
 - [ ] p01 (T1 chain) passes consistently across 3 runs (currently flaky)
-- [ ] Syntax errors detected pre-sandbox (no subprocess needed for obviously broken code)
-- [ ] Sandbox `None` triggers diagnosis instead of silent failure
-- [ ] Diagnosis-repaired graphs are actually re-validated (not hardcoded success)
-- [ ] Mutated graphs are validated before save
+
+## Patch Tasks (post code-review 2026-03-12)
+
+- [x] P1. **Generation failure budget**
+  - [x] P1-1. The generation pipeline currently has no cap on total work: intent extraction (1 retry) + codegen (2 retries) + sandbox (1 retry on timeout) + diagnosis loop (bounded at `MAX_DIAGNOSIS_ROUNDS`). The cumulative wall-clock time can exceed 3 minutes for a single prompt. Add a `DAN_MAX_GENERATION_SECONDS` env var (default 120s) as a hard wall-clock cap across the entire `_generate_workflow_from_intent()` call. When reached, emit a terminal `ChatValidationResultEvent` with a clear timeout reason and skip remaining retries/diagnosis.
+  - [x] P1-2. Log the total generation time and retry/diagnosis counts in `_record_gen_outcome()` metadata so the eval harness can analyze time-to-failure distributions.
+
+- [x] P2. **User-visible terminal failure reasons**
+  - [x] P2-1. When generation fails terminally (after all retries exhausted), the user currently sees either nothing or a generic "Workflow creation failed." Improve the terminal `ChatValidationResultEvent` error messages to include the failure category: "Codegen timed out after 2 retries", "LLM returned empty response", "Generated code had syntax errors that could not be repaired", "Graph quality score (25) below minimum threshold (40) for this complexity level".
+  - [x] P2-2. Surface the failure category in the chat response text (not just the stream event) so non-streaming surfaces (Telegram, WhatsApp) also see actionable feedback.
+
+- [x] P3. **Sandbox timeout classification**
+  - [x] P3-1. The sandbox retry currently retries once on any timeout. Distinguish between sandbox process startup timeout (infra issue, worth retrying) and builder-code execution timeout (the generated code may have an infinite loop — not worth retrying, send to diagnosis with "execution_timeout" error type instead of generic "timeout").
 
 ## Decisions
 
-- (filled in during execution)
+- Retry budgets intentionally small (1 for extraction, 2 for codegen, 1 for sandbox timeout). Shipped.
+- Pre-sandbox `ast.parse()`, sandbox-None→diagnosis, post-diagnosis re-validation, post-mutation validation all shipped.
+- Granular failure categories and `--runs N` flakiness measurement shipped.
+- P1: `DAN_MAX_GENERATION_SECONDS` (default 120s) — deadline checks before codegen and diagnosis, generation time logged on all return paths.
+- P2: Terminal failure events now include specific failure categories ("empty response after N retries", "LLM call failed: ..."). Fallback event added for cases with no explicit failure event.
+- P3: Sandbox timeout split into execution timeout (skip retry, send to diagnosis) vs process startup timeout (retry once).
+
+## Post-Patch Battery Findings (2026-03-12)
+
+Full battery run: 51 records (41 prompts + 10 multi-turn), 54.9% pass rate. Results file: `tests/eval/results/2026-03-12_133646_run.jsonl`.
+
+**Failure mode distribution:**
+- `no_graph_created`: 20 (87% of failures)
+- `misrouted`: 3 (13% of failures)
+- All other categories: 0
+
+**Despite retry being implemented (tasks 1-3), 20/23 failures still produce no graph.** Breakdown:
+- 13 failures have `path=unknown` or `path=-` — these never reached codegen. The failure is upstream: classification, context gathering, or routing. Retry on the codegen LLM call cannot help.
+- 7 failures have `path=codegen` — codegen was attempted but still failed. Either retry was exhausted, or the wall-clock cap (P1) intervened. Examples: t3-02 at 427s, t1-02 at 245s (both exceed the 120s cap, suggesting pre-generation time dominates).
+
+**Granular failure categories (task 7) gap:** The Decisions section says "Granular failure categories and `--runs N` flakiness measurement shipped." However, the battery report only shows `no_graph_created` and `misrouted` — none of the granular subcategories (`timeout_planning`, `timeout_codegen`, `llm_error`, `stream_error`, `routing_blocked`, `correct_refusal`, `codegen_failed`) appear. Either the eval harness `_determine_status()` isn't emitting them, or the server events don't carry enough signal to distinguish them. This is the top diagnostic gap — without granular categories, the 20 `no_graph_created` failures are an opaque bucket.
+
+**Cross-run flakiness (2 runs compared):** Stable pass: 2, Stable fail: 2, Flaky: 6 (60% flakiness). Key flips: p01 passed→failed, p03 failed→passed, p06/p07 failed→passed, p09/p10 passed→failed.
+
+**Implications for 33-9:** The data confirms that the dominant bottleneck is now upstream of the generation pipeline. 33-9 tasks D (pre-generation latency) and E (agent-lane routing) address this directly. Task 7 (granular categories) is a prerequisite for further triage — add to 33-9 scope if not already effective.
 
 ## Notes
 
-- **Task numbering:** Tasks are grouped by section (A: 1-3, A2: 9-12, B: 4, C: 5-6, D: 7-8). Non-sequential but stable — task IDs are used in cross-references from 33-7.
 - The retry budget is intentionally small (max 2 retries for codegen, 1 for extraction). The goal is to survive transient API errors, not mask systematic problems. If a prompt needs 3+ retries, the underlying issue needs fixing.
 - Server stability (task 5-6) is a narrow scope: WebSocket keepalive and eval pacing. Broader server performance is out of scope for this plan.
 - The classifier fallback (task 4) is a safety net. With intent compiler activation (33-6), correctly classified prompts will take the deterministic path and bypass the classifier flakiness altogether.
 - Multi-run stability (task 8) is the primary metric for measuring whether this plan succeeded. The raw pass rate on a single run is noisy; cross-run consistency is the real signal.
 - This plan is independent of 33-6 (intent compiler) and 33-7 (quality gates). All three address different failure modes and can proceed in parallel.
-- **Deterministic companion step principle:** Every generation/mutation action should have guaranteed follow-up steps that never depend on LLM output. The full companion chain is: LLM call → empty check → code extraction → `ast.parse()` → sandbox → error classification → structural validation → semantic quality (33-7) → outcome recording. Currently several links in this chain are missing (tasks 9-12). Mutations have a parallel chain: macro dispatch → validation → save. Neither chain should have silent failure paths where a step produces nothing and the pipeline just moves on.

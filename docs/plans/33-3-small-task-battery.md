@@ -97,7 +97,7 @@ Reuse / adaptation prompts (T2R) have different criteria:
 ## Tasks
 
 - [x] 1. Write all prompt fixtures into `tests/eval/prompts.json`
-- [ ] 2. Run the battery via the harness *(see [eval-run-guide](../eval-run-guide.md); requires `dan-up`)*
+- [x] 2. Run the battery via the harness *(2026-03-12: full run on port 8000, 51 records, 54.9% pass)*
 - [ ] 3. Review results and annotate false positives/negatives
 - [x] 4. Compute per-tier and per-lane pass rates *(report.by_tier, report.by_lane)*
 - [x] 5. Record generation path per prompt *(report.generation_path with by_tier breakdown)*

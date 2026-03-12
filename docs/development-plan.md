@@ -392,6 +392,7 @@ The paper-writing workflow already in `development-plan.md` Section 1 is the tar
 | **12** | Author & distribute | CLI, publish as API/MCP, messaging integrations, shareable blocks, PyPI package | **Completed** |
 | **20** | Telegram Multi-Bot Platform | Adapter upgrade, BotFleet, MessageRouter, native features (polls, streaming edits, reactions, forum topics), `dan-bot` CLI, unified `dan` CLI | **Completed** |
 | **21** | Daily-Use QoL | Model control, visibility, capability exposure, CLI power-user features, defaults overhaul | **Completed** |
+| **22** | Workflow generation optimization | Convenience layer, intent expansion, smart defaults, domain profiles. **32-7:** Direct execution architecture — eliminated codegen→sandbox roundtrip for complex tasks. `IntentCompiler.build_graph()` constructs Graph objects in-process. | In progress |
 
 ---
 

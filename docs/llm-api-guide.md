@@ -1183,6 +1183,39 @@ dan-serve
 
 ---
 
+## 9b. Streaming Response Protocol
+
+After `POST /api/chat/message` returns `{ "stream_channel_id": "chat-abc123" }`, connect to:
+
+```
+ws://<host>/api/chat/<stream_channel_id>/events
+```
+
+### Event Types
+
+| Event type | Semantics | Key fields |
+|---|---|---|
+| `chat_token` | Incremental text token | `delta: str`, `accumulated: str` |
+| `chat_complete` | Terminal event — final response | `content: str`, `detected_mode: str` |
+| `chat_queued` | Request queued; reconnect to new channel | `stream_channel_id: str`, `queue_position: int` |
+| `chat_error` | Terminal error | `error: str` |
+| `chat_interrupted` | Generation was cancelled | `content: str` (partial) |
+| `chat_tool_call_start` | Tool invocation began | `tool_name: str` |
+| `chat_tool_call_result` | Tool result summary | `tool_call_id: str`, `tool_name: str`, `status: str`, `output_preview: str`, `duration_ms: int` |
+| `chat_file_attachment` | File artifact delivered | `path: str` |
+| `chat_poll_request` | Poll for user | `question: str`, `options: list[str]` |
+| `chat_mutation` | Graph mutation proposed | `mutation_plan: dict` |
+
+### Lifecycle
+
+1. Open WebSocket to `/api/chat/<channel_id>/events`
+2. Receive `chat_token` events (if streaming) or go directly to terminal event
+3. On `chat_queued`: close current socket, reconnect to `stream_channel_id` from payload
+4. On `chat_complete` / `chat_error` / `chat_interrupted` / terminal `chat_mutation`: stream is done, close socket
+5. A `chat_complete` with `detected_mode: "progress_ack"` is a keepalive — continue listening
+
+---
+
 ## 10. Type Reference
 
 ### Node Types
@@ -1636,12 +1669,22 @@ Build-from-intent creates workflows from natural language. It can be triggered t
 {
   "workflow_id": "my-workflow",
   "message": "Create a paper writing pipeline with review loop",
-  "mode": "build",          # "build" or "mutate" (default: "mutate")
+  "mode": "build",
   "history": [],
-  "thread_id": null,
+  "surface_type": "web",
+  "surface_id": "editor-session-1",
+  "session_id": "chat-thread-1",
+  "surface_context": {
+    "identity": {
+      "name": "web-assistant",
+      "role": "workspace_assistant"
+    }
+  },
   "client_graph_revision": null
 }
 ```
+
+Legacy clients may still send `surface` and `thread_id`, but new frontends should prefer `surface_type` / `surface_id` / `session_id` and keep `history` limited to `user` / `assistant` turns.
 
 When `mode="build"`, the LLM receives `BUILD_FROM_INTENT_PROMPT` with:
 - **Task decomposition guidance** — break intent into stages, map to node types and data flow; dual-branch composition (`data_ingest` + `data_analysis` + drafting/review/compile)
@@ -1707,6 +1750,36 @@ Injects domain-specific prompt prefixes into targeted nodes:
 6. Client applies the mutation, switches to `mode="mutate"` for follow-up edits
 
 Use `strict=true` in `add_edge` operations when building from intent to fail fast on port typos.
+
+### 12g. IntentCompiler — Direct Graph Construction
+
+`IntentCompiler.build_graph(intent, *, domain=None) -> Graph` constructs a `Graph` object directly by calling the builder API in-process — no code string generation or sandbox execution.
+
+```python
+from dan.meta.intent_compiler import IntentCompiler, DirectBuildError
+from dan.meta.intent_schema import WorkflowIntent, StageIntent, StageType
+
+intent = WorkflowIntent(
+    goal="Summarize documents",
+    stages=[
+        StageIntent(name="summarize", stage_type=StageType.transform, description="Summarize the input"),
+    ],
+)
+
+compiler = IntentCompiler()
+try:
+    graph = compiler.build_graph(intent)
+    # graph is a validated Graph object ready for Engine.run()
+except DirectBuildError as e:
+    # Fall back to compile() → sandbox path
+    code = compiler.compile(intent)
+```
+
+For multi-pattern intents, use `build_graph_composed()`:
+
+```python
+graph = compiler.build_graph_composed(intent, ["research_review"])
+```
 
 ---
 

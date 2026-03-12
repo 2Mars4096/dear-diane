@@ -275,3 +275,26 @@ No prompt used the intent compiler path; all successful builds used codegen.
 4. **Intent compiler usage:** 0% intent_compiler; expand pattern coverage so T1/T2 prompts can use deterministic path.
 5. **Graph quality checks:** Add semantic checks (e.g. node count vs expected range) — p08’s 1-node graph is valid but not useful.
 6. **T5 behavior:** p09 and p10 “passed” by outcome (no graph) but p10 never attempted workflow build. Consider separate metrics for “correct refusal” vs “timeout before decision”.
+
+---
+
+## 4. Addendum — 2026-03-12 Runs
+
+### 4.1 Full Battery (build lane)
+- **Source:** `tests/eval/results/2026-03-12_001813_run.jsonl`
+- **51 records, 54.9% pass rate**
+- **Tier breakdown:** T1 72.7%, T2 50%, T2R 0%, T3 52.9%, T4 33.3%, T5 83.3%
+- **Durability:** D1–D4 run on first valid graph
+
+### 4.2 Pilot Both Lanes (partial — 012224)
+- **Source:** `tests/eval/results/2026-03-12_012224_run.jsonl` (12 records, p01–p06)
+- **Agent lane:** 0% pass (6/6 failed)
+- **Build lane:** 50% pass (3/6)
+- **Lane comparison:** 3 agent-only failures (p01: reuse prompt, p02/p04: routing_blocked); 3 both-fail (p03, p05, p06)
+- **Findings:** Agent lane blocked by clarification prompts — auto-reply may need tuning for multi-turn agent flow.
+
+### 4.3 Root Cause — chat_queued ~5ms Failures (fixed 2026-03-12)
+- **Symptom:** Runs where most prompts finished in ~5ms with only `chat_queued` observed and `no_graph_created`.
+- **Cause:** When the dispatcher queues same-project requests, the server emits `chat_queued` with a replacement `stream_channel_id` and closes the original WebSocket. The eval client was connecting only to the initial channel; when it closed after `chat_queued`, the client stopped instead of reconnecting to the queued channel.
+- **Fix:** `tests/eval/client.py` `stream_events()` now follows redirects in a loop (mirrors `telegram_fleet._iter_chat_stream_events()`). Loop detection via `seen_channels`; reconnect-on-close retained for transient failures.
+- **Also fixed:** Exception fallback `str(exc) or repr(exc) or type(exc).__name__` applied consistently in `run_single`, `run_multi_turn`, and top-level handler (setup-failure and unhandled errors).

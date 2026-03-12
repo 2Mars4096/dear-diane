@@ -5,14 +5,14 @@ How to run the workflow generation quality evaluation harness. Requires a runnin
 ## Prerequisites
 
 - Server running: `dan up` or `dan-serve`
-- Default base URL: `http://localhost:8080` (override with `--base-url`)
+- Default base URL: `http://localhost:8000` (override with `--base-url`)
 
 ## Commands
 
 ### Full battery (all prompts)
 
 ```bash
-PYTHONPATH=src python -m tests.eval --lane build --base-url http://localhost:8080
+PYTHONPATH=src python -m tests.eval --lane build
 ```
 
 ### Pilot subset (~10 prompts)
@@ -50,6 +50,21 @@ PYTHONPATH=src python -m tests.eval --lane build --durability
 ```bash
 PYTHONPATH=src python -m tests.eval --report tests/eval/results/YYYY-MM-DD_HHMMSS_run.jsonl
 ```
+
+### Execution path (plan 32-7)
+
+```bash
+# Force inline (direct build) path — start server with DAN_DIRECT_BUILD=only
+PYTHONPATH=src python -m tests.eval --execution-path inline --lane build
+
+# Force codegen path — start server with DAN_DIRECT_BUILD=off
+PYTHONPATH=src python -m tests.eval --execution-path codegen --lane build
+
+# Auto (default) — server chooses based on DAN_DIRECT_BUILD
+PYTHONPATH=src python -m tests.eval --execution-path auto --lane build
+```
+
+The flag sets `DAN_EVAL_EXECUTION_PATH` and stores `execution_path_requested` in records. For the server to honor it, start the server with matching `DAN_DIRECT_BUILD` (e.g. `DAN_DIRECT_BUILD=off` for codegen).
 
 ## Output
 

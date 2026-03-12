@@ -1,7 +1,7 @@
 # 33-5: Analysis & Fixes
 
 **Parent:** [33-generation-quality-eval](33-generation-quality-eval.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Analyze the baseline results from 33-3 and 33-4, identify the top failure modes, apply targeted fixes, and re-measure to confirm improvement.
 
 ## Process
@@ -84,7 +84,8 @@ Write up:
 - [x] 4. Select top 3 failure modes for fixing *(routing_blocked, timeout, LLM flakiness)*
 - [x] 5. Apply targeted fixes *(CONFIRM bypass, META_GOAL override, clarification auto-reply, 33-6/7/8 patches)*
 - [x] 6. Re-run failed prompts to verify fixes *(Run 2: p04 fixed)*
-- [ ] 7. Re-run full battery for regression check *(deferred: LLM API instability; pilot re-run done)*
+- [x] 7. Re-run full battery for regression check *(2026-03-12: 51 records, 54.9% pass, durability D1-D4 run)*
+- [x] 7b. Post-patch full battery re-run *(2026-03-12: 51 records, 54.9% pass — T2 +50pp, T3 +40pp, T4 +50pp vs pre-patch; intent compiler 100% pass when activated; 20/23 failures are no_graph_created; results: 2026-03-12_133646_run.jsonl)*
 - [x] 8. Produce comparison report *(baseline vs post-fix in [33-generation-quality-eval](33-generation-quality-eval.md#measure-fix-measure-cycle-2026-03-11))*
 - [x] 9. Update docs: bugs.md (root causes found), todo.md (remaining work), changelog.md *(bugs.md: Phase 33 root causes triage section added)*
 
@@ -101,7 +102,7 @@ Write up:
 ## Decisions
 
 - **Granular failure modes (33-8 Task 7):** Added `routing_blocked` to `_determine_status()` when events contain "please confirm" or "meta session started" — distinguishes confirmation-blocked builds from generic `no_graph_created`.
-- **Full battery deferred:** LLM API reliability and server stability under load are the main remaining blockers. Full 44-prompt battery deferred until provider stabilizes.
+- **Full battery timing:** A full 44-prompt battery was initially deferred on 2026-03-11 because of LLM API reliability and server stability under load, then completed on 2026-03-12 once the evaluation pass was retried. Treat the earlier deferment as historical context, not current status.
 
 ## Notes
 

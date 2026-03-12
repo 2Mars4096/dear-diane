@@ -351,7 +351,7 @@
 > `31-6` onward adds focused execution, continuity, UX, and learning architecture to make DAN work
 > smoothly for daily use.
 
-- [ ] [31-daily-use-qol](plans/31-daily-use-qol.md) — daily-use QoL: model control, visibility, capability exposure, power-user speed, defaults & docs, execution intelligence, safety, continuity *(19 subplans completed; 31-23 landed with deferred streaming/integration follow-ups)*
+- [ ] [31-daily-use-qol](plans/31-daily-use-qol.md) — daily-use QoL: model control, visibility, capability exposure, power-user speed, defaults & docs, execution intelligence, safety, continuity *(20 subplans completed; 31-23 landed with deferred streaming/integration follow-ups; 31-24 shipped simple-turn fast path + surface-owned identity)*
   - [x] [31-1-model-control](plans/31-1-model-control.md) — A. `/model` command, TierPolicy activation (`DAN_ENABLE_TIER_POLICY`), `get_config` tool, `set_config` expansion for `DAN_LLM_*`, model name in surface hints
   - [x] [31-2-visibility-feedback](plans/31-2-visibility-feedback.md) — B. Chat cost tracking (`/cost`), notification wiring for chat-initiated runs, error retry UX (`/retry`), `/status` fast command
   - [x] [31-3-capability-exposure](plans/31-3-capability-exposure.md) — C. Expose 13 built-in tools (python_eval, csv_read, git tools, etc.) as chat capabilities, workflow introspection tools, `DAN_LEARNING_MODE` bundle
@@ -372,6 +372,9 @@
   - [x] [31-21-proactive-domain-learning](plans/31-21-proactive-domain-learning.md) — R. Domain detection, post-task domain reflection, extraction templates, correction-to-domain bridge, pre-task expertise injection, domain-aware validation, template evolution (meta-learning), success pattern generalization, LLM-assisted template upgrade, context package assembly, two-phase pipeline, auto-read, reuse pattern wiring, 50 tests
   - [x] [31-22-self-adaptive-behavior](plans/31-22-self-adaptive-behavior.md) — S. BehaviorStore + AdaptableParameterRegistry + BehaviorChangeLog + ThresholdCalibrator + PatternAccumulator + seeds + prompt/threshold/intent/domain/model externalization + tool description single-source + `/changes`/`/revert`/`/behavior` commands + AdaptationRegistry extensions (outcome tracking, changelog wiring, scope enforcement, measurement) + safety invariants + tier 1→2 promotion gates + intent/domain discovery tier behavior + prompt tier behavior + regression detection + 86 tests. Integration tests deferred.
   - [x] [31-23-execution-boundary-handoff](plans/31-23-execution-boundary-handoff.md) — T. Typed `BoundaryHandoff` at build iterations, goal-loop attempts, workflow-to-workflow boundaries; deterministic signal extraction; budget caps raised (memory 800→1500, domain 600→1200); total output cap 6000 chars; precedence-ranked prompt assembly; 21 tests. Streaming event + integration tests deferred.
+  - [x] [31-24-concierge-core-tightening](plans/31-24-concierge-core-tightening.md) — U. Conservative simple-turn fast path before heavy prep, plus surface-owned Telegram identity metadata instead of adapter-injected system history.
+  - [ ] [31-25-messaging-reliability](plans/31-25-messaging-reliability.md) — V. Unified portal contract (normalized identifiers, clean history, canonical surface_context for any frontend), error visibility, WhatsApp gap closure, Telegram forum threading, cross-platform UX polish *(code complete; live Telegram/WhatsApp smoke still pending)*
+  - [ ] [31-26-concierge-tiered-execution](plans/31-26-concierge-tiered-execution.md) — W. Route concierge stages through DAN_TIER_MAP (cheap models for classification/file ops, strong models for planning/meta-goals), fix numeric tier key parsing
 
 ## Phase 22 — Workflow Generation Optimization
 > Improve the NL→workflow pipeline end-to-end so generated workflows are more powerful, less
@@ -379,13 +382,14 @@
 > compiler expansion, smart defaults, progressive refinement, domain profiles. Runs before
 > Phase 23 evaluation so the eval measures the optimized pipeline.
 
-- [x] [32-workflow-optimization](plans/32-workflow-optimization.md) — workflow generation optimization: convenience layer, intent expansion, smart defaults, refinement, domain profiles, runtime wiring, and follow-up convenience-gap patch slice
+- [ ] [32-workflow-optimization](plans/32-workflow-optimization.md) — workflow generation optimization: convenience layer, intent expansion, smart defaults, refinement, domain profiles, runtime wiring, direct execution architecture
   - [x] [32-1-builder-convenience-layer](plans/32-1-builder-convenience-layer.md) — A. `chain()`, `review_loop()`, `map_reduce()`, `tool_chain()`, pipeline `|` operator, auto-wiring
   - [x] [32-2-intent-compiler-expansion](plans/32-2-intent-compiler-expansion.md) — B. Expand from 7 to ~15 patterns, auto-composition, domain-aware selection
   - [x] [32-3-smart-generation-defaults](plans/32-3-smart-generation-defaults.md) — C. Auto-wire retry, validation gates, feedback loops, model tiering
   - [x] [32-4-progressive-refinement](plans/32-4-progressive-refinement.md) — D. Structural mutation macros, NL follow-ups without rebuild
   - [x] [32-5-domain-generation-profiles](plans/32-5-domain-generation-profiles.md) — E. Per-domain config bundles (tools, tiers, patterns), 5 seed profiles
   - [x] [32-6-convenience-gaps](plans/32-6-convenience-gaps.md) — F. narrow branch convenience, flexible `review_loop()`, compound structural follow-up mutations
+  - [x] [32-7-direct-execution-architecture](plans/32-7-direct-execution-architecture.md) — G. In-process Graph construction (skip codegen/sandbox), concierge inline execution, post-hoc script materialization, routing logic
 
 ## Phase 23 — Workflow Generation Quality Evaluation
 > Measure how well DAN generates and executes workflows from natural language. Establish
@@ -397,10 +401,12 @@
   - [x] [33-2-test-harness](plans/33-2-test-harness.md) — B. Automated runner, telemetry reader, JSONL logging, metrics, report *(harness implemented: client, runner, metrics, report, CLI)*
   - [x] [33-3-small-task-battery](plans/33-3-small-task-battery.md) — C. Small-task battery (patterns, composition, edge cases, reuse/adapt smoke tests) *(44 prompt fixtures written)*
   - [x] [33-4-complex-workflow-battery](plans/33-4-complex-workflow-battery.md) — D. Complex workflows, multi-turn refinement, durability smoke checks *(fixtures + durability check module built)*
-  - [ ] [33-5-analysis-and-fixes](plans/33-5-analysis-and-fixes.md) — E. Failure triage, targeted fixes, re-measure *(in progress: baseline+triage+fixes+re-run done; routing_blocked added; full battery deferred; tasks 3, 7, 9 remain)*
-  - [x] [33-6-intent-compiler-activation](plans/33-6-intent-compiler-activation.md) — F. Debug and fix 0% intent compiler activation; get T1/T2 onto deterministic path
-  - [x] [33-7-semantic-quality-gates](plans/33-7-semantic-quality-gates.md) — G. Catch underspecified graphs (p02: 2-node review loop, p08: 1-node equity research); quality scoring beyond structural validation
-  - [x] [33-8-codegen-resilience](plans/33-8-codegen-resilience.md) — H. LLM retry/fallback for codegen, classifier hardening, granular failure categories, multi-run stability measurement
+  - [x] [33-5-analysis-and-fixes](plans/33-5-analysis-and-fixes.md) — E. Failure triage, targeted fixes, re-measure *(completed: baseline+triage+fixes+full battery re-run done; routing_blocked added; durability D1-D4 run)*
+  - [x] [33-6-intent-compiler-activation](plans/33-6-intent-compiler-activation.md) — F. Intent compiler activation at 68.4% on T1/T2 (100% pass rate when activated). All patch tasks done.
+  - [x] [33-7-semantic-quality-gates](plans/33-7-semantic-quality-gates.md) — G. Quality scoring with tier-adaptive thresholds, keyword tuning from eval (avg 93.9). All patch tasks done.
+  - [x] [33-8-codegen-resilience](plans/33-8-codegen-resilience.md) — H. Generation failure budget, terminal failure reasons, sandbox timeout classification. All patch tasks done. *(Note: original tasks 1-12 claimed shipped but granular eval categories [task 7] not reflected in battery output — verification moved to 33-9 G.14)*
+  - [x] [33-9-build-path-trustworthiness](plans/33-9-build-path-trustworthiness.md) — I. Build path simplification & trustworthiness *(completed: all tasks implemented + battery validated. Agent lane 0%→20%, flakiness 60%→30%, granular failure categories decompose 97.5% of failures. Build lane 46.7% — below 65% target due to LLM API timeout_planning [72% of failures], not pipeline issues.)*
+  - [ ] [33-10-semantic-correctness-patch](plans/33-10-semantic-correctness-patch.md) — J. Semantic correctness patch: fix review-loop condition polarity bug, enforce fixture expectations in eval pass/fail, eliminate unsafe tool_id/code defaults, inject tool catalog into codegen prompt, add LLM-as-judge scoring
 
 ## Benchmark Suite — Prove Long-Tail Advantage
 > Empirically prove DAN's typed-graph architecture outperforms monolithic agents on complex, multi-step tasks. Published academic benchmarks + custom long-tail scenarios. Analysis framework built first.
@@ -420,6 +426,9 @@
 - [x] **IDE-compatible skill store** — `SkillStore` scans `~/.dan/skills/` (user) + `.dan/skills/` (project) + legacy `DAN_CUSTOM_SKILLS_DIR` for `SKILL.md` files. Frontmatter superset of Cursor/Claude/Codex format. `/skill list|info|import|scan` commands. 48 tests.
 - [x] ~~**Next deferred cleanup slice — Phase 21 live-wiring follow-ups**~~ — goal loop execution wiring (`GoalLoopExecutor` now spawns from `/goal`, tier-specific prompts, RepairClassifier inter-attempt diagnosis, intent recognition), proactive follow-up trigger emission (run-completion and schedule-result triggers wired in app.py, surface routing via PresenceTracker, per-task opt-out), progressive response pipeline (instant acknowledgment before LLM prep, phase transitions on capability execution, heartbeat enhancement), computer-use capability tools (7 browser + 5 desktop tools registered as chat capabilities, observe-act-verify loop, foreground-only enforcement, abort/fail-safe), and centered command reference (`docs/commands.md` + generation script)
 - [x] ~~**Optimize workflow generation quality**~~ → promoted to [Phase 22](#phase-22--workflow-generation-optimization) (Plan 32)
+
+### Messaging swarm ideas (deferred)
+- [ ] **Swarm-grade bot individuality / employee model** — promote bot identity from thin surface metadata to a first-class `BotContext` or durable employee actor boundary (`bot_id`, per-bot policy/tool permissions, memory namespace, ownership queue, delegation/team metadata, per-bot telemetry/reputation). Keep this in backlog until Telegram and WhatsApp are working reliably end-to-end; current priority is messaging stability/UX, not swarm expansion.
 
 ### Execution Intelligence follow-ups
 - [ ] **31-23 bridge wiring** — connect `session.context["last_handoff"]` and `executor.last_handoff` to `msg.metadata["boundary_handoff_context"]` in runtime.py so build-session and goal-loop handoffs reach `_build_prompt_from_package()`. Currently write-only on producer side, read-only on consumer side.
@@ -558,12 +567,24 @@
 - [x] **Project-scoped memory (31-18)** — Memories stored during a project conversation are tagged with `project_id` and `scope=PROJECT`. Retrieval filters by active project, keeping `USER`/`GLOBAL` items visible everywhere. Enables per-project file paths, style rules, and domain conventions that don't bleed across projects.
 - [x] **`/project` command** — Explicit project management via `/project list|info|set|memory|delete`. Replaces context-based project-status classifier heuristic. No more false-positive file sends on "any updates on the kaggle project".
 
-### Adapter abstraction & custom frontend
-> Today WhatsApp, Telegram, CLI, and the editor each carry their own rendering/routing logic. Extract a shared adapter interface so adding a new surface is minimal wiring. Then build a dedicated DAN web frontend (beyond the workflow editor) for managing bots, runs, projects, memory, and schedules in one place.
+### Custom UI — Job-Based Workspaces
+> Build a web application with job-based workspace modes (Research, Development, Analytics, Content, Operations, Chat) that fully leverage DAN's workflow orchestration for complex tasks while staying as convenient as ChatGPT for simple ones. Modes organized by job (what the user is trying to accomplish), not by function (write, code, analyze). Each job cross-cuts multiple functional capabilities. Plans in `docs/UI-plans/`.
+
+- [ ] [1-ui-spec](UI-plans/1-ui-spec.md) — master specification: 6 job-based modes, architecture, phasing, design principles
+  - [ ] **Phase 1: Shell + Chat + Research** (prove the architecture)
+    - [x] [1-1-app-shell-framework](UI-plans/1-1-app-shell-framework.md) — app shell, mode bar, mode switching, Electron setup, Operations/Chat mode wrapping *(core shell + mode switching done; panel framework, project sidebar, persistent chat bar, shared components pending)*
+    - [ ] [1-2-chat-mode](UI-plans/1-2-chat-mode.md) — full-screen chat with rich output rendering, progressive escalation to specialized modes *(layout, input, empty state, table/code rendering, escalation banners, compact tool-call groups, Enter-send, queued-stream handoff, progress/final-response streaming fix, auto-generated thread titles, and explicit user rename controls done; charts, file cards, diff view, broader conversation management, context panel pending)*
+    - [ ] [1-3-research-mode](UI-plans/1-3-research-mode.md) — research workspace: writing pane, PDF reader, references, reviews, pipeline progress, code cells
+  - [ ] Phase 2: Analytics mode + Management dashboard → (not yet planned)
+  - [ ] Phase 3: Development mode → (not yet planned)
+  - [ ] Phase 4: Content + Operations modes → (not yet planned)
+  - [ ] Phase 5: Custom modes + auto-detection → (not yet planned)
+
+### Adapter abstraction
+> Extract a shared adapter interface so adding a new surface is minimal wiring.
 
 - [ ] **Adapter interface extraction** — define a common `SurfaceAdapter` ABC that captures the shared contract across Telegram, WhatsApp, CLI, and editor adapters: message ingestion, reply rendering, media handling, slash-command dispatch, HumanNode resolution, presence tracking. Each existing adapter becomes a thin implementation of this interface. Reduces duplication and makes adding new surfaces (Discord, Slack, web UI) trivial.
 - [ ] **Surface capability matrix** — catalog which features each adapter supports (inline keyboards, reactions, file upload, streaming edits, forum topics, voice, polls) vs. graceful degradation. Use this to drive surface hints and feature-flag rendering logic rather than per-adapter `if` branches.
-- [ ] **DAN management frontend** — standalone web UI (separate from the workflow editor) for day-to-day operations: bot fleet status/control, active & historical runs, project/task overview, memory browser (facts, preferences, principles, corrections), schedule manager, cost dashboard, notification history. Acts as the "admin panel" that messaging surfaces can't provide.
 - [ ] **Unified adapter test harness** — shared test suite that every adapter must pass: message round-trip, slash commands, media, HumanNode prompt/response, concierge routing, error surfacing. New adapters get instant validation.
 
 ### Revenue-generating autonomous workflows

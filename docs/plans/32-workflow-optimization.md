@@ -1,6 +1,6 @@
 # 32: Workflow Generation Optimization
 
-**Status:** completed
+**Status:** in-progress
 **Goal:** Improve the NL→workflow pipeline end-to-end so generated workflows are more powerful, less verbose, and work correctly on first attempt more often — before measuring quality in Phase 23.
 
 ## Motivation
@@ -54,6 +54,7 @@ Six targeted improvements, ordered by impact:
 | [32-4](32-4-progressive-refinement.md) | Progressive NL Refinement | Structural mutation macros (wrap-in-loop, fan-out, insert-gate), node resolution by name, graph-context injection for follow-up turns | ~2 days | 32-1, 32-2 |
 | [32-5](32-5-domain-generation-profiles.md) | Domain Generation Profiles | Per-domain config bundles (tools, model tiers, patterns, validation), 4 seed profiles, codegen prompt injection | ~1.5 days | 32-2, 32-3 |
 | [32-6](32-6-convenience-gaps.md) | Workflow Convenience Gaps Patch-Up | narrow conditional branching, flexible `review_loop()`, compound structural follow-ups | ~1 day | 32-1, 32-2, 32-4 |
+| [32-7](32-7-direct-execution-architecture.md) | Direct Execution Architecture | In-process Graph construction (skip codegen/sandbox), concierge inline execution, post-hoc script materialization, routing logic | ~4 days | 32-1, 32-2 |
 
 ## Dependencies / Sequencing
 
@@ -68,6 +69,7 @@ Six targeted improvements, ordered by impact:
 32-2 and 32-3 can run in parallel after 32-1 completes.
 32-5 waits for both 32-2 (expanded pattern catalog) and 32-3 (`generation_defaults.py` created).
 32-6 is a narrow follow-up patch slice after the main Phase 32 implementation; it depends on the existing convenience layer, intent compiler, and structural mutation work already being in place.
+32-7 depends on 32-1 (builder convenience layer) and 32-2 (intent compiler expansion). Can start after both are complete. Independent of 32-3 through 32-6.
 
 ## Success Criteria
 

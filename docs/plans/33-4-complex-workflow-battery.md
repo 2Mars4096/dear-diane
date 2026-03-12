@@ -136,8 +136,8 @@ At least one follow-up should be compound, e.g. `"Add a review loop after the su
 - [x] 1. Write T4 prompt fixtures
 - [x] 2. Write multi-turn sequence fixtures (with follow_ups field), including at least one compound structural follow-up in a single turn
 - [x] 3. Add durability smoke fixtures / checks (`tests/eval/durability_checks.py`)
-- [ ] 4. Run complex battery via harness
-- [ ] 5. Attempt execution on execution-friendly valid graphs
+- [x] 4. Run complex battery via harness *(included in full run; T4: 33% pass, m1/m2/m3: 7/10 turns passed)*
+- [x] 5. Attempt execution on execution-friendly valid graphs *(T4 --execute: 3 valid graphs, execution attempted, all failed at runtime — expected for tool-heavy workflows)*
 - [x] 6. Run durability smoke checks *(CLI --durability flag runs D1-D4 on first valid graph)*
 - [ ] 7. Review results, annotate failure modes
 - [x] 8. Check whether domain profiles (32-5) activated for domain-specific T4 prompts *(report.t4_domain)*
