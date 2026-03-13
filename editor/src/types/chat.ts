@@ -30,6 +30,7 @@ export interface ChatMessage {
   runEvents?: RunEventPayload[];
   attachments?: Array<{ path: string; filename: string; size?: number }>;
   progressStatus?: string;
+  progressFilePath?: string;
 }
 
 export interface ChatThread {

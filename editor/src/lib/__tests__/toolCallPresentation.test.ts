@@ -69,28 +69,28 @@ describe("toolCallPresentation", () => {
   });
 
   it("describes the latest running tool in plain text", () => {
-    expect(
-      describeLatestToolProgress([
-        {
-          id: "a",
-          toolName: "list_directory",
-          argsPreview: '{"path":"/tmp/project/src"}',
-          status: "running",
-        },
-      ]),
-    ).toBe("Listing directory contents of src");
+    const result = describeLatestToolProgress([
+      {
+        id: "a",
+        toolName: "list_directory",
+        argsPreview: '{"path":"/tmp/project/src"}',
+        status: "running",
+      },
+    ]);
+    expect(result?.text).toBe("Listing directory contents of src");
+    expect(result?.filePath).toBe("/tmp/project/src");
   });
 
   it("describes completed tools as continuing progress", () => {
-    expect(
-      describeLatestToolProgress([
-        {
-          id: "a",
-          toolName: "web_search",
-          argsPreview: '{"query":"oil prices 2026 outlook"}',
-          status: "success",
-        },
-      ]),
-    ).toBe('Finished web search for "oil prices 2026 outlook". Continuing...');
+    const result = describeLatestToolProgress([
+      {
+        id: "a",
+        toolName: "web_search",
+        argsPreview: '{"query":"oil prices 2026 outlook"}',
+        status: "success",
+      },
+    ]);
+    expect(result?.text).toBe('Finished web search for "oil prices 2026 outlook". Continuing...');
+    expect(result?.filePath).toBeUndefined();
   });
 });

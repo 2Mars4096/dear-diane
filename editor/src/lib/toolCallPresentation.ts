@@ -297,10 +297,29 @@ function formatToolProgressMessage(
   }
 }
 
-export function describeLatestToolProgress(toolCalls: ToolCallInfo[]): string | null {
+export interface ToolProgressInfo {
+  text: string;
+  filePath?: string;
+}
+
+function extractFilePath(toolCall: ToolCallInfo): string | null {
+  const fileTools = new Set([
+    "file_read", "read_file", "write_file", "edit_file", "list_directory",
+  ]);
+  if (!fileTools.has(toolCall.toolName)) {
+    const fallback = extractStringArg(toolCall, "path", "file_path");
+    return fallback || null;
+  }
+  return extractStringArg(toolCall, "path", "file_path", "directory", "dir");
+}
+
+export function describeLatestToolProgress(toolCalls: ToolCallInfo[]): ToolProgressInfo | null {
   const latest =
     [...toolCalls].reverse().find((toolCall) => toolCall.status === "running") ??
     toolCalls[toolCalls.length - 1];
   if (!latest) return null;
-  return formatToolProgressMessage(latest, latest.status);
+  return {
+    text: formatToolProgressMessage(latest, latest.status),
+    filePath: extractFilePath(latest) ?? undefined,
+  };
 }
