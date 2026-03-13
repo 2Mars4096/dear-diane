@@ -141,6 +141,9 @@ class ChatStore:
         path = self._thread_path(workflow_id, thread_id)
         if path.exists():
             path.unlink()
+            meta = self._meta_path(workflow_id, thread_id)
+            if meta.exists():
+                meta.unlink()
             return True
         return False
 

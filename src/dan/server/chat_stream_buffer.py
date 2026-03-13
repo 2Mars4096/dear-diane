@@ -71,13 +71,28 @@ class ReconnectableChatStream:
         self._items.appendleft(self._clone_event(event))
         self._not_empty.set()
 
-    def prime_reconnect_snapshot(self) -> None:
-        """Replay the terminal snapshot when reconnecting after the queue drained."""
-        if self._items or self._terminal_snapshot is None:
+    def prime_reconnect_snapshot(self, *, producer_running: bool = False) -> None:
+        """Prepare the queue for a reconnecting consumer.
+
+        If a terminal snapshot exists and the queue only contains stale None
+        sentinels, replay the snapshot followed by a new None so the
+        reconnected client sees the terminal event.
+
+        If the producer is still running, clear any stale None sentinels so
+        the reconnected consumer waits for real events instead of closing
+        immediately.
+        """
+        has_real_events = any(item is not None for item in self._items)
+        if has_real_events:
             return
-        self._items.append(self._clone_event(self._terminal_snapshot))
-        self._items.append(None)
-        self._not_empty.set()
+        if self._terminal_snapshot is not None:
+            self._items.clear()
+            self._items.append(self._clone_event(self._terminal_snapshot))
+            self._items.append(None)
+            self._not_empty.set()
+        elif producer_running:
+            self._items.clear()
+            self._not_empty.clear()
 
     @staticmethod
     def _clone_event(event: Any) -> Any:

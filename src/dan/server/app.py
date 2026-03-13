@@ -16,7 +16,7 @@ import urllib.request
 import uuid
 from collections import defaultdict
 import zipfile
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
@@ -85,6 +85,10 @@ logger = logging.getLogger(__name__)
 
 _STRICT_MUTATION_VALIDATION = os.environ.get("DAN_STRICT_MUTATION_VALIDATION", "true").lower() == "true"
 _MUTATION_AUTO_RETRY = os.environ.get("DAN_MUTATION_AUTO_RETRY", "true").lower() == "true"
+_CHAT_STREAM_MISSING_TERMINAL_FALLBACK = (
+    "The response stream ended before a final answer was produced. "
+    "Please ask me to continue from the latest progress."
+)
 
 
 def _require_run_manager() -> RunManager:
@@ -1631,57 +1635,7 @@ async def lifespan(app: FastAPI):
             },
         )
         result = await _collect_concierge_terminal_content(surface_msg)
-
-        # 31-12: Create follow-up trigger for scheduled task result
-        _fu_config = getattr(_concierge, "_follow_up_config", None)
-        _fu_queue = getattr(_concierge, "_follow_up_queue", None)
-        if _fu_config is not None and _fu_queue is not None and _fu_config.enabled:
-            try:
-                from dan.server.concierge.follow_up import create_schedule_result_trigger
-                schedule_name = getattr(trigger_context, "task_id", None) or action[:60]
-                trigger = create_schedule_result_trigger(
-                    schedule_name=schedule_name,
-                    result=result[:200] if result else "completed",
-                )
-                _fu_queue.enqueue(trigger)
-            except Exception:
-                logger.debug("Schedule result follow-up trigger failed", exc_info=True)
-
         return result
-
-    async def _dispatch_follow_up(trigger: Any) -> None:
-        target_surface = str(trigger.target_surface or "").strip()
-        external_id = str(trigger.conversation_key or trigger.user_id or "").strip()
-
-        if not external_id and trigger.project_id and _concierge is not None:
-            tracker = getattr(_concierge, "_presence_tracker", None)
-            if tracker is not None:
-                preferred = tracker.get_preferred_surface(trigger.project_id)
-                if preferred is None:
-                    preferred = tracker.get_active_surface()
-                if preferred is not None:
-                    target_surface = target_surface or preferred.surface_type
-                    external_id = preferred.surface_id
-
-        if target_surface and external_id:
-            for aid, (adapter, _task) in list(_active_adapters.items()):
-                if _adapter_surface_types.get(aid) != target_surface:
-                    continue
-                await _send_adapter_text(adapter, external_id, trigger.message)
-                return
-
-        event_bus = getattr(_capability_context, "event_bus", None)
-        if event_bus is not None:
-            event_bus.broadcast({
-                "event_type": "notification",
-                "title": "DAN Follow-Up",
-                "message": trigger.message,
-                "level": "info",
-                "surface_id": external_id or "follow-up",
-            })
-            return
-
-        logger.info("Undeliverable follow-up retained in queue: %s", trigger.message)
 
     # 31-7: Scheduled task background loop (with lease-based authority)
     _task_scheduler = None
@@ -1713,57 +1667,6 @@ async def lifespan(app: FastAPI):
                 logger.info("Task scheduler started (authority=SERVER)")
     except Exception:
         logger.debug("Task scheduler startup skipped", exc_info=True)
-
-    # 31-12: Proactive follow-up delivery loop
-    _follow_up_engine = None
-    try:
-        from dan.server.concierge.follow_up import (
-            FollowUpDeliveryEngine,
-            scan_stale_tasks,
-        )
-
-        _follow_up_config = getattr(_concierge, "_follow_up_config", None)
-        _follow_up_queue = getattr(_concierge, "_follow_up_queue", None)
-        if _follow_up_config is not None and _follow_up_queue is not None:
-            if _concierge is not None:
-                for trigger in scan_stale_tasks(
-                    _concierge.project_store,
-                    stale_hours=_follow_up_config.stale_task_hours,
-                ):
-                    _follow_up_queue.enqueue(trigger)
-            _follow_up_engine = FollowUpDeliveryEngine(
-                queue=_follow_up_queue,
-                config=_follow_up_config,
-                dispatch_fn=_dispatch_follow_up,
-            )
-            if _concierge is not None:
-                _concierge._follow_up_engine = _follow_up_engine
-            await _follow_up_engine.start()
-            app.state.follow_up_engine = _follow_up_engine
-            logger.info("Follow-up delivery engine started")
-    except Exception:
-        logger.debug("Follow-up engine startup skipped", exc_info=True)
-
-    # 31-12: Wire run-completion triggers to follow-up queue
-    try:
-        if _follow_up_config is not None and _follow_up_queue is not None:
-            async def _on_run_completed_follow_up(event: dict) -> None:
-                if not _follow_up_config.enabled:
-                    return
-                event_type = event.get("event_type", "")
-                if event_type in ("run_completed", "run_failed"):
-                    run_id = event.get("data", {}).get("run_id", event.get("run_id", "unknown"))
-                    summary = event.get("data", {}).get("summary", event_type)
-                    project_id = event.get("data", {}).get("project_id")
-                    from dan.server.concierge.follow_up import create_run_completion_trigger
-                    trigger = create_run_completion_trigger(run_id, summary, project_id=project_id)
-                    _follow_up_queue.enqueue(trigger)
-
-            if hasattr(_gw_event_bus, "subscribe"):
-                _gw_event_bus.subscribe(_on_run_completed_follow_up)
-                logger.info("Run-completion follow-up trigger wired to event bus")
-    except Exception:
-        logger.debug("Run-completion follow-up wiring skipped", exc_info=True)
 
     # 31-15: Learning tier activation — store resolved tier on concierge
     try:
@@ -1852,11 +1755,10 @@ async def lifespan(app: FastAPI):
     notif_count = len(_notification_manager.channels) if _notification_manager else 0
     autonomy = os.environ.get("DAN_CONCIERGE_AUTONOMY", "auto")
     scheduler_status = "on" if _task_scheduler is not None else "off"
-    follow_up_status = "on" if _follow_up_engine is not None else "off"
 
     logger.info(
-        "DAN Server started | Model: %s | Tier: %s | Learning: %s | MCP: %d server(s) | Notifications: %d channel(s) | Autonomy: %s | Scheduler: %s | Follow-up: %s",
-        model_name, tier_policy, learning, mcp_count, notif_count, autonomy, scheduler_status, follow_up_status
+        "DAN Server started | Model: %s | Tier: %s | Learning: %s | MCP: %d server(s) | Notifications: %d channel(s) | Autonomy: %s | Scheduler: %s",
+        model_name, tier_policy, learning, mcp_count, notif_count, autonomy, scheduler_status
     )
 
     yield
@@ -1867,12 +1769,6 @@ async def lifespan(app: FastAPI):
             await _task_scheduler.stop()
         except Exception:
             logger.debug("Task scheduler shutdown failed", exc_info=True)
-
-    if _follow_up_engine is not None:
-        try:
-            await _follow_up_engine.stop()
-        except Exception:
-            logger.debug("Follow-up engine shutdown failed", exc_info=True)
 
     if _consolidation_task is not None and not _consolidation_task.done():
         _consolidation_task.cancel()
@@ -3816,6 +3712,30 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
     ] if req.mentions else []
 
     async def _produce():
+        terminal_event_emitted = False
+
+        async def _emit_missing_terminal_fallback() -> None:
+            nonlocal terminal_event_emitted
+            if terminal_event_emitted:
+                return
+            terminal_event_emitted = True
+            logger.warning(
+                "Chat stream %s ended without a terminal event; synthesizing fallback",
+                stream_channel_id,
+            )
+            await _put_chat_stream_event(
+                stream_channel_id,
+                queue,
+                {
+                    "type": "chat_complete",
+                    "message_id": uuid.uuid4().hex[:12],
+                    "content": _CHAT_STREAM_MISSING_TERMINAL_FALLBACK,
+                    "token_usage": {},
+                    "context_window": 0,
+                    "graph_revision": "",
+                },
+            )
+
         try:
             normalized_mode = normalize_chat_mode(req.mode)
             graph_dict = _graph_store.get_graph(req.workflow_id)
@@ -3896,6 +3816,11 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
             async for event in event_stream:
                 payload = event.model_dump()
                 evt_type = payload.get("type", "")
+                if evt_type == "chat_complete":
+                    if payload.get("detected_mode") != "progress_ack":
+                        terminal_event_emitted = True
+                elif evt_type in {"chat_mutation", "chat_error", "chat_interrupted"}:
+                    terminal_event_emitted = True
 
                 if evt_type == "chat_queued" and _dispatcher is not None:
                     queued_channel = payload.get("stream_channel_id", "")
@@ -3994,6 +3919,13 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                     pipe_task = asyncio.create_task(_pipe_tool_run_events())
                     _register_chat_stream(run_stream_id, run_queue, task=pipe_task)
                 await _put_chat_stream_event(stream_channel_id, queue, payload)
+            if not terminal_event_emitted:
+                await _emit_missing_terminal_fallback()
+        except asyncio.CancelledError:
+            if not cancel_event.is_set() and not terminal_event_emitted:
+                with suppress(Exception):
+                    await asyncio.shield(_emit_missing_terminal_fallback())
+            raise
         except Exception as exc:
             logger.exception("Chat _produce() error for channel %s", stream_channel_id)
             await _put_chat_stream_event(
@@ -4110,11 +4042,12 @@ async def chat_events_ws(websocket: WebSocket, channel_id: str):
     current_event: Any | None = None
     await websocket.accept()
     queue.attach_consumer()
-    queue.prime_reconnect_snapshot()
+    task = _chat_produce_tasks.get(channel_id)
+    queue.prime_reconnect_snapshot(producer_running=task is not None and not task.done())
     try:
         while True:
             try:
-                event = await asyncio.wait_for(queue.get(), timeout=25.0)
+                event = await asyncio.wait_for(queue.get(), timeout=10.0)
             except asyncio.TimeoutError:
                 await websocket.send_json({"type": "ping"})
                 continue

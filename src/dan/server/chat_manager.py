@@ -95,6 +95,41 @@ _ACTION_HINT_TOOL_MAP: dict[str, frozenset[str]] = {
     "write_file": frozenset({"file_write"}),
 }
 
+_MISSING_TARGET_PROBE_TOOLS = frozenset({
+    "file_read",
+    "file_grep",
+    "list_directory",
+})
+_RETRYABLE_CAPABILITY_MAX_RETRIES = 1
+_MISSING_TARGET_ERROR_TYPES = frozenset({
+    "not_found",
+    "file_not_found",
+    "directory_not_found",
+    "target_not_found",
+    "missing_path",
+    "missing_file",
+    "path_not_found",
+})
+_MISSING_TARGET_ERROR_MARKERS = (
+    "file not found",
+    "directory not found",
+    "target file missing",
+    "target file not found",
+    "does not exist",
+    "no such file",
+    "no such directory",
+)
+
+_PARALLEL_TOOL_FAMILY_MAP: dict[str, str] = {
+    "file_read": "read",
+    "pdf_read": "read",
+    "spreadsheet_read": "read",
+    "csv_read": "read",
+    "list_directory": "read",
+    "file_grep": "grep",
+    "web_search": "search",
+}
+
 
 def _dedupe_action_hints(required_action_hints: list[str] | None) -> list[str]:
     if not required_action_hints:
@@ -146,12 +181,41 @@ def _tool_choice_for_action_hints(
 
 def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> str:
     instructions: list[str] = []
-    if "write_file" in missing_action_hints:
+    search_pending = "search_web" in missing_action_hints
+    write_pending = "write_file" in missing_action_hints
+    read_pending = "read_file" in missing_action_hints
+    handled_read = False
+
+    if search_pending and write_pending:
+        instructions.append(
+            "You still need to gather live web information AND write the "
+            "requested output. Do your research FIRST (web_search / web_fetch), "
+            "then write incrementally:\n"
+            "1. First file_write with mode='overwrite' — preamble + first section only.\n"
+            "2. Subsequent file_write calls with mode='append' — one section each.\n"
+            "3. Final file_write with mode='append' — close the document "
+            "(\\end{document} or equivalent).\n"
+            "Do NOT write until you have gathered sufficient data."
+        )
+    elif read_pending and write_pending:
+        instructions.append(
+            "You still need to inspect the referenced local file or folder AND "
+            "write the requested output. Read the relevant parts FIRST using "
+            "targeted file_read / pdf_read / list_directory calls, then write "
+            "incrementally:\n"
+            "1. First file_write with mode='overwrite' — preamble + first section only.\n"
+            "2. Subsequent file_write calls with mode='append' — one section each.\n"
+            "3. Final file_write with mode='append' — close the document "
+            "(\\end{document} or equivalent).\n"
+            "Do NOT write until you have inspected the necessary local context."
+        )
+        handled_read = True
+    elif write_pending:
         instructions.append(
             "CRITICAL: You have not yet written the requested output to disk. "
             "Use file_write NOW — do not research or plan further.\n"
             "Strategy for long documents:\n"
-            "1. First call: file_write with mode='write' — write the preamble "
+            "1. First call: file_write with mode='overwrite' — write the preamble "
             "and first section only.\n"
             "2. Each subsequent call: file_write with mode='append' — add one "
             "section at a time.\n"
@@ -159,11 +223,12 @@ def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> s
             "(\\end{document} or equivalent).\n"
             "Do NOT attempt to write the entire document in a single file_write call."
         )
-    if "search_web" in missing_action_hints:
+    elif search_pending:
         instructions.append(
             "You still need to gather live web information. Use web_search or web_fetch before finalizing."
         )
-    if "read_file" in missing_action_hints:
+
+    if read_pending and not handled_read:
         instructions.append(
             "You still need to inspect the referenced local file or folder. "
             "Prefer chunked reads: use file_read or pdf_read with specific "
@@ -173,6 +238,77 @@ def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> s
     if not instructions:
         instructions.append("A required capability step is still missing. Use an appropriate tool before finalizing.")
     return " ".join(instructions)
+
+
+def _tool_schema_name(tool_schema: dict[str, Any]) -> str:
+    if not isinstance(tool_schema, dict):
+        return ""
+    func = tool_schema.get("function")
+    if isinstance(func, dict):
+        return str(func.get("name") or "")
+    return str(tool_schema.get("name") or "")
+
+
+def _parallel_tool_family(tool_name: str) -> str:
+    normalized = str(tool_name or "").strip()
+    if not normalized:
+        return ""
+    if normalized in _PARALLEL_TOOL_FAMILY_MAP:
+        return _PARALLEL_TOOL_FAMILY_MAP[normalized]
+    if normalized.endswith("_read"):
+        return "read"
+    if normalized.endswith("_grep") or normalized.startswith("grep_"):
+        return "grep"
+    if normalized.startswith("search_"):
+        return "search"
+    return normalized
+
+
+def _force_single_tool_request(
+    all_tools: list[dict[str, Any]],
+    tool_name: str,
+    *,
+    allow_exact_tool_choice: bool,
+) -> tuple[list[dict[str, Any]], str | dict[str, Any]]:
+    filtered_tools = [tool for tool in all_tools if _tool_schema_name(tool) == tool_name]
+    if not filtered_tools:
+        filtered_tools = all_tools
+    if allow_exact_tool_choice:
+        return filtered_tools, {
+            "type": "function",
+            "function": {"name": tool_name},
+        }
+    return filtered_tools, "required"
+
+
+def _looks_like_missing_target_error(
+    tool_name: str,
+    cap_result: CapabilityResult,
+) -> bool:
+    if tool_name not in _MISSING_TARGET_PROBE_TOOLS:
+        return False
+    error_type = str(getattr(cap_result, "error_type", "") or "").strip().lower()
+    if error_type in _MISSING_TARGET_ERROR_TYPES:
+        return True
+    message = str(getattr(cap_result, "message", "") or "").lower()
+    return any(marker in message for marker in _MISSING_TARGET_ERROR_MARKERS)
+
+
+def _write_file_escalation_prompt(*, missing_target: bool) -> str:
+    parts: list[str] = []
+    if missing_target:
+        parts.append(
+            "The target file/path does not exist yet. "
+            "Do not retry more read-only tools."
+        )
+    parts.append(
+        "Call file_write NOW. Write ONLY the preamble and first section "
+        "(no more than ~2000 characters). Use mode='overwrite'. "
+        "You will add remaining sections one at a time with mode='append' "
+        "in subsequent turns. Do NOT attempt to write the entire document "
+        "in a single file_write call — it will time out."
+    )
+    return " ".join(parts)
 
 
 def _is_transient_llm_error(exc: Exception) -> bool:
@@ -531,23 +667,8 @@ _CATEGORY_ORDER = [
 ]
 
 
-_ABBREVIATIONS = ("e.g.", "i.e.", "etc.", "vs.")
-_ABBR_SENTINEL = "\x00"
-
-
-def _brief_tool_description(full: str) -> str:
-    protected = full
-    for abbr in _ABBREVIATIONS:
-        protected = protected.replace(abbr, abbr.replace(".", _ABBR_SENTINEL))
-    sentence = protected.split(". ")[0]
-    sentence = sentence.replace(_ABBR_SENTINEL, ".").rstrip(".")
-    if sentence:
-        sentence = sentence[0].lower() + sentence[1:]
-    return sentence
-
-
 def generate_capability_reference() -> str:
-    """Build the '## Available tools' block from TOOL_METADATA (cached per process)."""
+    """Build a compact tool-family summary for the system prompt."""
     global _capability_reference_cache
     if _capability_reference_cache is not None:
         return _capability_reference_cache
@@ -558,16 +679,23 @@ def generate_capability_reference() -> str:
     except Exception:
         all_tools = {}
 
-    by_category: dict[str, list[tuple[str, str]]] = {}
+    by_category: dict[str, list[str]] = {}
     for tool_id, (_fn, meta) in all_tools.items():
         cat = meta.get("category", "other")
-        brief = _brief_tool_description(meta.get("description", tool_id))
-        by_category.setdefault(cat, []).append((tool_id, brief))
+        by_category.setdefault(cat, []).append(tool_id)
+
+    def _family_preview(tool_ids: list[str], *, limit: int = 4) -> str:
+        ordered = sorted(tool_ids)
+        preview = ordered[:limit]
+        extra = len(ordered) - len(preview)
+        suffix = f", +{extra} more" if extra > 0 else ""
+        return ", ".join(preview) + suffix
 
     lines = [
-        "## Available tools",
+        "## Tool Use",
         "",
-        "Call these when the user's intent matches:",
+        "Use the provided tool schemas instead of guessing. Prefer tools when you need grounded facts, "
+        "file contents, web/system actions, or to write deliverables to disk.",
         "",
     ]
 
@@ -577,16 +705,14 @@ def generate_capability_reference() -> str:
         if not entries:
             continue
         seen.add(cat_key)
-        items = ", ".join(f"{tid} ({desc})" for tid, desc in entries)
-        lines.append(f"**{cat_label}:** {items}")
+        lines.append(f"**{cat_label}:** {_family_preview(entries)}")
 
     for cat_key in sorted(by_category.keys()):
         if cat_key in seen:
             continue
         entries = by_category[cat_key]
         label = cat_key.replace("_", " ").title()
-        items = ", ".join(f"{tid} ({desc})" for tid, desc in entries)
-        lines.append(f"**{label}:** {items}")
+        lines.append(f"**{label}:** {_family_preview(entries)}")
 
     lines.append("")
     lines.append(
@@ -598,15 +724,15 @@ def generate_capability_reference() -> str:
     )
     lines.append(
         "For long outputs (reports, code, documents): use file_write to save to disk "
-        "section by section. First call: mode='write' with preamble + first section. "
+        "section by section. First outline the structure, then write one bounded chunk "
+        "at a time. First call: mode='overwrite' with preamble + first section. "
         "Then mode='append' for each subsequent section. Keep each write scoped to a "
         "small, coherent chunk such as one section at a time. "
         "Do NOT put long content in chat — write it to a file."
     )
     lines.append(
-        "Read-only modes (ask/plan): lookup + browse + file read + web read only."
+        "For large files, locate relevant sections first and read targeted ranges."
     )
-    lines.append("{mcp_block}")
 
     _capability_reference_cache = "\n".join(lines)
     return _capability_reference_cache
@@ -618,29 +744,60 @@ def invalidate_capability_cache() -> None:
     _capability_reference_cache = None
 
 
-CAPABILITY_TOOLS_REFERENCE = generate_capability_reference()
+_WHATSAPP_SURFACE_HINTS = (
+    "## Surface: WhatsApp\n"
+    "- Current model: {model_name}\n"
+    "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
+    "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
+    "- ABSOLUTELY NO HTML tags \u2014 WhatsApp renders these as raw text\n"
+    "- No code blocks, no markdown tables \u2014 plain text only\n"
+    "- URLs on their own line (auto-linkified)\n"
+    "- For long reports, organize into clearly separated sections"
+)
+
+_RESEARCH_REPORT_PROMPT_HINT = """\
+## Research & Report Behavior
+
+When asked for a research report, literature review, equity analysis, or deep-dive topic:
+
+### Phase 1 — Research
+1. Use the current date shown above to anchor words like "recent"; include the year in time-sensitive searches.
+2. Search multiple angles (typically 3-8 distinct web_search queries). Batch same-type calls: \
+multiple web_search calls in one response is fine, but do not mix with file_write.
+3. For promising results, use web_fetch to read the full page instead of relying only on snippets.
+4. Every factual claim or citation must come from a tool result. If you cannot source it, say so.
+5. For academic topics, check for relevant local PDFs when likely available.
+
+### Phase 2 — Structure
+Before writing, outline the document: list sections and subsections. \
+If the user requested a specific format (e.g. .tex, .md), plan the preamble/header separately.
+
+### Phase 3 — Incremental writing (MANDATORY for documents > ~1000 words)
+Write the document **chunk by chunk**, one section per file_write call:
+1. **First call:** file_write mode='overwrite' — preamble / header + first section only (~1500-2500 chars).
+2. **Each subsequent call:** file_write mode='append' — one section at a time.
+3. **Final call:** file_write mode='append' — closing matter (bibliography, \\end{document}, etc.).
+Do NOT write the entire document in a single file_write call — it will time out or degrade quality.
+This is analogous to file_read with start_line/end_line: produce and consume content in bounded chunks.
+"""
+
+_RESEARCH_PROMPT_PHRASES = (
+    "literature review",
+    "literature survey",
+    "research report",
+    "deep dive",
+    "deep-dive",
+    "equity analysis",
+    "equity research",
+    "investment memo",
+    "stock pitch",
+    "company analysis",
+    "industry analysis",
+)
 
 SURFACE_HINTS = {
-    "whatsapp": (
-        "## Surface: WhatsApp\n"
-        "- Current model: {model_name}\n"
-        "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
-        "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
-        "- ABSOLUTELY NO HTML tags \u2014 WhatsApp renders these as raw text\n"
-        "- No code blocks, no markdown tables \u2014 plain text only\n"
-        "- URLs on their own line (auto-linkified)\n"
-        "- For long reports, organize into clearly separated sections"
-    ),
-    "whatsapp-web": (
-        "## Surface: WhatsApp\n"
-        "- Current model: {model_name}\n"
-        "- Keep replies concise (1-5 sentences for simple tasks, structured sections for reports)\n"
-        "- Use *bold* for headers (not **markdown**). Bullet points with \u2022\n"
-        "- ABSOLUTELY NO HTML tags \u2014 WhatsApp renders these as raw text\n"
-        "- No code blocks, no markdown tables \u2014 plain text only\n"
-        "- URLs on their own line (auto-linkified)\n"
-        "- For long reports, organize into clearly separated sections"
-    ),
+    "whatsapp": _WHATSAPP_SURFACE_HINTS,
+    "whatsapp-web": _WHATSAPP_SURFACE_HINTS,
     "telegram": (
         "## Surface: Telegram\n"
         "- Current model: {model_name}\n"
@@ -682,28 +839,28 @@ def _resolve_surface_hints(surface: str | None, model_name: str) -> str:
         hints = hints.format(model_name=model_name)
     return hints
 
+
+def _looks_like_research_report_request(user_message: str) -> bool:
+    msg = user_message.lower()
+    if any(phrase in msg for phrase in _RESEARCH_PROMPT_PHRASES):
+        return True
+    has_report_shape = any(
+        token in msg
+        for token in ("report", "review", "analysis", "analyze", "research", "compare")
+    )
+    has_source_expectation = any(
+        token in msg
+        for token in ("cite", "citation", "citations", "sources", "recent", "latest", "papers")
+    )
+    return has_report_shape and has_source_expectation
+
 UNIFIED_SYSTEM_PROMPT = """\
 You are DAN, a personal AI assistant with full tool access. You help with anything: \
 research, file operations, web search, computation, communication, workflow building.
 
 **{current_date}**
 
-## Tools — ALWAYS use tools instead of guessing
-
-**Files:** file_read (text files), pdf_read (PDFs — use for summarize/review/analyze), \
-list_directory (browse folders). All accept absolute paths like ~/Dropbox/...
-**Web:** web_search (current data: prices, weather, news, papers — NEVER guess live data), \
-web_fetch (read a URL's content)
-**System:** shell_command (run terminal commands — Python, R, scripts, system ops), \
-current_datetime (today's date/time — get exact time with timezone if needed), \
-screenshot (capture screen), clipboard (read/write clipboard)
-**Communication:** send_email (send via SMTP), file_write (create/save files)
-**Text:** text_chunk, json_extract, regex_match
-**HTTP:** http_request (REST API calls)
-**Config:** set_config (set API keys and credentials at runtime)
-**Workflow:** list_graphs, start_run, get_run_status, cancel_run, resume_run, \
-get_run_logs, publish_workflow, export_workflow, search_workflow_history, \
-get_learned_principles, discover_capabilities, submit_human_input
+{capability_reference}
 
 ## Rules — NON-NEGOTIABLE
 
@@ -725,21 +882,13 @@ respond using project context and memory. Do NOT search externally unless \
 explicitly asked to search online/externally.
 11. When you make assumptions about what the user wants, state them explicitly \
 so the user can correct you before you act.
-
-## Research & Report Behavior
-
-When asked for research reports, literature reviews, equity analysis, or deep-dive topics:
-1. Use the current date (shown above) to anchor "recent" correctly. Include the year in search queries.
-2. Search MULTIPLE angles — at least 3-5 distinct web_search queries per research task. One search is never enough.
-3. For promising results, call web_fetch to read the full article/page — don't rely on search snippets alone.
-4. Every factual claim (prices, dates, statistics, company data) MUST come from a tool call. If you can't source it, say so.
-5. For academic topics, check if the user has local papers: call list_directory on likely paths, then pdf_read on found PDFs.
-6. When you find important papers you CAN'T access in full (paywalled, gated), explicitly tell the user: \
-"I found these papers but could only see the abstract: [list with author, title, journal]. If you have PDFs, share the path and I'll incorporate them."
-7. Structure reports with clear sections and bold headers. Include a Sources section at the end.
-8. NEVER fabricate citations, author names, journal names, or publication years. Every citation must come from a tool result.
+12. For long files or documents, design the structure first and write incrementally. \
+Use file_write in bounded chunks: first call mode='overwrite', later calls mode='append'. \
+Do not dump an entire long file in one tool call.
 
 {surface_hints}
+
+{task_hints}
 
 {context_block}
 
@@ -2062,7 +2211,6 @@ def _try_persist_audit(
             assistant_message=assistant_message or error or "",
             intent=str(audit_metadata.get("intent") or ""),
             mode=mode,
-            reuse_decision=str(audit_metadata.get("reuse_decision") or ""),
             prompt_messages=[
                 {
                     "role": str(msg.get("role", "")),
@@ -2303,7 +2451,7 @@ class ChatManager:
             hint = get_mcp_tool_hint(bridge)
             if not hint:
                 return ""
-            return f"\n**Domain tools (MCP):**\n{hint}"
+            return f"**Domain tools (MCP):**\n{hint}"
         except Exception:
             return ""
 
@@ -2861,6 +3009,31 @@ class ChatManager:
             if allow_mutation_tool and mode not in READ_ONLY_MODES:
                 all_tools.append(MUTATION_TOOL_SCHEMA)
             satisfied_tool_names: set[str] = set()
+            force_file_write_next_turn = False
+
+            def _tool_request_config(
+                *,
+                force_file_write_now: bool = False,
+            ) -> tuple[list[dict[str, Any]], str | dict[str, Any]]:
+                should_force_file_write = (
+                    force_file_write_now
+                    and "write_file" in required_action_hints
+                    and "file_write" not in satisfied_tool_names
+                )
+                if should_force_file_write:
+                    return _force_single_tool_request(
+                        all_tools,
+                        "file_write",
+                        allow_exact_tool_choice=exact_tool_choice_supported,
+                    )
+                return (
+                    all_tools,
+                    _tool_choice_for_action_hints(
+                        required_action_hints,
+                        satisfied_tool_names,
+                        allow_exact_tool_choice=exact_tool_choice_supported,
+                    ),
+                )
 
             async def _iter_guarded_complete(
                 *,
@@ -2885,7 +3058,7 @@ class ChatManager:
                                 wait_set.add(cancel_wait_task)
                             done, pending = await asyncio.wait(
                                 wait_set,
-                                timeout=25.0,
+                                timeout=8.0,
                                 return_when=asyncio.FIRST_COMPLETED,
                             )
                             if (
@@ -2924,12 +3097,40 @@ class ChatManager:
                                     revision_mismatch=revision_mismatch,
                                     detected_mode="progress_ack",
                                 )
-                            for task in pending:
-                                task.cancel()
                         finally:
                             if cancel_wait_task is not None and not cancel_wait_task.done():
                                 cancel_wait_task.cancel()
                     yield await complete_task
+                except asyncio.CancelledError as exc:
+                    if complete_task is not None and not complete_task.done():
+                        complete_task.cancel()
+                    current_task = asyncio.current_task()
+                    externally_cancelled = bool(
+                        (current_task is not None and current_task.cancelling())
+                        or (cancel_event is not None and cancel_event.is_set())
+                    )
+                    if externally_cancelled:
+                        raise
+
+                    request_tools = request_kwargs.get("tools") or []
+                    tool_names: list[str] = []
+                    for tool in request_tools:
+                        if not isinstance(tool, dict):
+                            continue
+                        func = tool.get("function")
+                        if isinstance(func, dict):
+                            name = str(func.get("name") or "").strip()
+                            if name:
+                                tool_names.append(name)
+                    logger.warning(
+                        "Guarded completion cancelled unexpectedly: model=%s, emit_progress_ack=%s, "
+                        "messages=%d, tools=%s",
+                        request_kwargs.get("model", self._chat_model),
+                        emit_progress_ack,
+                        len(request_kwargs.get("messages") or []),
+                        ",".join(tool_names) or "none",
+                    )
+                    raise RuntimeError("Guarded completion cancelled unexpectedly") from exc
                 except Exception:
                     if complete_task is not None and not complete_task.done():
                         complete_task.cancel()
@@ -2939,6 +3140,7 @@ class ChatManager:
                 # Retry loop for transient errors
                 for attempt in range(2):
                     try:
+                        request_tools, request_tool_choice = _tool_request_config()
                         result: CompletionResult | None = None
                         async for step in _iter_guarded_complete(
                             request_kwargs={
@@ -2946,12 +3148,8 @@ class ChatManager:
                                 "model": self._chat_model,
                                 "temperature": 0.7,
                                 "max_tokens": completion_max_tokens,
-                                "tools": all_tools,
-                                "tool_choice": _tool_choice_for_action_hints(
-                                    required_action_hints,
-                                    satisfied_tool_names,
-                                    allow_exact_tool_choice=exact_tool_choice_supported,
-                                ),
+                                "tools": request_tools,
+                                "tool_choice": request_tool_choice,
                             },
                             interrupted_content="",
                             emit_progress_ack=True,
@@ -3065,6 +3263,15 @@ class ChatManager:
                     end = float("inf")
                 return path, start, end
 
+            def _stream_step_label(step: Any) -> str:
+                step_type = str(getattr(step, "type", "") or "").strip()
+                if step_type:
+                    detected_mode = str(getattr(step, "detected_mode", "") or "").strip()
+                    if detected_mode:
+                        return f"{step_type}:{detected_mode}"
+                    return step_type
+                return type(step).__name__
+
             for _turn in range(max_tool_turns):
                 if cancel_event and cancel_event.is_set():
                     yield ChatInterruptedEvent(
@@ -3101,6 +3308,9 @@ class ChatManager:
                         messages.append({"role": "user", "content": "Continue from where you left off. Keep using file_write to save your output."})
                         messages = _compact_context(messages, self._chat_model)
                         try:
+                            continuation_tools, continuation_tool_choice = _tool_request_config(
+                                force_file_write_now=force_file_write_next_turn,
+                            )
                             continuation_result: CompletionResult | None = None
                             async for step in _iter_guarded_complete(
                                 request_kwargs={
@@ -3108,12 +3318,8 @@ class ChatManager:
                                     "model": self._chat_model,
                                     "temperature": 0.7,
                                     "max_tokens": completion_max_tokens,
-                                    "tools": all_tools,
-                                    "tool_choice": _tool_choice_for_action_hints(
-                                        required_action_hints,
-                                        satisfied_tool_names,
-                                        allow_exact_tool_choice=exact_tool_choice_supported,
-                                    ),
+                                    "tools": continuation_tools,
+                                    "tool_choice": continuation_tool_choice,
                                 },
                                 interrupted_content=lambda: "\n\n".join(combined_text_parts)
                                 if combined_text_parts
@@ -3177,6 +3383,9 @@ class ChatManager:
                             })
                             messages = _compact_context(messages, self._chat_model)
                             try:
+                                continuation_tools, continuation_tool_choice = _tool_request_config(
+                                    force_file_write_now=force_file_write_next_turn,
+                                )
                                 continuation_result = None
                                 async for step in _iter_guarded_complete(
                                     request_kwargs={
@@ -3184,12 +3393,8 @@ class ChatManager:
                                         "model": self._chat_model,
                                         "temperature": 0.7,
                                         "max_tokens": completion_max_tokens,
-                                        "tools": all_tools,
-                                        "tool_choice": _tool_choice_for_action_hints(
-                                            required_action_hints,
-                                            satisfied_tool_names,
-                                            allow_exact_tool_choice=exact_tool_choice_supported,
-                                        ),
+                                        "tools": continuation_tools,
+                                        "tool_choice": continuation_tool_choice,
                                     },
                                     interrupted_content=lambda: "\n\n".join(combined_text_parts)
                                     if combined_text_parts
@@ -3614,28 +3819,46 @@ class ChatManager:
                             "output_preview": cap_preview,
                             "cache_hit": True,
                         }
-                    try:
-                        if ctx is not None and self._capability_registry is not None:
-                            ctx = dataclasses.replace(ctx, workflow_id=workflow_id)
-                            cap_result = await self._capability_registry.execute(
+                    retry_count = 0
+                    while True:
+                        try:
+                            if ctx is not None and self._capability_registry is not None:
+                                ctx = dataclasses.replace(ctx, workflow_id=workflow_id)
+                                cap_result = await self._capability_registry.execute(
+                                    pending["tool_name"],
+                                    pending["args"],
+                                    ctx,
+                                    mode=mode,
+                                )
+                            else:
+                                cap_result = CapabilityResult(
+                                    success=False,
+                                    message="Capability context not configured.",
+                                )
+                        except Exception as exc:
+                            logger.exception(
+                                "Capability handler %s failed during parallel execution",
                                 pending["tool_name"],
-                                pending["args"],
-                                ctx,
-                                mode=mode,
                             )
-                        else:
                             cap_result = CapabilityResult(
                                 success=False,
-                                message="Capability context not configured.",
+                                message=f"Tool error: {exc}",
                             )
-                    except Exception as exc:
-                        logger.exception(
-                            "Capability handler %s failed during parallel execution",
+                        cap_retryable = bool(getattr(cap_result, "retryable", False))
+                        cap_error_type = str(getattr(cap_result, "error_type", "") or "").strip().lower()
+                        if (
+                            cap_result.success
+                            or not cap_retryable
+                            or retry_count >= _RETRYABLE_CAPABILITY_MAX_RETRIES
+                        ):
+                            break
+                        retry_count += 1
+                        logger.info(
+                            "Retrying capability %s after retryable failure (%s) attempt %d/%d",
                             pending["tool_name"],
-                        )
-                        cap_result = CapabilityResult(
-                            success=False,
-                            message=f"Tool error: {exc}",
+                            cap_error_type or "unknown",
+                            retry_count,
+                            _RETRYABLE_CAPABILITY_MAX_RETRIES,
                         )
                     cap_elapsed = int((time.monotonic() - cap_start) * 1000)
                     cap_status = "success" if cap_result.success else "error"
@@ -3682,10 +3905,28 @@ class ChatManager:
                     pending for pending in pending_capabilities
                     if pending.get("dedupe_from") is None
                 ]
-                unique_results = await asyncio.gather(*[
-                    _execute_capability_call(pending)
-                    for pending in unique_pending_capabilities
-                ])
+
+                type_groups: list[list[dict[str, Any]]] = []
+                for pending in unique_pending_capabilities:
+                    tool_family = _parallel_tool_family(pending["tool_name"])
+                    if (
+                        type_groups
+                        and _parallel_tool_family(type_groups[-1][0]["tool_name"]) == tool_family
+                    ):
+                        type_groups[-1].append(pending)
+                    else:
+                        type_groups.append([pending])
+
+                unique_results: list[dict[str, Any]] = []
+                for group in type_groups:
+                    if len(group) == 1:
+                        unique_results.append(await _execute_capability_call(group[0]))
+                    else:
+                        unique_results.extend(
+                            await asyncio.gather(*[
+                                _execute_capability_call(p) for p in group
+                            ])
+                        )
                 unique_result_by_index: dict[int, dict[str, Any]] = {
                     pending_capabilities.index(pending): result_payload
                     for pending, result_payload in zip(
@@ -3786,22 +4027,64 @@ class ChatManager:
                 })
                 messages.extend(tool_result_messages)
 
+                pending_write_file = (
+                    "write_file" in required_action_hints
+                    and "file_write" not in satisfied_tool_names
+                )
+                tool_names_this_turn = [
+                    pending["tool_name"] for pending in capability_results
+                ]
+                missing_target_detected = any(
+                    _looks_like_missing_target_error(
+                        pending["tool_name"],
+                        pending["cap_result"],
+                    )
+                    for pending in capability_results
+                )
+                force_write_prompt: str | None = None
+                if pending_write_file and missing_target_detected:
+                    force_file_write_next_turn = True
+                    force_write_prompt = _write_file_escalation_prompt(
+                        missing_target=True,
+                    )
+                elif not pending_write_file:
+                    force_file_write_next_turn = False
+                if force_write_prompt:
+                    messages.append({
+                        "role": "user",
+                        "content": force_write_prompt,
+                    })
+
                 messages = _compact_context(messages, self._chat_model)
+                followup_missing_action_hints = _missing_action_hints(
+                    required_action_hints,
+                    satisfied_tool_names,
+                )
 
                 try:
+                    followup_tools, followup_tool_choice = _tool_request_config(
+                        force_file_write_now=force_file_write_next_turn,
+                    )
+                    logger.info(
+                        "Tool-loop follow-up turn %d starting: tools=%s, missing_actions=%s, "
+                        "force_file_write=%s, last_stream_channel_id=%s, context_msgs=%d",
+                        _turn,
+                        ",".join(tool_names_this_turn) or "none",
+                        ",".join(followup_missing_action_hints) or "none",
+                        force_file_write_next_turn,
+                        last_stream_channel_id or "none",
+                        len(messages),
+                    )
                     followup_result: CompletionResult | None = None
+                    followup_step_labels: list[str] = []
                     async for step in _iter_guarded_complete(
                         request_kwargs={
                             "messages": messages,
                             "model": self._chat_model,
                             "temperature": 0.7,
                             "max_tokens": completion_max_tokens,
-                            "tools": all_tools,
-                            "tool_choice": _tool_choice_for_action_hints(
-                                required_action_hints,
-                                satisfied_tool_names,
-                                allow_exact_tool_choice=exact_tool_choice_supported,
-                            ),
+                            "tools": followup_tools,
+                            "tool_choice": followup_tool_choice,
                         },
                         interrupted_content=lambda: "\n\n".join(combined_text_parts)
                         if combined_text_parts
@@ -3811,10 +4094,27 @@ class ChatManager:
                         if isinstance(step, CompletionResult):
                             followup_result = step
                         else:
+                            followup_step_labels.append(_stream_step_label(step))
                             yield step
                             if isinstance(step, ChatInterruptedEvent):
+                                logger.info(
+                                    "Tool-loop follow-up turn %d interrupted after steps=%s",
+                                    _turn,
+                                    followup_step_labels or ["none"],
+                                )
                                 return
                     if followup_result is None:
+                        logger.warning(
+                            "Tool-loop follow-up turn %d exited without CompletionResult "
+                            "after steps=%s, tools=%s, missing_actions=%s, "
+                            "force_file_write=%s, last_stream_channel_id=%s",
+                            _turn,
+                            followup_step_labels or ["none"],
+                            ",".join(tool_names_this_turn) or "none",
+                            ",".join(followup_missing_action_hints) or "none",
+                            force_file_write_next_turn,
+                            last_stream_channel_id or "none",
+                        )
                         raise RuntimeError("Tool-loop follow-up produced no result")
                     result = followup_result
                     usage_totals = _merge_usage_totals(usage_totals, result.usage)
@@ -3832,14 +4132,15 @@ class ChatManager:
                     )
                 except Exception as exc:
                     is_timeout = isinstance(exc, (asyncio.TimeoutError, TimeoutError))
-                    missing_action_hints = _missing_action_hints(
-                        required_action_hints,
-                        satisfied_tool_names,
-                    )
+                    missing_action_hints = followup_missing_action_hints
                     logger.warning(
-                        "Multi-turn complete() %s at turn %d: %s",
+                        "Multi-turn complete() %s at turn %d: %s (tools=%s, missing_actions=%s, force_file_write=%s)",
                         "timed out" if is_timeout else "failed",
-                        _turn, exc,
+                        _turn,
+                        exc,
+                        ",".join(tool_names_this_turn) or "none",
+                        ",".join(missing_action_hints) or "none",
+                        force_file_write_next_turn,
                     )
                     combined_content = "\n\n".join(combined_text_parts)
                     if not combined_content.strip():
@@ -4278,6 +4579,11 @@ class ChatManager:
         )
         workflow_block = f"## Current Workflow\n{graph_text}"
         surface_hints = _resolve_surface_hints(surface, self._chat_model)
+        task_hints = (
+            _RESEARCH_REPORT_PROMPT_HINT
+            if _looks_like_research_report_request(user_message)
+            else ""
+        )
 
         preflight_context = ""
         try:
@@ -4288,15 +4594,16 @@ class ChatManager:
             _now = _dt.datetime.now(_dt.timezone.utc).astimezone()
             preflight_context = f"Today is {_now.strftime('%A, %Y-%m-%d')}."
 
-        system_content = UNIFIED_SYSTEM_PROMPT.format(
+        system_sections = [UNIFIED_SYSTEM_PROMPT.format(
             current_date=preflight_context,
+            capability_reference=generate_capability_reference(),
             surface_hints=surface_hints,
+            task_hints=task_hints,
             context_block=context_block,
             workflow_block=workflow_block,
-        )
+        ).strip()]
         if not tools_available:
-            system_content = (
-                f"{system_content.rstrip()}\n\n"
+            system_sections.append(
                 "## Tool access for this response\n"
                 "Tool calling is disabled for this response. "
                 "Do not mention or attempt to use tools. "
@@ -4304,17 +4611,20 @@ class ChatManager:
             )
         user_context_block = self._compose_user_context_block()
         if user_context_block:
-            system_content = f"{system_content.rstrip()}\n\n{user_context_block}"
+            system_sections.append(user_context_block)
         mcp_block = self._compose_mcp_tools_block()
         if mcp_block:
-            system_content = f"{system_content.rstrip()}\n\n## Connected MCP servers{mcp_block}"
+            system_sections.append(f"## Connected MCP servers\n{mcp_block}")
         memory_context = self._compose_memory_kernel_context(user_message)
         if memory_context:
-            system_content = f"{system_content.rstrip()}\n\n{memory_context}"
+            system_sections.append(memory_context)
         if extra_system_instructions:
-            system_content = (
-                f"{system_content.rstrip()}\n\n{extra_system_instructions.strip()}"
-            )
+            system_sections.append(extra_system_instructions.strip())
+        system_content = "\n\n".join(
+            section.rstrip()
+            for section in system_sections
+            if section and section.strip()
+        )
         recent_context_message = self._compose_recent_context_message()
         history_with_context = history
         if recent_context_message:
@@ -4368,11 +4678,11 @@ class ChatManager:
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream clarifying questions when build-mode intent is ambiguous."""
         clarify_prompt = (
-            "The user wants to create a workflow but their intent is not specific enough "
+            "The user wants to create or modify a workflow, but their request is not specific enough "
             "to produce a reliable plan. Ask 1-2 focused clarifying questions to understand:\n"
-            "1. What is the primary goal? (paper writing, data analysis, RAG QA, etc.)\n"
-            "2. What inputs do they have? (PDFs, data files, topic only)\n"
-            "3. What output do they want? (paper, report, analysis summary)\n"
+            "1. What is the main goal?\n"
+            "2. What inputs, systems, or resources are involved?\n"
+            "3. What output or deliverable should the workflow produce?\n"
             "Be concise. Do not produce a mutation plan yet."
         )
         messages: list[dict[str, str]] = [

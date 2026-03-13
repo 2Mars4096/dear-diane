@@ -56,6 +56,8 @@ class CapabilityResult:
     data: Any = None
     output_preview: str = ""
     stream_channel_id: str | None = None
+    retryable: bool = False
+    error_type: str | None = None
 
 
 CapabilityHandler = Callable[
@@ -158,6 +160,8 @@ class ChatCapabilityRegistry:
             return CapabilityResult(
                 success=False,
                 message=f"Tool error: {exc}",
+                retryable=False,
+                error_type="internal_exception",
             )
         elapsed = int((time.monotonic() - t0) * 1000)
         logger.debug("Capability %s completed in %dms", tool_name, elapsed)

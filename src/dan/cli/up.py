@@ -111,18 +111,16 @@ def start_server(port: int = 8000) -> int:
     return proc.pid
 
 
-def wait_for_health(port: int, max_wait: float = 15.0) -> bool:
-    """Poll ``/health`` with progressive back-off until the server is ready."""
-    delays = [0.5, 1.0, 1.5, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
-    elapsed = 0.0
-    for delay in delays:
-        if elapsed >= max_wait:
-            break
-        time.sleep(delay)
-        elapsed += delay
+def wait_for_health(port: int, max_wait: float = 25.0, poll_interval: float = 0.5) -> bool:
+    """Poll ``/health`` until the server is ready or the deadline expires."""
+    deadline = time.monotonic() + max_wait
+    while True:
         if check_health(port):
             return True
-    return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(poll_interval, remaining))
 
 
 def drop_into_chat(server_url: str) -> None:

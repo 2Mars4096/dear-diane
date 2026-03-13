@@ -31,6 +31,113 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
+# Workflow dependency handoff
+# ---------------------------------------------------------------------------
+
+
+class _WorkflowDependencyHandoff(BaseModel):
+    workflow_name: str
+    status: Literal["success", "partial", "failed"]
+    confidence: float = 1.0
+    validated_facts: list[str] = Field(default_factory=list)
+    known_issues: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+    artifacts_produced: list[str] = Field(default_factory=list)
+
+    def to_prompt_context(self, budget: int = 1500) -> str:
+        header = (
+            f"## Workflow '{self.workflow_name}' [{self.status}] "
+            f"(confidence: {self.confidence:.0%})"
+        )
+        parts = [header]
+        if self.validated_facts:
+            parts.append("Confirmed:\n" + "\n".join(f"- {fact}" for fact in self.validated_facts[:5]))
+        if self.known_issues:
+            parts.append("Issues:\n" + "\n".join(f"- {issue}" for issue in self.known_issues[:5]))
+        if self.suggestions:
+            parts.append(
+                "Suggestions:\n" + "\n".join(f"- {item}" for item in self.suggestions[:5])
+            )
+        if self.artifacts_produced:
+            parts.append(
+                "Artifacts:\n" + "\n".join(f"- {item}" for item in self.artifacts_produced[:5])
+            )
+        return "\n\n".join(parts)[:budget]
+
+
+def _assemble_workflow_dependency_handoff(
+    run_result: dict[str, Any],
+    workflow_name: str,
+) -> _WorkflowDependencyHandoff:
+    raw_status = run_result.get("status", "")
+    if raw_status == "completed":
+        status: Literal["success", "partial", "failed"] = "success"
+    elif raw_status == "failed":
+        status = "failed"
+    else:
+        status = "partial"
+
+    node_results = run_result.get("node_results", {})
+    nodes_total = len(node_results)
+    nodes_succeeded = 0
+    failed_nodes: list[tuple[str, str]] = []
+    succeeded_nodes: list[str] = []
+
+    for node_id, node_data in node_results.items():
+        node_status = node_data.get("status", "") if isinstance(node_data, dict) else ""
+        if node_status in {"completed", "success"}:
+            nodes_succeeded += 1
+            succeeded_nodes.append(node_id)
+        elif node_status in {"failed", "error"}:
+            error_msg = node_data.get("error", "") if isinstance(node_data, dict) else ""
+            failed_nodes.append((node_id, error_msg))
+
+    if nodes_total > 0:
+        confidence = nodes_succeeded / nodes_total
+    elif status == "success":
+        confidence = 1.0
+    else:
+        confidence = 0.0
+
+    validated_facts = [f"Node '{node_id}' succeeded" for node_id in succeeded_nodes[:5]]
+
+    known_issues: list[str] = []
+    for node_id, error_msg in failed_nodes[:10]:
+        entry = f"Node '{node_id}' failed"
+        if error_msg:
+            entry += f": {str(error_msg)[:100]}"
+        known_issues.append(entry)
+    for error in run_result.get("errors", [])[:5]:
+        known_issues.append(str(error)[:200])
+
+    artifacts: list[str] = []
+    outputs = run_result.get("outputs", {})
+    if isinstance(outputs, dict):
+        artifacts.extend(str(key) for key in list(outputs.keys())[:5])
+    run_id = run_result.get("run_id", "")
+    if run_id:
+        artifacts.append(f"run:{run_id}")
+
+    suggestions: list[str] = []
+    if confidence < 0.8 or failed_nodes:
+        for node_id, error_msg in failed_nodes[:3]:
+            if error_msg:
+                suggestions.append(f"Investigate '{node_id}': {str(error_msg)[:80]}")
+        if not suggestions and run_result.get("errors"):
+            suggestions.append(f"Review errors: {str(run_result['errors'][0])[:100]}")
+
+    return _WorkflowDependencyHandoff(
+        workflow_name=workflow_name,
+        status=status,
+        confidence=confidence,
+        validated_facts=validated_facts,
+        known_issues=known_issues,
+        suggestions=suggestions,
+        artifacts_produced=artifacts,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Session status & models
 # ---------------------------------------------------------------------------
 
@@ -364,11 +471,10 @@ class MetaController:
                             run_ids.append("")
                             _wf_result = {"status": "failed", "errors": [str(exc)]}
                     try:
-                        from dan.server.concierge.boundary_handoff import WorkflowDepAssembler
-                        _handoff = WorkflowDepAssembler.assemble(
-                            _wf_result or {"status": "completed"}, spec.name,
+                        handoffs[spec.name] = _assemble_workflow_dependency_handoff(
+                            _wf_result or {"status": "completed"},
+                            spec.name,
                         )
-                        handoffs[spec.name] = _handoff
                     except Exception:
                         logger.debug("Workflow handoff assembly failed for %s", spec.name, exc_info=True)
 

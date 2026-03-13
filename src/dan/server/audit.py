@@ -110,7 +110,6 @@ class ChatAuditRecord(BaseModel):
 
     intent: str = ""
     mode: str = ""
-    reuse_decision: str = ""
 
     prompt_messages: list[dict[str, str]] = Field(default_factory=list)
     model: str = ""

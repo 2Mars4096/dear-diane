@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from dan.server.capability_registry import (
     ALL_MODES,
     READ_ONLY_MODES,
@@ -74,6 +76,64 @@ def _sanitize_web_content(text: str) -> str:
     return text.strip()
 
 
+def _failure_result(
+    message: str,
+    *,
+    error_type: str,
+    retryable: bool = False,
+    data: Any = None,
+    output_preview: str = "",
+    stream_channel_id: str | None = None,
+) -> CapabilityResult:
+    return CapabilityResult(
+        success=False,
+        message=message,
+        data=data,
+        output_preview=output_preview,
+        stream_channel_id=stream_channel_id,
+        retryable=retryable,
+        error_type=error_type,
+    )
+
+
+def _classify_network_exception(exc: Exception) -> tuple[str, bool]:
+    if isinstance(exc, ImportError):
+        return "provider_unavailable", False
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code if exc.response is not None else None
+        if status == 429 or (status is not None and status >= 500):
+            return "provider_error", True
+        return "provider_error", False
+    if isinstance(
+        exc,
+        (
+            httpx.TimeoutException,
+            httpx.RequestError,
+            TimeoutError,
+            ConnectionError,
+            OSError,
+        ),
+    ):
+        return "network_error", True
+    text = str(exc).lower()
+    if any(
+        marker in text
+        for marker in (
+            "rate limit",
+            "temporar",
+            "overloaded",
+            "service unavailable",
+            "try again",
+            "timed out",
+            "connection reset",
+            "connection refused",
+            "network",
+        )
+    ):
+        return "provider_error", True
+    return "internal_exception", False
+
+
 # ── Web search tool ────────────────────────────────────────────────
 
 WEB_SEARCH_CAPABILITY_SCHEMA = build_tool_schema(
@@ -118,12 +178,17 @@ async def handle_web_search(
         from dan.tools.web_search import web_search
         result = await web_search(query=query, num_results=num)
     except ImportError:
-        return CapabilityResult(
-            success=False,
-            message="Web search is not available. Set DAN_TAVILY_API_KEY or DAN_BRAVE_API_KEY, or install duckduckgo-search.",
+        return _failure_result(
+            "Web search is not available. Set DAN_TAVILY_API_KEY or DAN_BRAVE_API_KEY, or install duckduckgo-search.",
+            error_type="provider_unavailable",
         )
     except Exception as exc:
-        return CapabilityResult(success=False, message=f"Web search failed: {exc}")
+        error_type, retryable = _classify_network_exception(exc)
+        return _failure_result(
+            f"Web search failed: {exc}",
+            error_type=error_type,
+            retryable=retryable,
+        )
 
     results = result.get("results", [])
     if not results:
@@ -218,7 +283,10 @@ async def handle_file_read(
     try:
         resolved = _resolve_user_path(raw_path)
         if not resolved.is_file():
-            return CapabilityResult(success=False, message=f"File not found: {raw_path}")
+            return _failure_result(
+                f"File not found: {raw_path}",
+                error_type="target_missing",
+            )
 
         start_line = args.get("start_line")
         end_line = args.get("end_line")
@@ -330,7 +398,10 @@ async def handle_file_read(
             },
         )
     except Exception as exc:
-        return CapabilityResult(success=False, message=f"Failed to read file: {exc}")
+        return _failure_result(
+            f"Failed to read file: {exc}",
+            error_type="internal_exception",
+        )
 
 
 FILE_GREP_CAPABILITY_SCHEMA = build_tool_schema(
@@ -382,7 +453,10 @@ async def handle_file_grep(
     try:
         resolved = _resolve_user_path(raw_path)
         if not resolved.is_dir():
-            return CapabilityResult(success=False, message=f"Directory not found: {raw_path}")
+            return _failure_result(
+                f"Directory not found: {raw_path}",
+                error_type="target_missing",
+            )
 
         try:
             pat = _re.compile(pattern_str, _re.IGNORECASE)
@@ -446,7 +520,10 @@ async def handle_file_grep(
             data={"path": str(resolved), "files_searched": files_searched, "files_matched": files_matched},
         )
     except Exception as exc:
-        return CapabilityResult(success=False, message=f"Search failed: {exc}")
+        return _failure_result(
+            f"Search failed: {exc}",
+            error_type="internal_exception",
+        )
 
 
 PDF_READ_CAPABILITY_SCHEMA = build_tool_schema(
@@ -1173,7 +1250,10 @@ async def handle_list_directory(args: dict[str, Any], ctx: CapabilityContext) ->
         return CapabilityResult(success=False, message="No directory path provided.")
     resolved = _resolve_user_path(raw_path)
     if not resolved.is_dir():
-        return CapabilityResult(success=False, message=f"Directory not found: {raw_path}")
+        return _failure_result(
+            f"Directory not found: {raw_path}",
+            error_type="target_missing",
+        )
     glob_pattern = args.get("glob_pattern", "")
     recursive = args.get("recursive", False)
     try:
@@ -1202,7 +1282,10 @@ async def handle_list_directory(args: dict[str, Any], ctx: CapabilityContext) ->
             message=f"{resolved}/\n" + "\n".join(entries) if entries else f"{resolved}/ (empty)",
         )
     except Exception as exc:
-        return CapabilityResult(success=False, message=f"Failed to list directory: {exc}")
+        return _failure_result(
+            f"Failed to list directory: {exc}",
+            error_type="internal_exception",
+        )
 
 
 WEB_FETCH_CAPABILITY_SCHEMA = build_tool_schema(
@@ -1258,7 +1341,12 @@ async def handle_web_fetch(args: dict[str, Any], ctx: CapabilityContext) -> Capa
             content = content[:_FILE_READ_MAX] + "\n\n[truncated]"
         return CapabilityResult(success=True, message=content, data=result)
     except Exception as exc:
-        return CapabilityResult(success=False, message=f"Failed to fetch URL: {exc}")
+        error_type, retryable = _classify_network_exception(exc)
+        return _failure_result(
+            f"Failed to fetch URL: {exc}",
+            error_type=error_type,
+            retryable=retryable,
+        )
 
 
 FILE_WRITE_CAPABILITY_SCHEMA = build_tool_schema(
@@ -1333,16 +1421,37 @@ async def handle_shell_command(args: dict[str, Any], ctx: CapabilityContext) -> 
         )
         stdout = result.get("stdout", "")
         stderr = result.get("stderr", "")
-        code = result.get("return_code", -1)
+        # `dan.tools.shell_command` returns `exit_code`; keep `return_code`
+        # as a backward-compatible fallback for older/custom tool adapters.
+        code = result.get("exit_code", result.get("return_code", -1))
         parts = []
         if stdout:
             parts.append(stdout[:_FILE_READ_MAX])
         if stderr:
             parts.append(f"stderr: {stderr[:2000]}")
         parts.append(f"exit code: {code}")
-        return CapabilityResult(success=code == 0, message="\n".join(parts), data=result)
+        message = "\n".join(parts)
+        error_type: str | None = None
+        retryable = False
+        if code != 0:
+            if code == -1 and "timed out" in stderr.lower():
+                error_type = "execution_timeout"
+                retryable = True
+            else:
+                error_type = "nonzero_exit"
+        return CapabilityResult(
+            success=code == 0,
+            message=message,
+            data=result,
+            output_preview=_truncate(message),
+            retryable=retryable,
+            error_type=error_type,
+        )
     except Exception as exc:
-        return CapabilityResult(success=False, message=f"Command failed: {exc}")
+        return _failure_result(
+            f"Command failed: {exc}",
+            error_type="internal_exception",
+        )
 
 
 HTTP_REQUEST_CAPABILITY_SCHEMA = build_tool_schema(
@@ -1380,13 +1489,27 @@ async def handle_http_request(args: dict[str, Any], ctx: CapabilityContext) -> C
         if len(body) > _FILE_READ_MAX:
             body = body[:_FILE_READ_MAX] + "\n\n[truncated]"
         status = result.get("status_code", 0)
+        error_type: str | None = None
+        retryable = False
+        if status == 429 or status >= 500:
+            error_type = "provider_error"
+            retryable = True
+        elif status >= 400:
+            error_type = "http_error"
         return CapabilityResult(
             success=200 <= status < 400,
             message=f"HTTP {status}\n\n{body}",
             data=result,
+            retryable=retryable,
+            error_type=error_type,
         )
     except Exception as exc:
-        return CapabilityResult(success=False, message=f"HTTP request failed: {exc}")
+        error_type, retryable = _classify_network_exception(exc)
+        return _failure_result(
+            f"HTTP request failed: {exc}",
+            error_type=error_type,
+            retryable=retryable,
+        )
 
 
 TEXT_CHUNK_CAPABILITY_SCHEMA = build_tool_schema(
