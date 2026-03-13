@@ -2314,7 +2314,7 @@ class Concierge:
             return
 
         if use_goal_orchestrator:
-            goal, action = self._continue_or_new(
+            goal, action = await self._continue_or_new(
                 msg.text,
                 self._concierge_state.active_goals,
                 context.project.project_id,
@@ -2440,6 +2440,9 @@ class Concierge:
                             "Adapt",
                             "Start fresh",
                         ]
+                        # Persist goal before returning so it survives session closure
+                        self._upsert_goal(goal)
+                        self._save_concierge_state(msg.external_id, self._concierge_state)
                         self.project_store.set_pending_action(
                             context.project.project_id,
                             PendingAction(
@@ -2589,22 +2592,31 @@ class Concierge:
             # Plan 32-7: try inline execution for eligible goals
             _inline_completed = False
             _has_build_session = bool(goal.context.get("build_session_id"))
-            if self._should_resume_inline_goal(goal) or self._should_execute_inline(
-                classification, goal.description or "", has_build_session=_has_build_session,
-            ):
-                async for event in self._execute_goal_inline(goal, goal.id):
-                    _inline_completed = True
-                    if getattr(event, "type", "") == "chat_complete":
-                        last_content = getattr(event, "content", "") or ""
-                    yield event
+            try:
+                if self._should_resume_inline_goal(goal) or self._should_execute_inline(
+                    classification, goal.description or "", has_build_session=_has_build_session,
+                ):
+                    async for event in self._execute_goal_inline(goal, goal.id):
+                        _inline_completed = True
+                        if getattr(event, "type", "") == "chat_complete":
+                            last_content = getattr(event, "content", "") or ""
+                        yield event
 
-            if not _inline_completed:
-                async for event in self._execute_goal(goal, msg, context):
-                    if getattr(event, "type", "") == "chat_complete":
-                        last_content = getattr(event, "content", "") or ""
-                    yield event
-            self._upsert_goal(goal)
-            self._save_concierge_state(msg.external_id, self._concierge_state)
+                if not _inline_completed:
+                    async for event in self._execute_goal(goal, msg, context):
+                        if getattr(event, "type", "") == "chat_complete":
+                            last_content = getattr(event, "content", "") or ""
+                        yield event
+            except Exception as _goal_exc:
+                logger.exception("Goal execution failed for goal %s", goal.id[:8])
+                if goal.status not in ("completed", "failed"):
+                    goal.status = "failed"
+                    goal.updated_at = time.time()
+                    goal.error_history.append(str(_goal_exc))
+                yield ChatErrorEvent(error=f"Goal execution error: {_goal_exc}")
+            finally:
+                self._upsert_goal(goal)
+                self._save_concierge_state(msg.external_id, self._concierge_state)
             self._record_assistant_turn(context, msg, last_content or "Goal executed.")
             self._store_memory_candidates(
                 msg.text,
@@ -5428,13 +5440,18 @@ class Concierge:
                 return ConciergeGoal(description=message.strip(), status="active")
         return None
 
-    def _continue_or_new(
+    async def _continue_or_new(
         self,
         message: str,
         active_goals: list[ConciergeGoal],
         project_id: str | None = None,
     ) -> tuple[ConciergeGoal, Literal["continue", "new", "pause"]]:
-        """If message relates to an active goal, return (goal, 'continue'); if explicit pause, (goal, 'pause'); else (new_goal, 'new')."""
+        """If message relates to an active goal, return (goal, 'continue'); if explicit pause, (goal, 'pause'); else (new_goal, 'new').
+
+        Uses deterministic keyword matching for unambiguous UI commands (yes/no,
+        pause, start over, etc.) and an LLM micro-tier call for ambiguous
+        free-text messages that may or may not refer to the active goal.
+        """
         relevant_goals = [
             g for g in active_goals
             if project_id is None or g.context.get("project_id") == project_id
@@ -5449,6 +5466,8 @@ class Concierge:
         active = [g for g in relevant_goals if g.status == "active"]
         paused = [g for g in relevant_goals if g.status == "paused"]
         reply = message.strip().lower()
+
+        # ── Deterministic fast-paths for unambiguous commands ──
         if not active:
             if paused:
                 paused_goal = paused[0]
@@ -5480,13 +5499,69 @@ class Concierge:
             return active[0], "continue"
         if reply in ("no", "n", "cancel"):
             return active[0], "continue"
+        # Build sessions: anything that isn't explicitly a new build command
+        # is treated as a follow-up to the active build.
         if active[0].context.get("build_session_id"):
             if reply.startswith(("build ", "create ", "make ", "automate ")):
                 return ConciergeGoal(description=message.strip(), status="active"), "new"
             return active[0], "continue"
-        if any(w in reply for w in ("same", "that one", "this one", "it ", "the workflow")):
-            return active[0], "continue"
-        return ConciergeGoal(description=message.strip(), status="active"), "new"
+
+        # ── LLM-based disambiguation for free-text messages ──
+        return await self._llm_continue_or_new(message, active[0])
+
+    async def _llm_continue_or_new(
+        self,
+        message: str,
+        active_goal: ConciergeGoal,
+    ) -> tuple[ConciergeGoal, Literal["continue", "new"]]:
+        """Use micro-tier LLM to decide if *message* continues *active_goal* or starts a new task.
+
+        Falls back to 'new' on LLM failure so we never silently swallow a fresh request.
+        """
+        goal_desc = (active_goal.description or "")[:300]
+        try:
+            result = await self._classify_llm_complete([
+                {
+                    "role": "system",
+                    "content": (
+                        "You are a routing classifier. The user has an active task in progress. "
+                        "Decide whether their new message is a follow-up to that task or an unrelated new request.\n\n"
+                        "Reply with exactly one word: CONTINUE or NEW.\n"
+                        "- CONTINUE: The message modifies, refines, asks about, or adds to the active task. "
+                        "Examples: 'make it faster', 'add error handling', 'what about edge cases', "
+                        "'also include validation', 'change the output format'.\n"
+                        "- NEW: The message is an unrelated request that has nothing to do with the active task. "
+                        "Examples: asking about a completely different topic, requesting a different workflow, "
+                        "starting a fresh unrelated task."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Active task: {goal_desc}\n\n"
+                        f"New message: {message.strip()[:500]}\n\n"
+                        "Is this CONTINUE or NEW?"
+                    ),
+                },
+            ])
+            answer = (result or "").strip().upper()
+            if "NEW" in answer:
+                logger.info(
+                    "LLM continue_or_new: NEW (goal=%s, msg=%s)",
+                    goal_desc[:60], message[:60],
+                )
+                return ConciergeGoal(description=message.strip(), status="active"), "new"
+            # Default to continue if LLM says CONTINUE or anything ambiguous —
+            # it's cheaper to route a stray message to an existing goal than to
+            # create an orphan.
+            logger.info(
+                "LLM continue_or_new: CONTINUE (goal=%s, msg=%s)",
+                goal_desc[:60], message[:60],
+            )
+            return active_goal, "continue"
+        except Exception:
+            logger.debug("LLM continue_or_new failed, defaulting to new", exc_info=True)
+            return ConciergeGoal(description=message.strip(), status="active"), "new"
 
     def _pause_active_goals(self, surface_id: str) -> None:
         """Mark all active goals as paused and persist state."""
@@ -5531,7 +5606,7 @@ class Concierge:
         import time as _time
 
         from dan.meta.intent_compiler import DirectBuildError, IntentCompiler
-        from dan.meta.intent_extraction import extract_workflow_intent
+        from dan.meta.intent_extraction import extract_workflow_intent, validate_and_expand_intent
         from dan.models.graph import Graph
 
         start_ms = _time.monotonic()
@@ -5565,7 +5640,10 @@ class Concierge:
                 logger.info(
                     "Inline execution: intent extraction failed, falling back to MetaController",
                 )
+                goal.context["inline_intent_failed"] = True
                 return
+
+            intent = validate_and_expand_intent(intent, goal.description)
 
             try:
                 compiler = IntentCompiler()
@@ -5574,6 +5652,7 @@ class Concierge:
                 goal.context["inline_build_ms"] = build_ms
             except DirectBuildError as exc:
                 logger.warning("Inline execution: build_graph failed: %s", exc)
+                goal.context["inline_build_failed"] = str(exc)
                 return
 
             goal.context["graph_node_count"] = len(graph.nodes)
@@ -5586,6 +5665,10 @@ class Concierge:
                 goal.context["inline_graph"] = graph.model_dump(mode="json")
                 goal.status = "paused"
                 goal.updated_at = time.time()
+                # Persist paused state immediately so it survives crashes
+                self._upsert_goal(goal)
+                if self._current_surface_id:
+                    self._save_concierge_state(self._current_surface_id, self._concierge_state)
                 yield self._complete_event(
                     content=(
                         f"I've decomposed this into {len(graph.nodes)} steps: "
@@ -5647,9 +5730,22 @@ class Concierge:
                         workflow_id=workflow_id,
                     )
                 )
+                _drain_deadline = _time.monotonic() + float(
+                    os.environ.get("DAN_INLINE_DRAIN_TIMEOUT", "600")
+                )
                 while True:
                     if run_task.done() and event_queue.empty():
                         break
+                    if _time.monotonic() > _drain_deadline:
+                        logger.warning(
+                            "Inline execution: event drain timeout reached, cancelling run task"
+                        )
+                        run_task.cancel()
+                        try:
+                            await run_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                        raise TimeoutError("Inline execution exceeded drain timeout")
                     try:
                         stream_event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
                     except asyncio.TimeoutError:
@@ -5763,6 +5859,10 @@ class Concierge:
                     diagnosis = self._diagnose_goal_failure(goal)
                     if diagnosis:
                         goal.context["last_diagnosis"] = diagnosis
+                # Persist failed state so caller sees accurate status
+                self._upsert_goal(goal)
+                if self._current_surface_id:
+                    self._save_concierge_state(self._current_surface_id, self._concierge_state)
                 yield ChatErrorEvent(error=error_msg)
         except Exception as exc:
             logger.warning("Inline execution: Engine.run() failed: %s", exc)
@@ -5774,6 +5874,10 @@ class Concierge:
                 diagnosis = self._diagnose_goal_failure(goal)
                 if diagnosis:
                     goal.context["last_diagnosis"] = diagnosis
+            # Persist failed state so retries see accurate status
+            self._upsert_goal(goal)
+            if self._current_surface_id:
+                self._save_concierge_state(self._current_surface_id, self._concierge_state)
             yield ChatErrorEvent(error=f"Execution error: {exc}")
 
     async def _execute_goal(
@@ -5797,6 +5901,8 @@ class Concierge:
             )
             goal.context.pop("reuse_workflow_id", None)
             goal.context["plan_action"] = "generate"
+            # Persist context change so it survives if the next step fails
+            goal.updated_at = time.time()
         if self.meta_controller is None:
             yield self._complete_event(
                 content=f"{format_prefix(context.project.label)} Meta controller not available; goal not executed.",
@@ -5837,7 +5943,8 @@ class Concierge:
                     f"Goal failed: {goal.description[:200]}. Error: {exc!s}",
                     metadata={"goal_id": goal.id},
                 )
-            self._sync_goal_from_session(goal, session)
+            # NOTE: Do NOT sync from `session` here — it holds pre-execution
+            # state and would overwrite the failure info we just recorded.
             idx = next((i for i, g in enumerate(self._concierge_state.active_goals) if g.id == goal.id), None)
             if idx is not None:
                 self._concierge_state.active_goals[idx] = goal
@@ -5871,9 +5978,12 @@ class Concierge:
             if diagnosis:
                 goal.context["last_diagnosis"] = diagnosis
 
-        # 29-2 §3-5: Repair cap — if max iterations exhausted, ensure goal is marked failed
+        # 29-2 §3-5: Repair cap — if max iterations exhausted, ensure goal is terminated
         if goal.iteration >= goal.max_iterations and goal.status not in ("completed", "failed"):
             goal.status = "failed"
+            goal.error_history.append(
+                f"Repair cap reached ({goal.iteration}/{goal.max_iterations})"
+            )
             logger.info(
                 "Goal %s: repair cap reached (%d/%d)",
                 goal.id[:8], goal.iteration, goal.max_iterations,
