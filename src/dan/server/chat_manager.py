@@ -25,7 +25,7 @@ except ImportError:
     _tiktoken_available = False
 
 from dan.models.graph import Graph
-from dan.providers import CompletionResult, StreamChunk
+from dan.providers import CompletionResult, StreamChunk, supports_exact_tool_choice
 from dan.providers.registry import ProviderRegistry
 from dan.providers.costs import estimate_cost
 from dan.server.capability_registry import CapabilityResult
@@ -88,6 +88,91 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 pii_session_var: ContextVar["Any"] = ContextVar("pii_session", default=None)
+
+_ACTION_HINT_TOOL_MAP: dict[str, frozenset[str]] = {
+    "read_file": frozenset({"file_read", "pdf_read", "list_directory"}),
+    "search_web": frozenset({"web_search", "web_fetch", "http_request"}),
+    "write_file": frozenset({"file_write"}),
+}
+
+
+def _dedupe_action_hints(required_action_hints: list[str] | None) -> list[str]:
+    if not required_action_hints:
+        return []
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for hint in required_action_hints:
+        if hint in seen:
+            continue
+        seen.add(hint)
+        ordered.append(hint)
+    return ordered
+
+
+def _missing_action_hints(
+    required_action_hints: list[str] | None,
+    satisfied_tool_names: set[str],
+) -> list[str]:
+    missing: list[str] = []
+    for hint in _dedupe_action_hints(required_action_hints):
+        tool_names = _ACTION_HINT_TOOL_MAP.get(hint)
+        if tool_names and satisfied_tool_names.isdisjoint(tool_names):
+            missing.append(hint)
+    return missing
+
+
+def _tool_choice_for_action_hints(
+    required_action_hints: list[str] | None,
+    satisfied_tool_names: set[str],
+    *,
+    allow_exact_tool_choice: bool = False,
+) -> str | dict[str, Any]:
+    missing_action_hints = _missing_action_hints(
+        required_action_hints,
+        satisfied_tool_names,
+    )
+    if not missing_action_hints:
+        return "auto"
+    if allow_exact_tool_choice and len(missing_action_hints) == 1:
+        tool_names = _ACTION_HINT_TOOL_MAP.get(missing_action_hints[0]) or frozenset()
+        if len(tool_names) == 1:
+            tool_name = next(iter(tool_names))
+            return {
+                "type": "function",
+                "function": {"name": tool_name},
+            }
+    return "required"
+
+
+def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> str:
+    instructions: list[str] = []
+    if "write_file" in missing_action_hints:
+        instructions.append(
+            "CRITICAL: You have not yet written the requested output to disk. "
+            "Use file_write NOW — do not research or plan further.\n"
+            "Strategy for long documents:\n"
+            "1. First call: file_write with mode='write' — write the preamble "
+            "and first section only.\n"
+            "2. Each subsequent call: file_write with mode='append' — add one "
+            "section at a time.\n"
+            "3. Final call: file_write with mode='append' — close the document "
+            "(\\end{document} or equivalent).\n"
+            "Do NOT attempt to write the entire document in a single file_write call."
+        )
+    if "search_web" in missing_action_hints:
+        instructions.append(
+            "You still need to gather live web information. Use web_search or web_fetch before finalizing."
+        )
+    if "read_file" in missing_action_hints:
+        instructions.append(
+            "You still need to inspect the referenced local file or folder. "
+            "Prefer chunked reads: use file_read or pdf_read with specific "
+            "start_line/end_line ranges (or grep to locate sections) instead of "
+            "re-reading the whole file."
+        )
+    if not instructions:
+        instructions.append("A required capability step is still missing. Use an appropriate tool before finalizing.")
+    return " ".join(instructions)
 
 
 def _is_transient_llm_error(exc: Exception) -> bool:
@@ -505,14 +590,18 @@ def generate_capability_reference() -> str:
 
     lines.append("")
     lines.append(
-        "file_read, pdf_read, list_directory accept absolute paths (~/Dropbox/...)."
+        "file_read, pdf_read, list_directory accept absolute paths (~/...)."
     )
     lines.append(
-        "For large files: use file_read with grep to find sections, then read specific line ranges."
+        "For large files: use file_read with grep to find sections, then use specific "
+        "start_line/end_line ranges instead of re-reading the whole file."
     )
     lines.append(
         "For long outputs (reports, code, documents): use file_write to save to disk "
-        "section by section (mode=append). Do NOT put long content in chat — write it to a file."
+        "section by section. First call: mode='write' with preamble + first section. "
+        "Then mode='append' for each subsequent section. Keep each write scoped to a "
+        "small, coherent chunk such as one section at a time. "
+        "Do NOT put long content in chat — write it to a file."
     )
     lines.append(
         "Read-only modes (ask/plan): lookup + browse + file read + web read only."
@@ -2390,6 +2479,7 @@ class ChatManager:
             provider = self._resolve_provider(
                 pii_session_key=thread_id or workflow_id,
             )
+            exact_tool_choice_supported = supports_exact_tool_choice(provider)
             message_id = uuid.uuid4().hex[:12]
             final_content = ""
             token_usage: dict[str, int] = {}
@@ -2468,6 +2558,7 @@ class ChatManager:
         surface: str | None = None,
         audit_metadata: dict[str, Any] | None = None,
         extra_system_instructions: str = "",
+        required_action_hints: list[str] | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Process a user message using LLM function calling for graph mutations.
 
@@ -2475,6 +2566,7 @@ class ChatManager:
         support the ``tools`` parameter.
         """
         try:
+            required_action_hints = _dedupe_action_hints(required_action_hints)
             graph_dict = self._graph_store.get_graph(workflow_id)
             if graph_dict is None:
                 _try_persist_audit(
@@ -2756,6 +2848,7 @@ class ChatManager:
             provider = self._resolve_provider(
                 pii_session_key=thread_id or workflow_id,
             )
+            exact_tool_choice_supported = supports_exact_tool_choice(provider)
             message_id = uuid.uuid4().hex[:12]
             usage_totals: dict[str, int] = {}
             completion_max_tokens = _completion_max_tokens(self._chat_model)
@@ -2767,6 +2860,7 @@ class ChatManager:
                 all_tools = list(self._capability_registry.get_tools(mode))
             if allow_mutation_tool and mode not in READ_ONLY_MODES:
                 all_tools.append(MUTATION_TOOL_SCHEMA)
+            satisfied_tool_names: set[str] = set()
 
             async def _iter_guarded_complete(
                 *,
@@ -2853,7 +2947,11 @@ class ChatManager:
                                 "temperature": 0.7,
                                 "max_tokens": completion_max_tokens,
                                 "tools": all_tools,
-                                "tool_choice": "auto",
+                                "tool_choice": _tool_choice_for_action_hints(
+                                    required_action_hints,
+                                    satisfied_tool_names,
+                                    allow_exact_tool_choice=exact_tool_choice_supported,
+                                ),
                             },
                             interrupted_content="",
                             emit_progress_ack=True,
@@ -2901,16 +2999,29 @@ class ChatManager:
                     "Tool-calling complete() failed (%s), falling back to text-only stream",
                     exc,
                 )
-                async for event in self._stream_with_json_fallback(
-                    provider, messages, message_id,
-                    revision, revision_mismatch, graph_dict,
-                    workflow_id=workflow_id,
-                    user_message=message,
-                    cancel_event=cancel_event,
-                    mode=mode,
-                    allow_mutation_tool=allow_mutation_tool,
-                ):
-                    yield event
+                try:
+                    async for event in self._stream_with_json_fallback(
+                        provider, messages, message_id,
+                        revision, revision_mismatch, graph_dict,
+                        workflow_id=workflow_id,
+                        user_message=message,
+                        cancel_event=cancel_event,
+                        mode=mode,
+                        allow_mutation_tool=allow_mutation_tool,
+                    ):
+                        yield event
+                except Exception as fallback_exc:
+                    logger.error(
+                        "Text-only fallback also failed: %s", fallback_exc,
+                    )
+                    yield ChatCompleteEvent(
+                        message_id=message_id,
+                        content=f"Both tool-calling and text-only paths failed. Error: {fallback_exc}",
+                        token_usage={},
+                        context_window=_get_context_window(self._chat_model),
+                        graph_revision=revision,
+                        revision_mismatch=revision_mismatch,
+                    )
                 return
 
             # -- Multi-turn tool loop ------------------------------------
@@ -2973,6 +3084,10 @@ class ChatManager:
                 if not cap_calls and mutation_data is None:
                     fr = getattr(result, "finish_reason", "") or ""
                     was_truncated = fr in ("length", "max_tokens")
+                    missing_action_hints = _missing_action_hints(
+                        required_action_hints,
+                        satisfied_tool_names,
+                    )
 
                     if was_truncated and _turn < max_tool_turns - 1:
                         logger.info(
@@ -2994,7 +3109,11 @@ class ChatManager:
                                     "temperature": 0.7,
                                     "max_tokens": completion_max_tokens,
                                     "tools": all_tools,
-                                    "tool_choice": "auto",
+                                    "tool_choice": _tool_choice_for_action_hints(
+                                        required_action_hints,
+                                        satisfied_tool_names,
+                                        allow_exact_tool_choice=exact_tool_choice_supported,
+                                    ),
                                 },
                                 interrupted_content=lambda: "\n\n".join(combined_text_parts)
                                 if combined_text_parts
@@ -3040,6 +3159,106 @@ class ChatManager:
                             )
                             return
                         continue
+
+                    if missing_action_hints:
+                        if _turn < max_tool_turns - 1:
+                            logger.info(
+                                "Turn %d: required actions still missing (%s) — requesting another tool call",
+                                _turn,
+                                ", ".join(missing_action_hints),
+                            )
+                            partial = result.text or ""
+                            if partial:
+                                combined_text_parts.append(partial)
+                            messages.append({"role": "assistant", "content": partial})
+                            messages.append({
+                                "role": "user",
+                                "content": _tool_retry_prompt_for_missing_actions(missing_action_hints),
+                            })
+                            messages = _compact_context(messages, self._chat_model)
+                            try:
+                                continuation_result = None
+                                async for step in _iter_guarded_complete(
+                                    request_kwargs={
+                                        "messages": messages,
+                                        "model": self._chat_model,
+                                        "temperature": 0.7,
+                                        "max_tokens": completion_max_tokens,
+                                        "tools": all_tools,
+                                        "tool_choice": _tool_choice_for_action_hints(
+                                            required_action_hints,
+                                            satisfied_tool_names,
+                                            allow_exact_tool_choice=exact_tool_choice_supported,
+                                        ),
+                                    },
+                                    interrupted_content=lambda: "\n\n".join(combined_text_parts)
+                                    if combined_text_parts
+                                    else "",
+                                    emit_progress_ack=True,
+                                ):
+                                    if isinstance(step, CompletionResult):
+                                        continuation_result = step
+                                    else:
+                                        yield step
+                                        if isinstance(step, ChatInterruptedEvent):
+                                            return
+                                if continuation_result is None:
+                                    raise RuntimeError("Required-action continuation produced no result")
+                                result = continuation_result
+                                usage_totals = _merge_usage_totals(usage_totals, result.usage)
+                                _cont_fr = getattr(result, "finish_reason", "") or ""
+                                _cont_usage = result.usage or {}
+                                logger.info(
+                                    "Required-action continuation turn %d: finish_reason=%s, has_text=%s, has_tools=%s, "
+                                    "prompt_tokens=%s, completion_tokens=%s",
+                                    _turn,
+                                    _cont_fr or "n/a",
+                                    bool((result.text or "").strip()),
+                                    bool(result.tool_calls),
+                                    _cont_usage.get("prompt_tokens", "?"),
+                                    _cont_usage.get("completion_tokens", "?"),
+                                )
+                            except Exception as exc:
+                                logger.warning("Required-action continuation failed: %s", exc)
+                                content = "\n\n".join(combined_text_parts) if combined_text_parts else ""
+                                if not content.strip():
+                                    content = (
+                                        "I could not complete the required tool action. "
+                                        "Please try again or narrow the request."
+                                    )
+                                yield ChatTokenEvent(delta=content, accumulated=content)
+                                yield ChatCompleteEvent(
+                                    message_id=message_id,
+                                    content=content,
+                                    token_usage={},
+                                    context_window=_get_context_window(self._chat_model),
+                                    graph_revision=revision,
+                                    revision_mismatch=revision_mismatch,
+                                    stream_channel_id=last_stream_channel_id,
+                                )
+                                return
+                            continue
+
+                        partial = result.text or ""
+                        if partial:
+                            combined_text_parts.append(partial)
+                        content = "\n\n".join(part for part in combined_text_parts if part).strip()
+                        note = (
+                            "I could not complete all required tool steps before responding. "
+                            + _tool_retry_prompt_for_missing_actions(missing_action_hints)
+                        )
+                        content = f"{content}\n\n{note}".strip() if content else note
+                        yield ChatTokenEvent(delta=content, accumulated=content)
+                        yield ChatCompleteEvent(
+                            message_id=message_id,
+                            content=content,
+                            token_usage={},
+                            context_window=_get_context_window(self._chat_model),
+                            graph_revision=revision,
+                            revision_mismatch=revision_mismatch,
+                            stream_channel_id=last_stream_channel_id,
+                        )
+                        return
 
                     content = result.text or ""
                     if not content.strip() and combined_text_parts:
@@ -3496,6 +3715,8 @@ class ChatManager:
                     cap_result = pending["cap_result"]
                     cap_name = pending["tool_name"]
                     cap_args = pending["args"]
+                    if pending["status"] == "success":
+                        satisfied_tool_names.add(cap_name)
                     yield ChatToolCallResultEvent(
                         tool_call_id=pending["event_tool_call_id"],
                         tool_name=cap_name,
@@ -3576,7 +3797,11 @@ class ChatManager:
                             "temperature": 0.7,
                             "max_tokens": completion_max_tokens,
                             "tools": all_tools,
-                            "tool_choice": "auto",
+                            "tool_choice": _tool_choice_for_action_hints(
+                                required_action_hints,
+                                satisfied_tool_names,
+                                allow_exact_tool_choice=exact_tool_choice_supported,
+                            ),
                         },
                         interrupted_content=lambda: "\n\n".join(combined_text_parts)
                         if combined_text_parts
@@ -3607,6 +3832,10 @@ class ChatManager:
                     )
                 except Exception as exc:
                     is_timeout = isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+                    missing_action_hints = _missing_action_hints(
+                        required_action_hints,
+                        satisfied_tool_names,
+                    )
                     logger.warning(
                         "Multi-turn complete() %s at turn %d: %s",
                         "timed out" if is_timeout else "failed",
@@ -3615,10 +3844,17 @@ class ChatManager:
                     combined_content = "\n\n".join(combined_text_parts)
                     if not combined_content.strip():
                         if is_timeout:
-                            combined_content = (
-                                "The language model took too long to respond after using tools. "
-                                "Your file was saved successfully. Please try asking me to continue or summarize."
-                            )
+                            if "write_file" in missing_action_hints:
+                                combined_content = (
+                                    "The language model took too long to respond after using tools "
+                                    "before it completed the required file write. Please try again "
+                                    "or ask me to continue from the partial progress."
+                                )
+                            else:
+                                combined_content = (
+                                    "The language model took too long to respond after using tools. "
+                                    "Please try asking me to continue or summarize."
+                                )
                         else:
                             combined_content = "I encountered an error generating a response after using tools. Please try again."
                     self._record_conversation_summary(
@@ -3653,12 +3889,21 @@ class ChatManager:
             # model is still requesting more tools, so the user gets the best
             # partial answer available instead of a hard stop note alone.
             final_cap_calls = self._extract_all_capability_tool_calls(result, mode)
+            missing_action_hints = _missing_action_hints(
+                required_action_hints,
+                satisfied_tool_names,
+            )
             turn_cap_note: str | None = None
             if final_cap_calls:
                 turn_cap_note = (
                     f"I reached the tool-call limit ({max_tool_turns}) while still gathering data, "
                     "so this answer may be partial."
                 )
+                if missing_action_hints:
+                    turn_cap_note = (
+                        f"{turn_cap_note} Required steps are still incomplete: "
+                        f"{', '.join(missing_action_hints)}."
+                    )
                 try:
                     synthesis_messages = _compact_context(
                         messages

@@ -37,6 +37,11 @@ def apply_cache_hints(
     return messages
 
 
+def supports_exact_tool_choice(provider: Any) -> bool:
+    """True when the provider can target a specific tool via ``tool_choice``."""
+    return bool(getattr(provider, "supports_exact_tool_choice", False))
+
+
 @dataclass
 class StreamChunk:
     """Single chunk from a streaming LLM response."""

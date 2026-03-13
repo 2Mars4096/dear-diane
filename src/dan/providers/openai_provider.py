@@ -17,6 +17,8 @@ from dan.providers import (
 class OpenAIProvider:
     """Provider for OpenAI and any OpenAI-compatible endpoint (e.g. vectorengine.ai)."""
 
+    supports_exact_tool_choice = True
+
     def __init__(self, config: ProviderConfig) -> None:
         self._timeout_seconds = resolve_provider_timeout(config)
         self._client = AsyncOpenAI(
