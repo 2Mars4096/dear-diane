@@ -138,3 +138,12 @@ class ReconnectableChatStream:
                 and run_event.get("event_type") in _TERMINAL_RUN_EVENT_TYPES
             ):
                 self._terminal_snapshot = self._clone_event(event)
+
+
+def should_preserve_chat_stream(
+    stream: ReconnectableChatStream,
+    *,
+    producer_running: bool,
+) -> bool:
+    """Keep stream channels available while they still have recoverable state."""
+    return producer_running or stream.has_reconnect_state()

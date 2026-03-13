@@ -55,7 +55,10 @@ from dan.server.graph_mutator import GraphMutator, MutationPlan
 from dan.server.graph_store import GraphStore, _validate_graph_id
 from dan.server.run_manager import RunManager, RunStatus
 from dan.server.run_store import RunStore
-from dan.server.chat_stream_buffer import ReconnectableChatStream
+from dan.server.chat_stream_buffer import (
+    ReconnectableChatStream,
+    should_preserve_chat_stream,
+)
 from dan.server.terminal_output import collect_terminal_content
 from dan.server.test_cases import NodeTestCase, TestCaseRunResult, TestCaseStore
 from dan.server.scoped_run import (
@@ -4100,10 +4103,10 @@ async def _handle_run_command(
 async def chat_events_ws(websocket: WebSocket, channel_id: str):
     entry = _chat_streams.get(channel_id)
     if entry is None:
+        await websocket.accept()
         await websocket.close(code=4004)
         return
     queue, _ = entry
-    disconnected_early = False
     current_event: Any | None = None
     await websocket.accept()
     queue.attach_consumer()
@@ -4123,14 +4126,12 @@ async def chat_events_ws(websocket: WebSocket, channel_id: str):
             _touch_chat_stream(channel_id)
         await websocket.close()
     except WebSocketDisconnect:
-        disconnected_early = True
         if current_event is not None:
             queue.requeue_front(current_event)
             current_event = None
             _touch_chat_stream(channel_id)
     except Exception:
         if current_event is not None:
-            disconnected_early = True
             queue.requeue_front(current_event)
             current_event = None
             _touch_chat_stream(channel_id)
@@ -4138,14 +4139,17 @@ async def chat_events_ws(websocket: WebSocket, channel_id: str):
     finally:
         queue.detach_consumer()
         task = _chat_produce_tasks.get(channel_id)
-        if disconnected_early and (
-            (task is not None and not task.done()) or queue.has_reconnect_state()
+        producer_running = task is not None and not task.done()
+        if should_preserve_chat_stream(
+            queue,
+            producer_running=producer_running,
         ):
             # Keep the queue/producer alive briefly so the client can reconnect
             # to the same stream after a transient browser/electron disconnect,
-            # even if the producer already exited and only the buffered tail or
-            # terminal snapshot remains.
+            # or reopen the terminal snapshot after delivery.
             _chat_streams[channel_id] = (queue, time.monotonic())
+            if not producer_running:
+                _chat_produce_tasks.pop(channel_id, None)
             return
         _chat_streams.pop(channel_id, None)
         task = _chat_produce_tasks.pop(channel_id, None)
