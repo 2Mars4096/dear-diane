@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { groupToolCallsForDisplay } from "../toolCallPresentation";
+import {
+  describeLatestToolProgress,
+  groupToolCallsForDisplay,
+} from "../toolCallPresentation";
 
 describe("toolCallPresentation", () => {
   it("collapses repeated file reads of the same file", () => {
@@ -63,5 +66,31 @@ describe("toolCallPresentation", () => {
     expect(items).toHaveLength(2);
     expect(items[0].fileReadGroup?.path).toBe("/tmp/a.py");
     expect(items[1].fileReadGroup?.path).toBe("/tmp/b.py");
+  });
+
+  it("describes the latest running tool in plain text", () => {
+    expect(
+      describeLatestToolProgress([
+        {
+          id: "a",
+          toolName: "list_directory",
+          argsPreview: '{"path":"/tmp/project/src"}',
+          status: "running",
+        },
+      ]),
+    ).toBe("Listing directory contents of src");
+  });
+
+  it("describes completed tools as continuing progress", () => {
+    expect(
+      describeLatestToolProgress([
+        {
+          id: "a",
+          toolName: "web_search",
+          argsPreview: '{"query":"oil prices 2026 outlook"}',
+          status: "success",
+        },
+      ]),
+    ).toBe('Finished web search for "oil prices 2026 outlook". Continuing...');
   });
 });

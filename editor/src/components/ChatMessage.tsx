@@ -2,6 +2,7 @@ import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { Check, X, Loader2, RotateCcw, ChevronRight, ChevronDown, Copy, Wrench } from "lucide-react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
+import { Marked, Renderer } from "marked";
 import hljs from "../lib/hljs";
 import type { ChatMessage } from "../types/chat";
 import {
@@ -16,7 +17,7 @@ import ToolCallCard from "./ToolCallCard";
 import RunOutputBlock from "./RunOutputBlock";
 
 // ---------------------------------------------------------------------------
-// Markdown → HTML (simple renderer — no external dependency)
+// Markdown → HTML  (marked + custom renderer)
 // ---------------------------------------------------------------------------
 
 function escapeHtml(s: string): string {
@@ -31,22 +32,6 @@ function renderKatex(tex: string, displayMode: boolean): string {
   }
 }
 
-function applyInlineMarkdown(line: string): string {
-  return line
-    .replace(
-      /`([^`]+)`/g,
-      '<code class="bg-gray-100 text-gray-800 px-1 py-0.5 rounded text-[12px] font-mono">$1</code>',
-    )
-    .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/~~(.+?)~~/g, "<del>$1</del>")
-    .replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, "<em>$1</em>")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text: string, url: string) => {
-      if (/^\s*javascript\s*:/i.test(url)) return escapeHtml(text);
-      const safeUrl = /^(https?:|mailto:|#)/.test(url) ? url : "#";
-      return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline hover:text-indigo-800">${text}</a>`;
-    });
-}
-
 function renderMentionHtml(name: string, type: string, id: string): string {
   const isCode = type === "code";
   const color = isCode
@@ -58,161 +43,143 @@ function renderMentionHtml(name: string, type: string, id: string): string {
   return `<button data-mention-type="${escapeHtml(type)}" data-mention-id="${escapeHtml(id)}" class="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-xs font-medium cursor-pointer ${color} hover:opacity-80 transition-opacity align-baseline">${inner}</button>`;
 }
 
-function renderMarkdown(raw: string): string {
-  const preserved: string[] = [];
-  const ph = (html: string) => {
-    preserved.push(html);
-    return `\x00PH${preserved.length - 1}\x00`;
-  };
+// ---------------------------------------------------------------------------
+// Build a single Marked instance with DAN-styled renderers
+// ---------------------------------------------------------------------------
 
-  // 1. Extract mentions before escaping
-  let text = raw.replace(
-    /@\[([^\]]+)\]\((node|workflow|subgraph|file|code|docs|chat):([^)]+)\)/g,
-    (_, name, type, id) => ph(renderMentionHtml(name, type, id)),
-  );
+const _preserved: string[] = [];
+function _ph(html: string): string {
+  _preserved.push(html);
+  return `\x00PH${_preserved.length - 1}\x00`;
+}
 
-  // 2. Extract fenced code blocks before escaping
-  text = text.replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) => {
-    const rawCode = code.trimEnd();
+const _markedInstance = (() => {
+  const renderer = new Renderer();
+
+  renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
     let highlighted: string;
     try {
       highlighted =
         lang && hljs.getLanguage(lang)
-          ? hljs.highlight(rawCode, { language: lang }).value
-          : hljs.highlightAuto(rawCode).value;
+          ? hljs.highlight(text, { language: lang }).value
+          : hljs.highlightAuto(text).value;
     } catch {
-      highlighted = escapeHtml(rawCode);
+      highlighted = escapeHtml(text);
     }
-    const langLabel = lang ? `<span class="text-[10px] text-gray-400 font-sans">${lang}</span>` : "";
-    const idx = preserved.length;
+    const langLabel = lang
+      ? `<span class="text-[10px] text-gray-400 font-sans">${escapeHtml(lang)}</span>`
+      : "";
+    const idx = _preserved.length;
     const copyBtn = `<button data-copy-code="${idx}" class="text-[10px] text-gray-400 hover:text-gray-200 font-sans transition-colors">Copy</button>`;
-    return ph(
+    return _ph(
       `<div class="my-2 rounded-lg overflow-hidden border border-gray-700/50">` +
         `<div class="flex items-center justify-between px-3 py-1.5 bg-gray-800 border-b border-gray-700/50">${langLabel}${copyBtn}</div>` +
         `<pre class="bg-gray-900 text-gray-100 p-3 overflow-x-auto text-[12px] leading-relaxed font-mono m-0"><code>${highlighted}</code></pre>` +
-        `<input type="hidden" data-code-raw="${idx}" value="${rawCode.replace(/"/g, "&quot;")}" />` +
+        `<input type="hidden" data-code-raw="${idx}" value="${text.replace(/"/g, "&quot;")}" />` +
       `</div>`,
     );
-  });
+  };
 
-  // 3. Extract block math ($$...$$) before escaping
+  renderer.codespan = ({ text }: { text: string }) =>
+    `<code class="bg-gray-100 text-gray-800 px-1 py-0.5 rounded text-[12px] font-mono">${text}</code>`;
+
+  renderer.heading = ({ text, depth }: { text: string; depth: number }) => {
+    const sizes = [
+      "text-base font-bold",
+      "text-sm font-bold",
+      "text-sm font-semibold",
+      "text-xs font-semibold",
+      "text-xs font-semibold",
+      "text-xs font-semibold",
+    ];
+    return `<h${depth} class="${sizes[depth - 1]} mt-3 mb-1">${text}</h${depth}>`;
+  };
+
+  renderer.table = ({ header, rows }: { header: string; rows: string }) =>
+    `<div class="my-2 overflow-x-auto rounded-lg border border-gray-200">` +
+    `<table class="min-w-full divide-y divide-gray-200">` +
+    `<thead class="bg-gray-50">${header}</thead>` +
+    `<tbody>${rows}</tbody></table></div>`;
+
+  renderer.tablerow = ({ text }: { text: string }) =>
+    `<tr class="hover:bg-gray-50 transition-colors">${text}</tr>`;
+
+  renderer.tablecell = ({
+    text,
+    header,
+    align,
+  }: {
+    text: string;
+    header: boolean;
+    align: "center" | "left" | "right" | null;
+  }) => {
+    const tag = header ? "th" : "td";
+    const cls = header
+      ? "px-3 py-2 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-200"
+      : "px-3 py-2 text-sm border-b border-gray-100";
+    const style = align ? ` style="text-align:${align}"` : "";
+    return `<${tag} class="${cls}"${style}>${text}</${tag}>`;
+  };
+
+  renderer.blockquote = ({ text }: { text: string }) =>
+    `<blockquote class="my-2 pl-3 border-l-2 border-indigo-300 text-gray-600 italic">${text}</blockquote>`;
+
+  renderer.list = ({ body, ordered }: { body: string; ordered: boolean }) => {
+    const tag = ordered ? "ol" : "ul";
+    const cls = ordered
+      ? "my-1 ml-4 list-decimal space-y-0.5"
+      : "my-1 ml-4 list-disc space-y-0.5";
+    return `<${tag} class="${cls}">${body}</${tag}>`;
+  };
+
+  renderer.listitem = ({ text }: { text: string }) => `<li>${text}</li>`;
+
+  renderer.paragraph = ({ text }: { text: string }) =>
+    `<p class="my-1">${text}</p>`;
+
+  renderer.hr = () => `<hr class="my-3 border-gray-200" />`;
+
+  renderer.link = ({ href, text }: { href: string; text: string }) => {
+    if (/^\s*javascript\s*:/i.test(href)) return escapeHtml(text);
+    const safeHref = /^(https?:|mailto:|#)/.test(href) ? href : "#";
+    return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline hover:text-indigo-800">${text}</a>`;
+  };
+
+  renderer.strong = ({ text }: { text: string }) => `<strong>${text}</strong>`;
+  renderer.em = ({ text }: { text: string }) => `<em>${text}</em>`;
+  renderer.del = ({ text }: { text: string }) => `<del>${text}</del>`;
+
+  return new Marked({ renderer, async: false });
+})();
+
+function renderMarkdown(raw: string): string {
+  _preserved.length = 0;
+
+  // 1. Extract mentions before marked processes them
+  let text = raw.replace(
+    /@\[([^\]]+)\]\((node|workflow|subgraph|file|code|docs|chat):([^)]+)\)/g,
+    (_, name, type, id) => _ph(renderMentionHtml(name, type, id)),
+  );
+
+  // 2. Extract block math ($$...$$) before marked
   text = text.replace(/\$\$([\s\S]+?)\$\$/g, (_, tex) =>
-    ph(`<div class="my-2 overflow-x-auto">${renderKatex(tex.trim(), true)}</div>`),
+    _ph(`<div class="my-2 overflow-x-auto">${renderKatex(tex.trim(), true)}</div>`),
   );
 
-  // 4. Extract inline math ($...$) before escaping — avoid greediness across lines
+  // 3. Extract inline math ($...$)
   text = text.replace(/(?<!\$)\$(?!\$)([^\n$]+?)\$(?!\$)/g, (_, tex) =>
-    ph(renderKatex(tex.trim(), false)),
+    _ph(renderKatex(tex.trim(), false)),
   );
 
-  // 5. Now HTML-escape everything that's left
-  text = escapeHtml(text);
+  // 4. Run marked (handles headings, lists, tables, blockquotes, code, inline formatting)
+  let html = _markedInstance.parse(text) as string;
 
-  // 6. Block-level rendering
-  const blocks = text.split(/\n{2,}/);
-  const rendered = blocks
-    .map((block) => {
-      const trimmed = block.trim();
-      if (!trimmed) return "";
-
-      // Preserved placeholder on its own
-      if (/^\x00PH\d+\x00$/.test(trimmed)) return trimmed;
-
-      const lines = trimmed.split("\n");
-
-      // Horizontal rule
-      if (lines.length === 1 && /^[-*_]{3,}$/.test(trimmed)) {
-        return `<hr class="my-3 border-gray-200" />`;
-      }
-
-      // Heading
-      if (lines.length === 1) {
-        const hm = trimmed.match(/^(#{1,6})\s+(.+)$/);
-        if (hm) {
-          const lvl = hm[1].length;
-          const sizes = [
-            "text-base font-bold",
-            "text-sm font-bold",
-            "text-sm font-semibold",
-            "text-xs font-semibold",
-            "text-xs font-semibold",
-            "text-xs font-semibold",
-          ];
-          return `<h${lvl} class="${sizes[lvl - 1]} mt-3 mb-1">${applyInlineMarkdown(hm[2])}</h${lvl}>`;
-        }
-      }
-
-      // Blockquote
-      if (lines.every((l) => /^&gt;\s?/.test(l))) {
-        const inner = lines.map((l) => applyInlineMarkdown(l.replace(/^&gt;\s?/, ""))).join("<br/>");
-        return `<blockquote class="my-2 pl-3 border-l-2 border-indigo-300 text-gray-600 italic">${inner}</blockquote>`;
-      }
-
-      // Unordered list
-      if (lines.every((l) => /^[-*]\s/.test(l))) {
-        const items = lines
-          .map((l) => `<li>${applyInlineMarkdown(l.replace(/^[-*]\s/, ""))}</li>`)
-          .join("");
-        return `<ul class="my-1 ml-4 list-disc space-y-0.5">${items}</ul>`;
-      }
-
-      // Ordered list
-      if (lines.every((l) => /^\d+\.\s/.test(l))) {
-        const items = lines
-          .map((l) => `<li>${applyInlineMarkdown(l.replace(/^\d+\.\s/, ""))}</li>`)
-          .join("");
-        return `<ol class="my-1 ml-4 list-decimal space-y-0.5">${items}</ol>`;
-      }
-
-      // Table
-      if (isTable(lines)) {
-        return renderTable(lines);
-      }
-
-      return `<p class="my-1">${lines.map((l) => applyInlineMarkdown(l)).join("<br/>")}</p>`;
-    })
-    .join("");
-
-  // 7. Restore all preserved blocks
-  let result = rendered;
-  preserved.forEach((html, i) => {
-    result = result.replaceAll(`\x00PH${i}\x00`, html);
+  // 5. Restore preserved placeholders
+  _preserved.forEach((content, i) => {
+    html = html.replaceAll(`\x00PH${i}\x00`, content);
   });
-  return result;
-}
 
-function isTable(lines: string[]): boolean {
-  if (lines.length < 2) return false;
-  const hasHeader = lines[0].includes("|");
-  const hasDivider = /^\|?\s*[-:]+[-|:\s]+$/.test(lines[1]);
-  return hasHeader && hasDivider;
-}
-
-function renderTable(lines: string[]): string {
-  const parseRow = (line: string) =>
-    line.split("|").map((c) => c.trim()).filter((_, i, a) => i > 0 && i < a.length - (line.endsWith("|") ? 1 : 0));
-
-  const headers = parseRow(lines[0]);
-  const aligns: Array<"left" | "center" | "right"> = parseRow(lines[1]).map((c) => {
-    if (c.startsWith(":") && c.endsWith(":")) return "center";
-    if (c.endsWith(":")) return "right";
-    return "left";
-  });
-  const rows = lines.slice(2).map(parseRow);
-
-  const thCells = headers
-    .map((h, i) => `<th class="px-3 py-2 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-200" style="text-align:${aligns[i] || "left"}">${applyInlineMarkdown(h)}</th>`)
-    .join("");
-  const tbody = rows
-    .map(
-      (row) =>
-        `<tr class="hover:bg-gray-50 transition-colors">${row
-          .map((c, i) => `<td class="px-3 py-2 text-sm border-b border-gray-100" style="text-align:${aligns[i] || "left"}">${applyInlineMarkdown(c)}</td>`)
-          .join("")}</tr>`,
-    )
-    .join("");
-
-  return `<div class="my-2 overflow-x-auto rounded-lg border border-gray-200"><table class="min-w-full divide-y divide-gray-200"><thead class="bg-gray-50"><tr>${thCells}</tr></thead><tbody>${tbody}</tbody></table></div>`;
+  return html;
 }
 
 // ---------------------------------------------------------------------------
@@ -563,10 +530,9 @@ export default function ChatMessageBubble({
         } px-3.5 py-2.5 shadow-xs${isStreaming && !isUser ? " dan-streaming-bubble" : ""}`}
       >
         {showLoadingPlaceholder ? (
-          <div className="flex items-center gap-1.5 py-1">
-            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:0ms]" />
-            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:150ms]" />
-            <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 animate-bounce [animation-delay:300ms]" />
+          <div className="flex items-center gap-1.5 py-0.5 text-xs text-gray-400 dan-progress-pulse">
+            <Loader2 size={11} className="animate-spin flex-shrink-0" />
+            <span className="truncate">{message.progressStatus || "Working..."}</span>
           </div>
         ) : isUser && !hasMentions ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
@@ -594,8 +560,8 @@ export default function ChatMessageBubble({
         )}
 
         {message.progressStatus && isStreaming && (
-          <div className="flex items-center gap-2 mt-2 px-2 py-1.5 rounded-lg bg-indigo-50/70 border border-indigo-100 text-xs text-indigo-600 dan-progress-pulse">
-            <Loader2 size={12} className="animate-spin flex-shrink-0" />
+          <div className="flex items-center gap-1.5 mt-1.5 text-xs text-gray-400 dan-progress-pulse">
+            <Loader2 size={11} className="animate-spin flex-shrink-0" />
             <span className="truncate">{message.progressStatus}</span>
           </div>
         )}

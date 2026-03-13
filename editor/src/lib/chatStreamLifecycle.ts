@@ -29,8 +29,22 @@ export function shouldReconnectStream(args: {
   maxReconnects?: number;
   closeCode?: number;
   hadTransportError?: boolean;
+  hadTerminalEvent?: boolean;
 }): boolean {
+  if (args.closedIntentionally || args.closeCode === 4004) {
+    return false;
+  }
+  if (
+    (args.closeCode === 1000 || args.closeCode === 1005) &&
+    args.hadTerminalEvent !== false
+  ) {
+    return false;
+  }
+  const prematureCleanClose =
+    (args.closeCode === 1000 || args.closeCode === 1005) &&
+    args.hadTerminalEvent === false;
   const transientClose =
+    prematureCleanClose ||
     args.hadTransportError ||
     args.closeCode === 1006 ||
     args.closeCode === 1012 ||
@@ -40,7 +54,6 @@ export function shouldReconnectStream(args: {
   return (
     !args.closedIntentionally &&
     args.activeChannelId === args.channelId &&
-    args.closeCode !== 4004 &&
     transientClose &&
     args.reconnectCount < (args.maxReconnects ?? 6)
   );

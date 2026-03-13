@@ -62,6 +62,7 @@ import {
   toBackendMessage,
 } from "../lib/chatMessagePersistence";
 import { createThreadPersistenceCoordinator } from "../lib/threadPersistenceCoordinator";
+import { describeLatestToolProgress } from "../lib/toolCallPresentation";
 import {
   getStreamDisconnectError,
   getStreamReconnectDelayMs,
@@ -668,6 +669,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
         setIsRunStreaming(true);
         let runWsClosedIntentionally = false;
         let runWsHadTransportError = false;
+        let runWsHadTerminalEvent = false;
 
         runWs.onmessage = (ev) => {
           try {
@@ -724,6 +726,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                 return updated;
               });
               if (isTerminalRunEvent) {
+                runWsHadTerminalEvent = true;
                 runWsClosedIntentionally = true;
                 activeRunChannelIdRef.current = null;
                 setIsRunStreaming(false);
@@ -757,6 +760,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               reconnectCount,
               closeCode: event.code,
               hadTransportError: runWsHadTransportError,
+              hadTerminalEvent: runWsHadTerminalEvent,
             })
           ) {
             window.setTimeout(() => {
@@ -766,8 +770,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           }
           if (
             runWsClosedIntentionally ||
-            event.code === 1000 ||
-            event.code === 1005
+            ((event.code === 1000 || event.code === 1005) && runWsHadTerminalEvent)
           ) {
             if (activeRunChannelIdRef.current === streamChannelId) {
               activeRunChannelIdRef.current = null;
@@ -1075,6 +1078,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           wsRef.current = ws;
           let wsClosedIntentionally = false;
           let wsHadTransportError = false;
+          let wsHadTerminalEvent = false;
 
           ws.onmessage = (e) => {
             try {
@@ -1174,6 +1178,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               if (isProgressAck) {
                 // Progress/reassurance update — keep streaming
               } else {
+                wsHadTerminalEvent = true;
                 wsClosedIntentionally = true;
                 if (evt.stream_channel_id) {
                   runStreamHandoffRef.current = true;
@@ -1224,6 +1229,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               });
               setIsStreaming(false);
               setActiveChannelId(null);
+              wsHadTerminalEvent = true;
               wsClosedIntentionally = true;
               ws.close();
               if (capturedGraphId) void fetchThreads(capturedGraphId);
@@ -1259,6 +1265,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               });
               setIsStreaming(false);
               setActiveChannelId(null);
+              wsHadTerminalEvent = true;
               wsClosedIntentionally = true;
               ws.close();
               if (capturedGraphId) void fetchThreads(capturedGraphId);
@@ -1266,10 +1273,8 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               setMessages((prev) => {
                 const updated = prev.map((m) =>
                   m.id === assistantId
-                    ? {
-                        ...m,
-                        progressStatus: undefined,
-                        toolCalls: [
+                    ? (() => {
+                        const nextToolCalls = [
                           ...(m.toolCalls || []),
                           {
                             id: evt.tool_call_id!,
@@ -1277,8 +1282,14 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                             argsPreview: evt.args_preview ?? "",
                             status: "running" as const,
                           },
-                        ],
-                      }
+                        ];
+                        return {
+                          ...m,
+                          progressStatus:
+                            describeLatestToolProgress(nextToolCalls) ?? m.progressStatus,
+                          toolCalls: nextToolCalls,
+                        };
+                      })()
                     : m,
                 );
                 scheduleThreadPersist(
@@ -1292,9 +1303,8 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               setMessages((prev) => {
                 const updated = prev.map((m) =>
                   m.id === assistantId
-                    ? {
-                        ...m,
-                        toolCalls: (m.toolCalls || []).map((tc: ToolCallInfo) =>
+                    ? (() => {
+                        const nextToolCalls = (m.toolCalls || []).map((tc: ToolCallInfo) =>
                           tc.id === evt.tool_call_id
                             ? {
                                 ...tc,
@@ -1303,8 +1313,14 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                                 durationMs: evt.duration_ms,
                               }
                             : tc,
-                        ),
-                      }
+                        );
+                        return {
+                          ...m,
+                          progressStatus:
+                            describeLatestToolProgress(nextToolCalls) ?? m.progressStatus,
+                          toolCalls: nextToolCalls,
+                        };
+                      })()
                     : m,
                 );
                 scheduleThreadPersist(
@@ -1365,6 +1381,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               setError(evt.error ?? "Unknown error");
               setIsStreaming(false);
               setActiveChannelId(null);
+              wsHadTerminalEvent = true;
               wsClosedIntentionally = true;
               ws.close();
               if (capturedGraphId) void fetchThreads(capturedGraphId);
@@ -1408,6 +1425,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                 reconnectCount,
                 closeCode: event.code,
                 hadTransportError: wsHadTransportError,
+                hadTerminalEvent: wsHadTerminalEvent,
               })
             ) {
               window.setTimeout(() => {
@@ -1419,8 +1437,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
             }
             if (
               wsClosedIntentionally ||
-              event.code === 1000 ||
-              event.code === 1005
+              ((event.code === 1000 || event.code === 1005) && wsHadTerminalEvent)
             ) {
               setIsStreaming(false);
               setActiveChannelId(null);
@@ -1669,18 +1686,25 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
       if (!graphId) return;
       if (!window.confirm("Delete this conversation?")) return;
       try {
+        persistenceCoordinatorRef.current?.cancelForThread(graphId, threadId);
         await api.deleteChatThread(graphId, threadId);
-        if (activeThreadId === threadId) {
+        const wasActive = activeThreadId === threadId;
+        if (wasActive) {
           setActiveThreadId(null);
           setMessages([]);
           setThreadTitle("");
         }
-        await fetchThreads(graphId);
+        const remaining = await fetchThreads(graphId);
+        if (wasActive && remaining.length > 0) {
+          await loadThread(graphId, remaining[0].id);
+        } else if (wasActive) {
+          requestAnimationFrame(() => textareaRef.current?.focus());
+        }
       } catch (err) {
         console.warn("Failed to delete thread:", err);
       }
     },
-    [graphId, activeThreadId, fetchThreads],
+    [graphId, activeThreadId, fetchThreads, loadThread],
   );
 
   const handleRenameThread = useCallback(

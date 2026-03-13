@@ -57,6 +57,34 @@ describe("chatStreamLifecycle", () => {
     ).toBe(false);
   });
 
+  it("does not reconnect after a clean close when a terminal event was received", () => {
+    expect(
+      shouldReconnectStream({
+        closedIntentionally: false,
+        activeChannelId: "chat-123",
+        channelId: "chat-123",
+        reconnectCount: 1,
+        closeCode: 1000,
+        hadTransportError: true,
+        hadTerminalEvent: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("reconnects after a premature clean close when no terminal event was received", () => {
+    expect(
+      shouldReconnectStream({
+        closedIntentionally: false,
+        activeChannelId: "chat-123",
+        channelId: "chat-123",
+        reconnectCount: 1,
+        closeCode: 1000,
+        hadTransportError: false,
+        hadTerminalEvent: false,
+      }),
+    ).toBe(true);
+  });
+
   it("backs off reconnect delays for longer local restarts", () => {
     expect(getStreamReconnectDelayMs(0)).toBe(500);
     expect(getStreamReconnectDelayMs(1)).toBe(1000);

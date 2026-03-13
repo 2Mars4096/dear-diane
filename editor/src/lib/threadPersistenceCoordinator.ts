@@ -143,6 +143,13 @@ export function createThreadPersistenceCoordinator<T>(args: {
     }
   };
 
+  const cancelForThread = (workflowId: string, threadId: string): void => {
+    clearPendingIfSuperseded(workflowId, threadId);
+    const key = keyFor(workflowId, threadId);
+    delete persistLatest[key];
+    delete persistSequence[key];
+  };
+
   const dispose = (): void => {
     if (persistTimer) {
       clearTimeout(persistTimer);
@@ -155,6 +162,7 @@ export function createThreadPersistenceCoordinator<T>(args: {
     persistNow,
     schedule,
     flushPending,
+    cancelForThread,
     dispose,
   };
 }
