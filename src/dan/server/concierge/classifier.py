@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import math
 import re
+from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from enum import Enum
 from pathlib import Path
@@ -11,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Callable, Protocol
 from pydantic import BaseModel
 
 from .context_resolver import ResolvedContext
+from .intent_catalog import build_classifier_prompt
 
 if TYPE_CHECKING:
     from dan.engine.behavior_store import BehaviorStore
@@ -42,6 +45,47 @@ class ClassificationResult(BaseModel):
     confidence: float
     param: str = ""
     raw_text: str
+    signals: list[str] = []
+
+
+@dataclass
+class _IntentFeatures:
+    text: str
+    clean: str
+    tokens: set[str]
+    recent_file_context: bool
+    has_path: bool
+    send_request_query: str | None
+    direct_web_lookup: bool
+    short_draft_request: bool
+    format_spec: bool
+    multi_action: bool
+    creative_artifact: bool
+    path_scoped_task: bool
+    file_lookup: bool
+    read_transform_request: bool
+    workflow_nouns: bool
+    workflow_edit: bool
+    workflow_query: bool
+    run_control: bool
+    status_check: bool
+    experience_query: bool
+    publish_share: bool
+    meta_goal: bool
+
+
+@dataclass
+class _IntentScoreBoard:
+    scores: dict[IntentCategory, float] = field(
+        default_factory=lambda: {intent: 0.0 for intent in IntentCategory}
+    )
+    reasons: dict[IntentCategory, list[str]] = field(
+        default_factory=lambda: {intent: [] for intent in IntentCategory}
+    )
+
+    def add(self, intent: IntentCategory, weight: float, reason: str) -> None:
+        self.scores[intent] += weight
+        self.reasons[intent].append(reason)
 
 
 def register_seed_intents(store: BehaviorStore) -> None:
@@ -211,18 +255,36 @@ def _looks_like_complex_direct_task(clean: str) -> bool:
     These requests are still ``DIRECT_TASK`` overall, but they need the fuller
     agent lane instead of the concierge's cheap non-build fast path.
     """
-    if not clean or _FILE_RETRIEVAL_START_RE.search(clean):
+    if not clean:
         return False
+    has_path = _has_filesystem_path(clean)
+    read_transform_request = bool(re.search(
+        r"\b(read|open|load)\b.*\b(and\s+)?(tell|list|what|extract|write|create|save|then|change|update|convert)\b",
+        clean,
+    ))
+    text_sans_paths = re.sub(
+        r"(?:~|/)[A-Za-z0-9._~/-]+", " ", clean,
+    ).strip()
     has_artifact_request = bool(
-        _CREATIVE_VERBS_RE.search(clean) and _OUTPUT_NOUNS_RE.search(clean)
+        _CREATIVE_VERBS_RE.search(text_sans_paths)
+        and (_OUTPUT_NOUNS_RE.search(text_sans_paths) or _FORMAT_SPEC_RE.search(clean))
     )
-    if not has_artifact_request:
+    if _FILE_RETRIEVAL_START_RE.search(clean) and not read_transform_request and not has_artifact_request:
+        return False
+    if not has_artifact_request and not read_transform_request:
         return False
     has_scope_cue = any(term in clean for term in _COMPLEX_TASK_SCOPE_TERMS)
     has_research_cue = any(term in clean for term in _COMPLEX_TASK_RESEARCH_TERMS)
     has_format_cue = bool(_FORMAT_SPEC_RE.search(clean))
     has_multi_step_cue = bool(_MULTI_ACTION_RE.search(clean))
-    return has_scope_cue or has_research_cue or has_format_cue or has_multi_step_cue
+    return (
+        read_transform_request
+        or has_scope_cue
+        or has_research_cue
+        or has_format_cue
+        or has_multi_step_cue
+        or (has_path and has_artifact_request)
+    )
 
 
 def _looks_like_path_scoped_task(clean: str, *, has_path: bool) -> bool:
@@ -254,6 +316,12 @@ def _looks_like_path_scoped_task(clean: str, *, has_path: bool) -> bool:
     ).strip()
 
     # Pure file-review actions without any creative verb → file lookup
+    # Exception: "read X and [tell me / list / extract / write]" is a multi-step task
+    if re.search(
+        r"\b(read|open|load)\b.*\b(and\s+)?(tell|list|what|extract|write|create|save|then|change|update|convert)\b",
+        clean,
+    ):
+        return True
     if any(
         phrase in clean
         for phrase in ("summary of", "summarize", "review", "read ", "analyze", "open ")
@@ -351,6 +419,177 @@ def _has_filesystem_path(text: str) -> bool:
     ))
 
 
+_WORKFLOW_NOUNS = {"workflow", "pipeline", "graph", "node", "edge", "step"}
+_WORKFLOW_EDIT_VERBS = {"add", "change", "wire", "modify", "edit", "update", "remove", "delete"}
+_WORKFLOW_QUERY_TOKENS = {"show", "list", "inspect", "explain", "what"}
+_RUN_CONTROL_TOKENS = {"cancel", "resume", "pause", "stop"}
+_STATUS_TOKENS = {"status", "progress", "running"}
+_EXPERIENCE_PHRASES = ("have we done", "similar to", "past work", "what did we learn")
+_PUBLISH_PHRASES = ("publish", "share", "export", "send to")
+_META_GOAL_PHRASES = (
+    "build me",
+    "create a workflow for",
+    "end-to-end",
+    "i need a pipeline",
+    "i want a system",
+    "from scratch",
+)
+_SHORT_DRAFT_PREFIXES = (
+    "draft a short ",
+    "draft an email",
+    "write a short email",
+    "write a short reply",
+)
+
+
+def _extract_intent_features(text: str, context: ResolvedContext) -> _IntentFeatures:
+    lower = text.lower().strip()
+    clean = lower.rstrip(".!?,")
+    tokens = set(re.findall(r"[a-z0-9]+", clean))
+    recent_file_context = any(
+        (
+            turn.intent == IntentCategory.FILE_REQUEST.value
+            or ".pdf" in turn.content.lower()
+            or "/" in turn.content
+            or "document" in turn.content.lower()
+            or "file" in turn.content.lower()
+        )
+        for turn in context.task.turns[-6:]
+    )
+    has_path = _has_filesystem_path(text)
+    send_request_query = extract_search_query_from_send_request(text)
+    direct_web_lookup = _looks_like_direct_web_lookup(clean)
+    short_draft_request = clean.startswith(_SHORT_DRAFT_PREFIXES)
+    format_spec = bool(_FORMAT_SPEC_RE.search(clean))
+    multi_action = bool(_MULTI_ACTION_RE.search(clean))
+    creative_artifact = bool(
+        _CREATIVE_VERBS_RE.search(clean)
+        and (_OUTPUT_NOUNS_RE.search(clean) or format_spec)
+    )
+    read_transform_request = bool(re.search(
+        r"\b(read|open|load)\b.*\b(and\s+)?(tell|list|what|extract|write|create|save|then|change|update|convert)\b",
+        clean,
+    ))
+    path_scoped_task = _looks_like_path_scoped_task(clean, has_path=has_path)
+    file_lookup = bool(
+        has_path
+        and _FILE_RETRIEVAL_START_RE.match(clean)
+        and not read_transform_request
+        and not path_scoped_task
+    )
+    workflow_nouns = bool(tokens & _WORKFLOW_NOUNS)
+    workflow_edit = bool(tokens & _WORKFLOW_EDIT_VERBS) and workflow_nouns
+    workflow_query = bool(tokens & _WORKFLOW_QUERY_TOKENS) and workflow_nouns and not workflow_edit
+    run_control = bool(tokens & _RUN_CONTROL_TOKENS) and (
+        bool(tokens & set(_INTERNAL_STATUS_OBJECTS)) or "run it" in clean
+    )
+    status_check = (
+        any(phrase in clean for phrase in _STATUS_PHRASES)
+        or (bool(tokens & _STATUS_TOKENS) and bool(tokens & set(_INTERNAL_STATUS_OBJECTS)))
+    )
+    experience_query = any(phrase in clean for phrase in _EXPERIENCE_PHRASES)
+    publish_share = any(phrase in clean for phrase in _PUBLISH_PHRASES)
+    meta_goal = any(phrase in clean for phrase in _META_GOAL_PHRASES)
+    return _IntentFeatures(
+        text=text,
+        clean=clean,
+        tokens=tokens,
+        recent_file_context=recent_file_context,
+        has_path=has_path,
+        send_request_query=send_request_query,
+        direct_web_lookup=direct_web_lookup,
+        short_draft_request=short_draft_request,
+        format_spec=format_spec,
+        multi_action=multi_action,
+        creative_artifact=creative_artifact,
+        path_scoped_task=path_scoped_task,
+        file_lookup=file_lookup,
+        read_transform_request=read_transform_request,
+        workflow_nouns=workflow_nouns,
+        workflow_edit=workflow_edit,
+        workflow_query=workflow_query,
+        run_control=run_control,
+        status_check=status_check,
+        experience_query=experience_query,
+        publish_share=publish_share,
+        meta_goal=meta_goal,
+    )
+
+
+def _score_intents(features: _IntentFeatures) -> _IntentScoreBoard:
+    board = _IntentScoreBoard()
+
+    if features.send_request_query:
+        board.add(IntentCategory.FILE_REQUEST, 8.0, "explicit send-me file request")
+
+    if features.status_check:
+        board.add(IntentCategory.STATUS_CHECK, 7.0, "status/progress signal")
+
+    if features.run_control:
+        board.add(IntentCategory.RUN_CONTROL, 7.0, "run-control signal")
+
+    if features.meta_goal:
+        board.add(IntentCategory.META_GOAL, 7.0, "meta-goal phrasing")
+
+    if features.short_draft_request or features.direct_web_lookup:
+        board.add(IntentCategory.DIRECT_TASK, 6.0, "direct-task lookup/drafting signal")
+
+    if features.experience_query:
+        board.add(IntentCategory.EXPERIENCE_QUERY, 6.0, "experience query signal")
+
+    if features.publish_share:
+        board.add(IntentCategory.PUBLISH_SHARE, 5.0, "publish/share signal")
+
+    if features.workflow_query:
+        board.add(IntentCategory.WORKFLOW_QUERY, 6.0, "workflow query signal")
+
+    if features.workflow_edit:
+        board.add(IntentCategory.WORKFLOW_BUILD, 7.0, "workflow edit signal")
+
+    if features.path_scoped_task:
+        board.add(IntentCategory.DIRECT_TASK, 8.0, "path-scoped task signal")
+
+    if features.read_transform_request:
+        board.add(IntentCategory.DIRECT_TASK, 7.0, "read-transform-write signal")
+
+    if features.file_lookup:
+        board.add(IntentCategory.FILE_REQUEST, 6.0, "path lookup signal")
+
+    if (
+        features.recent_file_context
+        and any(
+            phrase in features.clean
+            for phrase in ("summarize it", "review it", "read it", "summarize this", "review this")
+        )
+    ):
+        board.add(IntentCategory.FILE_REQUEST, 5.0, "recent file follow-up signal")
+
+    if features.creative_artifact and not features.workflow_nouns:
+        board.add(IntentCategory.DIRECT_TASK, 4.0, "artifact creation signal")
+
+    if features.format_spec and features.creative_artifact:
+        board.add(IntentCategory.DIRECT_TASK, 2.0, "explicit output format")
+
+    if features.multi_action and (features.creative_artifact or features.has_path):
+        board.add(IntentCategory.DIRECT_TASK, 2.0, "multi-step task signal")
+
+    if features.has_path and not features.path_scoped_task:
+        board.add(IntentCategory.FILE_REQUEST, 2.0, "filesystem path fallback")
+
+    if all(score <= 0 for score in board.scores.values()):
+        board.add(IntentCategory.CONVERSATION, 1.0, "fallback")
+
+    return board
+
+
+def _score_to_confidence(top_score: float, second_score: float) -> float:
+    """Convert relative score dominance into a confidence value."""
+    top = math.exp(min(max(top_score, 0.0), 8.0))
+    second = math.exp(min(max(second_score, 0.0), 8.0))
+    baseline = 1.0
+    return max(0.5, min(0.98, top / (top + second + baseline)))
+
+
 _STATUS_PHRASES = (
     "what's running", "whats running",
     "what's the status", "whats the status", "what is the status",
@@ -369,148 +608,57 @@ _INTERNAL_STATUS_OBJECTS = (
 )
 
 
+def _record_unrecognized_conversation(
+    text: str,
+    *,
+    intent: IntentCategory,
+    confidence: float,
+    pattern_accumulator: Any = None,
+) -> None:
+    if (
+        pattern_accumulator is None
+        or intent != IntentCategory.CONVERSATION
+        or confidence > 0.6
+    ):
+        return
+    keywords = [w for w in text.lower().split() if len(w) > 3][:10]
+    pattern_accumulator.record_unrecognized(text[:200], keywords, "taxonomy")
+
+
 def classify_intent(
     text: str,
     context: ResolvedContext,
     pattern_accumulator: Any = None,
 ) -> ClassificationResult:
-    lower = text.lower().strip()
-    clean = lower.rstrip(".!?,")
-    recent_file_context = any(
-        (
-            turn.intent == IntentCategory.FILE_REQUEST.value
-            or ".pdf" in turn.content.lower()
-            or "/" in turn.content
-            or "document" in turn.content.lower()
-            or "file" in turn.content.lower()
-        )
-        for turn in context.task.turns[-6:]
+    features = _extract_intent_features(text, context)
+    board = _score_intents(features)
+    ranked = sorted(board.scores.items(), key=lambda item: item[1], reverse=True)
+    top_intent, top_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    confidence = _score_to_confidence(top_score, second_score)
+    param = (features.send_request_query or "") if top_intent == IntentCategory.FILE_REQUEST else ""
+
+    _record_unrecognized_conversation(
+        text,
+        intent=top_intent,
+        confidence=confidence,
+        pattern_accumulator=pattern_accumulator,
     )
 
-    has_path = _has_filesystem_path(text)
-
-    polite_send_query = extract_search_query_from_send_request(text)
-    if polite_send_query:
-        return ClassificationResult(
-            intent=IntentCategory.FILE_REQUEST,
-            confidence=0.95,
-            param=polite_send_query,
-            raw_text=text,
-        )
-
-    if any(phrase in clean for phrase in _STATUS_PHRASES):
-        return ClassificationResult(intent=IntentCategory.STATUS_CHECK, confidence=0.95, raw_text=text)
-
-    if any(phrase in clean for phrase in ("cancel", "resume", "stop the run", "run it", "pause")):
-        return ClassificationResult(intent=IntentCategory.RUN_CONTROL, confidence=0.9, raw_text=text)
-
-    if any(
-        phrase in clean
-        for phrase in (
-            "build me",
-            "create a workflow for",
-            "end-to-end",
-            "i need a pipeline",
-            "i want a system",
-            "from scratch",
-        )
-    ):
-        return ClassificationResult(intent=IntentCategory.META_GOAL, confidence=0.9, raw_text=text)
-
-    if (
-        clean.startswith(("draft a short ", "draft an email", "write a short email", "write a short reply"))
-        or _looks_like_direct_web_lookup(clean)
-    ):
-        return ClassificationResult(intent=IntentCategory.DIRECT_TASK, confidence=0.8, raw_text=text)
-
-    if any(phrase in clean for phrase in ("have we done", "similar to", "past work", "what did we learn")):
-        return ClassificationResult(intent=IntentCategory.EXPERIENCE_QUERY, confidence=0.9, raw_text=text)
-
-    if any(phrase in clean for phrase in ("publish", "share", "export", "send to")):
-        return ClassificationResult(intent=IntentCategory.PUBLISH_SHARE, confidence=0.85, raw_text=text)
-
-    if any(phrase in clean for phrase in ("show me the workflow", "what does it do", "list workflows")):
-        return ClassificationResult(intent=IntentCategory.WORKFLOW_QUERY, confidence=0.85, raw_text=text)
-
-    if any(
-        phrase in clean
-        for phrase in (
-            "add a node",
-            "add a step",
-            "change the prompt",
-            "wire ",
-            "modify the workflow",
-            "edit the workflow",
-        )
-    ):
-        return ClassificationResult(intent=IntentCategory.WORKFLOW_BUILD, confidence=0.9, raw_text=text)
-
-    if _looks_like_path_scoped_task(clean, has_path=has_path):
-        return ClassificationResult(
-            intent=IntentCategory.DIRECT_TASK,
-            confidence=0.9,
-            raw_text=text,
-        )
-
-    if has_path:
-        return ClassificationResult(
-            intent=IntentCategory.FILE_REQUEST,
-            confidence=0.65,
-            raw_text=text,
-        )
-
-    file_prefixes = (
-        "send me the ",
-        "send me ",
-        "send the ",
-        "get me the ",
-        "get me ",
-        "find ",
-        "search for ",
-        "look for ",
-        "locate ",
-        "where is ",
-        "can you find ",
-        "help me find ",
+    return ClassificationResult(
+        intent=top_intent,
+        confidence=confidence,
+        param=param,
+        raw_text=text,
+        signals=board.reasons[top_intent],
     )
-    file_cues = ("the document", "the file", "that file", "that doc")
-    has_do_you_have_file_cue = "do you have" in clean and any(
-        token in clean for token in ("file", "document", "doc", "pdf", "report", "folder")
-    )
-    if lower.startswith(file_prefixes) or any(cue in clean for cue in file_cues) or has_do_you_have_file_cue:
-        return ClassificationResult(intent=IntentCategory.FILE_REQUEST, confidence=0.85, raw_text=text)
-    if (
-        any(token in clean for token in ("pdf", "paper", "document", "folder", "directory"))
-        and any(phrase in clean for phrase in ("list all", "starting with", "under ", "in that folder", "review", "summarize", "read"))
-    ):
-        return ClassificationResult(intent=IntentCategory.FILE_REQUEST, confidence=0.8, raw_text=text)
-    if recent_file_context and any(phrase in clean for phrase in ("summarize it", "review it", "read it", "summarize this", "review this")):
-        return ClassificationResult(intent=IntentCategory.FILE_REQUEST, confidence=0.75, raw_text=text)
-
-    if pattern_accumulator is not None:
-        keywords = [w for w in text.lower().split() if len(w) > 3][:10]
-        pattern_accumulator.record_unrecognized(text[:200], keywords, "taxonomy")
-    return ClassificationResult(intent=IntentCategory.CONVERSATION, confidence=0.5, raw_text=text)
 
 
 # ---------------------------------------------------------------------------
 # LLM-based intent classifier (micro-tier model, ~200ms)
 # ---------------------------------------------------------------------------
 
-_CLASSIFICATION_SYSTEM_PROMPT = """\
-Classify the user's message into exactly one intent. Respond with ONLY: {"intent":"<name>"}
-
-Intents:
-- file_request: Find/open/read/review/summarize a local file or document. Mentions a filesystem path or filename.
-- direct_task: Quick factual lookup, web search, drafting a short email or message.
-- run_control: Start, stop, cancel, resume, or pause a workflow run.
-- status_check: Check status/progress of active DAN runs, tasks, or scheduled jobs. Includes "what's running", "check the run". Does NOT include asking about a project by name — those are handled by project commands.
-- workflow_build: Create, modify, or edit a workflow or pipeline.
-- workflow_query: List or inspect existing workflows.
-- experience_query: Ask about past work, similar projects, or lessons learned.
-- publish_share: Publish, share, or export a workflow.
-- meta_goal: Build a complex end-to-end automation system or pipeline from scratch.
-- conversation: General chat, research questions, brainstorming, or anything else."""
+_CLASSIFICATION_SYSTEM_PROMPT = build_classifier_prompt()
 
 _VALID_INTENTS = frozenset(e.value for e in IntentCategory)
 
@@ -518,9 +666,11 @@ _VALID_INTENTS = frozenset(e.value for e in IntentCategory)
 def _build_classification_messages(
     text: str,
     context: ResolvedContext,
+    *,
+    system_prompt: str | None = None,
 ) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = [
-        {"role": "system", "content": _CLASSIFICATION_SYSTEM_PROMPT},
+        {"role": "system", "content": system_prompt or _CLASSIFICATION_SYSTEM_PROMPT},
     ]
     recent = context.task.turns[-4:]
     if recent:
@@ -532,26 +682,105 @@ def _build_classification_messages(
     return messages
 
 
-def _parse_llm_intent(raw: str) -> str | None:
-    """Extract an intent name from the LLM response (JSON or bare text)."""
+def _resolve_classification_system_prompt(behavior_store: Any = None) -> str:
+    if behavior_store is None:
+        return _CLASSIFICATION_SYSTEM_PROMPT
+    try:
+        prompt = behavior_store.get(
+            "prompts/classifier.classification_system",
+            default=None,
+        )
+    except Exception:
+        prompt = None
+    if isinstance(prompt, str) and prompt.strip():
+        return prompt
+    return _CLASSIFICATION_SYSTEM_PROMPT
+
+
+def _coerce_confidence(raw_value: Any) -> float | None:
+    if isinstance(raw_value, (int, float)):
+        value = float(raw_value)
+    elif isinstance(raw_value, str):
+        try:
+            value = float(raw_value.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    if value > 1.0 and value <= 100.0:
+        value /= 100.0
+    return max(0.0, min(1.0, value))
+
+
+def _parse_llm_classification(raw: str) -> tuple[str | None, float | None, str | None]:
+    """Extract intent, confidence, and rationale from JSON or bare text."""
     raw = raw.strip()
-    for start_char in ("{",):
-        idx = raw.find(start_char)
-        if idx >= 0:
-            end = raw.find("}", idx)
-            if end >= 0:
-                try:
-                    obj = _json.loads(raw[idx : end + 1])
-                    intent = obj.get("intent", "")
-                    if intent in _VALID_INTENTS:
-                        return intent
-                except (ValueError, TypeError):
-                    pass
+    start = raw.find("{")
+    end = raw.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            obj = _json.loads(raw[start : end + 1])
+        except (ValueError, TypeError):
+            obj = None
+        if isinstance(obj, dict):
+            intent = str(obj.get("intent", "")).strip()
+            if intent in _VALID_INTENTS:
+                reason = (
+                    str(
+                        obj.get("reason")
+                        or obj.get("rationale")
+                        or obj.get("explanation")
+                        or obj.get("why")
+                        or ""
+                    ).strip()
+                    or None
+                )
+                return intent, _coerce_confidence(obj.get("confidence")), reason
     lower = raw.lower()
     for intent_val in _VALID_INTENTS:
         if intent_val in lower:
-            return intent_val
-    return None
+            return intent_val, None, None
+    return None, None, None
+
+
+def _build_llm_classification_result(
+    text: str,
+    heuristic: ClassificationResult,
+    *,
+    intent_value: str,
+    confidence: float | None,
+    reason: str | None,
+    pattern_accumulator: Any = None,
+) -> ClassificationResult:
+    intent = IntentCategory(intent_value)
+    resolved_confidence = confidence
+    if resolved_confidence is None:
+        resolved_confidence = heuristic.confidence if heuristic.intent == intent else 0.72
+    if heuristic.intent == intent:
+        resolved_confidence = max(resolved_confidence, heuristic.confidence)
+    resolved_confidence = max(0.55, min(0.98, resolved_confidence))
+
+    signals: list[str] = []
+    if reason:
+        signals.append(f"llm: {reason}")
+    if heuristic.intent == intent and heuristic.signals:
+        signals.extend(f"heuristic: {signal}" for signal in heuristic.signals[:2])
+    elif heuristic.signals:
+        signals.append(f"heuristic disagreed: {heuristic.intent.value}")
+
+    _record_unrecognized_conversation(
+        text,
+        intent=intent,
+        confidence=resolved_confidence,
+        pattern_accumulator=pattern_accumulator,
+    )
+    return ClassificationResult(
+        intent=intent,
+        confidence=resolved_confidence,
+        param=(extract_search_query_from_send_request(text) or "") if intent == IntentCategory.FILE_REQUEST else "",
+        raw_text=text,
+        signals=signals,
+    )
 
 
 async def classify_intent_llm(
@@ -562,30 +791,16 @@ async def classify_intent_llm(
     pattern_accumulator: Any = None,
     on_fallback: Any = None,
 ) -> ClassificationResult:
-    """Primary classifier: uses a micro-tier LLM call with keyword fallback.
-
-    Fast-path rules (filesystem paths, slash commands) are checked first.
-    If the LLM call fails or returns garbage, falls back to keyword rules.
-
-    When falling back, calls on_fallback(reason) if provided. Reason is
-    "unparseable", "empty_content", or "exception".
-    """
-    fast_path_conf = 0.85
-    if behavior_store is not None:
-        val = behavior_store.get("heuristics/classifier.fast_path_confidence", default=0.85)
-        if isinstance(val, dict):
-            fast_path_conf = val.get("value", 0.85)
-        elif isinstance(val, (int, float)):
-            fast_path_conf = float(val)
-
+    """Primary classifier: use the LLM first, fall back to heuristics on failure."""
     heuristic = classify_intent(text, context, pattern_accumulator=pattern_accumulator)
-    if heuristic.confidence >= fast_path_conf or (
-        heuristic.intent != IntentCategory.CONVERSATION and heuristic.confidence >= 0.8
-    ):
-        return heuristic
 
     try:
-        messages = _build_classification_messages(text, context)
+        system_prompt = _resolve_classification_system_prompt(behavior_store)
+        messages = _build_classification_messages(
+            text,
+            context,
+            system_prompt=system_prompt,
+        )
         result = await llm_complete(messages)
         raw_text = result if isinstance(result, str) else getattr(result, "text", str(result))
         if not (raw_text or "").strip():
@@ -595,13 +810,16 @@ async def classify_intent_llm(
                     await on_fallback("empty_content")
                 except Exception:
                     pass
-            return classify_intent(text, context, pattern_accumulator=pattern_accumulator)
-        intent_value = _parse_llm_intent(raw_text)
+            return heuristic
+        intent_value, llm_confidence, llm_reason = _parse_llm_classification(raw_text)
         if intent_value:
-            return ClassificationResult(
-                intent=IntentCategory(intent_value),
-                confidence=0.85,
-                raw_text=text,
+            return _build_llm_classification_result(
+                text,
+                heuristic,
+                intent_value=intent_value,
+                confidence=llm_confidence,
+                reason=llm_reason,
+                pattern_accumulator=pattern_accumulator,
             )
         logger.warning("LLM classifier returned unparseable response: %s", raw_text[:200])
         if on_fallback:
@@ -610,14 +828,14 @@ async def classify_intent_llm(
             except Exception:
                 pass
     except Exception:
-        logger.warning("LLM classifier failed, falling back to keyword rules", exc_info=True)
+        logger.warning("LLM classifier failed, falling back to heuristic rules", exc_info=True)
         if on_fallback:
             try:
                 await on_fallback("exception")
             except Exception:
                 pass
 
-    return classify_intent(text, context, pattern_accumulator=pattern_accumulator)
+    return heuristic
 
 
 # ---------------------------------------------------------------------------

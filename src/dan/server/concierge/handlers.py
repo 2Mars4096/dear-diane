@@ -24,7 +24,7 @@ from dan.server.capability_handlers import (
 from dan.server.chat_manager import ChatStreamEvent
 
 from .classifier import ClassificationResult, IntentCategory, search_local_files
-from .classifier import _looks_like_complex_direct_task, _looks_like_direct_web_lookup
+from .classifier import _has_filesystem_path, _looks_like_complex_direct_task, _looks_like_direct_web_lookup
 from .context_resolver import ResolvedContext
 from .identity import format_prefix
 from .models import SurfaceMessage
@@ -872,6 +872,8 @@ class DirectTaskHandler:
     @staticmethod
     def _references_file_without_context(msg: SurfaceMessage, context: ResolvedContext) -> bool:
         if msg.metadata.get("selected_path"):
+            return False
+        if _has_filesystem_path(msg.text):
             return False
         tokens = set(re.findall(r"[a-z]+", msg.text.lower()))
         if not (tokens & _FILE_REF_ACTIONS and tokens & _FILE_REF_NOUNS):
