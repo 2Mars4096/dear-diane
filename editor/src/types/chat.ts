@@ -29,6 +29,7 @@ export interface ChatMessage {
   toolCalls?: ToolCallInfo[];
   runEvents?: RunEventPayload[];
   attachments?: Array<{ path: string; filename: string; size?: number }>;
+  progressStatus?: string;
 }
 
 export interface ChatThread {

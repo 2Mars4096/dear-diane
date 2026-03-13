@@ -593,6 +593,13 @@ export default function ChatMessageBubble({
           />
         )}
 
+        {message.progressStatus && isStreaming && (
+          <div className="flex items-center gap-2 mt-2 px-2 py-1.5 rounded-lg bg-indigo-50/70 border border-indigo-100 text-xs text-indigo-600 dan-progress-pulse">
+            <Loader2 size={12} className="animate-spin flex-shrink-0" />
+            <span className="truncate">{message.progressStatus}</span>
+          </div>
+        )}
+
         {message.attachments && message.attachments.length > 0 && (
           <div className="mt-2 space-y-1">
             {message.attachments.map((att, idx) => (

@@ -366,6 +366,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
         setError(null);
         const storedMode = (data.mode as ChatMode) || "agent";
         useGraphStore.getState().setChatMode(storedMode);
+        requestAnimationFrame(() => textareaRef.current?.focus());
       } catch (err) {
         console.warn("Failed to load thread:", err);
       }
@@ -463,6 +464,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
         await loadThread(graphId, sorted[0].id);
       } else if (sorted.length === 0) {
         setShowThreadList(true);
+        requestAnimationFrame(() => textareaRef.current?.focus());
       }
     })();
     return () => {
@@ -1118,6 +1120,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                         ...m,
                         content:
                           evt.accumulated ?? m.content + (evt.delta ?? ""),
+                        progressStatus: undefined,
                       }
                     : m,
                 );
@@ -1135,15 +1138,22 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               setMessages((prev) => {
                 const updated = prev.map((m) =>
                   m.id === assistantId
-                    ? {
-                        ...m,
-                        content: (evt.content || m.content),
-                        tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
-                        estimatedCost:
-                          typeof evt.estimated_cost === "number"
-                            ? evt.estimated_cost
-                            : m.estimatedCost ?? null,
-                      }
+                    ? isProgressAck
+                      ? {
+                          ...m,
+                          progressStatus: evt.content || m.progressStatus,
+                          tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
+                        }
+                      : {
+                          ...m,
+                          content: (evt.content || m.content),
+                          progressStatus: undefined,
+                          tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
+                          estimatedCost:
+                            typeof evt.estimated_cost === "number"
+                              ? evt.estimated_cost
+                              : m.estimatedCost ?? null,
+                        }
                     : m,
                 );
                 if (isProgressAck) {
@@ -1258,6 +1268,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                   m.id === assistantId
                     ? {
                         ...m,
+                        progressStatus: undefined,
                         toolCalls: [
                           ...(m.toolCalls || []),
                           {
@@ -1609,6 +1620,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
     setShowThreadList(false);
     setError(null);
     setSessionMarkers({});
+    requestAnimationFrame(() => textareaRef.current?.focus());
   }, []);
 
   useEffect(() => {

@@ -91,3 +91,14 @@ body {
   background: linear-gradient(90deg, transparent, #818cf8, #6366f1, #818cf8, transparent);
   animation: dan-shimmer 1.5s ease-in-out infinite;
 }
+
+/* -- Chat: progress status pulse ----------------------------------------- */
+
+@keyframes dan-progress-fade {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.6; }
+}
+
+.dan-progress-pulse {
+  animation: dan-progress-fade 2s ease-in-out infinite;
+}
