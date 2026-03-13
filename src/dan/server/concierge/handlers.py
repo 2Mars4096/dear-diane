@@ -23,7 +23,7 @@ from dan.server.capability_handlers import (
 )
 from dan.server.chat_manager import ChatStreamEvent
 
-from .classifier import ClassificationResult, IntentCategory, search_local_files
+from .classifier import ClassificationResult, IntentCategory, RouteMode, search_local_files
 from .classifier import _has_filesystem_path, _looks_like_complex_direct_task, _looks_like_direct_web_lookup
 from .context_resolver import ResolvedContext
 from .identity import format_prefix
@@ -78,8 +78,8 @@ class HandlerRegistry:
     def get(self, intent: IntentCategory) -> Handler:
         handler = self._handlers.get(intent)
         if handler is None:
-            logger.warning("No handler for intent %s, falling back to CONVERSATION", intent)
-            handler = self._handlers.get(IntentCategory.CONVERSATION)
+            logger.warning("No handler for intent %s, falling back to ASK", intent)
+            handler = self._handlers.get(IntentCategory.ASK)
         if handler is None:
             raise KeyError(f"No handler registered for intent {intent!r} and no fallback available")
         return handler
@@ -178,6 +178,43 @@ def _surface_identity_instructions(msg: SurfaceMessage) -> str:
 def _chat_system_instructions(msg: SurfaceMessage, *extra_blocks: str) -> str:
     blocks = [_surface_identity_instructions(msg), *extra_blocks]
     return "\n\n".join(block.strip() for block in blocks if block and block.strip())
+
+
+def _deliberation_system_instructions(classification: ClassificationResult) -> str:
+    deliberation = classification.deliberation
+    route = classification.route
+    if deliberation is None and route is None:
+        return ""
+    lines = [
+        "## Execution contract",
+        (
+            "Before each tool/no-tool decision, briefly reassess whether you fully understand "
+            "the goal, which required actions remain, and whether the completion criteria are "
+            "actually satisfied."
+        ),
+    ]
+    if deliberation is not None:
+        if deliberation.goal:
+            lines.append(f"- Goal: {deliberation.goal}")
+        if deliberation.deliverable:
+            lines.append(f"- Deliverable: {deliberation.deliverable}")
+        if deliberation.constraints:
+            lines.append("- Constraints:")
+            lines.extend(f"  - {item}" for item in deliberation.constraints)
+        if deliberation.required_action_hints:
+            lines.append(
+                f"- Required actions: {', '.join(deliberation.required_action_hints)}"
+            )
+        if deliberation.completion_checks:
+            lines.append("- Completion criteria:")
+            lines.extend(f"  - {item}" for item in deliberation.completion_checks)
+        if deliberation.next_step:
+            lines.append(f"- Immediate next step: {deliberation.next_step}")
+    elif route is not None:
+        hint_text = ", ".join(route.action_hints) if route.action_hints else "none"
+        lines.append(f"- Route target: {route.target}")
+        lines.append(f"- Required actions: {hint_text}")
+    return "\n".join(lines)
 
 
 def _project_prompt_context(context: ResolvedContext) -> str:
@@ -762,12 +799,31 @@ class DirectTaskHandler:
     ) -> HandlerResult:
         cleaned = msg.text.lower().strip()
         is_complex_direct_task = _looks_like_complex_direct_task(cleaned)
-        task_mode = "agent" if is_complex_direct_task else "conversation"
-        extra_instructions = _chat_system_instructions(msg)
-        if is_complex_direct_task:
+        route = classification.route
+        if route is not None:
+            if route.mode == RouteMode.AGENT:
+                task_mode = "agent"
+            elif route.mode == RouteMode.PLAN:
+                task_mode = "plan"
+            else:
+                task_mode = "ask"
+        else:
+            task_mode = "agent" if is_complex_direct_task else "ask"
+        extra_instructions = _chat_system_instructions(
+            msg,
+            _deliberation_system_instructions(classification),
+        )
+        if route is not None:
+            hint_text = ", ".join(route.action_hints) if route.action_hints else "none"
             extra_instructions = (
                 f"{extra_instructions}\n\n"
-                "This is a complex direct task, not a workflow-editing request. "
+                f"Routing mode: {route.mode.value}. Target: {route.target}. "
+                f"Action hints: {hint_text}."
+            ).strip()
+        if task_mode == "agent" or is_complex_direct_task:
+            extra_instructions = (
+                f"{extra_instructions}\n\n"
+                "This is a direct task, not a workflow-editing request. "
                 "Do not propose or apply graph mutations. Use capability tools to research, "
                 "read, and write the requested artifact, then summarize progress/results clearly."
             ).strip()
@@ -782,7 +838,7 @@ class DirectTaskHandler:
             debug_context=str(msg.metadata.get("debug_context") or ""),
             prompt_context=_build_prompt_from_package(msg, context),
             mentions=msg.metadata.get("mentions") or [],
-            allow_mutation_tool=not is_complex_direct_task,
+            allow_mutation_tool=False,
             surface=msg.surface,
             audit_metadata={
                 "project_id": context.project.project_id,
@@ -791,6 +847,7 @@ class DirectTaskHandler:
                 "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
             },
             extra_system_instructions=extra_instructions,
+            required_action_hints=list(route.action_hints) if route is not None else None,
         )
         return HandlerResult(events=events)
 
@@ -980,7 +1037,7 @@ class ExperienceHandler:
                 history=_message_history(msg, context),
                 thread_id=str(msg.metadata.get("thread_id") or "") or None,
                 client_graph_revision=msg.metadata.get("client_graph_revision"),
-                mode="conversation",
+                mode="ask",
                 cancel_event=msg.metadata.get("cancel_event"),
                 debug_context=str(msg.metadata.get("debug_context") or ""),
                 prompt_context=_build_prompt_from_package(msg, context),
@@ -992,7 +1049,10 @@ class ExperienceHandler:
                     "intent": classification.intent.value,
                     "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
                 },
-                extra_system_instructions=_chat_system_instructions(msg),
+                extra_system_instructions=_chat_system_instructions(
+                    msg,
+                    _deliberation_system_instructions(classification),
+                ),
             )
             return HandlerResult(events=events)
         return HandlerResult(content=result.message)
@@ -1033,7 +1093,7 @@ class ConversationHandler:
     async def handle(self, msg: SurfaceMessage, context: ResolvedContext, classification: ClassificationResult) -> HandlerResult:
         workflow_id = _workflow_id_from(msg, context)
         request_mode = str(msg.metadata.get("mode") or "")
-        mode = request_mode if request_mode in ("ask", "plan", "debug") else "conversation"
+        mode = request_mode if request_mode in ("ask", "plan", "debug", "agent") else "ask"
         events = self.chat_manager.send_message_with_tools(
             workflow_id=workflow_id,
             message=msg.text,
@@ -1052,7 +1112,10 @@ class ConversationHandler:
                 "intent": classification.intent.value,
                 "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
             },
-            extra_system_instructions=_chat_system_instructions(msg),
+            extra_system_instructions=_chat_system_instructions(
+                msg,
+                _deliberation_system_instructions(classification),
+            ),
         )
         return HandlerResult(events=events)
 
@@ -1096,7 +1159,10 @@ class WorkflowBuildHandler:
                 "intent": classification.intent.value,
                 "reuse_decision": str(msg.metadata.get("reuse_choice") or ""),
             },
-            extra_system_instructions=_chat_system_instructions(msg),
+            extra_system_instructions=_chat_system_instructions(
+                msg,
+                _deliberation_system_instructions(classification),
+            ),
         )
         return HandlerResult(
             events=events,
@@ -1162,3 +1228,62 @@ class MetaGoalHandler:
             except Exception:
                 pass
         return "".join(parts)
+
+
+class AskHandler:
+    def __init__(
+        self,
+        *,
+        user_profile: Any = None,
+        capability_context: Any = None,
+        progress_reporter: ProgressReporter | None = None,
+        chat_manager: Any = None,
+    ) -> None:
+        self.file_handler = FileHandler(user_profile=user_profile, chat_manager=chat_manager)
+        self.status_handler = StatusHandler(capability_context, progress_reporter)
+        self.experience_handler = ExperienceHandler(capability_context, chat_manager=chat_manager)
+        self.workflow_query_handler = WorkflowQueryHandler(capability_context)
+        self.conversation_handler = ConversationHandler(chat_manager)
+
+    async def handle(self, msg: SurfaceMessage, context: ResolvedContext, classification: ClassificationResult) -> HandlerResult:
+        route = classification.route
+        action_hints = set(route.action_hints if route is not None else [])
+        target = route.target if route is not None else "general"
+        if "read_file" in action_hints or target == "file":
+            return await self.file_handler.handle(msg, context, classification)
+        if "status_check" in action_hints or target == "run":
+            return await self.status_handler.handle(msg, context, classification)
+        if "workflow_query" in action_hints or target == "workflow":
+            return await self.workflow_query_handler.handle(msg, context, classification)
+        if "experience_lookup" in action_hints or target == "memory":
+            return await self.experience_handler.handle(msg, context, classification)
+        return await self.conversation_handler.handle(msg, context, classification)
+
+
+class AgentHandler:
+    def __init__(self, *, capability_context: Any = None, chat_manager: Any = None) -> None:
+        self.direct_task_handler = DirectTaskHandler(chat_manager)
+        self.run_handler = RunHandler(capability_context, chat_manager=chat_manager)
+        self.publish_handler = PublishHandler(capability_context)
+
+    async def handle(self, msg: SurfaceMessage, context: ResolvedContext, classification: ClassificationResult) -> HandlerResult:
+        route = classification.route
+        action_hints = set(route.action_hints if route is not None else [])
+        if "run_control" in action_hints:
+            return await self.run_handler.handle(msg, context, classification)
+        if "publish" in action_hints:
+            return await self.publish_handler.handle(msg, context, classification)
+        return await self.direct_task_handler.handle(msg, context, classification)
+
+
+class PlanHandler:
+    def __init__(self, *, capability_context: Any = None, chat_manager: Any = None, meta_controller: Any = None) -> None:
+        self.workflow_build_handler = WorkflowBuildHandler(chat_manager)
+        self.meta_goal_handler = MetaGoalHandler(meta_controller, capability_context=capability_context)
+
+    async def handle(self, msg: SurfaceMessage, context: ResolvedContext, classification: ClassificationResult) -> HandlerResult:
+        route = classification.route
+        action_hints = set(route.action_hints if route is not None else [])
+        if "long_horizon_goal" in action_hints:
+            return await self.meta_goal_handler.handle(msg, context, classification)
+        return await self.workflow_build_handler.handle(msg, context, classification)

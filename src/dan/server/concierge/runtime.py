@@ -16,11 +16,14 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Literal
 if TYPE_CHECKING:
     from .dispatcher import ConcurrentDispatcher
 
+from dan.meta.goal_contract import build_goal_contract
 from dan.server.chat_manager import ChatCompleteEvent, ChatErrorEvent, ChatStreamEvent
 
 from .classifier import (
     ClassificationResult,
     IntentCategory,
+    RouteDecision,
+    RouteMode,
     _looks_like_direct_web_lookup,
     classify_intent,
     classify_intent_llm,
@@ -42,17 +45,10 @@ from .models import ConciergeGoal, ConciergeState, SurfaceMessage
 
 logger = logging.getLogger(__name__)
 from .handlers import (
-    ConversationHandler,
-    DirectTaskHandler,
-    ExperienceHandler,
-    FileHandler,
+    AgentHandler,
+    AskHandler,
     HandlerRegistry,
-    MetaGoalHandler,
-    PublishHandler,
-    RunHandler,
-    StatusHandler,
-    WorkflowBuildHandler,
-    WorkflowQueryHandler,
+    PlanHandler,
 )
 from .models import PendingAction, Project, TaskTurn
 from .policy import ActionPolicy, resolve_policy
@@ -136,9 +132,8 @@ def _prompt_explicitly_requests_reuse(text: str) -> bool:
 
 
 _NON_BUILD_FAST_INTENTS = frozenset({
-    IntentCategory.CONVERSATION,
-    IntentCategory.STATUS_CHECK,
-    IntentCategory.DIRECT_TASK,
+    IntentCategory.ASK,
+    IntentCategory.AGENT,
 })
 
 
@@ -291,17 +286,27 @@ class Concierge:
         if getattr(chat_manager, "_providers", None) is not None:
             self._llm_complete_for_intent = self._intent_llm_complete
         self.handlers = HandlerRegistry()
-        self.handlers.register(IntentCategory.FILE_REQUEST, FileHandler(user_profile=user_profile, chat_manager=chat_manager))
-        self.handlers.register(IntentCategory.DIRECT_TASK, DirectTaskHandler(chat_manager))
-        self.handlers.register(IntentCategory.RUN_CONTROL, RunHandler(capability_context, chat_manager=chat_manager))
-        self.handlers.register(IntentCategory.STATUS_CHECK, StatusHandler(capability_context, progress_reporter))
-        self.handlers.register(IntentCategory.EXPERIENCE_QUERY, ExperienceHandler(capability_context, chat_manager=chat_manager))
-        self.handlers.register(IntentCategory.PUBLISH_SHARE, PublishHandler(capability_context))
-        self.handlers.register(IntentCategory.WORKFLOW_QUERY, WorkflowQueryHandler(capability_context))
-        build_handler = WorkflowBuildHandler(chat_manager)
-        self.handlers.register(IntentCategory.WORKFLOW_BUILD, build_handler)
-        self.handlers.register(IntentCategory.META_GOAL, MetaGoalHandler(meta_controller, capability_context=capability_context))
-        self.handlers.register(IntentCategory.CONVERSATION, ConversationHandler(chat_manager))
+        self.handlers.register(
+            IntentCategory.ASK,
+            AskHandler(
+                user_profile=user_profile,
+                capability_context=capability_context,
+                progress_reporter=progress_reporter,
+                chat_manager=chat_manager,
+            ),
+        )
+        self.handlers.register(
+            IntentCategory.AGENT,
+            AgentHandler(capability_context=capability_context, chat_manager=chat_manager),
+        )
+        self.handlers.register(
+            IntentCategory.PLAN,
+            PlanHandler(
+                capability_context=capability_context,
+                chat_manager=chat_manager,
+                meta_controller=meta_controller,
+            ),
+        )
         self.execution_selector = execution_selector or ExecutionSelector(self.handlers)
         self._progress_sessions: dict[str, Any] = {}
         self._goal_loop_states: dict[str, dict[str, Any]] = {}
@@ -458,18 +463,30 @@ class Concierge:
         explicit_mode = metadata.get("requested_mode") or metadata.get("mode")
         if explicit_mode == "build":
             return ClassificationResult(
-                intent=IntentCategory.WORKFLOW_BUILD,
+                intent=IntentCategory.PLAN,
                 confidence=max(getattr(classification, "confidence", 0.0), 0.9),
                 raw_text=classification.raw_text,
+                route=RouteDecision(
+                    mode=RouteMode.PLAN,
+                    target="workflow",
+                    action_hints=["workflow_edit"],
+                    rationale="explicit build mode override",
+                ),
             )
         if explicit_mode == "mutate" and classification.intent in (
-            IntentCategory.CONVERSATION,
-            IntentCategory.META_GOAL,
+            IntentCategory.ASK,
+            IntentCategory.PLAN,
         ):
             return ClassificationResult(
-                intent=IntentCategory.WORKFLOW_BUILD,
+                intent=IntentCategory.PLAN,
                 confidence=max(getattr(classification, "confidence", 0.0), 0.9),
                 raw_text=classification.raw_text,
+                route=RouteDecision(
+                    mode=RouteMode.PLAN,
+                    target="workflow",
+                    action_hints=["workflow_edit"],
+                    rationale="explicit mutate mode override",
+                ),
             )
         return classification
 
@@ -962,6 +979,7 @@ class Concierge:
                 prompt = get_tier_prompt(
                     strategy_tier, state.goal, best_result,
                     previous_attempts[-3:] if previous_attempts else [],
+                    goal_contract=getattr(state, "goal_contract", None),
                 )
                 return {"approach_summary": f"Attempt {attempt_number} at tier {strategy_tier}", "prompt": prompt}
 
@@ -1376,16 +1394,9 @@ class Concierge:
 
     def _progress_label_for_intent(self, intent: IntentCategory) -> str:
         labels = {
-            IntentCategory.FILE_REQUEST: "Searching files and documents",
-            IntentCategory.DIRECT_TASK: "Working through the request",
-            IntentCategory.RUN_CONTROL: "Preparing the workflow run",
-            IntentCategory.WORKFLOW_BUILD: "Planning the workflow",
-            IntentCategory.WORKFLOW_QUERY: "Inspecting the workflow",
-            IntentCategory.EXPERIENCE_QUERY: "Checking similar past work",
-            IntentCategory.PUBLISH_SHARE: "Preparing sharing and publish steps",
-            IntentCategory.STATUS_CHECK: "Checking current status",
-            IntentCategory.META_GOAL: "Planning the broader goal",
-            IntentCategory.CONVERSATION: "Thinking through the request",
+            IntentCategory.ASK: "Gathering relevant context",
+            IntentCategory.AGENT: "Working through the request",
+            IntentCategory.PLAN: "Planning the workflow",
         }
         return labels.get(intent, "Working through the request")
 
@@ -2017,11 +2028,11 @@ class Concierge:
                         self.project_store.append_turn(
                             context.project.project_id,
                             context.task.task_id,
-                            TaskTurn(role="user", content=msg.text, intent="status_check"),
+                            TaskTurn(role="user", content=msg.text, intent="ask"),
                             msg.external_id,
                         )
                         self._record_assistant_turn(context, msg, sc_content)
-                        self._finalize_task(context, msg, IntentCategory.STATUS_CHECK, True)
+                        self._finalize_task(context, msg, IntentCategory.ASK, True)
                         yield self._complete_event(content=sc_content)
                         return
                     if _g1.action == "reclassify":
@@ -2046,52 +2057,121 @@ class Concierge:
                 logger.debug("Guard 1 (classification) failed", exc_info=True)
 
         # 33-9 D.10: Fast rejection for non-build intents with high confidence.
-        # Skip expensive phases (memory retrieval, correction detection, action
-        # policy, goal orchestrator/solver) and go straight to handler dispatch.
+        # Skip expensive phases (memory retrieval, correction detection,
+        # goal orchestrator/solver) and go straight to handler dispatch.
+        # Still checks policy for destructive actions and runs response
+        # relevance guard to catch misrouted answers.
         if (
             classification.intent in _NON_BUILD_FAST_INTENTS
             and classification.confidence >= 0.7
             and not msg.metadata.get("skip_non_build_fast_path")
         ):
-            logger.info(
-                "Non-build fast path: %s (confidence=%.2f), skipping heavy phases",
-                classification.intent.value,
-                classification.confidence,
+            # Policy check: even on the fast path, destructive actions need
+            # confirmation so we don't bypass safety.
+            _fp_action_policy, _ = resolve_policy(
+                intent=classification.intent,
+                action_hints=(classification.route.action_hints if classification.route else []),
+                text=msg.text,
+                context=context,
+                user_profile=self.user_profile,
+                surface=msg.surface,
             )
-            pre_generation_ms = int((time.monotonic() - _inner_start) * 1000)
-            msg.metadata["pre_generation_ms"] = pre_generation_ms
-            self.project_store.append_turn(
-                context.project.project_id,
-                context.task.task_id,
-                TaskTurn(role="user", content=msg.text, intent=classification.intent.value),
-                msg.external_id,
-            )
-            handler = self.handlers.get(classification.intent)
-            result = await handler.handle(msg, context, classification)
-            content = result.content
-            label_prefix = self._format_reply_label(context, msg)
-            if label_prefix and content and not starts_with_prefix(content):
-                content = f"{label_prefix} {content}"
-            if result.events is not None:
-                final_content = ""
-                async for event in result.events:
-                    evt_type = getattr(event, "type", "")
-                    if evt_type == "chat_complete":
-                        final_content = getattr(event, "content", "") or ""
-                    yield event
-                if final_content:
-                    self._record_assistant_turn(context, msg, final_content)
-                self._finalize_task(
-                    context, msg, classification.intent, bool(final_content),
+            if (
+                _fp_action_policy == ActionPolicy.CONFIRM
+                and not msg.metadata.get("skip_confirm")
+            ):
+                # Fall through to the full pipeline so CONFIRM is handled.
+                msg.metadata["skip_non_build_fast_path"] = True
+                logger.info(
+                    "Non-build fast path bypassed: policy requires CONFIRM"
                 )
+            else:
+                logger.info(
+                    "Non-build fast path: %s (confidence=%.2f), skipping heavy phases",
+                    classification.intent.value,
+                    classification.confidence,
+                )
+                pre_generation_ms = int((time.monotonic() - _inner_start) * 1000)
+                msg.metadata["pre_generation_ms"] = pre_generation_ms
+                self.project_store.append_turn(
+                    context.project.project_id,
+                    context.task.task_id,
+                    TaskTurn(role="user", content=msg.text, intent=classification.intent.value),
+                    msg.external_id,
+                )
+                handler = self.handlers.get(classification.intent)
+                result = await handler.handle(msg, context, classification)
+                content = result.content
+                label_prefix = self._format_reply_label(context, msg)
+                if label_prefix and content and not starts_with_prefix(content):
+                    content = f"{label_prefix} {content}"
+                if result.events is not None:
+                    final_content = ""
+                    try:
+                        async for event in result.events:
+                            evt_type = getattr(event, "type", "")
+                            if evt_type == "chat_complete":
+                                final_content = getattr(event, "content", "") or ""
+                            yield event
+                    except Exception as _fp_exc:
+                        logger.warning(
+                            "Fast-path event stream failed: %s", _fp_exc, exc_info=True,
+                        )
+                        if not final_content:
+                            yield ChatErrorEvent(
+                                error=f"The request could not be completed: {_fp_exc}"
+                            )
+                            self._finalize_task(
+                                context, msg, classification.intent, False,
+                            )
+                            return
+                    if final_content:
+                        content = final_content
+                    else:
+                        content = ""
+
+                # Response relevance guard: catch misrouted answers even on
+                # the fast path so the user gets a hint when the response
+                # drifts from their question.
+                if content and guards_enabled():
+                    try:
+                        _fp_g3_ctx = GuardContext(
+                            message=msg,
+                            entity_ctx=_entity_ctx,
+                            classification=classification,
+                            response_content=content,
+                        )
+                        _fp_g3 = guard_response_relevance(_fp_g3_ctx)
+                        if not _fp_g3.passed and _fp_g3.short_circuit_response:
+                            content = f"{content}\n\n_{_fp_g3.short_circuit_response}_"
+                    except Exception:
+                        logger.debug("Fast-path Guard 3 failed", exc_info=True)
+
+                if content:
+                    self._record_assistant_turn(context, msg, content)
+                self._finalize_task(
+                    context, msg, classification.intent, bool(content),
+                )
+                if result.events is not None:
+                    # Events already yielded above; just need turn recording
+                    return
+                yield self._complete_event(content=content)
                 return
-            self._record_assistant_turn(context, msg, content)
-            self._finalize_task(context, msg, classification.intent, bool(content))
-            yield self._complete_event(content=content)
-            return
 
         _resolved_project_id = context.project.project_id
-        if _resolved_project_id and self.memory_kernel and self._memory_context is not None:
+        # Only fetch project-specific memory supplement if the parallel prep
+        # didn't already cover this project (avoids a redundant embedding lookup).
+        _memory_already_has_project = bool(
+            self._memory_context
+            and _resolved_project_id
+            and _resolved_project_id in (self._memory_context or "")
+        )
+        if (
+            _resolved_project_id
+            and self.memory_kernel
+            and self._memory_context is not None
+            and not _memory_already_has_project
+        ):
             _mem_start = time.monotonic()
             _project_supplement = self._retrieve_memory_context(
                 msg.text,
@@ -2128,7 +2208,11 @@ class Concierge:
 
         try:
             correction_store = self._correction_store
-            if correction_store is not None:
+            # Skip correction detection when there's no prior assistant turn
+            # (new conversation / new topic) or when there are fewer than 2
+            # turns — there's nothing to correct yet.
+            _has_conversation_history = len(context.task.turns) >= 2
+            if correction_store is not None and _has_conversation_history:
                 previous_assistant_turn = next(
                     (
                         turn.content
@@ -2162,8 +2246,8 @@ class Concierge:
                                     if _corr_content:
                                         self.memory_kernel.store_fact(
                                             _corr_content,
-                                            importance=0.8,
-                                            tags=["domain_knowledge"],
+                                            importance=0.5,  # moderate; single correction shouldn't dominate
+                                            tags=["domain_knowledge", "correction"],
                                             project_id=context.project.project_id,
                                             metadata={"domain": _corr_domain, "category": _cat},
                                         )
@@ -2210,15 +2294,18 @@ class Concierge:
 
         action_policy, _execution_policy = resolve_policy(
             intent=classification.intent,
+            action_hints=(classification.route.action_hints if classification.route else []),
             text=msg.text,
             context=context,
             user_profile=self.user_profile,
             surface=msg.surface,
         )
-        # 33-9 E.11: Also bypass CONFIRM for high-confidence WORKFLOW_BUILD
+        # 33-9 E.11: Also bypass CONFIRM for high-confidence workflow-edit plans
         # (agent lane was blocked by CONFIRM prompts for build requests)
         _is_confident_build = (
-            classification.intent == IntentCategory.WORKFLOW_BUILD
+            classification.intent == IntentCategory.PLAN
+            and classification.route is not None
+            and "workflow_edit" in classification.route.action_hints
             and classification.confidence >= 0.7
         )
         if (
@@ -2447,7 +2534,7 @@ class Concierge:
                             context.project.project_id,
                             PendingAction(
                                 kind="clarify",
-                                intent=IntentCategory.META_GOAL.value,
+                                intent=IntentCategory.PLAN.value,
                                 original_text=msg.text,
                                 options=opts,
                                 metadata={
@@ -2541,8 +2628,12 @@ class Concierge:
                 try:
                     from .solver import ExecutionMode as _EM, SolverDecision as _SD
                     _intent_mode_map = {
-                        IntentCategory.META_GOAL: _EM.META_DELEGATE,
-                        IntentCategory.WORKFLOW_BUILD: _EM.WORKFLOW_BUILD,
+                        IntentCategory.PLAN: (
+                            _EM.META_DELEGATE
+                            if classification.route is not None
+                            and "long_horizon_goal" in classification.route.action_hints
+                            else _EM.WORKFLOW_BUILD
+                        ),
                     }
                     _proxy = _SD(
                         user_goal=goal.description,
@@ -2753,9 +2844,7 @@ class Concierge:
         auto_note = str(msg.metadata.get("clarification_auto_note") or "").strip()
         if auto_note and content:
             content = f"{auto_note}\n\n{content}"
-        had_tool_call = classification.intent not in (
-            IntentCategory.CONVERSATION, IntentCategory.DIRECT_TASK,
-        )
+        had_tool_call = classification.intent == IntentCategory.AGENT
         content = self._check_unsourced_claims(content, had_tool_call)
         content = await self._post_process_response(content, msg.text, msg=msg, entity_ctx=_entity_ctx)
         if self.promoter and self.promoter.should_propose(context.project, context.task):
@@ -3064,7 +3153,7 @@ class Concierge:
         project = self._select_pending_project(msg, pending_projects)
         if isinstance(project, ChatCompleteEvent):
             return project, self._pending_context_fallback(msg.external_id, pending_projects), ClassificationResult(
-                intent=IntentCategory.CONVERSATION,
+                intent=IntentCategory.ASK,
                 confidence=1.0,
                 raw_text=msg.text,
             ), msg
@@ -3326,8 +3415,8 @@ class Concierge:
             self.memory_kernel,
             goal_description,
             domain_patterns=_domain_patterns or None,
-            behavior_store=self._behavior_store,
-            param_logger=self._param_logger,
+            behavior_store=getattr(self, "_behavior_store", None),
+            param_logger=getattr(self, "_param_logger", None),
         )
 
     def _maybe_add_reuse_choice(
@@ -3500,14 +3589,18 @@ class Concierge:
         question: str,
     ) -> ChatCompleteEvent:
         """Pause the current task and ask a focused clarification question."""
-        inferred_intent = classify_intent(msg.text, context, pattern_accumulator=self._pattern_accumulator).intent
+        inferred_intent = classify_intent(
+            msg.text,
+            context,
+            pattern_accumulator=getattr(self, "_pattern_accumulator", None),
+        ).intent
         intent_value = (
             inferred_intent.value
             if hasattr(inferred_intent, "value")
             else str(inferred_intent)
         )
-        if intent_value == IntentCategory.CONVERSATION.value:
-            intent_value = IntentCategory.DIRECT_TASK.value
+        if intent_value == IntentCategory.ASK.value:
+            intent_value = IntentCategory.AGENT.value
         self.project_store.append_turn(
             context.project.project_id,
             context.task.task_id,
@@ -3620,10 +3713,9 @@ class Concierge:
         status = task_status_override or (
             "completed"
             if intent in (
-                IntentCategory.WORKFLOW_BUILD,
-                IntentCategory.META_GOAL,
-                IntentCategory.DIRECT_TASK,
-                IntentCategory.FILE_REQUEST,
+                IntentCategory.PLAN,
+                IntentCategory.AGENT,
+                IntentCategory.ASK,
             )
             else "paused"
         )
@@ -4489,7 +4581,7 @@ class Concierge:
         if self._looks_like_simple_social_turn(text):
             context = self.context_resolver.resolve(msg)
             return context, ClassificationResult(
-                intent=IntentCategory.CONVERSATION,
+                intent=IntentCategory.ASK,
                 confidence=0.95,
                 raw_text=msg.text,
             )
@@ -4508,7 +4600,7 @@ class Concierge:
 
         context = self.context_resolver.resolve(msg)
         classification = classify_intent(msg.text, context)
-        if classification.intent != IntentCategory.DIRECT_TASK or classification.confidence < 0.8:
+        if classification.intent != IntentCategory.AGENT or classification.confidence < 0.8:
             return None
         return context, classification
 
@@ -4626,10 +4718,7 @@ class Concierge:
             content = f"{label_prefix} {content}"
         content = self._check_unsourced_claims(
             content,
-            classification.intent not in (
-                IntentCategory.CONVERSATION,
-                IntentCategory.DIRECT_TASK,
-            ),
+            classification.intent == IntentCategory.AGENT,
         )
         content = await self._post_process_response(
             content,
@@ -5258,9 +5347,11 @@ class Concierge:
             return False
         if has_build_session:
             return False
-        if classification.intent == IntentCategory.WORKFLOW_BUILD:
+        if classification.intent == IntentCategory.PLAN and classification.route is not None and "workflow_edit" in classification.route.action_hints:
             return False
-        if classification.intent != IntentCategory.META_GOAL:
+        if classification.intent != IntentCategory.PLAN:
+            return False
+        if classification.route is not None and "long_horizon_goal" not in classification.route.action_hints:
             return False
         if self._is_workflow_build_goal(goal_text):
             return False
@@ -5274,10 +5365,7 @@ class Concierge:
         """Route workflow/meta goals through the Phase 29 path only when fully wired."""
         if self.memory_kernel is None or self.meta_controller is None:
             return False
-        return classification.intent in (
-            IntentCategory.META_GOAL,
-            IntentCategory.WORKFLOW_BUILD,
-        )
+        return classification.intent == IntentCategory.PLAN
 
     def _should_resume_goal_follow_up(
         self,
@@ -5305,9 +5393,8 @@ class Concierge:
         if goal is None:
             return False
         if classification.intent not in (
-            IntentCategory.CONVERSATION,
-            IntentCategory.RUN_CONTROL,
-            IntentCategory.STATUS_CHECK,
+            IntentCategory.ASK,
+            IntentCategory.AGENT,
         ):
             return False
         lower = message.strip().lower()
@@ -5422,6 +5509,17 @@ class Concierge:
             return "paused"
         return "active"
 
+    @staticmethod
+    def _goal_contract_from_classification(
+        classification: ClassificationResult,
+    ) -> dict[str, Any]:
+        route = classification.route
+        return build_goal_contract(
+            deliberation=classification.deliberation,
+            route_target=route.target if route is not None else None,
+            route_action_hints=route.action_hints if route is not None else None,
+        )
+
     def _detect_goal(
         self,
         message: str,
@@ -5429,15 +5527,21 @@ class Concierge:
         classification: ClassificationResult,
     ) -> ConciergeGoal | None:
         """Distinguish goal-bearing messages from simple questions/commands. Returns a new goal if goal-bearing."""
-        if classification.intent == IntentCategory.META_GOAL:
+        goal_contract = self._goal_contract_from_classification(classification)
+        if classification.intent == IntentCategory.PLAN and classification.route is not None and "long_horizon_goal" in classification.route.action_hints:
             goal = ConciergeGoal(description=message.strip(), status="active")
+            if goal_contract:
+                goal.context["goal_contract"] = goal_contract
             if self._should_execute_inline(classification, message):
                 goal.context["execution_mode"] = "inline"
             return goal
-        if classification.intent == IntentCategory.WORKFLOW_BUILD:
+        if classification.intent == IntentCategory.PLAN:
             lower = message.lower()
             if any(kw in lower for kw in ("build", "create", "make", "automate", "workflow", "pipeline")):
-                return ConciergeGoal(description=message.strip(), status="active")
+                goal = ConciergeGoal(description=message.strip(), status="active")
+                if goal_contract:
+                    goal.context["goal_contract"] = goal_contract
+                return goal
         return None
 
     async def _continue_or_new(
@@ -5634,6 +5738,7 @@ class Concierge:
                 intent = await extract_workflow_intent(
                     self._llm_complete_for_intent,
                     goal.description,
+                    goal_contract=goal.context.get("goal_contract"),
                 )
 
             if intent is None:
