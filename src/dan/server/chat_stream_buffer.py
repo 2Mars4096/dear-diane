@@ -129,6 +129,8 @@ class ReconnectableChatStream:
             return
         event_type = event.get("type")
         if event_type in _TERMINAL_CHAT_EVENT_TYPES:
+            if event.get("detected_mode") == "progress_ack":
+                return
             self._terminal_snapshot = self._clone_event(event)
             return
         if event_type == "chat_run_event":

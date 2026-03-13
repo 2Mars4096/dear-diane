@@ -334,7 +334,7 @@ class ChatStore:
         return True
 
     def list_threads(self, workflow_id: str) -> list[dict[str, Any]]:
-        """List thread summaries, including pin status from metadata."""
+        """List thread summaries sorted by updated_at descending (most recent first)."""
         chats_dir = self.base_dir / "chats" / workflow_id
         if not chats_dir.exists():
             return []
@@ -359,4 +359,5 @@ class ChatStore:
                 })
             except (ValueError, OSError):
                 continue
+        results.sort(key=lambda t: t["updated_at"], reverse=True)
         return results
