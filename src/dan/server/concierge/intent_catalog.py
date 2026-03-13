@@ -21,150 +21,72 @@ class IntentDefinition:
 
 INTENT_DEFINITIONS: tuple[IntentDefinition, ...] = (
     IntentDefinition(
-        name="file_request",
-        summary="Retrieve or inspect a local file or folder itself.",
+        name="ask",
+        summary="Read-only help, lookup, explanation, or lightweight inspection.",
         choose_when=(
-            "The user wants a file or folder found, opened, sent, read, or simply summarized.",
-            "The primary output is the file match, file contents, or a lightweight review of that file.",
+            "The user mainly wants an answer, explanation, summary, status, file lookup, workflow lookup, or conversational guidance.",
+            "The result can be produced without carrying out a multi-step external action or writing a new artifact.",
         ),
         avoid_when=(
-            "The user wants follow-on work after reading the file, such as rewriting, extracting, comparing, updating, converting, or saving a new artifact.",
-            "A filesystem path is just the working location for a broader task.",
+            "The user is asking you to carry out work, use tools repeatedly, write files, or create deliverables.",
+            "The user wants to design or modify a workflow/automation structure.",
         ),
         examples=(
             IntentExample(
                 user="Find /Users/me/report.pdf",
-                reason="The goal is to locate the file itself.",
+                reason="The user wants a read-only file lookup result.",
+            ),
+            IntentExample(
+                user="What's the status of the run?",
+                reason="The user wants a read-only status answer.",
             ),
         ),
     ),
     IntentDefinition(
-        name="direct_task",
-        summary="Carry out a tool-using task in the workspace or on the web.",
+        name="agent",
+        summary="Carry out operational work using tools and external actions.",
         choose_when=(
-            "The user wants work done: research, drafting, code/file edits, transformations, data gathering, or artifact creation.",
+            "The user wants work done: research, drafting, code/file edits, transformations, data gathering, artifact creation, publishing, or run control.",
             "The request may read files, use a folder as workspace, search online, and then write or deliver output.",
             "A message that starts from a file or folder but asks for additional work still belongs here.",
         ),
         avoid_when=(
-            "The user only wants the file itself located or opened with no extra work.",
-            "The request is specifically about editing or inspecting a workflow/graph structure.",
+            "The user only wants a read-only answer or lookup.",
+            "The request is specifically about designing or editing workflow structure instead of executing work directly.",
         ),
         examples=(
             IntentExample(
                 user="Read /Users/me/report.tex, update 2025 to 2026, and save a new copy.",
-                reason="The request starts from a file but the real goal is a transformation and new output.",
+                reason="The request requires file transformation and output creation.",
             ),
             IntentExample(
                 user="Help me write a comprehensive report in /Users/me/project as tex and cite figures from the web.",
                 reason="The folder is a workspace for a multi-step artifact task.",
             ),
-        ),
-    ),
-    IntentDefinition(
-        name="run_control",
-        summary="Start, stop, cancel, resume, or pause a workflow run.",
-        choose_when=(
-            "The user is controlling execution state for a DAN run or workflow.",
-        ),
-        examples=(
             IntentExample(
-                user="Cancel the active run.",
-                reason="The user is issuing an execution control action.",
+                user="Publish this workflow and give me a shareable link.",
+                reason="Publishing is an operational action, not a read-only answer.",
             ),
         ),
     ),
     IntentDefinition(
-        name="status_check",
-        summary="Check the status or progress of DAN's own runs, tasks, or jobs.",
-        choose_when=(
-            "The user asks what is running, how far along something is, or whether a DAN job completed.",
-        ),
-        avoid_when=(
-            "The user is asking about the status of an external topic, company, or project in the real world.",
-        ),
-        examples=(
-            IntentExample(
-                user="What's the status of the run?",
-                reason="This is a progress query about DAN's own execution state.",
-            ),
-        ),
-    ),
-    IntentDefinition(
-        name="workflow_build",
-        summary="Create or modify a workflow, graph, pipeline, nodes, or edges.",
+        name="plan",
+        summary="Plan, design, or modify workflow/automation structure.",
         choose_when=(
             "The user wants to add, remove, edit, wire, or redesign workflow structure.",
+            "The user is asking for a broader automation plan or longer-horizon orchestration design.",
+        ),
+        avoid_when=(
+            "The user wants the task executed directly right now instead of planning or restructuring the system.",
         ),
         examples=(
             IntentExample(
                 user="Add a reviewer node after summarize and wire it to approval.",
-                reason="The request is about workflow structure rather than doing the task directly.",
+                reason="The request is about workflow structure.",
             ),
-        ),
-    ),
-    IntentDefinition(
-        name="workflow_query",
-        summary="Inspect, list, or explain existing workflows.",
-        choose_when=(
-            "The user wants to browse or inspect workflows without changing them.",
-        ),
-        examples=(
-            IntentExample(
-                user="List the workflows we already saved.",
-                reason="The request is about existing workflow inventory.",
-            ),
-        ),
-    ),
-    IntentDefinition(
-        name="experience_query",
-        summary="Ask about similar past work, prior runs, or lessons learned.",
-        choose_when=(
-            "The user is looking for analogous projects, memories, or prior solutions.",
-        ),
-        examples=(
-            IntentExample(
-                user="Have we done something similar before?",
-                reason="The request targets prior experience rather than current execution.",
-            ),
-        ),
-    ),
-    IntentDefinition(
-        name="publish_share",
-        summary="Publish, export, or share a workflow.",
-        choose_when=(
-            "The user wants a workflow exposed, exported, or shared with others.",
-        ),
-        examples=(
-            IntentExample(
-                user="Publish this workflow and give me a shareable link.",
-                reason="The action is about distribution, not execution or editing.",
-            ),
-        ),
-    ),
-    IntentDefinition(
-        name="meta_goal",
-        summary="Set up a broad end-to-end automation system or longer-horizon agentic plan.",
-        choose_when=(
-            "The user wants a substantial automation system or repeated autonomous process orchestrated from scratch.",
-        ),
-        examples=(
             IntentExample(
                 user="Set up an always-on research automation system that scouts papers and emails me weekly.",
-                reason="This is a broad automation goal rather than a single immediate task.",
-            ),
-        ),
-    ),
-    IntentDefinition(
-        name="conversation",
-        summary="General discussion, brainstorming, or lightweight advice with no concrete operational task.",
-        choose_when=(
-            "The user is chatting, asking for opinions, or discussing ideas without asking DAN to take action.",
-        ),
-        examples=(
-            IntentExample(
-                user="What do you think is a good name for this project?",
-                reason="This is conversational guidance rather than an operational route.",
+                reason="This is a broader automation design / planning request.",
             ),
         ),
     ),
@@ -192,17 +114,25 @@ def _render_definition(definition: IntentDefinition) -> str:
 def build_classifier_prompt() -> str:
     catalog = "\n\n".join(_render_definition(definition) for definition in INTENT_DEFINITIONS)
     return (
-        "You are DAN's routing classifier. Choose exactly one intent for the latest user message.\n"
-        'Return JSON only: {"intent":"<name>","confidence":0.0,"reason":"short explanation"}\n\n'
+        "You are DAN's routing classifier. Choose exactly one top-level route for the latest user message.\n"
+        'Return JSON only with this schema: {"intent":"<name>","confidence":0.0,"reason":"short explanation","target":"general|file|web|run|workflow|memory","action_hints":["read_file|search_web|write_file|status_check|workflow_query|experience_lookup|run_control|publish|workflow_edit|long_horizon_goal"],"goal":"one-sentence user goal","deliverable":"one-sentence expected outcome","constraints":["short constraint"],"next_step":"short immediate next action"}\n\n'
         "Routing principles:\n"
+        "- First infer the user's real goal and expected deliverable.\n"
+        "- Then choose the route, target, and action hints that best match that goal.\n"
+        "- Do a short internal second pass: check whether your chosen route would still make sense after the required reads, searches, or writes are complete.\n"
         "- Classify the user's underlying goal, not surface keyword overlap.\n"
         "- Use recent turns to resolve pronouns like it, that, this file, or there.\n"
-        "- Filesystem paths are context, not intent. If a path is the workspace, input, or output location for a broader task, choose direct_task.\n"
-        "- If the user wants the file or folder itself found, opened, sent, read, or simply summarized, choose file_request.\n"
-        "- If the user wants to read a file and then do more work with it (rewrite, compare, extract, update, convert, save output), choose direct_task.\n"
-        "- status_check is only for DAN's own runs, tasks, queues, or jobs.\n"
-        "- workflow_build is for editing workflow structure, not carrying out the task directly.\n"
-        "- conversation is the fallback only when no stronger operational route applies.\n\n"
-        "Intent catalog:\n"
+        "- Filesystem paths are context, not route. If a path is the workspace, input, or output location for broader work, choose agent.\n"
+        "- If the user wants the file or folder itself found, opened, sent, read, or simply summarized, choose ask.\n"
+        "- If the user wants to read a file and then do more work with it (rewrite, compare, extract, update, convert, save output), choose agent.\n"
+        "- If the user wants workflow / graph / automation structure changed or designed, choose plan.\n"
+        "- ask is the default for general conversation, explanation, status, and lightweight lookup.\n\n"
+        "Action-hint guidance:\n"
+        "- Use `read_file` when the task should inspect a local file or folder before answering.\n"
+        "- Use `search_web` when the task needs live external information.\n"
+        "- Use `write_file` when the task must save or create a local artifact.\n"
+        "- Use `workflow_edit` for workflow-structure edits and `long_horizon_goal` for broader automation planning.\n"
+        "- Use `status_check`, `workflow_query`, `experience_lookup`, `run_control`, or `publish` only when they are clearly the main action.\n\n"
+        "Route catalog:\n"
         f"{catalog}\n"
     )

@@ -24,16 +24,16 @@ logger = logging.getLogger(__name__)
 # Reuse = run an existing workflow as-is; maps to RunHandler which handles
 # start/resume. Adapt = modify then run; maps to WorkflowBuildHandler.
 EXECUTION_MODE_TO_INTENT: dict[ExecutionMode, IntentCategory] = {
-    ExecutionMode.DIRECT_ACTION: IntentCategory.DIRECT_TASK,
-    ExecutionMode.WORKFLOW_REUSE: IntentCategory.RUN_CONTROL,
-    ExecutionMode.WORKFLOW_ADAPT: IntentCategory.WORKFLOW_BUILD,
-    ExecutionMode.WORKFLOW_BUILD: IntentCategory.WORKFLOW_BUILD,
-    ExecutionMode.RUN_CONTROL: IntentCategory.RUN_CONTROL,
-    ExecutionMode.STATUS_PULL: IntentCategory.STATUS_CHECK,
-    ExecutionMode.EXPERIENCE_LOOKUP: IntentCategory.EXPERIENCE_QUERY,
-    ExecutionMode.PUBLISH_SHARE: IntentCategory.PUBLISH_SHARE,
-    ExecutionMode.CONVERSATION_SYNTHESIS: IntentCategory.CONVERSATION,
-    ExecutionMode.META_DELEGATE: IntentCategory.META_GOAL,
+    ExecutionMode.DIRECT_ACTION: IntentCategory.AGENT,
+    ExecutionMode.WORKFLOW_REUSE: IntentCategory.AGENT,
+    ExecutionMode.WORKFLOW_ADAPT: IntentCategory.PLAN,
+    ExecutionMode.WORKFLOW_BUILD: IntentCategory.PLAN,
+    ExecutionMode.RUN_CONTROL: IntentCategory.AGENT,
+    ExecutionMode.STATUS_PULL: IntentCategory.ASK,
+    ExecutionMode.EXPERIENCE_LOOKUP: IntentCategory.ASK,
+    ExecutionMode.PUBLISH_SHARE: IntentCategory.AGENT,
+    ExecutionMode.CONVERSATION_SYNTHESIS: IntentCategory.ASK,
+    ExecutionMode.META_DELEGATE: IntentCategory.PLAN,
 }
 
 
@@ -66,6 +66,7 @@ class ExecutionSelector:
 
     def __init__(self, handler_registry: HandlerRegistry) -> None:
         self._handlers = handler_registry
+        self._last_handler_error: str | None = None
 
     # -- public API ---------------------------------------------------------
 
@@ -74,7 +75,7 @@ class ExecutionSelector:
             return decision.handler_hint
         return EXECUTION_MODE_TO_INTENT.get(
             _mode_key(decision.execution_mode),
-            IntentCategory.CONVERSATION,
+            IntentCategory.ASK,
         )
 
     async def execute(
@@ -101,6 +102,7 @@ class ExecutionSelector:
         context: ResolvedContext,
         classification: ClassificationResult,
     ) -> ExecutionResult:
+        self._last_handler_error = None
         intent = self.select_handler(decision)
         logger.debug(
             "executor: primary mode=%s handler=%s",
@@ -114,7 +116,7 @@ class ExecutionSelector:
         for step in decision.fallback_chain:
             fb_intent = EXECUTION_MODE_TO_INTENT.get(
                 _mode_key(step.execution_mode),
-                IntentCategory.CONVERSATION,
+                IntentCategory.ASK,
             )
             logger.debug(
                 "executor: fallback step=%s handler=%s reason=%s",
@@ -129,9 +131,13 @@ class ExecutionSelector:
                 )
 
         remaining = [s.description for s in decision.plan_steps]
+        # Surface the last handler error so the user knows what went wrong
+        error_detail = ""
+        if self._last_handler_error:
+            error_detail = f"Error encountered: {self._last_handler_error}\n\n"
         return ExecutionResult(
             outcome=TerminalOutcome.PARTIAL_DONE_WITH_NEXT_UNLOCK,
-            content=format_partial_result("", decision.assumptions, remaining),
+            content=format_partial_result(error_detail, decision.assumptions, remaining),
             assumptions_used=list(decision.assumptions),
             remaining_steps=remaining,
         )
@@ -150,8 +156,10 @@ class ExecutionSelector:
             return None
         try:
             return await handler.handle(msg, context, classification)
-        except Exception:
+        except Exception as exc:
             logger.exception("executor: handler %s raised", intent)
+            # Store the error so it can be surfaced if all handlers fail
+            self._last_handler_error = f"{type(exc).__name__}: {exc}"
             return None
 
     def _synthesize_result(

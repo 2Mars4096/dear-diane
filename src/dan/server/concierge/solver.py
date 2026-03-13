@@ -64,22 +64,14 @@ class SolverDecision(BaseModel):
 
 
 _INTENT_TO_MODE: dict[IntentCategory, ExecutionMode] = {
-    IntentCategory.FILE_REQUEST: ExecutionMode.DIRECT_ACTION,
-    IntentCategory.DIRECT_TASK: ExecutionMode.DIRECT_ACTION,
-    IntentCategory.RUN_CONTROL: ExecutionMode.RUN_CONTROL,
-    IntentCategory.WORKFLOW_BUILD: ExecutionMode.WORKFLOW_BUILD,
-    IntentCategory.WORKFLOW_QUERY: ExecutionMode.EXPERIENCE_LOOKUP,
-    IntentCategory.EXPERIENCE_QUERY: ExecutionMode.EXPERIENCE_LOOKUP,
-    IntentCategory.PUBLISH_SHARE: ExecutionMode.PUBLISH_SHARE,
-    IntentCategory.STATUS_CHECK: ExecutionMode.STATUS_PULL,
-    IntentCategory.META_GOAL: ExecutionMode.META_DELEGATE,
-    IntentCategory.CONVERSATION: ExecutionMode.CONVERSATION_SYNTHESIS,
+    IntentCategory.ASK: ExecutionMode.DIRECT_ACTION,
+    IntentCategory.AGENT: ExecutionMode.DIRECT_ACTION,
+    IntentCategory.PLAN: ExecutionMode.WORKFLOW_BUILD,
 }
 
 _FAST_PATH_INTENTS = frozenset({
-    IntentCategory.FILE_REQUEST,
-    IntentCategory.STATUS_CHECK,
-    IntentCategory.RUN_CONTROL,
+    IntentCategory.ASK,
+    IntentCategory.AGENT,
 })
 
 _FAST_PATH_CONFIDENCE = 0.85
@@ -92,13 +84,14 @@ _SOLVER_SYSTEM_PROMPT = (
     "workflow_build | run_control | status_pull | experience_lookup | "
     "publish_share | conversation_synthesis | meta_delegate\n"
     "- assumptions: list of assumptions made\n"
+    "- confidence: float 0.0-1.0 indicating how confident you are in this routing\n"
     "- clarification_question: set if the user's intent is unclear, multiple "
     "interpretations exist, or you need to make non-obvious assumptions. "
     "Prefer asking over guessing.\n\n"
     "ROUTING RULE: Time-sensitive queries (prices, rates, weather, scores, "
     "news, market data) → direct_action. Never guess live data.\n\n"
     '{"user_goal":"...","requested_deliverable":"...","execution_mode":"...",'
-    '"assumptions":[...],"clarification_question":null}'
+    '"assumptions":[...],"confidence":0.85,"clarification_question":null}'
 )
 
 
@@ -221,7 +214,9 @@ class GoalResolver:
         # classifier is confident the user wants a fresh build. This was
         # causing the agent lane to intercept build requests with stale reuse.
         _confident_build = (
-            classification.intent == IntentCategory.WORKFLOW_BUILD
+            classification.intent == IntentCategory.PLAN
+            and classification.route is not None
+            and "workflow_edit" in classification.route.action_hints
             and classification.confidence >= 0.7
         )
         if candidates and mode in (ExecutionMode.DIRECT_ACTION, ExecutionMode.WORKFLOW_BUILD) and not _confident_build:
@@ -284,6 +279,14 @@ class GoalResolver:
         if not (isinstance(clarification, str) and clarification.strip()):
             clarification = None
 
+        # Use the LLM's own confidence when available; fall back to a
+        # moderate default so downstream guards (Guard 2) have a real signal.
+        raw_confidence = data.get("confidence")
+        if isinstance(raw_confidence, (int, float)) and 0.0 <= raw_confidence <= 1.0:
+            confidence = float(raw_confidence)
+        else:
+            confidence = 0.7  # conservative default when LLM omits confidence
+
         return SolverDecision(
             user_goal=data.get("user_goal", planning_ctx.get("message", "")),
             requested_deliverable=data.get("requested_deliverable", ""),
@@ -292,7 +295,7 @@ class GoalResolver:
             clarification_question=clarification,
             handler_hint=classification.intent,
             workflow_candidates=planning_ctx.get("workflow_candidates") or [],
-            confidence=0.85,
+            confidence=confidence,
         )
 
 

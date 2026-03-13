@@ -28,16 +28,31 @@ class LLMProvider(Protocol):
 
 
 class IntentCategory(str, Enum):
-    FILE_REQUEST = "file_request"
-    DIRECT_TASK = "direct_task"
-    RUN_CONTROL = "run_control"
-    WORKFLOW_BUILD = "workflow_build"
-    WORKFLOW_QUERY = "workflow_query"
-    EXPERIENCE_QUERY = "experience_query"
-    PUBLISH_SHARE = "publish_share"
-    STATUS_CHECK = "status_check"
-    META_GOAL = "meta_goal"
-    CONVERSATION = "conversation"
+    ASK = "ask"
+    AGENT = "agent"
+    PLAN = "plan"
+
+
+class RouteMode(str, Enum):
+    ASK = "ask"
+    AGENT = "agent"
+    PLAN = "plan"
+
+
+class RouteDecision(BaseModel):
+    mode: RouteMode
+    target: str = "general"
+    action_hints: list[str] = []
+    rationale: str = ""
+
+
+class RouteDeliberation(BaseModel):
+    goal: str = ""
+    deliverable: str = ""
+    constraints: list[str] = []
+    required_action_hints: list[str] = []
+    completion_checks: list[str] = []
+    next_step: str = ""
 
 
 class ClassificationResult(BaseModel):
@@ -46,6 +61,8 @@ class ClassificationResult(BaseModel):
     param: str = ""
     raw_text: str
     signals: list[str] = []
+    route: RouteDecision | None = None
+    deliberation: RouteDeliberation | None = None
 
 
 @dataclass
@@ -86,6 +103,19 @@ class _IntentScoreBoard:
     def add(self, intent: IntentCategory, weight: float, reason: str) -> None:
         self.scores[intent] += weight
         self.reasons[intent].append(reason)
+
+
+@dataclass
+class _ParsedLLMClassification:
+    intent: str | None
+    confidence: float | None
+    reason: str | None
+    target: str | None = None
+    action_hints: list[str] = field(default_factory=list)
+    goal: str | None = None
+    deliverable: str | None = None
+    constraints: list[str] = field(default_factory=list)
+    next_step: str | None = None
 
 
 def register_seed_intents(store: BehaviorStore) -> None:
@@ -146,48 +176,24 @@ def _normalize_search_text(text: str) -> str:
     return " ".join(re.findall(r"[a-z0-9]+", text.lower()))
 
 
-_INTERNAL_OR_VAGUE_TASK_TERMS = (
-    "workflow",
-    "graph",
-    "node",
-    "edge",
-    "run",
-    "task",
-    "project",
-    "prompt",
-    "dan",
-    "blocker",
-    "status",
-    "progress",
-    "failure",
-    "failed",
-    "error",
-    "bug",
-    "document",
-    "file",
-    "pdf",
-)
-
-
-def _looks_like_external_fact_query(clean: str) -> bool:
-    if any(term in clean for term in _INTERNAL_OR_VAGUE_TASK_TERMS):
-        return False
-    if clean in {"what's the latest", "what is the latest", "what's the current", "what is the current"}:
-        return False
-    return bool(
-        re.search(r"^(who is|who's|when is|when was|where is|where was)\b", clean)
-        or re.search(r"^(what is|what's) (the )?(current|latest)\s+\w+", clean)
-    )
-
-
 def _looks_like_direct_web_lookup(clean: str) -> bool:
+    if any(
+        phrase in clean
+        for phrase in (
+            "search the web",
+            "search web",
+            "search online",
+            "web search",
+        )
+    ):
+        return True
     if any(phrase in clean for phrase in ("stock price", "share price")):
         return True
     if bool(re.search(r"^look up (the )?(stock|share) price\b", clean)):
         return True
     if bool(re.search(r"^(look up|find) (this |that |a |an |some )?(fact|facts|info|information)\b", clean)):
         return True
-    return _looks_like_external_fact_query(clean)
+    return False
 
 
 _CREATIVE_VERBS_RE = re.compile(
@@ -213,6 +219,14 @@ _MULTI_ACTION_RE = re.compile(
 
 _HELP_ME_TASK_RE = re.compile(
     r"\bhelp\s+me\b.*\b(?:write|create|generate|build|draft|make|prepare|produce|do|finish|complete|start)\b"
+)
+
+_WRITE_ACTION_RE = re.compile(
+    r"\b(write|save|create|generate|draft|produce|render|compile|rewrite|update|change|convert|edit)\b"
+)
+
+_WEB_ACTION_RE = re.compile(
+    r"\b(search(?: the web)?|search online|web search|browse|look up|lookup|fetch|download|crawl|scrape)\b"
 )
 
 _FILE_RETRIEVAL_START_RE = re.compile(
@@ -424,6 +438,8 @@ _WORKFLOW_EDIT_VERBS = {"add", "change", "wire", "modify", "edit", "update", "re
 _WORKFLOW_QUERY_TOKENS = {"show", "list", "inspect", "explain", "what"}
 _RUN_CONTROL_TOKENS = {"cancel", "resume", "pause", "stop"}
 _STATUS_TOKENS = {"status", "progress", "running"}
+_STATUS_QUERY_TOKENS = {"what", "how", "show", "give", "check"}
+_STATUS_OBJECT_TOKENS = {"run", "workflow", "task", "job", "session", "build", "goal"}
 _EXPERIENCE_PHRASES = ("have we done", "similar to", "past work", "what did we learn")
 _PUBLISH_PHRASES = ("publish", "share", "export", "send to")
 _META_GOAL_PHRASES = (
@@ -448,7 +464,7 @@ def _extract_intent_features(text: str, context: ResolvedContext) -> _IntentFeat
     tokens = set(re.findall(r"[a-z0-9]+", clean))
     recent_file_context = any(
         (
-            turn.intent == IntentCategory.FILE_REQUEST.value
+            turn.intent == IntentCategory.ASK.value
             or ".pdf" in turn.content.lower()
             or "/" in turn.content
             or "document" in turn.content.lower()
@@ -481,11 +497,13 @@ def _extract_intent_features(text: str, context: ResolvedContext) -> _IntentFeat
     workflow_edit = bool(tokens & _WORKFLOW_EDIT_VERBS) and workflow_nouns
     workflow_query = bool(tokens & _WORKFLOW_QUERY_TOKENS) and workflow_nouns and not workflow_edit
     run_control = bool(tokens & _RUN_CONTROL_TOKENS) and (
-        bool(tokens & set(_INTERNAL_STATUS_OBJECTS)) or "run it" in clean
+        bool(tokens & _STATUS_OBJECT_TOKENS) or "run it" in clean or "it" in tokens
     )
-    status_check = (
-        any(phrase in clean for phrase in _STATUS_PHRASES)
-        or (bool(tokens & _STATUS_TOKENS) and bool(tokens & set(_INTERNAL_STATUS_OBJECTS)))
+    status_check = bool(tokens & _STATUS_TOKENS) and (
+        clean.endswith("?")
+        or bool(tokens & _STATUS_QUERY_TOKENS)
+        or bool(tokens & _STATUS_OBJECT_TOKENS)
+        or clean.startswith(("status", "progress"))
     )
     experience_query = any(phrase in clean for phrase in _EXPERIENCE_PHRASES)
     publish_share = any(phrase in clean for phrase in _PUBLISH_PHRASES)
@@ -520,40 +538,40 @@ def _score_intents(features: _IntentFeatures) -> _IntentScoreBoard:
     board = _IntentScoreBoard()
 
     if features.send_request_query:
-        board.add(IntentCategory.FILE_REQUEST, 8.0, "explicit send-me file request")
+        board.add(IntentCategory.ASK, 8.0, "explicit send-me file request")
 
     if features.status_check:
-        board.add(IntentCategory.STATUS_CHECK, 7.0, "status/progress signal")
+        board.add(IntentCategory.ASK, 7.0, "status/progress signal")
 
     if features.run_control:
-        board.add(IntentCategory.RUN_CONTROL, 7.0, "run-control signal")
+        board.add(IntentCategory.AGENT, 7.0, "run-control signal")
 
     if features.meta_goal:
-        board.add(IntentCategory.META_GOAL, 7.0, "meta-goal phrasing")
+        board.add(IntentCategory.PLAN, 7.0, "meta-goal phrasing")
 
     if features.short_draft_request or features.direct_web_lookup:
-        board.add(IntentCategory.DIRECT_TASK, 6.0, "direct-task lookup/drafting signal")
+        board.add(IntentCategory.AGENT, 6.0, "tool-using lookup/drafting signal")
 
     if features.experience_query:
-        board.add(IntentCategory.EXPERIENCE_QUERY, 6.0, "experience query signal")
+        board.add(IntentCategory.ASK, 6.0, "experience query signal")
 
     if features.publish_share:
-        board.add(IntentCategory.PUBLISH_SHARE, 5.0, "publish/share signal")
+        board.add(IntentCategory.AGENT, 5.0, "publish/share signal")
 
     if features.workflow_query:
-        board.add(IntentCategory.WORKFLOW_QUERY, 6.0, "workflow query signal")
+        board.add(IntentCategory.ASK, 6.0, "workflow query signal")
 
     if features.workflow_edit:
-        board.add(IntentCategory.WORKFLOW_BUILD, 7.0, "workflow edit signal")
+        board.add(IntentCategory.PLAN, 7.0, "workflow edit signal")
 
     if features.path_scoped_task:
-        board.add(IntentCategory.DIRECT_TASK, 8.0, "path-scoped task signal")
+        board.add(IntentCategory.AGENT, 8.0, "path-scoped task signal")
 
     if features.read_transform_request:
-        board.add(IntentCategory.DIRECT_TASK, 7.0, "read-transform-write signal")
+        board.add(IntentCategory.AGENT, 7.0, "read-transform-write signal")
 
     if features.file_lookup:
-        board.add(IntentCategory.FILE_REQUEST, 6.0, "path lookup signal")
+        board.add(IntentCategory.ASK, 6.0, "path lookup signal")
 
     if (
         features.recent_file_context
@@ -562,22 +580,22 @@ def _score_intents(features: _IntentFeatures) -> _IntentScoreBoard:
             for phrase in ("summarize it", "review it", "read it", "summarize this", "review this")
         )
     ):
-        board.add(IntentCategory.FILE_REQUEST, 5.0, "recent file follow-up signal")
+        board.add(IntentCategory.ASK, 5.0, "recent file follow-up signal")
 
     if features.creative_artifact and not features.workflow_nouns:
-        board.add(IntentCategory.DIRECT_TASK, 4.0, "artifact creation signal")
+        board.add(IntentCategory.AGENT, 4.0, "artifact creation signal")
 
     if features.format_spec and features.creative_artifact:
-        board.add(IntentCategory.DIRECT_TASK, 2.0, "explicit output format")
+        board.add(IntentCategory.AGENT, 2.0, "explicit output format")
 
     if features.multi_action and (features.creative_artifact or features.has_path):
-        board.add(IntentCategory.DIRECT_TASK, 2.0, "multi-step task signal")
+        board.add(IntentCategory.AGENT, 2.0, "multi-step task signal")
 
     if features.has_path and not features.path_scoped_task:
-        board.add(IntentCategory.FILE_REQUEST, 2.0, "filesystem path fallback")
+        board.add(IntentCategory.ASK, 2.0, "filesystem path fallback")
 
     if all(score <= 0 for score in board.scores.values()):
-        board.add(IntentCategory.CONVERSATION, 1.0, "fallback")
+        board.add(IntentCategory.ASK, 1.0, "fallback")
 
     return board
 
@@ -590,22 +608,110 @@ def _score_to_confidence(top_score: float, second_score: float) -> float:
     return max(0.5, min(0.98, top / (top + second + baseline)))
 
 
-_STATUS_PHRASES = (
-    "what's running", "whats running",
-    "what's the status", "whats the status", "what is the status",
-    "status update", "status check", "check the status", "check status",
-    "show me the status", "give me the status", "give me status",
-    "how's it going", "how is it going",
-    "how's the run", "how is the run",
-    "what's the progress", "whats the progress", "what is the progress",
-    "progress update", "progress check",
-)
+def _derive_route_from_features(
+    features: _IntentFeatures,
+    intent: IntentCategory,
+    *,
+    rationale: str = "",
+) -> RouteDecision:
+    action_hints: list[str] = []
+    target = "general"
 
-_INTERNAL_STATUS_OBJECTS = (
-    "run", "runs", "workflow", "workflows", "task", "tasks",
-    "job", "jobs", "session", "sessions", "build", "builds",
-    "goal", "goals",
-)
+    if intent == IntentCategory.PLAN:
+        if features.workflow_edit:
+            return RouteDecision(
+                mode=RouteMode.PLAN,
+                target="workflow",
+                action_hints=["workflow_edit"],
+                rationale=rationale or "Workflow edits belong in plan mode.",
+            )
+        return RouteDecision(
+            mode=RouteMode.PLAN,
+            target="general",
+            action_hints=["long_horizon_goal"],
+            rationale=rationale or "Long-horizon automation belongs in plan mode.",
+        )
+
+    if intent == IntentCategory.AGENT:
+        if features.run_control:
+            return RouteDecision(
+                mode=RouteMode.AGENT,
+                target="run",
+                action_hints=["run_control"],
+                rationale=rationale or "Run control is operational.",
+            )
+        if features.publish_share:
+            return RouteDecision(
+                mode=RouteMode.AGENT,
+                target="workflow",
+                action_hints=["publish"],
+                rationale=rationale or "Publishing is operational.",
+            )
+        if features.has_path or features.recent_file_context:
+            target = "file"
+            action_hints.append("read_file")
+        elif features.direct_web_lookup or _WEB_ACTION_RE.search(features.clean):
+            target = "web"
+        if features.direct_web_lookup or _WEB_ACTION_RE.search(features.clean):
+            action_hints.append("search_web")
+        write_requested = bool(_WRITE_ACTION_RE.search(features.clean)) and (
+            features.has_path
+            or features.path_scoped_task
+            or features.creative_artifact
+            or features.format_spec
+        )
+        if write_requested:
+            action_hints.append("write_file")
+        return RouteDecision(
+            mode=RouteMode.AGENT,
+            target=target,
+            action_hints=action_hints,
+            rationale=rationale or "Operational work belongs in agent mode.",
+        )
+
+    if (
+        features.has_path
+        or features.recent_file_context
+        or features.send_request_query
+        or features.file_lookup
+    ) and not (
+        features.path_scoped_task
+        or features.read_transform_request
+        or features.creative_artifact
+    ):
+        return RouteDecision(
+            mode=RouteMode.ASK,
+            target="file",
+            action_hints=["read_file"],
+            rationale=rationale or "Read-only file lookup/review belongs in ask mode.",
+        )
+    if features.status_check:
+        return RouteDecision(
+            mode=RouteMode.ASK,
+            target="run",
+            action_hints=["status_check"],
+            rationale=rationale or "Status checks are read-only.",
+        )
+    if features.workflow_query:
+        return RouteDecision(
+            mode=RouteMode.ASK,
+            target="workflow",
+            action_hints=["workflow_query"],
+            rationale=rationale or "Workflow lookup is read-only.",
+        )
+    if features.experience_query:
+        return RouteDecision(
+            mode=RouteMode.ASK,
+            target="memory",
+            action_hints=["experience_lookup"],
+            rationale=rationale or "Experience lookup is read-only.",
+        )
+    return RouteDecision(
+        mode=RouteMode.ASK,
+        target="general",
+        action_hints=[],
+        rationale=rationale or "General discussion defaults to ask mode.",
+    )
 
 
 def _record_unrecognized_conversation(
@@ -617,7 +723,7 @@ def _record_unrecognized_conversation(
 ) -> None:
     if (
         pattern_accumulator is None
-        or intent != IntentCategory.CONVERSATION
+        or intent != IntentCategory.ASK
         or confidence > 0.6
     ):
         return
@@ -636,7 +742,12 @@ def classify_intent(
     top_intent, top_score = ranked[0]
     second_score = ranked[1][1] if len(ranked) > 1 else 0.0
     confidence = _score_to_confidence(top_score, second_score)
-    param = (features.send_request_query or "") if top_intent == IntentCategory.FILE_REQUEST else ""
+    route = _derive_route_from_features(
+        features,
+        top_intent,
+        rationale="heuristic route derivation",
+    )
+    param = (features.send_request_query or "") if route.target == "file" else ""
 
     _record_unrecognized_conversation(
         text,
@@ -651,6 +762,8 @@ def classify_intent(
         param=param,
         raw_text=text,
         signals=board.reasons[top_intent],
+        route=route,
+        deliberation=_build_route_deliberation(text, features, route),
     )
 
 
@@ -712,8 +825,186 @@ def _coerce_confidence(raw_value: Any) -> float | None:
     return max(0.0, min(1.0, value))
 
 
-def _parse_llm_classification(raw: str) -> tuple[str | None, float | None, str | None]:
-    """Extract intent, confidence, and rationale from JSON or bare text."""
+_VALID_ROUTE_TARGETS = frozenset({"general", "file", "web", "run", "workflow", "memory"})
+_VALID_ACTION_HINTS = frozenset(
+    {
+        "read_file",
+        "search_web",
+        "write_file",
+        "status_check",
+        "workflow_query",
+        "experience_lookup",
+        "run_control",
+        "publish",
+        "workflow_edit",
+        "long_horizon_goal",
+    }
+)
+
+
+def _coerce_string_list(raw_value: Any) -> list[str]:
+    if isinstance(raw_value, str):
+        items = [raw_value]
+    elif isinstance(raw_value, (list, tuple)):
+        items = [str(item) for item in raw_value]
+    else:
+        return []
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for item in items:
+        cleaned = item.strip()
+        if not cleaned or cleaned in seen:
+            continue
+        seen.add(cleaned)
+        ordered.append(cleaned)
+    return ordered
+
+
+def _completion_checks_for_action_hints(action_hints: list[str]) -> list[str]:
+    checks: list[str] = []
+    if "read_file" in action_hints:
+        checks.append(
+            "A successful local file or folder read must occur before you give the final answer."
+        )
+    if "search_web" in action_hints:
+        checks.append(
+            "A successful live web lookup must occur before you give the final answer."
+        )
+    if "write_file" in action_hints:
+        checks.append(
+            "A successful file_write must occur before you give the final answer."
+        )
+    if "workflow_edit" in action_hints:
+        checks.append(
+            "Stay in workflow-design mode and do not execute unrelated direct-task work."
+        )
+    if "long_horizon_goal" in action_hints:
+        checks.append(
+            "Keep the response focused on planning the system or workflow before execution."
+        )
+    return checks
+
+
+def _infer_deliverable_from_route(route: RouteDecision) -> str:
+    if "write_file" in route.action_hints:
+        return "A saved local artifact."
+    if route.mode == RouteMode.PLAN and "workflow_edit" in route.action_hints:
+        return "An updated workflow design."
+    if route.mode == RouteMode.PLAN:
+        return "A workflow or automation plan."
+    if "search_web" in route.action_hints:
+        return "A grounded answer based on live sources."
+    if route.target == "file":
+        return "A read-only answer based on local files."
+    return "A direct answer for the user."
+
+
+def _infer_constraints(features: _IntentFeatures) -> list[str]:
+    constraints: list[str] = []
+    if features.has_path:
+        constraints.append("Treat referenced local paths as real workspace context.")
+    if features.format_spec:
+        constraints.append("Honor the requested output format.")
+    if features.recent_file_context:
+        constraints.append("Use the recently referenced file context if it is still relevant.")
+    return constraints
+
+
+def _infer_next_step(route: RouteDecision) -> str:
+    if "read_file" in route.action_hints:
+        return "Inspect the referenced local files or folders first."
+    if "search_web" in route.action_hints:
+        return "Gather the missing live web information first."
+    if "write_file" in route.action_hints:
+        return "Prepare the requested output and save it to disk."
+    if "workflow_edit" in route.action_hints:
+        return "Plan the workflow changes before proposing them."
+    if "long_horizon_goal" in route.action_hints:
+        return "Decompose the automation goal into a concrete plan."
+    return "Answer directly or clarify missing requirements."
+
+
+def _build_route_deliberation(
+    text: str,
+    features: _IntentFeatures,
+    route: RouteDecision,
+    *,
+    goal: str | None = None,
+    deliverable: str | None = None,
+    constraints: list[str] | None = None,
+    next_step: str | None = None,
+) -> RouteDeliberation:
+    goal_text = re.sub(r"\s+", " ", (goal or text).strip())
+    if len(goal_text) > 220:
+        goal_text = goal_text[:217].rstrip() + "..."
+    merged_constraints = _coerce_string_list([*(constraints or []), *_infer_constraints(features)])
+    required_action_hints = list(route.action_hints)
+    return RouteDeliberation(
+        goal=goal_text,
+        deliverable=(deliverable or _infer_deliverable_from_route(route)).strip(),
+        constraints=merged_constraints,
+        required_action_hints=required_action_hints,
+        completion_checks=_completion_checks_for_action_hints(required_action_hints),
+        next_step=(next_step or _infer_next_step(route)).strip(),
+    )
+
+
+def _build_route_from_llm_details(
+    features: _IntentFeatures,
+    intent: IntentCategory,
+    *,
+    target: str | None,
+    action_hints: list[str],
+    rationale: str,
+) -> RouteDecision:
+    normalized_target = str(target or "").strip().lower()
+    if normalized_target not in _VALID_ROUTE_TARGETS:
+        normalized_target = ""
+    normalized_hints = [
+        hint for hint in _coerce_string_list(action_hints)
+        if hint in _VALID_ACTION_HINTS
+    ]
+    if not normalized_target and not normalized_hints:
+        return _derive_route_from_features(features, intent, rationale=rationale)
+
+    if intent == IntentCategory.PLAN:
+        final_target = normalized_target or ("workflow" if "workflow_edit" in normalized_hints else "general")
+        final_hints = normalized_hints or (
+            ["workflow_edit"] if final_target == "workflow" else ["long_horizon_goal"]
+        )
+        return RouteDecision(
+            mode=RouteMode.PLAN,
+            target=final_target,
+            action_hints=final_hints,
+            rationale=rationale or "llm route details",
+        )
+
+    if intent == IntentCategory.AGENT:
+        final_target = normalized_target or ("file" if features.has_path or features.recent_file_context else "general")
+        final_hints = normalized_hints or (
+            ["read_file"] if final_target == "file" else []
+        )
+        return RouteDecision(
+            mode=RouteMode.AGENT,
+            target=final_target,
+            action_hints=final_hints,
+            rationale=rationale or "llm route details",
+        )
+
+    final_target = normalized_target or ("file" if features.has_path or features.recent_file_context else "general")
+    final_hints = normalized_hints or (
+        ["read_file"] if final_target == "file" else []
+    )
+    return RouteDecision(
+        mode=RouteMode.ASK,
+        target=final_target,
+        action_hints=final_hints,
+        rationale=rationale or "llm route details",
+    )
+
+
+def _parse_llm_classification(raw: str) -> _ParsedLLMClassification:
+    """Extract intent, route hints, and deliberation details from JSON or bare text."""
     raw = raw.strip()
     start = raw.find("{")
     end = raw.rfind("}")
@@ -735,25 +1026,34 @@ def _parse_llm_classification(raw: str) -> tuple[str | None, float | None, str |
                     ).strip()
                     or None
                 )
-                return intent, _coerce_confidence(obj.get("confidence")), reason
+                return _ParsedLLMClassification(
+                    intent=intent,
+                    confidence=_coerce_confidence(obj.get("confidence")),
+                    reason=reason,
+                    target=str(obj.get("target") or "").strip() or None,
+                    action_hints=_coerce_string_list(obj.get("action_hints")),
+                    goal=str(obj.get("goal") or "").strip() or None,
+                    deliverable=str(obj.get("deliverable") or "").strip() or None,
+                    constraints=_coerce_string_list(obj.get("constraints")),
+                    next_step=str(obj.get("next_step") or "").strip() or None,
+                )
     lower = raw.lower()
     for intent_val in _VALID_INTENTS:
         if intent_val in lower:
-            return intent_val, None, None
-    return None, None, None
+            return _ParsedLLMClassification(intent=intent_val, confidence=None, reason=None)
+    return _ParsedLLMClassification(intent=None, confidence=None, reason=None)
 
 
 def _build_llm_classification_result(
     text: str,
+    context: ResolvedContext,
     heuristic: ClassificationResult,
     *,
-    intent_value: str,
-    confidence: float | None,
-    reason: str | None,
+    payload: _ParsedLLMClassification,
     pattern_accumulator: Any = None,
 ) -> ClassificationResult:
-    intent = IntentCategory(intent_value)
-    resolved_confidence = confidence
+    intent = IntentCategory(payload.intent or IntentCategory.ASK.value)
+    resolved_confidence = payload.confidence
     if resolved_confidence is None:
         resolved_confidence = heuristic.confidence if heuristic.intent == intent else 0.72
     if heuristic.intent == intent:
@@ -761,8 +1061,8 @@ def _build_llm_classification_result(
     resolved_confidence = max(0.55, min(0.98, resolved_confidence))
 
     signals: list[str] = []
-    if reason:
-        signals.append(f"llm: {reason}")
+    if payload.reason:
+        signals.append(f"llm: {payload.reason}")
     if heuristic.intent == intent and heuristic.signals:
         signals.extend(f"heuristic: {signal}" for signal in heuristic.signals[:2])
     elif heuristic.signals:
@@ -774,12 +1074,30 @@ def _build_llm_classification_result(
         confidence=resolved_confidence,
         pattern_accumulator=pattern_accumulator,
     )
+    features = _extract_intent_features(text, context)
+    route = _build_route_from_llm_details(
+        features,
+        intent,
+        target=payload.target,
+        action_hints=payload.action_hints,
+        rationale=payload.reason or "llm route derivation",
+    )
     return ClassificationResult(
         intent=intent,
         confidence=resolved_confidence,
-        param=(extract_search_query_from_send_request(text) or "") if intent == IntentCategory.FILE_REQUEST else "",
+        param=(extract_search_query_from_send_request(text) or "") if route.target == "file" else "",
         raw_text=text,
         signals=signals,
+        route=route,
+        deliberation=_build_route_deliberation(
+            text,
+            features,
+            route,
+            goal=payload.goal,
+            deliverable=payload.deliverable,
+            constraints=payload.constraints,
+            next_step=payload.next_step,
+        ),
     )
 
 
@@ -811,14 +1129,13 @@ async def classify_intent_llm(
                 except Exception:
                     pass
             return heuristic
-        intent_value, llm_confidence, llm_reason = _parse_llm_classification(raw_text)
-        if intent_value:
+        payload = _parse_llm_classification(raw_text)
+        if payload.intent:
             return _build_llm_classification_result(
                 text,
+                context,
                 heuristic,
-                intent_value=intent_value,
-                confidence=llm_confidence,
-                reason=llm_reason,
+                payload=payload,
                 pattern_accumulator=pattern_accumulator,
             )
         logger.warning("LLM classifier returned unparseable response: %s", raw_text[:200])
@@ -926,7 +1243,7 @@ def apply_new_intent(
     handlers: dict = behavior_store.get("taxonomy/intent_handlers", default={})
     if not isinstance(handlers, dict):
         handlers = {}
-    handlers[intent_name] = "direct_task"
+    handlers[intent_name] = "agent"
     behavior_store.set(
         "taxonomy/intent_handlers",
         handlers,

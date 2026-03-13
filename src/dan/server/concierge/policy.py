@@ -40,33 +40,19 @@ class BehaviorPolicy(BaseModel):
 
 
 DEFAULT_HANDLER_POLICIES: dict[IntentCategory, ActionPolicy] = {
-    IntentCategory.FILE_REQUEST: ActionPolicy.AUTO,
-    IntentCategory.DIRECT_TASK: ActionPolicy.AUTO,
-    IntentCategory.RUN_CONTROL: ActionPolicy.AUTO,
-    IntentCategory.STATUS_CHECK: ActionPolicy.AUTO,
-    IntentCategory.EXPERIENCE_QUERY: ActionPolicy.AUTO,
-    IntentCategory.PUBLISH_SHARE: ActionPolicy.CONFIRM,
-    IntentCategory.WORKFLOW_BUILD: ActionPolicy.AUTO,
-    IntentCategory.WORKFLOW_QUERY: ActionPolicy.AUTO,
-    IntentCategory.META_GOAL: ActionPolicy.AUTO,
-    IntentCategory.CONVERSATION: ActionPolicy.AUTO,
+    IntentCategory.ASK: ActionPolicy.AUTO,
+    IntentCategory.AGENT: ActionPolicy.AUTO,
+    IntentCategory.PLAN: ActionPolicy.AUTO,
 }
 
 DEFAULT_EXECUTION_POLICIES: dict[IntentCategory, ExecutionPolicy] = {
-    IntentCategory.FILE_REQUEST: ExecutionPolicy.DIRECT,
-    IntentCategory.DIRECT_TASK: ExecutionPolicy.DIRECT,
-    IntentCategory.RUN_CONTROL: ExecutionPolicy.DIRECT,
-    IntentCategory.STATUS_CHECK: ExecutionPolicy.DIRECT,
-    IntentCategory.EXPERIENCE_QUERY: ExecutionPolicy.DIRECT,
-    IntentCategory.PUBLISH_SHARE: ExecutionPolicy.DIRECT,
-    IntentCategory.WORKFLOW_BUILD: ExecutionPolicy.LLM_CONVERSATION,
-    IntentCategory.WORKFLOW_QUERY: ExecutionPolicy.DIRECT,
-    IntentCategory.META_GOAL: ExecutionPolicy.META_DELEGATE,
-    IntentCategory.CONVERSATION: ExecutionPolicy.LLM_CONVERSATION,
+    IntentCategory.ASK: ExecutionPolicy.LLM_CONVERSATION,
+    IntentCategory.AGENT: ExecutionPolicy.DIRECT,
+    IntentCategory.PLAN: ExecutionPolicy.LLM_CONVERSATION,
 }
 
 _DESTRUCTIVE_KEYWORDS = ("delete", "remove", "cancel", "unpublish", "destroy")
-_MUTATION_INTENTS = {IntentCategory.WORKFLOW_BUILD, IntentCategory.META_GOAL}
+_MUTATION_INTENTS = {IntentCategory.PLAN}
 _MESSAGING_SURFACES = {"telegram", "whatsapp", "whatsapp-web", "email"}
 _SIMPLE_MUTATION_KEYWORDS = ("add", "edit", "modify", "change", "update", "rename", "move", "remove")
 
@@ -79,11 +65,15 @@ def _surface_kind(surface: str) -> str:
 
 
 def estimate_action_cost(
-    intent: IntentCategory, text: str, context: Any = None,
+    intent: IntentCategory,
+    text: str,
+    context: Any = None,
+    action_hints: list[str] | None = None,
 ) -> float:
-    if intent == IntentCategory.META_GOAL:
+    hints = set(action_hints or [])
+    if intent == IntentCategory.PLAN and "long_horizon_goal" in hints:
         return 2.0
-    if intent == IntentCategory.WORKFLOW_BUILD:
+    if intent == IntentCategory.PLAN:
         lower = text.lower()
         if any(kw in lower for kw in _SIMPLE_MUTATION_KEYWORDS):
             return 0.05
@@ -94,6 +84,7 @@ def estimate_action_cost(
 def resolve_policy(
     *,
     intent: IntentCategory,
+    action_hints: list[str] | None,
     text: str,
     context: Any,
     user_profile: Any,
@@ -112,9 +103,11 @@ def resolve_policy(
     lower = text.lower()
     if any(keyword in lower for keyword in _DESTRUCTIVE_KEYWORDS):
         action = ActionPolicy.CONFIRM
+    if "publish" in set(action_hints or []):
+        action = ActionPolicy.CONFIRM
 
     if estimated_cost == 0.0:
-        estimated_cost = estimate_action_cost(intent, text, context)
+        estimated_cost = estimate_action_cost(intent, text, context, action_hints)
 
     env_threshold = os.environ.get("DAN_COST_CONFIRM_THRESHOLD")
     if env_threshold is not None:

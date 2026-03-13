@@ -770,7 +770,7 @@ class TestRuntimeDomainLearningIntegrations:
         assert project is not None
         project.pending_action = PendingAction(
             kind="confirm",
-            intent="conversation",
+            intent="ask",
             original_text="continue the paper",
         )
         concierge.project_store.save_project(project)
@@ -787,7 +787,7 @@ class TestRuntimeDomainLearningIntegrations:
         immediate_event, context, classification, replay_msg = pending
         assert immediate_event is None
         assert context.domain == "paper_rendering"
-        assert str(classification.intent.value) == "conversation"
+        assert str(classification.intent.value) == "ask"
         assert replay_msg.metadata["resolved_domain"] == "paper_rendering"
         assert replay_msg.metadata["resolved_project_id"] == project.project_id
 
@@ -839,7 +839,7 @@ class TestRuntimeDomainLearningIntegrations:
         assert project is not None
         project.pending_action = PendingAction(
             kind="confirm",
-            intent="conversation",
+            intent="ask",
             original_text="continue the paper",
         )
         concierge.project_store.save_project(project)
@@ -875,7 +875,7 @@ class TestRuntimeDomainLearningIntegrations:
         assert project is not None
         project.pending_action = PendingAction(
             kind="clarify",
-            intent="direct_task",
+            intent="agent",
             original_text="update the report",
             metadata={
                 "solver_decision": True,
@@ -1671,7 +1671,7 @@ class TestRuntimeContextClarification:
         assert updated.pending_action is not None
         assert updated.pending_action.kind == "clarify"
         assert updated.pending_action.original_text == "update the report"
-        assert updated.pending_action.intent != "conversation"
+        assert updated.pending_action.intent != "ask"
 
 
 class TestMemoryContextProjectRefresh:
@@ -1735,7 +1735,7 @@ class TestContextSufficiencyDataReference:
 
 
 class TestFinalizeTaskDomainReflection:
-    def test_finalize_task_completes_direct_task_and_triggers_reflection(self, tmp_path):
+    def test_finalize_task_completes_agent_task_and_triggers_reflection(self, tmp_path):
         from dan.server.concierge.classifier import IntentCategory
         from dan.server.concierge.runtime import Concierge
 
@@ -1760,7 +1760,7 @@ class TestFinalizeTaskDomainReflection:
             concierge,
             context,
             msg,
-            IntentCategory.DIRECT_TASK,
+            IntentCategory.AGENT,
             True,
         )
 
@@ -1799,7 +1799,7 @@ class TestFinalizeTaskDomainReflection:
             concierge,
             context,
             msg,
-            IntentCategory.DIRECT_TASK,
+            IntentCategory.AGENT,
             True,
         )
 
