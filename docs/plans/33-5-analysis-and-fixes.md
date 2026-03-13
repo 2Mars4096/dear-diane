@@ -97,30 +97,59 @@ Write up:
 
 **Context:** Pipeline has received 33-6 (intent compiler activation), 33-7 (semantic quality gates), 33-8 (codegen resilience), 33-9 (build path trustworthiness), and 33-10 partial (semantic correctness — B, C, F done; A, D, E pending). Fixture expectation enforcement (33-10 B) is now active, producing an honest baseline. Tool keyword inference (33-10 C) and tool-aware extraction (33-10 F) should improve tool-node quality.
 
-**Prior baseline (Cycle 2):** 54.9% pass (51 records), 20/23 failures were `no_graph_created`. Intent compiler 29.4% activation. 72% of failures were `timeout_planning`.
+**Prior baseline (Cycle 2):** 33.3% pass (60 records, both lanes), build-only 46.7% (14/30). Intent compiler 18.3%. 72% of failures `timeout_planning`.
 
-- [ ] 10. Generate post-33-9/33-10 report from re-run JSONL
-  - [ ] 10-1. Overall pass rate (expected: lower than 54.9% due to fixture enforcement)
-  - [ ] 10-2. Per-tier pass rates with comparison to Cycle 2
-  - [ ] 10-3. Failure mode distribution — specifically track new `expectation_mismatch` category
-  - [ ] 10-4. Intent compiler activation rate per tier (target: T1 >80%, T2 >60%)
-  - [ ] 10-5. Tool_id correctness rate for tool-node prompts
-- [ ] 11. Triage new failure modes
-  - [ ] 11-1. Separate `expectation_mismatch` into "fixture too strict" vs "generation genuinely wrong"
-  - [ ] 11-2. Widen fixture ranges for reasonable alternative topologies
-  - [ ] 11-3. Identify any remaining `no_graph_created` that should be sub-classified
-- [ ] 12. Compare honest baseline to prior "passing" rate
-  - [ ] 12-1. Document the gap between structural-only validation and expectation-fit validation
-  - [ ] 12-2. Identify which "previously passing" graphs now fail — are they genuine quality issues?
-- [ ] 13. Assess 33-10 A/D/E impact
-  - [ ] 13-1. How many graphs have review-loop condition polarity bugs? (informs 33-10 A priority)
-  - [ ] 13-2. How many graphs have wrong tool_ids despite keyword map? (informs 33-10 D — codegen tool catalog)
-  - [ ] 13-3. Would LLM-as-judge (33-10 E) catch issues that fixture expectations miss?
-- [ ] 14. Produce Cycle 3 comparison report
-  - [ ] 14-1. Cycle 2 vs Cycle 3 comparison table
-  - [ ] 14-2. Updated failure mode histogram
-  - [ ] 14-3. Recommendations for 33-10 remaining patches (A, D, E)
-  - [ ] 14-4. Decision: is generation quality trending toward daily usability?
+**Cycle 3 results (2026-03-13):** `tests/eval/results/2026-03-13_002753_run.jsonl` — 56 records, build lane only.
+
+| Metric | Cycle 2 (build) | Cycle 3 (build) | Delta |
+|---|---|---|---|
+| Overall pass rate | 46.7% (14/30) | 25.0% (14/56) | -21.7pp (expected: fixture enforcement) |
+| T1 | 33.3% (4/12) | 54.5% (6/11) | +21.2pp |
+| T2 | 25.0% (3/12) | 37.5% (3/8) | +12.5pp |
+| T2R | — | 0.0% (0/3) | — |
+| T3 | 16.7% (2/12) | 0.0% (0/18) | -16.7pp (multi-turn all fail) |
+| T4 | 16.7% (2/12) | 40.0% (4/10) | +23.3pp |
+| T5 | 75.0% (9/12) | 16.7% (1/6) | -58.3pp (misrouted in build lane) |
+| Intent compiler activation | 18.3% | 30.4% | +12.1pp |
+| T1 intent compiler | 33.3% | 63.6% | +30.3pp |
+| T2 intent compiler | 25.0% | 75.0% | +50.0pp |
+
+**Failure mode distribution (42 failures):**
+
+| Mode | Count | % | Description |
+|---|---|---|---|
+| `expectation_mismatch` | 23 | 54.8% | Graph valid but doesn't match fixture expectations |
+| `timeout_planning` | 8 | 19.0% | LLM API never reached codegen |
+| `misrouted` | 5 | 11.9% | T5 edge cases built graphs when shouldn't |
+| `timeout_codegen` | 4 | 9.5% | Codegen timed out |
+| `no_graph_created` | 2 | 4.8% | Pipeline ran but no graph |
+
+**Top quality concerns from LLM-as-judge:**
+- 9x single node with no edges for multi-step prompts
+- 5x node count below fixture min
+- 4x "review loop" prompt but no loop edges
+- 4x "parallel" prompt but no fan-out/for_each nodes
+
+- [x] 10. Generate post-33-9/33-10 report *(2026-03-13: 56 records, 25.0% honest baseline)*
+  - [x] 10-1. Overall pass rate: 25.0% (down from 46.7% due to fixture enforcement)
+  - [x] 10-2. Per-tier: T1 54.5%, T2 37.5%, T2R 0%, T3 0%, T4 40%, T5 16.7%
+  - [x] 10-3. expectation_mismatch is dominant: 23/42 failures (54.8%)
+  - [x] 10-4. Intent compiler: T1=63.6% (target 80% miss), T2=75.0% (target 60% HIT)
+  - [x] 10-5. Tool_id: most graphs are LLM-only; tool/code/gate nodes rarely generated
+- [ ] 11. Triage expectation_mismatch failures
+  - [ ] 11-1. **Under-noding (genuine):** p02, t1-03, t1-06, t2-02 produce 1 node for multi-step prompts — intent compiler collapses to single node
+  - [ ] 11-2. **Fixture too strict?** t1-07 (single-node summarizer fails "chain" topology check — could relax); t3-03 (5 nodes vs min 6 — borderline)
+  - [ ] 11-3. **Missing node types (genuine):** t3-01 (no tool), t3-02 (no gate), t2-06 (no for_each) — LLM-only chains for prompts requiring tools
+  - [ ] 11-4. **Multi-turn stagnation (genuine):** m1/m2/m3 never grow; follow-ups don't modify graphs
+- [ ] 12. Compare honest vs prior pass rate
+  - [x] 12-1. Gap: 46.7% (Cycle 2 structural) vs 25.0% (Cycle 3 honest) = 21.7pp of false-positive passes removed
+  - [x] 12-2. Genuine improvements: T1 +21.2pp, T2 +12.5pp, T4 +23.3pp (more graphs, better quality)
+- [ ] 13. Prioritize next fixes
+  - [ ] 13-1. **P0: Intent compiler under-noding** — single biggest issue. 9 single-node graphs for multi-step prompts. Fix: intent compiler patterns must expand to multi-node; or fall back to codegen when prompt complexity exceeds intent compiler capability.
+  - [ ] 13-2. **P1: Multi-turn mutation stagnation** — follow-ups don't modify graphs. Fix: structural mutation macros not activating. Debug mutation dispatch for "add review loop" / "make it fan out" follow-ups.
+  - [ ] 13-3. **P1: T5 edge case detection in build lane** — 5/6 T5 prompts misrouted. Fix: build lane should still detect non-workflow requests before building. Or: accept that build lane always builds and only test T5 in agent lane.
+  - [ ] 13-4. **P2: Missing non-LLM node types** — tool, code, gate, for_each nodes rarely generated. Fix: intent compiler patterns should produce tool/code nodes when prompt mentions file/web/code/email; codegen prompt should use tool catalog (33-10 D).
+- [ ] 14. Produce summary for next fix cycle
 - [ ] 15. Update docs: bugs.md, todo.md, changelog.md
 
 ## Files
