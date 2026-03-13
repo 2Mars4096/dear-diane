@@ -105,6 +105,7 @@ Chat mode is the entry point for all users. It should have zero learning curve. 
 - Recovery UI must stay actionable when it appears late: if disconnect/stale-state banners are inserted after the last streamed message, auto-scroll them into view so the sticky composer does not hide the retry/dismiss actions
 - Client-side draft titles should avoid raw prompt noise: strip filesystem paths and conversational wrappers from the first visible title immediately, then refresh against the server-authored title shortly after the first save so the active header does not stay stuck on a path-heavy prompt during streaming
 - Tool traces should collapse repeated low-signal reads: if `file_read` hits the same path multiple times in one turn, present it once with merged ranges and an open-file link instead of spamming near-identical cards for each line-range read
+- Tool execution should still narrate the step in plain text: when tool cards are visible, keep a readable progress line derived from the latest tool event instead of falling back to raw prompt echoes or hiding text entirely
 
 ## Notes
 - Chat mode should feel indistinguishable from a best-in-class chat UI (Claude/ChatGPT) for simple tasks

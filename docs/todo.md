@@ -113,7 +113,7 @@
 > Evolve the chatbox from a graph-editing assistant into a full-featured conversational development surface. Multi-mode interaction (Ask/Agent/Plan/Debug), rich context mentions (@Files/@Code/@Docs/@Web/@Past Chats), inline tool display with approval, conversation lifecycle (stop/queue/checkpoint/export/search), and measurable quality harness.
 
 - [x] [12-cursor-parity-chat](plans/12-cursor-parity-chat.md) — Cursor-parity chat: modes, context, tools, lifecycle, quality *(core complete; stretch items deferred — see individual sub-plans)*
-- [x] [12-1-chat-reliability-polish](plans/12-1-chat-reliability-polish.md) — A. Fix trust gaps: revision concurrency, history compaction, dead CTAs, env vars, integration tests, plan doc reconciliation *(follow-up tuning now also covers server-authored graph revisions for stale checks, LLM call timeouts, complex direct-task routing, newer large-context model aliases + higher tool-loop budgets, reconnectable run-stream handoffs, bounded reconnect-tail buffering on the server, SQLite telemetry round-tripping for parameter decisions, orphan-tool cleanup during context compaction, explicit cancellation coverage across continuation/follow-up/synthesis branches, terminal saves beating stale debounced snapshots, and normalized token/placeholder state during long streams)*
+- [x] [12-1-chat-reliability-polish](plans/12-1-chat-reliability-polish.md) — A. Fix trust gaps: revision concurrency, history compaction, dead CTAs, env vars, integration tests, plan doc reconciliation *(follow-up tuning now also covers server-authored graph revisions for stale checks, LLM call timeouts, complex direct-task routing, newer large-context model aliases + higher tool-loop budgets, reconnectable run-stream handoffs, bounded reconnect-tail buffering on the server, SQLite telemetry round-tripping for parameter decisions, orphan-tool cleanup during context compaction, explicit cancellation coverage across continuation/follow-up/synthesis branches, terminal saves beating stale debounced snapshots, normalized token/placeholder state during long streams, and terminal chat-stream stop conditions after clean `1000` / missing-channel `4004` closes)*
   - [x] [12-2-multi-mode-chat](plans/12-2-multi-mode-chat.md) — B. Ask / Agent / Plan / Debug chat modes with mode-specific prompts and tool availability *(tasks 1–6 done; per-thread mode persistence, keyboard shortcuts, debug-fix tag, auto-mode detection deferred)*
   - [x] [12-3-rich-context-mentions](plans/12-3-rich-context-mentions.md) — C. @Files, @Code, @Docs, @Past Chats + server-side resolution + context budget *(tasks 1–5,7 done; @Web [task 6] and autocomplete UX polish [task 8] deferred)*
   - [x] [12-4-tool-display-execution](plans/12-4-tool-display-execution.md) — D. Inline tool call rendering, run output streaming *(tasks 1-4 done; approval gates [task 5] and sandbox display [task 6] deferred)*
@@ -312,7 +312,7 @@
   - [x] [28-2-unified-tool-dispatch](plans/28-2-unified-tool-dispatch.md) — B. Multi-turn tool loop (10 turns), broader tool visibility, initial `DAN_LLM_FIRST_CHAT` rollout
   - [x] [28-3-response-actions](plans/28-3-response-actions.md) — C. File delivery events, message splitting, claim validation
   - [x] [28-4-system-prompt-design](plans/28-4-system-prompt-design.md) — D. Unified prompt with tool catalog, surface hints, anti-fabrication rules
-- [ ] [28-5-cleanup-dead-code](plans/28-5-cleanup-dead-code.md) — E. Remove dead classifier, handlers, mode-gating code *(in progress: removed unused classifier fallback/re-export, deprecated runtime queue plumbing, an unused `detect_chat_mode()` parameter, a tiny unused solver/executor interface, dead fallback-policy helpers, and the legacy prompt fallback/constants; handler, solver, and broader mode reductions now require runtime decisions)*
+- [ ] [28-5-cleanup-dead-code](plans/28-5-cleanup-dead-code.md) — E. Remove dead classifier, handlers, mode-gating code *(in progress: removed unused classifier fallback/re-export, deprecated runtime queue plumbing, an unused `detect_chat_mode()` parameter, a tiny unused solver/executor interface, dead fallback-policy helpers, and the legacy prompt fallback/constants; prompt-design cleanup also landed with compact live tool-family hints, conditional research-only guidance, and generic build clarification, while handler/solver/broader mode reductions still require runtime decisions)*
   - [x] [28-6-real-world-test-scenarios](plans/28-6-real-world-test-scenarios.md) — F. 5 scenarios, 38 tests: lit review, equity report, deep research, computer task, casual utility
 
 ## Phase 19 — Concierge-First Architecture: Memory, Reuse & Self-Evolvement
@@ -410,6 +410,32 @@
   - [x] [33-9-build-path-trustworthiness](plans/33-9-build-path-trustworthiness.md) — I. Build path simplification & trustworthiness *(completed: all tasks implemented + battery validated. Agent lane 0%→20%, flakiness 60%→30%, granular failure categories decompose 97.5% of failures. Build lane 46.7% — below 65% target due to LLM API timeout_planning [72% of failures], not pipeline issues.)*
   - [x] [33-10-semantic-correctness-patch](plans/33-10-semantic-correctness-patch.md) — J. Semantic correctness patch: fix review-loop condition polarity bug, enforce fixture expectations in eval pass/fail, eliminate unsafe tool_id/code defaults, inject tool catalog into codegen prompt, add LLM-as-judge scoring
 
+## Phase 24 — Concierge Complete Rewrite (COMPLETED)
+> Deleted the monolithic `runtime.py` (6,681→1,730 lines) and 18 satellite modules (~8,000 lines).
+> Replaced with a clean tiered dispatcher: **understand → assign → track**.
+> 23 modules remaining (11,165 lines), down from 41 (~25,000 lines). 818 tests pass, 0 failures.
+
+- [x] [34-tiered-async-dispatcher](plans/34-tiered-async-dispatcher.md) — complete concierge rewrite
+  - [x] [34-1-session-model](plans/34-1-session-model.md) — A. Session model
+  - [x] **34-5 Phase 0** — B. Relocated shared types to `models.py`
+  - [x] [34-2-triage-llm](plans/34-2-triage-llm.md) — C. Cleaned triage (self-contained, no legacy imports)
+  - [x] [34-3-tiered-execution](plans/34-3-tiered-execution.md) — D. Rewrote executors (direct `chat_manager.send_message_with_tools()`)
+  - [x] [34-4-integration](plans/34-4-integration.md) — E. Rewrote `runtime.py`, patched all imports, removed feature flag
+  - [x] [34-5-legacy-deletion](plans/34-5-legacy-deletion.md) — F. Deleted 18 source modules, 28+ test files, gutted `__init__.py`, cleaned registry
+
+## Phase 25 — Server Module Decomposition
+> Break the large server-side modules into focused, testable packages/modules. Pure structural
+> extraction — no logic changes, no API changes, and no public import-path breaks mid-phase.
+> Safe parallel lane with Plan 34: `35-3`, `35-4`, and a minimal-diff `35-1`. Do **not** land
+> `35-2` or `35-5` in parallel with `34-4`; those wait until the runtime integration settles.
+
+- [ ] [35-server-module-decomposition](plans/35-server-module-decomposition.md) — decompose `app.py`, `chat_manager.py`, and `capability_handlers.py` with compatibility facades and verification gates
+  - [ ] [35-1-extract-domain-tools](plans/35-1-extract-domain-tools.md) — A. Extract domain tools from `app.py` into `server/tools/` while keeping `_build_tool_registry()` and tool IDs stable
+  - [ ] [35-2-app-routers](plans/35-2-app-routers.md) — B. Split route handlers from `app.py` into `server/routers/` after `34-4` settles; keep OpenAPI and stream semantics unchanged
+  - [ ] [35-3-chat-manager-split](plans/35-3-chat-manager-split.md) — C. Extract support code into `server/chat/` while keeping `chat_manager.py` as a compatibility facade
+  - [ ] [35-4-capability-handlers-split](plans/35-4-capability-handlers-split.md) — D. Move handler implementations into `server/capabilities/` while keeping `capability_handlers.py` as the stable registration/import surface
+  - [ ] [35-5-app-startup-state](plans/35-5-app-startup-state.md) — E. Extract startup/lifespan into `server/startup.py` and migrate globals to typed `AppState` in staged steps
+
 ## Benchmark Suite — Prove Long-Tail Advantage
 > Empirically prove DAN's typed-graph architecture outperforms monolithic agents on complex, multi-step tasks. Published academic benchmarks + custom long-tail scenarios. Analysis framework built first.
 
@@ -425,6 +451,7 @@
 ## Backlog (unphased)
 
 ### strengthen workflow to make it more powerful and easier to use
+- [x] **`dan-up` startup timeout hardening** — launcher health polling in `src/dan/cli/up.py` now uses a real deadline instead of a brittle 15s delay table, so slow local startups are not misclassified as failures and then killed. Added `tests/test_cli/test_up.py`.
 - [x] **IDE-compatible skill store** — `SkillStore` scans `~/.dan/skills/` (user) + `.dan/skills/` (project) + legacy `DAN_CUSTOM_SKILLS_DIR` for `SKILL.md` files. Frontmatter superset of Cursor/Claude/Codex format. `/skill list|info|import|scan` commands. 48 tests.
 - [x] ~~**Next deferred cleanup slice — Phase 21 live-wiring follow-ups**~~ — goal loop execution wiring (`GoalLoopExecutor` now spawns from `/goal`, tier-specific prompts, RepairClassifier inter-attempt diagnosis, intent recognition), proactive follow-up trigger emission (run-completion and schedule-result triggers wired in app.py, surface routing via PresenceTracker, per-task opt-out), progressive response pipeline (instant acknowledgment before LLM prep, phase transitions on capability execution, heartbeat enhancement), computer-use capability tools (7 browser + 5 desktop tools registered as chat capabilities, observe-act-verify loop, foreground-only enforcement, abort/fail-safe), and centered command reference (`docs/commands.md` + generation script)
 - [x] ~~**Optimize workflow generation quality**~~ → promoted to [Phase 22](#phase-22--workflow-generation-optimization) (Plan 32)
@@ -583,7 +610,7 @@
 - [ ] [1-ui-spec](UI-plans/1-ui-spec.md) — master specification: 6 job-based modes, architecture, phasing, design principles
   - [ ] **Phase 1: Shell + Chat + Research** (prove the architecture)
     - [x] [1-1-app-shell-framework](UI-plans/1-1-app-shell-framework.md) — app shell, mode bar, mode switching, Electron setup, Operations/Chat mode wrapping *(core shell + mode switching done; panel framework, project sidebar, persistent chat bar, shared components pending)*
-    - [ ] [1-2-chat-mode](UI-plans/1-2-chat-mode.md) — full-screen chat with rich output rendering, progressive escalation to specialized modes *(layout, input, empty state, new-thread shortcut, table/code rendering, escalation banners, compact tool-call groups, Enter-send, queued-stream handoff, progress/final-response streaming fix, auto-generated thread titles, explicit user rename controls, first-turn title-trigger persistence, intermediate response autosaves, cleaned path-stripped draft titles, restart-aware disconnect messaging/reconnect recovery, collapsed same-file `file_read` cards with file links, most-recent-thread default, auto-focus input, and live progress status pill done; charts, file cards, diff view, broader conversation management, context panel pending)*
+    - [ ] [1-2-chat-mode](UI-plans/1-2-chat-mode.md) — full-screen chat with rich output rendering, progressive escalation to specialized modes *(layout, input, empty state, new-thread shortcut, table/code rendering, escalation banners, compact tool-call groups, Enter-send, queued-stream handoff, progress/final-response streaming fix, auto-generated thread titles, explicit user rename controls, first-turn title-trigger persistence, intermediate response autosaves, cleaned path-stripped draft titles, restart-aware disconnect messaging/reconnect recovery, collapsed same-file `file_read` cards with file links, most-recent-thread default, auto-focus input, live progress status pill, and tool-call text progress done; charts, file cards, diff view, broader conversation management, context panel pending)*
     - [ ] [1-3-research-mode](UI-plans/1-3-research-mode.md) — research workspace: writing pane, PDF reader, references, reviews, pipeline progress, code cells
   - [ ] Phase 2: Analytics mode + Management dashboard → (not yet planned)
   - [ ] Phase 3: Development mode → (not yet planned)

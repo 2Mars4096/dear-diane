@@ -97,3 +97,5 @@ pnpm-debug.log*
 /tests/*
 !/tests/test_domain_learning.py
 !/tests/test_chat_manager_codegen_resilience.py
+!/tests/test_concierge/
+!/tests/test_concierge/**
