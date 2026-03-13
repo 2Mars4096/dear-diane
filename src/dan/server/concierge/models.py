@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 import uuid
 from datetime import datetime, timezone
+from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -29,6 +30,7 @@ class TaskTurn(BaseModel):
     content: str
     timestamp: datetime = Field(default_factory=_utc_now)
     intent: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class Task(BaseModel):
@@ -102,3 +104,36 @@ class ConciergeState(BaseModel):
     active_goals: list[ConciergeGoal] = Field(default_factory=list)
     pending_clarifications: list[dict[str, Any]] = Field(default_factory=list)
     last_interaction_at: float = Field(default_factory=time.time)
+
+
+# ---------------------------------------------------------------------------
+# Routing and context types for the rebuilt concierge runtime.
+# ---------------------------------------------------------------------------
+
+
+class IntentCategory(str, Enum):
+    ASK = "ask"
+    AGENT = "agent"
+    PLAN = "plan"
+
+
+class RouteMode(str, Enum):
+    ASK = "ask"
+    AGENT = "agent"
+    PLAN = "plan"
+
+
+class RouteDecision(BaseModel):
+    mode: RouteMode
+    target: str = "general"
+    action_hints: list[str] = []
+    rationale: str = ""
+
+
+class ResolvedContext(BaseModel):
+    project: Project
+    task: Task
+    is_new_project: bool
+    is_new_task: bool
+    confidence: float
+    domain: str | None = None

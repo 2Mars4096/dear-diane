@@ -11,9 +11,8 @@ from typing import Any, AsyncIterator
 from dan.server.chat_manager import ChatCompleteEvent, ChatQueuedEvent, ChatStreamEvent
 
 from .command_registry import get_default_registry
-from .context_resolver import ResolvedContext
 from .identity import format_prefix
-from .models import SurfaceMessage
+from .models import ResolvedContext, SurfaceMessage
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +86,7 @@ class ConcurrentDispatcher:
         4. Resources exhausted (max concurrent reached) -> queue with position info.
         """
         self._reap_stale_buses()
-        context = self._concierge.context_resolver.resolve(msg)
+        context = self._concierge._resolve_context(msg)
         project_id = context.project.project_id
 
         if _is_bypass_command(msg):
@@ -280,7 +279,7 @@ class ConcurrentDispatcher:
             else len(self._active_tasks) < self._max_concurrent
         ):
             queued_msg, channel_id = self._global_queue.get_nowait()
-            context = self._concierge.context_resolver.resolve(queued_msg)
+            context = self._concierge._resolve_context(queued_msg)
             project_id = context.project.project_id
             bus = self._get_or_create_bus(channel_id)
 

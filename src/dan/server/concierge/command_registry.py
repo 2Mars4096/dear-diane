@@ -375,15 +375,6 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         group="workflow",
     ))
     registry.register(CommandDescriptor(
-        name="/save",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="[name]",
-        help_text="Save the current workflow",
-        group="workflow",
-        handler="dan.server.concierge.runtime.Concierge._handle_save_command",
-    ))
-    registry.register(CommandDescriptor(
         name="/saveas",
         kind="repl",
         surfaces=["cli"],
@@ -441,182 +432,6 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         examples=["/build Research X and summarize Y", "/build Create a data pipeline"],
         group="workflow",
     ))
-    registry.register(CommandDescriptor(
-        name="/build-status",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Show build session status",
-        group="workflow",
-        handler="dan.server.concierge.runtime.Concierge._handle_build_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/build-stop",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Stop active build session",
-        group="workflow",
-        handler="dan.server.concierge.runtime.Concierge._handle_build_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/build-logs",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Show build session logs",
-        group="workflow",
-        handler="dan.server.concierge.runtime.Concierge._handle_build_command",
-    ))
-
-    # -- Model & Config commands -------------------------------------------
-    registry.register(CommandDescriptor(
-        name="/model",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="[model_name]",
-        help_text="Show or change the current LLM model",
-        group="model_config",
-        handler="dan.server.concierge.runtime.Concierge._handle_model_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/cost",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Show session cost summary",
-        group="model_config",
-        handler="dan.server.concierge.runtime.Concierge._handle_cost_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/analytics",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="[project <name>] [--since Nd] [--by model|surface|day|intent] | export [--format jsonl|csv]",
-        subcommands={
-            "project": SubcommandDescriptor(name="project", args_schema="<name> [--since Nd]", help_text="Project-specific usage report"),
-            "export": SubcommandDescriptor(name="export", args_schema="[--since Nd] [--format jsonl|csv]", help_text="Export raw telemetry events"),
-        },
-        help_text="Show usage analytics (tokens, cost, timing)",
-        group="model_config",
-        handler="dan.server.concierge.runtime.Concierge._handle_analytics_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/status",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Show system status and active runs",
-        group="model_config",
-        handler="dan.server.concierge.runtime.Concierge._handle_status_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/retry",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Retry the last failed request",
-        group="model_config",
-        handler="dan.server.concierge.runtime.Concierge._handle_retry_command",
-    ))
-
-    # -- Project commands --------------------------------------------------
-    registry.register(CommandDescriptor(
-        name="/project",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="[list|info [name]|set <key> <value>|memory [name]|delete <name>]",
-        subcommands={
-            "list": SubcommandDescriptor(name="list", help_text="List all projects on this surface"),
-            "info": SubcommandDescriptor(name="info", args_schema="[name]", help_text="Show project details"),
-            "set": SubcommandDescriptor(name="set", args_schema="<key> <value>", help_text="Store a project-specific fact"),
-            "memory": SubcommandDescriptor(name="memory", args_schema="[name]", help_text="Browse project memories"),
-            "delete": SubcommandDescriptor(name="delete", args_schema="<name>", help_text="Mark project completed"),
-        },
-        help_text="Manage projects: list all, inspect details, store project-specific facts, browse project memories",
-        group="project",
-        handler="dan.server.concierge.runtime.Concierge._handle_project_command",
-    ))
-
-    # -- Memory commands ---------------------------------------------------
-    registry.register(CommandDescriptor(
-        name="/memory-stats",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Show memory usage statistics",
-        group="memory",
-        handler="dan.server.concierge.runtime.Concierge._handle_memory_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/memory-search",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="<query>",
-        help_text="Search stored memories",
-        group="memory",
-        handler="dan.server.concierge.runtime.Concierge._handle_memory_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/memory-delete",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="<memory_id>",
-        help_text="Delete a specific memory item",
-        group="memory",
-        handler="dan.server.concierge.runtime.Concierge._handle_memory_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/memory-forget",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="<keyword>",
-        help_text="Forget memories matching a keyword",
-        group="memory",
-        handler="dan.server.concierge.runtime.Concierge._handle_memory_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/memory-confirm",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Confirm pending preference suggestions",
-        group="memory",
-        hidden=True,
-        handler="dan.server.concierge.runtime.Concierge._handle_memory_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/memory-reject",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Reject pending preference suggestions",
-        group="memory",
-        hidden=True,
-        handler="dan.server.concierge.runtime.Concierge._handle_memory_command",
-    ))
-
-    # -- Integration commands ----------------------------------------------
-    registry.register(CommandDescriptor(
-        name="/mcp",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="<install|list|remove|tools> [args]",
-        help_text="Manage MCP tool servers",
-        group="integration",
-        handler="dan.server.concierge.runtime.Concierge._handle_mcp_command",
-        subcommands={
-            "install": SubcommandDescriptor(
-                name="install",
-                args_schema="<package_or_name>",
-                help_text="Install an MCP server package",
-            ),
-            "list": SubcommandDescriptor(
-                name="list",
-                help_text="List connected MCP servers",
-            ),
-            "remove": SubcommandDescriptor(
-                name="remove",
-                args_schema="<server_name>",
-                help_text="Remove an MCP server",
-            ),
-            "tools": SubcommandDescriptor(
-                name="tools",
-                help_text="List tools from all MCP servers",
-            ),
-        },
-    ))
 
     # -- Skill commands ----------------------------------------------------
     registry.register(CommandDescriptor(
@@ -667,15 +482,6 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         help_text="Send you a file",
         group="file_navigation",
     ))
-    registry.register(CommandDescriptor(
-        name="/cancel",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="[run_id|latest|last_failed|paused]",
-        help_text="Cancel the current run or task",
-        group="session",
-        handler="dan.server.concierge.runtime.Concierge._handle_cancel_command",
-    ))
 
     # -- Session commands --------------------------------------------------
     registry.register(CommandDescriptor(
@@ -693,38 +499,6 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         help_text="Exit the chat session",
         group="session",
         aliases=["/quit"],
-    ))
-
-    # ======================================================================
-    # Placeholder registrations for planned commands (31-6 through 31-17).
-    # Handlers will be wired when each subplan is implemented.
-    # ======================================================================
-
-    # 31-6: Goal-Oriented Loop
-    registry.register(CommandDescriptor(
-        name="/goal",
-        kind="chat",
-        surfaces=["all"],
-        args_schema='"<metric> <op> <target>" [--timeout <duration>] [--eval <mode>]',
-        help_text="Start a goal-oriented loop: iterate until metric met or deadline expires",
-        group="scheduling",
-        handler="dan.server.concierge.goal_loop.handle_goal_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/goal-status",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Show goal loop progress",
-        group="scheduling",
-        handler="dan.server.concierge.goal_loop.handle_goal_status_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/goal-stop",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Stop active goal loop and return best result",
-        group="scheduling",
-        handler="dan.server.concierge.goal_loop.handle_goal_stop_command",
     ))
 
     # 31-7: Scheduled Tasks
@@ -773,16 +547,6 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         handler="dan.engine.plan_scheduler.handle_plan_command",
     ))
 
-    # 31-9: Completion Guard
-    registry.register(CommandDescriptor(
-        name="/completion",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Show completion check statistics",
-        group="safety",
-        handler="dan.server.concierge.completion_guard.handle_completion_command",
-    ))
-
     # 31-10: PII Tokenization
     registry.register(CommandDescriptor(
         name="/pii",
@@ -811,43 +575,6 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         },
     ))
 
-    # 31-11: Cross-Session Resume
-    registry.register(CommandDescriptor(
-        name="/resume",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="[task_name]",
-        help_text="Resume a paused or previous task",
-        group="continuity",
-        handler="dan.server.concierge.resume.handle_resume_command",
-    ))
-
-    # 31-12: Proactive Follow-Up
-    registry.register(CommandDescriptor(
-        name="/follow-ups",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="[on|off]",
-        help_text="List or toggle proactive follow-ups",
-        group="continuity",
-        handler="dan.server.concierge.follow_up.handle_follow_ups_command",
-        subcommands={
-            "on": SubcommandDescriptor(name="on", help_text="Enable follow-ups"),
-            "off": SubcommandDescriptor(name="off", help_text="Disable follow-ups"),
-        },
-    ))
-
-    # 31-13: Multi-Surface Continuity
-    registry.register(CommandDescriptor(
-        name="/sync",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="[--allow-group]",
-        help_text="Pull latest context from all surfaces for current project",
-        group="continuity",
-        handler="dan.server.concierge.continuity.handle_sync_command",
-    ))
-
     # 31-14: Progressive Response UX
     registry.register(CommandDescriptor(
         name="/progress",
@@ -857,67 +584,6 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         help_text="Set progress verbosity level",
         group="progress",
         handler="dan.server.concierge.progress_ux.handle_progress_command",
-    ))
-
-    # 31-15: Learning & Evolution Optimization
-    registry.register(CommandDescriptor(
-        name="/corrections",
-        kind="chat",
-        surfaces=["all"],
-        help_text="List recent correction-driven learning events",
-        group="learning",
-        handler="dan.server.concierge.learning.handle_corrections_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/adaptations",
-        kind="chat",
-        surfaces=["all"],
-        help_text="List pending adaptations with confidence and approval status",
-        group="learning",
-        handler="dan.server.concierge.learning.handle_adaptations_command",
-    ))
-
-    # -- Behavior commands (31-22) -----------------------------------------
-    registry.register(CommandDescriptor(
-        name="/changes",
-        kind="chat",
-        surfaces=["all"],
-        help_text="List recent behavioral adaptations",
-        group="behavior",
-        handler="dan.server.concierge.learning.handle_changes_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/revert",
-        kind="chat",
-        surfaces=["all"],
-        args_schema="<id>",
-        help_text="Roll back a specific behavior change",
-        group="behavior",
-        handler="dan.server.concierge.learning.handle_revert_command",
-    ))
-    registry.register(CommandDescriptor(
-        name="/behavior",
-        kind="chat",
-        surfaces=["all"],
-        help_text="Inspect current behavior state",
-        group="behavior",
-        subcommands={
-            "--key": SubcommandDescriptor(
-                name="--key",
-                args_schema="<key>",
-                help_text="Show value, version, and history for a specific key",
-            ),
-            "--seeds": SubcommandDescriptor(
-                name="--seeds",
-                help_text="Compare current values to seed defaults",
-            ),
-            "--reset": SubcommandDescriptor(
-                name="--reset",
-                args_schema="<key>",
-                help_text="Restore a key to its seed default",
-            ),
-        },
-        handler="dan.server.concierge.learning.handle_behavior_command",
     ))
 
     # 31-17: Computer Control & Browser Automation

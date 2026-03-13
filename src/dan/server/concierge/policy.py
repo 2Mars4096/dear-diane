@@ -7,7 +7,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from .classifier import IntentCategory
+from .models import IntentCategory
 
 
 class ActionPolicy(str, Enum):
