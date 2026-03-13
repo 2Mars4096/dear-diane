@@ -1,0 +1,18 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "test_read_transform_write_1773370862",
+    "description": "",
+    "created_at": "2026-03-13T11:01:02Z",
+    "updated_at": "2026-03-13T11:01:02Z",
+    "tags": []
+  },
+  "nodes": [],
+  "edges": [],
+  "sub_graphs": {},
+  "entry_points": [],
+  "exit_points": [],
+  "shared_context": [],
+  "artifact_refs": [],
+  "hyperedges": []
+}
