@@ -102,3 +102,14 @@ body {
 .dan-progress-pulse {
   animation: dan-progress-fade 2s ease-in-out infinite;
 }
+
+/* -- Thread list: background stream indicator ------------------------------ */
+
+@keyframes dan-bg-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.8); }
+}
+
+.dan-bg-stream-pulse {
+  animation: dan-bg-pulse 1.5s ease-in-out infinite;
+}

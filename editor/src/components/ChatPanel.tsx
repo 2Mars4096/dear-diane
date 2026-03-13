@@ -26,6 +26,8 @@ import {
   Bug,
   CheckCircle2,
   PencilLine,
+  ArrowUp,
+  GripVertical,
 } from "lucide-react";
 import { useGraphStore } from "../store/useGraphStore";
 import type { ChatMessage, ChatStreamEvent, ToolCallInfo } from "../types/chat";
@@ -63,6 +65,13 @@ import {
 } from "../lib/chatMessagePersistence";
 import { createThreadPersistenceCoordinator } from "../lib/threadPersistenceCoordinator";
 import { describeLatestToolProgress } from "../lib/toolCallPresentation";
+import {
+  detachToBackground,
+  getBackgroundThreadIds,
+  isStreamingInBackground,
+  subscribe as subscribeBackgroundStreams,
+  shutdownAll as shutdownAllBackgroundStreams,
+} from "../lib/backgroundStreamRegistry";
 import {
   getStreamDisconnectError,
   getStreamReconnectDelayMs,
@@ -188,6 +197,12 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   const [mutationConfirmMode, setMutationConfirmMode] = useState<boolean>(() =>
     readMutationConfirmPreference(),
   );
+  const [pendingQueue, setPendingQueue] = useState<
+    Array<{ id: string; content: string; timestamp: number }>
+  >([]);
+  const pendingQueueRef = useRef(pendingQueue);
+  pendingQueueRef.current = pendingQueue;
+  const sendMessageRef = useRef<((text: string) => void) | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<
     Array<{
@@ -207,6 +222,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   const applyingRef = useRef(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const activeAssistantIdRef = useRef<string | null>(null);
   const runStreamHandoffRef = useRef(false);
   const dragging = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
@@ -240,6 +256,59 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   graphIdRef.current = graphId;
 
   activeThreadIdRef.current = activeThreadId;
+
+  const detachCurrentStream = useCallback(() => {
+    const ws = wsRef.current;
+    const threadId = activeThreadIdRef.current;
+    const assistantId = activeAssistantIdRef.current;
+    if (!ws || ws.readyState >= WebSocket.CLOSING || !threadId || !assistantId) return;
+    const wfId = graphIdRef.current;
+    if (!wfId) return;
+    detachToBackground({
+      ws,
+      channelId: activeChannelIdRef.current ?? "",
+      threadId,
+      workflowId: wfId,
+      assistantMessageId: assistantId,
+      messages: messagesRef.current,
+    });
+    wsRef.current = null;
+    activeAssistantIdRef.current = null;
+  }, []);
+
+  const [bgStreamIds, setBgStreamIds] = useState<Set<string>>(() => getBackgroundThreadIds());
+  const bgStreamReloadRef = useRef<((wfId: string) => void) | null>(null);
+  useEffect(() => {
+    let prevIds = getBackgroundThreadIds();
+    return subscribeBackgroundStreams(() => {
+      const nextIds = getBackgroundThreadIds();
+      setBgStreamIds(nextIds);
+      const tid = activeThreadIdRef.current;
+      const wfId = graphIdRef.current;
+      if (tid && prevIds.has(tid) && !nextIds.has(tid) && wfId) {
+        api.getChatThread(wfId, tid).then((data) => {
+          const backendMsgs = (data.messages ?? []) as Record<string, unknown>[];
+          setMessages(backendMsgs.map(fromBackendMessage));
+          setIsStreaming(false);
+          if (data.title) setThreadTitle(data.title as string);
+        }).catch(() => {});
+        bgStreamReloadRef.current?.(wfId);
+      }
+      prevIds = nextIds;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!isStreaming) {
+      activeAssistantIdRef.current = null;
+      const q = pendingQueueRef.current;
+      if (q.length > 0) {
+        const next = q[0];
+        setPendingQueue((prev) => prev.slice(1));
+        setTimeout(() => sendMessageRef.current?.(next.content), 100);
+      }
+    }
+  }, [isStreaming]);
 
   // -------------------------------------------------------------------------
   // Thread persistence helpers
@@ -325,6 +394,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
       setLoadingThreads(false);
     }
   }, []);
+  bgStreamReloadRef.current = fetchThreads;
 
   const refreshActiveThreadTitle = useCallback(
     async (wfId: string, threadId: string) => {
@@ -357,6 +427,9 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
 
   const loadThread = useCallback(
     async (wfId: string, threadId: string) => {
+      if (isStreaming) detachCurrentStream();
+      setIsStreaming(false);
+      setPendingQueue([]);
       try {
         const data = await api.getChatThread(wfId, threadId);
         const backendMsgs = (data.messages ?? []) as Record<string, unknown>[];
@@ -367,12 +440,15 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
         setError(null);
         const storedMode = (data.mode as ChatMode) || "agent";
         useGraphStore.getState().setChatMode(storedMode);
+        if (isStreamingInBackground(threadId)) {
+          setIsStreaming(true);
+        }
         requestAnimationFrame(() => textareaRef.current?.focus());
       } catch (err) {
         console.warn("Failed to load thread:", err);
       }
     },
-    [],
+    [isStreaming, detachCurrentStream],
   );
 
   const probeBackendAvailability = useCallback(async () => {
@@ -619,15 +695,21 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
     setMentionAnchor(null);
   }, []);
 
-  // Clean up WebSocket on unmount
+  // Clean up all WebSockets + background streams on unmount / window close
   useEffect(() => {
-    return () => {
+    const onBeforeUnload = () => {
       flushScheduledThreadPersist(
         graphIdRef.current,
         activeThreadIdRef.current,
         messagesRef.current,
       );
       wsRef.current?.close();
+      shutdownAllBackgroundStreams();
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      onBeforeUnload();
     };
   }, [flushScheduledThreadPersist]);
 
@@ -876,7 +958,16 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   const sendMessage = useCallback(
     async (text?: string, historyOverride?: ChatMessage[], modeOverride?: ChatMode) => {
       const content = (text ?? inputText).trim();
-      if (!content || isStreaming) return;
+      if (!content) return;
+
+      if (isStreaming && !historyOverride) {
+        setPendingQueue((q) => [
+          ...q,
+          { id: crypto.randomUUID(), content, timestamp: Date.now() },
+        ]);
+        setInputText("");
+        return;
+      }
 
       let threadId = activeThreadIdRef.current;
       if (!threadId && graphId) {
@@ -901,6 +992,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
       };
 
       const assistantId = crypto.randomUUID();
+      activeAssistantIdRef.current = assistantId;
       const assistantMsg: ChatMessage = {
         id: assistantId,
         role: "assistant",
@@ -1283,10 +1375,11 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                             status: "running" as const,
                           },
                         ];
+                        const prog = describeLatestToolProgress(nextToolCalls);
                         return {
                           ...m,
-                          progressStatus:
-                            describeLatestToolProgress(nextToolCalls) ?? m.progressStatus,
+                          progressStatus: prog?.text ?? m.progressStatus,
+                          progressFilePath: prog?.filePath ?? m.progressFilePath,
                           toolCalls: nextToolCalls,
                         };
                       })()
@@ -1314,10 +1407,11 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                               }
                             : tc,
                         );
+                        const prog = describeLatestToolProgress(nextToolCalls);
                         return {
                           ...m,
-                          progressStatus:
-                            describeLatestToolProgress(nextToolCalls) ?? m.progressStatus,
+                          progressStatus: prog?.text ?? m.progressStatus,
+                          progressFilePath: prog?.filePath ?? m.progressFilePath,
                           toolCalls: nextToolCalls,
                         };
                       })()
@@ -1528,6 +1622,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
       fetchThreads,
     ],
   );
+  sendMessageRef.current = sendMessage;
 
   const retryLast = useCallback(() => {
     const msgs = messagesRef.current;
@@ -1631,14 +1726,17 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   // -------------------------------------------------------------------------
 
   const handleNewChat = useCallback(() => {
+    if (isStreaming) detachCurrentStream();
     setActiveThreadId(null);
     setMessages([]);
     setThreadTitle("");
     setShowThreadList(false);
     setError(null);
+    setIsStreaming(false);
     setSessionMarkers({});
+    setPendingQueue([]);
     requestAnimationFrame(() => textareaRef.current?.focus());
-  }, []);
+  }, [isStreaming, detachCurrentStream]);
 
   useEffect(() => {
     if (!fullScreen) return;
@@ -2278,7 +2376,9 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
             onKeyUp={checkMention}
             onClick={checkMention}
             placeholder={
-              fullScreen
+              isStreaming
+                ? "Type to queue next message…"
+                : fullScreen
                 ? "Message DAN… (@ to mention, / for commands)"
                 : chatMode === "ask" ? "Ask about your workflow…"
                 : chatMode === "plan" ? "Describe what changes to plan…"
@@ -2287,8 +2387,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                 : "Ask about your workflow… (@ to mention)"
             }
             rows={1}
-            disabled={isStreaming}
-            className={`flex-1 resize-none text-gray-900 placeholder-gray-400 bg-transparent outline-none max-h-[160px] leading-snug disabled:opacity-50 ${fullScreen ? "text-[15px] min-h-[28px]" : "text-sm min-h-[24px]"}`}
+            className={`flex-1 resize-none text-gray-900 placeholder-gray-400 bg-transparent outline-none max-h-[160px] leading-snug ${fullScreen ? "text-[15px] min-h-[28px]" : "text-sm min-h-[24px]"}`}
           />
           {mentionQuery !== null && (
             <MentionAutocomplete
@@ -2299,15 +2398,26 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
             />
           )}
           {isStreaming || isRunStreaming ? (
-            isStreaming && activeChannelId ? (
-              <button onClick={handleStop} className="text-red-500 hover:text-red-700 transition-colors p-0.5 flex-shrink-0" title="Stop generation">
-                <Square size={fullScreen ? 18 : 16} />
-              </button>
-            ) : (
-              <span className="text-gray-300 p-0.5 flex-shrink-0" title="Waiting for run updates">
-                <Loader2 size={fullScreen ? 18 : 16} className="animate-spin" />
-              </span>
-            )
+            <div className="flex items-center gap-1 flex-shrink-0">
+              {inputText.trim() && (
+                <button
+                  onClick={() => sendMessage()}
+                  className="text-indigo-500 hover:text-indigo-700 transition-colors p-0.5"
+                  title="Queue message"
+                >
+                  <ArrowUp size={fullScreen ? 18 : 16} />
+                </button>
+              )}
+              {isStreaming && activeChannelId ? (
+                <button onClick={handleStop} className="text-red-500 hover:text-red-700 transition-colors p-0.5" title="Stop generation">
+                  <Square size={fullScreen ? 18 : 16} />
+                </button>
+              ) : (
+                <span className="text-gray-300 p-0.5" title="Waiting for run updates">
+                  <Loader2 size={fullScreen ? 18 : 16} className="animate-spin" />
+                </span>
+              )}
+            </div>
           ) : (
             <button
               onClick={() => sendMessage()}
@@ -2319,8 +2429,63 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           )}
         </div>
         <div className="text-[10px] text-gray-400 mt-1.5 px-1">
-          Enter to send · Shift+Enter for newline{fullScreen ? " · Cmd+K command palette" : ""}
+          {isStreaming
+            ? "Enter to queue · Shift+Enter for newline" + (fullScreen ? " · Cmd+K command palette" : "")
+            : "Enter to send · Shift+Enter for newline" + (fullScreen ? " · Cmd+K command palette" : "")}
         </div>
+        {pendingQueue.length > 0 && (
+          <div className="mt-2 space-y-1">
+            <div className="text-[10px] font-medium text-gray-500 px-1">
+              Queued messages ({pendingQueue.length})
+            </div>
+            {pendingQueue.map((item, idx) => (
+              <div
+                key={item.id}
+                className="flex items-center gap-1.5 bg-gray-50 rounded-lg px-2.5 py-1.5 group"
+              >
+                <GripVertical size={12} className="text-gray-300 flex-shrink-0" />
+                <span className="flex-1 text-xs text-gray-700 truncate min-w-0">
+                  {item.content}
+                </span>
+                <div className="flex items-center gap-0.5 flex-shrink-0">
+                  <button
+                    onClick={() => {
+                      setPendingQueue((q) => q.filter((_, i) => i !== idx));
+                      setInputText(item.content);
+                      requestAnimationFrame(() => textareaRef.current?.focus());
+                    }}
+                    className="text-gray-400 hover:text-indigo-500 p-0.5 rounded transition-colors"
+                    title="Edit this message"
+                  >
+                    <PencilLine size={11} />
+                  </button>
+                  {idx > 0 && (
+                    <button
+                      onClick={() => {
+                        setPendingQueue((q) => {
+                          const next = [...q];
+                          [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                          return next;
+                        });
+                      }}
+                      className="text-gray-400 hover:text-indigo-500 p-0.5 rounded transition-colors"
+                      title="Move up in queue"
+                    >
+                      <ArrowUp size={11} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setPendingQueue((q) => q.filter((_, i) => i !== idx))}
+                    className="text-gray-400 hover:text-red-500 p-0.5 rounded transition-colors"
+                    title="Remove from queue"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -2346,6 +2511,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               searchResults={searchResults}
               isSearching={isSearching}
               onSearch={handleSearch}
+              bgStreamIds={bgStreamIds}
             />
           </div>
         )}
@@ -2383,6 +2549,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
             searchResults={searchResults}
             isSearching={isSearching}
             onSearch={handleSearch}
+            bgStreamIds={bgStreamIds}
           />
         ) : (
           <>
@@ -2414,6 +2581,7 @@ function ThreadListView({
   searchResults,
   isSearching,
   onSearch,
+  bgStreamIds,
 }: {
   threads: ChatThreadSummary[];
   loading: boolean;
@@ -2434,6 +2602,7 @@ function ThreadListView({
   }>;
   isSearching: boolean;
   onSearch: (query: string) => void;
+  bgStreamIds?: Set<string>;
 }) {
   const sortedThreads = [...threads].sort((a, b) => {
     const aPinned = (a as ChatThreadSummary & { pinned?: boolean }).pinned ? 1 : 0;
@@ -2556,6 +2725,7 @@ function ThreadListView({
                   (t as ChatThreadSummary & { pinned?: boolean }).pinned ??
                   false
                 }
+                isStreamingInBg={bgStreamIds?.has(t.id) ?? false}
               />
             ))}
           </div>
@@ -2572,6 +2742,7 @@ function ThreadRow({
   onRename,
   onPin,
   pinned,
+  isStreamingInBg,
 }: {
   thread: ChatThreadSummary;
   onSelect: () => void;
@@ -2579,6 +2750,7 @@ function ThreadRow({
   onRename: (title: string) => void;
   onPin: () => void;
   pinned: boolean;
+  isStreamingInBg?: boolean;
 }) {
   const title = getDisplayThreadTitle(thread.title, "Untitled chat");
   const displayTitle = title.length > 40 ? title.slice(0, 40) + "…" : title;
@@ -2603,6 +2775,9 @@ function ThreadRow({
       className="group flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors"
     >
       {pinned && <Pin size={10} className="text-indigo-400 flex-shrink-0" />}
+      {isStreamingInBg && (
+        <span className="flex-shrink-0 w-2 h-2 rounded-full bg-indigo-400 dan-bg-stream-pulse" title="Working in background" />
+      )}
       <div className="flex-1 min-w-0">
         {editing ? (
           <input

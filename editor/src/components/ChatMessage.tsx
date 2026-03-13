@@ -15,6 +15,7 @@ import { useGraphStore } from "../store/useGraphStore";
 import { groupToolCallsForDisplay } from "../lib/toolCallPresentation";
 import ToolCallCard from "./ToolCallCard";
 import RunOutputBlock from "./RunOutputBlock";
+import { nativeShell } from "../lib/electronBridge";
 
 // ---------------------------------------------------------------------------
 // Markdown → HTML  (marked + custom renderer)
@@ -83,7 +84,14 @@ const _markedInstance = (() => {
   renderer.codespan = ({ text }: { text: string }) =>
     `<code class="bg-gray-100 text-gray-800 px-1 py-0.5 rounded text-[12px] font-mono">${text}</code>`;
 
-  renderer.heading = ({ text, depth }: { text: string; depth: number }) => {
+  // marked v17: renderer methods receive raw token objects, not pre-rendered
+  // HTML strings. Methods that render child content must use this.parser.
+  // Regular `function` expressions (not arrows) are required so `this` binds
+  // to the Renderer instance where `this.parser` lives.
+
+  renderer.heading = function(token: any) {
+    const text = this.parser.parseInline(token.tokens);
+    const depth: number = token.depth;
     const sizes = [
       "text-base font-bold",
       "text-sm font-bold",
@@ -95,59 +103,83 @@ const _markedInstance = (() => {
     return `<h${depth} class="${sizes[depth - 1]} mt-3 mb-1">${text}</h${depth}>`;
   };
 
-  renderer.table = ({ header, rows }: { header: string; rows: string }) =>
-    `<div class="my-2 overflow-x-auto rounded-lg border border-gray-200">` +
-    `<table class="min-w-full divide-y divide-gray-200">` +
-    `<thead class="bg-gray-50">${header}</thead>` +
-    `<tbody>${rows}</tbody></table></div>`;
+  renderer.table = function(token: any) {
+    let headerCells = "";
+    for (const cell of token.header) headerCells += this.tablecell(cell);
+    const headerRow = this.tablerow({ text: headerCells });
+
+    let bodyRows = "";
+    for (const row of token.rows) {
+      let rowCells = "";
+      for (const cell of row) rowCells += this.tablecell(cell);
+      bodyRows += this.tablerow({ text: rowCells });
+    }
+
+    return (
+      `<div class="my-2 overflow-x-auto rounded-lg border border-gray-200">` +
+      `<table class="min-w-full divide-y divide-gray-200">` +
+      `<thead class="bg-gray-50">${headerRow}</thead>` +
+      (bodyRows ? `<tbody>${bodyRows}</tbody>` : "") +
+      `</table></div>`
+    );
+  };
 
   renderer.tablerow = ({ text }: { text: string }) =>
     `<tr class="hover:bg-gray-50 transition-colors">${text}</tr>`;
 
-  renderer.tablecell = ({
-    text,
-    header,
-    align,
-  }: {
-    text: string;
-    header: boolean;
-    align: "center" | "left" | "right" | null;
-  }) => {
-    const tag = header ? "th" : "td";
-    const cls = header
+  renderer.tablecell = function(token: any) {
+    const content = this.parser.parseInline(token.tokens);
+    const tag = token.header ? "th" : "td";
+    const cls = token.header
       ? "px-3 py-2 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-200"
       : "px-3 py-2 text-sm border-b border-gray-100";
-    const style = align ? ` style="text-align:${align}"` : "";
-    return `<${tag} class="${cls}"${style}>${text}</${tag}>`;
+    const style = token.align ? ` style="text-align:${token.align}"` : "";
+    return `<${tag} class="${cls}"${style}>${content}</${tag}>`;
   };
 
-  renderer.blockquote = ({ text }: { text: string }) =>
-    `<blockquote class="my-2 pl-3 border-l-2 border-indigo-300 text-gray-600 italic">${text}</blockquote>`;
+  renderer.blockquote = function(token: any) {
+    const body = this.parser.parse(token.tokens);
+    return `<blockquote class="my-2 pl-3 border-l-2 border-indigo-300 text-gray-600 italic">${body}</blockquote>`;
+  };
 
-  renderer.list = ({ body, ordered }: { body: string; ordered: boolean }) => {
-    const tag = ordered ? "ol" : "ul";
-    const cls = ordered
+  renderer.list = function(token: any) {
+    let body = "";
+    for (const item of token.items) body += this.listitem(item);
+    const tag = token.ordered ? "ol" : "ul";
+    const cls = token.ordered
       ? "my-1 ml-4 list-decimal space-y-0.5"
       : "my-1 ml-4 list-disc space-y-0.5";
-    return `<${tag} class="${cls}">${body}</${tag}>`;
+    const startAttr = token.ordered && token.start !== 1 ? ` start="${token.start}"` : "";
+    return `<${tag} class="${cls}"${startAttr}>${body}</${tag}>`;
   };
 
-  renderer.listitem = ({ text }: { text: string }) => `<li>${text}</li>`;
+  renderer.listitem = function(item: any) {
+    let text = this.parser.parse(item.tokens);
+    if (item.task) {
+      const checkbox = this.checkbox({ type: "checkbox", raw: "", checked: !!item.checked });
+      text = checkbox + text;
+    }
+    return `<li>${text}</li>`;
+  };
 
-  renderer.paragraph = ({ text }: { text: string }) =>
-    `<p class="my-1">${text}</p>`;
+  renderer.paragraph = function(token: any) {
+    const text = this.parser.parseInline(token.tokens);
+    return `<p class="my-1">${text}</p>`;
+  };
 
   renderer.hr = () => `<hr class="my-3 border-gray-200" />`;
 
-  renderer.link = ({ href, text }: { href: string; text: string }) => {
+  renderer.link = function(token: any) {
+    const text = this.parser.parseInline(token.tokens);
+    const href: string = token.href ?? "";
     if (/^\s*javascript\s*:/i.test(href)) return escapeHtml(text);
     const safeHref = /^(https?:|mailto:|#)/.test(href) ? href : "#";
     return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline hover:text-indigo-800">${text}</a>`;
   };
 
-  renderer.strong = ({ text }: { text: string }) => `<strong>${text}</strong>`;
-  renderer.em = ({ text }: { text: string }) => `<em>${text}</em>`;
-  renderer.del = ({ text }: { text: string }) => `<del>${text}</del>`;
+  renderer.strong = function(token: any) { return `<strong>${this.parser.parseInline(token.tokens)}</strong>`; };
+  renderer.em = function(token: any) { return `<em>${this.parser.parseInline(token.tokens)}</em>`; };
+  renderer.del = function(token: any) { return `<del>${this.parser.parseInline(token.tokens)}</del>`; };
 
   return new Marked({ renderer, async: false });
 })();
@@ -529,12 +561,23 @@ export default function ChatMessageBubble({
             : "bg-gray-50 text-gray-900 rounded-2xl rounded-bl-md"
         } px-3.5 py-2.5 shadow-xs${isStreaming && !isUser ? " dan-streaming-bubble" : ""}`}
       >
-        {showLoadingPlaceholder ? (
-          <div className="flex items-center gap-1.5 py-0.5 text-xs text-gray-400 dan-progress-pulse">
+        {isStreaming && !isUser && (message.progressStatus || showLoadingPlaceholder) && (
+          <div className="flex items-center gap-1.5 py-0.5 mb-1 text-xs text-gray-400 dan-progress-pulse">
             <Loader2 size={11} className="animate-spin flex-shrink-0" />
             <span className="truncate">{message.progressStatus || "Working..."}</span>
+            {message.progressFilePath && (
+              <button
+                onClick={() => nativeShell.openPath(message.progressFilePath!)}
+                className="flex-shrink-0 text-indigo-400 hover:text-indigo-600 transition-colors underline"
+                title={message.progressFilePath}
+              >
+                open
+              </button>
+            )}
           </div>
-        ) : isUser && !hasMentions ? (
+        )}
+
+        {isUser && !hasMentions ? (
           <p className="text-sm whitespace-pre-wrap">{message.content}</p>
         ) : isUser && hasMentions ? (
           <div
@@ -542,13 +585,13 @@ export default function ChatMessageBubble({
             className="text-sm whitespace-pre-wrap"
             dangerouslySetInnerHTML={{ __html: html }}
           />
-        ) : (
+        ) : message.content ? (
           <div
             onClick={handleClick}
             className="text-sm leading-relaxed [&_pre]:my-2 [&_code]:break-words [&_a]:underline"
             dangerouslySetInnerHTML={{ __html: html }}
           />
-        )}
+        ) : null}
 
         {message.toolCalls && message.toolCalls.length > 0 && (
           <ToolCallGroup
@@ -557,13 +600,6 @@ export default function ChatMessageBubble({
             mutationStatus={message.mutationStatus}
             onPreviewMutation={onPreviewMutation ? () => onPreviewMutation(message) : undefined}
           />
-        )}
-
-        {message.progressStatus && isStreaming && (
-          <div className="flex items-center gap-1.5 mt-1.5 text-xs text-gray-400 dan-progress-pulse">
-            <Loader2 size={11} className="animate-spin flex-shrink-0" />
-            <span className="truncate">{message.progressStatus}</span>
-          </div>
         )}
 
         {message.attachments && message.attachments.length > 0 && (
