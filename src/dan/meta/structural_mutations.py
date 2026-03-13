@@ -500,10 +500,13 @@ def resolve_node(graph: dict, reference_text: str) -> list[str]:
     nodes = graph.get("nodes", [])
     candidates: list[tuple[float, str]] = []
 
+    ref_words = set(re.split(r"[\s_\-]+", text_lower)) - {"the", "a", "an", "step", "node", "stage"}
+
     for node in nodes:
         nid = node.get("id", "")
         name = node.get("config", {}).get("name", nid)
         prompt = node.get("config", {}).get("prompt_template", "")
+        node_words = set(re.split(r"[\s_\-]+", (name or nid).lower()))
 
         score = 0.0
 
@@ -517,6 +520,9 @@ def resolve_node(graph: dict, reference_text: str) -> list[str]:
             score = 0.65
         elif prompt and text_lower in prompt.lower():
             score = 0.4
+        elif ref_words and node_words and ref_words & node_words:
+            overlap = len(ref_words & node_words) / max(len(ref_words), 1)
+            score = 0.3 + overlap * 0.3
 
         if score > 0:
             candidates.append((score, nid))

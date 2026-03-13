@@ -2609,7 +2609,8 @@ class ChatManager:
                     )
 
                     dispatch = dispatch_compound_mutations(graph_dict, message)
-                    if dispatch.matched and dispatch.results and all(r.success for r in dispatch.results):
+                    _mutation_results = dispatch.results or ([dispatch.result] if dispatch.result else [])
+                    if dispatch.matched and _mutation_results and all(r.success for r in _mutation_results):
                         # Task 12: validate mutated graph before save; rollback = don't save
                         from dan.validation.graph import validate_graph
                         validation_passed = False
@@ -4385,6 +4386,10 @@ class ChatManager:
                     continue
                 logger.info("Intent extraction failed: %s", exc)
                 break
+
+        if intent is not None:
+            from dan.meta.intent_extraction import validate_and_expand_intent
+            intent = validate_and_expand_intent(intent, user_message)
 
         coverage_fully_covered = False
         coverage_recommendation = None

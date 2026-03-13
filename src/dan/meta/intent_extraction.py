@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Callable, Awaitable
 
 from dan.meta.intent_schema import StageType, WorkflowIntent
@@ -42,7 +43,19 @@ Supported stage types (use ONLY these):
 Rules:
 - Decompose the goal into sequential stages. Each stage needs a name, description, \
 and stage_type from the list above.
+- CRITICAL: Each distinct step, action, or verb phrase the user mentions MUST become \
+its own separate stage. NEVER collapse multiple steps into one stage. If the user says \
+"research, analyze, and summarize", that is 3 separate stages, not 1. If the user says \
+"search the web, read results, and write a briefing", that is 3 stages.
+- A simple count: if the prompt mentions N distinct actions, emit at least N stages.
 - Only use the listed stage types. Do not invent new ones.
+- For tool-related actions (search, read file, write file, email, fetch URL), use \
+stage_type=tool_call with the appropriate tool_id from the available list.
+- For code/compute actions (calculate, analyze data, run Python, generate chart), use \
+stage_type=code_execution.
+- For parallel processing (process each, for each, in parallel), use stage_type=fan_out.
+- For review/quality loops (review, iterate, improve until), use stage_type=review_loop \
+with reviewer_prompt, condition, and max_iterations.
 - For review_loop stages, include a review field with reviewer_prompt, condition, \
 and max_iterations.
 - Identify global_inputs (what the user must provide) and global_outputs (final \
@@ -60,10 +73,20 @@ Common workflow patterns (use these as guidance):
 - Code analysis: file operations + code execution + analysis
 - Iterative improvement: repeated refinement toward a goal
 
-Explicit phrase → stage_type mapping:
-- "review loop", "draft then review", "iterate until quality" → review_loop
-- "in parallel", "for each", "process items concurrently" → fan_out
-- "search and retrieve", "RAG", "look up then answer", "retrieve context" → rag_retrieval
+IMPORTANT stage_type selection rules (do NOT default everything to transform):
+- "search", "web search", "fetch URL", "read file", "write file", "email", "send" \
+→ stage_type=tool_call (with appropriate tool_id)
+- "run code", "Python", "compute", "calculate", "statistics", "chart", "analyze data" \
+→ stage_type=code_execution
+- "in parallel", "for each", "process N items", "concurrently", "fan out" \
+→ stage_type=fan_out
+- "review loop", "draft then review", "iterate until quality", "revision cycles" \
+→ stage_type=review_loop
+- "RAG", "retrieve context", "look up then answer", "knowledge base" \
+→ stage_type=rag_retrieval
+- "approve", "human review", "sign off" → stage_type=human_approval
+- "if/else", "check whether", "branch based on" → stage_type=conditional
+- Only use transform for pure LLM text processing with no tools, code, or control flow.
 """.format(
     stage_types="\n".join(
         f"  - {st.value}: {desc}" for st, desc in _STAGE_TYPE_DESCRIPTIONS.items()
@@ -290,5 +313,113 @@ async def extract_workflow_intent(
 
     except Exception:
         logger.debug("Intent extraction failed", exc_info=True)
+        return None
 
     return None
+
+
+_ACTION_SPLIT_RE = re.compile(
+    r",\s*(?:and\s+|then\s+)?|\.\s+|;\s+|\bthen\b|\bafter\s+that\b"
+)
+
+
+def _estimate_min_stages(goal_text: str) -> int:
+    """Heuristic: count distinct action phrases to estimate expected stage count."""
+    parts = _ACTION_SPLIT_RE.split(goal_text.lower())
+    action_phrases = [s.strip() for s in parts if len(s.strip()) > 5]
+    return max(1, len(action_phrases))
+
+
+def validate_and_expand_intent(
+    intent: WorkflowIntent,
+    goal_text: str,
+) -> WorkflowIntent:
+    """Post-extraction check: if prompt implies more stages than extracted, expand.
+
+    Catches the common LLM failure mode of collapsing "research, analyze, summarize"
+    into a single stage.
+    """
+    expected_min = _estimate_min_stages(goal_text)
+    actual = len(intent.stages)
+
+    if actual >= expected_min or actual >= 3:
+        return intent
+
+    if actual == 1 and expected_min >= 2:
+        from dan.meta.intent_schema import StageIntent
+
+        parts = _ACTION_SPLIT_RE.split(goal_text.lower())
+        parts = [p.strip() for p in parts if len(p.strip()) > 5]
+
+        if len(parts) >= 2:
+            logger.info(
+                "Expanding single-stage intent to %d stages from prompt phrases",
+                len(parts),
+            )
+            new_stages = []
+            for i, part in enumerate(parts):
+                stage_type = _infer_stage_type(part)
+                config = _infer_stage_config(part, stage_type)
+                review = _infer_review_config(part) if stage_type.value == "review_loop" else None
+                new_stages.append(StageIntent(
+                    name=_slugify_stage(part, i),
+                    description=part.strip().capitalize(),
+                    stage_type=stage_type,
+                    config=config,
+                    review=review,
+                ))
+            intent = intent.model_copy(update={"stages": new_stages})
+
+    return intent
+
+
+def _infer_stage_type(text: str) -> "StageType":
+    """Infer StageType from a phrase."""
+    from dan.meta.intent_schema import StageType
+    t = text.lower()
+    if any(kw in t for kw in ("review loop", "review and revise", "revise", "iterate until", "revision cycle")):
+        return StageType.review_loop
+    if any(kw in t for kw in ("in parallel", "for each", "each item", "concurrently", "fan out")):
+        return StageType.fan_out
+    if any(kw in t for kw in (
+        "search", "web", "fetch", "read file", "load file", "email", "send",
+        "read a csv", "read csv", "read pdf", "ingest", "download", "scrape",
+        "pull data",
+    )):
+        return StageType.tool_call
+    if any(kw in t for kw in (
+        "run code", "python", "compute", "calculate", "chart", "statistic",
+        "analyze data", "run analysis", "generate chart", "financial ratio",
+    )):
+        return StageType.code_execution
+    if any(kw in t for kw in ("rag", "retrieve context", "knowledge base", "document collection")):
+        return StageType.rag_retrieval
+    if any(kw in t for kw in ("human approval", "human review", "sign off")):
+        return StageType.human_approval
+    if any(kw in t for kw in ("if ", "check whether", "branch based on")):
+        return StageType.conditional
+    return StageType.transform
+
+
+def _infer_stage_config(text: str, stage_type: "StageType") -> dict:
+    """Infer config for a stage based on text."""
+    from dan.meta.intent_schema import StageType
+    if stage_type == StageType.tool_call:
+        from dan.meta.intent_compiler import _infer_tool_id
+        return {"tool_id": _infer_tool_id(text, text)}
+    return {}
+
+
+def _infer_review_config(text: str) -> "ReviewRequirement":
+    """Provide a default ReviewRequirement for review_loop stages."""
+    from dan.meta.intent_schema import ReviewRequirement
+    return ReviewRequirement(
+        reviewer_prompt=f"Review the output for quality: {text.strip()[:80]}",
+        condition="quality_score < 8",
+        max_iterations=3,
+    )
+
+
+def _slugify_stage(text: str, index: int) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", text.lower().strip())[:30].strip("_")
+    return slug or f"stage_{index}"
