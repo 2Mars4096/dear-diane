@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel, Field
 
 from dan.meta.discovery import DiscoveryResult, DiscoveryService
+from dan.meta.goal_contract import render_goal_contract_section
 from dan.meta.tool_catalog import render_tool_catalog_markdown
 
 if TYPE_CHECKING:
@@ -405,6 +406,16 @@ Output ONLY a single valid JSON object. No markdown, no explanation."""
             sections.append(f"## Error Context from Prior Attempt\n{error_context}")
 
         if plan_context:
+            goal_contract_section = render_goal_contract_section(
+                plan_context.get("goal_contract"),
+                preamble=(
+                    "Use this contract when choosing REUSE vs ADAPT vs GENERATE and "
+                    "when checking whether the planned workflow is actually complete."
+                ),
+            )
+            if goal_contract_section:
+                sections.append(goal_contract_section)
+
             ctx_lines: list[str] = []
             if plan_context.get("adapt_workflow_id"):
                 ctx_lines.append(

@@ -15,6 +15,8 @@ from typing import Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field
 
+from .goal_contract import normalize_goal_contract
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -317,7 +319,7 @@ class MetaController:
             await self._emit("META_WORKFLOW_PLANNING", session, {"workflow": spec.name})
 
             if self._planner:
-                plan_context: dict[str, Any] = {}
+                plan_context_extra: dict[str, Any] = {}
                 _deps = getattr(spec, 'depends_on', None) or []
                 if _deps:
                     _upstream = {d: handoffs[d] for d in _deps if d in handoffs}
@@ -326,18 +328,18 @@ class MetaController:
                         _per = max(200, 1500 // len(_upstream))
                         for _dn, _dh in _upstream.items():
                             _sections.append(_dh.to_prompt_context(budget=_per))
-                        plan_context["upstream_handoffs"] = "## Upstream Results\n" + "\n".join(_sections)
+                        plan_context_extra["upstream_handoffs"] = "## Upstream Results\n" + "\n".join(_sections)
                 if spec.required_tools:
-                    plan_context["required_tools"] = spec.required_tools
+                    plan_context_extra["required_tools"] = spec.required_tools
                 if spec.required_skills:
-                    plan_context["required_skills"] = spec.required_skills
+                    plan_context_extra["required_skills"] = spec.required_skills
                 if spec.inputs:
-                    plan_context["inputs"] = spec.inputs
+                    plan_context_extra["inputs"] = spec.inputs
                 if spec.outputs:
-                    plan_context["outputs"] = spec.outputs
-                # avoid passing {} so planner omits constraints section
+                    plan_context_extra["outputs"] = spec.outputs
+                plan_context = self._build_plan_context(session, plan_context_extra)
                 plan_output = await self._planner.plan(
-                    spec.goal, plan_context=plan_context if plan_context else None
+                    spec.goal, plan_context=plan_context
                 )
                 if plan_output.review.valid:
                     graph_data = await self._planner.execute_plan(
@@ -462,9 +464,7 @@ class MetaController:
                         session.error_context = "No planner configured"
                         break
 
-                    plan_context: dict[str, Any] | None = None
-                    if session.goal_context and session.goal_context.get("adapt_workflow_id"):
-                        plan_context = {"adapt_workflow_id": session.goal_context["adapt_workflow_id"]}
+                    plan_context = self._build_plan_context(session)
                     planner_output = await self._planner.plan(
                         session.goal, session.error_context, plan_context=plan_context
                     )
@@ -636,6 +636,21 @@ class MetaController:
     def _plan_from_dict(plan_dict: dict[str, Any] | None) -> Any | None:
         from dan.meta.utils import plan_from_dict
         return plan_from_dict(plan_dict)
+
+    @staticmethod
+    def _build_plan_context(
+        session: MetaSession,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        plan_context = dict(extra or {})
+        if session.goal_context:
+            adapt_workflow_id = session.goal_context.get("adapt_workflow_id")
+            if adapt_workflow_id:
+                plan_context["adapt_workflow_id"] = adapt_workflow_id
+            goal_contract = normalize_goal_contract(session.goal_context.get("goal_contract"))
+            if goal_contract:
+                plan_context["goal_contract"] = goal_contract
+        return plan_context or None
 
     async def _checkpoint_pause(self, session: MetaSession, stage: str) -> bool:
         """Pause when requested by config or external API at step checkpoints."""

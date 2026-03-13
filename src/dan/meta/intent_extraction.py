@@ -12,6 +12,7 @@ import logging
 import re
 from typing import Any, Callable, Awaitable
 
+from dan.meta.goal_contract import render_goal_contract_section
 from dan.meta.intent_schema import StageType, WorkflowIntent
 from dan.meta.tool_catalog import render_tool_id_list
 
@@ -264,6 +265,7 @@ async def extract_workflow_intent(
     goal_text: str,
     *,
     model: str | None = None,
+    goal_contract: dict[str, Any] | None = None,
 ) -> WorkflowIntent | None:
     """Extract a WorkflowIntent from goal text using LLM function calling.
 
@@ -288,11 +290,21 @@ async def extract_workflow_intent(
         + "Do NOT invent tool_ids not in this list. If no tool matches, use "
         + "code_execution with inline Python instead."
     )
+    user_prompt = goal_text
+    goal_contract_section = render_goal_contract_section(
+        goal_contract,
+        preamble=(
+            "Use this contract to decide what stages are necessary and what must "
+            "be true before the workflow counts as complete."
+        ),
+    )
+    if goal_contract_section:
+        user_prompt = f"{goal_text}\n\n{goal_contract_section}"
 
     try:
         response = await llm_complete(
             system_prompt,
-            goal_text,
+            user_prompt,
             model,
             0.3,
             [tool_schema],

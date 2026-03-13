@@ -21,6 +21,7 @@ from typing import Any, Awaitable, Callable, Literal, Protocol, runtime_checkabl
 
 from pydantic import BaseModel, Field
 
+from dan.meta.goal_contract import normalize_goal_contract, render_goal_contract_section
 from dan.server.concierge.boundary_handoff import GoalAttemptAssembler
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def get_tier_prompt(
     goal: "GoalSpec",
     best_result: "EvaluationResult | None",
     recent_attempts: "list[AttemptRecord]",
+    goal_contract: dict[str, Any] | None = None,
 ) -> str:
     """Build a comprehensive prompt incorporating tier guidance and loop state."""
     template = STRATEGY_TIER_PROMPTS.get(tier, STRATEGY_TIER_PROMPTS[0])
@@ -90,6 +92,16 @@ def get_tier_prompt(
                 f"  #{a.attempt_number} tier={a.strategy_tier} "
                 f"score={a.result.score} — {a.approach_summary or 'no summary'}"
             )
+
+    goal_contract_section = render_goal_contract_section(
+        goal_contract,
+        preamble=(
+            "Keep each attempt aligned with this contract before changing strategy "
+            "or deciding that the goal is complete."
+        ),
+    )
+    if goal_contract_section:
+        parts.append(goal_contract_section)
 
     return "\n".join(parts)
 
@@ -144,6 +156,7 @@ class GoalLoopState(BaseModel):
     start_time: datetime = Field(default_factory=_utc_now)
     strategy_tier: int = 0
     status: Literal["running", "success", "timeout", "stopped", "failed"] = "running"
+    goal_contract: dict[str, Any] = Field(default_factory=dict)
 
 
 class GoalSession(BaseModel):
@@ -704,7 +717,11 @@ def handle_goal_command(
             if mode in ("script", "llm_judge", "test_suite", "custom"):
                 spec.evaluation_mode = mode  # type: ignore[assignment]
 
-    state = GoalLoopState(goal=spec)
+    goal_contract = {}
+    if isinstance(context, dict):
+        goal_contract = normalize_goal_contract(context.get("goal_contract"))
+
+    state = GoalLoopState(goal=spec, goal_contract=goal_contract)
     session = GoalSession(
         goal_state=state,
         project_id=project_id,
