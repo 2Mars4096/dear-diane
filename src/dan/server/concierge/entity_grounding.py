@@ -60,10 +60,19 @@ _GUARD_RELEVANCE_ENABLED = os.environ.get("DAN_GUARD_RELEVANCE", "1") == "1"
 # ---------------------------------------------------------------------------
 
 _ABOUT_PROJECT_PHRASES = frozenset({
-    "update", "updates", "status", "progress", "how's", "how is",
-    "what's happening", "any news", "review", "overview",
-    "check on", "checking on", "where are we", "where is",
-    "how far", "what's the status", "report",
+    "updates", "status", "progress", "how's", "how is",
+    "what's happening", "any news", "overview",
+    "where are we", "how far", "what's the status", "report on",
+    "any updates",
+})
+
+# These phrases look like "about project" keywords but are actually action
+# requests.  When both an about-phrase and an action-phrase appear, the
+# message is NOT a status query.
+_ACTION_VERB_PHRASES = frozenset({
+    "update the", "update this", "update my",
+    "review the", "review this", "review my",
+    "check the", "check this",
 })
 
 _EXTERNAL_ACTION_PHRASES = frozenset({
@@ -146,15 +155,26 @@ def ground_entities(
         projects = project_store.list_projects(surface_id)[:20]
 
     norm_text = _normalize_for_match(text)
+    norm_words = set(norm_text.split())
     matched_projects: list[Any] = []
 
     for p in projects:
         norm_label = _normalize_for_match(p.label)
+        if not norm_label:
+            continue
         if len(norm_label) < 3:
-            if norm_label and norm_label in norm_text.split():
+            # Short labels: exact word match only
+            if norm_label in norm_words:
                 matched_projects.append(p)
-        elif norm_label in norm_text:
-            matched_projects.append(p)
+        elif " " in norm_label:
+            # Multi-word labels: require full phrase as substring
+            if norm_label in norm_text:
+                matched_projects.append(p)
+        else:
+            # Single-word labels ≥3 chars: word-boundary match to avoid
+            # "data" matching "database", "test" matching "testing", etc.
+            if norm_label in norm_words:
+                matched_projects.append(p)
 
     matched_tasks: list[Any] = []
     matched_workflows: list[str] = []
@@ -165,7 +185,13 @@ def ground_entities(
     text_lower = text.lower()
     has_about_phrase = any(phrase in text_lower for phrase in _ABOUT_PROJECT_PHRASES)
     has_external_phrase = any(phrase in text_lower for phrase in _EXTERNAL_ACTION_PHRASES)
-    is_about_project = bool(matched_projects) and has_about_phrase and not has_external_phrase
+    has_action_verb = any(phrase in text_lower for phrase in _ACTION_VERB_PHRASES)
+    is_about_project = (
+        bool(matched_projects)
+        and has_about_phrase
+        and not has_external_phrase
+        and not has_action_verb
+    )
 
     return EntityContext(
         matched_projects=matched_projects,
@@ -201,13 +227,16 @@ def guard_classification(ctx: GuardContext) -> GuardResult:
             notes=["project-about query short-circuited to project info"],
         )
 
-    if ctx.classification.intent.value == "file_request":
+    if (
+        ctx.classification.intent.value == "ask"
+        and getattr(ctx.classification.route, "target", "") == "file"
+    ):
         has_path = bool(re.search(r"(?:~|/)[A-Za-z0-9._~/-]+", ctx.message.text))
         if not has_path and ctx.entity_ctx.matched_projects:
             return GuardResult(
                 passed=False,
                 action="reclassify",
-                notes=["file_request classification but no path found, project entity matched"],
+                notes=["ask/file classification but no path found, project entity matched"],
             )
 
     if ctx.classification.confidence < 0.6 and ctx.entity_ctx.matched_projects:
