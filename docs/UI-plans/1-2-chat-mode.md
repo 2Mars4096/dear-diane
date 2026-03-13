@@ -70,6 +70,9 @@ Chat mode is the entry point for all users. It should have zero learning curve. 
 - [ ] 4-5. Conversation context carries to other modes: switch to Research → conversation available in research chat bar
 - [ ] 4-6. Thread metadata: creation date, message count, last active, associated project/task
 - [ ] 4-7. Delete / archive conversations
+- [x] 4-8. Background streaming: sessions keep running when switching threads, pulsing indicator in thread list
+- [x] 4-9. Message queue: type follow-ups while streaming, with edit/reorder/delete, auto-send on completion
+- [x] 4-10. Graceful shutdown: beforeunload + unmount close all background streams and flush pending saves
 
 ### 5. Quick Actions & Intelligence
 - [ ] 5-1. **Suggested follow-ups:** After a response, show 2-3 contextual next steps ("Drill deeper into...", "Export as...", "Schedule this...")
@@ -106,6 +109,9 @@ Chat mode is the entry point for all users. It should have zero learning curve. 
 - Client-side draft titles should avoid raw prompt noise: strip filesystem paths and conversational wrappers from the first visible title immediately, then refresh against the server-authored title shortly after the first save so the active header does not stay stuck on a path-heavy prompt during streaming
 - Tool traces should collapse repeated low-signal reads: if `file_read` hits the same path multiple times in one turn, present it once with merged ranges and an open-file link instead of spamming near-identical cards for each line-range read
 - Tool execution should still narrate the step in plain text: when tool cards are visible, keep a readable progress line derived from the latest tool event instead of falling back to raw prompt echoes or hiding text entirely
+- Background streaming uses a module-level WebSocket registry (`backgroundStreamRegistry.ts`): switching threads detaches the active WS instead of closing it; the background handler keeps saving to the server; thread list shows a pulsing dot for in-flight background streams; when a background stream completes, the active-thread view auto-reloads the latest saved state
+- Loading placeholder now shows the progress status text instead of bouncing dots — the shimmer bar on the bubble already indicates activity, so dots are redundant; progress text is more informative
+- Message queueing follows a Cursor-like pattern: the composer never disables, Enter always works (queues when streaming, sends when idle), the queue is visible and actionable (edit, reorder, delete), and auto-drains when the current turn completes. Queue state is per-thread and clears on thread switch.
 
 ## Notes
 - Chat mode should feel indistinguishable from a best-in-class chat UI (Claude/ChatGPT) for simple tasks
