@@ -3,6 +3,7 @@ import {
   useRef,
   useEffect,
   useCallback,
+  useMemo,
   type KeyboardEvent,
 } from "react";
 import {
@@ -28,14 +29,26 @@ import {
   PencilLine,
   ArrowUp,
   GripVertical,
+  MoreVertical,
+  Folder,
+  Clock,
+  Info,
+  Upload,
+  Link2,
+  Code2,
 } from "lucide-react";
 import { useGraphStore } from "../store/useGraphStore";
+import { useAppStore } from "../store/useAppStore";
+import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import type { ChatMessage, ChatStreamEvent, ToolCallInfo } from "../types/chat";
 import type { ChatThreadSummary } from "../lib/api";
 import * as api from "../lib/api";
 import type { ApplyMutationResult } from "../lib/api";
 import ChatMessageBubble from "./ChatMessage";
 import EscalationBanner, { detectEscalation } from "./EscalationBanner";
+import ModePreview from "./chat/ModePreview";
+import VoiceInput from "./chat/VoiceInput";
+import { getSwitchPreference, setSwitchPreference, type SwitchAction } from "../lib/switchPreference";
 import GraphDiffPreview from "./GraphDiffPreview";
 import MentionAutocomplete from "./MentionAutocomplete";
 import {
@@ -143,14 +156,159 @@ function relativeTimeShort(iso: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Quick-action helpers & sub-components
+// ---------------------------------------------------------------------------
+
+function generateFollowups(assistantMessage: string, _userMessage: string): string[] {
+  const suggestions: string[] = [];
+
+  if (assistantMessage.includes("error") || assistantMessage.includes("bug")) {
+    suggestions.push("How do I fix this?", "Show me the relevant code");
+  }
+  if (assistantMessage.includes("```")) {
+    suggestions.push("Explain this code", "Are there any issues?", "Can you optimize this?");
+  }
+  if (assistantMessage.includes("table") || assistantMessage.includes("data")) {
+    suggestions.push("Create a chart from this data", "Export as CSV");
+  }
+  if (assistantMessage.includes("file") || assistantMessage.includes("wrote")) {
+    suggestions.push("Show the full file", "What else needs to change?");
+  }
+
+  if (suggestions.length === 0) {
+    suggestions.push("Tell me more", "Can you elaborate?", "What's the next step?");
+  }
+
+  return suggestions.slice(0, 3);
+}
+
+function trackCommand(cmd: string) {
+  try {
+    const recent: string[] = JSON.parse(localStorage.getItem("dan-recent-commands") ?? "[]");
+    const updated = [cmd, ...recent.filter((c) => c !== cmd)].slice(0, 20);
+    localStorage.setItem("dan-recent-commands", JSON.stringify(updated));
+  } catch { /* ignore */ }
+}
+
+function SuggestedFollowups({
+  suggestions,
+  onSelect,
+}: {
+  suggestions: string[];
+  onSelect: (text: string) => void;
+}) {
+  if (suggestions.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-2 mt-3 mb-1">
+      {suggestions.map((s, i) => (
+        <button
+          key={i}
+          onClick={() => onSelect(s)}
+          className="px-3 py-1.5 text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-full hover:bg-indigo-50 hover:text-indigo-600 hover:border-indigo-200 transition-colors"
+        >
+          {s}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RecentCommandsBar({ onSelect }: { onSelect: (cmd: string) => void }) {
+  const [recentCommands] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem("dan-recent-commands") ?? "[]");
+    } catch {
+      return [];
+    }
+  });
+
+  const defaultCommands = ["/ask", "/agent", "/plan", "/debug", "/search", "/project"];
+  const commands = recentCommands.length > 0 ? recentCommands : defaultCommands;
+
+  return (
+    <div className="flex items-center gap-1.5 px-1 py-1 overflow-x-auto scrollbar-hide">
+      {commands.slice(0, 8).map((cmd) => (
+        <button
+          key={cmd}
+          onClick={() => onSelect(cmd + " ")}
+          className="shrink-0 px-2.5 py-0.5 text-[11px] text-gray-500 bg-gray-50 border border-gray-100 rounded-full hover:text-indigo-600 hover:bg-indigo-50 hover:border-indigo-200 transition-colors"
+        >
+          {cmd}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function TypingIndicator({ phase }: { phase: "thinking" | "executing" | "writing" }) {
+  const labels = {
+    thinking: "DAN is thinking…",
+    executing: "Running tools…",
+    writing: "Composing response…",
+  };
+
+  return (
+    <div className="flex items-center gap-2 px-4 py-2 text-xs text-gray-400">
+      <div className="flex gap-1">
+        <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+        <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+        <span className="w-1.5 h-1.5 bg-indigo-400 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+      </div>
+      <span>{labels[phase]}</span>
+    </div>
+  );
+}
+
+function SmartPasteHint({
+  hint,
+  onAccept,
+  onDismiss,
+}: {
+  hint: { type: "url" | "code" | "image"; value?: string; file?: File };
+  onAccept: () => void;
+  onDismiss: () => void;
+}) {
+  const labels: Record<string, { icon: typeof Link2; text: string; action: string }> = {
+    url: { icon: Link2, text: "URL detected", action: "Fetch this URL?" },
+    code: { icon: Code2, text: "Code detected", action: "Wrap in code block?" },
+    image: { icon: Upload, text: "Image pasted", action: "Attach as image?" },
+  };
+  const cfg = labels[hint.type];
+  const Icon = cfg.icon;
+
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 mt-1 bg-indigo-50 border border-indigo-100 rounded-lg text-xs animate-in fade-in slide-in-from-bottom-1 duration-200">
+      <Icon size={12} className="text-indigo-500 flex-shrink-0" />
+      <span className="text-indigo-700">{cfg.text}</span>
+      <span className="text-indigo-400">—</span>
+      <button onClick={onAccept} className="font-medium text-indigo-600 hover:text-indigo-800 transition-colors">
+        {cfg.action}
+      </button>
+      <button onClick={onDismiss} className="text-indigo-300 hover:text-indigo-500 ml-auto transition-colors">
+        <X size={12} />
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
 interface ChatPanelProps {
   fullScreen?: boolean;
+  workspaceId?: string;
+  onThreadOpen?: (threadId: string, threadTitle?: string) => void;
+  onThreadTitleUpdate?: (threadId: string, title: string) => void;
 }
 
-export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
+export default function ChatPanel({
+  fullScreen = false,
+  workspaceId: _workspaceId,
+  onThreadOpen,
+  onThreadTitleUpdate,
+}: ChatPanelProps) {
   const rawGraphId = useGraphStore((s) => s.graphId);
   const graphId = rawGraphId || (fullScreen ? "_scratch" : null);
   const danGraph = useGraphStore((s) => s.danGraph);
@@ -200,6 +358,8 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
   const [detectedMode, setDetectedMode] = useState<string | null>(null);
   const [escalation, setEscalation] = useState<{ targetMode: import("../store/useAppStore").AppMode; reason: string } | null>(null);
+  const setMode = useAppStore((s) => s.setMode);
+  const [switchPrefMenu, setSwitchPrefMenu] = useState(false);
   const [mutationConfirmMode, setMutationConfirmMode] = useState<boolean>(() =>
     readMutationConfirmPreference(),
   );
@@ -221,6 +381,21 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
     }>
   >([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [showContextPanel, setShowContextPanel] = useState(false);
+  const [threadContextMenu, setThreadContextMenu] = useState<{
+    x: number;
+    y: number;
+    threadId: string;
+    threadTitle: string;
+    pinned: boolean;
+  } | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [pasteHint, setPasteHint] = useState<{
+    type: "url" | "code" | "image";
+    value?: string;
+    file?: File;
+  } | null>(null);
+  const [userAttachments, setUserAttachments] = useState<File[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef(messages);
@@ -410,6 +585,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
         if (!nextTitle) return;
         if (activeThreadIdRef.current !== threadId) return;
         setThreadTitle(nextTitle);
+        onThreadTitleUpdate?.(threadId, nextTitle);
         setThreads((prev) =>
           prev.map((thread) =>
             thread.id === threadId
@@ -428,7 +604,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
         // Best-effort title refresh.
       }
     },
-    [],
+    [onThreadTitleUpdate],
   );
 
   const loadThread = useCallback(
@@ -441,7 +617,8 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
         const backendMsgs = (data.messages ?? []) as Record<string, unknown>[];
         setMessages(backendMsgs.map(fromBackendMessage));
         setActiveThreadId(threadId);
-        setThreadTitle((data.title as string) || "");
+        const title = (data.title as string) || "";
+        setThreadTitle(title);
         setShowThreadList(false);
         setError(null);
         const storedMode = (data.mode as ChatMode) || "agent";
@@ -449,12 +626,14 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
         if (isStreamingInBackground(threadId)) {
           setIsStreaming(true);
         }
+        onThreadOpen?.(threadId, title);
+        onThreadTitleUpdate?.(threadId, title);
         requestAnimationFrame(() => textareaRef.current?.focus());
       } catch (err) {
         console.warn("Failed to load thread:", err);
       }
     },
-    [isStreaming, detachCurrentStream],
+    [isStreaming, detachCurrentStream, onThreadOpen, onThreadTitleUpdate],
   );
 
   const probeBackendAvailability = useCallback(async () => {
@@ -545,10 +724,15 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
       if (cancelled) return;
       if (sorted.length > 0 && !activeThreadIdRef.current) {
         let targetId = sorted[0].id;
-        try {
-          const saved = localStorage.getItem(`dan_active_thread_${graphId}`);
-          if (saved && sorted.some((t) => t.id === saved)) targetId = saved;
-        } catch {}
+        const wsActiveThread = useWorkspaceStore.getState().getActiveWorkspace()?.activeThreadId;
+        if (wsActiveThread && sorted.some((t) => t.id === wsActiveThread)) {
+          targetId = wsActiveThread;
+        } else {
+          try {
+            const saved = localStorage.getItem(`dan_active_thread_${graphId}`);
+            if (saved && sorted.some((t) => t.id === saved)) targetId = saved;
+          } catch {}
+        }
         await loadThread(graphId, targetId);
       } else if (sorted.length === 0) {
         setShowThreadList(true);
@@ -990,6 +1174,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           activeThreadIdRef.current = threadId;
           setThreadTitle(draftTitle);
           setShowThreadList(false);
+          onThreadOpen?.(threadId, draftTitle);
         } catch (err) {
           console.warn("Failed to create thread:", err);
         }
@@ -1013,12 +1198,23 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setInputText("");
+      setUserAttachments([]);
+      if (content.startsWith("/")) {
+        trackCommand(content.split(/\s/)[0]);
+      }
       setIsStreaming(true);
       setError(null);
 
       if (fullScreen) {
         const esc = detectEscalation(content);
-        if (esc) setEscalation(esc);
+        if (esc) {
+          const pref = getSwitchPreference(esc.targetMode);
+          if (pref === "always") {
+            setMode(esc.targetMode);
+          } else if (pref === "ask") {
+            setEscalation(esc);
+          }
+        }
       }
       setStaleRevision(false);
       setBuildJustCompleted(false);
@@ -1674,6 +1870,57 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
     [sendMessage, mentionQuery],
   );
 
+  const handlePaste = useCallback((e: React.ClipboardEvent) => {
+    const text = e.clipboardData.getData("text/plain");
+
+    if (/^https?:\/\/\S+$/.test(text.trim())) {
+      setPasteHint({ type: "url", value: text.trim() });
+      return;
+    }
+
+    if (
+      text.includes("\n") &&
+      (text.includes("function") ||
+        text.includes("class") ||
+        text.includes("def ") ||
+        text.includes("import "))
+    ) {
+      setPasteHint({ type: "code", value: text });
+      return;
+    }
+
+    const items = Array.from(e.clipboardData.items);
+    const imageItem = items.find((item) => item.type.startsWith("image/"));
+    if (imageItem) {
+      const file = imageItem.getAsFile();
+      if (file) {
+        setPasteHint({ type: "image", file });
+      }
+    }
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes("Files")) {
+      e.preventDefault();
+      setIsDragOver(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragOver(false);
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length > 0) {
+      setUserAttachments((prev) => [...prev, ...files]);
+    }
+  }, []);
+
   const handleStop = useCallback(async () => {
     const chId = activeChannelIdRef.current;
     if (!chId) return;
@@ -1733,6 +1980,26 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
     [graphId],
   );
 
+  const handleExportThread = useCallback(
+    async (threadId: string, format: "md" | "json" = "md") => {
+      if (!graphId) return;
+      try {
+        const { content } = await api.exportChatThread(graphId, threadId, format);
+        const ext = format === "json" ? "json" : "md";
+        const blob = new Blob([content], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `chat-${threadId}.${ext}`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        console.warn("Export failed:", err);
+      }
+    },
+    [graphId],
+  );
+
   const handlePinThread = useCallback(
     async (threadId: string, pinned: boolean) => {
       if (!graphId) return;
@@ -1765,6 +2032,18 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
 
   useEffect(() => {
     if (!fullScreen) return;
+    const onPersistentSend = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (detail?.message) {
+        sendMessage(detail.message);
+      }
+    };
+    window.addEventListener("persistent-chat:send", onPersistentSend);
+    return () => window.removeEventListener("persistent-chat:send", onPersistentSend);
+  }, [sendMessage]);
+
+  useEffect(() => {
+    if (!fullScreen) return;
     const handler = (e: globalThis.KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
@@ -1774,11 +2053,36 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
       } else if (e.key.toLowerCase() === "l" && e.shiftKey) {
         e.preventDefault();
         setShowThreadList((prev) => !prev);
+      } else if (e.key.toLowerCase() === "i" && !e.shiftKey) {
+        e.preventDefault();
+        setShowContextPanel((prev) => !prev);
       }
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
   }, [fullScreen, handleNewChat]);
+
+  // Sync active thread to AppStore for cross-mode access
+  useEffect(() => {
+    useAppStore.getState().setActiveChatThread(activeThreadId, graphId);
+  }, [activeThreadId, graphId]);
+
+  useEffect(() => {
+    if (!fullScreen) return;
+    const handleSelectThread = (e: Event) => {
+      const threadId = (e as CustomEvent).detail?.threadId;
+      if (threadId && graphId && threadId !== activeThreadIdRef.current) {
+        loadThread(graphId, threadId);
+      }
+    };
+    const handleNewThread = () => handleNewChat();
+    window.addEventListener("workspace:selectThread", handleSelectThread);
+    window.addEventListener("workspace:newThread", handleNewThread);
+    return () => {
+      window.removeEventListener("workspace:selectThread", handleSelectThread);
+      window.removeEventListener("workspace:newThread", handleNewThread);
+    };
+  }, [fullScreen, graphId, loadThread, handleNewChat]);
 
   const handleBackToList = useCallback(async () => {
     const tid = activeThreadIdRef.current;
@@ -2145,6 +2449,13 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           <Download size={13} />
         </button>
         <button
+          onClick={() => setShowContextPanel((prev) => !prev)}
+          className={`p-0.5 rounded transition-colors ${showContextPanel ? "text-indigo-500 bg-indigo-50" : "text-gray-400 hover:text-gray-600"}`}
+          title="Context panel (⌘I)"
+        >
+          <Info size={13} />
+        </button>
+        <button
           onClick={handleNewChat}
           className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors"
           title="New chat (⌘N)"
@@ -2273,6 +2584,25 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
     </div>
   );
 
+  // Derive typing indicator phase from streaming state
+  const typingPhase: "thinking" | "executing" | null = (() => {
+    if (!isStreaming) return null;
+    const lastMsg = messages.length > 0 ? messages[messages.length - 1] : null;
+    if (!lastMsg || lastMsg.role !== "assistant") return null;
+    if (lastMsg.toolCalls?.some((tc) => tc.status === "running")) return "executing";
+    if (!lastMsg.content) return "thinking";
+    return null;
+  })();
+
+  // Derive follow-up suggestions from last assistant message
+  const followupSuggestions = useMemo(() => {
+    if (isStreaming || messages.length === 0 || inputText.length > 0) return [];
+    const lastMsg = messages[messages.length - 1];
+    if (lastMsg.role !== "assistant" || !lastMsg.content) return [];
+    const lastUser = [...messages].reverse().find((m) => m.role === "user");
+    return generateFollowups(lastMsg.content, lastUser?.content ?? "");
+  }, [isStreaming, messages, inputText]);
+
   const messagesArea = (
     <div className={`flex-1 overflow-y-auto py-4 min-h-0 ${fullScreen ? "px-4" : "px-3"}`}>
       <div className={fullScreen ? "max-w-3xl mx-auto" : ""}>
@@ -2316,8 +2646,52 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               </div>
             ))}
 
+            {!isStreaming && followupSuggestions.length > 0 && (
+              <SuggestedFollowups
+                suggestions={followupSuggestions}
+                onSelect={(text) => sendMessage(text)}
+              />
+            )}
+
+            {typingPhase && <TypingIndicator phase={typingPhase} />}
+
             {fullScreen && escalation && (
-              <EscalationBanner suggestion={escalation} onDismiss={() => setEscalation(null)} />
+              <div className="flex items-start gap-3 my-3">
+                <div className="flex-1 min-w-0">
+                  <EscalationBanner suggestion={escalation} onDismiss={() => setEscalation(null)} />
+                  <div className="relative inline-block ml-4 mt-1">
+                    <button
+                      onClick={() => setSwitchPrefMenu((v) => !v)}
+                      className="text-[10px] text-gray-400 hover:text-gray-600 transition-colors flex items-center gap-0.5"
+                      title="Switch preference"
+                    >
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+                      Preference
+                    </button>
+                    {switchPrefMenu && (
+                      <div className="absolute bottom-full mb-1 left-0 z-50 rounded border border-gray-200 bg-white shadow-lg py-1 min-w-[130px]">
+                        {(["always", "ask", "never"] as SwitchAction[]).map((action) => {
+                          const current = getSwitchPreference(escalation.targetMode);
+                          return (
+                            <button
+                              key={action}
+                              className={`w-full text-left px-3 py-1 text-[11px] hover:bg-gray-100 ${current === action ? "text-indigo-600 font-medium" : "text-gray-600"}`}
+                              onClick={() => {
+                                setSwitchPreference(escalation.targetMode, action);
+                                setSwitchPrefMenu(false);
+                                if (action === "never") setEscalation(null);
+                              }}
+                            >
+                              {action === "always" ? "Always switch" : action === "ask" ? "Always ask" : "Never switch"}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </div>
+                <ModePreview mode={escalation.targetMode} onClick={() => setMode(escalation.targetMode)} />
+              </div>
             )}
 
             {previewingMessage && !previewingMessage.dryRunResult?.new_graph && (
@@ -2465,14 +2839,39 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   const inputArea = (
     <div className={`flex-shrink-0 border-t border-gray-200 ${fullScreen ? "px-4 py-4 bg-white" : "p-3"}`}>
       <div className={fullScreen ? "max-w-3xl mx-auto" : ""}>
+        {fullScreen && !isStreaming && messages.length > 0 && (
+          <RecentCommandsBar
+            onSelect={(cmd) => {
+              setInputText(cmd);
+              requestAnimationFrame(() => textareaRef.current?.focus());
+            }}
+          />
+        )}
+        {userAttachments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2 px-1">
+            {userAttachments.map((f, i) => (
+              <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-gray-600 bg-gray-100 border border-gray-200 rounded-full">
+                <Upload size={10} className="text-gray-400" />
+                {f.name.length > 20 ? f.name.slice(0, 18) + "…" : f.name}
+                <button
+                  onClick={() => setUserAttachments((prev) => prev.filter((_, j) => j !== i))}
+                  className="text-gray-400 hover:text-red-500 transition-colors"
+                >
+                  <X size={10} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
         <div className={`flex items-end gap-2 border border-gray-200 rounded-xl px-3 py-2.5 focus-within:shadow-md focus-within:border-indigo-300 transition-all ${fullScreen ? "shadow-sm" : "focus-within:shadow-sm"}`}>
           <textarea
             ref={textareaRef}
             value={inputText}
-            onChange={(e) => { setInputText(e.target.value); requestAnimationFrame(checkMention); }}
+            onChange={(e) => { setInputText(e.target.value); setPasteHint(null); requestAnimationFrame(checkMention); }}
             onKeyDown={handleKeyDown}
             onKeyUp={checkMention}
             onClick={checkMention}
+            onPaste={handlePaste}
             placeholder={
               isStreaming
                 ? "Type to queue next message…"
@@ -2517,20 +2916,48 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               )}
             </div>
           ) : (
-            <button
-              onClick={() => sendMessage()}
-              disabled={!inputText.trim()}
-              className="text-indigo-500 hover:text-indigo-700 disabled:text-gray-300 transition-colors p-0.5 flex-shrink-0"
-            >
-              <Send size={fullScreen ? 18 : 16} />
-            </button>
+            <div className="flex items-center gap-1 flex-shrink-0">
+              {fullScreen && (
+                <VoiceInput
+                  size={fullScreen ? 16 : 14}
+                  onTranscript={(text) => setInputText((prev) => prev + text)}
+                />
+              )}
+              <button
+                onClick={() => sendMessage()}
+                disabled={!inputText.trim()}
+                className="text-indigo-500 hover:text-indigo-700 disabled:text-gray-300 transition-colors p-0.5"
+              >
+                <Send size={fullScreen ? 18 : 16} />
+              </button>
+            </div>
           )}
         </div>
         <div className="text-[10px] text-gray-400 mt-1.5 px-1">
           {isStreaming
-            ? "Enter to queue · Shift+Enter for newline" + (fullScreen ? " · Cmd+K command palette" : "")
-            : "Enter to send · Shift+Enter for newline" + (fullScreen ? " · Cmd+K command palette" : "")}
+            ? "Enter to queue · Shift+Enter for newline" + (fullScreen ? " · ⌘K command palette" : "")
+            : "Enter to send · Shift+Enter for newline" + (fullScreen ? " · ⌘K command palette" : "")}
         </div>
+        {pasteHint && (
+          <SmartPasteHint
+            hint={pasteHint}
+            onAccept={() => {
+              if (pasteHint.type === "url" && pasteHint.value) {
+                setInputText((prev) =>
+                  prev.replace(pasteHint.value!, `Fetch and summarize: ${pasteHint.value}`),
+                );
+              } else if (pasteHint.type === "code" && pasteHint.value) {
+                setInputText((prev) =>
+                  prev.replace(pasteHint.value!, "```\n" + pasteHint.value + "\n```"),
+                );
+              } else if (pasteHint.type === "image" && pasteHint.file) {
+                setUserAttachments((prev) => [...prev, pasteHint.file!]);
+              }
+              setPasteHint(null);
+            }}
+            onDismiss={() => setPasteHint(null)}
+          />
+        )}
       </div>
     </div>
   );
@@ -2540,7 +2967,20 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   // -------------------------------------------------------------------------
   if (fullScreen) {
     return (
-      <div className="flex flex-1 min-h-0 w-full bg-white overflow-hidden">
+      <div
+        className="absolute inset-0 flex bg-white overflow-hidden"
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isDragOver && (
+          <div className="absolute inset-0 z-50 flex items-center justify-center bg-indigo-500/10 border-2 border-dashed border-indigo-400/30 rounded-lg pointer-events-none">
+            <div className="flex flex-col items-center gap-2 text-indigo-400">
+              <Upload size={32} />
+              <span className="text-sm font-medium">Drop files to attach</span>
+            </div>
+          </div>
+        )}
         {showThreadList && (
           <div className="w-72 flex-shrink-0 border-r border-gray-200 flex flex-col">
             <ThreadListView
@@ -2551,12 +2991,14 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
               onDeleteThread={handleDeleteThread}
               onRenameThread={handleRenameThread}
               onPinThread={handlePinThread}
+              onExportThread={handleExportThread}
               onClose={() => setShowThreadList(false)}
               searchQuery={searchQuery}
               searchResults={searchResults}
               isSearching={isSearching}
               onSearch={handleSearch}
               bgStreamIds={bgStreamIds}
+              onContextMenu={setThreadContextMenu}
             />
           </div>
         )}
@@ -2567,6 +3009,27 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           {queueStrip}
           {inputArea}
         </div>
+        {showContextPanel && (
+          <ContextPanel
+            messages={messages}
+            workspaceName={graphId ?? "Scratch"}
+            onClose={() => setShowContextPanel(false)}
+          />
+        )}
+        {threadContextMenu && (
+          <ThreadContextMenu
+            x={threadContextMenu.x}
+            y={threadContextMenu.y}
+            threadId={threadContextMenu.threadId}
+            threadTitle={threadContextMenu.threadTitle}
+            pinned={threadContextMenu.pinned}
+            onPin={(id, pin) => { handlePinThread(id, pin); setThreadContextMenu(null); }}
+            onRename={() => setThreadContextMenu(null)}
+            onExport={(id, fmt) => { handleExportThread(id, fmt); setThreadContextMenu(null); }}
+            onDelete={(id) => { handleDeleteThread(id); setThreadContextMenu(null); }}
+            onClose={() => setThreadContextMenu(null)}
+          />
+        )}
       </div>
     );
   }
@@ -2575,7 +3038,21 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   // Sidebar layout: toggle between thread list and conversation
   // -------------------------------------------------------------------------
   return (
-    <div className="flex flex-shrink-0 h-full border-l border-gray-200 bg-white" style={{ width: panelWidth }}>
+    <div
+      className="flex flex-shrink-0 h-full border-l border-gray-200 bg-white relative"
+      style={{ width: panelWidth }}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {isDragOver && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-indigo-500/10 border-2 border-dashed border-indigo-400/30 rounded-lg pointer-events-none">
+          <div className="flex flex-col items-center gap-2 text-indigo-400">
+            <Upload size={24} />
+            <span className="text-xs font-medium">Drop files to attach</span>
+          </div>
+        </div>
+      )}
       <div
         onMouseDown={onResizeStart}
         className="w-1 cursor-col-resize hover:bg-indigo-200 active:bg-indigo-300 transition-colors flex-shrink-0"
@@ -2590,12 +3067,14 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
             onDeleteThread={handleDeleteThread}
             onRenameThread={handleRenameThread}
             onPinThread={handlePinThread}
+            onExportThread={handleExportThread}
             onClose={() => setChatOpen(false)}
             searchQuery={searchQuery}
             searchResults={searchResults}
             isSearching={isSearching}
             onSearch={handleSearch}
             bgStreamIds={bgStreamIds}
+            onContextMenu={setThreadContextMenu}
           />
         ) : (
           <>
@@ -2607,6 +3086,20 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
           </>
         )}
       </div>
+      {threadContextMenu && (
+        <ThreadContextMenu
+          x={threadContextMenu.x}
+          y={threadContextMenu.y}
+          threadId={threadContextMenu.threadId}
+          threadTitle={threadContextMenu.threadTitle}
+          pinned={threadContextMenu.pinned}
+          onPin={(id, pin) => { handlePinThread(id, pin); setThreadContextMenu(null); }}
+          onRename={() => setThreadContextMenu(null)}
+          onExport={(id, fmt) => { handleExportThread(id, fmt); setThreadContextMenu(null); }}
+          onDelete={(id) => { handleDeleteThread(id); setThreadContextMenu(null); }}
+          onClose={() => setThreadContextMenu(null)}
+        />
+      )}
     </div>
   );
 }
@@ -2623,12 +3116,14 @@ function ThreadListView({
   onDeleteThread,
   onRenameThread,
   onPinThread,
+  onExportThread,
   onClose,
   searchQuery,
   searchResults,
   isSearching,
   onSearch,
   bgStreamIds,
+  onContextMenu,
 }: {
   threads: ChatThreadSummary[];
   loading: boolean;
@@ -2637,6 +3132,7 @@ function ThreadListView({
   onDeleteThread: (id: string) => void;
   onRenameThread: (id: string, title: string) => void;
   onPinThread: (id: string, pinned: boolean) => void;
+  onExportThread: (id: string, format: "md" | "json") => void;
   onClose?: () => void;
   searchQuery: string;
   searchResults: Array<{
@@ -2650,13 +3146,16 @@ function ThreadListView({
   isSearching: boolean;
   onSearch: (query: string) => void;
   bgStreamIds?: Set<string>;
+  onContextMenu?: (menu: { x: number; y: number; threadId: string; threadTitle: string; pinned: boolean }) => void;
 }) {
-  const sortedThreads = [...threads].sort((a, b) => {
-    const aPinned = (a as ChatThreadSummary & { pinned?: boolean }).pinned ? 1 : 0;
-    const bPinned = (b as ChatThreadSummary & { pinned?: boolean }).pinned ? 1 : 0;
-    if (aPinned !== bPinned) return bPinned - aPinned;
-    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
-  });
+  const pinnedThreads = threads.filter((t) => (t as ChatThreadSummary & { pinned?: boolean }).pinned);
+  const unpinnedThreads = threads.filter((t) => !(t as ChatThreadSummary & { pinned?: boolean }).pinned);
+  const sortedUnpinned = [...unpinnedThreads].sort(
+    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+  );
+  const sortedPinned = [...pinnedThreads].sort(
+    (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
+  );
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -2755,25 +3254,60 @@ function ThreadListView({
           </div>
         ) : (
           <div className="py-1">
-            {sortedThreads.map((t) => (
-              <ThreadRow
-                key={t.id}
-                thread={t}
-                onSelect={() => onSelectThread(t.id)}
-                onDelete={() => onDeleteThread(t.id)}
-                onRename={(title) => onRenameThread(t.id, title)}
-                onPin={() =>
-                  onPinThread(
-                    t.id,
-                    !(t as ChatThreadSummary & { pinned?: boolean }).pinned,
-                  )
-                }
-                pinned={
-                  (t as ChatThreadSummary & { pinned?: boolean }).pinned ??
-                  false
-                }
-                isStreamingInBg={bgStreamIds?.has(t.id) ?? false}
-              />
+            {sortedPinned.length > 0 && (
+              <>
+                <div className="px-3 pt-2 pb-1">
+                  <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1">
+                    <Pin size={9} className="text-indigo-400" />
+                    Pinned
+                  </span>
+                </div>
+                {sortedPinned.map((t) => (
+                  <ThreadRow
+                    key={t.id}
+                    thread={t}
+                    onSelect={() => onSelectThread(t.id)}
+                    onDelete={() => onDeleteThread(t.id)}
+                    onRename={(title) => onRenameThread(t.id, title)}
+                    onPin={() => onPinThread(t.id, false)}
+                    onExport={(fmt) => onExportThread(t.id, fmt)}
+                    pinned
+                    isStreamingInBg={bgStreamIds?.has(t.id) ?? false}
+                    onContextMenu={onContextMenu}
+                  />
+                ))}
+                {sortedUnpinned.length > 0 && (
+                  <div className="mx-3 my-1 border-t border-gray-100" />
+                )}
+              </>
+            )}
+            {groupThreadsByDate(sortedUnpinned).map(({ label, threads: group }) => (
+              <div key={label}>
+                <div className="px-3 pt-2 pb-1">
+                  <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                    {label}
+                  </span>
+                </div>
+                {group.map((t) => (
+                  <ThreadRow
+                    key={t.id}
+                    thread={t}
+                    onSelect={() => onSelectThread(t.id)}
+                    onDelete={() => onDeleteThread(t.id)}
+                    onRename={(title) => onRenameThread(t.id, title)}
+                    onPin={() =>
+                      onPinThread(
+                        t.id,
+                        !(t as ChatThreadSummary & { pinned?: boolean }).pinned,
+                      )
+                    }
+                    onExport={(fmt) => onExportThread(t.id, fmt)}
+                    pinned={false}
+                    isStreamingInBg={bgStreamIds?.has(t.id) ?? false}
+                    onContextMenu={onContextMenu}
+                  />
+                ))}
+              </div>
             ))}
           </div>
         )}
@@ -2785,19 +3319,21 @@ function ThreadListView({
 function ThreadRow({
   thread,
   onSelect,
-  onDelete,
   onRename,
   onPin,
   pinned,
   isStreamingInBg,
+  onContextMenu,
 }: {
   thread: ChatThreadSummary;
   onSelect: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
   onRename: (title: string) => void;
   onPin: () => void;
+  onExport?: (format: "md" | "json") => void;
   pinned: boolean;
   isStreamingInBg?: boolean;
+  onContextMenu?: (menu: { x: number; y: number; threadId: string; threadTitle: string; pinned: boolean }) => void;
 }) {
   const title = getDisplayThreadTitle(thread.title, "Untitled chat");
   const displayTitle = title.length > 40 ? title.slice(0, 40) + "…" : title;
@@ -2816,9 +3352,22 @@ function ThreadRow({
     onRename(trimmed);
   }, [draftTitle, onRename, title]);
 
+  const openContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onContextMenu?.({
+      x: e.clientX,
+      y: e.clientY,
+      threadId: thread.id,
+      threadTitle: title,
+      pinned,
+    });
+  }, [onContextMenu, thread.id, title, pinned]);
+
   return (
     <div
       onClick={onSelect}
+      onContextMenu={openContextMenu}
       className="group flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors"
     >
       {pinned && <Pin size={10} className="text-indigo-400 flex-shrink-0" />}
@@ -2855,6 +3404,14 @@ function ThreadRow({
           <span className="text-[10px] text-gray-400">
             {relativeTimeShort(thread.updated_at)}
           </span>
+          {thread.mode && (
+            <>
+              <span className="text-[10px] text-gray-300">·</span>
+              <span className="text-[10px] text-gray-400 capitalize">
+                {thread.mode}
+              </span>
+            </>
+          )}
         </div>
       </div>
       <div className="flex items-center gap-0.5">
@@ -2879,14 +3436,11 @@ function ThreadRow({
           <Pin size={12} />
         </button>
         <button
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-          className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-red-500 p-0.5 rounded transition-all"
-          title="Delete"
+          onClick={openContextMenu}
+          className="opacity-0 group-hover:opacity-100 text-gray-300 hover:text-gray-600 p-0.5 rounded transition-all"
+          title="More options"
         >
-          <Trash2 size={12} />
+          <MoreVertical size={12} />
         </button>
       </div>
     </div>
@@ -2995,5 +3549,240 @@ function PlanApprovalButtons({
       </button>
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// Context Panel (Cmd+I) — workspace info, memory, referenced files
+// ---------------------------------------------------------------------------
+
+function ContextPanel({
+  messages,
+  workspaceName,
+  onClose,
+}: {
+  messages: ChatMessage[];
+  workspaceName: string;
+  onClose: () => void;
+}) {
+  const referencedFiles = useMemo(() => {
+    const paths = new Set<string>();
+    for (const msg of messages) {
+      if (msg.mentions) {
+        for (const m of msg.mentions) {
+          if (m.type === "file" || m.type === "code") paths.add(m.name);
+        }
+      }
+      if (msg.attachments) {
+        for (const a of msg.attachments) paths.add(a.filename);
+      }
+      if (msg.toolCalls) {
+        for (const tc of msg.toolCalls) {
+          const fileMatch = tc.argsPreview?.match(/(?:path|file)['":\s]+([^\s'",}]+)/i);
+          if (fileMatch) paths.add(fileMatch[1]);
+        }
+      }
+    }
+    return Array.from(paths).slice(0, 50);
+  }, [messages]);
+
+  const memoryItems = useMemo(() => {
+    return messages
+      .filter((m) => m.role === "assistant" && m.content.length > 0)
+      .slice(-5)
+      .map((m) => ({
+        id: m.id,
+        preview: m.content.slice(0, 120) + (m.content.length > 120 ? "…" : ""),
+        timestamp: m.timestamp,
+      }));
+  }, [messages]);
+
+  return (
+    <div className="w-80 flex-shrink-0 border-l border-gray-200 bg-white flex flex-col overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-200 flex-shrink-0">
+        <h3 className="text-sm font-semibold text-gray-800">Context</h3>
+        <button
+          onClick={onClose}
+          className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors"
+          title="Close (⌘I)"
+        >
+          <X size={14} />
+        </button>
+      </div>
+
+      <div className="px-4 py-3 border-b border-gray-100">
+        <h4 className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+          <Folder size={10} />
+          Workspace
+        </h4>
+        <p className="text-sm text-gray-700 font-medium">{workspaceName}</p>
+      </div>
+
+      <div className="px-4 py-3 border-b border-gray-100">
+        <h4 className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+          <Clock size={10} />
+          Recent Memory
+        </h4>
+        {memoryItems.length === 0 ? (
+          <p className="text-xs text-gray-400 italic">
+            Memory items from the active conversation will appear here
+          </p>
+        ) : (
+          <div className="space-y-2">
+            {memoryItems.map((item) => (
+              <div key={item.id} className="text-xs text-gray-500 leading-relaxed">
+                {item.preview}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="px-4 py-3 flex-1 overflow-y-auto">
+        <h4 className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-1">
+          <FileText size={10} />
+          Referenced Files
+        </h4>
+        {referencedFiles.length === 0 ? (
+          <p className="text-xs text-gray-400 italic">
+            Files mentioned in conversation will appear here
+          </p>
+        ) : (
+          <div className="space-y-0.5">
+            {referencedFiles.map((path) => (
+              <p
+                key={path}
+                className="text-[11px] text-gray-600 truncate font-mono py-0.5 px-1.5 rounded hover:bg-gray-50 cursor-default"
+                title={path}
+              >
+                {path}
+              </p>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Thread Context Menu (right-click / "..." button)
+// ---------------------------------------------------------------------------
+
+function ThreadContextMenu({
+  x,
+  y,
+  threadId,
+  threadTitle,
+  pinned,
+  onPin,
+  onRename,
+  onExport,
+  onDelete,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  threadId: string;
+  threadTitle: string;
+  pinned: boolean;
+  onPin: (id: string, pinned: boolean) => void;
+  onRename: (id: string) => void;
+  onExport: (id: string, format: "md" | "json") => void;
+  onDelete: (id: string) => void;
+  onClose: () => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        onClose();
+      }
+    };
+    const escHandler = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("keydown", escHandler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("keydown", escHandler);
+    };
+  }, [onClose]);
+
+  // Clamp to viewport
+  const clampedY = Math.min(y, window.innerHeight - 250);
+  const clampedX = Math.min(x, window.innerWidth - 200);
+
+  const menuItem = "flex items-center gap-2 px-3 py-2 text-xs text-gray-700 hover:bg-gray-50 cursor-pointer transition-colors w-full text-left";
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed z-50 bg-white rounded-lg shadow-lg border border-gray-200 py-1 min-w-[180px]"
+      style={{ top: clampedY, left: clampedX }}
+    >
+      <div className="px-3 py-1.5 text-[10px] text-gray-400 truncate max-w-[200px]">
+        {threadTitle}
+      </div>
+      <div className="border-t border-gray-100 mb-1" />
+      <button className={menuItem} onClick={() => onRename(threadId)}>
+        <PencilLine size={12} className="text-gray-400" />
+        Rename
+      </button>
+      <button className={menuItem} onClick={() => onPin(threadId, !pinned)}>
+        <Pin size={12} className={pinned ? "text-indigo-400" : "text-gray-400"} />
+        {pinned ? "Unpin" : "Pin to top"}
+      </button>
+      <div className="my-1 border-t border-gray-100" />
+      <button className={menuItem} onClick={() => onExport(threadId, "md")}>
+        <Download size={12} className="text-gray-400" />
+        Export as Markdown
+      </button>
+      <button className={menuItem} onClick={() => onExport(threadId, "json")}>
+        <Download size={12} className="text-gray-400" />
+        Export as JSON
+      </button>
+      <div className="my-1 border-t border-gray-100" />
+      <button
+        className="flex items-center gap-2 px-3 py-2 text-xs text-red-600 hover:bg-red-50 cursor-pointer transition-colors w-full text-left"
+        onClick={() => onDelete(threadId)}
+      >
+        <Trash2 size={12} />
+        Delete conversation
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Date grouping helper
+// ---------------------------------------------------------------------------
+
+function groupThreadsByDate(threads: ChatThreadSummary[]): Array<{ label: string; threads: ChatThreadSummary[] }> {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86_400_000);
+  const weekAgo = new Date(today.getTime() - 7 * 86_400_000);
+
+  const groups: Record<string, ChatThreadSummary[]> = {};
+  const order: string[] = [];
+
+  for (const t of threads) {
+    const d = new Date(t.updated_at);
+    let label: string;
+    if (d >= today) label = "Today";
+    else if (d >= yesterday) label = "Yesterday";
+    else if (d >= weekAgo) label = "This week";
+    else label = d.toLocaleDateString("en-US", { month: "short", year: "numeric" });
+
+    if (!groups[label]) {
+      groups[label] = [];
+      order.push(label);
+    }
+    groups[label].push(t);
+  }
+
+  return order.map((label) => ({ label, threads: groups[label] }));
 }
 

@@ -1,14 +1,97 @@
 /**
  * Chat mode: full-screen conversational interface.
- * Wraps the existing ChatPanel in a full-width layout with a thread
- * list sidebar. This is the default mode — as simple as ChatGPT/Claude.
+ * Wraps the existing ChatPanel in a full-width layout with workspace-scoped
+ * thread tabs synced via the workspace store.
  */
+import { useState, useCallback, useEffect } from "react";
 import ChatPanel from "../ChatPanel";
+import ThreadTabs, { useThreadCloseShortcut } from "../shell/ThreadTabs";
+import WorkspaceContextBar from "../chat/WorkspaceContextBar";
+import { useWorkspaceStore } from "../../store/useWorkspaceStore";
+import { useAppStore } from "../../store/useAppStore";
 
 export default function ChatMode() {
+  const activeMode = useAppStore((s) => s.activeMode);
+  const activeWorkspace = useWorkspaceStore((s) => s.getActiveWorkspace());
+  const openThread = useWorkspaceStore((s) => s.openThread);
+  const closeThread = useWorkspaceStore((s) => s.closeThread);
+  const setActiveThread = useWorkspaceStore((s) => s.setActiveThread);
+
+  const [threadTitles, setThreadTitles] = useState<Map<string, string>>(
+    () => new Map(),
+  );
+
+  const handleThreadOpen = useCallback(
+    (threadId: string, threadTitle?: string) => {
+      openThread(threadId);
+      if (threadTitle) {
+        setThreadTitles((prev) => {
+          const next = new Map(prev);
+          next.set(threadId, threadTitle);
+          return next;
+        });
+      }
+    },
+    [openThread],
+  );
+
+  const handleThreadTitleUpdate = useCallback(
+    (threadId: string, title: string) => {
+      setThreadTitles((prev) => {
+        const next = new Map(prev);
+        next.set(threadId, title);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const handleSelectThread = useCallback(
+    (threadId: string) => {
+      setActiveThread(threadId);
+      window.dispatchEvent(
+        new CustomEvent("workspace:selectThread", { detail: { threadId } }),
+      );
+    },
+    [setActiveThread],
+  );
+
+  const handleCloseThread = useCallback(
+    (threadId: string) => {
+      closeThread(threadId);
+    },
+    [closeThread],
+  );
+
+  const handleNewThread = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("workspace:newThread"));
+  }, []);
+
+  useThreadCloseShortcut();
+
+  const isChatActive = activeMode === "chat";
+
   return (
     <div className="flex-1 min-h-0 w-full overflow-hidden flex flex-col bg-white">
-      <ChatPanel fullScreen />
+      {isChatActive && (
+        <>
+          <ThreadTabs
+            threadTitles={threadTitles}
+            onSelectThread={handleSelectThread}
+            onCloseThread={handleCloseThread}
+            onNewThread={handleNewThread}
+          />
+          <WorkspaceContextBar />
+        </>
+      )}
+      <div className="flex-1 min-h-0 relative">
+        <ChatPanel
+          fullScreen
+          workspaceId={activeWorkspace?.id}
+          onThreadOpen={handleThreadOpen}
+          onThreadTitleUpdate={handleThreadTitleUpdate}
+        />
+      </div>
     </div>
   );
 }

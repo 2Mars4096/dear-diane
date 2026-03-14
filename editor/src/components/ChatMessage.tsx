@@ -16,6 +16,16 @@ import { groupToolCallsForDisplay } from "../lib/toolCallPresentation";
 import ToolCallCard from "./ToolCallCard";
 import RunOutputBlock from "./RunOutputBlock";
 import { nativeShell } from "../lib/electronBridge";
+import {
+  ChartBlock,
+  FileCard,
+  InlineDiff,
+  ProgressCard,
+  InlineImage,
+  CitationCard,
+  parseRichBlocks,
+  type RichBlock,
+} from "./chat/RichOutputRenderers";
 
 // ---------------------------------------------------------------------------
 // Markdown → HTML  (marked + custom renderer)
@@ -58,6 +68,12 @@ const _markedInstance = (() => {
   const renderer = new Renderer();
 
   renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
+    if (lang === "chart" || lang === "json:chart") {
+      return _ph(
+        `<div data-rich-chart class="hidden">${escapeHtml(text)}</div>`,
+      );
+    }
+
     let highlighted: string;
     try {
       highlighted =
@@ -212,6 +228,104 @@ function renderMarkdown(raw: string): string {
   });
 
   return html;
+}
+
+// ---------------------------------------------------------------------------
+// Rich content — splits message into rich blocks and renders each
+// ---------------------------------------------------------------------------
+
+function RichContentRenderer({
+  content,
+  onClick,
+}: {
+  content: string;
+  onClick: (e: React.MouseEvent) => void;
+}) {
+  const blocks = useMemo(() => parseRichBlocks(content), [content]);
+  const hasRichBlocks = blocks.some((b) => b.type !== "markdown");
+
+  if (!hasRichBlocks) {
+    const html = renderMarkdown(content);
+    return (
+      <div
+        onClick={onClick}
+        className="text-sm leading-relaxed [&_pre]:my-2 [&_code]:break-words [&_a]:underline"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+
+  return (
+    <div className="text-sm leading-relaxed [&_pre]:my-2 [&_code]:break-words [&_a]:underline">
+      {blocks.map((block, i) => (
+        <RichBlockRenderer key={i} block={block} onClick={onClick} />
+      ))}
+    </div>
+  );
+}
+
+function RichBlockRenderer({
+  block,
+  onClick,
+}: {
+  block: RichBlock;
+  onClick: (e: React.MouseEvent) => void;
+}) {
+  switch (block.type) {
+    case "chart":
+      return <ChartBlock spec={block.data} />;
+
+    case "file":
+      return (
+        <FileCard
+          filename={block.data.filename}
+          path={block.data.path}
+          size={block.data.size}
+        />
+      );
+
+    case "diff":
+      return (
+        <InlineDiff
+          original={block.data.original}
+          modified={block.data.modified}
+          filename={block.data.filename}
+        />
+      );
+
+    case "progress":
+      return (
+        <ProgressCard
+          steps={block.data.steps ?? []}
+          elapsed={block.data.elapsed}
+        />
+      );
+
+    case "image":
+      return <InlineImage src={block.data.src} alt={block.data.alt} />;
+
+    case "citation":
+      return (
+        <CitationCard
+          author={block.data.author ?? "Unknown"}
+          year={block.data.year ?? ""}
+          title={block.data.title ?? "Untitled"}
+          url={block.data.url}
+          abstract={block.data.abstract}
+        />
+      );
+
+    case "markdown":
+    default: {
+      const html = renderMarkdown(block.raw);
+      return (
+        <div
+          onClick={onClick}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -586,11 +700,7 @@ export default function ChatMessageBubble({
             dangerouslySetInnerHTML={{ __html: html }}
           />
         ) : message.content ? (
-          <div
-            onClick={handleClick}
-            className="text-sm leading-relaxed [&_pre]:my-2 [&_code]:break-words [&_a]:underline"
-            dangerouslySetInnerHTML={{ __html: html }}
-          />
+          <RichContentRenderer content={message.content} onClick={handleClick} />
         ) : null}
 
         {message.toolCalls && message.toolCalls.length > 0 && (
