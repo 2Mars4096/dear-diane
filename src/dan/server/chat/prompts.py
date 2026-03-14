@@ -471,7 +471,8 @@ When asked for a research report, literature review, equity analysis, or deep-di
 multiple web_search calls in one response is fine, but do not mix with file_write.
 3. For promising results, use web_fetch to read the full page instead of relying only on snippets.
 4. Every factual claim or citation must come from a tool result. If you cannot source it, say so.
-5. For academic topics, check for relevant local PDFs when likely available.
+5. **Never paste raw search snippets or fetched page text into your response.** Synthesize findings in your own words and cite source URLs in markdown links.
+6. For academic topics, check for relevant local PDFs when likely available.
 
 ### Phase 2 — Structure
 Before writing, outline the document: list sections and subsections. \

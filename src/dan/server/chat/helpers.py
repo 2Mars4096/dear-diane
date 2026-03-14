@@ -317,6 +317,39 @@ def _clean_tool_result(tool_name: str, content: str, limit: int = 4000) -> str:
     return content.strip()[:limit]
 
 
+def _summarize_tool_result(tool_name: str, args: dict[str, Any], message: str, success: bool) -> str:
+    """Return a short one-line summary of a tool result for fallback display.
+
+    Used instead of raw tool output in ``combined_text_parts`` so that
+    timeout / error fallback paths never dump raw web content to the user.
+    """
+    status = "" if success else " [failed]"
+    if tool_name in ("web_search", "search_web"):
+        query = args.get("query", "").strip()[:60]
+        count = message.count("\n\n") + 1 if message.strip() else 0
+        return f"Searched web for \"{query}\" ({count} results){status}"
+    if tool_name in ("web_fetch", "fetch_url", "open_url"):
+        url = args.get("url", "").strip()[:80]
+        size = f"{len(message):,}" if message else "0"
+        return f"Fetched {url} ({size} chars){status}"
+    if tool_name in ("file_read", "read_file", "pdf_read"):
+        path = args.get("path") or args.get("file_path") or args.get("filepath") or ""
+        if isinstance(path, str):
+            path = path.rsplit("/", 1)[-1][:40]
+        size = f"{len(message):,}" if message else "0"
+        return f"Read {path} ({size} chars){status}"
+    if tool_name in ("file_write", "write_file", "edit_file"):
+        path = args.get("path") or args.get("file_path") or ""
+        if isinstance(path, str):
+            path = path.rsplit("/", 1)[-1][:40]
+        return f"Wrote {path}{status}"
+    if tool_name == "shell":
+        cmd = (args.get("command") or "")[:40]
+        return f"Ran command: {cmd}{status}"
+    label = tool_name.replace("_", " ")
+    return f"{label}{status}"
+
+
 # ---------------------------------------------------------------------------
 # Source extraction helper
 # ---------------------------------------------------------------------------

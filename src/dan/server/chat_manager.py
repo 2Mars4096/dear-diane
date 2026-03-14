@@ -92,6 +92,7 @@ from dan.server.chat.helpers import (  # noqa: F401
     _write_file_escalation_prompt,
     _is_transient_llm_error,
     _clean_tool_result,
+    _summarize_tool_result,
     _extract_cited_sources,
     _URL_RE,
     CHAT_MODE_ALIASES,
@@ -1185,23 +1186,18 @@ class ChatManager:
                         )
                         break
                     except Exception as e:
-                        if attempt == 0 and ("timeout" in str(e).lower() or "rate" in str(e).lower() or "connection" in str(e).lower()):
-                            logger.warning(f"Transient error in LLM call, retrying: {e}")
-                            await asyncio.sleep(2)
+                        _is_transient = (
+                            isinstance(e, (asyncio.TimeoutError, TimeoutError))
+                            or "timeout" in str(e).lower()
+                            or "rate" in str(e).lower()
+                            or "connection" in str(e).lower()
+                        )
+                        if attempt < 1 and _is_transient:
+                            logger.warning("Transient error in LLM call (attempt %d), retrying: %s", attempt, e)
+                            await asyncio.sleep(2 * (attempt + 1))
                             continue
                         raise
             except Exception as exc:
-                if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-                    logger.warning("Initial tool-calling complete() timed out: %s", exc)
-                    yield ChatCompleteEvent(
-                        message_id=message_id,
-                        content="The language model took too long to begin responding. Please try again, continue from the saved file, or switch to a faster model.",
-                        token_usage={},
-                        context_window=_get_context_window(self._chat_model),
-                        graph_revision=revision,
-                        revision_mismatch=revision_mismatch,
-                    )
-                    return
                 logger.warning(
                     "Tool-calling complete() failed (%s), falling back to text-only stream",
                     exc,
@@ -2033,7 +2029,9 @@ class ChatManager:
                             str(cap_args.get("path") or cap_args.get("file_path") or cap_args.get("filepath") or "")
                         ] if cap_name in ("pdf_read", "file_read") and isinstance(cap_args, dict) else [],
                     })
-                    combined_text_parts.append(cap_result.message)
+                    combined_text_parts.append(
+                        _summarize_tool_result(cap_name, cap_args if isinstance(cap_args, dict) else {}, cap_result.message, cap_result.success)
+                    )
                     if cap_result.stream_channel_id:
                         last_stream_channel_id = cap_result.stream_channel_id
                     tool_result_messages.append({
@@ -2164,22 +2162,87 @@ class ChatManager:
                         ",".join(missing_action_hints) or "none",
                         force_file_write_next_turn,
                     )
-                    combined_content = "\n\n".join(combined_text_parts)
-                    if not combined_content.strip():
-                        if is_timeout:
-                            if "write_file" in missing_action_hints:
-                                combined_content = (
-                                    "The language model took too long to respond after using tools "
-                                    "before it completed the required file write. Please try again "
-                                    "or ask me to continue from the partial progress."
-                                )
-                            else:
-                                combined_content = (
-                                    "The language model took too long to respond after using tools. "
-                                    "Please try asking me to continue or summarize."
-                                )
-                        else:
-                            combined_content = "I encountered an error generating a response after using tools. Please try again."
+
+                    # Try a no-tools synthesis before giving up — the model
+                    # may be able to produce a useful answer from what's already
+                    # in the conversation history even if the tool follow-up timed out.
+                    synthesis_ok = False
+                    try:
+                        synthesis_messages = list(messages)
+                        synthesis_messages.append({
+                            "role": "user",
+                            "content": (
+                                "The previous tool call timed out. Using ONLY the tool "
+                                "results already in this conversation, provide the best "
+                                "answer you can. Do not call any tools."
+                            ),
+                        })
+                        synthesis_result = await asyncio.wait_for(
+                            provider.complete(
+                                messages=synthesis_messages,
+                                model=self._chat_model,
+                                temperature=0.7,
+                                max_tokens=completion_max_tokens,
+                            ),
+                            timeout=min(_LLM_CALL_TIMEOUT_SECONDS, 60),
+                        )
+                        if synthesis_result and (synthesis_result.text or "").strip():
+                            result = synthesis_result
+                            synthesis_ok = True
+                            logger.info("Mid-loop timeout recovery synthesis succeeded")
+                    except Exception as synth_exc:
+                        logger.debug("Mid-loop timeout recovery synthesis failed: %s", synth_exc)
+
+                    if synthesis_ok:
+                        content = result.text or ""
+                        yield ChatTokenEvent(delta=content, accumulated=content)
+                        normalized_usage = _normalize_usage(usage_totals or result.usage)
+                        self._record_conversation_summary(
+                            workflow_id=workflow_id,
+                            user_message=message,
+                            assistant_message=content,
+                        )
+                        _try_persist_audit(
+                            workflow_id=workflow_id,
+                            message_id=message_id,
+                            user_message=message,
+                            assistant_message=content,
+                            mode=mode,
+                            model=self._chat_model,
+                            audit_tool_records=audit_tool_records,
+                            prompt_messages=messages,
+                            surface=surface,
+                            audit_metadata=audit_metadata,
+                        )
+                        yield ChatCompleteEvent(
+                            message_id=message_id,
+                            content=content,
+                            token_usage=normalized_usage,
+                            context_window=_get_context_window(self._chat_model),
+                            graph_revision=revision,
+                            revision_mismatch=revision_mismatch,
+                            stream_channel_id=last_stream_channel_id,
+                        )
+                        return
+
+                    # Synthesis also failed — build a contextual error message
+                    # that includes tool summaries so "continue" has context.
+                    tool_summary_lines = [p for p in combined_text_parts if p.strip()]
+                    if tool_summary_lines:
+                        progress_note = "Here's what I completed before the interruption:\n" + "\n".join(
+                            f"- {line}" for line in tool_summary_lines
+                        )
+                    else:
+                        progress_note = ""
+                    if is_timeout:
+                        error_intro = (
+                            "The language model took too long to respond after using tools."
+                        )
+                    else:
+                        error_intro = (
+                            "I encountered an error generating a response after using tools."
+                        )
+                    combined_content = f"{error_intro}\n\n{progress_note}\n\nPlease ask me to continue or summarize.".strip()
                     self._record_conversation_summary(
                         workflow_id=workflow_id,
                         user_message=message,
