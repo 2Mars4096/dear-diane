@@ -97,5 +97,16 @@ pnpm-debug.log*
 /tests/*
 !/tests/test_domain_learning.py
 !/tests/test_chat_manager_codegen_resilience.py
+!/tests/test_model_override.py
 !/tests/test_concierge/
 !/tests/test_concierge/**
+/tests/test_concierge/__pycache__/
+/tests/test_concierge/**/*.pyc
+!/tests/test_providers/
+/tests/test_providers/*
+!/tests/test_providers/test_tier_normalization.py
+!/tests/test_adapters/
+/tests/test_adapters/*
+!/tests/test_adapters/test_telegram.py
+tests/__pycache__/
+tests/.DS_Store
