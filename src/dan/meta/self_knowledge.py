@@ -131,6 +131,9 @@ _CHUNK_CFG: dict[str, Any] = {"chunk_size": 2000, "overlap": 200}
 # ---------------------------------------------------------------------------
 
 
+_DEFAULT_HASH_PATH = Path.home() / ".dan" / "self_knowledge_hashes.json"
+
+
 class SelfKnowledgeIndex:
     """Indexes DAN's own docs for planner grounding.
 
@@ -138,6 +141,9 @@ class SelfKnowledgeIndex:
     ``VectorStore``, ``EmbeddingProvider``) to embed and store
     documentation, tool schemas, and workflow examples in a dedicated
     collection (``_dan_self_knowledge``).
+
+    File content hashes are persisted to disk so unchanged files are
+    skipped on restart (truly incremental).
     """
 
     def __init__(
@@ -147,6 +153,7 @@ class SelfKnowledgeIndex:
         store: VectorStore | None = None,
         store_config: VectorStoreConfig | None = None,
         token_budget: int = 4000,
+        hash_path: Path | None = None,
     ) -> None:
         self._provider = embedding_provider
         self._model = embedding_model
@@ -157,7 +164,8 @@ class SelfKnowledgeIndex:
             store=store,
             store_config=store_config,
         )
-        self._file_hashes: dict[str, str] = {}
+        self._hash_path = hash_path or _DEFAULT_HASH_PATH
+        self._file_hashes: dict[str, str] = self._load_hashes()
 
     @property
     def store(self) -> VectorStore:
@@ -207,6 +215,7 @@ class SelfKnowledgeIndex:
             files_indexed,
             stats.get("chunks", 0),
         )
+        self._save_hashes()
         return {"files_indexed": files_indexed, "chunks": stats.get("chunks", 0)}
 
     async def index_tool_schemas(
@@ -364,23 +373,27 @@ class SelfKnowledgeIndex:
         examples_dir: Path | None = None,
         tool_registry: Any | None = None,
     ) -> dict[str, Any]:
-        """Re-index only files whose content hash has changed (incremental).
+        """Re-index only content whose hash has changed since last run.
 
-        Compares current file SHA-256 against stored hashes.  Unchanged
-        files are skipped.  Tool schemas are always re-indexed since they
-        have no on-disk hash to compare.
+        Compares current SHA-256 against persisted hashes.  Unchanged
+        files and tool schemas are skipped entirely.  Hashes are saved
+        to disk after each successful indexing pass.
         """
         stats: dict[str, Any] = {
             "docs_refreshed": 0,
             "examples_refreshed": 0,
             "tools_refreshed": False,
         }
+        any_changed = False
 
         if doc_paths:
             changed = [p for p in doc_paths if self._file_changed(p)]
             if changed:
                 result = await self._index_docs_incremental(changed)
                 stats["docs_refreshed"] = result.get("files_indexed", 0)
+                any_changed = True
+            else:
+                logger.info("Self-knowledge: docs unchanged, skipping")
 
         if examples_dir and examples_dir.is_dir():
             changed_examples = [
@@ -391,11 +404,49 @@ class SelfKnowledgeIndex:
             if changed_examples:
                 result = await self._index_examples_incremental(changed_examples)
                 stats["examples_refreshed"] = result.get("files_indexed", 0)
+                any_changed = True
+            else:
+                logger.info("Self-knowledge: examples unchanged, skipping")
 
-        tool_result = await self.index_tool_schemas(tool_registry)
-        stats["tools_refreshed"] = tool_result.get("tools_indexed", 0) > 0
+        if self._tool_schemas_changed(tool_registry):
+            tool_result = await self.index_tool_schemas(tool_registry)
+            stats["tools_refreshed"] = tool_result.get("tools_indexed", 0) > 0
+            any_changed = True
+        else:
+            logger.info("Self-knowledge: tool schemas unchanged, skipping")
+
+        if any_changed:
+            self._save_hashes()
 
         return stats
+
+    def _tool_schemas_changed(self, tool_registry: Any | None) -> bool:
+        """Return True if the tool schema fingerprint differs from the stored one."""
+        tools: dict[str, tuple[Any, dict]] = {}
+        if tool_registry is not None and hasattr(tool_registry, "get_metadata"):
+            for tid in tool_registry.registered_ids():
+                meta = tool_registry.get_metadata(tid)
+                if meta:
+                    tools[tid] = (None, meta)
+        else:
+            try:
+                from dan.tools import get_all_tools
+                all_t = get_all_tools()
+                if tool_registry is not None:
+                    registered = set(tool_registry.registered_ids())
+                    tools = {k: v for k, v in all_t.items() if k in registered and v[1]}
+                else:
+                    tools = {k: v for k, v in all_t.items() if v[1]}
+            except Exception:
+                return True
+
+        fingerprint = hashlib.sha256(
+            str(sorted(tools.keys())).encode()
+        ).hexdigest()
+        if fingerprint == self._file_hashes.get("__tool_schemas__"):
+            return False
+        self._file_hashes["__tool_schemas__"] = fingerprint
+        return True
 
     # ------------------------------------------------------------------
     # Prompt formatting
@@ -430,6 +481,27 @@ class SelfKnowledgeIndex:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _load_hashes(self) -> dict[str, str]:
+        """Load persisted content hashes from disk."""
+        try:
+            if self._hash_path.exists():
+                import json
+                return json.loads(self._hash_path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.debug("Failed to load self-knowledge hashes", exc_info=True)
+        return {}
+
+    def _save_hashes(self) -> None:
+        """Persist content hashes to disk for cross-restart incrementality."""
+        try:
+            import json
+            self._hash_path.parent.mkdir(parents=True, exist_ok=True)
+            self._hash_path.write_text(
+                json.dumps(self._file_hashes, indent=2), encoding="utf-8",
+            )
+        except Exception:
+            logger.debug("Failed to save self-knowledge hashes", exc_info=True)
 
     def _file_changed(self, path: Path) -> bool:
         """Return True if *path* content differs from the stored hash."""

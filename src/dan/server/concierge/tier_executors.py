@@ -232,6 +232,8 @@ def _extract_chat_params(session: Any, system_prompt: str) -> dict[str, Any]:
     if not isinstance(allow_mutation_tool, bool):
         allow_mutation_tool = "workflow_edit" in required_action_hints
 
+    stream_channel_id = str(metadata.get("stream_channel_id") or "").strip() or None
+
     return {
         "workflow_id": workflow_id,
         "message": message,
@@ -246,6 +248,7 @@ def _extract_chat_params(session: Any, system_prompt: str) -> dict[str, Any]:
         "allow_mutation_tool": allow_mutation_tool,
         "surface": surface,
         "required_action_hints": required_action_hints,
+        "stream_channel_id": stream_channel_id,
     }
 
 
