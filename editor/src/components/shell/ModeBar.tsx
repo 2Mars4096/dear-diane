@@ -7,8 +7,10 @@ import {
   BarChart3,
   PenTool,
   Workflow,
+  Command,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import NotificationCenter from "./NotificationCenter";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   MessageSquare,
@@ -22,6 +24,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
 export default function ModeBar() {
   const activeMode = useAppStore((s) => s.activeMode);
   const setMode = useAppStore((s) => s.setMode);
+  const setGlobalPaletteVisible = useAppStore((s) => s.setGlobalPaletteVisible);
 
   const isElectron = typeof window !== "undefined" && "electronAPI" in window;
   const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
@@ -55,7 +58,20 @@ export default function ModeBar() {
           );
         })}
       </div>
+
       <div className="flex-1" />
+
+      {/* Right-side actions */}
+      <div className="flex items-center gap-1">
+        <button
+          onClick={() => setGlobalPaletteVisible(true)}
+          className="app-no-drag p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-white/10 transition-colors"
+          title="Command Palette (⇧⌘P)"
+        >
+          <Command size={15} />
+        </button>
+        <NotificationCenter />
+      </div>
     </div>
   );
 }
