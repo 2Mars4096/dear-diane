@@ -64,6 +64,7 @@ export interface ChatStreamEvent {
     | "chat_graph_created"
     | "chat_validation_result"
     | "chat_file_attachment"
+    | "chat_injected_message"
     | "ping";
   delta?: string;
   accumulated?: string;
@@ -93,4 +94,5 @@ export interface ChatStreamEvent {
   path?: string;
   filename?: string;
   size?: number;
+  inject_id?: string;
 }

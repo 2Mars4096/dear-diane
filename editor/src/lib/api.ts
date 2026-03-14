@@ -367,6 +367,15 @@ export const stopChatStream = (channelId: string, messageId?: string) =>
     },
   );
 
+export const injectChatMessage = (channelId: string, content: string, injectId: string) =>
+  request<{ status: string; channel_id: string; inject_id: string }>(
+    `/chat/${channelId}/inject`,
+    {
+      method: "POST",
+      body: JSON.stringify({ content, inject_id: injectId }),
+    },
+  );
+
 export const exportChatThread = (
   workflowId: string,
   threadId: string,

@@ -1461,6 +1461,20 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                 );
                 return updated;
               });
+            } else if (evt.type === "chat_injected_message") {
+              const injectedUserMsg: ChatMessage = {
+                id: evt.inject_id ?? crypto.randomUUID(),
+                role: "user",
+                content: evt.content ?? "",
+                timestamp: Date.now(),
+              };
+              setMessages((prev) => {
+                const aidx = prev.findIndex((m) => m.id === assistantId);
+                if (aidx === -1) return [...prev, injectedUserMsg];
+                const before = prev.slice(0, aidx);
+                const after = prev.slice(aidx);
+                return [...before, injectedUserMsg, ...after];
+              });
             } else if (evt.type === "ping") {
               // WS keepalive — no-op
             } else if (evt.type === "chat_error") {
@@ -2448,6 +2462,23 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
                   {item.content}
                 </span>
                 <div className="flex items-center gap-0.5 flex-shrink-0">
+                  {idx === 0 && isStreaming && activeChannelId && (
+                    <button
+                      onClick={() => {
+                        const chId = activeChannelIdRef.current;
+                        if (!chId) return;
+                        api.injectChatMessage(chId, item.content, item.id).then(() => {
+                          setPendingQueue((q) => q.filter((_, i) => i !== 0));
+                        }).catch((err) => {
+                          console.warn("Failed to inject message:", err);
+                        });
+                      }}
+                      className="text-xs text-indigo-500 hover:text-indigo-700 px-1.5 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 transition-colors font-medium"
+                      title="Inject into current session — DAN will see this in the next tool round"
+                    >
+                      Push
+                    </button>
+                  )}
                   <button
                     onClick={() => {
                       setPendingQueue((q) => q.filter((_, i) => i !== idx));
