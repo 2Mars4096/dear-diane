@@ -7,10 +7,8 @@ import ChatPanel from "../ChatPanel";
 
 export default function ChatMode() {
   return (
-    <div className="flex h-full bg-white">
-      <div className="flex-1 min-w-0">
-        <ChatPanel fullScreen />
-      </div>
+    <div className="flex-1 min-h-0 w-full overflow-hidden flex flex-col bg-white">
+      <ChatPanel fullScreen />
     </div>
   );
 }

@@ -177,6 +177,12 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
 
   const [threads, setThreads] = useState<ChatThreadSummary[]>([]);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!activeThreadId) return;
+    try {
+      localStorage.setItem(`dan_active_thread_${graphId ?? ""}`, activeThreadId);
+    } catch {}
+  }, [activeThreadId, graphId]);
   const [showThreadList, setShowThreadList] = useState(!fullScreen);
   const [loadingThreads, setLoadingThreads] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -538,7 +544,12 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
       const sorted = await fetchThreads(graphId);
       if (cancelled) return;
       if (sorted.length > 0 && !activeThreadIdRef.current) {
-        await loadThread(graphId, sorted[0].id);
+        let targetId = sorted[0].id;
+        try {
+          const saved = localStorage.getItem(`dan_active_thread_${graphId}`);
+          if (saved && sorted.some((t) => t.id === saved)) targetId = saved;
+        } catch {}
+        await loadThread(graphId, targetId);
       } else if (sorted.length === 0) {
         setShowThreadList(true);
         requestAnimationFrame(() => textareaRef.current?.focus());
@@ -2378,6 +2389,79 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
     </div>
   );
 
+  const queueStrip = pendingQueue.length > 0 ? (
+    <div className={`flex-shrink-0 border-t border-gray-100 bg-gray-50/50 max-h-36 overflow-y-auto ${fullScreen ? "px-4 py-2" : "px-3 py-2"}`}>
+      <div className={`${fullScreen ? "max-w-3xl mx-auto" : ""} space-y-1`}>
+        <div className="text-[10px] font-medium text-gray-500 px-1">
+          Queued messages ({pendingQueue.length})
+        </div>
+        {pendingQueue.map((item, idx) => (
+          <div
+            key={item.id}
+            className="flex items-center gap-1.5 bg-white rounded-lg px-2.5 py-1.5 group border border-gray-100"
+          >
+            <GripVertical size={12} className="text-gray-300 flex-shrink-0" />
+            <span className="flex-1 text-xs text-gray-700 truncate min-w-0">
+              {item.content}
+            </span>
+            <div className="flex items-center gap-0.5 flex-shrink-0">
+              {idx === 0 && isStreaming && activeChannelId && (
+                <button
+                  onClick={() => {
+                    const chId = activeChannelIdRef.current;
+                    if (!chId) return;
+                    api.injectChatMessage(chId, item.content, item.id).then(() => {
+                      setPendingQueue((q) => q.filter((_, i) => i !== 0));
+                    }).catch((err) => {
+                      console.warn("Failed to inject message:", err);
+                    });
+                  }}
+                  className="text-xs text-indigo-500 hover:text-indigo-700 px-1.5 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 transition-colors font-medium"
+                  title="Inject into current session — DAN will see this in the next tool round"
+                >
+                  Push
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  setPendingQueue((q) => q.filter((_, i) => i !== idx));
+                  setInputText(item.content);
+                  requestAnimationFrame(() => textareaRef.current?.focus());
+                }}
+                className="text-gray-400 hover:text-indigo-500 p-0.5 rounded transition-colors"
+                title="Edit this message"
+              >
+                <PencilLine size={11} />
+              </button>
+              {idx > 0 && (
+                <button
+                  onClick={() => {
+                    setPendingQueue((q) => {
+                      const next = [...q];
+                      [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
+                      return next;
+                    });
+                  }}
+                  className="text-gray-400 hover:text-indigo-500 p-0.5 rounded transition-colors"
+                  title="Move up in queue"
+                >
+                  <ArrowUp size={11} />
+                </button>
+              )}
+              <button
+                onClick={() => setPendingQueue((q) => q.filter((_, i) => i !== idx))}
+                className="text-gray-400 hover:text-red-500 p-0.5 rounded transition-colors"
+                title="Remove from queue"
+              >
+                <X size={11} />
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  ) : null;
+
   const inputArea = (
     <div className={`flex-shrink-0 border-t border-gray-200 ${fullScreen ? "px-4 py-4 bg-white" : "p-3"}`}>
       <div className={fullScreen ? "max-w-3xl mx-auto" : ""}>
@@ -2447,76 +2531,6 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
             ? "Enter to queue · Shift+Enter for newline" + (fullScreen ? " · Cmd+K command palette" : "")
             : "Enter to send · Shift+Enter for newline" + (fullScreen ? " · Cmd+K command palette" : "")}
         </div>
-        {pendingQueue.length > 0 && (
-          <div className="mt-2 space-y-1">
-            <div className="text-[10px] font-medium text-gray-500 px-1">
-              Queued messages ({pendingQueue.length})
-            </div>
-            {pendingQueue.map((item, idx) => (
-              <div
-                key={item.id}
-                className="flex items-center gap-1.5 bg-gray-50 rounded-lg px-2.5 py-1.5 group"
-              >
-                <GripVertical size={12} className="text-gray-300 flex-shrink-0" />
-                <span className="flex-1 text-xs text-gray-700 truncate min-w-0">
-                  {item.content}
-                </span>
-                <div className="flex items-center gap-0.5 flex-shrink-0">
-                  {idx === 0 && isStreaming && activeChannelId && (
-                    <button
-                      onClick={() => {
-                        const chId = activeChannelIdRef.current;
-                        if (!chId) return;
-                        api.injectChatMessage(chId, item.content, item.id).then(() => {
-                          setPendingQueue((q) => q.filter((_, i) => i !== 0));
-                        }).catch((err) => {
-                          console.warn("Failed to inject message:", err);
-                        });
-                      }}
-                      className="text-xs text-indigo-500 hover:text-indigo-700 px-1.5 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 transition-colors font-medium"
-                      title="Inject into current session — DAN will see this in the next tool round"
-                    >
-                      Push
-                    </button>
-                  )}
-                  <button
-                    onClick={() => {
-                      setPendingQueue((q) => q.filter((_, i) => i !== idx));
-                      setInputText(item.content);
-                      requestAnimationFrame(() => textareaRef.current?.focus());
-                    }}
-                    className="text-gray-400 hover:text-indigo-500 p-0.5 rounded transition-colors"
-                    title="Edit this message"
-                  >
-                    <PencilLine size={11} />
-                  </button>
-                  {idx > 0 && (
-                    <button
-                      onClick={() => {
-                        setPendingQueue((q) => {
-                          const next = [...q];
-                          [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
-                          return next;
-                        });
-                      }}
-                      className="text-gray-400 hover:text-indigo-500 p-0.5 rounded transition-colors"
-                      title="Move up in queue"
-                    >
-                      <ArrowUp size={11} />
-                    </button>
-                  )}
-                  <button
-                    onClick={() => setPendingQueue((q) => q.filter((_, i) => i !== idx))}
-                    className="text-gray-400 hover:text-red-500 p-0.5 rounded transition-colors"
-                    title="Remove from queue"
-                  >
-                    <X size={11} />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -2526,7 +2540,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
   // -------------------------------------------------------------------------
   if (fullScreen) {
     return (
-      <div className="flex h-full w-full bg-white">
+      <div className="flex flex-1 min-h-0 w-full bg-white overflow-hidden">
         {showThreadList && (
           <div className="w-72 flex-shrink-0 border-r border-gray-200 flex flex-col">
             <ThreadListView
@@ -2546,10 +2560,11 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
             />
           </div>
         )}
-        <div className="flex flex-col flex-1 min-w-0">
+        <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
           {conversationHeader}
           {modeSelector}
           {messagesArea}
+          {queueStrip}
           {inputArea}
         </div>
       </div>
@@ -2565,7 +2580,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
         onMouseDown={onResizeStart}
         className="w-1 cursor-col-resize hover:bg-indigo-200 active:bg-indigo-300 transition-colors flex-shrink-0"
       />
-      <div className="flex flex-col flex-1 min-w-0">
+      <div className="flex flex-col flex-1 min-w-0 min-h-0">
         {showThreadList ? (
           <ThreadListView
             threads={threads}
@@ -2587,6 +2602,7 @@ export default function ChatPanel({ fullScreen = false }: ChatPanelProps) {
             {conversationHeader}
             {modeSelector}
             {messagesArea}
+            {queueStrip}
             {inputArea}
           </>
         )}

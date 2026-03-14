@@ -27,7 +27,7 @@ export default function AppShell() {
       <ModeBar />
 
       <div className="flex-1 min-h-0 relative">
-        <div className={`absolute inset-0 ${activeMode === "chat" ? "" : "hidden"}`}>
+        <div className={`absolute inset-0 overflow-hidden flex flex-col ${activeMode === "chat" ? "" : "hidden"}`}>
           <ErrorBoundary name="Chat">
             <ChatMode />
           </ErrorBoundary>
