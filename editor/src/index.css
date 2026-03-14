@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "@xyflow/react/dist/style.css";
+@import "allotment/dist/style.css";
 
 html, body {
   height: 100%;
@@ -116,4 +117,182 @@ html, body {
 
 .dan-bg-stream-pulse {
   animation: dan-bg-pulse 1.5s ease-in-out infinite;
+}
+
+/* -- Inline edit (Cmd+K) -------------------------------------------------- */
+
+@keyframes inline-edit-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.inline-edit-widget {
+  animation: inline-edit-fade-in 0.15s ease-out;
+}
+
+.inline-edit-selection-highlight {
+  background-color: rgba(100, 150, 255, 0.15);
+  border: 1px solid rgba(100, 150, 255, 0.3);
+}
+
+.inline-edit-added-highlight {
+  background-color: rgba(34, 197, 94, 0.12);
+  border-left: 3px solid rgba(34, 197, 94, 0.6);
+}
+
+.inline-edit-loading-highlight {
+  background-color: rgba(59, 130, 246, 0.08);
+}
+
+.inline-edit-changed-line {
+  background-color: rgba(251, 191, 36, 0.1);
+  border-left: 3px solid rgba(251, 191, 36, 0.5);
+}
+
+.inline-edit-loading-border {
+  animation: inline-edit-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes inline-edit-pulse {
+  0%, 100% { border-color: rgba(59, 130, 246, 0.3); }
+  50% { border-color: rgba(59, 130, 246, 0.6); }
+}
+
+.inline-edit-glyph-added {
+  background-color: rgba(34, 197, 94, 0.6);
+  width: 3px !important;
+  margin-left: 3px;
+}
+
+/* -- Coverage decorations -------------------------------------------------- */
+
+.coverage-line-covered {
+  background-color: rgba(34, 197, 94, 0.06);
+}
+
+.coverage-line-uncovered {
+  background-color: rgba(239, 68, 68, 0.08);
+}
+
+.coverage-glyph-covered::before {
+  content: "✓";
+  color: #22c55e;
+  font-size: 9px;
+}
+
+.coverage-glyph-uncovered::before {
+  content: "✗";
+  color: #ef4444;
+  font-size: 9px;
+}
+
+/* -- Merge conflict decorations ------------------------------------------- */
+
+.merge-conflict-current {
+  background-color: rgba(76, 175, 80, 0.15) !important;
+  border-left: 3px solid #4caf50;
+}
+
+.merge-conflict-incoming {
+  background-color: rgba(33, 150, 243, 0.15) !important;
+  border-left: 3px solid #2196f3;
+}
+
+.merge-conflict-actions {
+  color: #64b5f6 !important;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+/* -- Git blame inline annotation (GitLens-style) ------------------------- */
+
+.git-blame-inline {
+  color: #6b7280 !important;
+  font-style: italic;
+  font-size: 11px;
+  padding-left: 2em;
+  opacity: 0.7;
+}
+
+/* -- Inline diff decorations (added/removed/modified) -------------------- */
+
+.inline-diff-added {
+  background-color: rgba(40, 167, 69, 0.15);
+}
+
+.inline-diff-removed {
+  background-color: rgba(220, 53, 69, 0.15);
+}
+
+.inline-diff-modified {
+  background-color: rgba(255, 193, 7, 0.1);
+}
+
+.inline-diff-glyph-added::before {
+  content: "+";
+  color: #28a745;
+}
+
+.inline-diff-glyph-removed::before {
+  content: "-";
+  color: #dc3545;
+}
+
+/* -- Notification bell pulse --------------------------------------------- */
+
+@keyframes dan-bell-pulse {
+  0%   { transform: rotate(0deg); }
+  15%  { transform: rotate(12deg); }
+  30%  { transform: rotate(-10deg); }
+  45%  { transform: rotate(6deg); }
+  60%  { transform: rotate(-4deg); }
+  75%  { transform: rotate(2deg); }
+  100% { transform: rotate(0deg); }
+}
+
+.animate-bell-pulse {
+  animation: dan-bell-pulse 0.6s ease-in-out;
+}
+
+/* -- Research: Track changes decorations --------------------------------- */
+
+.track-change-pending {
+  background-color: rgba(250, 204, 21, 0.12);
+  border-bottom: 2px wavy rgba(250, 204, 21, 0.5);
+}
+
+.track-change-glyph::before {
+  content: "~";
+  color: #facc15;
+  font-weight: bold;
+}
+
+.track-change-accepted {
+  background-color: rgba(34, 197, 94, 0.12);
+}
+
+.track-change-rejected {
+  background-color: rgba(220, 53, 69, 0.08);
+  text-decoration: line-through;
+  opacity: 0.5;
+}
+
+/* -- Research: Writing preview typography -------------------------------- */
+
+.writing-preview {
+  font-family: 'Georgia', 'Crimson Text', 'Times New Roman', serif;
+  line-height: 1.8;
+}
+
+.writing-preview .math-block {
+  overflow-x: auto;
+  padding: 4px 0;
+}
+
+.writing-preview .math-block .katex-display {
+  margin: 0;
+}
+
+.writing-preview .katex {
+  font-size: 1.05em;
 }
