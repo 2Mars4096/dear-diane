@@ -114,12 +114,29 @@ def _truncate_assistant_message(text: str) -> str:
 
 _TOOL_SCHEMA_OVERHEAD_TOKENS = 2000
 
+_COMPACT_RATIO_OVERRIDE = float(os.environ.get("DAN_COMPACT_CONTEXT_RATIO", "0"))
+
+
+def _default_compact_ratio(context_window: int) -> float:
+    """Pick a compaction ratio based on window size.
+
+    Larger windows can afford a higher ratio because the output budget
+    is soft-capped (not proportional), leaving more room for input.
+    """
+    if context_window >= 1_000_000:
+        return 0.80
+    if context_window >= 200_000:
+        return 0.70
+    if context_window >= 128_000:
+        return 0.65
+    return 0.55
+
 
 def _compact_context(
     messages: list[dict[str, Any]],
     model: str,
     *,
-    target_ratio: float = 0.55,
+    target_ratio: float | None = None,
 ) -> list[dict[str, Any]]:
     """Dynamically compact messages to fit within target_ratio of context window.
 
@@ -137,6 +154,8 @@ def _compact_context(
     state through later follow-up completions.
     """
     context_window = _get_context_window(model)
+    if target_ratio is None:
+        target_ratio = _COMPACT_RATIO_OVERRIDE if _COMPACT_RATIO_OVERRIDE > 0 else _default_compact_ratio(context_window)
     budget = int(context_window * target_ratio) - _TOOL_SCHEMA_OVERHEAD_TOKENS
     if budget < 4000:
         budget = 4000
@@ -307,3 +326,41 @@ def compact_history(
         len(messages), total_kept, len(messages) - total_kept,
     )
     return system + truncated + recent
+
+
+# ---------------------------------------------------------------------------
+# Context pressure hint — injected when conversation is getting large
+# ---------------------------------------------------------------------------
+
+_CONTEXT_PRESSURE_THRESHOLD = float(os.environ.get("DAN_CONTEXT_PRESSURE_THRESHOLD", "0.60"))
+
+_CONTEXT_PRESSURE_HINT = (
+    "[System note: the conversation context is getting large. "
+    "Save intermediate results to a file with file_write before making more tool calls. "
+    "Keep your response concise and focused.]"
+)
+
+
+def context_pressure_hint(messages: list[dict[str, Any]], model: str) -> str | None:
+    """Return a short behavioral hint if context usage exceeds the pressure threshold.
+
+    Returns ``None`` when context is comfortable.  The caller should inject
+    the returned string as a system-role message right before the LLM call
+    so the model can adapt its behavior (write to file, be concise).
+    """
+    context_window = _get_context_window(model)
+    if context_window <= 0:
+        return None
+    used = 0
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, str):
+            used += 4 + estimate_tokens(c, model)
+        tc = m.get("tool_calls")
+        if isinstance(tc, list):
+            used += len(json.dumps(tc, default=str)) // 4
+    ratio = used / context_window
+    if ratio >= _CONTEXT_PRESSURE_THRESHOLD:
+        logger.debug("Context pressure: %.1f%% of %dK window", ratio * 100, context_window // 1000)
+        return _CONTEXT_PRESSURE_HINT
+    return None

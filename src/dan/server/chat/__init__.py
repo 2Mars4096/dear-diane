@@ -49,6 +49,7 @@ from dan.server.chat.prompts import (
 from dan.server.chat.tokens import (
     MODEL_CONTEXT_WINDOWS,
     compact_history,
+    context_pressure_hint,
     estimate_tokens,
 )
 
@@ -88,6 +89,7 @@ __all__ = [
     "_coerce_strict_edges",
     "_normalize_generated_mutation_ops",
     "estimate_tokens",
+    "context_pressure_hint",
     "compact_history",
     "MODEL_CONTEXT_WINDOWS",
     "generate_capability_reference",

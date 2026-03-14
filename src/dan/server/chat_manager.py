@@ -135,6 +135,7 @@ from dan.server.chat.tokens import (  # noqa: F401
     _truncate_assistant_message,
     _TOOL_SCHEMA_OVERHEAD_TOKENS,
     _compact_context,
+    context_pressure_hint,
     compact_history,
 )
 from dan.server.chat.graph_summary import (  # noqa: F401
@@ -2076,6 +2077,10 @@ class ChatManager:
                     })
 
                 messages = _compact_context(messages, self._chat_model)
+                _pressure_hint = context_pressure_hint(messages, self._chat_model)
+                if _pressure_hint:
+                    messages.append({"role": "system", "content": _pressure_hint})
+
                 followup_missing_action_hints = _missing_action_hints(
                     required_action_hints,
                     satisfied_tool_names,
