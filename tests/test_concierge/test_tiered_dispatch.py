@@ -27,7 +27,10 @@ from dan.server.concierge.tier_executors import (
     InstantExecutor,
     MultiStepExecutor,
     SingleShotExecutor,
+    _determine_stage,
+    _extract_chat_params,
 )
+from dan.server.concierge.tiering import ConciergeTierResolver
 from dan.server.concierge.tiered_dispatch import TieredDispatcher
 from dan.server.concierge.triage import TriageResult
 
@@ -664,3 +667,332 @@ async def test_root_assistant_turn_persists_session_tree_metadata(tmp_path: Path
     assert assistant_turn.content == "You are on the tiered path."
     assert isinstance(getattr(assistant_turn, "metadata", None), dict)
     assert assistant_turn.metadata["session_tree"]
+
+
+# ---------------------------------------------------------------------------
+# _determine_stage tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeMsg:
+    def __init__(self, metadata: dict[str, Any] | None = None) -> None:
+        self.metadata = metadata or {}
+        self.surface = "cli"
+        self.external_id = "test"
+        self.text = "hello"
+
+
+class _FakeRoute:
+    def __init__(
+        self,
+        target: str = "general",
+        action_hints: list[str] | None = None,
+    ) -> None:
+        self.target = target
+        self.action_hints = action_hints or []
+
+
+class _FakeTriage:
+    def __init__(
+        self,
+        intent: str = "ask",
+        route: Any = None,
+    ) -> None:
+        self.intent = intent
+        self.route = route
+        self.goal = "test"
+        self.deliverable = "test"
+
+
+class _FakeSession:
+    def __init__(
+        self,
+        triage: Any = None,
+        msg: Any = None,
+    ) -> None:
+        self.triage = triage
+        self.msg = msg or _FakeMsg()
+        self.id = "sess-1"
+        self.root_id = "sess-1"
+        self.context = None
+        self.task = "test task"
+        self.tier = 1
+
+
+def test_determine_stage_default_conversation() -> None:
+    session = _FakeSession(triage=_FakeTriage())
+    assert _determine_stage(session) == "conversation"
+
+
+def test_determine_stage_plan_intent() -> None:
+    session = _FakeSession(triage=_FakeTriage(intent="plan"))
+    assert _determine_stage(session) == "conversation_plan"
+
+
+def test_determine_stage_plan_mode() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(),
+        msg=_FakeMsg(metadata={"mode": "plan"}),
+    )
+    assert _determine_stage(session) == "conversation_plan"
+
+
+def test_determine_stage_debug_mode() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(),
+        msg=_FakeMsg(metadata={"mode": "debug"}),
+    )
+    assert _determine_stage(session) == "conversation_debug"
+
+
+def test_determine_stage_build_mode() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(),
+        msg=_FakeMsg(metadata={"mode": "build"}),
+    )
+    assert _determine_stage(session) == "workflow_build"
+
+
+def test_determine_stage_workflow_edit_action_hint() -> None:
+    route = _FakeRoute(action_hints=["workflow_edit"])
+    session = _FakeSession(triage=_FakeTriage(route=route))
+    assert _determine_stage(session) == "workflow_build"
+
+
+def test_determine_stage_workflow_target() -> None:
+    route = _FakeRoute(target="workflow")
+    session = _FakeSession(triage=_FakeTriage(route=route))
+    assert _determine_stage(session) == "workflow_build"
+
+
+def test_determine_stage_file_target() -> None:
+    route = _FakeRoute(target="file")
+    session = _FakeSession(triage=_FakeTriage(route=route))
+    assert _determine_stage(session) == "file_review"
+
+
+def test_determine_stage_no_triage() -> None:
+    session = _FakeSession(triage=None)
+    assert _determine_stage(session) == "conversation"
+
+
+def test_determine_stage_experience_lookup() -> None:
+    route = _FakeRoute(action_hints=["experience_lookup"])
+    session = _FakeSession(triage=_FakeTriage(route=route))
+    assert _determine_stage(session) == "experience_fallback"
+
+
+def test_determine_stage_direct_task_run() -> None:
+    route = _FakeRoute(target="run")
+    session = _FakeSession(triage=_FakeTriage(intent="agent", route=route))
+    assert _determine_stage(session) == "direct_task"
+
+
+def test_determine_stage_direct_task_memory() -> None:
+    route = _FakeRoute(target="memory")
+    session = _FakeSession(triage=_FakeTriage(intent="agent", route=route))
+    assert _determine_stage(session) == "direct_task"
+
+
+def test_determine_stage_direct_task_web() -> None:
+    route = _FakeRoute(target="web")
+    session = _FakeSession(triage=_FakeTriage(intent="agent", route=route))
+    assert _determine_stage(session) == "direct_task"
+
+
+def test_determine_stage_run_target_ask_intent_is_conversation() -> None:
+    """run target with 'ask' intent should be conversation, not direct_task."""
+    route = _FakeRoute(target="run")
+    session = _FakeSession(triage=_FakeTriage(intent="ask", route=route))
+    assert _determine_stage(session) == "conversation"
+
+
+# ---------------------------------------------------------------------------
+# _extract_chat_params model_override tests
+# ---------------------------------------------------------------------------
+
+
+def test_extract_chat_params_includes_model_override() -> None:
+    session = _FakeSession(triage=_FakeTriage())
+    params = _extract_chat_params(session, "system prompt", model_override="test-model")
+    assert params["model_override"] == "test-model"
+
+
+def test_extract_chat_params_omits_model_override_when_none() -> None:
+    session = _FakeSession(triage=_FakeTriage())
+    params = _extract_chat_params(session, "system prompt", model_override=None)
+    assert "model_override" not in params
+
+
+def test_extract_chat_params_omits_model_override_when_empty() -> None:
+    session = _FakeSession(triage=_FakeTriage())
+    params = _extract_chat_params(session, "system prompt", model_override="")
+    assert "model_override" not in params
+
+
+# ---------------------------------------------------------------------------
+# SingleShotExecutor model_override wiring test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_single_shot_passes_model_override_with_tier_resolver(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    tier_map = {"micro": "fast-model", "routine": "mid-model", "reasoning": "big-model", "critical": "big-model"}
+    concierge._tier_resolver = ConciergeTierResolver(tier_map, "fallback-model")
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="ask",
+            goal="Answer",
+            deliverable="Answer",
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["What time is it?"] = "It is noon."
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(surface="cli", external_id="cli-user", text="What time is it?")
+        )
+    ]
+
+    assert concierge.chat_manager.call_log == ["What time is it?"]
+    call = concierge.chat_manager.calls[-1]
+    assert call["model_override"] == "mid-model"
+
+
+@pytest.mark.asyncio
+async def test_single_shot_plan_mode_uses_reasoning_model(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    tier_map = {"micro": "fast-model", "routine": "mid-model", "reasoning": "big-model", "critical": "big-model"}
+    concierge._tier_resolver = ConciergeTierResolver(tier_map, "fallback-model")
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="plan",
+            goal="Plan the project",
+            deliverable="Plan the project",
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Plan the project"] = "Here is the plan."
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text="Plan the project",
+                metadata={"mode": "plan"},
+            )
+        )
+    ]
+
+    assert concierge.chat_manager.call_log == ["Plan the project"]
+    call = concierge.chat_manager.calls[-1]
+    assert call["model_override"] == "big-model"
+
+
+# ---------------------------------------------------------------------------
+# MultiStepExecutor model_override wiring test
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_multi_step_direct_passes_model_override(tmp_path: Path) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    tier_map = {"micro": "fast-model", "routine": "mid-model", "reasoning": "big-model", "critical": "big-model"}
+    concierge._tier_resolver = ConciergeTierResolver(tier_map, "fallback-model")
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Build the workflow",
+            deliverable="Build the workflow",
+            subtasks=["Build the workflow"],
+            execution_order="serial",
+            route=RouteDecision(
+                mode=RouteMode.AGENT,
+                target="workflow",
+                action_hints=["workflow_edit"],
+            ),
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Build the workflow"] = "Workflow built."
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text="Build the workflow",
+                metadata={"mode": "build"},
+            )
+        )
+    ]
+
+    assert concierge.chat_manager.call_log == ["Build the workflow"]
+    call = concierge.chat_manager.calls[-1]
+    assert call["model_override"] == "big-model"
+
+
+@pytest.mark.asyncio
+async def test_no_model_override_without_tier_resolver(tmp_path: Path) -> None:
+    """When no tier resolver is configured, model_override should not be in params."""
+    concierge = _make_concierge(tmp_path)
+    concierge._tier_resolver = None
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(tier=1, intent="ask", goal="Hello", deliverable="Hello")
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Hello world"] = "Hi."
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(surface="cli", external_id="cli-user", text="Hello world")
+        )
+    ]
+
+    assert concierge.chat_manager.call_log == ["Hello world"]
+    call = concierge.chat_manager.calls[-1]
+    assert "model_override" not in call
+
+
+# ---------------------------------------------------------------------------
+# Triage model uses tier resolver
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_triage_model_uses_tier_resolver(tmp_path: Path) -> None:
+    concierge = _make_concierge(tmp_path)
+    tier_map = {"micro": "cheap-classifier", "routine": "mid", "reasoning": "big", "critical": "big"}
+    concierge._tier_resolver = ConciergeTierResolver(tier_map, "fallback")
+    concierge._triage_model = ""
+
+    assert concierge._resolve_triage_model() == "cheap-classifier"
+
+
+def test_resolve_triage_model_explicit_override_wins(tmp_path: Path) -> None:
+    concierge = _make_concierge(tmp_path)
+    tier_map = {"micro": "cheap-classifier", "routine": "mid", "reasoning": "big", "critical": "big"}
+    concierge._tier_resolver = ConciergeTierResolver(tier_map, "fallback")
+    concierge._triage_model = "explicit-model"
+
+    assert concierge._resolve_triage_model() == "explicit-model"

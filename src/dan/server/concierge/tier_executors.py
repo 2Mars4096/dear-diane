@@ -175,7 +175,39 @@ def _build_prompt(session: Any) -> str:
     return "\n".join(parts) if parts else ""
 
 
-def _extract_chat_params(session: Any, system_prompt: str) -> dict[str, Any]:
+def _determine_stage(session: Any) -> str:
+    """Map session triage/mode to a concierge stage name for tier resolution."""
+    triage = getattr(session, "triage", None)
+    route = getattr(triage, "route", None) if triage else None
+    intent = getattr(triage, "intent", "ask") if triage else "ask"
+
+    msg = getattr(session, "msg", None)
+    metadata = getattr(msg, "metadata", None) if msg is not None else None
+    if not isinstance(metadata, dict):
+        metadata = {}
+    mode = str(metadata.get("mode") or "agent")
+
+    action_hints = getattr(route, "action_hints", []) if route else []
+    route_target = getattr(route, "target", "") if route else ""
+
+    if mode == "build" or "workflow_edit" in action_hints or route_target == "workflow":
+        return "workflow_build"
+    if intent == "plan" or mode == "plan":
+        return "conversation_plan"
+    if mode == "debug":
+        return "conversation_debug"
+    if route_target == "file":
+        return "file_review"
+    if "experience_lookup" in action_hints:
+        return "experience_fallback"
+    if route_target in ("run", "memory", "web") and intent == "agent":
+        return "direct_task"
+    return "conversation"
+
+
+def _extract_chat_params(
+    session: Any, system_prompt: str, model_override: str | None = None,
+) -> dict[str, Any]:
     """Extract parameters for ``ChatManager.send_message_with_tools()``."""
     msg = getattr(session, "msg", None)
     metadata = getattr(msg, "metadata", None) if msg is not None else None
@@ -234,7 +266,7 @@ def _extract_chat_params(session: Any, system_prompt: str) -> dict[str, Any]:
 
     stream_channel_id = str(metadata.get("stream_channel_id") or "").strip() or None
 
-    return {
+    result = {
         "workflow_id": workflow_id,
         "message": message,
         "history": history,
@@ -250,6 +282,12 @@ def _extract_chat_params(session: Any, system_prompt: str) -> dict[str, Any]:
         "required_action_hints": required_action_hints,
         "stream_channel_id": stream_channel_id,
     }
+    if model_override:
+        result["model_override"] = model_override
+        audit = result.get("audit_metadata") or {}
+        audit["concierge_model_override"] = model_override
+        result["audit_metadata"] = audit
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -356,8 +394,12 @@ class SingleShotExecutor:
 
         manager.update_state(session.id, "running")
 
+        stage = _determine_stage(session)
+        tier_resolver = getattr(self._concierge, "_tier_resolver", None)
+        model_override = tier_resolver.resolve_model(stage) if tier_resolver else None
+
         system_prompt = _build_prompt(session)
-        chat_params = _extract_chat_params(session, system_prompt)
+        chat_params = _extract_chat_params(session, system_prompt, model_override=model_override)
 
         final_content = ""
         token_usage: dict[str, int] = {}
@@ -468,8 +510,12 @@ class MultiStepExecutor:
             yield _interrupted_event()
             return
 
+        stage = _determine_stage(session)
+        tier_resolver = getattr(self._concierge, "_tier_resolver", None)
+        model_override = tier_resolver.resolve_model(stage) if tier_resolver else None
+
         system_prompt = _build_prompt(session)
-        chat_params = _extract_chat_params(session, system_prompt)
+        chat_params = _extract_chat_params(session, system_prompt, model_override=model_override)
 
         final_content = ""
         token_usage: dict[str, int] = {}

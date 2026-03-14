@@ -24,7 +24,6 @@ from .policy import (
     ClarificationResponse,
     ExecutionPolicy,
     resolve_policy,
-    validate_terminal_content,
 )
 from .progress import ProgressReporter
 from .project_store import ProjectStore
@@ -146,7 +145,6 @@ __all__ = [
     "ClarificationResponse",
     "ExecutionPolicy",
     "resolve_policy",
-    "validate_terminal_content",
     # identity
     "format_bare_prefix",
     "format_prefix",

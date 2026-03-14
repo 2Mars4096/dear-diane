@@ -129,7 +129,9 @@ def _build_engine_config() -> Any:
         if tier_map_env:
             import json
             try:
-                tier_map = json.loads(tier_map_env)
+                raw = json.loads(tier_map_env)
+                from dan.providers.tier_defaults import normalize_tier_map
+                tier_map = normalize_tier_map(raw) or raw
             except Exception:
                 logger.warning("Failed to parse DAN_TIER_MAP JSON, using defaults")
         default_model_policy = TierPolicy(tier_map=tier_map)

@@ -275,6 +275,40 @@ class Concierge:
             or os.environ.get("DAN_CLASSIFIER_MODEL", "").strip()
         )
 
+        # Tier resolver — maps concierge stages to concrete models
+        self._tier_resolver: Any = None
+        try:
+            from dan.providers.tier_defaults import normalize_tier_map, resolve_tier_map
+            from .tiering import ConciergeTierResolver
+
+            tier_map_env = os.environ.get("DAN_TIER_MAP", "").strip()
+            user_tier_map = None
+            if tier_map_env:
+                try:
+                    raw = json.loads(tier_map_env)
+                    user_tier_map = normalize_tier_map(raw)
+                except Exception:
+                    pass
+
+            provider_names: list[str] = []
+            providers = getattr(chat_manager, "_providers", None)
+            if providers is not None:
+                provider_names = (
+                    providers.provider_names()
+                    if hasattr(providers, "provider_names")
+                    else list(getattr(providers, "_providers", {}).keys())
+                )
+
+            full_tier_map = resolve_tier_map(provider_names, user_tier_map)
+            fallback_model = (
+                os.environ.get("DAN_CHAT_MODEL", "").strip()
+                or os.environ.get("DAN_LLM_MODEL", "").strip()
+                or "claude-sonnet-4-6"
+            )
+            self._tier_resolver = ConciergeTierResolver(full_tier_map, fallback_model)
+        except Exception as exc:
+            logger.warning("Tier resolver init failed: %s", exc)
+
         # Tiered dispatcher (always enabled)
         from .session import SessionManager
         from .triage import triage as triage_fn
@@ -330,6 +364,8 @@ class Concierge:
     def _resolve_triage_model(self) -> str:
         if self._triage_model:
             return self._triage_model
+        if self._tier_resolver is not None:
+            return self._tier_resolver.resolve_model("classification")
         configured_model = (
             str(getattr(self.chat_manager, "_chat_model", "") or "").strip()
             or os.environ.get("DAN_CHAT_MODEL", "").strip()

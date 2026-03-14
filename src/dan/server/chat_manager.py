@@ -386,13 +386,18 @@ class ChatManager:
 
         return "\n".join(lines)
 
-    def _resolve_provider(self, *, pii_session_key: str | None = None) -> Any:
+    def _resolve_provider(
+        self,
+        *,
+        pii_session_key: str | None = None,
+        model: str | None = None,
+    ) -> Any:
         """Resolve the active provider and wrap it for PII protection when enabled.
 
         The resolved ``PIISession`` is also stored in :data:`pii_session_var`
         so deeper call stacks can access it without explicit parameter passing.
         """
-        provider = self._providers.resolve(self._chat_model)
+        provider = self._providers.resolve(model or self._chat_model)
         try:
             from dan.server.concierge.pii_tokenizer import (
                 SensitiveWordRegistry,
@@ -602,9 +607,11 @@ class ChatManager:
         mentions: list[Any] | None = None,
         surface: str | None = None,
         extra_system_instructions: str = "",
+        model_override: str | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream a text-only LLM response (no function calling)."""
         try:
+            effective_model = model_override or self._chat_model
             graph_dict = self._graph_store.get_graph(workflow_id)
             if graph_dict is None:
                 yield ChatErrorEvent(error=f"Workflow '{workflow_id}' not found")
@@ -632,10 +639,12 @@ class ChatManager:
                 surface=surface,
                 extra_system_instructions=extra_system_instructions,
                 tools_available=False,
+                model=effective_model,
             )
 
             provider = self._resolve_provider(
                 pii_session_key=thread_id or workflow_id,
+                model=effective_model,
             )
             exact_tool_choice_supported = supports_exact_tool_choice(provider)
             message_id = uuid.uuid4().hex[:12]
@@ -645,7 +654,7 @@ class ChatManager:
 
             async for chunk in provider.stream(
                 messages=messages,
-                model=self._chat_model,
+                model=effective_model,
                 temperature=0.7,
             ):
                 if cancel_event and cancel_event.is_set():
@@ -674,7 +683,7 @@ class ChatManager:
                     assistant_message=final_content,
                 )
                 
-                cost = estimate_cost(self._chat_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
+                cost = estimate_cost(effective_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
                 if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
                     final_content += f"\n\n[~${cost:.4f}]"
 
@@ -683,7 +692,7 @@ class ChatManager:
                     content=final_content,
                     token_usage=token_usage,
                     estimated_cost=cost,
-                    context_window=_get_context_window(self._chat_model),
+                    context_window=_get_context_window(effective_model),
                     graph_revision=summary.revision,
                     revision_mismatch=revision_mismatch,
                 )
@@ -718,6 +727,7 @@ class ChatManager:
         extra_system_instructions: str = "",
         required_action_hints: list[str] | None = None,
         stream_channel_id: str | None = None,
+        model_override: str | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Process a user message using LLM function calling for graph mutations.
 
@@ -725,6 +735,7 @@ class ChatManager:
         support the ``tools`` parameter.
         """
         try:
+            effective_model = model_override or self._chat_model
             required_action_hints = _dedupe_action_hints(required_action_hints)
             graph_dict = self._graph_store.get_graph(workflow_id)
             if graph_dict is None:
@@ -734,7 +745,7 @@ class ChatManager:
                     user_message=message,
                     assistant_message="",
                     mode=mode,
-                    model=self._chat_model,
+                    model=effective_model,
                     audit_tool_records=[],
                     prompt_messages=[],
                     surface=surface,
@@ -777,6 +788,7 @@ class ChatManager:
                         user_message=message,
                         workflow_id=workflow_id,
                         channel_id=thread_id or workflow_id,
+                        effective_model=effective_model,
                     )
                 )
                 while not codegen_task.done():
@@ -791,7 +803,7 @@ class ChatManager:
                             message_id=message_id,
                             content="",
                             token_usage={},
-                            context_window=_get_context_window(self._chat_model),
+                            context_window=_get_context_window(effective_model),
                             graph_revision=revision,
                             revision_mismatch=revision_mismatch,
                             detected_mode="progress_ack",
@@ -834,7 +846,7 @@ class ChatManager:
                         message_id=message_id,
                         content=summary_message,
                         token_usage={},
-                        context_window=_get_context_window(self._chat_model),
+                        context_window=_get_context_window(effective_model),
                         graph_revision=new_summary.revision,
                         revision_mismatch=False,
                         detected_mode="agent",
@@ -926,7 +938,7 @@ class ChatManager:
                                 message_id=message_id,
                                 content=macro_msg,
                                 token_usage={},
-                                context_window=_get_context_window(self._chat_model),
+                                context_window=_get_context_window(effective_model),
                                 graph_revision=updated_summary.revision,
                                 revision_mismatch=False,
                                 detected_mode=mode,
@@ -987,7 +999,7 @@ class ChatManager:
                                 message_id=message_id,
                                 content=macro_msg,
                                 token_usage={},
-                                context_window=_get_context_window(self._chat_model),
+                                context_window=_get_context_window(effective_model),
                                 graph_revision=updated_summary.revision,
                                 revision_mismatch=False,
                                 detected_mode=mode,
@@ -1003,14 +1015,16 @@ class ChatManager:
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
                 surface=surface,
                 extra_system_instructions=extra_system_instructions,
+                model=effective_model,
             )
             provider = self._resolve_provider(
                 pii_session_key=thread_id or workflow_id,
+                model=effective_model,
             )
             exact_tool_choice_supported = supports_exact_tool_choice(provider)
             message_id = uuid.uuid4().hex[:12]
             usage_totals: dict[str, int] = {}
-            completion_max_tokens = _completion_max_tokens(self._chat_model)
+            completion_max_tokens = _completion_max_tokens(effective_model)
 
             from dan.server.capability_registry import READ_ONLY_MODES
 
@@ -1103,7 +1117,7 @@ class ChatManager:
                                     message_id=message_id,
                                     content="",
                                     token_usage={},
-                                    context_window=_get_context_window(self._chat_model),
+                                    context_window=_get_context_window(effective_model),
                                     graph_revision=revision,
                                     revision_mismatch=revision_mismatch,
                                     detected_mode="progress_ack",
@@ -1136,7 +1150,7 @@ class ChatManager:
                     logger.warning(
                         "Guarded completion cancelled unexpectedly: model=%s, emit_progress_ack=%s, "
                         "messages=%d, tools=%s",
-                        request_kwargs.get("model", self._chat_model),
+                        request_kwargs.get("model", effective_model),
                         emit_progress_ack,
                         len(request_kwargs.get("messages") or []),
                         ",".join(tool_names) or "none",
@@ -1156,7 +1170,7 @@ class ChatManager:
                         async for step in _iter_guarded_complete(
                             request_kwargs={
                                 "messages": messages,
-                                "model": self._chat_model,
+                                "model": effective_model,
                                 "temperature": 0.7,
                                 "max_tokens": completion_max_tokens,
                                 "tools": request_tools,
@@ -1212,6 +1226,7 @@ class ChatManager:
                         cancel_event=cancel_event,
                         mode=mode,
                         allow_mutation_tool=allow_mutation_tool,
+                        effective_model=effective_model,
                     ):
                         yield event
                 except Exception as fallback_exc:
@@ -1222,7 +1237,7 @@ class ChatManager:
                         message_id=message_id,
                         content=f"Both tool-calling and text-only paths failed. Error: {fallback_exc}",
                         token_usage={},
-                        context_window=_get_context_window(self._chat_model),
+                        context_window=_get_context_window(effective_model),
                         graph_revision=revision,
                         revision_mismatch=revision_mismatch,
                     )
@@ -1325,7 +1340,7 @@ class ChatManager:
                             combined_text_parts.append(partial)
                         messages.append({"role": "assistant", "content": partial})
                         messages.append({"role": "user", "content": "Continue from where you left off. Keep using file_write to save your output."})
-                        messages = _compact_context(messages, self._chat_model)
+                        messages = _compact_context(messages, effective_model)
                         try:
                             continuation_tools, continuation_tool_choice = _tool_request_config(
                                 force_file_write_now=force_file_write_next_turn,
@@ -1334,7 +1349,7 @@ class ChatManager:
                             async for step in _iter_guarded_complete(
                                 request_kwargs={
                                     "messages": messages,
-                                    "model": self._chat_model,
+                                    "model": effective_model,
                                     "temperature": 0.7,
                                     "max_tokens": completion_max_tokens,
                                     "tools": continuation_tools,
@@ -1377,7 +1392,7 @@ class ChatManager:
                                 message_id=message_id,
                                 content=content,
                                 token_usage={},
-                                context_window=_get_context_window(self._chat_model),
+                                context_window=_get_context_window(effective_model),
                                 graph_revision=revision,
                                 revision_mismatch=revision_mismatch,
                                 stream_channel_id=last_stream_channel_id,
@@ -1400,7 +1415,7 @@ class ChatManager:
                                 "role": "user",
                                 "content": _tool_retry_prompt_for_missing_actions(missing_action_hints),
                             })
-                            messages = _compact_context(messages, self._chat_model)
+                            messages = _compact_context(messages, effective_model)
                             try:
                                 continuation_tools, continuation_tool_choice = _tool_request_config(
                                     force_file_write_now=force_file_write_next_turn,
@@ -1409,7 +1424,7 @@ class ChatManager:
                                 async for step in _iter_guarded_complete(
                                     request_kwargs={
                                         "messages": messages,
-                                        "model": self._chat_model,
+                                        "model": effective_model,
                                         "temperature": 0.7,
                                         "max_tokens": completion_max_tokens,
                                         "tools": continuation_tools,
@@ -1455,7 +1470,7 @@ class ChatManager:
                                     message_id=message_id,
                                     content=content,
                                     token_usage={},
-                                    context_window=_get_context_window(self._chat_model),
+                                    context_window=_get_context_window(effective_model),
                                     graph_revision=revision,
                                     revision_mismatch=revision_mismatch,
                                     stream_channel_id=last_stream_channel_id,
@@ -1477,7 +1492,7 @@ class ChatManager:
                             message_id=message_id,
                             content=content,
                             token_usage={},
-                            context_window=_get_context_window(self._chat_model),
+                            context_window=_get_context_window(effective_model),
                             graph_revision=revision,
                             revision_mismatch=revision_mismatch,
                             stream_channel_id=last_stream_channel_id,
@@ -1503,14 +1518,14 @@ class ChatManager:
                         user_message=message,
                         assistant_message=content,
                         mode=mode,
-                        model=self._chat_model,
+                        model=effective_model,
                         audit_tool_records=audit_tool_records,
                         prompt_messages=messages,
                         surface=surface,
                         audit_metadata=audit_metadata,
                     )
                     
-                    cost = estimate_cost(self._chat_model, normalized_usage.get("prompt_tokens", 0), normalized_usage.get("completion_tokens", 0))
+                    cost = estimate_cost(effective_model, normalized_usage.get("prompt_tokens", 0), normalized_usage.get("completion_tokens", 0))
                     if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
                         content += f"\n\n[~${cost:.4f}]"
                         
@@ -1519,7 +1534,7 @@ class ChatManager:
                         content=content,
                         token_usage=normalized_usage,
                         estimated_cost=cost,
-                        context_window=_get_context_window(self._chat_model),
+                        context_window=_get_context_window(effective_model),
                         graph_revision=revision,
                         revision_mismatch=revision_mismatch,
                         stream_channel_id=last_stream_channel_id,
@@ -1585,7 +1600,7 @@ class ChatManager:
                                 async for step in _iter_guarded_complete(
                                     request_kwargs={
                                         "messages": retry_messages,
-                                        "model": self._chat_model,
+                                        "model": effective_model,
                                         "temperature": 0.5,
                                         "max_tokens": completion_max_tokens,
                                         "tools": [MUTATION_TOOL_SCHEMA],
@@ -1661,6 +1676,7 @@ class ChatManager:
                                 mode=mode,
                                 prompt_context=prompt_context,
                                 surface=surface,
+                                model=effective_model,
                             )
                             replan_messages.append({
                                 "role": "user",
@@ -1675,7 +1691,7 @@ class ChatManager:
                                 async for step in _iter_guarded_complete(
                                     request_kwargs={
                                         "messages": replan_messages,
-                                        "model": self._chat_model,
+                                        "model": effective_model,
                                         "temperature": 0.5,
                                         "max_tokens": completion_max_tokens,
                                         "tools": [MUTATION_TOOL_SCHEMA],
@@ -1748,7 +1764,7 @@ class ChatManager:
                         mutation_plan=plan_dump,
                         dry_run_result=dry_result.model_dump(),
                         token_usage=normalized_usage,
-                        context_window=_get_context_window(self._chat_model),
+                        context_window=_get_context_window(effective_model),
                         graph_revision=revision,
                         revision_mismatch=revision_mismatch,
                     )
@@ -2076,8 +2092,8 @@ class ChatManager:
                         "content": force_write_prompt,
                     })
 
-                messages = _compact_context(messages, self._chat_model)
-                _pressure_hint = context_pressure_hint(messages, self._chat_model)
+                messages = _compact_context(messages, effective_model)
+                _pressure_hint = context_pressure_hint(messages, effective_model)
                 if _pressure_hint:
                     messages.append({"role": "system", "content": _pressure_hint})
 
@@ -2105,7 +2121,7 @@ class ChatManager:
                     async for step in _iter_guarded_complete(
                         request_kwargs={
                             "messages": messages,
-                            "model": self._chat_model,
+                            "model": effective_model,
                             "temperature": 0.7,
                             "max_tokens": completion_max_tokens,
                             "tools": followup_tools,
@@ -2185,7 +2201,7 @@ class ChatManager:
                         synthesis_result = await asyncio.wait_for(
                             provider.complete(
                                 messages=synthesis_messages,
-                                model=self._chat_model,
+                                model=effective_model,
                                 temperature=0.7,
                                 max_tokens=completion_max_tokens,
                             ),
@@ -2213,7 +2229,7 @@ class ChatManager:
                             user_message=message,
                             assistant_message=content,
                             mode=mode,
-                            model=self._chat_model,
+                            model=effective_model,
                             audit_tool_records=audit_tool_records,
                             prompt_messages=messages,
                             surface=surface,
@@ -2223,7 +2239,7 @@ class ChatManager:
                             message_id=message_id,
                             content=content,
                             token_usage=normalized_usage,
-                            context_window=_get_context_window(self._chat_model),
+                            context_window=_get_context_window(effective_model),
                             graph_revision=revision,
                             revision_mismatch=revision_mismatch,
                             stream_channel_id=last_stream_channel_id,
@@ -2259,7 +2275,7 @@ class ChatManager:
                         user_message=message,
                         assistant_message=combined_content,
                         mode=mode,
-                        model=self._chat_model,
+                        model=effective_model,
                         audit_tool_records=audit_tool_records,
                         prompt_messages=messages,
                         surface=surface,
@@ -2269,7 +2285,7 @@ class ChatManager:
                         message_id=message_id,
                         content=combined_content,
                         token_usage={},
-                        context_window=_get_context_window(self._chat_model),
+                        context_window=_get_context_window(effective_model),
                         graph_revision=revision,
                         revision_mismatch=revision_mismatch,
                         stream_channel_id=last_stream_channel_id,
@@ -2309,13 +2325,13 @@ class ChatManager:
                                 ),
                             }
                         ],
-                        self._chat_model,
+                        effective_model,
                     )
                     synthesis: CompletionResult | None = None
                     async for step in _iter_guarded_complete(
                         request_kwargs={
                             "messages": synthesis_messages,
-                            "model": self._chat_model,
+                            "model": effective_model,
                             "temperature": 0.7,
                             "max_tokens": completion_max_tokens,
                         },
@@ -2354,11 +2370,11 @@ class ChatManager:
                         content=final_content,
                         token_usage=token_usage,
                         estimated_cost=estimate_cost(
-                            self._chat_model,
+                            effective_model,
                             token_usage.get("prompt", 0),
                             token_usage.get("completion", 0),
                         ),
-                        context_window=_get_context_window(self._chat_model),
+                        context_window=_get_context_window(effective_model),
                         graph_revision=revision,
                         revision_mismatch=revision_mismatch,
                         stream_channel_id=last_stream_channel_id,
@@ -2372,7 +2388,7 @@ class ChatManager:
                     async for step in _iter_guarded_complete(
                         request_kwargs={
                             "messages": messages,
-                            "model": self._chat_model,
+                            "model": effective_model,
                             "temperature": 0.7,
                             "max_tokens": completion_max_tokens,
                         },
@@ -2410,14 +2426,14 @@ class ChatManager:
                 user_message=message,
                 assistant_message=final_content,
                 mode=mode,
-                model=self._chat_model,
+                model=effective_model,
                 audit_tool_records=audit_tool_records,
                 prompt_messages=messages,
                 surface=surface,
                 audit_metadata=audit_metadata,
             )
             token_usage = _normalize_usage(usage_totals or result.usage)
-            cost = estimate_cost(self._chat_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
+            cost = estimate_cost(effective_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
             if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
                 final_content += f"\n\n[~${cost:.4f}]"
 
@@ -2426,7 +2442,7 @@ class ChatManager:
                 content=final_content,
                 token_usage=token_usage,
                 estimated_cost=cost,
-                context_window=_get_context_window(self._chat_model),
+                context_window=_get_context_window(effective_model),
                 graph_revision=revision,
                 revision_mismatch=revision_mismatch,
                 stream_channel_id=last_stream_channel_id,
@@ -2440,7 +2456,7 @@ class ChatManager:
                 user_message=message,
                 assistant_message="",
                 mode=mode,
-                model=self._chat_model,
+                model=locals().get("effective_model", self._chat_model),
                 audit_tool_records=locals().get("audit_tool_records", []),
                 prompt_messages=locals().get("messages", []),
                 surface=surface,
@@ -2456,7 +2472,7 @@ class ChatManager:
                 user_message=message,
                 assistant_message="",
                 mode=mode,
-                model=self._chat_model,
+                model=locals().get("effective_model", self._chat_model),
                 audit_tool_records=locals().get("audit_tool_records", []),
                 prompt_messages=locals().get("messages", []),
                 surface=surface,
@@ -2482,14 +2498,16 @@ class ChatManager:
         cancel_event: asyncio.Event | None = None,
         mode: str = "agent",
         allow_mutation_tool: bool = True,
+        effective_model: str | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
+        _model = effective_model or self._chat_model
         final_content = ""
         token_usage: dict[str, int] = {}
         interrupted = False
 
         async for chunk in provider.stream(
             messages=messages,
-            model=self._chat_model,
+            model=_model,
             temperature=0.7,
         ):
             if cancel_event and cancel_event.is_set():
@@ -2549,7 +2567,7 @@ class ChatManager:
                     mutation_plan=plan_dump,
                     dry_run_result=dry_result.model_dump(),
                     token_usage=token_usage,
-                    context_window=_get_context_window(self._chat_model),
+                    context_window=_get_context_window(_model),
                     graph_revision=revision,
                     revision_mismatch=revision_mismatch,
                 )
@@ -2563,7 +2581,7 @@ class ChatManager:
             assistant_message=final_content,
         )
         
-        cost = estimate_cost(self._chat_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
+        cost = estimate_cost(_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
         if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
             final_content += f"\n\n[~${cost:.4f}]"
 
@@ -2572,7 +2590,7 @@ class ChatManager:
             content=final_content,
             token_usage=token_usage,
             estimated_cost=cost,
-            context_window=_get_context_window(self._chat_model),
+            context_window=_get_context_window(_model),
             graph_revision=revision,
             revision_mismatch=revision_mismatch,
         )
@@ -2651,7 +2669,9 @@ class ChatManager:
         surface: str = "server",
         extra_system_instructions: str = "",
         tools_available: bool = True,
+        model: str | None = None,
     ) -> list[dict[str, str]]:
+        effective_model = model or self._chat_model
         context_sections: list[str] = []
         if prompt_context:
             context_sections.append(f"## Context\n{prompt_context}")
@@ -2668,7 +2688,7 @@ class ChatManager:
             else serialize_for_prompt(summary)
         )
         workflow_block = f"## Current Workflow\n{graph_text}"
-        surface_hints = _resolve_surface_hints(surface, self._chat_model)
+        surface_hints = _resolve_surface_hints(surface, effective_model)
         task_hints = (
             _RESEARCH_REPORT_PROMPT_HINT
             if _looks_like_research_report_request(user_message)
@@ -2723,13 +2743,13 @@ class ChatManager:
                 *history,
             ]
 
-        context_window = _get_context_window(self._chat_model)
+        context_window = _get_context_window(effective_model)
 
         resolved_mentions = []
         if mentions and self._mention_resolver and workflow_id:
             try:
                 resolved_mentions = self._mention_resolver.resolve_all(
-                    mentions, workflow_id, graph_dict, model=self._chat_model
+                    mentions, workflow_id, graph_dict, model=effective_model
                 )
             except Exception as exc:
                 logger.warning("Mention resolution failed: %s", exc)
@@ -2744,14 +2764,14 @@ class ChatManager:
                 user_message=user_message,
                 context_window=context_window,
                 max_ratio=_MAX_CONTEXT_RATIO,
-                model=self._chat_model,
+                model=effective_model,
             )
         else:
             messages = [{"role": "system", "content": system_content}]
             messages.extend(history_with_context)
             messages.append({"role": "user", "content": user_message})
             max_tokens = int(context_window * _MAX_CONTEXT_RATIO)
-            messages = compact_history(messages, max_tokens, model=self._chat_model)
+            messages = compact_history(messages, max_tokens, model=effective_model)
 
         return messages
 
@@ -2765,8 +2785,10 @@ class ChatManager:
         message: str,
         history: list[dict[str, str]],
         cancel_event: asyncio.Event | None = None,
+        model_override: str | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream clarifying questions when build-mode intent is ambiguous."""
+        _model = model_override or self._chat_model
         clarify_prompt = (
             "The user wants to create or modify a workflow, but their request is not specific enough "
             "to produce a reliable plan. Ask 1-2 focused clarifying questions to understand:\n"
@@ -2782,10 +2804,10 @@ class ChatManager:
         messages.append({"role": "user", "content": message})
 
         try:
-            provider = self._resolve_provider()
+            provider = self._resolve_provider(pii_session_key=workflow_id, model=_model)
             stream = provider.stream(
                 messages=messages,
-                model=self._chat_model,
+                model=_model,
                 temperature=0.7,
             )
 
@@ -2802,7 +2824,7 @@ class ChatManager:
                     final_content = chunk.accumulated
                     token_usage = _normalize_usage(chunk.usage)
 
-            cost = estimate_cost(self._chat_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
+            cost = estimate_cost(_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
             if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
                 final_content += f"\n\n[~${cost:.4f}]"
 
@@ -2811,7 +2833,7 @@ class ChatManager:
                 content=final_content,
                 token_usage=token_usage,
                 estimated_cost=cost,
-                context_window=_get_context_window(self._chat_model),
+                context_window=_get_context_window(_model),
                 graph_revision="",
             )
         except Exception as exc:
@@ -2827,6 +2849,7 @@ class ChatManager:
         user_message: str,
         workflow_id: str,
         channel_id: str,
+        effective_model: str | None = None,
     ) -> tuple[dict | None, list[ChatStreamEvent]]:
         """New generation path for build mode.
 
@@ -2856,6 +2879,7 @@ class ChatManager:
         )
         from dan.meta.planner import CodegenPromptBuilder, validate_codegen_output
 
+        _model = effective_model or self._chat_model
         events: list[ChatStreamEvent] = []
         _max_gen_seconds = int(os.environ.get("DAN_MAX_GENERATION_SECONDS", "120") or "120")
         _gen_start = time.monotonic()
@@ -2929,7 +2953,7 @@ class ChatManager:
                 )
 
         _quality_threshold_override = int(os.environ.get("DAN_GRAPH_QUALITY_THRESHOLD", "0") or "0")
-        provider = self._resolve_provider(pii_session_key=workflow_id)
+        provider = self._resolve_provider(pii_session_key=workflow_id, model=_model)
 
         def _quality_error_for_graph(graph_dict: dict, *, warning_message: str) -> GenerationError | None:
             nonlocal _last_quality_score
@@ -2999,7 +3023,7 @@ class ChatManager:
             try:
                 intent_result = await provider.complete(
                     messages=intent_messages,
-                    model=self._chat_model,
+                    model=_model,
                     temperature=0.3,
                     tools=[intent_tool],
                     tool_choice="auto",
@@ -3230,7 +3254,7 @@ class ChatManager:
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt},
                     ],
-                    model=self._chat_model,
+                    model=_model,
                     temperature=0.3,
                 )
                 raw_text = codegen_result.text or ""
@@ -3516,7 +3540,7 @@ class ChatManager:
                             {"role": "system", "content": sys_prompt},
                             {"role": "user", "content": user_prompt},
                         ],
-                        model=self._chat_model,
+                        model=_model,
                         temperature=0.3,
                     )
                     return r.text or ""

@@ -42,7 +42,42 @@ DEFAULT_TIER_PARAMS: dict[str, dict[str, dict[str, Any]]] = {
 
 _TIER_KEYS = {"micro", "routine", "reasoning", "critical"}
 
+_NUMERIC_TO_CANONICAL: dict[str, list[str]] = {
+    "1": ["micro"],
+    "2": ["routine"],
+    "3": ["reasoning", "critical"],
+}
+
 _PROVIDER_PREFERENCE = ["anthropic", "openai", "google"]
+
+
+def normalize_tier_map(raw: dict[str, str] | None) -> dict[str, str] | None:
+    """Normalize a user-supplied tier map so all keys are canonical tier names.
+
+    Numeric shorthand is expanded:
+      ``"1"`` → ``micro``, ``"2"`` → ``routine``,
+      ``"3"`` → ``reasoning`` **and** ``critical`` (unless the caller already
+      provided an explicit ``critical`` entry).
+
+    Named canonical keys pass through unchanged.  Returns *None* if *raw*
+    is ``None`` or empty.
+    """
+    if not raw:
+        return None
+
+    result: dict[str, str] = {}
+    has_explicit_critical = "critical" in raw
+
+    for key, model in raw.items():
+        if key in _TIER_KEYS:
+            result[key] = model
+        elif key in _NUMERIC_TO_CANONICAL:
+            for canonical in _NUMERIC_TO_CANONICAL[key]:
+                if canonical == "critical" and has_explicit_critical:
+                    continue
+                result.setdefault(canonical, model)
+
+    return result or None
 
 
 def register_seed_tier_maps(store: BehaviorStore) -> None:
@@ -64,6 +99,7 @@ def resolve_tier_map(
     * If *behavior_store* is provided, its ``models/tier_maps`` entry
       is used in place of the module-level ``DEFAULT_TIER_MAPS``.
     """
+    user_override = normalize_tier_map(user_override) or user_override
     if user_override and _TIER_KEYS <= user_override.keys():
         return user_override
 

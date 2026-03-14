@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import re
 from enum import Enum
 from typing import Any
 
@@ -125,33 +124,3 @@ def resolve_policy(
     return action, execution
 
 
-_APOLOGY_ONLY_PATTERNS: tuple[str, ...] = (
-    r"^I(?:'m| am) (?:sorry|unable|not able)",
-    r"^Unfortunately,? I",
-    r"^I (?:can(?:'t|not)|don'?t) (?:do|help with|handle|process) that",
-    r"^I apologize",
-)
-
-_APOLOGY_RE = re.compile("|".join(_APOLOGY_ONLY_PATTERNS), re.IGNORECASE | re.MULTILINE)
-
-
-def validate_terminal_content(content: str) -> tuple[bool, str]:
-    """Check if response content meets the 'never just stop' policy.
-
-    Returns (is_valid, reason). A response is invalid if it consists
-    only of apology/limitation language without useful content.
-    Lenient: apology alongside substantial content (>80 chars) passes.
-    """
-    if not content or not content.strip():
-        return False, "empty"
-
-    lines = [ln.strip() for ln in content.strip().splitlines() if ln.strip()]
-    apology_lines = sum(1 for ln in lines if _APOLOGY_RE.search(ln))
-
-    if apology_lines >= len(lines):
-        total_len = sum(len(ln) for ln in lines)
-        if total_len > 80:
-            return True, ""
-        return False, "apology_only"
-
-    return True, ""
