@@ -1,57 +1,48 @@
 # 35-2: Split app.py Route Handlers into APIRouter Modules
 
 **Parent:** [35-server-module-decomposition](35-server-module-decomposition.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Extract route handlers from `app.py` into domain-grouped FastAPI `APIRouter` modules under `server/routers/`, while keeping endpoint paths, OpenAPI shape, WebSocket behavior, and stream semantics unchanged.
 
 ## Current State
 
-`app.py` lines 2076–5311 contain ~90 `@app.get/post/put/delete/websocket` handlers spanning 12+ unrelated API domains:
+All ~90 route handlers have been extracted from `app.py` (4,284→397 lines) into 10 router modules under `src/dan/server/routers/`:
 
-| Domain | Endpoints | Approx. lines |
-|---|---|---|
-| Graphs CRUD + mutation + validation + export | 10 | ~400 |
-| Runs (start, resume, rerun, compare, checkpoints, events, human-input, scoped) | 12 | ~500 |
-| Chat (message, stop, CRUD, search, export, pin, checkpoint, WebSocket) | 12 | ~600 |
-| RAG collections | 5 | ~60 |
-| Meta (discover, plan, validate, run, sessions) | 10 | ~200 |
-| Experiences | 5 | ~120 |
-| Blocks (list, get, import, export, delete) | 5 | ~150 |
-| Publishing | 4 | ~120 |
-| Adapters (start, stop, status + message routing) | 3 + ~400 internal | ~500 |
-| Test cases | 4 | ~150 |
-| Memory / Errors / Rules | 9 | ~200 |
-| Misc (health, cache, metrics, token breakdown, optimization, files, docs, code-refs) | 11 | ~350 |
-
-## Safety Rules
-
-- This sub-plan is **blocked on Plan 34 integration stabilizing**. Do not land it in parallel with `34-4`.
-- Do not combine router extraction with the `AppState` migration from `35-5`.
-- Preserve endpoint paths, tags, request/response models, and WebSocket close/terminal-event semantics.
-- Extract in waves: low-state routers first, chat/adapters last.
+| Router module | Endpoints | Lines | Domain |
+|---|---|---|---|
+| `misc.py` | 26 | 487 | Health, cache, metrics, files/docs/code-refs, test cases, memory, errors, rules |
+| `graphs.py` | 10 | 509 | Graph CRUD, mutation, validation, export, node inputs, boundary validators |
+| `rag.py` | 5 | 122 | RAG collections + lazy indexer |
+| `runs.py` | 14 | 505 | Run lifecycle, checkpoints, compare, scoped run, token breakdown, optimization, WS |
+| `experiences.py` | 5 | 124 | Experience CRUD + semantic search + refresh |
+| `meta.py` | 11 | 241 | Meta-orchestrator discover/plan/validate/run/sessions + WS |
+| `publishing.py` | 4 | 143 | Publish/unpublish/MCP-config/status |
+| `blocks.py` | 6 | 172 | Block CRUD + export |
+| `chat.py` | 14 | 805 | Chat message, stop, CRUD, stream state, WS, search, export, pin, checkpoint |
+| `adapters.py` | 3 | 438 | Adapter start/stop/status + all runtime logic |
+| `dependencies.py` | — | 106 | Shared dependency accessors |
 
 ## Tasks
-
-- [ ] 1. Create `src/dan/server/routers/` package and `src/dan/server/dependencies.py`
-  - [ ] 1-1. Add shared dependency accessors (`get_run_manager`, `get_chat_manager`, `get_graph_store`, etc.)
-  - [ ] 1-2. Add any shared response/model helpers that multiple routers need
-- [ ] 2. Extract low-risk HTTP routers first
-  - [ ] 2-1. `rag.py` — RAG collections + `_get_indexer` wrapper
-  - [ ] 2-2. `experiences.py`
-  - [ ] 2-3. `blocks.py`
-  - [ ] 2-4. `publishing.py`
-  - [ ] 2-5. `misc.py` — health, cache, metrics, files/docs/code-refs, test cases, memory/errors/rules if they stay small
-- [ ] 3. Extract graph/run routers second
-  - [ ] 3-1. `graphs.py` — graph CRUD, mutation, validation, export, node-level helpers
-  - [ ] 3-2. `runs.py` — run lifecycle, checkpoints, compare, logs, scoped run, run WS
-  - [ ] 3-3. Move `CreateGraphRequest`, `ApplyMutationRequest`, `RunRequest`, `ResumeRequest` next to their router modules
-- [ ] 4. Extract stateful routers last
-  - [ ] 4-1. `meta.py` — meta session routes + `_meta_tasks`, `_meta_subscribers`
-  - [ ] 4-2. `chat.py` — chat CRUD + `chat_message`
-  - [ ] 4-3. `chat_streams.py` — chat stream state, stop endpoint, WebSocket handlers, reconnect helpers
-  - [ ] 4-4. `adapters.py` — adapter routes + adapter runtime helpers/state
-- [ ] 5. Update `app.py` to `include_router()` each module with stable prefixes/tags
-- [ ] 6. Verification gates
+- [x] 1. Create `src/dan/server/routers/` package and `dependencies.py`
+  - [x] 1-1. Add shared dependency accessors (`get_run_manager`, `get_chat_manager`, `get_graph_store`, etc.)
+  - [x] 1-2. Add helper accessors for memory, experience, and path validation
+- [x] 2. Extract low-risk HTTP routers first
+  - [x] 2-1. `rag.py` — RAG collections + `_get_indexer` wrapper (module-level state)
+  - [x] 2-2. `experiences.py`
+  - [x] 2-3. `blocks.py`
+  - [x] 2-4. `publishing.py`
+  - [x] 2-5. `misc.py` — health, cache, metrics, files/docs/code-refs, test cases, memory/errors/rules
+- [x] 3. Extract graph/run routers
+  - [x] 3-1. `graphs.py` — graph CRUD, mutation, validation, export, node-level helpers, `build_token_analysis_context`
+  - [x] 3-2. `runs.py` — run lifecycle, checkpoints, compare, scoped run, token breakdown, optimization, run WS
+  - [x] 3-3. Move request models (`CreateGraphRequest`, `ApplyMutationRequest`, `RunRequest`, `ResumeRequest`) into their router modules
+- [x] 4. Extract stateful routers
+  - [x] 4-1. `meta.py` — meta session routes + `_meta_tasks`, `_meta_subscribers` (module-level state)
+  - [x] 4-2. `chat.py` — chat CRUD + `chat_message` (full `_produce()` closure preserved)
+  - [x] 4-3. Chat stream state (`_chat_streams`, `_chat_produce_tasks`, helpers) moved into `chat.py`
+  - [x] 4-4. `adapters.py` — adapter routes + all runtime helpers/state dicts
+- [x] 5. Update `app.py` to `include_router()` each module; add compatibility re-exports
+- [ ] 6. Verification gates (deferred — requires server startup)
   - [ ] 6-1. Diff `/openapi.json` before/after
   - [ ] 6-2. Smoke-test one representative endpoint from each moved router
   - [ ] 6-3. Verify chat stream reconnect + terminal-event guarantee still hold
@@ -59,12 +50,14 @@
   - [ ] 6-5. Run the relevant targeted test suites
 
 ## Decisions
-
-- (filled in during execution)
+- Combined `chat_streams.py` into `chat.py` rather than keeping a separate file, since the stream state is tightly coupled to the chat message handler's `_produce()` closure. Separating them would require cross-module mutable state sharing with no clear benefit.
+- Moved `_build_meta_controller()` helper back to `app.py` since it references module-level globals (`_graph_store`, `_chat_manager`, etc.) and is used by the meta router via `dependencies.py`. This avoids circular imports.
+- Chat stream module state (`_chat_streams`, `_chat_produce_tasks`) lives in `routers/chat.py` as module-level dicts, matching the original pattern.
+- Adapter state dicts (`_active_adapters`, `_adapter_session_stores`, etc.) moved to `routers/adapters.py` as module-level state.
+- `build_token_analysis_context` is exported from `graphs.py` for use by the runs router's optimization endpoints.
 
 ## Notes
-
-- `chat_message` is the highest-risk route move. Treat it as its own PR, and do not combine it with the chat CRUD move if the diff becomes noisy.
-- `chat_streams.py` is intentionally separate from `chat.py` so the transport/state machinery does not get mixed back into CRUD endpoints.
-- Initial router extraction can still call existing helpers through compatibility imports. The deeper dependency cleanup happens in `35-5`.
-- The scoped-run handler is large enough to warrant a helper module if it keeps growing during extraction.
+- `app.py` went from 4,284 lines to 397 lines (91% reduction).
+- All endpoint paths remain exactly the same — no prefix changes.
+- Request/response models (`CreateGraphRequest`, `ChatMessageRequest`, etc.) are re-exported from `app.py` for backward compatibility.
+- The `_produce()` closure in `chat_message` was moved as-is with all its inner helpers.

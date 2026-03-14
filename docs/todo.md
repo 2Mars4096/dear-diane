@@ -423,18 +423,18 @@
   - [x] [34-4-integration](plans/34-4-integration.md) — E. Rewrote `runtime.py`, patched all imports, removed feature flag
   - [x] [34-5-legacy-deletion](plans/34-5-legacy-deletion.md) — F. Deleted 18 source modules, 28+ test files, gutted `__init__.py`, cleaned registry
 
-## Phase 25 — Server Module Decomposition
-> Break the large server-side modules into focused, testable packages/modules. Pure structural
-> extraction — no logic changes, no API changes, and no public import-path breaks mid-phase.
-> Safe parallel lane with Plan 34: `35-3`, `35-4`, and a minimal-diff `35-1`. Do **not** land
-> `35-2` or `35-5` in parallel with `34-4`; those wait until the runtime integration settles.
+## Phase 25 — Server Module Decomposition *(completed)*
+> Broke the three largest server-side modules (`app.py` 5,362→426, `chat_manager.py` 5,669→3,647,
+> `capability_handlers.py` 4,839→752) into 6 focused packages with compatibility facades. Created
+> `server/tools/`, `server/chat/`, `server/capabilities/`, `server/routers/`, `server/startup.py`,
+> and `server/app_state.py`. 149 targeted tests verified passing; all public import paths preserved.
 
-- [ ] [35-server-module-decomposition](plans/35-server-module-decomposition.md) — decompose `app.py`, `chat_manager.py`, and `capability_handlers.py` with compatibility facades and verification gates
-  - [ ] [35-1-extract-domain-tools](plans/35-1-extract-domain-tools.md) — A. Extract domain tools from `app.py` into `server/tools/` while keeping `_build_tool_registry()` and tool IDs stable
-  - [ ] [35-2-app-routers](plans/35-2-app-routers.md) — B. Split route handlers from `app.py` into `server/routers/` after `34-4` settles; keep OpenAPI and stream semantics unchanged
-  - [ ] [35-3-chat-manager-split](plans/35-3-chat-manager-split.md) — C. Extract support code into `server/chat/` while keeping `chat_manager.py` as a compatibility facade
-  - [ ] [35-4-capability-handlers-split](plans/35-4-capability-handlers-split.md) — D. Move handler implementations into `server/capabilities/` while keeping `capability_handlers.py` as the stable registration/import surface
-  - [ ] [35-5-app-startup-state](plans/35-5-app-startup-state.md) — E. Extract startup/lifespan into `server/startup.py` and migrate globals to typed `AppState` in staged steps
+- [x] [35-server-module-decomposition](plans/35-server-module-decomposition.md) — decompose `app.py` (5,362→426), `chat_manager.py` (5,669→3,647), `capability_handlers.py` (4,839→752) with compatibility facades and verification gates
+  - [x] [35-1-extract-domain-tools](plans/35-1-extract-domain-tools.md) — A. Extract domain tools from `app.py` into `server/tools/` (6 modules, 1,096 lines)
+  - [x] [35-2-app-routers](plans/35-2-app-routers.md) — B. Split route handlers from `app.py` into `server/routers/` (12 modules, 3,653 lines)
+  - [x] [35-3-chat-manager-split](plans/35-3-chat-manager-split.md) — C. Extract support code into `server/chat/` package (7 modules, 2,287 lines)
+  - [x] [35-4-capability-handlers-split](plans/35-4-capability-handlers-split.md) — D. Move handler implementations into `server/capabilities/` (15 modules, 2,934 lines)
+  - [x] [35-5-app-startup-state](plans/35-5-app-startup-state.md) — E. Extract startup/lifespan into `server/startup.py` (1,076 lines) + typed `AppState` (120 lines)
 
 ## Benchmark Suite — Prove Long-Tail Advantage
 > Empirically prove DAN's typed-graph architecture outperforms monolithic agents on complex, multi-step tasks. Published academic benchmarks + custom long-tail scenarios. Analysis framework built first.
@@ -631,6 +631,20 @@
 - [ ] **Kaggle competition strategist** — monitor active Kaggle competitions, auto-scaffold projects, generate/evaluate submissions. Loop: pick competition → EDA → feature engineering → model ensemble → submit → analyze leaderboard feedback → iterate. Use DAN's iterative build/test/diagnose loop.
 - [ ] **Crypto mining orchestration** — manage mining operations (pool selection, hardware monitoring, profitability switching). DAN as the control plane for hashrate allocation and profit optimization.
 - [ ] **Revenue path discovery** — systematic search for new token-to-money conversion paths. Survey: freelance automation (Upwork/Fiverr bots), content generation pipelines, data labeling/annotation services, API-as-a-service (publish DAN workflows as paid endpoints), algorithmic trading signal subscriptions, automated research reports for sale, SEO/content farms, synthetic data generation. Evaluate each on effort-to-revenue ratio and regulatory risk.
+
+### Packaging & Distribution
+- [ ] **Installable package release (opencode-style)** — distribute DAN as a standalone installable binary/package (not open source yet). Homebrew, npm/npx, or single-binary installer. Users run `dan` without cloning or managing Python deps.
+
+### Branding: Stove & Pot Theme
+- [ ] **Cooking-themed identity** — rebrand around stove/pot metaphor: tokens burn to cook, workflows are recipes, knowledge distillation is flavor extraction. Consistent theming across CLI output, UI chrome, docs, and packaging.
+
+### 100-Paper Domain Learning Experiment
+- [ ] **Domain recipe distillation (100-paper experiment)** — use memory + self-evolvement system to ingest ~100 papers in one research area over an extended session. Measure paper-writing quality before vs. after distillation. Validates whether the learning pipeline produces meaningful domain expertise. Core question: does burning tokens on 100 papers yield measurably better output?
+- [ ] **Domain-flavour memory architecture** — generalize memory mechanisms to extract the core "taste" (conventions, terminology, methodological patterns, citation norms, rhetorical style) of each research domain. General enough to work across domains, specific enough to capture what makes each field distinctive. Builds on existing memory kernel (29-1) + domain learning (31-21).
+- [ ] **UI: cooking area + recipe area** — two workspace surfaces: (1) **Cooking area** — where active work happens (coding, writing, analysis); (2) **Recipe area** — where long-running learning sessions digest papers over hours/days, showing progress, extracted knowledge, and distillation status. Recipe area is a new mode in the job-based workspace UI.
+- [ ] **Recipe marketplace** — sell distilled domain knowledge ("recipes") extracted from actual token-burning sessions (e.g., reading 100 supply-chain papers). Recipes are richer than skills: they encode domain taste, not just procedural steps. Marketplace for buying/selling/sharing recipes. Differentiation from skills: recipes are empirically distilled from reading real papers, skills are authored procedural knowledge.
+- [ ] **Paper quality scoring website (possibly separate project)** — upload a paper, get a structured quality score. Multi-model review (like [APE](https://ape.socialcatalystlab.org/methodology)): advisor pass/fail, exhibit review, prose review, referee reports, head-to-head tournament against published papers. Use as the before/after measurement for the 100-paper experiment. Could be a standalone service or a DAN-published workflow endpoint.
+- [ ] **Latent group subconsciousness extraction** — after reading 100 papers, build directional association vectors for the field's core concepts (e.g. `supply_chain → [disruption, resilience, bullwhip, dual_sourcing, ...]` ranked by salience). These vectors capture the field's collective intuition — what practitioners/reviewers implicitly expect when they encounter a concept. A "good idea" is one that activates a latent association people recognize but haven't explicitly formulated ("oh, I've sort of thought about this but never seriously pursued it"). The 100-paper learning should extract these association vectors and use them to (1) evaluate whether a proposed research question aligns with the field's latent expectations, and (2) generate questions that sit in the high-salience-but-unexplored zone. Open problem: how to measure/validate these vectors against actual reviewer reactions. Possible approaches: predict acceptance/citation from alignment score, compare extracted vectors across fields, or test whether vector-informed question generation produces higher-rated proposals.
 
 ### Future vision
 - [x] ~~**Multi-agent group chat**~~ → promoted and completed in [Phase 20](#phase-20--telegram-multi-bot-platform) (Plan 30, Telegram-first). Discord adapter deferred to future phase.

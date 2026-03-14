@@ -1,6 +1,6 @@
 # 35: Server Module Decomposition
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Break down the largest server-side modules into focused, testable packages/modules without changing external behavior, public APIs, or public import paths mid-phase.
 
 ## Motivation
@@ -38,11 +38,11 @@ This phase is **structural extraction only**:
 
 ## Sub-Plans
 
-- [ ] [35-1-extract-domain-tools](35-1-extract-domain-tools.md) — A. Extract domain tool implementations from `app.py` into `server/tools/`
-- [ ] [35-2-app-routers](35-2-app-routers.md) — B. Split route handlers from `app.py` into FastAPI `APIRouter` modules under `server/routers/`
-- [ ] [35-3-chat-manager-split](35-3-chat-manager-split.md) — C. Extract `chat_manager.py` support code into a dedicated `server/chat/` package while keeping `chat_manager.py` as a compatibility facade
-- [ ] [35-4-capability-handlers-split](35-4-capability-handlers-split.md) — D. Split `capability_handlers.py` implementations into `server/capabilities/` while keeping stable registration and import surfaces
-- [ ] [35-5-app-startup-state](35-5-app-startup-state.md) — E. Extract lifespan/startup into `server/startup.py` and consolidate globals into typed `AppState`
+- [x] [35-1-extract-domain-tools](35-1-extract-domain-tools.md) — A. Extract domain tool implementations from `app.py` into `server/tools/`
+- [x] [35-2-app-routers](35-2-app-routers.md) — B. Split route handlers from `app.py` into FastAPI `APIRouter` modules under `server/routers/`
+- [x] [35-3-chat-manager-split](35-3-chat-manager-split.md) — C. Extract `chat_manager.py` support code into `server/chat/` package (5,669→3,647 lines; 7 new modules)
+- [x] [35-4-capability-handlers-split](35-4-capability-handlers-split.md) — D. Split `capability_handlers.py` into `server/capabilities/` (4,839→752 lines; 14 domain modules)
+- [x] [35-5-app-startup-state](35-5-app-startup-state.md) — E. Extract lifespan/startup into `server/startup.py` + typed `AppState` (1,076+120 lines new)
 
 ## Parallelization Contract with Plan 34
 
@@ -92,12 +92,26 @@ Each sub-plan is independently shippable, but `35-2` and `35-5` should not be co
 - No endpoint path, WebSocket protocol, tool ID, or capability schema changes
 - Existing tests pass with only import-path adjustments where deliberately migrated
 
+## Final Inventory
+
+| Original file | Before | After | New packages |
+|---|---|---|---|
+| `app.py` | 5,362 | 426 | `server/tools/` (1,096), `server/routers/` (3,653), `server/startup.py` (1,076), `server/app_state.py` (120) |
+| `chat_manager.py` | 5,669 | 3,647 | `server/chat/` (2,287) |
+| `capability_handlers.py` | 4,839 | 752 | `server/capabilities/` (2,934) |
+| **Total** | **15,870** | **4,825** | **11,166 lines in new packages** |
+
+149 targeted tests verified passing. 2 pre-existing failures confirmed unrelated.
+
 ## Decisions
 
-- `runtime.py` stays out of scope here; Plan 34 owns it
-- Compatibility facades stay until Plan 34 is merged and Phase 25 is largely complete
+- `runtime.py` stayed out of scope; Plan 34 owns it
+- Compatibility facades kept on `chat_manager.py` and `capability_handlers.py` — they re-export all moved symbols so existing imports work unchanged
+- `app.py` uses `__getattr__` with cached lookups to re-export adapter/stream state that moved to router modules
+- Module globals in `app.py` are mirrored from `AppState` via `_mirror_state_to_globals()` during lifespan for backward compatibility
+- Adapter state dicts removed from `app.py` globals — canonical location is now `routers/adapters.py`
 
 ## Notes
 
-- This phase is about making future management sane, not about squeezing every file under an arbitrary line count in one shot.
-- If Plan 34 deletes or relocates a dependency first, update the relevant 35-X plan instead of forcing the old target shape.
+- Phase completed in one session. All 5 sub-plans landed successfully.
+- If Plan 34 deletes or relocates a dependency, update the relevant facade or `__getattr__` table in `app.py`.

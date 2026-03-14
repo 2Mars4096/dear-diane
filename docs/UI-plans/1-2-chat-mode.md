@@ -73,6 +73,7 @@ Chat mode is the entry point for all users. It should have zero learning curve. 
 - [x] 4-8. Background streaming: sessions keep running when switching threads, pulsing indicator in thread list
 - [x] 4-9. Message queue: type follow-ups while streaming, with edit/reorder/delete, auto-send on completion
 - [x] 4-10. Graceful shutdown: beforeunload + unmount close all background streams and flush pending saves
+- [x] 4-11. Mid-session injection: first queued message can be "pushed" into the active stream's tool loop via /api/chat/{channel}/inject
 
 ### 5. Quick Actions & Intelligence
 - [ ] 5-1. **Suggested follow-ups:** After a response, show 2-3 contextual next steps ("Drill deeper into...", "Export as...", "Schedule this...")
@@ -112,6 +113,7 @@ Chat mode is the entry point for all users. It should have zero learning curve. 
 - Background streaming uses a module-level WebSocket registry (`backgroundStreamRegistry.ts`): switching threads detaches the active WS instead of closing it; the background handler keeps saving to the server; thread list shows a pulsing dot for in-flight background streams; when a background stream completes, the active-thread view auto-reloads the latest saved state
 - Loading placeholder now shows the progress status text instead of bouncing dots — the shimmer bar on the bubble already indicates activity, so dots are redundant; progress text is more informative
 - Message queueing follows a Cursor-like pattern: the composer never disables, Enter always works (queues when streaming, sends when idle), the queue is visible and actionable (edit, reorder, delete), and auto-drains when the current turn completes. Queue state is per-thread and clears on thread switch.
+- The first queued message has a special "Push" button that injects it into the active session's tool loop. The backend drains injections between tool rounds and appends them as user messages, so the LLM sees the injected content in its next follow-up turn. A `ChatInjectedMessageEvent` confirms the injection and the frontend inserts it as a user bubble above the ongoing assistant response.
 
 ## Notes
 - Chat mode should feel indistinguishable from a best-in-class chat UI (Claude/ChatGPT) for simple tasks

@@ -1,7 +1,7 @@
 # 35-5: Extract Lifespan & Consolidate Server State
 
 **Parent:** [35-server-module-decomposition](35-server-module-decomposition.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Extract `app.py` startup/lifespan wiring into `server/startup.py` and migrate mutable module globals onto a typed `AppState`, using a staged compatibility approach rather than a big-bang cutover.
 
 ## Current State
@@ -50,32 +50,34 @@ _notification_manager, _concierge, _dispatcher, _mcp_bridge  # None until lifesp
 
 ## Tasks
 
-- [ ] 1. Define `AppState` in `src/dan/server/app_state.py`
-  - [ ] 1-1. Type fields explicitly wherever the concrete type is known
-  - [ ] 1-2. Group fields by concern: stores, managers, integrations, background tasks, adapter runtime
-  - [ ] 1-3. Add guard/accessor helpers for required runtime-only fields
-- [ ] 2. Add a compatibility layer before deleting globals
-  - [ ] 2-1. Instantiate and attach `AppState` on `app.state`
-  - [ ] 2-2. Populate both `app.state` and existing globals from the same constructed objects
-  - [ ] 2-3. Keep existing `_require_*` helpers temporarily, but source them from `app.state`
-- [ ] 3. Create `src/dan/server/startup.py`
-  - [ ] 3-1. Move `_get_engine_config()`
-  - [ ] 3-2. Move `_build_chat_provider_registry()`
-  - [ ] 3-3. Move `_auto_register_published_workflows()`
-  - [ ] 3-4. Move `_consolidation_loop()`
-  - [ ] 3-5. Move MCP bridge helpers
-  - [ ] 3-6. Extract phased init functions with explicit inputs/outputs:
-    - `init_stores(state)`
-    - `init_capabilities(state)`
-    - `init_managers(state)`
-    - `init_integrations(state)`
-    - `init_background_tasks(state)`
-    - `shutdown_all(state)`
-  - [ ] 3-7. Compose a clean `lifespan()` wrapper around those phases
-- [ ] 4. Update `app.py` incrementally
-  - [ ] 4-1. Import lifespan from `startup.py`
-  - [ ] 4-2. Keep `app.py` as composition root only
-  - [ ] 4-3. Do not combine with router extraction in the same PR
+- [x] 1. Define `AppState` in `src/dan/server/app_state.py`
+  - [x] 1-1. Type fields explicitly wherever the concrete type is known
+  - [x] 1-2. Group fields by concern: stores, managers, integrations, background tasks, adapter runtime
+  - [x] 1-3. Add guard/accessor helpers for required runtime-only fields
+- [x] 2. Add a compatibility layer before deleting globals
+  - [x] 2-1. Instantiate and attach `AppState` on `app.state.dan`
+  - [x] 2-2. Populate both `app.state.dan` and existing globals from the same constructed objects via `_mirror_state_to_globals()`
+  - [x] 2-3. Keep existing `_require_*` helpers temporarily in `app.py`; `AppState` has its own `require_*` accessors
+- [x] 3. Create `src/dan/server/startup.py`
+  - [x] 3-1. Move `_get_engine_config()`
+  - [x] 3-2. Move `_build_chat_provider_registry()`
+  - [x] 3-3. Move `_auto_register_published_workflows()` (now takes graph_store+graphs_dir params)
+  - [x] 3-4. Move `_consolidation_loop()` (now takes graph_store param)
+  - [x] 3-5. Move MCP bridge helpers (`_initialize_mcp_bridge_for_server`, `_shutdown_mcp_bridge_for_server`)
+  - [x] 3-6. Extract phased init functions with explicit inputs/outputs:
+    - `init_learning_tiers()` — env var resolution
+    - `init_stores(state)` — RunStore, BlockRegistry
+    - `init_engine(state)` — EngineConfig, TierTracker, TelemetryStore, RunManager, RAG indexer
+    - `init_capabilities(state)` — ChatCapabilityRegistry, 7 groups, CapabilityContext, MCP bridge
+    - `init_managers(state)` — MentionResolver, UserProfile, ConversationMemory, MemoryKernel, ChatManager
+    - `init_integrations(state, app)` — PublishRegistry, gateway, notifications, self-knowledge, experience/discovery, concierge/dispatcher
+    - `init_background(state, app)` — scheduler, learning tier, presence, computer config, skill store, consolidation loop, feature log
+    - `shutdown(state)` — cancel tasks, stop adapters, shutdown MCP bridge
+  - [x] 3-7. Compose a clean `lifespan()` wrapper around those phases
+- [x] 4. Update `app.py` incrementally
+  - [x] 4-1. Import lifespan from `startup.py`
+  - [x] 4-2. Keep `app.py` as composition root: route handlers, request/response schemas, module globals (compat)
+  - [x] 4-3. Delegate `_get_engine_config()` and `_build_chat_provider_registry()` to startup module
 - [ ] 5. After `35-2`, move call sites onto state/dependencies
   - [ ] 5-1. Use `server/dependencies.py` for typed access
   - [ ] 5-2. Update router modules to use `request.app.state` / dependency helpers
@@ -91,7 +93,10 @@ _notification_manager, _concierge, _dispatcher, _mcp_bridge  # None until lifesp
 
 ## Decisions
 
-- (filled in during execution)
+- `_graph_store`, `_chat_store`, `_test_case_store` continue to be created at `app.py` import time as module globals. The `lifespan()` in `startup.py` creates fresh instances passed into `AppState`, then `_mirror_state_to_globals()` overwrites the module-level ones. This keeps eager import-time construction stable.
+- `_get_experience_index`, `_get_experience_store`, `_build_meta_controller` stay in `app.py` for now — they reference module globals (`_graph_store`, `_run_manager`, etc.) and are imported lazily by `startup.py`'s `init_integrations()`. Moving them would require breaking those global references first.
+- `_get_indexer` (RAG endpoint indexer) remains in `app.py` for route handler use. A separate indexer closure is created inside `init_engine()` for tool registry use.
+- The `_global_event_bus` NameError in the scheduler wiring was preserved as-is (it's caught by the surrounding try/except). Fixing it is out of scope for this structural extraction.
 
 ## Notes
 

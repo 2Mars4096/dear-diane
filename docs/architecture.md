@@ -10,6 +10,58 @@
 - **Shared contract:** versioned graph JSON (`dan_graph_v1`) between Python and TypeScript
 - **Testing:** pytest, pytest-asyncio, httpx (ASGI test client); vitest (editor unit tests)
 
+## Server Startup & State
+
+- `src/dan/server/app_state.py` — `AppState` dataclass: typed container for all server-side runtime state (stores, managers, registries, integrations, background tasks, adapters). Attached to `app.state.dan` during lifespan. Includes `require_*` accessor guards that raise HTTP 503 if a subsystem isn't initialized yet.
+- `src/dan/server/startup.py` — server lifespan and phased initialization (Plan 35-5). Contains all helper functions moved from `app.py` (`_get_engine_config`, `_build_chat_provider_registry`, MCP bridge helpers, `_auto_register_published_workflows`, `_consolidation_loop`, `_build_tool_registry`) plus 8 phased init functions: `init_learning_tiers()`, `init_stores(state)`, `init_engine(state)`, `init_capabilities(state)`, `init_managers(state)`, `init_integrations(state, app)`, `init_background(state, app)`, `shutdown(state)`. The `lifespan(app)` async context manager composes all phases and mirrors state to `app.py` module globals via `_mirror_state_to_globals()` for backward compat.
+- `app.py` is the composition root (397 lines): `FastAPI(lifespan=lifespan)`, CORS middleware, `include_router()` calls for 10 router modules, compatibility re-exports, and static file serving. All route handlers live in `src/dan/server/routers/`. Module globals (`_graph_store`, `_run_manager`, etc.) are kept as a compatibility layer, populated from `AppState` during lifespan.
+
+## Route Handlers Package
+
+- `src/dan/server/routers/` — domain-grouped FastAPI `APIRouter` modules extracted from `app.py` (Plan 35-2).
+- `dependencies.py` — shared accessor functions (`get_graph_store`, `get_run_manager`, `get_chat_manager`, etc.) using deferred imports to avoid circular dependencies.
+- `misc.py` (487 lines) — health, cache, metrics, files/docs/code-refs, test cases, memory, errors, rules.
+- `graphs.py` (509 lines) — graph CRUD, mutation, validation, export, node inputs, boundary validators, `build_token_analysis_context`.
+- `rag.py` (122 lines) — RAG collection CRUD + lazy-initialized indexer.
+- `runs.py` (505 lines) — run lifecycle, checkpoints, compare, scoped run, token breakdown, optimization, WebSocket.
+- `experiences.py` (124 lines) — experience CRUD + semantic search + refresh.
+- `meta.py` (241 lines) — meta-orchestrator discover/plan/validate/run/sessions + WebSocket. Module-level `_meta_tasks` and `_meta_subscribers` state.
+- `publishing.py` (143 lines) — publish/unpublish/MCP-config/status.
+- `blocks.py` (172 lines) — block CRUD + export.
+- `chat.py` (805 lines) — chat message (with full `_produce()` closure), stop, CRUD, search, export, pin, checkpoint, WebSocket. Module-level chat stream state (`_chat_streams`, `_chat_produce_tasks`).
+- `adapters.py` (438 lines) — adapter start/stop/status + all runtime logic. Module-level adapter state dicts.
+
+## Server Tools Package
+
+- `src/dan/server/tools/` — domain-specific tool implementations extracted from `app.py` (Plan 35-1).
+- `_shared.py` — low-level helpers (`_http_get_json`, `_run_command`) shared across tool modules.
+- `latex.py` — LaTeX compilation, paper saving, submission packaging, citation key extraction, `informs3.cls` auto-fetch.
+- `research.py` — Semantic Scholar paper search, citation verification.
+- `quant.py` — `run_strategy_script` (script-as-param strategy execution with factor validation), `run_backtest` (subprocess backtest), `save_grid_csv` / `plot_backtest` (deprecated, kept for backward compat).
+- `general.py` — `run_python` (generic code execution), `get_department_state` / `update_department_state`, `rag_index_documents` (dependency-injected `get_indexer`).
+- `__init__.py` — re-exports all tool functions and provides `register_server_tools(registry, *, get_indexer=None)` which wires all 14 tool IDs into a `ToolRegistry`.
+- `app.py`'s `_build_tool_registry()` delegates to `register_server_tools()` for domain tools and only handles built-in tool registration and custom-tool discovery itself.
+
+## Capability Handlers Package
+
+- `src/dan/server/capabilities/` — domain-grouped handler implementations extracted from `capability_handlers.py` (Plan 35-4).
+- `_helpers.py` — shared utilities: `_truncate`, `_sanitize_web_content`, `_failure_result`, `_classify_network_exception`, `_resolve_user_path`, `_schedule_export_cleanup`, `_FILE_READ_MAX`.
+- `web.py` — `handle_web_search`, `handle_web_fetch`, `handle_http_request`.
+- `file_io.py` — `handle_file_read`, `handle_file_write`, `handle_file_grep`, `handle_pdf_read`, `handle_list_directory`, `handle_file_copy/move/delete`, `handle_compress`.
+- `git.py` — `handle_git_status/diff/log/branch/commit/worktree`.
+- `shell.py` — `handle_shell_command`, `handle_screenshot`, `handle_clipboard`, `handle_notify`.
+- `data.py` — `handle_python_eval`, `handle_csv_read`, `handle_spreadsheet_read`, `handle_json_extract`, `handle_regex_match`, `handle_text_chunk/diff/translate`.
+- `media.py` — `handle_image_describe`, `handle_audio_transcribe`.
+- `config.py` — `handle_get_config`, `handle_set_config`, `_update_env_file`.
+- `experiences.py` — workflow history/catalog/activity handlers + `_format_experience_summary`.
+- `publishing.py` — publish/export/share/block handlers + `_resolve_graph`.
+- `runs.py` — run lifecycle handlers + `resolve_run_reference`, `get_pending_run_disambiguation`.
+- `browser.py` — browser/desktop computer-control handlers + `_get_controller`, `set_controller`.
+- `introspection.py` — `handle_inspect_node`, `handle_list_test_cases`, `handle_run_test_case`.
+- `misc.py` — `handle_current_datetime`, `handle_telegram_poll`, `handle_send_email`.
+- `__init__.py` — lazy re-exports of `register_*` functions for convenience (canonical import: `dan.server.capability_handlers`).
+- `capability_handlers.py` is now a thin registration hub: all schemas, all 8 `register_*` functions, and imports from domain modules.
+
 ## Concierge Runtime
 
 - `src/dan/server/concierge/` is the shared Phase 15 control-plane package.
@@ -44,6 +96,7 @@
 - Tool-call presentation now has its own frontend helper layer: `editor/src/lib/toolCallPresentation.ts` groups repeated same-turn `file_read` calls by path so `ChatMessage.tsx` can render one logical file-read entry with merged range summaries instead of one card per raw range read. `ToolCallCard.tsx` uses the Electron shell bridge to expose an open-file link for these grouped reads. `describeLatestToolProgress()` returns `ToolProgressInfo { text, filePath? }` so the progress line can link to the active file.
 - Background streaming is managed by `editor/src/lib/backgroundStreamRegistry.ts`: a module-level `Map<threadId, BackgroundStream>` holds detached WebSockets that continue processing events and saving to the server while the user works in a different thread. `ChatPanel` detaches on thread switch instead of closing the WS. The registry notifies subscribers when streams complete so the active thread can auto-reload. Thread list rows show a pulsing dot for threads with active background streams. `shutdownAll()` closes every background WS and flushes saves — called from both `beforeunload` and the component's unmount cleanup.
 - Message queueing: when a stream is active, new messages are pushed to a `pendingQueue` state array instead of being silently dropped. The composer stays enabled with a queue-specific placeholder. Each queued item can be edited (popped back to the input), reordered, or deleted via inline actions. When `isStreaming` transitions to false, the first queued message auto-sends after a short delay. The queue is cleared on thread switch or new chat creation.
+- Mid-session message injection: `ChatManager` now maintains per-channel injection queues (`_injection_queues: dict[str, asyncio.Queue]`) alongside cancel events. `POST /api/chat/{channel}/inject` pushes a message; between tool rounds in `send_message_with_tools`'s multi-turn loop (after `_turn > 0`), pending injections are drained and appended to the LLM `messages` list as user messages. Each injection emits `ChatInjectedMessageEvent` on the WebSocket. The frontend's first queued item has a "Push" button that calls the inject API and inserts the acknowledged message into the conversation above the assistant bubble. The `stream_channel_id` is threaded through both the direct `send()` call and the concierge's `_extract_chat_params`.
 - Graph CRUD responses now include canonical `graph_revision` values from the backend. The editor stores that revision in `useGraphStore` and reuses it for chat stale-revision checks instead of hashing the layout-adjusted `GET /api/graphs/{id}?layout=true` payload. When the graph is dirty locally, the editor intentionally falls back to a local canonical hash so stale detection still reflects unsaved edits instead of blindly sending the last saved server revision.
 - Provider-layer timeout policy is now shared. `resolve_provider_timeout()` in `src/dan/providers/__init__.py` resolves a default timeout from `ProviderConfig.extra["timeout_seconds"]`, then `DAN_PROVIDER_TIMEOUT`, then `DAN_LLM_CALL_TIMEOUT`. The OpenAI and Anthropic chat providers propagate that timeout to their SDK requests by default, and the Google provider wraps both complete and stream paths in asyncio timeouts. Chat-specific timeout guards in `ChatManager` still exist as a second line of defense for progress/cancellation behavior, but the provider layer now protects other direct `provider.complete()` callers too.
 - `src/dan/server/__main__.py` now builds the shared uvicorn log config for manual and service-managed server starts. It promotes `dan.*` loggers to `INFO`, so `dan-up`'s persistent `~/.dan/logs/server.log` and service log files capture `chat_manager` tool-loop diagnostics (`finish_reason`, turn summaries, follow-up failures) instead of only uvicorn process lines. `src/dan/cli/service_runner.py` reuses the same config for background service launches.
