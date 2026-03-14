@@ -36,7 +36,7 @@ def _build_tool_registry() -> ToolRegistry:
     project_root = Path(__file__).resolve().parents[2]
     if str(project_root) not in sys.path:
         sys.path.insert(0, str(project_root))
-    from dan.server.app import (
+    from dan.server.tools.quant import (
         _run_backtest,
         _run_strategy_script,
         _plot_backtest,
