@@ -1,6 +1,6 @@
 # 1: DAN Custom UI — Master Specification
 
-**Status:** planning
+**Status:** in-progress (Phases 1–3 complete, Phases 4–5 not yet planned)
 **Goal:** Build a workspace-based desktop app that is as convenient as ChatGPT for simple tasks, as powerful as Cursor/VS Code for coding, and fully leverages DAN's workflow orchestration for complex tail tasks.
 
 ## Vision
@@ -216,20 +216,20 @@ See [1-5-marketplace-extensions](1-5-marketplace-extensions.md) for detailed pla
 
 ## Development Phases
 
-### Phase 1: Shell + Chat + Code Core ← current priority
+### Phase 1: Shell + Chat + Code Core — complete
 Prove the architecture. Build the two things needed for daily use: chat and coding.
-- [1-1-app-shell-framework](1-1-app-shell-framework.md) — panel system, mode switching, workspace tabs, sidebar
-- [1-2-chat-mode](1-2-chat-mode.md) — full-screen chat with rich output, progressive escalation, workspace navigation
-- [1-4-code-mode](1-4-code-mode.md) — Phase 1: Monaco editor, file explorer, terminal, diff, search, git, chat integration
+- [1-1-app-shell-framework](1-1-app-shell-framework.md) — 61/61 done
+- [1-2-chat-mode](1-2-chat-mode.md) — 50/50 done
+- [1-4-code-mode](1-4-code-mode.md) — Phase 1: 101/101 done
 
-### Phase 2: Code Mode Advanced + Marketplace
+### Phase 2: Code Mode Advanced + Marketplace — complete
 Full VS Code parity. Extensions ecosystem. Marketplace framework.
-- [1-4-code-mode](1-4-code-mode.md) — Phase 2: LSP, debugger, advanced editor, AI code features
-- [1-5-marketplace-extensions](1-5-marketplace-extensions.md) — VS Code extensions, DAN skills, MCP servers, generic marketplace framework
+- [1-4-code-mode](1-4-code-mode.md) — Phase 2: 79/79 done (total 180/180)
+- [1-5-marketplace-extensions](1-5-marketplace-extensions.md) — 59/59 done
 
-### Phase 3: Research Mode
+### Phase 3: Research Mode — complete
 Academic papers, literature reviews, systematic investigations.
-- [1-3-research-mode](1-3-research-mode.md) — writing pane, PDF reader, references, reviews, recipe/distillation tab for long-running 100-paper learning, pipeline progress
+- [1-3-research-mode](1-3-research-mode.md) — 92/92 done
 
 ### Phase 4: Analytics + Operations
 Data science workspace + workflow management.

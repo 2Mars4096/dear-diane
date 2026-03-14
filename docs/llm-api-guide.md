@@ -916,6 +916,8 @@ Emits a `tier_escalation` event with `from_tier`, `to_tier`, `from_model`, `to_m
 | `tier_map` | `dict[str, str] \| None` | `None` | Custom tier→model mapping (merged with provider defaults) |
 | `tier_params` | `dict[str, dict] \| None` | `None` | Per-tier LLM parameter overrides (e.g. `extended_thinking`) |
 
+> **Note — Concierge stage-based tiering:** The concierge pipeline also uses `DAN_TIER_MAP` for model selection, but via explicit stage-to-tier mapping (`CONCIERGE_STAGE_TIERS` in `concierge/tiering.py`) rather than the dynamic scoring used by `TierPolicy`. Both systems share the same normalized tier map produced by `normalize_tier_map()`. See `docs/architecture.md` § Concierge Runtime for stage assignments.
+
 ---
 
 ## 7e. Built-in Tools (`dan.tools`)

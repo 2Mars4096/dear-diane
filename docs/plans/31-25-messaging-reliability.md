@@ -1,7 +1,7 @@
 # 31-25: Messaging Reliability
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Normalize the chat portal contract so any frontend speaks the same protocol, then close the remaining reliability and UX gaps on Telegram and WhatsApp.
 
 ## Context

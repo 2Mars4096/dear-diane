@@ -305,14 +305,14 @@
   - [x] [27-3-surface-async-acceptance](plans/27-3-surface-async-acceptance.md) — C. Server endpoint returns `status: "processing"|"queued"`, pipes queued stream channels. Adapter uses shared `httpx.AsyncClient` + background task dispatch. `LocalChatRuntime` uses dispatcher. `dan-chat` CLI local mode gets queued event handling.
 
 ## Phase 18 — LLM-First Chat Architecture
-> Move chat toward an LLM-first architecture with a unified prompt, multi-turn tool loop, and post-LLM safety/UX actions. Some mode-gated and text-only fallback behavior still remains while `28-5` decides what can be removed safely.
+> Move chat toward an LLM-first architecture with a unified prompt, multi-turn tool loop, and post-LLM safety/UX actions. Completed: unified prompt path is the only supported route; dead classifier/handler/solver code removed; mode system retained for tool gating.
 
-- [ ] [28-llm-first-chat](plans/28-llm-first-chat.md) — LLM-first chat: single path, all tools, multi-turn, response actions
+- [x] [28-llm-first-chat](plans/28-llm-first-chat.md) — LLM-first chat: single path, all tools, multi-turn, response actions
   - [x] [28-1-strip-adapter-routing](plans/28-1-strip-adapter-routing.md) — A. Adapter is thin pipe: slash→NL translation, everything to server
   - [x] [28-2-unified-tool-dispatch](plans/28-2-unified-tool-dispatch.md) — B. Multi-turn tool loop (10 turns), broader tool visibility, initial `DAN_LLM_FIRST_CHAT` rollout
   - [x] [28-3-response-actions](plans/28-3-response-actions.md) — C. File delivery events, message splitting, claim validation
   - [x] [28-4-system-prompt-design](plans/28-4-system-prompt-design.md) — D. Unified prompt with tool catalog, surface hints, anti-fabrication rules
-- [ ] [28-5-cleanup-dead-code](plans/28-5-cleanup-dead-code.md) — E. Remove dead classifier, handlers, mode-gating code *(in progress: removed unused classifier fallback/re-export, deprecated runtime queue plumbing, an unused `detect_chat_mode()` parameter, a tiny unused solver/executor interface, dead fallback-policy helpers, and the legacy prompt fallback/constants; prompt-design cleanup also landed with compact live tool-family hints, conditional research-only guidance, and generic build clarification, while handler/solver/broader mode reductions still require runtime decisions)*
+- [x] [28-5-cleanup-dead-code](plans/28-5-cleanup-dead-code.md) — E. Remove dead classifier, handlers, mode-gating code *(completed: all legacy files deleted by Plan 34, final audit removed dead `validate_terminal_content()` from policy.py; mode system kept as still active)*
   - [x] [28-6-real-world-test-scenarios](plans/28-6-real-world-test-scenarios.md) — F. 5 scenarios, 38 tests: lit review, equity report, deep research, computer task, casual utility
 
 ## Phase 19 — Concierge-First Architecture: Memory, Reuse & Self-Evolvement
@@ -373,8 +373,8 @@
   - [x] [31-22-self-adaptive-behavior](plans/31-22-self-adaptive-behavior.md) — S. BehaviorStore + AdaptableParameterRegistry + BehaviorChangeLog + ThresholdCalibrator + PatternAccumulator + seeds + prompt/threshold/intent/domain/model externalization + tool description single-source + `/changes`/`/revert`/`/behavior` commands + AdaptationRegistry extensions (outcome tracking, changelog wiring, scope enforcement, measurement) + safety invariants + tier 1→2 promotion gates + intent/domain discovery tier behavior + prompt tier behavior + regression detection + 86 tests. Integration tests deferred.
   - [x] [31-23-execution-boundary-handoff](plans/31-23-execution-boundary-handoff.md) — T. Typed `BoundaryHandoff` at build iterations, goal-loop attempts, workflow-to-workflow boundaries; deterministic signal extraction; budget caps raised (memory 800→1500, domain 600→1200); total output cap 6000 chars; precedence-ranked prompt assembly; 21 tests. Streaming event + integration tests deferred.
   - [x] [31-24-concierge-core-tightening](plans/31-24-concierge-core-tightening.md) — U. Conservative simple-turn fast path before heavy prep, plus surface-owned Telegram identity metadata instead of adapter-injected system history.
-  - [ ] [31-25-messaging-reliability](plans/31-25-messaging-reliability.md) — V. Unified portal contract (normalized identifiers, clean history, canonical surface_context for any frontend), error visibility, WhatsApp gap closure, Telegram forum threading, cross-platform UX polish *(code complete; WhatsApp self-only guard landed; live Telegram/WhatsApp smoke still pending)*
-  - [ ] [31-26-concierge-tiered-execution](plans/31-26-concierge-tiered-execution.md) — W. Route concierge stages through DAN_TIER_MAP (cheap models for classification/file ops, strong models for planning/meta-goals), fix numeric tier key parsing
+  - [x] [31-25-messaging-reliability](plans/31-25-messaging-reliability.md) — V. Unified portal contract (normalized identifiers, clean history, canonical surface_context for any frontend), error visibility, WhatsApp gap closure, Telegram forum threading, cross-platform UX polish *(complete: 295 adapter/messaging tests pass; live smoke pending)*
+  - [x] [31-26-concierge-tiered-execution](plans/31-26-concierge-tiered-execution.md) — W. Route concierge stages through DAN_TIER_MAP (cheap models for classification/file ops, strong models for planning/meta-goals), numeric tier key normalization, `model_override` on ChatManager, `ConciergeTierResolver`, stage-based routing in all executors *(complete: 66 tier tests + 810 concierge tests pass; handler-specific direct-call wiring deferred to 4-7)*
   - [x] [31-27-concierge-route-and-execution-gates](plans/31-27-concierge-route-and-execution-gates.md) — X. Classifier now returns bounded route deliberation, handlers inject an execution contract into tool prompts, and required action hints only count when the corresponding tool succeeds.
   - [x] [31-28-long-horizon-goal-contract](plans/31-28-long-horizon-goal-contract.md) — Y. Carry the bounded goal contract into MetaController planning, inline intent extraction, and goal-loop prompts so long-horizon orchestration keeps the same goal/deliverable/completion checks.
 
@@ -464,9 +464,9 @@
 - [ ] **Tree + swarm composability** — hierarchical delegation (vertical authority: who decides what to work on) and agent teams/swarms (horizontal collaboration: how peers work together) are orthogonal and composable. A node in the delegation tree can internally be an `AgentTeamNode` where peers debate before producing a result. A team of peers can escalate to a higher tier. Both patterns nest inside each other. Document this composability pattern and ensure `DelegationNode` + `AgentTeamNode` interop works cleanly.
 
 ### Execution Intelligence follow-ups
-- [ ] **31-23 bridge wiring** — connect `session.context["last_handoff"]` and `executor.last_handoff` to `msg.metadata["boundary_handoff_context"]` in runtime.py so build-session and goal-loop handoffs reach `_build_prompt_from_package()`. Currently write-only on producer side, read-only on consumer side.
-- [ ] **31-23 streaming event** — emit `BoundaryHandoff.to_user_summary()` via `ProgressSession` for user-visible continuity (deferred task 3-3).
-- [ ] **31-23 integration tests** — end-to-end tests for build-session handoff injection (5-6), goal-loop handoff injection (5-7), and `_build_prompt_from_package` with handoff metadata (5-9).
+- [x] ~~**31-23 bridge wiring**~~ — obsolete: `boundary_handoff.py` deleted in Plan 34 concierge rewrite. Tiered dispatcher doesn't use `BoundaryHandoff`.
+- [x] ~~**31-23 streaming event**~~ — obsolete: `BoundaryHandoff.to_user_summary()` deleted in Plan 34.
+- [x] ~~**31-23 integration tests**~~ — obsolete: the code under test no longer exists.
 
 ### Infrastructure / CI
 - [ ] **Playwright E2E browser tests** (12-6 tasks 5-6) — mode transitions, mention autocomplete, stop generation, export. Requires Playwright setup + CI pipeline.
@@ -608,15 +608,15 @@
 > Build an Electron desktop app with workspace-based layout modes (Chat, Code, Research, Analytics, Operations) that is as convenient as ChatGPT for chat, as powerful as Cursor/VS Code for coding, and leverages DAN's full orchestration for complex tasks. Modes = layout presets (which panels you see), NOT behavioral modes. Backend behavioral modes are auto-detected and invisible to the mode bar. Plans in `docs/UI-plans/`.
 
 - [ ] [1-ui-spec](UI-plans/1-ui-spec.md) — master specification: 5 layout modes, workspace model (two-layer tabs), marketplace architecture, phasing, design principles
-  - [ ] **Phase 1: Shell + Chat + Code Core** ← current priority (replace Cursor for daily use)
-    - [ ] [1-1-app-shell-framework](UI-plans/1-1-app-shell-framework.md) — workspace shell, mode bar, workspace tabs, Electron setup, Operations/Chat wrapping *(core shell + mode switching done; workspace tabs, sidebar host, panel framework, persistent chat bar, shared components pending)*
-    - [ ] [1-2-chat-mode](UI-plans/1-2-chat-mode.md) — full-screen chat with workspace tabs + open-thread tabs + history sidebar, rich output, progressive escalation *(layout, input, streaming, tables/code, escalation, tool-call groups, titles, persistence done; workspace tabs/open-thread strip, charts, file cards, diff view, conversation management, context panel pending)*
-    - [ ] [1-4-code-mode](UI-plans/1-4-code-mode.md) — Phase 1: Monaco editor, file explorer (pinned paths), terminal (xterm.js), diff view, cross-file search (ripgrep), git integration, chat-editor bridge, problems panel, plus production-readiness gaps (autosave/hot exit, recovery, navigation, output channels)
-  - [ ] **Phase 2: Code Mode Advanced + Marketplace**
-    - [ ] [1-4-code-mode](UI-plans/1-4-code-mode.md) — Phase 2: LSP (go-to-definition, IntelliSense, diagnostics, format/code-actions on save), VS Code extension support, debugger (DAP), advanced editor features, AI code features (inline completion, Cmd+K editing, multi-file edits), test explorer + coverage
-    - [ ] [1-5-marketplace-extensions](UI-plans/1-5-marketplace-extensions.md) — extensible marketplace framework: VS Code extensions (Open VSX + compatible VSIX sources), DAN skills hub, MCP server registry, recipe store (future), generic `MarketplaceRegistry` interface for adding new sources, trust model, and extension safe mode
-  - [ ] **Phase 3: Research Mode**
-    - [ ] [1-3-research-mode](UI-plans/1-3-research-mode.md) — research workspace: writing pane, PDF reader, references, reviews, distillation tab for long-running 100-paper learning, pipeline progress, code cells
+  - [x] **Phase 1: Shell + Chat + Code Core** ← complete
+    - [x] [1-1-app-shell-framework](UI-plans/1-1-app-shell-framework.md) — **100% complete (61/61).** All features done including auto-updater (electron-updater + UpdateNotification.tsx) and platform builds (electron-builder: macOS DMG+ZIP, Windows NSIS, Linux AppImage+deb).
+    - [x] [1-2-chat-mode](UI-plans/1-2-chat-mode.md) — **100% complete (50/50).** All features done: full-screen layout, workspace navigation (workspace tabs + open-thread tabs + persistence), rich output, conversation management, quick actions, progressive escalation, migration, workspace context bar (2-7), inline workspace preview (4-3), switch preference (4-4), voice input (6-4).
+    - [x] [1-4-code-mode](UI-plans/1-4-code-mode.md) — **Phase 1 complete (101/101).** Core IDE: Monaco, file explorer, terminal (node-pty), output, search, git, diff, chat integration, problems, settings, inline edit, command palette, crash recovery, local history.
+  - [x] **Phase 2: Code Mode Advanced + Marketplace**
+    - [x] [1-4-code-mode](UI-plans/1-4-code-mode.md) — **Phase 2 complete (79/79, total 180/180).** LSP, advanced editor, AI code, task runner, test explorer, DAP debugger, advanced git, workspace intelligence, extension marketplace UI, GitHub PR integration.
+    - [x] [1-5-marketplace-extensions](UI-plans/1-5-marketplace-extensions.md) — **100% (59/59).** Done: MarketplaceManager + types + Open VSX adapter (w/ configurable URL) + VSIX handling + Extensions Panel UI + theme/grammar/snippet/langconfig/iconTheme loaders + DAN Skills adapter (7/7) + MCP Server adapter (8/8, incl. auto-connect + chat integration) + trust model + safe mode + enable scope + update checking + extension host process + partial vscode API shim + activation events + curated essentials + compatibility tier + native-first fallback + marketplace settings UI + plugin architecture (7-1, 7-2) + Recipe Store adapter (6-1..6-6: recipe model, browser, install, marketplace, creation, versioning) + Skill Hub remote API (4-3) + ADAPTER_GUIDE.md extensibility docs (7-3, 7-4)
+  - [x] **Phase 3: Research Mode**
+    - [x] [1-3-research-mode](UI-plans/1-3-research-mode.md) — **100% complete (92/92).** All features done including: persistent PDF annotations (5 colors + notes + export), split PDF reader (dual-pane with independent nav), citation-linked navigation (clickable citations → PDF reader), per-page AI summaries (cached), tool integration for code cells (5 tools).
   - [ ] Phase 4: Analytics + Operations modes → (not yet planned)
   - [ ] Phase 5: Polish + Custom modes + auto-detection → (not yet planned)
 
