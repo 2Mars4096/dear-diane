@@ -1,0 +1,487 @@
+"""Miscellaneous endpoints: health, cache, metrics, files, docs, code-refs,
+test cases, memory, errors, and rules."""
+
+from __future__ import annotations
+
+import os
+import re
+import time
+import uuid
+import logging
+from typing import Any
+
+from fastapi import APIRouter, HTTPException
+
+from dan.server.routers.dependencies import (
+    get_run_manager,
+    get_graph_store,
+    get_test_case_store,
+    get_mention_resolver,
+    get_engine_config,
+    get_memory_store,
+    resolve_cache_dir,
+    validate_path_segment,
+)
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter()
+
+
+# ------------------------------------------------------------------
+# Health
+# ------------------------------------------------------------------
+
+
+@router.get("/health")
+async def health_check() -> dict[str, Any]:
+    """Health check endpoint for server discovery."""
+    from dan.server.app import _run_manager
+
+    result: dict[str, Any] = {"status": "ok"}
+    if _run_manager is not None:
+        runs = _run_manager.list_runs()
+        active = [r for r in runs if r.get("status") in ("running", "pending")]
+        result["active_runs"] = len(active)
+    return result
+
+
+@router.get("/api/health")
+async def health():
+    """Minimal liveness probe for desktop/editor reconnect flows."""
+    return {"status": "ok", "pid": os.getpid(), "timestamp": time.time()}
+
+
+# ------------------------------------------------------------------
+# Cache
+# ------------------------------------------------------------------
+
+
+@router.post("/api/cache/clear")
+async def clear_cache():
+    config = get_engine_config()
+    base = resolve_cache_dir(config)
+    deleted_files = 0
+
+    if base.exists():
+        for pattern in ("*.json", "*.tmp", "**/*.json", "**/*.tmp"):
+            for p in base.glob(pattern):
+                if not p.is_file():
+                    continue
+                try:
+                    p.unlink()
+                    deleted_files += 1
+                except OSError:
+                    pass
+
+    return {
+        "status": "cleared",
+        "cache_dir": str(base),
+        "deleted_files": deleted_files,
+    }
+
+
+@router.get("/api/cache/stats")
+async def cache_stats():
+    config = get_engine_config()
+    base = resolve_cache_dir(config)
+    file_count = 0
+    total_bytes = 0
+    if base.exists():
+        for p in base.rglob("*.json"):
+            if p.is_file():
+                file_count += 1
+                try:
+                    total_bytes += p.stat().st_size
+                except OSError:
+                    pass
+
+    latest_run_cache: dict[str, Any] | None = None
+    from dan.server.app import _run_manager
+
+    if _run_manager is not None:
+        runs = _run_manager.list_runs()
+        if runs:
+            latest = max(runs, key=lambda r: float(r.get("started_at", 0.0) or 0.0))
+            record = _run_manager.get_run(str(latest.get("run_id", "")))
+            if record is not None and record.result is not None:
+                meta = record.result.metadata
+                if isinstance(meta, dict):
+                    latest_run_cache = meta.get("__run_cache__")
+
+    return {
+        "cache_dir": str(base),
+        "cache_enabled": config.cache_enabled,
+        "cache_max_size_mb": config.cache_max_size_mb,
+        "semantic_cache_threshold": config.semantic_cache_threshold,
+        "semantic_cache_ttl_hours": config.semantic_cache_ttl_hours,
+        "disk_file_count": file_count,
+        "disk_size_bytes": total_bytes,
+        "latest_run_cache": latest_run_cache,
+    }
+
+
+# ------------------------------------------------------------------
+# Mutation metrics
+# ------------------------------------------------------------------
+
+
+@router.get("/api/metrics/mutations")
+async def get_mutation_metrics():
+    from dan.server.mutation_metrics import mutation_metrics
+    return mutation_metrics.summary()
+
+
+@router.post("/api/metrics/mutations/reset")
+async def reset_mutation_metrics():
+    from dan.server.mutation_metrics import mutation_metrics
+    return mutation_metrics.reset()
+
+
+# ------------------------------------------------------------------
+# Files / docs / code-refs
+# ------------------------------------------------------------------
+
+
+@router.get("/api/files/list")
+async def list_workspace_files():
+    resolver = get_mention_resolver()
+    if resolver is None:
+        raise HTTPException(status_code=503, detail="Server not fully initialised")
+    files = resolver.file_resolver.list_files()
+    return {"files": files}
+
+
+@router.get("/api/docs/list")
+async def list_docs():
+    resolver = get_mention_resolver()
+    if resolver is None:
+        raise HTTPException(status_code=503, detail="Server not fully initialised")
+    docs = resolver.docs_resolver.list_docs()
+    return {"docs": docs}
+
+
+@router.get("/api/code-refs/{workflow_id}")
+async def list_code_refs(workflow_id: str):
+    gs = get_graph_store()
+    graph_dict = gs.get_graph(workflow_id)
+    if graph_dict is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{workflow_id}' not found")
+    from dan.server.mention_resolver import CodeResolver
+    refs = CodeResolver.list_code_refs(graph_dict)
+    return {"refs": refs}
+
+
+# ------------------------------------------------------------------
+# Test cases
+# ------------------------------------------------------------------
+
+from dan.server.test_cases import NodeTestCase, TestCaseRunResult
+
+
+@router.get("/api/test-cases/{workflow_id}/{node_id}")
+async def list_test_cases(workflow_id: str, node_id: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    store = get_test_case_store()
+    cases = store.list_cases(workflow_id, node_id)
+    return {"cases": [c.model_dump() for c in cases]}
+
+
+@router.post("/api/test-cases/{workflow_id}/{node_id}")
+async def create_or_update_test_case(workflow_id: str, node_id: str, body: dict[str, Any]):
+    validate_path_segment(workflow_id, "workflow_id")
+    store = get_test_case_store()
+    body.setdefault("node_id", node_id)
+    body.setdefault("updated_at", time.time())
+    if "id" not in body:
+        body["id"] = str(uuid.uuid4())
+    if "created_at" not in body:
+        body["created_at"] = time.time()
+    case = NodeTestCase.model_validate(body)
+    store.save_case(workflow_id, node_id, case)
+    return {"case": case.model_dump()}
+
+
+@router.delete("/api/test-cases/{workflow_id}/{node_id}/{case_id}")
+async def delete_test_case(workflow_id: str, node_id: str, case_id: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    store = get_test_case_store()
+    if not store.delete_case(workflow_id, node_id, case_id):
+        raise HTTPException(status_code=404, detail=f"Test case '{case_id}' not found")
+    return {"status": "deleted", "case_id": case_id}
+
+
+@router.post("/api/test-cases/{workflow_id}/{node_id}/{case_id}/run")
+async def run_test_case(workflow_id: str, node_id: str, case_id: str):
+    import asyncio
+
+    validate_path_segment(workflow_id, "workflow_id")
+    rm = get_run_manager()
+    gs = get_graph_store()
+    store = get_test_case_store()
+
+    case = store.get_case(workflow_id, node_id, case_id)
+    if case is None:
+        raise HTTPException(status_code=404, detail=f"Test case '{case_id}' not found")
+
+    graph = gs.load_as_model(workflow_id)
+    if graph is None:
+        raise HTTPException(status_code=404, detail=f"Graph '{workflow_id}' not found")
+
+    target_node = graph.node_by_id(node_id)
+    if target_node is None:
+        raise HTTPException(status_code=404, detail=f"Node '{node_id}' not found in graph")
+
+    from dan.models.graph import Graph as GraphModel
+
+    synthetic = GraphModel(
+        nodes=[target_node],
+        entry_points=[node_id],
+        exit_points=[node_id],
+    )
+
+    run_id = f"test-{case_id}-{int(time.time() * 1000)}"
+    record = await rm.start_run(
+        synthetic,
+        graph_id=workflow_id,
+        inputs=case.inputs,
+        run_id=run_id,
+    )
+
+    deadline = time.time() + 120
+    while True:
+        current = rm.get_run(record.run_id)
+        if current is None:
+            break
+        if current.status.value in ("completed", "failed"):
+            break
+        if time.time() > deadline:
+            break
+        await asyncio.sleep(0.1)
+
+    current = rm.get_run(record.run_id)
+    actual_outputs: dict[str, Any] = {}
+    execution_metadata: dict[str, Any] = {}
+    error_msg: str | None = None
+
+    if current and current.result:
+        actual_outputs = current.result.outputs or {}
+        if node_id in actual_outputs and isinstance(actual_outputs[node_id], dict):
+            actual_outputs = actual_outputs[node_id]
+        if current.result.errors:
+            error_msg = "; ".join(
+                f"{k}: {v}" for k, v in current.result.errors.items()
+            )
+        execution_metadata = {
+            "run_id": record.run_id,
+            "elapsed_seconds": current.elapsed_seconds,
+            "total_tokens": current.total_tokens,
+            "total_cost": current.total_cost,
+            "model": current.model,
+        }
+
+    passed = True
+    diff: dict[str, Any] | None = None
+
+    if error_msg:
+        passed = False
+    elif case.expected_outputs is not None:
+        diff = {}
+        for key, expected_val in case.expected_outputs.items():
+            actual_val = actual_outputs.get(key)
+            if actual_val != expected_val:
+                diff[key] = {"expected": expected_val, "actual": actual_val}
+        passed = len(diff) == 0
+        if not diff:
+            diff = None
+
+    result = TestCaseRunResult(
+        passed=passed,
+        actual_outputs=actual_outputs,
+        expected_outputs=case.expected_outputs,
+        diff=diff,
+        execution_metadata=execution_metadata,
+        error=error_msg,
+    )
+    return result.model_dump()
+
+
+# ------------------------------------------------------------------
+# Memory
+# ------------------------------------------------------------------
+
+
+@router.get("/api/memory/{workflow_id}/{session_id}")
+async def list_memory_keys(workflow_id: str, session_id: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    validate_path_segment(session_id, "session_id")
+    store = get_memory_store()
+    keys = await store.list_keys(workflow_id, session_id)
+    return {"workflow_id": workflow_id, "session_id": session_id, "keys": keys}
+
+
+@router.get("/api/memory/{workflow_id}/{session_id}/{key:path}")
+async def read_memory_entry(workflow_id: str, session_id: str, key: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    validate_path_segment(session_id, "session_id")
+    store = get_memory_store()
+    entry = await store.read(workflow_id, session_id, key)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Memory key '{key}' not found")
+    return entry.model_dump()
+
+
+@router.delete("/api/memory/{workflow_id}/{session_id}")
+async def clear_session_memory(workflow_id: str, session_id: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    validate_path_segment(session_id, "session_id")
+    store = get_memory_store()
+    await store.clear_session(workflow_id, session_id)
+    return {"status": "cleared", "workflow_id": workflow_id, "session_id": session_id}
+
+
+@router.get("/api/memory/{workflow_id}")
+async def list_sessions(workflow_id: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    store = get_memory_store()
+    sessions = await store.list_sessions(workflow_id)
+    return {"workflow_id": workflow_id, "sessions": sessions}
+
+
+# ------------------------------------------------------------------
+# Error memory
+# ------------------------------------------------------------------
+
+
+@router.get("/api/errors/{workflow_id}")
+async def list_error_memory(workflow_id: str, limit: int = 50):
+    rm = get_run_manager()
+    index = rm._get_error_memory_index()
+    if index is None:
+        return {"errors": [], "message": "Error memory not enabled"}
+    try:
+        stats = await index.stats(workflow_id)
+        return {"workflow_id": workflow_id, **stats}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@router.delete("/api/errors/{workflow_id}")
+async def clear_error_memory(workflow_id: str):
+    rm = get_run_manager()
+    index = rm._get_error_memory_index()
+    if index is None:
+        raise HTTPException(status_code=400, detail="Error memory not enabled")
+    await index.clear(workflow_id)
+    return {"status": "cleared", "workflow_id": workflow_id}
+
+
+@router.get("/api/errors/{workflow_id}/search")
+async def search_error_memory(workflow_id: str, q: str = "", top_k: int = 5):
+    rm = get_run_manager()
+    index = rm._get_error_memory_index()
+    if index is None:
+        raise HTTPException(status_code=400, detail="Error memory not enabled")
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="Query parameter 'q' is required")
+    results = await index.query_similar(workflow_id, q.strip(), top_k=top_k)
+    return {"workflow_id": workflow_id, "query": q, "results": results}
+
+
+# ------------------------------------------------------------------
+# Rules
+# ------------------------------------------------------------------
+
+
+@router.get("/api/rules/{workflow_id}")
+async def list_generated_rules(workflow_id: str, status: str | None = None):
+    validate_path_segment(workflow_id, "workflow_id")
+    rm = get_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        return {"rules": [], "message": "Self-evolving rules not enabled"}
+    rules = manager.list_rules(workflow_id, status=status)
+    return {
+        "workflow_id": workflow_id,
+        "rules": [r.model_dump() for r in rules],
+    }
+
+
+@router.post("/api/rules/{workflow_id}/{rule_id}/disable")
+async def disable_generated_rule(workflow_id: str, rule_id: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    validate_path_segment(rule_id, "rule_id")
+    rm = get_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        raise HTTPException(status_code=400, detail="Self-evolving rules not enabled")
+    if not manager.disable_rule(workflow_id, rule_id):
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found")
+    rm.emit_rule_lifecycle_event(workflow_id, "rule_disabled", {
+        "rule_id": rule_id,
+        "reason": "manual_api",
+    })
+    return {"status": "disabled", "rule_id": rule_id}
+
+
+@router.post("/api/rules/{workflow_id}/{rule_id}/enable")
+async def enable_generated_rule(workflow_id: str, rule_id: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    validate_path_segment(rule_id, "rule_id")
+    rm = get_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        raise HTTPException(status_code=400, detail="Self-evolving rules not enabled")
+    if not manager.enable_rule(workflow_id, rule_id):
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found")
+    return {"status": "enabled", "rule_id": rule_id}
+
+
+@router.post("/api/rules/{workflow_id}/{rule_id}/approve")
+async def approve_generated_rule(workflow_id: str, rule_id: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    validate_path_segment(rule_id, "rule_id")
+    rm = get_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        raise HTTPException(status_code=400, detail="Self-evolving rules not enabled")
+    if not manager.enable_rule(workflow_id, rule_id):
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found")
+    return {"status": "approved", "rule_id": rule_id}
+
+
+@router.delete("/api/rules/{workflow_id}/{rule_id}")
+async def delete_generated_rule(workflow_id: str, rule_id: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    validate_path_segment(rule_id, "rule_id")
+    rm = get_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        raise HTTPException(status_code=400, detail="Self-evolving rules not enabled")
+    if not manager.delete_rule(workflow_id, rule_id):
+        raise HTTPException(status_code=404, detail=f"Rule '{rule_id}' not found")
+    return {"status": "deleted", "rule_id": rule_id}
+
+
+@router.post("/api/rules/{workflow_id}/rollback")
+async def rollback_generated_rules(workflow_id: str, body: dict[str, Any]):
+    validate_path_segment(workflow_id, "workflow_id")
+    rm = get_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        raise HTTPException(status_code=400, detail="Self-evolving rules not enabled")
+    before = body.get("before")
+    if not before:
+        raise HTTPException(status_code=400, detail="'before' timestamp is required")
+    disabled = manager.rollback(workflow_id, float(before))
+    return {"disabled_count": len(disabled), "disabled_rule_ids": disabled}
+
+
+@router.get("/api/rules/{workflow_id}/stats")
+async def generated_rules_stats(workflow_id: str):
+    validate_path_segment(workflow_id, "workflow_id")
+    rm = get_run_manager()
+    manager = rm._get_rule_lifecycle_manager()
+    if manager is None:
+        return {"message": "Self-evolving rules not enabled"}
+    return manager.stats(workflow_id)
