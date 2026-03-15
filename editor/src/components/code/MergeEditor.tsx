@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor as monacoEditor } from "monaco-editor";
 import {
@@ -6,8 +6,6 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
-  ChevronDown,
-  ChevronRight,
   Eye,
   EyeOff,
   GitMerge,
@@ -172,7 +170,7 @@ export default function MergeEditor({ cwd, filePath, onClose, onResolved }: Prop
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [conflictFile, setConflictFile] = useState<ConflictFile | null>(null);
-  const [conflicts, setConflicts] = useState<ConflictRegion[]>([]);
+  const [_conflicts, setConflicts] = useState<ConflictRegion[]>([]);
   const [activeConflictIndex, setActiveConflictIndex] = useState(0);
   const [mergedContent, setMergedContent] = useState("");
   const [showBase, setShowBase] = useState(false);

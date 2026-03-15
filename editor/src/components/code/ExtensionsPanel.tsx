@@ -645,7 +645,7 @@ function SkillsTabContent({
   const [hubResults, setHubResults] = useState<MarketplaceItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [hubEnabled, setHubEnabled] = useState(() => getSkillsAdapter()?.isHubEnabled() ?? false);
-  const { error, setError } = useMarketplaceStore();
+  const { setError } = useMarketplaceStore();
 
   const loadSkills = useCallback(async () => {
     setLoading(true);
@@ -958,7 +958,7 @@ function McpTabContent({
 }) {
   const [servers, setServers] = useState<McpDisplayItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const { isInstalling, setIsInstalling, error, setError, mcpStatuses, setMcpStatuses } = useMarketplaceStore();
+  const { isInstalling, setIsInstalling, setError, setMcpStatuses } = useMarketplaceStore();
 
   const loadServers = useCallback(async () => {
     setLoading(true);
@@ -1442,7 +1442,7 @@ export default function ExtensionsPanel() {
     addInstalledItem,
   } = useMarketplaceStore();
 
-  const searchTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const searchTimeout = useRef<ReturnType<typeof setTimeout>>(undefined);
   const inputRef = useRef<HTMLInputElement>(null);
   const [showSortMenu, setShowSortMenu] = useState(false);
   const [showSettings, setShowSettings] = useState(false);

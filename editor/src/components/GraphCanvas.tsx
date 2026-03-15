@@ -61,7 +61,7 @@ export default function GraphCanvas() {
   } | null>(null);
 
   const validateConnection = useCallback(
-    (conn: Connection) => isValidConnection(conn, nodes, edges),
+    (conn: Edge | Connection) => isValidConnection(conn as Connection, nodes, edges),
     [nodes, edges],
   );
 
@@ -134,11 +134,11 @@ export default function GraphCanvas() {
           const inputProps = (block.input_schema as Record<string, unknown>)?.properties as Record<string, unknown> | undefined;
           const outputProps = (block.output_schema as Record<string, unknown>)?.properties as Record<string, unknown> | undefined;
           const inputPorts = inputProps
-            ? Object.keys(inputProps).map((k) => ({ id: k, name: k, data_type: "any" }))
-            : [{ id: "input", name: "input", data_type: "any" }];
+            ? Object.keys(inputProps).map((k) => ({ id: k, name: k, data_type: "any", schema: {} }))
+            : [{ id: "input", name: "input", data_type: "any", schema: {} }];
           const outputPorts = outputProps
-            ? Object.keys(outputProps).map((k) => ({ id: k, name: k, data_type: "any" }))
-            : [{ id: "output", name: "output", data_type: "any" }];
+            ? Object.keys(outputProps).map((k) => ({ id: k, name: k, data_type: "any", schema: {} }))
+            : [{ id: "output", name: "output", data_type: "any", schema: {} }];
           const blockNode: DanNodeType = {
             id: crypto.randomUUID(),
             node_type: "composite",

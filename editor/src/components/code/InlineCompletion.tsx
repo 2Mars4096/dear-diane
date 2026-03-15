@@ -25,7 +25,7 @@ export function registerInlineCompletion(): monaco.IDisposable {
   const provider: monaco.languages.InlineCompletionsProvider = {
     provideInlineCompletions: async (model, position, context, token) => {
       const settings = useSettingsStore.getState();
-      if (!(settings as Record<string, unknown>).inlineCompletionEnabled) {
+      if (!(settings as unknown as Record<string, unknown>).inlineCompletionEnabled) {
         return { items: [] };
       }
 
@@ -110,7 +110,7 @@ export function registerInlineCompletion(): monaco.IDisposable {
       }
     },
 
-    freeInlineCompletions: () => {},
+    disposeInlineCompletions() {},
   };
 
   return monaco.languages.registerInlineCompletionsProvider(

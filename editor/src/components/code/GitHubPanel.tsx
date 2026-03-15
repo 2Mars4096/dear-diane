@@ -1,21 +1,15 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertCircle,
-  Check,
   ChevronDown,
   ChevronRight,
   ExternalLink,
   GitMerge,
   GitPullRequest,
   Loader2,
-  MessageSquare,
   Plus,
   RefreshCw,
-  X,
   FileText,
-  Tag,
-  Clock,
-  User,
   ChevronLeft,
 } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
@@ -202,7 +196,7 @@ function PRDetailView({
   const [checkingOut, setCheckingOut] = useState(false);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; msg: string } | null>(null);
   const openDiff = useCodeStore((s) => s.openDiff);
-  const feedbackTimer = useRef<ReturnType<typeof setTimeout>>();
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const showFeedback = useCallback((type: "success" | "error", msg: string) => {
     setFeedback({ type, msg });

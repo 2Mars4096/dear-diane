@@ -63,22 +63,8 @@ export default function TerminalPanel() {
     ? activeTerminalId === splitTerminalIds[0] ? "left" : "right"
     : null;
 
-  const createTerminalInstance = useCallback(async (profile?: TerminalProfile): Promise<string | null> => {
-    const pinnedRoots = useCodeStore.getState().pinnedRoots;
-    const settings = useSettingsStore.getState();
-
-    const resolvedProfile = profile
-      ?? settings.terminalProfiles.find((p) => p.id === settings.defaultTerminalProfile)
-      ?? settings.terminalProfiles.find((p) => p.isDefault)
-      ?? settings.terminalProfiles[0];
-
-    const cwd = resolvedProfile?.cwd || pinnedRoots[0] || undefined;
-    const shell = resolvedProfile?.shell || "/bin/zsh";
-
-    const termId = await nativeTerminal.create({ shell, cwd });
-    if (!termId) return null;
-
-    addTerminal(termId);
+  const attachTerminalInstance = useCallback((termId: string) => {
+    if (xtermMapRef.current.has(termId)) return;
 
     const container = document.createElement("div");
     container.style.width = "100%";
@@ -119,22 +105,67 @@ export default function TerminalPanel() {
       requestAnimationFrame(() => {
         fitAddon.fit();
         const dims = fitAddon.proposeDimensions();
-        if (dims && termId) nativeTerminal.resize(termId, dims.cols, dims.rows);
+        if (dims) nativeTerminal.resize(termId, dims.cols, dims.rows);
       });
     }
 
     terminal.onData((data) => {
       nativeTerminal.write(termId, data);
     });
+  }, []);
+
+  const createTerminalInstance = useCallback(async (profile?: TerminalProfile): Promise<string | null> => {
+    const pinnedRoots = useCodeStore.getState().pinnedRoots;
+    const settings = useSettingsStore.getState();
+
+    const resolvedProfile = profile
+      ?? settings.terminalProfiles.find((p) => p.id === settings.defaultTerminalProfile)
+      ?? settings.terminalProfiles.find((p) => p.isDefault)
+      ?? settings.terminalProfiles[0];
+
+    const cwd = resolvedProfile?.cwd || pinnedRoots[0] || undefined;
+    const shell = resolvedProfile?.shell || "/bin/zsh";
+
+    const termId = await nativeTerminal.create({ shell, cwd });
+    if (!termId) return null;
+
+    addTerminal(termId);
+    attachTerminalInstance(termId);
 
     return termId;
-  }, [addTerminal]);
+  }, [addTerminal, attachTerminalInstance]);
 
   useEffect(() => {
     if (mountedRef.current) return;
     mountedRef.current = true;
-    createTerminalInstance();
-  }, [createTerminalInstance]);
+
+    if (terminals.length === 0) {
+      void createTerminalInstance();
+    } else {
+      terminals.forEach((term) => attachTerminalInstance(term.id));
+      if (!activeTerminalId && terminals[0]) {
+        setActiveTerminal(terminals[0].id);
+      }
+    }
+  }, [
+    terminals,
+    activeTerminalId,
+    createTerminalInstance,
+    attachTerminalInstance,
+    setActiveTerminal,
+  ]);
+
+  useEffect(() => {
+    terminals.forEach((term) => attachTerminalInstance(term.id));
+
+    for (const [id, inst] of xtermMapRef.current) {
+      if (!terminals.some((term) => term.id === id)) {
+        inst.terminal.dispose();
+        inst.container.remove();
+        xtermMapRef.current.delete(id);
+      }
+    }
+  }, [terminals, attachTerminalInstance]);
 
   useEffect(() => {
     const removeDataListener = nativeTerminal.onData((id, data) => {
@@ -236,14 +267,12 @@ export default function TerminalPanel() {
   }, [activeTerminalId, splitTerminalIds]);
 
   useEffect(() => {
+    const xtermMap = xtermMapRef.current;
     return () => {
-      for (const [, inst] of xtermMapRef.current) {
+      for (const [, inst] of xtermMap) {
         inst.terminal.dispose();
       }
-      for (const [id] of xtermMapRef.current) {
-        nativeTerminal.kill(id);
-      }
-      xtermMapRef.current.clear();
+      xtermMap.clear();
     };
   }, []);
 

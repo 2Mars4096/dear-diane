@@ -96,34 +96,6 @@ interface GroupedDiagnostics {
   [resource: string]: UnifiedDiagnostic[];
 }
 
-interface GroupedMarkers {
-  [resource: string]: monaco.editor.IMarkerData[];
-}
-
-const SEVERITY_ORDER: Record<number, number> = { 8: 0, 4: 1, 2: 2, 1: 3 };
-
-function severityIcon(severity: monaco.MarkerSeverity) {
-  switch (severity) {
-    case 8: // Error
-      return <XCircle size={14} className="text-red-400 shrink-0" />;
-    case 4: // Warning
-      return <AlertTriangle size={14} className="text-yellow-400 shrink-0" />;
-    case 2: // Info
-      return <Info size={14} className="text-blue-400 shrink-0" />;
-    case 1: // Hint
-    default:
-      return <Lightbulb size={14} className="text-gray-400 shrink-0" />;
-  }
-}
-
-function severityLabel(severity: monaco.MarkerSeverity): string {
-  switch (severity) {
-    case 8: return "error";
-    case 4: return "warning";
-    case 2: return "info";
-    default: return "hint";
-  }
-}
 
 /* ------------------------------------------------------------------ */
 /*  Shared marker polling hook                                         */
@@ -382,7 +354,7 @@ export default function ProblemsPanel() {
   const { grouped, counts } = useMemo(() => {
     const combined: UnifiedDiagnostic[] = [
       ...markers.map((m) => ({
-        filePath: m.resource?.toString() ?? "unknown",
+        filePath: m.source?.toString() ?? "unknown",
         line: m.startLineNumber,
         column: m.startColumn,
         message: m.message,

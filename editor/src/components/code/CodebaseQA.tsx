@@ -12,7 +12,7 @@ function SimpleMarkdown({ content }: { content: string }) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/```(\w*)\n([\s\S]*?)```/g, (_, lang, code) =>
+    .replace(/```(\w*)\n([\s\S]*?)```/g, (_, _lang, code) =>
       `<pre class="bg-gray-950 border border-gray-700/50 rounded-md p-2 my-1.5 overflow-x-auto text-[11px] leading-relaxed font-mono"><code>${code.trim()}</code></pre>`)
     .replace(/`([^`]+)`/g, '<code class="bg-gray-800 text-gray-200 px-1 py-0.5 rounded text-[10px] font-mono">$1</code>')
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")

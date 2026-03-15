@@ -4,14 +4,13 @@ import {
   Loader2,
   RefreshCw,
   Plus,
-  Square,
   ChevronRight,
   ChevronDown,
   X,
 } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
 import { detectTasks, type DetectedTask } from "../../lib/taskDetector";
-import { nativeShell, nativeTerminal } from "../../lib/electronBridge";
+import { nativeShell } from "../../lib/electronBridge";
 import { parseTaskOutput } from "../../lib/problemMatcher";
 import {
   pushExternalDiagnostic,
@@ -36,9 +35,6 @@ export default function TaskRunner() {
     new Set(),
   );
   const pinnedRoots = useCodeStore((s) => s.pinnedRoots);
-  const setShowTerminal = useCodeStore((s) => s.setShowTerminal);
-  const addTerminal = useCodeStore((s) => s.addTerminal);
-  const setActiveTerminal = useCodeStore((s) => s.setActiveTerminal);
 
   const refreshTasks = useCallback(() => {
     if (pinnedRoots.length > 0) {

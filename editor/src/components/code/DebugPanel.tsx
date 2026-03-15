@@ -526,7 +526,6 @@ function VariableRow({ variable, depth = 0 }: { variable: DebugVariable; depth?:
 
 function VariablesSection() {
   const variables = useDebugStore((s) => s.variables);
-  const scopes = useDebugStore((s) => s.scopes);
   const status = useDebugStore((s) => s.status);
 
   if (status !== "paused" || variables.length === 0) {
@@ -693,14 +692,12 @@ function CallStackSection() {
 function BreakpointsSection() {
   const breakpoints = useDebugStore((s) => s.breakpoints);
   const removeBreakpoint = useDebugStore((s) => s.removeBreakpoint);
-  const clearBreakpoints = useDebugStore((s) => s.clearBreakpoints);
-
   const allBps = Object.entries(breakpoints).flatMap(([filePath, bps]) =>
     bps.map((bp) => ({ filePath, ...bp })),
   );
 
   const handleClick = (filePath: string, line: number) => {
-    const { openFiles, openFile, setActiveFile } = useCodeStore.getState();
+    const { openFiles, setActiveFile } = useCodeStore.getState();
     const isOpen = openFiles.find((f) => f.path === filePath);
     if (isOpen) {
       setActiveFile(filePath);

@@ -3,7 +3,6 @@ import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor as monacoEditor } from "monaco-editor";
 import {
   X,
-  ChevronRight,
   FileCode2,
   FileJson,
   FileText,
@@ -96,10 +95,6 @@ function LangIcon({ language, size = 14 }: { language: string; size?: number }) 
 function basename(filePath: string): string {
   const parts = filePath.replace(/\\/g, "/").split("/");
   return parts[parts.length - 1] || filePath;
-}
-
-function pathSegments(filePath: string): string[] {
-  return filePath.replace(/\\/g, "/").split("/").filter(Boolean);
 }
 
 // ---------------------------------------------------------------------------

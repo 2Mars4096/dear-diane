@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useGraphStore, EVENT_CATEGORY, type LogEntry } from "../store/useGraphStore";
 
 // ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@ function ChevronIcon({ open, className }: { open: boolean; className?: string })
 // Constants
 // ---------------------------------------------------------------------------
 
-const EVENT_ICON: Record<string, (cls: string) => JSX.Element> = {
+const EVENT_ICON: Record<string, (cls: string) => React.JSX.Element> = {
   llm_thinking: (cls) => <BrainIcon className={cls} />,
   tool_call_started: (cls) => <WrenchIcon className={cls} />,
   tool_call_result: (cls) => <WrenchIcon className={cls} />,
@@ -109,7 +109,7 @@ function formatTime(ts: number): string {
   return d.toLocaleTimeString(undefined, { hour12: false, fractionalSecondDigits: 1 });
 }
 
-function getEventIcon(eventType: string): JSX.Element {
+function getEventIcon(eventType: string): React.JSX.Element {
   const factory = EVENT_ICON[eventType];
   const color = EVENT_COLORS[eventType] ?? "text-gray-400";
   return factory ? factory(color) : <CircleIcon className={color} />;

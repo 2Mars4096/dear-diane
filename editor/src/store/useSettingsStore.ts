@@ -47,6 +47,8 @@ export interface EditorSettings {
   aiActionsEnabled: boolean;
   codeActionsOnSave: boolean;
   iconTheme: string;
+  researchPdfRoots: string[];
+  researchNoteRoots: string[];
 }
 
 interface SettingsState extends EditorSettings {
@@ -94,6 +96,8 @@ const DEFAULT_SETTINGS: EditorSettings = {
   aiActionsEnabled: true,
   codeActionsOnSave: true,
   iconTheme: "default",
+  researchPdfRoots: [],
+  researchNoteRoots: [],
 };
 
 export const useSettingsStore = create<SettingsState>()(

@@ -5,8 +5,8 @@ import {
   useCallback,
   type KeyboardEvent,
 } from "react";
-import { Check, X, Loader2, Undo2, History, ChevronUp, ChevronDown } from "lucide-react";
-import type { editor as monacoEditor, IDisposable } from "monaco-editor";
+import { Check, X, Loader2, Undo2, History } from "lucide-react";
+import type { editor as monacoEditor, IDisposable, IRange } from "monaco-editor";
 import { useCodeStore } from "../../store/useCodeStore";
 
 const API_BASE = "/api";
@@ -71,7 +71,7 @@ function stripCodeFences(text: string): string {
 
 interface SelectionInfo {
   text: string;
-  range: monacoEditor.IRange;
+  range: IRange;
   startLine: number;
   endLine: number;
 }
@@ -85,7 +85,7 @@ function getSelectionInfo(
   const selection = editor.getSelection();
   if (!selection) return null;
 
-  let range: monacoEditor.IRange;
+  let range: IRange;
   let text: string;
 
   if (selection.isEmpty()) {

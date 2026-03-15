@@ -52,7 +52,7 @@ describe("chatGraphRevision", () => {
       nodes: [
         {
           id: "n1",
-          node_type: "llm_operator",
+          node_type: "llm_operator" as const,
           name: "Old name",
           input_ports: [],
           output_ports: [],

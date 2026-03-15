@@ -328,7 +328,7 @@ function Section({
 
 function CommitItem({
   commit,
-  cwd,
+  cwd: _cwd,
   onCherryPick,
 }: {
   commit: GitCommit;
@@ -430,7 +430,7 @@ function StashItem({
 
 function BranchDropdown({
   branches,
-  currentBranch,
+  currentBranch: _currentBranch,
   onCheckout,
   onCreate,
   onClose,
@@ -625,11 +625,11 @@ export default function GitPanel() {
   const [showGraphView, setShowGraphView] = useState(false);
 
   const [conflictedFiles, setConflictedFiles] = useState<string[]>([]);
-  const [showRebase, setShowRebase] = useState(false);
+  const [_showRebase, _setShowRebase] = useState(false);
   const [rebaseInProgress, setRebaseInProgress] = useState(false);
   const [showGitHub, setShowGitHub] = useState(false);
 
-  const feedbackTimer = useRef<ReturnType<typeof setTimeout>>();
+  const feedbackTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const showFeedback = useCallback((type: "success" | "error", msg: string) => {
     setSyncFeedback({ type, msg });

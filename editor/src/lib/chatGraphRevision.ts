@@ -56,8 +56,8 @@ function applyLoopGroupMetadata(graph: DanGraph, loopGroups: LoopGroup[]): DanGr
     return { ...graph, metadata: { ...graph.metadata, loop_groups: loopGroups } };
   }
   const { loop_groups: _removed, ...restMeta } =
-    (graph.metadata ?? {}) as Record<string, unknown>;
-  return { ...graph, metadata: restMeta as DanGraph["metadata"] };
+    (graph.metadata ?? {}) as unknown as Record<string, unknown>;
+  return { ...graph, metadata: restMeta as unknown as DanGraph["metadata"] };
 }
 
 export function deriveGraphRevisionSource(args: {

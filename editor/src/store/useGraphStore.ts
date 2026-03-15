@@ -17,7 +17,7 @@ import {
   addEdge,
   MarkerType,
 } from "@xyflow/react";
-import type { DanGraph, DanNode, DanEdge, InputVariable, LoopGroup, TokenBreakdown, WasteFinding, OptimizationMutation, TierInfo } from "../types/graph";
+import type { DanGraph, DanNode, DanEdge, LoopGroup, TokenBreakdown, WasteFinding, OptimizationMutation, TierInfo } from "../types/graph";
 import {
   danGraphToReactFlow,
   danNodeToReactFlow,
@@ -29,7 +29,6 @@ import {
   resolveGraphAtStack,
   deepSetSubGraph,
   MAX_DRILL_DEPTH,
-  type LayerStackEntry,
 } from "../lib/graphAdapter";
 import { PREDEFINED_AGENT_TEMPLATES } from "../lib/paletteTemplates";
 import { layoutGraph, needsAutoLayout } from "../lib/layout";

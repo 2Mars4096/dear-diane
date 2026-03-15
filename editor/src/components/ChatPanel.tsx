@@ -2044,6 +2044,15 @@ export default function ChatPanel({
 
   useEffect(() => {
     if (!fullScreen) return;
+    const pending = useAppStore.getState().pendingChatMessage;
+    if (pending) {
+      useAppStore.getState().setPendingChatMessage(null);
+      sendMessage(pending);
+    }
+  }, [fullScreen, sendMessage]);
+
+  useEffect(() => {
+    if (!fullScreen) return;
     const handler = (e: globalThis.KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
@@ -2732,6 +2741,7 @@ export default function ChatPanel({
             {staleRevision && (
               <div className="flex items-center gap-2 mb-3 px-2 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
                 <span className="flex-1">Graph changed since your last message — context may be stale.</span>
+                <button onClick={() => { setStaleRevision(false); retryLast(); }} className="flex items-center gap-1 text-amber-600 hover:text-amber-800 text-xs font-medium flex-shrink-0"><RotateCcw size={12} /> Retry with current</button>
                 <button onClick={() => setStaleRevision(false)} className="text-amber-500 hover:text-amber-700 text-xs font-medium flex-shrink-0">Dismiss</button>
               </div>
             )}

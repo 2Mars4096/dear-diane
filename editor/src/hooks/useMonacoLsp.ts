@@ -180,7 +180,7 @@ export function useMonacoLsp() {
     disposables.push(
       monaco.languages.registerCompletionItemProvider("*", {
         triggerCharacters: [".", "/", "<", '"', "'", " ", "@", ":"],
-        provideCompletionItems: async (model, position) => {
+        provideCompletionItems: async (model, position): Promise<monaco.languages.CompletionList> => {
           const result = await nativeLsp.completion({
             filePath: model.uri.path,
             line: position.lineNumber - 1,
@@ -189,6 +189,13 @@ export function useMonacoLsp() {
           if (!result) return { suggestions: [] };
 
           const items: any[] = result.items ?? result;
+          const wordRange = model.getWordUntilPosition(position);
+          const defaultRange: monaco.IRange = {
+            startLineNumber: position.lineNumber,
+            endLineNumber: position.lineNumber,
+            startColumn: wordRange.startColumn,
+            endColumn: wordRange.endColumn,
+          };
           return {
             suggestions: items.map((item: any) => ({
               label: typeof item.label === "string"
@@ -201,7 +208,7 @@ export function useMonacoLsp() {
                 : undefined,
               detail: item.detail,
               documentation: item.documentation?.value ?? item.documentation,
-              range: item.textEdit?.range ? convertRange(item.textEdit.range) : undefined,
+              range: item.textEdit?.range ? convertRange(item.textEdit.range) : defaultRange,
               sortText: item.sortText,
               filterText: item.filterText,
               preselect: item.preselect,

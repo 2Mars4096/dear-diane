@@ -9,7 +9,6 @@ import {
   FileText,
   Filter,
   Folder,
-  FolderOpen,
   FolderPlus,
   FilePlus,
   FolderPlusIcon,
@@ -114,11 +113,6 @@ function sortEntries(entries: FileTreeEntry[]): FileTreeEntry[] {
 
 function basename(p: string): string {
   return p.split("/").filter(Boolean).pop() ?? p;
-}
-
-function extension(name: string): string {
-  const i = name.lastIndexOf(".");
-  return i > 0 ? name.slice(i + 1).toLowerCase() : "";
 }
 
 // ─── Filter helpers ────────────────────────────────────────────────────
@@ -446,7 +440,9 @@ const TreeNode = React.memo(function TreeNode({
   const [loading, setLoading] = useState(false);
   const expanded = useCodeStore((s) => s.expandedDirs[entry.path] ?? false);
   const activeFilePath = useCodeStore((s) => s.activeFilePath);
-  const openFilePaths = useCodeStore((s) => s.openFiles.map((f) => f.path));
+  const isOpen = useCodeStore((s) =>
+    entry.isDirectory ? false : s.openFiles.some((f) => f.path === entry.path),
+  );
   const fileTree = useCodeStore((s) => s.fileTree);
   const toggleDir = useCodeStore((s) => s.toggleDir);
   const setFileTree = useCodeStore((s) => s.setFileTree);
@@ -457,7 +453,6 @@ const TreeNode = React.memo(function TreeNode({
   const { ops, setOps, refreshDir } = React.useContext(FileOpContext);
 
   const isActive = !entry.isDirectory && entry.path === activeFilePath;
-  const isOpen = !entry.isDirectory && openFilePaths.includes(entry.path);
   const isRenaming = ops.renaming === entry.path;
   const isCreatingHere = entry.isDirectory && ops.creating?.parentPath === entry.path;
 

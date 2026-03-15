@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { nativeLsp } from "../../lib/electronBridge";
 import { useCodeStore } from "../../store/useCodeStore";
-import { nativeFs } from "../../lib/electronBridge";
 
 export interface CallHierarchyItem {
   name: string;
@@ -43,12 +42,6 @@ function basename(uri: string): string {
   const path = uri.replace(/^file:\/\//, "");
   const parts = path.split("/");
   return parts[parts.length - 1] || path;
-}
-
-function shortenPath(uri: string): string {
-  const path = uri.replace(/^file:\/\//, "");
-  const parts = path.split("/");
-  return parts.slice(-3).join("/");
 }
 
 function regexFallbackOutgoing(code: string, functionName: string): CallNode[] {

@@ -152,7 +152,7 @@ interface DebugState {
   resetSession: () => void;
 }
 
-export const useDebugStore = create<DebugState>((set, get) => ({
+export const useDebugStore = create<DebugState>((set, _get) => ({
   status: "idle",
   threads: [],
   activeThreadId: null,

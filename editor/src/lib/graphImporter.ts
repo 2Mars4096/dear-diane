@@ -22,9 +22,9 @@ function namespaceGraph(
 
   const namespacedNodes = graph.nodes.map((node) => {
     const newNode = { ...node, id: idMap.get(node.id)! };
-    if ((newNode as Record<string, unknown>).body_graph) {
-      (newNode as Record<string, unknown>).body_graph =
-        `${prefix}${(node as Record<string, unknown>).body_graph}`;
+    if ((newNode as unknown as Record<string, unknown>).body_graph) {
+      (newNode as unknown as Record<string, unknown>).body_graph =
+        `${prefix}${(node as unknown as Record<string, unknown>).body_graph}`;
     }
     return newNode;
   });
@@ -65,7 +65,7 @@ function namespaceGraph(
       edges: namespacedEdges,
       entry_points: namespacedEntry,
       exit_points: namespacedExit,
-      sub_graphs: namespacedSubGraphs,
+      sub_graphs: namespacedSubGraphs as Record<string, DanGraph>,
     },
     idMap,
   };
@@ -148,7 +148,7 @@ export function graphAsCompositeNode(
     derivePorts(namespacedGraph);
 
   const graphName =
-    (importedGraph.metadata as Record<string, unknown>)?.name ??
+    (importedGraph.metadata as unknown as Record<string, unknown>)?.name ??
     graphId;
 
   const compositeNode: DanNode = {

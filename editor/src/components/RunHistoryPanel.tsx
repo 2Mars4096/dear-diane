@@ -131,7 +131,7 @@ function CheckpointSection({ run }: { run: api.RunSummary }) {
     fetchCheckpoints();
   }, [fetchCheckpoints]);
 
-  const handleRerun = useCallback(async (cp: CheckpointEntry) => {
+  const handleRerun = useCallback(async (_cp: CheckpointEntry) => {
     if (!targetNodeId && scopeType !== "subgraph") return;
     setRerunning(true);
     try {

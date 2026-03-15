@@ -49,6 +49,9 @@ interface AppState {
   activeChatThreadId: string | null;
   activeChatWorkflowId: string | null;
 
+  pendingChatMessage: string | null;
+  setPendingChatMessage: (msg: string | null) => void;
+
   globalPaletteVisible: boolean;
   setGlobalPaletteVisible: (v: boolean) => void;
 
@@ -79,6 +82,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   activeChatThreadId: null,
   activeChatWorkflowId: null,
+
+  pendingChatMessage: null,
+  setPendingChatMessage: (msg) => set({ pendingChatMessage: msg }),
 
   globalPaletteVisible: false,
   setGlobalPaletteVisible: (v) => set({ globalPaletteVisible: v }),

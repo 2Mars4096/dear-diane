@@ -1,4 +1,4 @@
-import { useAppStore, type AppMode } from "../../store/useAppStore";
+import { type AppMode } from "../../store/useAppStore";
 
 function CodeModePreview() {
   return (

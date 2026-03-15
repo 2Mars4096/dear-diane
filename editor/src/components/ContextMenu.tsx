@@ -20,7 +20,6 @@ export default function ContextMenu({ type, position, targetId, onClose }: Conte
   const updateEdgeData = useGraphStore((s) => s.updateEdgeData);
   const pushSnapshot = useGraphStore((s) => s.pushSnapshot);
   const setSelectedNode = useGraphStore((s) => s.setSelectedNode);
-  const setSelectedEdge = useGraphStore((s) => s.setSelectedEdge);
   const selectedNodeIds = useGraphStore((s) => s.selectedNodeIds);
   const nodes = useGraphStore((s) => s.nodes);
   const loopGroups = useGraphStore((s) => s.loopGroups);

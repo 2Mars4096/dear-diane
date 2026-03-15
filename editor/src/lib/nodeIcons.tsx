@@ -1,6 +1,8 @@
+import React from "react";
+
 const S = 16;
 
-const icons: Record<string, JSX.Element> = {
+const icons: Record<string, React.JSX.Element> = {
   llm_operator: (
     <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
       <path d="M8 1l1.5 3.5L13 6l-3.5 1.5L8 11 6.5 7.5 3 6l3.5-1.5L8 1z" fill="currentColor" />

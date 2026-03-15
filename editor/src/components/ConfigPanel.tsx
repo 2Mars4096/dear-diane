@@ -1125,6 +1125,7 @@ export default function ConfigPanel() {
   const selectedNodeIds = useGraphStore((s) => s.selectedNodeIds);
   const nodes = useGraphStore((s) => s.nodes);
   const edges = useGraphStore((s) => s.edges);
+  const graphId = useGraphStore((s) => s.graphId);
   const updateNodeData = useGraphStore((s) => s.updateNodeData);
   const updateEdgeData = useGraphStore((s) => s.updateEdgeData);
   const deleteSelected = useGraphStore((s) => s.deleteSelected);

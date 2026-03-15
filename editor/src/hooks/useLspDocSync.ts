@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import { nativeLsp } from "../lib/electronBridge";
-import { useCodeStore, type OpenFile } from "../store/useCodeStore";
+import { useCodeStore } from "../store/useCodeStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 
 const DEBOUNCE_MS = 100;

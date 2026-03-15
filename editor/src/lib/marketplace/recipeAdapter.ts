@@ -240,10 +240,8 @@ export class RecipeStoreAdapter implements MarketplaceRegistry {
   }
 
   private getRecipeDir(): string {
-    const home =
-      typeof process !== "undefined" && process.env?.HOME
-        ? process.env.HOME
-        : "~";
+    const proc = (globalThis as unknown as { process?: { env?: Record<string, string | undefined> } }).process;
+    const home = proc?.env?.HOME ?? "~";
     return `${home}/.dan/recipes`;
   }
 

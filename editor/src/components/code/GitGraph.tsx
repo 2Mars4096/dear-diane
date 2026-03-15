@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { nativeGit } from "../../lib/electronBridge";
 import { useCodeStore } from "../../store/useCodeStore";
@@ -157,7 +157,6 @@ export default function GitGraph({ onViewCommit }: GitGraphProps) {
   }, [loading]);
 
   const cx = (lane: number) => lane * LANE_W + GRAPH_PAD;
-  const cy = (row: number) => row * ROW_H + ROW_H / 2;
 
   return (
     <div
