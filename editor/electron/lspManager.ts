@@ -13,31 +13,31 @@ interface ServerConfig {
 const SERVER_CONFIGS: Record<string, ServerConfig> = {
   typescript: {
     command: "npx",
-    args: ["typescript-language-server", "--stdio"],
+    args: ["--no-install", "typescript-language-server", "--stdio"],
     languages: ["typescript", "typescriptreact", "javascript", "javascriptreact"],
     fileExtensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
   },
   python: {
-    command: "pyright-langserver",
-    args: ["--stdio"],
+    command: "npx",
+    args: ["--no-install", "pyright-langserver", "--stdio"],
     languages: ["python"],
     fileExtensions: [".py", ".pyi"],
   },
   json: {
     command: "npx",
-    args: ["vscode-json-languageserver", "--stdio"],
+    args: ["--no-install", "vscode-json-language-server", "--stdio"],
     languages: ["json", "jsonc"],
     fileExtensions: [".json", ".jsonc"],
   },
   css: {
     command: "npx",
-    args: ["vscode-css-languageserver-bin", "--stdio"],
+    args: ["--no-install", "vscode-css-language-server", "--stdio"],
     languages: ["css", "scss", "less"],
     fileExtensions: [".css", ".scss", ".less"],
   },
   html: {
     command: "npx",
-    args: ["vscode-html-languageserver-bin", "--stdio"],
+    args: ["--no-install", "vscode-html-language-server", "--stdio"],
     languages: ["html"],
     fileExtensions: [".html", ".htm"],
   },

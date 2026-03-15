@@ -100,7 +100,12 @@ function expandHome(p: string): string {
 }
 
 ipcMain.handle("fs:readFile", async (_event, filePath: string) => {
-  return await fs.promises.readFile(expandHome(filePath), "utf-8");
+  try {
+    return await fs.promises.readFile(expandHome(filePath), "utf-8");
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return null;
+    throw err;
+  }
 });
 
 ipcMain.handle("fs:writeFile", async (_event, filePath: string, content: string) => {
