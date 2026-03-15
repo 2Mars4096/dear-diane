@@ -1,0 +1,83 @@
+"""Recipe distillation system — ingredient provenance, furnace sessions, corpus memory."""
+
+from dan.engine.recipe.models import (
+    AcquisitionSource,
+    BatchCheckpoint,
+    CorpusMetadata,
+    FurnacePhase,
+    FurnaceSession,
+    Generality,
+    IngredientRecord,
+    IngredientStatus,
+    KnowledgeKind,
+    KNOWLEDGE_KIND_TO_MEMORY_TYPE,
+    PaperCorpusMetadata,
+    PaperStatus,
+    RecipeVersion,
+    ResearchLibraryConfig,
+    SourceType,
+    VersionDiff,
+)
+from dan.engine.recipe.session_store import FurnaceSessionStore
+from dan.engine.recipe.ingredient_ledger import IngredientLedger
+from dan.engine.recipe.corpus import (
+    CorpusReader,
+    CorpusWriter,
+    PaperCorpusReader,
+    PaperCorpusWriter,
+    PromotionEngine,
+    PAPER_CORPUS_RETRIEVAL_POLICY,
+    WRITING_RETRIEVAL_POLICY,
+    EVALUATION_RETRIEVAL_POLICY,
+)
+from dan.engine.recipe.recipe_compiler import RecipeCompiler
+from dan.engine.recipe.acquisition import (
+    load_library_config,
+    resolve_paper_paths,
+    register_acquired_paper,
+    ingest_paper_metadata,
+    ingest_paper_extractions,
+    generate_paper_note,
+)
+from dan.engine.recipe.workflows import (
+    build_paper_acquisition_workflow,
+    build_batch_distillation_workflow,
+)
+
+__all__ = [
+    "build_batch_distillation_workflow",
+    "build_paper_acquisition_workflow",
+    "AcquisitionSource",
+    "BatchCheckpoint",
+    "CorpusMetadata",
+    "CorpusReader",
+    "CorpusWriter",
+    "EVALUATION_RETRIEVAL_POLICY",
+    "FurnacePhase",
+    "FurnaceSession",
+    "FurnaceSessionStore",
+    "generate_paper_note",
+    "Generality",
+    "IngredientLedger",
+    "IngredientRecord",
+    "ingest_paper_extractions",
+    "ingest_paper_metadata",
+    "IngredientStatus",
+    "KnowledgeKind",
+    "KNOWLEDGE_KIND_TO_MEMORY_TYPE",
+    "load_library_config",
+    "PAPER_CORPUS_RETRIEVAL_POLICY",
+    "PaperCorpusMetadata",
+    "PaperCorpusReader",
+    "PaperCorpusWriter",
+    "PaperStatus",
+    "PromotionEngine",
+    "RecipeCompiler",
+    "register_acquired_paper",
+    "resolve_paper_paths",
+    "RecipeVersion",
+    "ResearchLibraryConfig",
+    "SourceType",
+    "VersionDiff",
+    "WRITING_RETRIEVAL_POLICY",
+]
