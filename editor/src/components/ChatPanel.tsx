@@ -51,6 +51,7 @@ import VoiceInput from "./chat/VoiceInput";
 import { getSwitchPreference, setSwitchPreference, type SwitchAction } from "../lib/switchPreference";
 import GraphDiffPreview from "./GraphDiffPreview";
 import MentionAutocomplete from "./MentionAutocomplete";
+import ConfirmDialog from "./shell/ConfirmDialog";
 import {
   buildAutoApplyPreviewMessage,
   parseRunIdFromStreamChannel,
@@ -214,6 +215,49 @@ function SuggestedFollowups({
   );
 }
 
+const SLASH_COMMANDS = [
+  { cmd: "/run", desc: "Run the current workflow" },
+  { cmd: "/show", desc: "Show workflow details" },
+  { cmd: "/undo", desc: "Undo last change" },
+  { cmd: "/help", desc: "Show available commands" },
+  { cmd: "/build", desc: "Build a workflow from description" },
+  { cmd: "/plan", desc: "Plan changes before applying" },
+  { cmd: "/export", desc: "Export thread or workflow" },
+];
+
+function SlashCommandPopup({
+  filter,
+  onSelect,
+}: {
+  filter: string;
+  onSelect: (cmd: string) => void;
+}) {
+  const filtered = SLASH_COMMANDS.filter((c) =>
+    c.cmd.startsWith(filter.toLowerCase()),
+  );
+  if (filtered.length === 0) return null;
+
+  return (
+    <div className="mb-1 border border-gray-200 rounded-lg bg-white shadow-md overflow-hidden">
+      {filtered.map((c) => (
+        <button
+          key={c.cmd}
+          onMouseDown={(e) => {
+            e.preventDefault();
+            onSelect(c.cmd);
+          }}
+          className="flex items-center gap-3 w-full text-left px-3 py-2 text-sm hover:bg-indigo-50 transition-colors"
+        >
+          <span className="font-mono font-semibold text-indigo-600 text-xs w-16 shrink-0">
+            {c.cmd}
+          </span>
+          <span className="text-gray-500 text-xs">{c.desc}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function RecentCommandsBar({ onSelect }: { onSelect: (cmd: string) => void }) {
   const [recentCommands] = useState<string[]>(() => {
     try {
@@ -344,6 +388,7 @@ export default function ChatPanel({
   const [showThreadList, setShowThreadList] = useState(!fullScreen);
   const [loadingThreads, setLoadingThreads] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
+  const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
   const [threadTitle, setThreadTitle] = useState("");
   const [sessionMarkers, setSessionMarkers] = useState<
     Record<string, { historyCursor: number }>
@@ -359,6 +404,8 @@ export default function ChatPanel({
   const [detectedMode, setDetectedMode] = useState<string | null>(null);
   const [escalation, setEscalation] = useState<{ targetMode: import("../store/useAppStore").AppMode; reason: string } | null>(null);
   const setMode = useAppStore((s) => s.setMode);
+  const pendingChatMessage = useAppStore((s) => s.pendingChatMessage);
+  const setPendingChatMessage = useAppStore((s) => s.setPendingChatMessage);
   const [switchPrefMenu, setSwitchPrefMenu] = useState(false);
   const [mutationConfirmMode, setMutationConfirmMode] = useState<boolean>(() =>
     readMutationConfirmPreference(),
@@ -1382,6 +1429,11 @@ export default function ChatPanel({
           ws.onmessage = (e) => {
             try {
               const evt: ChatStreamEvent = JSON.parse(e.data);
+
+              if (["node_started", "node_completed", "artifact_created"].includes(evt.type)) {
+                window.dispatchEvent(new CustomEvent("dan:engine-event-raw", { detail: evt }));
+              }
+
               if (evt.type === "chat_queued") {
                 const nextChannel = (evt.stream_channel_id ?? "").trim();
                 const queuePosition =
@@ -2044,12 +2096,10 @@ export default function ChatPanel({
 
   useEffect(() => {
     if (!fullScreen) return;
-    const pending = useAppStore.getState().pendingChatMessage;
-    if (pending) {
-      useAppStore.getState().setPendingChatMessage(null);
-      sendMessage(pending);
-    }
-  }, [fullScreen, sendMessage]);
+    if (!pendingChatMessage) return;
+    setPendingChatMessage(null);
+    sendMessage(pendingChatMessage);
+  }, [fullScreen, pendingChatMessage, sendMessage, setPendingChatMessage]);
 
   useEffect(() => {
     if (!fullScreen) return;
@@ -2118,9 +2168,19 @@ export default function ChatPanel({
   );
 
   const handleDeleteThread = useCallback(
+    (threadId: string) => {
+      setConfirmDeleteThreadId(threadId);
+    },
+    [],
+  );
+
+  const executeDeleteThread = useCallback(
     async (threadId: string) => {
       if (!graphId) return;
-      if (!window.confirm("Delete this conversation?")) return;
+      let snapshot: Record<string, unknown> | null = null;
+      try {
+        snapshot = await api.getChatThread(graphId, threadId);
+      } catch { /* proceed without undo capability */ }
       try {
         persistenceCoordinatorRef.current?.cancelForThread(graphId, threadId);
         await api.deleteChatThread(graphId, threadId);
@@ -2135,6 +2195,41 @@ export default function ChatPanel({
           await loadThread(graphId, remaining[0].id);
         } else if (wasActive) {
           requestAnimationFrame(() => textareaRef.current?.focus());
+        }
+        if (snapshot) {
+          const title = (snapshot as { title?: string }).title ?? threadId.slice(0, 8);
+          const snapshotTitle = (snapshot as { title?: string }).title;
+          const snapshotMessages = (snapshot as { messages?: unknown[] }).messages;
+          const snapshotMode = (snapshot as { mode?: string }).mode;
+          useGraphStore.getState().addToast({
+            type: "info",
+            message: `Deleted "${title}"`,
+            durationMs: 8000,
+            action: {
+              label: "Undo",
+              onClick: async () => {
+                try {
+                  const restored = await api.createChatThread(graphId);
+                  const restoredId = (restored as { id?: string }).id;
+                  if (!restoredId) {
+                    throw new Error("Missing restored thread id");
+                  }
+                  await api.updateChatThread(graphId, restoredId, {
+                    title: snapshotTitle,
+                    messages: snapshotMessages ?? [],
+                    mode: snapshotMode,
+                  });
+                  await fetchThreads(graphId);
+                  if (wasActive) {
+                    await loadThread(graphId, restoredId);
+                  }
+                  useGraphStore.getState().addToast({ type: "success", message: `Restored "${title}"` });
+                } catch {
+                  useGraphStore.getState().addToast({ type: "error", message: "Failed to restore conversation" });
+                }
+              },
+            },
+          });
         }
       } catch (err) {
         console.warn("Failed to delete thread:", err);
@@ -2873,6 +2968,15 @@ export default function ChatPanel({
             ))}
           </div>
         )}
+        {inputText.startsWith("/") && inputText.length < 15 && (
+          <SlashCommandPopup
+            filter={inputText}
+            onSelect={(cmd) => {
+              setInputText(cmd + " ");
+              requestAnimationFrame(() => textareaRef.current?.focus());
+            }}
+          />
+        )}
         <div className={`flex items-end gap-2 border border-gray-200 rounded-xl px-3 py-2.5 focus-within:shadow-md focus-within:border-indigo-300 transition-all ${fullScreen ? "shadow-sm" : "focus-within:shadow-sm"}`}>
           <textarea
             ref={textareaRef}
@@ -3040,6 +3144,18 @@ export default function ChatPanel({
             onClose={() => setThreadContextMenu(null)}
           />
         )}
+        <ConfirmDialog
+          open={confirmDeleteThreadId !== null}
+          title="Delete conversation"
+          message="Are you sure you want to delete this conversation?"
+          confirmLabel="Delete"
+          confirmVariant="danger"
+          onConfirm={() => {
+            if (confirmDeleteThreadId) executeDeleteThread(confirmDeleteThreadId);
+            setConfirmDeleteThreadId(null);
+          }}
+          onCancel={() => setConfirmDeleteThreadId(null)}
+        />
       </div>
     );
   }
@@ -3110,6 +3226,18 @@ export default function ChatPanel({
           onClose={() => setThreadContextMenu(null)}
         />
       )}
+      <ConfirmDialog
+        open={confirmDeleteThreadId !== null}
+        title="Delete conversation"
+        message="Are you sure you want to delete this conversation?"
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        onConfirm={() => {
+          if (confirmDeleteThreadId) executeDeleteThread(confirmDeleteThreadId);
+          setConfirmDeleteThreadId(null);
+        }}
+        onCancel={() => setConfirmDeleteThreadId(null)}
+      />
     </div>
   );
 }
