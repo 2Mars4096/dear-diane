@@ -7,7 +7,9 @@ graduated repair, with human override at any checkpoint.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 import time
 import uuid
 from enum import Enum
@@ -534,8 +536,42 @@ class MetaController:
         config: MetaControllerConfig | None = None,
         resume_stage: str | None = None,
     ) -> MetaSession:
-        """Continue executing an existing session."""
+        """Continue executing an existing session.
+
+        Wraps the core loop with a wall-clock timeout (configurable via
+        ``MetaControllerConfig.timeout_seconds`` or the ``DAN_META_TIMEOUT``
+        env var, default 600s) so that hung executions do not freeze forever.
+        """
         cfg = config or MetaControllerConfig(max_iterations=session.max_iterations)
+        timeout = cfg.timeout_seconds or float(
+            os.environ.get("DAN_META_TIMEOUT", "600")
+        )
+        try:
+            return await asyncio.wait_for(
+                self._run_session_inner(session, cfg, resume_stage),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "MetaController wall-clock timeout (%.0fs) for session %s",
+                timeout,
+                session.session_id,
+            )
+            await self._record_pending_repair_outcomes(session, success=False)
+            session.status = MetaSessionStatus.FAILED
+            session.error_context = f"Wall-clock timeout ({timeout:.0f}s) exceeded"
+            session.updated_at = time.time()
+            await self._save_session(session)
+            await self._update_experience(session, success=False)
+            return session
+
+    async def _run_session_inner(
+        self,
+        session: MetaSession,
+        cfg: MetaControllerConfig,
+        resume_stage: str | None = None,
+    ) -> MetaSession:
+        """Core session loop extracted for ``asyncio.wait_for`` wrapping."""
         session.max_iterations = max(session.max_iterations, cfg.max_iterations)
         start_time = time.time()
         reexecute_current_plan = bool(

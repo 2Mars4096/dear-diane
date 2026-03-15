@@ -1182,7 +1182,7 @@ class WorkflowPlanner:
 
         return {
             "workflow_id": f"direct-{uuid.uuid4().hex[:10]}",
-            "graph_data": graph_data,
+            "graph": graph_data,
             "success": True,
             "description": plan.description,
             "direct_build": True,
