@@ -9,7 +9,8 @@ from dan.tools._workspace import validate_path
 TOOL_METADATA = {
     "tool_id": "file_read",
     "description": (
-        "Read the contents of a file within the workspace. Supports optional "
+        "Read the contents of a file. Relative paths resolve against the workspace root; "
+        "absolute and ~/ paths are allowed. Supports optional "
         "line-range selection (1-indexed) and configurable encoding. "
         "Files larger than max_size bytes are rejected to prevent memory issues."
     ),
@@ -18,7 +19,7 @@ TOOL_METADATA = {
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Relative path to the file (resolved against workspace root).",
+                "description": "File path. Relative paths resolve against the workspace root; absolute and ~/ paths are allowed.",
             },
             "start_line": {
                 "type": "integer",

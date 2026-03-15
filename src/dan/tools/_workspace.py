@@ -10,15 +10,20 @@ def _workspace_root() -> str:
 
 
 def validate_path(path: str) -> str:
-    """Resolve *path* relative to workspace root and reject escapes.
+    """Resolve user-provided paths safely.
 
-    Raises ``ValueError`` if the resolved path falls outside the workspace.
+    - Relative paths stay rooted inside the workspace.
+    - Explicit absolute paths (including ``~/...``) are allowed as-is.
     """
+    expanded = os.path.expanduser(path)
+    if os.path.isabs(expanded):
+        return os.path.realpath(expanded)
+
     root = os.path.realpath(_workspace_root())
-    resolved = os.path.realpath(os.path.join(root, path))
+    resolved = os.path.realpath(os.path.join(root, expanded))
     if resolved != root and not resolved.startswith(root + os.sep):
         raise ValueError(
-            f"Path '{path}' resolves outside the workspace root. "
-            f"All file operations are sandboxed to '{root}'."
+            f"Relative path '{path}' resolves outside the workspace root '{root}'. "
+            "Use an explicit absolute path if that is intentional."
         )
     return resolved

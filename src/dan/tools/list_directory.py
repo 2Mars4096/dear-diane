@@ -10,7 +10,8 @@ from dan.tools._workspace import validate_path
 TOOL_METADATA = {
     "tool_id": "list_directory",
     "description": (
-        "List files and directories within the workspace. Supports optional "
+        "List files and directories. Relative paths resolve against the workspace root; "
+        "absolute and ~/ paths are allowed. Supports optional "
         "glob pattern filtering and recursive traversal. "
         "Returns structured entries with name, type, and size."
     ),
@@ -19,7 +20,7 @@ TOOL_METADATA = {
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Relative path to the directory (defaults to workspace root).",
+                "description": "Directory path. Relative paths resolve against the workspace root; absolute and ~/ paths are allowed.",
                 "default": ".",
             },
             "glob_pattern": {
@@ -76,12 +77,12 @@ async def list_directory(
     entries = []
     for p in sorted(matches):
         try:
-            rel = p.relative_to(root)
+            display_path = str(p.relative_to(root))
         except ValueError:
-            continue
+            display_path = str(p)
         entry = {
             "name": p.name,
-            "path": str(rel),
+            "path": display_path,
             "type": "directory" if p.is_dir() else "file",
             "size": p.stat().st_size if p.is_file() else 0,
         }

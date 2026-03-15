@@ -10,19 +10,19 @@ from dan.tools._workspace import validate_path
 TOOL_METADATA = {
     "tool_id": "file_move",
     "description": (
-        "Move or rename a file or directory within the workspace. "
-        "Both source and destination must be within the workspace root."
+        "Move or rename a file or directory. Relative paths resolve against the workspace root; "
+        "absolute and ~/ paths are allowed for both source and destination."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "source": {
                 "type": "string",
-                "description": "Path to the source file or directory.",
+                "description": "Source path. Relative paths resolve against the workspace root; absolute and ~/ paths are allowed.",
             },
             "destination": {
                 "type": "string",
-                "description": "Path for the destination.",
+                "description": "Destination path. Relative paths resolve against the workspace root; absolute and ~/ paths are allowed.",
             },
         },
         "required": ["source", "destination"],

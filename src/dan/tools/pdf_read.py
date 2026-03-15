@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 TOOL_METADATA = {
     "tool_id": "pdf_read",
     "description": (
-        "Read a PDF file within the workspace. "
+        "Read a PDF file. Relative paths resolve against the workspace root; absolute and ~/ paths are allowed. "
         "mode='text': extract text only (fast; misses figures/tables). "
         "mode='vision': render each page as image and describe with a vision LLM — captures figures, tables, and layout. "
         "Supports optional page range. Requires 'pypdf' for text; for vision also 'pymupdf' and an API key."
@@ -23,7 +23,7 @@ TOOL_METADATA = {
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Relative path to the PDF file.",
+                "description": "PDF path. Relative paths resolve against the workspace root; absolute and ~/ paths are allowed.",
             },
             "mode": {
                 "type": "string",

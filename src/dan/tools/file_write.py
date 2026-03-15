@@ -9,7 +9,8 @@ from dan.tools._workspace import validate_path
 TOOL_METADATA = {
     "tool_id": "file_write",
     "description": (
-        "Write or append content to a file within the workspace. "
+        "Write or append content to a file. Relative paths resolve against the workspace root; "
+        "absolute and ~/ paths are allowed. "
         "Automatically creates parent directories if they don't exist. "
         "Use mode='append' to add content to the end of an existing file."
     ),
@@ -18,7 +19,7 @@ TOOL_METADATA = {
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Relative path to the file (resolved against workspace root).",
+                "description": "File path. Relative paths resolve against the workspace root; absolute and ~/ paths are allowed.",
             },
             "content": {
                 "type": "string",
