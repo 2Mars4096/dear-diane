@@ -407,6 +407,12 @@ class ComputerUseController:
                     return await method(target, value)
                 if action == "wait_for":
                     return await method(target, **kwargs)
+                if action == "download":
+                    return await method(
+                        target,
+                        destination_path=kwargs.get("destination_path"),
+                        timeout=kwargs.get("timeout", 30.0),
+                    )
                 if action == "switch_tab":
                     index = kwargs.get("index", 0)
                     return await method(index)

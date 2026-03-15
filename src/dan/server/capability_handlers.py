@@ -129,6 +129,7 @@ from dan.server.capabilities.browser import (
     handle_browser_click,
     handle_browser_type,
     handle_browser_fill,
+    handle_browser_download,
     handle_browser_extract,
     handle_browser_screenshot,
     handle_browser_tabs,
@@ -610,6 +611,7 @@ BROWSER_OPEN_SCHEMA = build_tool_schema(name="browser_open", description="Open a
 BROWSER_CLICK_SCHEMA = build_tool_schema(name="browser_click", description="Click an element in the browser by CSS selector.", parameters={"type": "object", "properties": {"selector": {"type": "string", "description": "CSS selector"}}, "required": ["selector"]})
 BROWSER_TYPE_SCHEMA = build_tool_schema(name="browser_type", description="Type text into a browser element (appends).", parameters={"type": "object", "properties": {"selector": {"type": "string", "description": "CSS selector"}, "text": {"type": "string", "description": "Text to type"}}, "required": ["selector", "text"]})
 BROWSER_FILL_SCHEMA = build_tool_schema(name="browser_fill", description="Fill (clear + type) text into a browser element.", parameters={"type": "object", "properties": {"selector": {"type": "string", "description": "CSS selector"}, "text": {"type": "string", "description": "Text to fill"}}, "required": ["selector", "text"]})
+BROWSER_DOWNLOAD_SCHEMA = build_tool_schema(name="browser_download", description="Trigger a browser download by clicking a CSS selector and optionally save it to a destination path.", parameters={"type": "object", "properties": {"selector": {"type": "string", "description": "CSS selector that triggers the download"}, "destination_path": {"type": "string", "description": "Optional final path for the downloaded file (supports ~/... and absolute paths)"}, "timeout_seconds": {"type": "number", "description": "Seconds to wait for the download", "default": 30.0}}, "required": ["selector"]})
 BROWSER_EXTRACT_SCHEMA = build_tool_schema(name="browser_extract", description="Extract text from the browser page or a specific element.", parameters={"type": "object", "properties": {"selector": {"type": "string", "description": "CSS selector (optional, omit for full page)"}}})
 BROWSER_SCREENSHOT_SCHEMA = build_tool_schema(name="browser_screenshot", description="Take a screenshot of the current browser page.", parameters={"type": "object", "properties": {}})
 BROWSER_TABS_SCHEMA = build_tool_schema(name="browser_tabs", description="List open browser tabs.", parameters={"type": "object", "properties": {}})
@@ -736,12 +738,13 @@ def register_computer_capabilities(
     if controller is not None:
         _set_controller(controller)
 
-    logger.info("DAN_COMPUTER_CONTROL enabled: registering 12 computer-control tools.")
+    logger.info("DAN_COMPUTER_CONTROL enabled: registering 13 computer-control tools.")
 
     registry.register("browser_open", BROWSER_OPEN_SCHEMA, handle_browser_open, modes=["agent"], category="computer")
     registry.register("browser_click", BROWSER_CLICK_SCHEMA, handle_browser_click, modes=["agent"], category="computer")
     registry.register("browser_type", BROWSER_TYPE_SCHEMA, handle_browser_type, modes=["agent"], category="computer")
     registry.register("browser_fill", BROWSER_FILL_SCHEMA, handle_browser_fill, modes=["agent"], category="computer")
+    registry.register("browser_download", BROWSER_DOWNLOAD_SCHEMA, handle_browser_download, modes=["agent"], category="computer")
     registry.register("browser_extract", BROWSER_EXTRACT_SCHEMA, handle_browser_extract, modes=["agent", "ask"], category="computer")
     registry.register("browser_screenshot", BROWSER_SCREENSHOT_SCHEMA, handle_browser_screenshot, modes=["agent"], category="computer")
     registry.register("browser_tabs", BROWSER_TABS_SCHEMA, handle_browser_tabs, modes=["agent", "ask"], category="computer")

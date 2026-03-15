@@ -62,6 +62,22 @@ async def handle_browser_fill(args: dict[str, Any], ctx: CapabilityContext) -> C
         return CapabilityResult(success=False, message=f"browser_fill error: {exc}")
 
 
+async def handle_browser_download(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    ctrl = _get_controller()
+    if ctrl is None:
+        return CapabilityResult(success=False, message="Computer controller not initialized")
+    try:
+        result = await ctrl.act(
+            "download",
+            args["selector"],
+            destination_path=args.get("destination_path"),
+            timeout=args.get("timeout_seconds", 30.0),
+        )
+        return CapabilityResult(success=result.get("status") != "error", message=str(result), data=result)
+    except Exception as exc:
+        return CapabilityResult(success=False, message=f"browser_download error: {exc}")
+
+
 async def handle_browser_extract(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
     ctrl = _get_controller()
     if ctrl is None:

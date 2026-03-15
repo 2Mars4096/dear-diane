@@ -24,6 +24,7 @@ _PREFERRED_TOOL_IDS = [
     "git_status",
     "notify",
     "browser_open",
+    "browser_download",
     "browser_screenshot",
 ]
 

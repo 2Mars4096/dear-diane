@@ -17,6 +17,7 @@ from typing import Any, Awaitable, Callable, Protocol, runtime_checkable
 logger = logging.getLogger(__name__)
 
 SCREENSHOT_DIR = os.path.expanduser("~/.dan/screenshots")
+DOWNLOAD_DIR = os.path.expanduser("~/.dan/downloads")
 PROFILE_DIR = os.path.expanduser("~/.dan/browser-profiles")
 MAX_SCREENSHOTS = 50
 
@@ -57,7 +58,12 @@ class BrowserController(Protocol):
     async def extract_text(self, selector: str | None = None) -> str: ...
     async def screenshot(self) -> str: ...
     async def download(
-        self, trigger: Callable[[], Awaitable[Any]] | None = None,
+        self,
+        selector: str | None = None,
+        *,
+        trigger: Callable[[], Awaitable[Any]] | None = None,
+        destination_path: str | None = None,
+        timeout: float = 30.0,
     ) -> str | None: ...
     async def list_tabs(self) -> list[dict]: ...
     async def switch_tab(self, index: int) -> dict: ...
@@ -87,6 +93,22 @@ def is_playwright_available() -> bool:
 def _ensure_screenshot_dir() -> str:
     os.makedirs(SCREENSHOT_DIR, exist_ok=True)
     return SCREENSHOT_DIR
+
+
+def _ensure_download_dir() -> str:
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    return DOWNLOAD_DIR
+
+
+def _resolve_download_path(destination_path: str | None, suggested_filename: str) -> str:
+    if destination_path:
+        expanded = os.path.expanduser(destination_path)
+        resolved = expanded if os.path.isabs(expanded) else os.path.realpath(expanded)
+        parent = os.path.dirname(resolved)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        return resolved
+    return os.path.join(_ensure_download_dir(), suggested_filename)
 
 
 def _cleanup_old_screenshots() -> None:
@@ -233,20 +255,29 @@ class PlaywrightBrowserController:
         return path
 
     async def download(
-        self, trigger: Callable[[], Awaitable[Any]] | None = None,
+        self,
+        selector: str | None = None,
+        *,
+        trigger: Callable[[], Awaitable[Any]] | None = None,
+        destination_path: str | None = None,
+        timeout: float = 30.0,
     ) -> str | None:
         page = await self._ensure_browser()
-        if trigger is None:
-            logger.warning("download() requires a trigger callback to start the download")
+        if trigger is None and selector is None:
+            logger.warning("download() requires a selector or trigger callback")
             return None
         try:
-            async with page.expect_download(timeout=30000) as dl_info:
-                await trigger()
+            async with page.expect_download(timeout=timeout * 1000) as dl_info:
+                if trigger is not None:
+                    await trigger()
+                else:
+                    await page.click(selector)
             dl = await dl_info.value
-            save_path = os.path.join(_ensure_screenshot_dir(), dl.suggested_filename)
+            save_path = _resolve_download_path(destination_path, dl.suggested_filename)
             await dl.save_as(save_path)
             return save_path
         except Exception:
+            logger.debug("Browser download failed", exc_info=True)
             return None
 
     async def list_tabs(self) -> list[dict]:
@@ -342,9 +373,21 @@ class MockBrowserController:
         return self._responses.get("screenshot", "/tmp/mock_screenshot.png")
 
     async def download(
-        self, trigger: Callable[[], Awaitable[Any]] | None = None,
+        self,
+        selector: str | None = None,
+        *,
+        trigger: Callable[[], Awaitable[Any]] | None = None,
+        destination_path: str | None = None,
+        timeout: float = 30.0,
     ) -> str | None:
-        self._record("download")
+        self._record(
+            "download",
+            selector=selector,
+            destination_path=destination_path,
+            timeout=timeout,
+        )
+        if destination_path:
+            return self._responses.get("download", destination_path)
         return self._responses.get("download", "/tmp/mock_download.pdf")
 
     async def list_tabs(self) -> list[dict]:
