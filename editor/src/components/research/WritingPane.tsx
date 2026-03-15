@@ -6,8 +6,8 @@ import {
   useCallback,
 } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
-import type { editor as monacoEditor } from "monaco-editor";
 import * as monaco from "monaco-editor";
+import type { editor as monacoEditor, IRange } from "monaco-editor";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { Marked, Renderer } from "marked";
@@ -24,7 +24,6 @@ import {
   Check,
   X,
   Loader2,
-  Link2,
 } from "lucide-react";
 import { useResearchStore, type ResearchPaper } from "../../store/useResearchStore";
 
@@ -127,7 +126,7 @@ function matchPaper(citeKey: string, papers: ResearchPaper[]): ResearchPaper | u
 function makeCitationsClickable(html: string, papers: ResearchPaper[]): string {
   let result = html;
   for (const pattern of CITATION_PATTERNS) {
-    result = result.replace(new RegExp(pattern.source, "g"), (fullMatch, inner) => {
+    result = result.replace(new RegExp(pattern.source, "g"), (fullMatch, _inner) => {
       const key = extractCiteKey(fullMatch);
       const paper = matchPaper(key, papers);
       if (paper) {
@@ -407,18 +406,18 @@ interface FloatingToolbarState {
   x: number;
   y: number;
   selectedText: string;
-  selection: monacoEditor.IRange | null;
+  selection: IRange | null;
 }
 
 function FloatingAIToolbar({
   state,
-  editor,
+  editor: _editor,
   onAction,
   onClose,
 }: {
   state: FloatingToolbarState;
   editor: monacoEditor.IStandaloneCodeEditor;
-  onAction: (action: AIAction, selectedText: string, range: monacoEditor.IRange) => void;
+  onAction: (action: AIAction, selectedText: string, range: IRange) => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -463,7 +462,7 @@ function FloatingAIToolbar({
 
 export interface TrackChange {
   id: string;
-  range: monacoEditor.IRange;
+  range: IRange;
   originalText: string;
   proposedText: string;
   status: "pending" | "accepted" | "rejected";
@@ -621,7 +620,7 @@ function useAIAction() {
     async (
       action: AIAction,
       selectedText: string,
-      range: monacoEditor.IRange,
+      range: IRange,
       editor: monacoEditor.IStandaloneCodeEditor,
     ) => {
       setLoading(true);
@@ -783,7 +782,7 @@ export default function WritingPane() {
   );
 
   const handleAIAction = useCallback(
-    (action: AIAction, selectedText: string, range: monacoEditor.IRange) => {
+    (action: AIAction, selectedText: string, range: IRange) => {
       const editor = editorRef.current;
       if (!editor) return;
       setToolbar((t) => ({ ...t, visible: false }));

@@ -7,7 +7,6 @@ import {
   Eye,
   X,
   FileJson,
-  FileText,
   File,
   ArrowUpDown,
   Search,

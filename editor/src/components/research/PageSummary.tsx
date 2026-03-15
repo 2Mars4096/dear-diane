@@ -8,7 +8,6 @@ import {
   ChevronDown,
   ChevronRight,
   Lightbulb,
-  X,
 } from "lucide-react";
 import {
   useResearchStore,

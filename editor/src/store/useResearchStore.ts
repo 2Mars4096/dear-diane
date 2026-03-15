@@ -93,9 +93,22 @@ export type CellTool =
   | "shell_exec"
   | "data_analyze";
 
-type PrimaryTab = "editor" | "reader";
+type PrimaryTab = "editor" | "reader" | "furnace";
 type ContextTab = "references" | "reviews" | "outline" | "notes" | "distillation";
 type SecondaryTab = "code" | "figures" | "data";
+
+export interface TrainingSession {
+  id: string;
+  name: string;
+  topic: string;
+  status: "idle" | "running" | "paused" | "completed" | "failed";
+  targetPapers: number;
+  processedPapers: number;
+  startedAt: number;
+  lastActivityAt?: number;
+  extractedPatterns?: number;
+  extractedTerms?: number;
+}
 
 interface ResearchState {
   primaryTab: PrimaryTab;
@@ -137,6 +150,18 @@ interface ResearchState {
   showSecondary: boolean;
   toggleSecondary: () => void;
 
+  showContextPanel: boolean;
+  toggleContextPanel: () => void;
+  setShowContextPanel: (show: boolean) => void;
+
+  activeRailSection: "library" | "plan" | "training";
+  setActiveRailSection: (section: "library" | "plan" | "training") => void;
+
+  trainingSessions: TrainingSession[];
+  addTrainingSession: (session: Omit<TrainingSession, "id" | "startedAt">) => void;
+  updateTrainingSession: (id: string, updates: Partial<TrainingSession>) => void;
+  removeTrainingSession: (id: string) => void;
+
   activeQuickStart: string | null;
   setActiveQuickStart: (id: string | null) => void;
 
@@ -165,7 +190,7 @@ function uid() {
   return `r-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export const useResearchStore = create<ResearchState>((set) => ({
+export const useResearchStore = create<ResearchState>((set, get) => ({
   primaryTab: "editor",
   setPrimaryTab: (tab) => set({ primaryTab: tab }),
 
@@ -227,10 +252,29 @@ export const useResearchStore = create<ResearchState>((set) => ({
   documentContent: "",
   setDocumentContent: (content) => set({ documentContent: content }),
 
-  showPipeline: true,
+  showPipeline: false,
   togglePipeline: () => set((s) => ({ showPipeline: !s.showPipeline })),
-  showSecondary: true,
+  showSecondary: false,
   toggleSecondary: () => set((s) => ({ showSecondary: !s.showSecondary })),
+
+  showContextPanel: false,
+  toggleContextPanel: () => set((s) => ({ showContextPanel: !s.showContextPanel })),
+  setShowContextPanel: (show) => set({ showContextPanel: show }),
+
+  activeRailSection: "library",
+  setActiveRailSection: (section) => set({ activeRailSection: section }),
+
+  trainingSessions: [],
+  addTrainingSession: (session) =>
+    set((s) => ({
+      trainingSessions: [...s.trainingSessions, { ...session, id: uid(), startedAt: Date.now() }],
+    })),
+  updateTrainingSession: (id, updates) =>
+    set((s) => ({
+      trainingSessions: s.trainingSessions.map((t) => (t.id === id ? { ...t, ...updates } : t)),
+    })),
+  removeTrainingSession: (id) =>
+    set((s) => ({ trainingSessions: s.trainingSessions.filter((t) => t.id !== id) })),
 
   activeQuickStart: null,
   setActiveQuickStart: (id) => set({ activeQuickStart: id }),
@@ -270,7 +314,7 @@ export const useResearchStore = create<ResearchState>((set) => ({
       return { annotations: next };
     }),
   getAnnotationsForPaper: (paperId) => {
-    return useResearchStore.getState().annotations.filter((a) => a.paperId === paperId);
+    return get().annotations.filter((a) => a.paperId === paperId);
   },
 
   pageSummaries: (() => {

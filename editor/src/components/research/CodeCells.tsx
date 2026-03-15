@@ -3,7 +3,6 @@ import {
   useRef,
   useCallback,
   useEffect,
-  type ReactNode,
 } from "react";
 import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor as monacoEditor } from "monaco-editor";
@@ -21,12 +20,10 @@ import {
   Code2,
   Terminal,
   BarChart3,
-  Wrench,
 } from "lucide-react";
 import {
   useResearchStore,
   type CellTool,
-  type ResearchPaper,
 } from "../../store/useResearchStore";
 
 /* ------------------------------------------------------------------ */
@@ -352,9 +349,9 @@ function WebSearchForm({
 }
 
 function PdfReadForm({
-  code,
+  code: _code,
   params,
-  onChange,
+  onChange: _onChange,
   onParamsChange,
 }: {
   code: string;

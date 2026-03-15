@@ -1,11 +1,15 @@
 /**
  * Research mode: purpose-built workspace for academic papers, literature reviews,
- * and systematic research. Layout: ResearchNav + Pipeline | Primary + Context | Secondary.
+ * and systematic research.
+ *
+ * Layout (1-7 simplification): Left Rail (Library / Plan / Training) | Center Desk
+ * (Editor / Reader / Furnace) | Right Drawer (on-demand) | Terminal (bottom).
  */
 import {
   useState,
   useEffect,
   useCallback,
+  useMemo,
   lazy,
   Suspense,
   type ReactNode,
@@ -26,9 +30,6 @@ import {
   BookMarked,
   MessageSquareText,
   List,
-  Code2,
-  Image as ImageIcon,
-  Database,
   Search,
   Eye,
   GitCompare,
@@ -36,52 +37,50 @@ import {
   ChevronDown,
   ChevronRight,
   Plus,
-  Trash2,
   PanelBottomClose,
   PanelBottomOpen,
+  PanelRightClose,
+  PanelRightOpen,
   Gauge,
   Clock,
   X,
   Settings2,
+  FolderOpen,
+  Clipboard,
+  FlaskConical,
+  Pause,
+  Terminal as TerminalIcon,
+  Package,
+  Play,
+  SquarePen,
 } from "lucide-react";
 import {
   useResearchStore,
   type PipelineStage,
   type PipelineStageDetails,
   type PipelinePreset,
+  type TrainingSession,
 } from "../../store/useResearchStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { useWorkspaceStore } from "../../store/useWorkspaceStore";
+import { useCodeStore } from "../../store/useCodeStore";
 import DomainProfileSelector, {
   getActiveProfile,
 } from "../research/DomainProfile";
+import TerminalPanel from "../code/TerminalPanel";
 
 /* ------------------------------------------------------------------ */
 /*  Lazy-loaded panel components                                       */
 /* ------------------------------------------------------------------ */
 
 const WritingPane = lazy(() => import("../research/WritingPane"));
-const PdfReader = lazy(() => import("../research/PdfReader"));
 const SplitPdfReader = lazy(() => import("../research/SplitPdfReader"));
 const ReferencePanel = lazy(() => import("../research/ReferencePanel"));
 const ReviewPanel = lazy(() => import("../research/ReviewPanel"));
 const OutlinePanel = lazy(() => import("../research/OutlinePanel"));
 const NotesPanel = lazy(() => import("../research/NotesPanel"));
 const DistillationTab = lazy(() => import("../research/DistillationTab"));
-const CodeCells = lazy(() => import("../research/CodeCells"));
 
-const FigureGallery = lazy(() =>
-  import("../research/FigureGallery").catch(() => ({
-    default: () => (
-      <PlaceholderPane label="Figure Gallery" icon={<ImageIcon size={24} />} />
-    ),
-  })),
-);
-const DataBrowser = lazy(() =>
-  import("../research/DataBrowser").catch(() => ({
-    default: () => (
-      <PlaceholderPane label="Data Browser" icon={<Database size={24} />} />
-    ),
-  })),
-);
 const QuickStartPanel = lazy(
   () => import("../research/QuickStartPanel"),
 );
@@ -98,6 +97,15 @@ function PanelLoader() {
 /*  Utilities                                                          */
 /* ------------------------------------------------------------------ */
 
+function useNow(interval = 1000) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), interval);
+    return () => clearInterval(id);
+  }, [interval]);
+  return now;
+}
+
 function formatDuration(ms: number): string {
   if (ms <= 0) return "0s";
   const totalSec = Math.floor(ms / 1000);
@@ -110,7 +118,7 @@ function formatDuration(ms: number): string {
   return rm > 0 ? `${h}h ${rm}m` : `${h}h`;
 }
 
-function estimateRemaining(pipeline: PipelineStage[]): string {
+function estimateRemaining(pipeline: PipelineStage[], nowMs: number): string {
   const completed = pipeline.filter(
     (s) => s.status === "completed" && s.startedAt && s.completedAt,
   );
@@ -123,7 +131,7 @@ function estimateRemaining(pipeline: PipelineStage[]): string {
   const active = pipeline.find((s) => s.status === "active");
   let estimate = remaining * avgDuration;
   if (active?.startedAt)
-    estimate += Math.max(0, avgDuration - (Date.now() - active.startedAt));
+    estimate += Math.max(0, avgDuration - (nowMs - active.startedAt));
 
   return estimate > 0 ? formatDuration(estimate) : "";
 }
@@ -203,12 +211,14 @@ function NavItem({
   label,
   subtitle,
   status,
+  badge,
   active,
   onClick,
 }: {
   label: string;
   subtitle: string;
   status: "unread" | "reading" | "read";
+  badge?: string;
   active?: boolean;
   onClick: () => void;
 }) {
@@ -230,8 +240,15 @@ function NavItem({
               : "bg-gray-600"
         }`}
       />
-      <div className="min-w-0">
-        <p className="text-[11px] text-gray-300 truncate">{label}</p>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1">
+          <p className="text-[11px] text-gray-300 truncate flex-1">{label}</p>
+          {badge && (
+            <span className="text-[8px] text-amber-400 bg-amber-400/10 px-1 rounded shrink-0">
+              {badge}
+            </span>
+          )}
+        </div>
         <p className="text-[9px] text-gray-600 truncate">{subtitle}</p>
       </div>
     </button>
@@ -239,25 +256,91 @@ function NavItem({
 }
 
 /* ------------------------------------------------------------------ */
-/*  Research Nav (left sidebar — top section)                          */
+/*  Rail section buttons (Library / Plan / Training)                   */
 /* ------------------------------------------------------------------ */
 
-function ResearchNav() {
+type RailSection = "library" | "plan" | "training";
+
+const RAIL_SECTIONS: {
+  id: RailSection;
+  label: string;
+  icon: ReactNode;
+}[] = [
+  { id: "library", label: "Library", icon: <FolderOpen size={14} /> },
+  { id: "plan", label: "Plan", icon: <Clipboard size={14} /> },
+  { id: "training", label: "Training", icon: <FlaskConical size={14} /> },
+];
+
+/* ------------------------------------------------------------------ */
+/*  Library Section                                                    */
+/* ------------------------------------------------------------------ */
+
+function LibrarySection() {
   const papers = useResearchStore((s) => s.papers);
-  const notes = useResearchStore((s) => s.notes);
+  const annotations = useResearchStore((s) => s.annotations);
+  const noteCount = useResearchStore((s) => s.notes.length);
   const activePaperId = useResearchStore((s) => s.activePaperId);
   const setActivePaper = useResearchStore((s) => s.setActivePaper);
   const setPrimaryTab = useResearchStore((s) => s.setPrimaryTab);
-  const setContextTab = useResearchStore((s) => s.setContextTab);
-  const [showProfileSelector, setShowProfileSelector] = useState(false);
-  const activeProfile = getActiveProfile();
+  const pdfRoots = useSettingsStore((s) => s.researchPdfRoots);
+  const noteRoots = useSettingsStore((s) => s.researchNoteRoots);
+  const wsPdfRoots = useWorkspaceStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    return ws?.researchConfig?.pdfRoots;
+  });
+  const wsNoteRoots = useWorkspaceStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    return ws?.researchConfig?.noteRoots;
+  });
+
+  const effectiveRoots = useMemo(() => {
+    const pdf = wsPdfRoots && wsPdfRoots.length > 0 ? wsPdfRoots : pdfRoots;
+    const note = wsNoteRoots && wsNoteRoots.length > 0 ? wsNoteRoots : noteRoots;
+    return { pdf, note };
+  }, [pdfRoots, noteRoots, wsPdfRoots, wsNoteRoots]);
+
+  const annotatedPaperIds = useMemo(
+    () => new Set(annotations.map((a) => a.paperId)),
+    [annotations],
+  );
+
+  const paperStatus = useCallback(
+    (paperId: string, status: "unread" | "reading" | "read") => {
+      if (annotatedPaperIds.has(paperId)) return "annotated" as const;
+      return status;
+    },
+    [annotatedPaperIds],
+  );
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="px-3 py-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider">
-        Research
-      </div>
+      {/* Configured roots */}
+      {(effectiveRoots.pdf.length > 0 || effectiveRoots.note.length > 0) && (
+        <div className="px-3 py-1.5 border-b border-gray-800/50">
+          {effectiveRoots.pdf.map((root) => (
+            <div
+              key={root}
+              className="text-[9px] text-gray-600 truncate flex items-center gap-1 py-0.5"
+              title={root}
+            >
+              <FileText size={9} className="shrink-0 text-gray-700" />
+              {root.split("/").pop()}
+            </div>
+          ))}
+          {effectiveRoots.note.map((root) => (
+            <div
+              key={root}
+              className="text-[9px] text-gray-600 truncate flex items-center gap-1 py-0.5"
+              title={root}
+            >
+              <StickyNote size={9} className="shrink-0 text-gray-700" />
+              {root.split("/").pop()}
+            </div>
+          ))}
+        </div>
+      )}
 
+      {/* Papers */}
       <NavSection
         icon={<FileText size={14} />}
         label="Papers"
@@ -265,49 +348,273 @@ function ResearchNav() {
       >
         {papers.length === 0 ? (
           <p className="px-7 py-2 text-[10px] text-gray-600 italic">
-            No papers yet
+            No papers yet — drag a PDF or use a quick-start
           </p>
         ) : (
-          papers.map((p) => (
-            <NavItem
-              key={p.id}
-              label={p.title}
-              subtitle={`${p.authors[0] ?? "Unknown"} ${p.year}`}
-              status={p.status}
-              active={activePaperId === p.id}
-              onClick={() => {
-                setActivePaper(p.id);
-                setPrimaryTab("reader");
-              }}
-            />
-          ))
+          papers.map((p) => {
+            const displayStatus = paperStatus(p.id, p.status);
+            return (
+              <NavItem
+                key={p.id}
+                label={p.title}
+                subtitle={`${p.authors[0] ?? "Unknown"} ${p.year}`}
+                status={displayStatus === "annotated" ? "read" : p.status}
+                badge={displayStatus === "annotated" ? "annotated" : undefined}
+                active={activePaperId === p.id}
+                onClick={() => {
+                  setActivePaper(p.id);
+                  setPrimaryTab("reader");
+                }}
+              />
+            );
+          })
         )}
       </NavSection>
 
+      {/* Notes */}
       <NavSection
         icon={<StickyNote size={14} />}
         label="Notes"
-        count={notes.length}
+        count={noteCount}
       >
         <button
-          onClick={() => setContextTab("notes")}
+          onClick={() => {
+            useResearchStore.getState().setShowContextPanel(true);
+            useResearchStore.getState().setContextTab("notes");
+          }}
           className="w-full text-left px-4 pl-7 py-1 text-[11px] text-gray-400 hover:bg-gray-800/40"
         >
           View all notes
         </button>
       </NavSection>
+    </div>
+  );
+}
 
-      <NavSection icon={<Flame size={14} />} label="Learn" count={0}>
+/* ------------------------------------------------------------------ */
+/*  Plan Section                                                       */
+/* ------------------------------------------------------------------ */
+
+function PlanSection() {
+  const documentContent = useResearchStore((s) => s.documentContent);
+  const setShowContextPanel = useResearchStore((s) => s.setShowContextPanel);
+  const setContextTab = useResearchStore((s) => s.setContextTab);
+  const setPrimaryTab = useResearchStore((s) => s.setPrimaryTab);
+
+  const headings = useMemo(() => {
+    if (!documentContent) return [];
+    return documentContent
+      .split("\n")
+      .filter((l) => /^#{1,3}\s/.test(l))
+      .map((l) => ({
+        level: (l.match(/^(#+)/)![1].length as 1 | 2 | 3),
+        text: l.replace(/^#+\s*/, ""),
+      }));
+  }, [documentContent]);
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      {/* Outline */}
+      <NavSection icon={<List size={14} />} label="Outline" count={headings.length}>
+        {headings.length === 0 ? (
+          <p className="px-7 py-2 text-[10px] text-gray-600 italic">
+            Start writing to see outline
+          </p>
+        ) : (
+          headings.slice(0, 20).map((h, i) => (
+            <button
+              key={i}
+              onClick={() => {
+                setPrimaryTab("editor");
+                setShowContextPanel(true);
+                setContextTab("outline");
+              }}
+              className="w-full text-left px-4 py-0.5 text-[11px] text-gray-400 hover:text-gray-200 hover:bg-gray-800/40 truncate transition-colors"
+              style={{ paddingLeft: `${12 + (h.level - 1) * 10}px` }}
+            >
+              {h.text}
+            </button>
+          ))
+        )}
+      </NavSection>
+
+      {/* Quick access */}
+      <NavSection icon={<MessageSquareText size={14} />} label="Review" count={0}>
         <button
-          onClick={() => setContextTab("distillation")}
+          onClick={() => {
+            setShowContextPanel(true);
+            setContextTab("reviews");
+          }}
           className="w-full text-left px-4 pl-7 py-1 text-[11px] text-gray-400 hover:bg-gray-800/40"
         >
-          100 Papers Learning
+          Open reviews
         </button>
       </NavSection>
 
-      {/* Domain profile selector */}
-      <div className="border-t border-gray-800 mt-1">
+      <NavSection icon={<BookMarked size={14} />} label="References" count={0}>
+        <button
+          onClick={() => {
+            setShowContextPanel(true);
+            setContextTab("references");
+          }}
+          className="w-full text-left px-4 pl-7 py-1 text-[11px] text-gray-400 hover:bg-gray-800/40"
+        >
+          Open references
+        </button>
+      </NavSection>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Training Section                                                   */
+/* ------------------------------------------------------------------ */
+
+function TrainingSection() {
+  const sessions = useResearchStore((s) => s.trainingSessions);
+  const setPrimaryTab = useResearchStore((s) => s.setPrimaryTab);
+
+  const openFurnace = () => setPrimaryTab("furnace");
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <NavSection
+        icon={<FlaskConical size={14} />}
+        label="Sessions"
+        count={sessions.length}
+      >
+        {sessions.length === 0 ? (
+          <div className="px-7 py-2">
+            <p className="text-[10px] text-gray-600 italic mb-2">
+              No training sessions yet
+            </p>
+            <button
+              onClick={openFurnace}
+              className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"
+            >
+              <Plus size={10} /> Start a session
+            </button>
+          </div>
+        ) : (
+          sessions.map((sess) => (
+            <TrainingSessionItem
+              key={sess.id}
+              session={sess}
+              onClick={openFurnace}
+            />
+          ))
+        )}
+      </NavSection>
+
+      <button
+        onClick={openFurnace}
+        className="w-full text-left px-4 pl-7 py-1 text-[11px] text-gray-400 hover:bg-gray-800/40"
+      >
+        Open Furnace
+      </button>
+    </div>
+  );
+}
+
+function TrainingSessionItem({
+  session,
+  onClick,
+}: {
+  session: TrainingSession;
+  onClick: () => void;
+}) {
+  const pct =
+    session.targetPapers > 0
+      ? Math.round((session.processedPapers / session.targetPapers) * 100)
+      : 0;
+
+  const statusColors: Record<TrainingSession["status"], string> = {
+    idle: "text-gray-500",
+    running: "text-blue-400",
+    paused: "text-yellow-400",
+    completed: "text-green-400",
+    failed: "text-red-400",
+  };
+
+  const statusIcons: Record<TrainingSession["status"], ReactNode> = {
+    idle: <Circle size={10} />,
+    running: <Loader2 size={10} className="animate-spin" />,
+    paused: <Pause size={10} />,
+    completed: <CheckCircle2 size={10} />,
+    failed: <XCircle size={10} />,
+  };
+
+  return (
+    <button
+      onClick={onClick}
+      className="w-full text-left px-4 pl-7 py-1.5 hover:bg-gray-800/40 transition-colors group"
+    >
+      <div className="flex items-center gap-2">
+        <span className={statusColors[session.status]}>
+          {statusIcons[session.status]}
+        </span>
+        <span className="text-[11px] text-gray-300 truncate flex-1">
+          {session.name}
+        </span>
+      </div>
+      <div className="ml-5 mt-0.5">
+        <div className="flex items-center gap-2 text-[9px] text-gray-600">
+          <span>
+            {session.processedPapers}/{session.targetPapers} papers
+          </span>
+          <span>{pct}%</span>
+        </div>
+        <div className="mt-0.5 h-0.5 bg-gray-800 rounded-full overflow-hidden">
+          <div
+            className="h-full bg-purple-500/70 rounded-full transition-all"
+            style={{ width: `${pct}%` }}
+          />
+        </div>
+      </div>
+    </button>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Function-first Left Rail                                           */
+/* ------------------------------------------------------------------ */
+
+function FunctionRail() {
+  const activeSection = useResearchStore((s) => s.activeRailSection);
+  const setActiveSection = useResearchStore((s) => s.setActiveRailSection);
+  const [showProfileSelector, setShowProfileSelector] = useState(false);
+  const activeProfile = getActiveProfile();
+
+  return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Section tabs */}
+      <div className="flex border-b border-gray-800">
+        {RAIL_SECTIONS.map((sec) => (
+          <button
+            key={sec.id}
+            onClick={() => setActiveSection(sec.id)}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[10px] font-medium transition-colors ${
+              activeSection === sec.id
+                ? "text-gray-200 border-b-2 border-purple-500 bg-[#1e1e1e]"
+                : "text-gray-500 hover:text-gray-300 border-b-2 border-transparent"
+            }`}
+            title={sec.label}
+          >
+            {sec.icon}
+            <span className="hidden sm:inline">{sec.label}</span>
+          </button>
+        ))}
+      </div>
+
+      {/* Section content */}
+      <div className="flex-1 min-h-0 overflow-hidden">
+        {activeSection === "library" && <LibrarySection />}
+        {activeSection === "plan" && <PlanSection />}
+        {activeSection === "training" && <TrainingSection />}
+      </div>
+
+      {/* Domain profile (always visible) */}
+      <div className="border-t border-gray-800 shrink-0">
         <button
           onClick={() => setShowProfileSelector((v) => !v)}
           className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors"
@@ -363,7 +670,7 @@ function getDefaultStages(preset: PipelinePreset): PipelineStage[] {
 
 const STAGE_PANEL_MAP: Record<
   string,
-  { primary?: "editor" | "reader"; context?: string }
+  { primary?: "editor" | "reader"; context?: "references" | "reviews" | "outline" | "notes" | "distillation" }
 > = {
   search: { context: "references" },
   read: { primary: "reader" },
@@ -407,13 +714,13 @@ function StageIcon({ status }: { status: PipelineStage["status"] }) {
   }
 }
 
-function StageDetail({ stage }: { stage: PipelineStage }) {
+function StageDetail({ stage, nowMs }: { stage: PipelineStage; nowMs: number }) {
   const details = getStageDetails(stage);
   const duration =
     stage.completedAt && stage.startedAt
       ? formatDuration(stage.completedAt - stage.startedAt)
       : stage.startedAt
-        ? formatDuration(Date.now() - stage.startedAt)
+        ? formatDuration(nowMs - stage.startedAt)
         : "—";
 
   return (
@@ -463,6 +770,7 @@ function PipelineProgress() {
   const setContextTab = useResearchStore((s) => s.setContextTab);
   const addStageAction = useResearchStore((s) => s.addStage);
   const removeStageAction = useResearchStore((s) => s.removeStage);
+  const nowMs = useNow(1000);
 
   const [expandedStage, setExpandedStage] = useState<string | null>(null);
   const [addingStage, setAddingStage] = useState(false);
@@ -471,7 +779,7 @@ function PipelineProgress() {
   const stages =
     pipeline.length > 0 ? pipeline : getDefaultStages(pipelinePreset);
   const completed = stages.filter((s) => s.status === "completed").length;
-  const eta = estimateRemaining(stages);
+  const eta = estimateRemaining(stages, nowMs);
 
   const handleStageClick = (stageId: string) => {
     setExpandedStage((prev) => (prev === stageId ? null : stageId));
@@ -479,7 +787,10 @@ function PipelineProgress() {
     const mapping = STAGE_PANEL_MAP[stageId];
     if (!mapping) return;
     if (mapping.primary) setPrimaryTab(mapping.primary);
-    if (mapping.context) setContextTab(mapping.context as any);
+    if (mapping.context) {
+      setContextTab(mapping.context);
+      useResearchStore.getState().setShowContextPanel(true);
+    }
   };
 
   const handleAddStage = () => {
@@ -597,7 +908,7 @@ function PipelineProgress() {
                 </span>
                 {stage.status === "active" && stage.startedAt && (
                   <span className="text-[9px] text-gray-600">
-                    {formatDuration(Date.now() - stage.startedAt)}
+                    {formatDuration(nowMs - stage.startedAt)}
                   </span>
                 )}
                 <span className="text-gray-700">
@@ -619,7 +930,7 @@ function PipelineProgress() {
               )}
             </div>
             {expandedStage === stage.id && (
-              <StageDetail stage={stage} />
+              <StageDetail stage={stage} nowMs={nowMs} />
             )}
           </div>
         ))}
@@ -683,29 +994,7 @@ function PipelineProgress() {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Placeholder panel (fallback for missing components)                */
-/* ------------------------------------------------------------------ */
-
-function PlaceholderPane({
-  label,
-  icon,
-}: {
-  label: string;
-  icon: ReactNode;
-}) {
-  return (
-    <div className="h-full flex items-center justify-center text-gray-500">
-      <div className="text-center space-y-2">
-        <div className="mx-auto opacity-40">{icon}</div>
-        <p className="text-xs">{label}</p>
-        <p className="text-[10px] text-gray-600">Coming soon</p>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Primary Panel (Editor | PDF Reader)                                */
+/*  Primary Panel (Editor | PDF Reader | Furnace)                      */
 /* ------------------------------------------------------------------ */
 
 function PrimaryPanel() {
@@ -721,7 +1010,8 @@ function PrimaryPanel() {
     papers.length === 0 &&
     notes.length === 0 &&
     !documentContent &&
-    !activeQuickStart;
+    !activeQuickStart &&
+    primaryTab !== "furnace";
 
   if (isEmpty) {
     return (
@@ -746,11 +1036,18 @@ function PrimaryPanel() {
         >
           <BookOpen size={12} /> PDF Reader
         </TabButton>
+        <TabButton
+          active={primaryTab === "furnace"}
+          onClick={() => setPrimaryTab("furnace")}
+        >
+          <Flame size={12} /> Furnace
+        </TabButton>
       </div>
       <div className="flex-1 min-h-0">
         <Suspense fallback={<PanelLoader />}>
           {primaryTab === "editor" && <WritingPane />}
           {primaryTab === "reader" && <SplitPdfReader />}
+          {primaryTab === "furnace" && <FurnacePanel />}
         </Suspense>
       </div>
     </div>
@@ -809,47 +1106,6 @@ function ContextPanel() {
           {contextTab === "outline" && <OutlinePanel />}
           {contextTab === "notes" && <NotesPanel />}
           {contextTab === "distillation" && <DistillationTab />}
-        </Suspense>
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Secondary Panel (Code | Figures | Data)                            */
-/* ------------------------------------------------------------------ */
-
-function SecondaryPanel() {
-  const secondaryTab = useResearchStore((s) => s.secondaryTab);
-  const setSecondaryTab = useResearchStore((s) => s.setSecondaryTab);
-
-  return (
-    <div className="h-full flex flex-col border-t border-gray-800">
-      <div className="flex border-b border-gray-800 bg-[#252526]">
-        <TabButton
-          active={secondaryTab === "code"}
-          onClick={() => setSecondaryTab("code")}
-        >
-          <Code2 size={12} /> Code
-        </TabButton>
-        <TabButton
-          active={secondaryTab === "figures"}
-          onClick={() => setSecondaryTab("figures")}
-        >
-          <ImageIcon size={12} /> Figures
-        </TabButton>
-        <TabButton
-          active={secondaryTab === "data"}
-          onClick={() => setSecondaryTab("data")}
-        >
-          <Database size={12} /> Data
-        </TabButton>
-      </div>
-      <div className="flex-1 min-h-0">
-        <Suspense fallback={<PanelLoader />}>
-          {secondaryTab === "code" && <CodeCells />}
-          {secondaryTab === "figures" && <FigureGallery />}
-          {secondaryTab === "data" && <DataBrowser />}
         </Suspense>
       </div>
     </div>
@@ -926,6 +1182,246 @@ function ResearchEmptyStateFallback() {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Furnace Panel (recipe definition + ingredient management)          */
+/* ------------------------------------------------------------------ */
+
+const FURNACE_SESSION_STATUS_COLORS: Record<TrainingSession["status"], string> = {
+  idle: "bg-gray-600",
+  running: "bg-blue-500",
+  paused: "bg-yellow-500",
+  completed: "bg-green-500",
+  failed: "bg-red-500",
+};
+
+function FurnacePanel() {
+  const trainingSessions = useResearchStore((s) => s.trainingSessions);
+  const addTrainingSession = useResearchStore((s) => s.addTrainingSession);
+  const wsId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const wsResearchConfig = useWorkspaceStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    return ws?.researchConfig;
+  });
+  const updateWorkspace = useWorkspaceStore((s) => s.updateWorkspace);
+  const pdfRoots = useSettingsStore((s) => s.researchPdfRoots);
+  const noteRoots = useSettingsStore((s) => s.researchNoteRoots);
+  const wsPdfRoots = wsResearchConfig?.pdfRoots;
+  const wsNoteRoots = wsResearchConfig?.noteRoots;
+  const corpusTopic = wsResearchConfig?.corpusTopic ?? "";
+
+  const effectivePdfRoots = wsPdfRoots && wsPdfRoots.length > 0 ? wsPdfRoots : pdfRoots;
+  const effectiveNoteRoots = wsNoteRoots && wsNoteRoots.length > 0 ? wsNoteRoots : noteRoots;
+
+  const [topic, setTopic] = useState(corpusTopic);
+  const [targetPapers, setTargetPapers] = useState(100);
+
+  const handleStartSession = () => {
+    if (!topic.trim()) return;
+    if (wsId) {
+      updateWorkspace(wsId, {
+        researchConfig: { ...wsResearchConfig, corpusTopic: topic.trim() },
+      });
+    }
+    addTrainingSession({
+      name: topic.trim(),
+      topic: topic.trim(),
+      status: "idle",
+      targetPapers,
+      processedPapers: 0,
+    });
+  };
+
+  return (
+    <div className="h-full flex flex-col overflow-y-auto">
+      <div className="max-w-3xl mx-auto w-full px-8 py-8 space-y-8">
+        {/* Header */}
+        <div>
+          <div className="flex items-center gap-3 mb-2">
+            <Flame size={24} className="text-orange-400" />
+            <h2 className="text-lg font-semibold text-gray-200">Furnace</h2>
+          </div>
+          <p className="text-sm text-gray-500">
+            Define a recipe, specify ingredients (papers to learn from), and run
+            the distillation pipeline.
+          </p>
+        </div>
+
+        {/* Recipe Definition */}
+        <section className="space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <SquarePen size={14} /> Recipe Definition
+          </h3>
+          <div className="space-y-2">
+            <label className="block text-[11px] text-gray-500">
+              Domain / Topic
+            </label>
+            <input
+              value={topic}
+              onChange={(e) => setTopic(e.target.value)}
+              placeholder="e.g. Supply Chain Resilience, Network Economics, ..."
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none focus:border-purple-500/50"
+            />
+          </div>
+          <div className="flex gap-4">
+            <div className="flex-1 space-y-1">
+              <label className="block text-[11px] text-gray-500">
+                Target Papers
+              </label>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                value={targetPapers}
+                onChange={(e) => setTargetPapers(Number(e.target.value) || 100)}
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 outline-none focus:border-purple-500/50"
+              />
+            </div>
+            <div className="flex items-end">
+              <button
+                onClick={handleStartSession}
+                disabled={!topic.trim()}
+                className="flex items-center gap-2 px-4 py-2 bg-orange-600/80 hover:bg-orange-600 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded-lg transition-colors"
+              >
+                <Play size={14} /> Start Session
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {/* Ingredients (configured roots) */}
+        <section className="space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <Package size={14} /> Ingredients (Paper & Note Roots)
+          </h3>
+          {effectivePdfRoots.length === 0 && effectiveNoteRoots.length === 0 ? (
+            <p className="text-[11px] text-gray-600 italic">
+              No roots configured. Set PDF and note roots in Settings or
+              workspace config to specify where papers live.
+            </p>
+          ) : (
+            <div className="space-y-1.5">
+              {effectivePdfRoots.map((root) => (
+                <div
+                  key={root}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-gray-800/50 rounded-lg text-[11px] text-gray-400"
+                  title={root}
+                >
+                  <FileText size={12} className="text-blue-400 shrink-0" />
+                  <span className="truncate flex-1">{root}</span>
+                  <span className="text-[9px] text-gray-600 bg-gray-800 px-1.5 rounded">
+                    PDFs
+                  </span>
+                </div>
+              ))}
+              {effectiveNoteRoots.map((root) => (
+                <div
+                  key={root}
+                  className="flex items-center gap-2 px-3 py-1.5 bg-gray-800/50 rounded-lg text-[11px] text-gray-400"
+                  title={root}
+                >
+                  <StickyNote size={12} className="text-green-400 shrink-0" />
+                  <span className="truncate flex-1">{root}</span>
+                  <span className="text-[9px] text-gray-600 bg-gray-800 px-1.5 rounded">
+                    Notes
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Training Sessions */}
+        <section className="space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <FlaskConical size={14} /> Training Sessions
+          </h3>
+          {trainingSessions.length === 0 ? (
+            <p className="text-[11px] text-gray-600 italic">
+              No sessions yet. Define a topic above and start a session.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {trainingSessions.map((sess) => (
+                <FurnaceSessionCard key={sess.id} session={sess} />
+              ))}
+            </div>
+          )}
+        </section>
+
+        {/* Distillation Pipeline */}
+        <section className="space-y-3">
+          <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+            <Gauge size={14} /> Distillation Pipeline
+          </h3>
+          <div className="grid grid-cols-5 gap-2">
+            {["Normalize", "Extract", "Aggregate", "Infer Taste", "Project"].map(
+              (step, i) => (
+                <div
+                  key={step}
+                  className="flex flex-col items-center gap-1 p-3 bg-gray-800/40 rounded-lg border border-gray-700/50"
+                >
+                  <span className="text-[9px] text-gray-600 font-medium">
+                    {i + 1}
+                  </span>
+                  <span className="text-[10px] text-gray-400 text-center">
+                    {step}
+                  </span>
+                </div>
+              ),
+            )}
+          </div>
+          <p className="text-[10px] text-gray-600">
+            Five-pass furnace loop: Normalize metadata, Extract facts &
+            methods, Aggregate cross-paper, Infer taste & associations,
+            Project recipe.md + evaluate.
+          </p>
+        </section>
+      </div>
+    </div>
+  );
+}
+
+function FurnaceSessionCard({ session }: { session: TrainingSession }) {
+  const pct =
+    session.targetPapers > 0
+      ? Math.round((session.processedPapers / session.targetPapers) * 100)
+      : 0;
+
+  return (
+    <div className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg">
+      <div className="flex items-center gap-2 mb-2">
+        <span
+          className={`w-2 h-2 rounded-full ${FURNACE_SESSION_STATUS_COLORS[session.status]}`}
+        />
+        <span className="text-sm text-gray-200 font-medium flex-1 truncate">
+          {session.name}
+        </span>
+        <span className="text-[10px] text-gray-500 capitalize">
+          {session.status}
+        </span>
+      </div>
+      <div className="flex items-center gap-3 text-[10px] text-gray-500 mb-1.5">
+        <span>
+          {session.processedPapers}/{session.targetPapers} papers
+        </span>
+        <span>{pct}%</span>
+        {session.extractedPatterns !== undefined && (
+          <span>{session.extractedPatterns} patterns</span>
+        )}
+        {session.extractedTerms !== undefined && (
+          <span>{session.extractedTerms} terms</span>
+        )}
+      </div>
+      <div className="h-1.5 bg-gray-700 rounded-full overflow-hidden">
+        <div
+          className="h-full bg-orange-500/70 rounded-full transition-all"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Keyboard shortcuts hook                                            */
 /* ------------------------------------------------------------------ */
 
@@ -934,6 +1430,8 @@ function useResearchShortcuts() {
   const primaryTab = useResearchStore((s) => s.primaryTab);
   const setContextTab = useResearchStore((s) => s.setContextTab);
   const contextTab = useResearchStore((s) => s.contextTab);
+  const toggleContextPanel = useResearchStore((s) => s.toggleContextPanel);
+  const toggleTerminal = useCodeStore((s) => s.toggleTerminal);
 
   const handler = useCallback(
     (e: KeyboardEvent) => {
@@ -949,6 +1447,7 @@ function useResearchShortcuts() {
         setContextTab(
           contextTab === "references" ? "notes" : "references",
         );
+        useResearchStore.getState().setShowContextPanel(true);
         return;
       }
       if (meta && e.shiftKey && e.key === "o") {
@@ -956,10 +1455,21 @@ function useResearchShortcuts() {
         setContextTab(
           contextTab === "outline" ? "notes" : "outline",
         );
+        useResearchStore.getState().setShowContextPanel(true);
+        return;
+      }
+      if (meta && e.key === "i" && !e.shiftKey) {
+        e.preventDefault();
+        toggleContextPanel();
+        return;
+      }
+      if (meta && e.key === "`") {
+        e.preventDefault();
+        toggleTerminal();
         return;
       }
     },
-    [setPrimaryTab, primaryTab, setContextTab, contextTab],
+    [setPrimaryTab, primaryTab, setContextTab, contextTab, toggleContextPanel, toggleTerminal],
   );
 
   useEffect(() => {
@@ -969,51 +1479,94 @@ function useResearchShortcuts() {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Progressive disclosure: auto-show furnace on active training       */
+/* ------------------------------------------------------------------ */
+
+function useAutoShowFurnace() {
+  const trainingSessions = useResearchStore((s) => s.trainingSessions);
+  const pipeline = useResearchStore((s) => s.pipeline);
+  const setActiveRailSection = useResearchStore((s) => s.setActiveRailSection);
+
+  const hasActiveTraining = trainingSessions.some(
+    (s) => s.status === "running" || s.status === "paused",
+  );
+  const hasActivePipeline = pipeline.some(
+    (s) => s.status === "active" || s.status === "completed",
+  );
+
+  useEffect(() => {
+    if (hasActiveTraining) {
+      setActiveRailSection("training");
+    }
+  }, [hasActiveTraining, setActiveRailSection]);
+
+  return { pipelineActive: hasActivePipeline };
+}
+
+/* ------------------------------------------------------------------ */
 /*  Main layout                                                        */
 /* ------------------------------------------------------------------ */
 
 export default function ResearchMode() {
   useResearchEvents();
   useResearchShortcuts();
+  const { pipelineActive } = useAutoShowFurnace();
 
   const showPipeline = useResearchStore((s) => s.showPipeline);
-  const showSecondary = useResearchStore((s) => s.showSecondary);
+  const showContextPanel = useResearchStore((s) => s.showContextPanel);
   const togglePipeline = useResearchStore((s) => s.togglePipeline);
-  const toggleSecondary = useResearchStore((s) => s.toggleSecondary);
+  const toggleContextPanel = useResearchStore((s) => s.toggleContextPanel);
+  const showTerminal = useCodeStore((s) => s.showTerminal);
+  const toggleTerminal = useCodeStore((s) => s.toggleTerminal);
 
   return (
     <div className="h-full flex bg-[#1e1e1e] text-gray-200">
-      {/* Left sidebar: Research Nav + Pipeline Progress */}
+      {/* Left Rail: Function-first nav + Pipeline */}
       <div className="w-56 border-r border-gray-800 flex flex-col bg-[#1e1e1e] shrink-0">
-        <ResearchNav />
-        <div className="border-t border-gray-800 px-2 py-1 flex items-center gap-1">
-          <button
-            onClick={togglePipeline}
-            title={showPipeline ? "Hide pipeline" : "Show pipeline"}
-            className="text-[10px] text-gray-500 hover:text-gray-300 flex items-center gap-1 transition-colors"
-          >
-            <Gauge size={11} />
-            {showPipeline ? "Hide" : "Show"} Pipeline
-          </button>
+        <FunctionRail />
+
+        {/* Toggle bar: pipeline + panels */}
+        <div className="border-t border-gray-800 px-2 py-1 flex items-center gap-1 shrink-0">
+          {pipelineActive && (
+            <button
+              onClick={togglePipeline}
+              title={showPipeline ? "Hide pipeline" : "Show pipeline"}
+              className="text-[10px] text-gray-500 hover:text-gray-300 flex items-center gap-1 transition-colors"
+            >
+              <Gauge size={11} />
+              {showPipeline ? "Hide" : "Show"} Pipeline
+            </button>
+          )}
           <span className="flex-1" />
           <button
-            onClick={toggleSecondary}
-            title={
-              showSecondary ? "Hide bottom panel" : "Show bottom panel"
-            }
+            onClick={toggleContextPanel}
+            title={showContextPanel ? "Hide right drawer" : "Show right drawer"}
             className="text-gray-500 hover:text-gray-300 transition-colors"
           >
-            {showSecondary ? (
+            {showContextPanel ? (
+              <PanelRightClose size={13} />
+            ) : (
+              <PanelRightOpen size={13} />
+            )}
+          </button>
+          <button
+            onClick={toggleTerminal}
+            title={showTerminal ? "Hide terminal (⌘`)" : "Show terminal (⌘`)"}
+            className="text-gray-500 hover:text-gray-300 transition-colors"
+          >
+            {showTerminal ? (
               <PanelBottomClose size={13} />
             ) : (
               <PanelBottomOpen size={13} />
             )}
           </button>
         </div>
-        {showPipeline && <PipelineProgress />}
+
+        {/* Pipeline progress — only rendered when pipeline is active AND toggled on */}
+        {pipelineActive && showPipeline && <PipelineProgress />}
       </div>
 
-      {/* Main area: Primary + Context (top) | Secondary (bottom) */}
+      {/* Main area: Desk (center) + Right Drawer (optional) | Terminal (optional) */}
       <div className="flex-1 min-w-0 flex flex-col">
         <Allotment vertical>
           <Allotment.Pane minSize={200}>
@@ -1021,15 +1574,34 @@ export default function ResearchMode() {
               <Allotment.Pane minSize={300}>
                 <PrimaryPanel />
               </Allotment.Pane>
-              <Allotment.Pane preferredSize={320} minSize={200}>
-                <ContextPanel />
-              </Allotment.Pane>
+              {showContextPanel && (
+                <Allotment.Pane preferredSize={320} minSize={200}>
+                  <ContextPanel />
+                </Allotment.Pane>
+              )}
             </Allotment>
           </Allotment.Pane>
 
-          {showSecondary && (
-            <Allotment.Pane preferredSize={250} minSize={100}>
-              <SecondaryPanel />
+          {showTerminal && (
+            <Allotment.Pane preferredSize={200} minSize={100}>
+              <div className="h-full flex flex-col border-t border-gray-800">
+                <div className="flex items-center bg-[#252526] border-b border-gray-800 px-2 py-0.5 shrink-0">
+                  <span className="text-[10px] text-gray-400 flex items-center gap-1.5">
+                    <TerminalIcon size={11} /> Terminal
+                  </span>
+                  <span className="flex-1" />
+                  <button
+                    onClick={toggleTerminal}
+                    className="text-gray-500 hover:text-gray-300 p-0.5 transition-colors"
+                    title="Close terminal"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+                <div className="flex-1 min-h-0">
+                  <TerminalPanel />
+                </div>
+              </div>
             </Allotment.Pane>
           )}
         </Allotment>
