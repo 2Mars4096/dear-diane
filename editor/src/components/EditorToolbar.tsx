@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import ConfirmDialog from "./shell/ConfirmDialog";
 import { useGraphStore } from "../store/useGraphStore";
 import Spinner from "./Spinner";
 import RunInputsDialog from "./RunInputsDialog";
@@ -183,6 +184,7 @@ export default function EditorToolbar() {
   const showEdgeTokenLabels = useGraphStore((s) => s.showEdgeTokenLabels);
   const setShowEdgeTokenLabels = useGraphStore((s) => s.setShowEdgeTokenLabels);
 
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [newName, setNewName] = useState("");
   const [showRunInputs, setShowRunInputs] = useState(false);
@@ -380,15 +382,53 @@ export default function EditorToolbar() {
 
       {graphId && (
         <button
-          onClick={() => {
-            if (confirm(`Delete "${graphId}"?`)) deleteGraph(graphId);
-          }}
+          onClick={() => setConfirmDelete(graphId)}
           className="text-[10px] text-red-400 hover:text-red-600"
           title="Delete graph"
         >
           ×
         </button>
       )}
+
+      <ConfirmDialog
+        open={confirmDelete !== null}
+        title="Delete graph"
+        message={`Are you sure you want to delete "${confirmDelete}"?`}
+        confirmLabel="Delete"
+        confirmVariant="danger"
+        onConfirm={async () => {
+          const gid = confirmDelete;
+          setConfirmDelete(null);
+          if (!gid) return;
+          let snapshot: Record<string, unknown> | null = null;
+          try {
+            const resp = await api.getGraph(gid);
+            snapshot = resp.data;
+          } catch { /* proceed without undo capability */ }
+          await deleteGraph(gid);
+          if (snapshot) {
+            addToast({
+              type: "info",
+              message: `Deleted "${gid}"`,
+              durationMs: 8000,
+              action: {
+                label: "Undo",
+                onClick: async () => {
+                  try {
+                    await api.createGraph(gid, snapshot!);
+                    await loadGraphList();
+                    await openTab(gid);
+                    addToast({ type: "success", message: `Restored "${gid}"` });
+                  } catch {
+                    addToast({ type: "error", message: "Failed to restore graph" });
+                  }
+                },
+              },
+            });
+          }
+        }}
+        onCancel={() => setConfirmDelete(null)}
+      />
 
       {showNew ? (
         <div className="flex items-center gap-1">

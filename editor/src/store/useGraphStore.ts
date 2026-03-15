@@ -210,8 +210,8 @@ interface GraphState {
   setCommandPaletteOpen: (open: boolean) => void;
 
   // -- 5-5: UI polish
-  toasts: Array<{ id: string; type: "success" | "error" | "info" | "warning"; message: string }>;
-  addToast: (toast: { type: "success" | "error" | "info" | "warning"; message: string }) => void;
+  toasts: Array<{ id: string; type: "success" | "error" | "info" | "warning"; message: string; action?: { label: string; onClick: () => void }; durationMs?: number }>;
+  addToast: (toast: { type: "success" | "error" | "info" | "warning"; message: string; action?: { label: string; onClick: () => void }; durationMs?: number }) => void;
   removeToast: (id: string) => void;
   loadingGraph: boolean;
   savingGraph: boolean;
