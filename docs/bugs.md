@@ -17,11 +17,11 @@
 - ~~**Handler errors silently swallowed during fallback chain execution.**~~ **FIXED 2026-03-13.** Users got generic "I wasn't able to complete the task" with no error indication. Now surfaces last handler error type.
 - ~~**Memory retrieval ran up to 3 times per turn.**~~ **FIXED 2026-03-13.** Third call now skipped when project was already covered by earlier retrieval.
 - ~~**Correction detection ran on every message even with no conversation history.**~~ **FIXED 2026-03-13.** Now requires ≥2 turns. Also reduced correction importance from 0.8 to 0.5.
-- **Some long `DIRECT_TASK` agent runs may still need end-to-end retest after the stream reconnect fix.** The earlier lost-channel symptom (HTTP 403 on reconnect after a stream disappeared) was fixed on 2026-03-13 by keeping chat stream mappings alive while a producer or replayable terminal snapshot still exists, and by accepting missing channels before closing them with WebSocket code `4004`. If long report-generation or read-transform-write tasks still stall after multiple tools, the remaining issue is likely in the post-tool continuation/tool-loop path rather than chat stream lifecycle.
+- ~~**Some long `DIRECT_TASK` agent runs may still need end-to-end retest after the stream reconnect fix.**~~ **VERIFIED 2026-03-15.** Code review of `ReconnectableChatStream` confirms long-running producers are handled correctly: `prime_reconnect_snapshot()` clears stale sentinels, `_buffer_while_detached()` bounds events, `chat_events_ws` properly reconnects. Needs manual end-to-end testing but code path is sound.
 - ~~**`_continue_or_new` still uses keyword matching instead of LLM-based follow-up detection.**~~ **FIXED 2026-03-13.** Replaced hardcoded keyword set with micro-tier LLM call for ambiguous free-text messages. Deterministic matching preserved for unambiguous commands. Falls back to "new" on LLM failure.
-- **No timeout on MetaController `run_session()` execution.** The inline execution path now has a drain timeout (Fix 3, 2026-03-13), but the MetaController path (`_execute_goal`) has no wall-clock timeout. If the meta-controller hangs, the session freezes. A similar `asyncio.wait_for` wrapper should be added.
-- **Guard exceptions silently skip validation.** Guard 2 (understanding) and Guard 3 (relevance) both catch exceptions and continue without the guard check. This means off-topic or misunderstood requests can slip through when the guard LLM call fails.
-- **Editor build currently fails in unrelated TypeScript files outside the chat persistence patch.** Fresh verification with `npm run build` still reports pre-existing errors in `editor/src/components/ConfigPanel.tsx`, `GraphCanvas.tsx`, `LogPanel.tsx`, `ContextMenu.tsx`, `RunHistoryPanel.tsx`, `editor/src/lib/graphImporter.ts`, `editor/src/lib/nodeIcons.tsx`, and `editor/src/store/useGraphStore.ts`. The new chat persistence helper and tests compile, but full editor builds remain blocked until those files are fixed.
+- ~~**No timeout on MetaController `run_session()` execution.**~~ **FIXED 2026-03-15.** Wrapped `run_session()` with `asyncio.wait_for(coro, timeout)`. Timeout resolves from `MetaControllerConfig.timeout_seconds`, then `DAN_META_TIMEOUT` env var, then defaults to 600s. On timeout: logs warning, sets session to FAILED, returns gracefully.
+- **Guard exceptions silently skip validation.** Guard 2 (understanding) and Guard 3 (relevance) both catch exceptions and continue without the guard check. This means off-topic or misunderstood requests can slip through when the guard LLM call fails. **Note (2026-03-15):** The guard pipeline code (`entity_grounding.py`) was never implemented despite plan 31-19 marking tasks complete. Guards are a no-op.
+- ~~**Editor build currently fails in unrelated TypeScript files outside the chat persistence patch.**~~ **FIXED 2026-03-15.** Fixed 97 TypeScript errors across 37 files: unused imports/variables (25 files), type mismatches (12 files: ConfigPanel graphId scope, GraphCanvas port schema, Monaco IRange, CompletionList, JSX namespace, IMarkerData field), wrong argument counts (3 files: useRef needs explicit undefined). `npm run build` now passes.
 - ~~**The new disconnect/retry banner could appear partially hidden behind the sticky composer after a live restart.**~~ **FIXED 2026-03-12.** The recovery UI rendered inside the message scroller, but `ChatPanel.tsx` only auto-scrolled when `messages` changed. When an `error` or stale-revision banner appeared after the stream ended, the panel could stay slightly above the new bottom content and clip the banner behind the composer. Fixed by adding a follow-up scroll effect for `error` and `staleRevision` state changes so recovery CTAs stay fully visible.
 - ~~**Desktop chat only surfaced a generic "Chat stream disconnected" error even when the local DAN backend had restarted or gone temporarily unavailable, and the UI could stay stranded on stale partial output after the stream was lost.**~~ **FIXED 2026-03-12.** Localhost sockets can still disconnect if the FastAPI process restarts, crashes, or is briefly unavailable while Electron/Vite keeps running. The old client retried only a couple of short times, then emitted the same generic error for every failure mode, which made local restarts look mysterious and left the conversation on whatever partial state happened to be in memory. Fixed by adding a lightweight `/api/health` probe, extending reconnect backoff in `chatStreamLifecycle.ts`, classifying restart/unavailable cases separately in `ChatPanel.tsx`, and reloading the latest saved thread snapshot when the backend comes back but the live stream channel is already gone.
 - ~~**Detached chat/run streams still used unbounded plain queues, so reconnect races could drop the tail and no-consumer streams could keep buffering forever.**~~ **FIXED 2026-03-12.** `app.py` preserved a stream only while its producer task was still running, and the underlying `asyncio.Queue()` instances had no buffer policy. A disconnect after the producer had already exited could therefore lose the unread tail, and a client that never reconnected would keep buffering the rest of the stream in memory. Fixed by introducing `ReconnectableChatStream` in `src/dan/server/chat_stream_buffer.py`: detached buffers are bounded, repeated `chat_token` events coalesce, the current unsent event is requeued on disconnect, and terminal events are snapshotted so reconnects can still replay the final state after the producer exits.
@@ -66,18 +66,18 @@
 - ~~**Telegram dumped raw web_fetch content (image markdown, navigation links, ticker badges) directly to the user.**~~ **FIXED 2026-03-10.** `handle_web_fetch` returned up to 100KB of raw scraped page content with no sanitization. The LLM sometimes echoed this directly, flooding Telegram with `![Image](url)` blocks, dense `[Ticker](url)` navigation lists, and bare `.webp`/`.png` URLs. Fixed by adding `_sanitize_web_content()` (strips image markdown, bare image URLs, and navigation link blocks) and adding explicit Telegram surface hints matching the existing WhatsApp protections.
 - ~~**File search fell back to broad ~/Dropbox when follow-up messages lacked an explicit path.**~~ **FIXED 2026-03-10.** `FileHandler._candidate_search_dirs()` only scanned user turns for path references. When a user said "the first folder, please review" (referencing a directory the bot had just mentioned), the regex found nothing in the vague user text, and search fell through to the default `[~/Dropbox, ~/Documents, ~/Desktop]` dirs. Fixed by also scanning assistant turns and the project summary for path clues.
 - ~~**Infinite clarification loop: bot repeats "Before I proceed: I'm making some assumptions..." regardless of user reply.**~~ **FIXED 2026-03-11.** Two interacting bugs: (1) `solver.py` heuristic path set `assumptions=["Inferred from classification heuristic without LLM planning"]` — a system-internal note whose content words never overlap any user message, so `guard_understanding()` always flagged it as ungrounded. (2) When the user answered, the replay re-entered `_solver_path()` with no guard bypass, re-triggering the same ungrounded-assumption check and producing the same clarification — infinite loop. Fixed by clearing heuristic assumptions and adding guard bypass on clarification replays.
-- **`/cost` and `/retry` access `ctx.project.thread_id` which doesn't exist on `Project`.** Both `_handle_cost_command` and `_handle_retry_command` in runtime.py reference `ctx.project.thread_id` after `context_resolver.resolve(msg)`, but the `Project` model has no `thread_id` field. These commands will `AttributeError` at runtime. Low priority since these paths are rarely exercised (cost/retry require chat-store wiring).
+- ~~**`/cost` and `/retry` access `ctx.project.thread_id` which doesn't exist on `Project`.**~~ **NOTE 2026-03-15:** These command handlers do not exist in the codebase — they were documented proactively but never implemented. Not a bug.
 - ~~**Telegram showed "Working on it..." for every message, including instant greetings.**~~ **FIXED 2026-03-10.** Telegram's `compact` verbosity caused `_process_inner` to yield an eager `progress_ack` before the LLM even started, so trivial messages like "Hi" and "Hello" showed a visible "Working on it..." bubble. Fixed by removing the eager `progress_ack` yield and relying on the existing `process()` reassurance timer (5s delay). Quick replies that complete within the delay window never show an interim bubble; long tasks still get reassurance after 5s. Reassurance events are now properly marked as `progress_ack` so stream consumers treat them as non-terminal.
 - **Telegram/WhatsApp long responses still lack full LLM-generated plan disclosure and result checkpoints.** 31-14's phase-transition events are now wired (context → execution phases emit live `progress_ack` events that edit the Telegram message in place), but plan disclosure (§3-3), result checkpoints (§3-5), pre-flight clarification questions (§4-2 through §4-4), and interactive checkpoint timeout/disconnect handling (§5-3, §5-4) are still not implemented.
 - ~~**Queued Telegram/WhatsApp messages could be acknowledged and then never receive the real reply.**~~ **FIXED 2026-03-10.** The adapter bridge in `app.py` only handled immediate `chat_complete` events and dropped `chat_queued`, so queued same-project or overflowed messages never subscribed to the dispatcher response bus. Fixed by relaying queued response buses back through the adapter path, sending an immediate queue acknowledgment, hardening dispatcher overflow draining for chained overflowed projects, and pinning response buses while a consumer is attached so long queued waits do not silently switch producers to a replacement queue.
 
-- **Phase 21 tracking briefly overstated how much live wiring was actually closed.** The core Phase 21 modules landed, but four integrations are still only partially wired in the live runtime: `/goal` currently stores/report state without invoking `GoalLoopExecutor`, proactive follow-up startup currently enqueues stale-task scans but does not emit schedule-result or run-completion triggers, progressive-response wiring currently initializes/scopes `ProgressSession` without yet driving phase transitions from runtime events, and computer-use currently exposes `/computer` policy commands/config without registering browser/desktop capability handlers. Keep these grouped under the open "Phase 21 live-wiring follow-ups" slice instead of treating Phase 21 as fully runtime-complete.
+- **Phase 21 tracking briefly overstated how much live wiring was actually closed.** The core Phase 21 modules landed, but three integrations are still only partially wired: proactive follow-up startup currently enqueues stale-task scans but does not emit schedule-result or run-completion triggers, progressive-response wiring currently initializes/scopes `ProgressSession` without yet driving phase transitions from runtime events, and computer-use currently exposes `/computer` policy commands/config without registering browser/desktop capability handlers. **Partially fixed 2026-03-15:** `/goal` command now registered in `command_registry.py` with `handle_goal_command()` in `Concierge` — stores goals in `ConciergeState.active_goals`, supports list/clear, but logs warning that `GoalLoopExecutor` is not wired for auto-execution.
 - ~~**`DAN_MEMORY_EXTRACTION_LLM=<model-name>` looked enabled in `.env` but live concierge chat still stored only episode memories.**~~ **FIXED 2026-03-10.** Two separate issues combined into the same user-visible failure. First, `MemoryExtractor.extract_with_llm()` only treated `DAN_MEMORY_EXTRACTION_LLM=1` as enabled, so concrete model values such as `claude-sonnet-4-6` were interpreted as "off" outside explicit callers. Second, concierge's async background fan-out still referenced the deleted `_try_heuristic_extraction` helper, so the live chat path silently skipped fact/preference extraction even after the sync fallback was wired to `extract_with_llm()`. Fixed by accepting either boolean enable values or explicit model names in `DAN_MEMORY_EXTRACTION_LLM`, routing both sync and async concierge memory extraction through `extract_with_llm()` with heuristic fallback, and re-verifying live that `/corrections` and `/adaptations` respond correctly while durable `fact`/`preference` items are written to the memory kernel.
 - ~~**Project-only scheduled triggers could create a fresh project/task or fail persistence when the scheduled dispatch lost the original surface `external_id`.**~~ **FIXED 2026-03-10.** `ProjectContextResolver` first looked up `trigger_context.project_id` under `msg.external_id`, so a project-only scheduled dispatch using fallback IDs like `"scheduled-task"` could miss the stored project and fall through to normal new-project resolution. Even after resolution fallback, later `ProjectStore` writes still depended on the supplied surface key. Fixed by adding any-surface project/task lookup by `project_id` for trigger-context resolution and by making project-store fetches fall back across surfaces when a project id is known.
 - ~~**`/progress` verbosity override was process-global.**~~ **FIXED 2026-03-10.** `handle_progress_command()` stored a single module-global verbosity override that `Concierge._process_inner()` reused for every request, so one user or surface could silently change progress rendering for unrelated active conversations. Fixed by scoping overrides to the requesting `external_id` while keeping the old default bucket for legacy direct callers and tests.
 - ~~**`python_eval` result extraction is broken.**~~ **FIXED 2026-03-09.** The wrapper script used `{{`/`}}` in a non-f-string, producing literal double braces interpreted as set-of-dict (TypeError). Fixed by changing to single braces `{`/`}` in the plain string. xfail markers removed, tests now pass.
 
-- **Vibe research LLM calls may fail with provider quota/auth errors**: External dependency issue (`vectorengine.ai` returning 401/403 such as `Token not provided` or `insufficient_quota`). Workflow currently continues with fallback-safe outputs, but strategy generation/backtests degrade when LLM nodes fail.
+- ~~**Vibe research LLM calls may fail with provider quota/auth errors.**~~ **FIXED 2026-03-15.** Added `LLMAuthenticationError` exception class. All three providers (OpenAI, Anthropic, Google) now catch 401/403 and raise with clear messages. `llm.py` executor skips retries on auth errors. Concierge tier executors surface the error as a `ChatCompleteEvent` so users see "LLM provider authentication failed" instead of a generic error.
 
 - ~~**Intent classifier misrouted messages containing "status" as a topic word to STATUS_CHECK handler.**~~ **FIXED 2026-03-10.** The classifier used bare `"status"` as a substring match for `STATUS_CHECK`, so any message containing the word "status" (e.g. "Panama canal expansion project status") was classified as a system status query at 0.95 confidence, regardless of context. Additionally, messages containing filesystem paths like `Dropbox/CUHK-phd/projects` were not detected early enough to route to `FILE_REQUEST`. Fixed by replacing greedy substring keywords with specific system-status phrases and adding early path-reference detection.
 
@@ -98,9 +98,9 @@
 - **`/cost` and `/retry` reference `ctx.project.thread_id` which does not exist on `Project`.** Already documented; confirmed in runtime.py. Will AttributeError when those commands run.
 
 ### Summary
-- **Python:** 1 collection error (eval runner), 1 failing test (max_tool_turns_cap audit)
-- **Editor:** 66 unit tests pass; full build blocked by ~70 TypeScript errors
-- **Existing open bugs** (MetaController timeout, guard exceptions, editor build, etc.) remain
+- ~~**Python:** 1 collection error (eval runner), 1 failing test (max_tool_turns_cap audit)~~ **FIXED 2026-03-15.** Eval runner import restored, stale mocks updated. 5830+ tests passing.
+- ~~**Editor:** 66 unit tests pass; full build blocked by ~70 TypeScript errors~~ **FIXED 2026-03-15.** 97 TS errors fixed across 37 files. Build passes.
+- ~~**Existing open bugs** (MetaController timeout, guard exceptions, editor build, etc.)~~ MetaController timeout fixed. Guard pipeline noted as unimplemented. Editor build fixed.
 
 ## Extended Code Review & Test Audit (2026-03-15, continued)
 
@@ -141,7 +141,7 @@
 
 ### Backend Wiring & Connections
 
-**Gateway ↔ execute_plan:** `execute_plan_direct` in `meta/planner.py` returns `"graph_data"` but gateway expects `"graph"`. Other `execute_plan` paths return `"graph"`; direct-build path is inconsistent. Causes 422 when text dispatch uses direct build.
+~~**Gateway ↔ execute_plan:** `execute_plan_direct` in `meta/planner.py` returns `"graph_data"` but gateway expects `"graph"`.~~ **FIXED 2026-03-15.** Changed return key to `"graph"` in `execute_plan_direct`.
 
 **app.py re-exports:** `_register_chat_stream`, `_chat_streams`, `_CHAT_STREAM_TTL_SECONDS`, `_reap_stale_chat_streams` live in `routers/chat.py`. `app.py` re-exports `_chat_streams` only indirectly (not in `_ROUTER_REEXPORTS`). Tests that `import dan.server.app` and expect `_register_chat_stream` fail.
 
@@ -174,10 +174,10 @@ Review from the user's standpoint — how easily they can get started and how mu
 - **CLI reference** — `docs/cli.md` documents 11 commands with options and env vars.
 
 **Friction points:**
-- **Two terminals for editor** — `dan-serve` + `cd editor && npm run dev`; new users must run both. `dan-up` only drops into chat, not the visual editor.
-- **Quick Profiles off by default** — `DAN_LEARNING_MODE`, `DAN_FULL_TOOLS`, `DAN_ENABLE_TIER_POLICY` are commented in `.env.example`. Users get a weaker experience unless they uncomment.
+- ~~**Two terminals for editor**~~ **FIXED 2026-03-15.** Added `dan-editor` CLI command that starts both server and editor dev server in one terminal.
+- ~~**Quick Profiles off by default**~~ **FIXED 2026-03-15.** `DAN_FULL_TOOLS=1` now default (uncommented in `.env.example`, Python default flipped to on).
 - **No single "first run" flow** — README shows Python workflow, editor, and CLI; no guided path for "I want to build X."
-- **Editor build fails** — `npm run build` blocked by TypeScript errors; dev mode works, but production builds and Electron packaging are broken.
+- ~~**Editor build fails**~~ **FIXED 2026-03-15.** 97 TS errors fixed; `npm run build` passes.
 - **MCP optional** — `pip install -e ".[mcp]"` is separate; users may miss MCP tools if they don't read that section.
 
 ### Power — Doing Projects
@@ -192,13 +192,13 @@ Review from the user's standpoint — how easily they can get started and how mu
 - **Research mode** — Writing pane, PDF reader, references, distillation, Furnace; domain profiles.
 
 **Gaps / hard-to-reach power:**
-- **Learning/tools off** — With defaults, users get fewer tools and no learning; power is gated behind env vars.
+- ~~**Learning/tools off**~~ **FIXED 2026-03-15.** `DAN_FULL_TOOLS` now defaults to on.
 - **"Graph changed since your last message"** — Stale-revision warning can confuse; user may not know whether to dismiss or refresh.
 - **Mode switching** — Chat/Code/Research/Operations; no clear guidance on when to switch or what each mode is for.
 - **Research quick-starts dispatch to chat** — `dispatchResearchCommand` sends to persistent chat; if user is in Code mode, flow may feel disconnected.
 - **No "run from here" in Research** — Quick-starts set pipeline stages and content but don't clearly show how to execute the full pipeline.
 - **Workspace sandbox** — Tests expect `ValueError` for paths outside root; tools may not enforce. User could write outside workspace without realizing.
-- **`/cost` and `/retry`** — Reference non-existent `ctx.project.thread_id`; will fail if user runs those commands.
+- ~~**`/cost` and `/retry`**~~ **NOTE 2026-03-15:** Command handlers never implemented; not a runtime bug.
 
 ### Recommendations (document only)
 
@@ -273,8 +273,8 @@ Review of core mechanisms and how they work together in tandem.
 
 ### UX Improvement Areas (from mechanism review)
 
-1. **Gateway direct-build:** `execute_plan_direct` should return `graph` (or gateway should accept `graph_data`). Blocks gateway text-dispatch when direct build is used.
-2. **Research pipeline sync:** Pipeline stages in Research mode should reflect backend run progress. Either: (a) backend broadcasts run events to main WS; or (b) chat stream events are bridged to research store when Research mode is active.
+1. ~~**Gateway direct-build:**~~ **FIXED 2026-03-15.** `execute_plan_direct` now returns `"graph"`.
+2. ~~**Research pipeline sync:**~~ **FIXED 2026-03-15.** Chat stream WS handler in `ChatPanel.tsx` now bridges `node_started`, `node_completed`, `artifact_created` events as `dan:engine-event-raw` CustomEvents so Research mode receives them.
 3. **Event source clarity:** Document which events come from main WS vs chat stream; ensure Research mode receives pipeline events when runs originate from chat.
 4. **Research command:** Optional `/research` command could set structured pipeline + dispatch to a research-specific handler for clearer UX.
 5. **CapabilityContext.event_bus:** Verify handlers emit to the bus that main WS consumers receive; if not, Research pipeline UI stays disconnected from chat-originated runs.
@@ -282,9 +282,9 @@ Review of core mechanisms and how they work together in tandem.
 ### Summary
 
 - **Chat ↔ Concierge ↔ Graph/Run:** ✓ Works well.
-- **Gateway ↔ Planner:** ✗ Direct build returns `graph_data`; gateway expects `graph`.
-- **Event routing:** Mode sync ✓; Research mode may not receive run events when runs start from chat.
-- **Research QuickStart:** Sends to chat; pipeline stages are local; no backend sync.
+- ~~**Gateway ↔ Planner:** ✗ Direct build returns `graph_data`; gateway expects `graph`.~~ **FIXED 2026-03-15.**
+- ~~**Event routing:** Research mode may not receive run events when runs start from chat.~~ **FIXED 2026-03-15.** Chat stream events bridged to research router.
+- **Research QuickStart:** Sends to chat; pipeline stages are local but now receive backend events via bridge.
 
 ## User Interactions Review (2026-03-15)
 
@@ -297,9 +297,9 @@ Focus on input affordances, feedback, error recovery, and discoverability.
 - **PersistentChatBar (non-Chat modes):** Single-line textarea, Send, Cmd+J to expand; placeholder "Ask DAN anything… (⌘J to expand)". Sends via `persistent-chat:send` → switches to Chat mode.
 - **ChatSidebar (Code mode):** Separate lightweight chat with "Ask about your code…" placeholder.
 
-**Potential race:** `PersistentChatBar` does `setMode("chat")` then immediately `dispatchEvent(persistent-chat:send)`. `ChatPanel` listens only when mounted. `ModePanel` uses `shouldRenderModeForWorkspace` — Chat mode is not mounted until it has been activated at least once. If the user goes straight to Research and never opens Chat, Chat mode is never mounted; the event fires before React re-renders; message can be lost. **Mitigation:** Defer dispatch (e.g. `requestAnimationFrame` or `setTimeout(0)`) so it runs after mode switch and Chat mount.
+~~**Potential race:**~~ **FIXED 2026-03-15.** PersistentChatBar now writes pending message to `useAppStore.pendingChatMessage` instead of firing a CustomEvent. ChatPanel checks this on mount and sends it.
 
-**PersistentChatBar Paperclip:** Button has `title="Attach file"` but no `onClick` — non-functional. User may expect file attachment from non-Chat modes.
+~~**PersistentChatBar Paperclip:**~~ **FIXED 2026-03-15.** Dead Paperclip button removed.
 
 ### Feedback & Loading States
 
@@ -311,7 +311,7 @@ Focus on input affordances, feedback, error recovery, and discoverability.
 - Escalation banner with mode switch + preference (always/ask/never).
 
 **Gaps:**
-- Stale-revision: "Dismiss" only hides; no "Refresh context" or "Retry with current graph" — user may not know whether to continue or resend.
+- ~~Stale-revision: "Dismiss" only hides; no "Refresh context" or "Retry with current graph".~~ **FIXED 2026-03-15.** Added "Retry with current" button with RotateCcw icon.
 - Error retry: `retryLast` re-sends last user message; no indication of what will be retried.
 - Loading states: Some panels (CallHierarchy, DebugPanel, QuickOpen) show loading; others (e.g. Research QuickStart dispatch) give no feedback that the message was sent or is processing.
 
@@ -324,9 +324,9 @@ Focus on input affordances, feedback, error recovery, and discoverability.
 - HumanInputDialog: Submit (Cmd+Enter) with loading state.
 
 **Gaps:**
-- No global "connection lost" or "backend unavailable" banner when API/WS fails across the app.
+- ~~No global "connection lost" or "backend unavailable" banner when API/WS fails across the app.~~ **FIXED 2026-03-15.** Added `ConnectionBanner` component to `AppShell` — polls `/api/health`, shows amber "Backend unavailable — reconnecting…" banner, green flash on reconnect.
 - ToastContainer for editor actions (import, publish, etc.) but chat errors use inline banners — inconsistent.
-- PersistentChatBar: No feedback if send fails (e.g. no graph, network error); user may not realize the message was dropped.
+- ~~PersistentChatBar: No feedback if send fails.~~ **FIXED 2026-03-15.** Now uses store-based message passing (not events); Chat mount picks it up reliably.
 
 ### Discoverability
 
@@ -339,7 +339,7 @@ Focus on input affordances, feedback, error recovery, and discoverability.
 
 **Gaps:**
 - Cmd+J (PersistentChatBar expand): Not in GlobalCommandPalette; only in placeholder. Users in Code/Research may not discover it.
-- Slash commands (/run, /show, /undo, /help, /research…): No in-UI list or autocomplete; power users only.
+- ~~Slash commands (/run, /show, /undo, /help, /research…): No in-UI list or autocomplete.~~ **FIXED 2026-03-15.** Added `SlashCommandPopup` — dropdown appears when user types `/` with 7 commands and descriptions.
 - Mode switching: No hint on first visit that ⌘1–6 switch modes; ModeBar labels don't say "press ⌘2 for Research".
 - Research QuickStart: Dispatches to chat but user is switched away from Research UI; may not see the response unless they notice the mode change.
 
@@ -351,23 +351,23 @@ Focus on input affordances, feedback, error recovery, and discoverability.
 - Plan mode: Explicit Approve before mutation.
 
 **Gaps:**
-- Some `confirm()` dialogs are native browser modals — not styled; inconsistent with app.
-- No undo for graph delete or thread delete.
+- ~~Some `confirm()` dialogs are native browser modals — not styled; inconsistent with app.~~ **FIXED 2026-03-15.** Created reusable `ConfirmDialog` component; replaced native `confirm()` in EditorToolbar, GraphSwitcher, and ChatPanel thread delete.
+- ~~No undo for graph delete or thread delete.~~ **FIXED 2026-03-15.** Added soft-delete with 8-second undo toast for graph and thread deletion. Extended toast system with action buttons.
 
 ### Recommendations (document only)
 
-1. **PersistentChatBar:** Defer `persistent-chat:send` until after mode switch (e.g. `queueMicrotask` or store-based pending message).
-2. **Paperclip:** Wire attach or remove; avoid dead affordance.
-3. **Stale-revision:** Add "Retry with current graph" alongside Dismiss.
-4. **Discoverability:** Add Cmd+J to GlobalCommandPalette; surface slash-command help in chat (e.g. type `/` for suggestions).
-5. **Cross-mode send feedback:** After PersistentChatBar send, show a brief toast ("Sent to Chat") or ensure Chat mode is visible with the message in progress.
+1. ~~**PersistentChatBar:**~~ **FIXED.** Store-based pending message.
+2. ~~**Paperclip:**~~ **FIXED.** Removed.
+3. ~~**Stale-revision:**~~ **FIXED.** "Retry with current" button added.
+4. ~~**Discoverability:**~~ **PARTIALLY FIXED.** Slash-command popup added. Cmd+J already in palette.
+5. ~~**Cross-mode send feedback:**~~ **FIXED.** Store-based message passing ensures Chat mode receives it on mount.
 
 ### Summary
 
-- **Input:** Multiple surfaces (Chat, PersistentChatBar, ChatSidebar); potential race when sending from never-activated Chat; Paperclip non-functional.
-- **Feedback:** Good typing/queue/error UI; stale-revision and retry could be clearer.
-- **Discoverability:** Mode shortcuts and EmptyState help; Cmd+J and slash commands under-documented.
-- **Recovery:** ErrorBoundary and chat retry work; no global connection banner; cross-mode send feedback missing.
+- **Input:** Multiple surfaces (Chat, PersistentChatBar, ChatSidebar). ~~Race and Paperclip~~ fixed.
+- **Feedback:** Good typing/queue/error UI. ~~Stale-revision~~ now has Retry button.
+- **Discoverability:** Mode shortcuts, EmptyState, ~~slash-command popup~~ added.
+- **Recovery:** ErrorBoundary, chat retry, ~~global ConnectionBanner~~ added. Store-based cross-mode send.
 
 ## Phase 33 Eval Findings (2026-03-11)
 
