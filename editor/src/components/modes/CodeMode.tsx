@@ -51,9 +51,8 @@ import InteractiveRebase from "../code/InteractiveRebase";
 import MergeEditor from "../code/MergeEditor";
 import ExtensionsPanel from "../code/ExtensionsPanel";
 import CallHierarchy from "../code/CallHierarchy";
-import CoverageOverlay, {
+import {
   CoverageSummaryBar,
-  isCoverageVisible,
 } from "../code/CoverageOverlay";
 import { useSessionRestore } from "../../hooks/useSessionRestore";
 import { useFileWatcher } from "../../hooks/useFileWatcher";
@@ -423,7 +422,6 @@ export default function CodeMode() {
   const setCommandPaletteVisible = useCodeStore((s) => s.setCommandPaletteVisible);
   const symbolSearchVisible = useCodeStore((s) => s.symbolSearchVisible);
   const setSymbolSearchVisible = useCodeStore((s) => s.setSymbolSearchVisible);
-  const localHistoryVisible = useCodeStore((s) => s.localHistoryVisible);
   const setCurrentBranch = useCodeStore((s) => s.setCurrentBranch);
   const pinnedRoots = useCodeStore((s) => s.pinnedRoots);
   const addPinnedRoot = useCodeStore((s) => s.addPinnedRoot);

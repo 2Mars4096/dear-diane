@@ -3,15 +3,13 @@
  * Wraps the existing ChatPanel in a full-width layout with workspace-scoped
  * thread tabs synced via the workspace store.
  */
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import ChatPanel from "../ChatPanel";
 import ThreadTabs, { useThreadCloseShortcut } from "../shell/ThreadTabs";
 import WorkspaceContextBar from "../chat/WorkspaceContextBar";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
-import { useAppStore } from "../../store/useAppStore";
 
 export default function ChatMode() {
-  const activeMode = useAppStore((s) => s.activeMode);
   const activeWorkspace = useWorkspaceStore((s) => s.getActiveWorkspace());
   const openThread = useWorkspaceStore((s) => s.openThread);
   const closeThread = useWorkspaceStore((s) => s.closeThread);
@@ -69,21 +67,15 @@ export default function ChatMode() {
 
   useThreadCloseShortcut();
 
-  const isChatActive = activeMode === "chat";
-
   return (
-    <div className="flex-1 min-h-0 w-full overflow-hidden flex flex-col bg-white">
-      {isChatActive && (
-        <>
-          <ThreadTabs
-            threadTitles={threadTitles}
-            onSelectThread={handleSelectThread}
-            onCloseThread={handleCloseThread}
-            onNewThread={handleNewThread}
-          />
-          <WorkspaceContextBar />
-        </>
-      )}
+    <div className="absolute inset-0 overflow-hidden flex flex-col bg-white">
+      <ThreadTabs
+        threadTitles={threadTitles}
+        onSelectThread={handleSelectThread}
+        onCloseThread={handleCloseThread}
+        onNewThread={handleNewThread}
+      />
+      <WorkspaceContextBar />
       <div className="flex-1 min-h-0 relative">
         <ChatPanel
           fullScreen
