@@ -420,8 +420,20 @@ class SingleShotExecutor:
                     final_content = event.content
                     token_usage = dict(event.token_usage)
                 yield event
-        except Exception:
-            logger.exception("SingleShot execution failed for session %s", session.id)
+        except Exception as exc:
+            from dan.providers import LLMAuthenticationError
+            if isinstance(exc, LLMAuthenticationError):
+                final_content = str(exc)
+                saw_terminal = True
+                yield ChatCompleteEvent(
+                    message_id=uuid.uuid4().hex[:12],
+                    content=final_content,
+                    token_usage={},
+                    context_window=0,
+                    graph_revision="",
+                )
+            else:
+                logger.exception("SingleShot execution failed for session %s", session.id)
 
         if _cancel_requested(session):
             _mark_session_cancelled(manager, session, start=start, content=final_content)
@@ -536,8 +548,20 @@ class MultiStepExecutor:
                     final_content = event.content
                     token_usage = dict(event.token_usage)
                 yield event
-        except Exception:
-            logger.exception("MultiStep direct execution failed for session %s", session.id)
+        except Exception as exc:
+            from dan.providers import LLMAuthenticationError
+            if isinstance(exc, LLMAuthenticationError):
+                final_content = str(exc)
+                saw_terminal = True
+                yield ChatCompleteEvent(
+                    message_id=uuid.uuid4().hex[:12],
+                    content=final_content,
+                    token_usage={},
+                    context_window=0,
+                    graph_revision="",
+                )
+            else:
+                logger.exception("MultiStep direct execution failed for session %s", session.id)
 
         if _cancel_requested(session):
             _mark_session_cancelled(manager, session, start=start, content=final_content)

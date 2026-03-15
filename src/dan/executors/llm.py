@@ -13,6 +13,8 @@ from typing import Any
 
 from openai import AsyncOpenAI, APIError, APITimeoutError, RateLimitError
 
+from dan.providers import LLMAuthenticationError
+
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.normalizer import OutputNormalizer
 from dan.engine.state import NodeStatus
@@ -1150,6 +1152,9 @@ class LLMExecutor:
                         except Exception as fb_exc:
                             return "", f"Fallback model '{current_model}' also failed: {fb_exc}", None, None
                     return "", f"API error after {max_retries} retries: {exc}", None, None
+
+            except LLMAuthenticationError as exc:
+                return "", str(exc), None, None
 
             except (APIError,) as exc:
                 return "", f"API error: {exc}", None, None

@@ -7,6 +7,7 @@ from typing import Any, AsyncIterator
 
 from dan.providers import (
     CompletionResult,
+    LLMAuthenticationError,
     ProviderConfig,
     StreamChunk,
     resolve_provider_timeout,
@@ -84,10 +85,19 @@ class GoogleProvider:
         chat = gm.start_chat(history=history[:-1] if len(history) > 1 else [])
 
         last_msg = history[-1]["parts"][0] if history else ""
-        resp = await asyncio.wait_for(
-            chat.send_message_async(last_msg, generation_config=gen_config),
-            timeout=self._timeout_seconds,
-        )
+        try:
+            resp = await asyncio.wait_for(
+                chat.send_message_async(last_msg, generation_config=gen_config),
+                timeout=self._timeout_seconds,
+            )
+        except Exception as exc:
+            msg_lower = str(exc).lower()
+            if "api key" in msg_lower or "403" in str(exc) or "401" in str(exc):
+                raise LLMAuthenticationError(
+                    f"LLM provider authentication failed for model '{model}': "
+                    f"check your Google API key — {exc}"
+                ) from exc
+            raise
         text = resp.text or ""
         usage = self._extract_usage(resp)
         finish_reason = ""
@@ -123,10 +133,23 @@ class GoogleProvider:
 
         last_msg = history[-1]["parts"][0] if history else ""
         accumulated = ""
-        async with asyncio.timeout(self._timeout_seconds):
-            resp = await chat.send_message_async(
-                last_msg, generation_config=gen_config, stream=True,
-            )
+        try:
+            timeout_ctx = asyncio.timeout(self._timeout_seconds)
+        except Exception:
+            timeout_ctx = asyncio.timeout(120)
+        async with timeout_ctx:
+            try:
+                resp = await chat.send_message_async(
+                    last_msg, generation_config=gen_config, stream=True,
+                )
+            except Exception as exc:
+                msg_lower = str(exc).lower()
+                if "api key" in msg_lower or "403" in str(exc) or "401" in str(exc):
+                    raise LLMAuthenticationError(
+                        f"LLM provider authentication failed for model '{model}': "
+                        f"check your Google API key — {exc}"
+                    ) from exc
+                raise
             async for chunk in resp:
                 delta = chunk.text or ""
                 accumulated += delta

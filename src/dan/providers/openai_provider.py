@@ -4,10 +4,18 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator
 
-from openai import AsyncOpenAI, APIError, APITimeoutError, RateLimitError
+from openai import (
+    AsyncOpenAI,
+    APIError,
+    APITimeoutError,
+    AuthenticationError,
+    PermissionDeniedError,
+    RateLimitError,
+)
 
 from dan.providers import (
     CompletionResult,
+    LLMAuthenticationError,
     ProviderConfig,
     StreamChunk,
     resolve_provider_timeout,
@@ -73,7 +81,18 @@ class OpenAIProvider:
         if self._timeout_seconds is not None:
             call_kwargs.setdefault("timeout", self._timeout_seconds)
 
-        resp = await self._client.chat.completions.create(**call_kwargs)
+        try:
+            resp = await self._client.chat.completions.create(**call_kwargs)
+        except AuthenticationError as exc:
+            raise LLMAuthenticationError(
+                f"LLM provider authentication failed for model '{model}': "
+                f"check your API key — {exc}"
+            ) from exc
+        except PermissionDeniedError as exc:
+            raise LLMAuthenticationError(
+                f"LLM provider denied access for model '{model}': "
+                f"your API key may lack permissions or the model may be unavailable — {exc}"
+            ) from exc
         message = resp.choices[0].message
         text = message.content or ""
         usage = self._extract_usage(resp)
@@ -119,7 +138,18 @@ class OpenAIProvider:
         if self._timeout_seconds is not None:
             call_kwargs.setdefault("timeout", self._timeout_seconds)
 
-        stream = await self._client.chat.completions.create(**call_kwargs)
+        try:
+            stream = await self._client.chat.completions.create(**call_kwargs)
+        except AuthenticationError as exc:
+            raise LLMAuthenticationError(
+                f"LLM provider authentication failed for model '{model}': "
+                f"check your API key — {exc}"
+            ) from exc
+        except PermissionDeniedError as exc:
+            raise LLMAuthenticationError(
+                f"LLM provider denied access for model '{model}': "
+                f"your API key may lack permissions or the model may be unavailable — {exc}"
+            ) from exc
         accumulated = ""
         last_usage = None
         async for chunk in stream:

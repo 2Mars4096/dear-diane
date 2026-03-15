@@ -6,6 +6,7 @@ from typing import Any, AsyncIterator
 
 from dan.providers import (
     CompletionResult,
+    LLMAuthenticationError,
     ProviderConfig,
     StreamChunk,
     resolve_provider_timeout,
@@ -100,7 +101,21 @@ class AnthropicProvider:
             call_kwargs["system"] = system_text
         call_kwargs.setdefault("timeout", self._timeout_seconds)
 
-        resp = await self._client.messages.create(**call_kwargs)
+        try:
+            resp = await self._client.messages.create(**call_kwargs)
+        except Exception as exc:
+            _cls = type(exc).__name__
+            if _cls == "AuthenticationError":
+                raise LLMAuthenticationError(
+                    f"LLM provider authentication failed for model '{model}': "
+                    f"check your Anthropic API key — {exc}"
+                ) from exc
+            if _cls == "PermissionDeniedError":
+                raise LLMAuthenticationError(
+                    f"LLM provider denied access for model '{model}': "
+                    f"your Anthropic API key may lack permissions — {exc}"
+                ) from exc
+            raise
         text = ""
         for block in resp.content:
             if getattr(block, "type", None) == "text":
@@ -136,7 +151,22 @@ class AnthropicProvider:
         call_kwargs.setdefault("timeout", self._timeout_seconds)
 
         accumulated = ""
-        async with self._client.messages.stream(**call_kwargs) as stream:
+        try:
+            stream_ctx = self._client.messages.stream(**call_kwargs)
+        except Exception as exc:
+            _cls = type(exc).__name__
+            if _cls == "AuthenticationError":
+                raise LLMAuthenticationError(
+                    f"LLM provider authentication failed for model '{model}': "
+                    f"check your Anthropic API key — {exc}"
+                ) from exc
+            if _cls == "PermissionDeniedError":
+                raise LLMAuthenticationError(
+                    f"LLM provider denied access for model '{model}': "
+                    f"your Anthropic API key may lack permissions — {exc}"
+                ) from exc
+            raise
+        async with stream_ctx as stream:
             async for text in stream.text_stream:
                 accumulated += text
                 yield StreamChunk(delta=text, accumulated=accumulated)

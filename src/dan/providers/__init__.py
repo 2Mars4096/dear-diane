@@ -11,6 +11,11 @@ from dan.providers.cost_tracker import BudgetExceededError, CostTracker  # noqa:
 from dan.providers.model_selector import CascadeHandler, ModelSelector  # noqa: F401
 
 
+class LLMAuthenticationError(Exception):
+    """Raised when the LLM provider returns a 401/403 authentication or permission error."""
+    pass
+
+
 @dataclass
 class CompletionResult:
     """Result of a non-streaming LLM completion."""
