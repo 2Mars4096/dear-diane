@@ -4,7 +4,9 @@ import fs, { type FSWatcher } from "node:fs";
 import { spawn, exec, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
 const execAsync = promisify(exec);
+import http from "node:http";
 import https from "node:https";
+import net from "node:net";
 import os from "node:os";
 import * as pty from "node-pty";
 import { autoUpdater } from "electron-updater";
@@ -20,6 +22,193 @@ const extensionHost = new ExtensionHost();
 
 const isDev = !app.isPackaged;
 const VITE_DEV_URL = "http://localhost:5173";
+const BACKEND_PORT = 8000;
+
+// --- Production backend + proxy server ---
+
+let backendProcess: ChildProcess | null = null;
+let prodServer: http.Server | null = null;
+let prodServerPort = 0;
+
+function findPython(): string {
+  const candidates = [
+    process.env.DAN_PYTHON ?? "",
+    path.join(os.homedir(), ".venv", "bin", "python"),
+    "/opt/anaconda3/bin/python",
+    "/usr/local/bin/python3",
+    "/usr/bin/python3",
+    "python3",
+    "python",
+  ].filter(Boolean);
+  for (const p of candidates) {
+    try {
+      const resolved = p.startsWith("/") ? p : "";
+      if (resolved && fs.existsSync(resolved)) return resolved;
+    } catch { /* skip */ }
+  }
+  return candidates[candidates.length - 1];
+}
+
+function startBackend(): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const danServe = process.env.DAN_SERVE_CMD;
+    let proc: ChildProcess;
+
+    if (danServe) {
+      const parts = danServe.split(/\s+/);
+      proc = spawn(parts[0], [...parts.slice(1), "--no-reload"], {
+        env: { ...process.env },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } else {
+      const python = findPython();
+      proc = spawn(python, ["-m", "dan.server", "--no-reload"], {
+        env: { ...process.env },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    }
+
+    backendProcess = proc;
+    let started = false;
+
+    proc.stdout?.on("data", (d: Buffer) => {
+      const text = d.toString();
+      console.log("[backend]", text.trimEnd());
+      if (!started && text.includes("Uvicorn running")) {
+        started = true;
+        resolve();
+      }
+    });
+
+    proc.stderr?.on("data", (d: Buffer) => {
+      const text = d.toString();
+      console.error("[backend]", text.trimEnd());
+      if (!started && text.includes("Uvicorn running")) {
+        started = true;
+        resolve();
+      }
+    });
+
+    proc.on("error", (err) => {
+      console.error("Failed to start backend:", err.message);
+      if (!started) reject(err);
+    });
+
+    proc.on("exit", (code) => {
+      console.log("Backend exited with code", code);
+      backendProcess = null;
+      if (!started) reject(new Error(`Backend exited with code ${code}`));
+    });
+
+    setTimeout(() => {
+      if (!started) {
+        started = true;
+        resolve();
+      }
+    }, 8000);
+  });
+}
+
+function getMimeType(ext: string): string {
+  const mimes: Record<string, string> = {
+    ".html": "text/html",
+    ".js": "application/javascript",
+    ".mjs": "application/javascript",
+    ".css": "text/css",
+    ".json": "application/json",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".svg": "image/svg+xml",
+    ".ico": "image/x-icon",
+    ".woff": "font/woff",
+    ".woff2": "font/woff2",
+    ".ttf": "font/ttf",
+    ".map": "application/json",
+  };
+  return mimes[ext] || "application/octet-stream";
+}
+
+function startProductionServer(distDir: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = http.createServer((req, res) => {
+      const url = req.url ?? "/";
+
+      if (url.startsWith("/api/")) {
+        const proxyReq = http.request(
+          { hostname: "127.0.0.1", port: BACKEND_PORT, path: url, method: req.method, headers: { ...req.headers, host: `127.0.0.1:${BACKEND_PORT}` } },
+          (proxyRes) => {
+            res.writeHead(proxyRes.statusCode ?? 502, proxyRes.headers);
+            proxyRes.pipe(res);
+          },
+        );
+        proxyReq.on("error", () => {
+          res.writeHead(502);
+          res.end("Backend unavailable");
+        });
+        req.pipe(proxyReq);
+        return;
+      }
+
+      let filePath = path.join(distDir, url === "/" ? "index.html" : url);
+      if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+        filePath = path.join(distDir, "index.html");
+      }
+      try {
+        const content = fs.readFileSync(filePath);
+        const ext = path.extname(filePath);
+        res.writeHead(200, { "Content-Type": getMimeType(ext), "Content-Length": content.length });
+        res.end(content);
+      } catch {
+        res.writeHead(404);
+        res.end("Not found");
+      }
+    });
+
+    server.on("upgrade", (req, socket, head) => {
+      const url = req.url ?? "";
+      if (!url.startsWith("/api/")) {
+        socket.destroy();
+        return;
+      }
+      const proxyReq = http.request({
+        hostname: "127.0.0.1",
+        port: BACKEND_PORT,
+        path: url,
+        method: "GET",
+        headers: { ...req.headers, host: `127.0.0.1:${BACKEND_PORT}` },
+      });
+
+      proxyReq.on("upgrade", (_proxyRes, proxySocket, proxyHead) => {
+        socket.write(
+          "HTTP/1.1 101 Switching Protocols\r\n" +
+          "Upgrade: websocket\r\n" +
+          "Connection: Upgrade\r\n" +
+          Object.entries(_proxyRes.headers)
+            .filter(([k]) => !["upgrade", "connection"].includes(k.toLowerCase()))
+            .map(([k, v]) => `${k}: ${v}`)
+            .join("\r\n") +
+          "\r\n\r\n",
+        );
+        if (proxyHead.length) socket.write(proxyHead);
+        proxySocket.pipe(socket as net.Socket);
+        (socket as net.Socket).pipe(proxySocket);
+      });
+
+      proxyReq.on("error", () => socket.destroy());
+      proxyReq.end();
+    });
+
+    server.listen(0, "127.0.0.1", () => {
+      const addr = server.address() as net.AddressInfo;
+      prodServerPort = addr.port;
+      prodServer = server;
+      console.log(`Production server listening on http://127.0.0.1:${prodServerPort}`);
+      resolve(prodServerPort);
+    });
+
+    server.on("error", reject);
+  });
+}
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -40,7 +229,7 @@ function createWindow() {
     mainWindow.loadURL(VITE_DEV_URL);
     mainWindow.webContents.openDevTools({ mode: "detach" });
   } else {
-    mainWindow.loadFile(path.join(__dirname, "../dist/index.html"));
+    mainWindow.loadURL(`http://127.0.0.1:${prodServerPort}`);
   }
 
   mainWindow.on("closed", () => {
@@ -1457,7 +1646,19 @@ async function autoConnectMcpServers() {
 
 // --- App lifecycle ---
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  if (!isDev) {
+    const distDir = path.join(__dirname, "../dist");
+    console.log("Starting DAN backend server...");
+    try {
+      await startBackend();
+      console.log("Backend server started.");
+    } catch (err) {
+      console.error("Backend failed to start:", err);
+    }
+    await startProductionServer(distDir);
+  }
+
   createWindow();
   createTray();
 
@@ -1466,9 +1667,9 @@ app.whenReady().then(() => {
 
   autoConnectMcpServers();
 
-  if (!isDev) {
-    setupAutoUpdater();
-  }
+  // Auto-updater disabled — no release server configured.
+  // Enable when a GitHub/S3 publish target is set in package.json.
+  // if (!isDev) { setupAutoUpdater(); }
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1493,6 +1694,15 @@ app.on("before-quit", () => {
     proc.kill();
   }
   mcpProcesses.clear();
+
+  if (prodServer) {
+    prodServer.close();
+    prodServer = null;
+  }
+  if (backendProcess) {
+    backendProcess.kill();
+    backendProcess = null;
+  }
 });
 
 app.on("window-all-closed", () => {

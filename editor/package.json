@@ -2,6 +2,8 @@
   "name": "dan",
   "private": true,
   "version": "0.1.0",
+  "description": "Deep Agent Network — typed graph orchestration for multi-agent LLM workflows",
+  "author": "DAN",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -15,7 +17,7 @@
     "electron:build": "npm run build && npm run electron:compile",
     "postinstall": "electron-rebuild -f -w node-pty",
     "dist": "npm run build && npm run electron:compile && electron-builder",
-    "dist:mac": "npm run build && npm run electron:compile && electron-builder --mac",
+    "dist:mac": "npm run build && npm run electron:compile && CXXFLAGS=\"-isystem $(xcrun --show-sdk-path)/usr/include/c++/v1\" electron-builder --mac --publish never && codesign --force --deep --sign - release/mac-arm64/DAN.app",
     "dist:win": "npm run build && npm run electron:compile && electron-builder --win",
     "dist:linux": "npm run build && npm run electron:compile && electron-builder --linux"
   },
@@ -36,23 +38,20 @@
         {
           "target": "dmg",
           "arch": [
-            "arm64",
-            "x64"
+            "arm64"
           ]
         },
         {
           "target": "zip",
           "arch": [
-            "arm64",
-            "x64"
+            "arm64"
           ]
         }
       ],
       "icon": "build/icon.icns",
-      "hardenedRuntime": true,
+      "hardenedRuntime": false,
       "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
+      "identity": null
     },
     "win": {
       "target": [
@@ -93,11 +92,7 @@
       "category": "Development",
       "icon": "build/icon.png"
     },
-    "publish": {
-      "provider": "github",
-      "owner": "dan-network",
-      "repo": "dan-desktop"
-    }
+    "publish": null
   },
   "dependencies": {
     "@dagrejs/dagre": "^2.0.4",
