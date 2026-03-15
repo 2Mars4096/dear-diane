@@ -586,6 +586,17 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         handler="dan.server.concierge.progress_ux.handle_progress_command",
     ))
 
+    # Goal tracking
+    registry.register(CommandDescriptor(
+        name="/goal",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="[<description>|list|clear]",
+        help_text="Track a high-level goal (stored for context; autonomous execution not yet wired)",
+        group="workflow",
+        handler="dan.server.concierge.runtime.Concierge.handle_goal_command",
+    ))
+
     # 31-17: Computer Control & Browser Automation
     registry.register(CommandDescriptor(
         name="/computer",

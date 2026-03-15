@@ -1792,6 +1792,55 @@ class Concierge:
     # Utility
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # /goal command
+    # ------------------------------------------------------------------
+
+    def handle_goal_command(self, msg: SurfaceMessage) -> str:
+        """Handle ``/goal`` — create, list, or inspect concierge goals."""
+        from .models import ConciergeGoal
+
+        text = msg.text.strip()
+        args = text.split(None, 1)
+        subcommand = args[1].strip() if len(args) > 1 else ""
+
+        state = self._concierge_state
+
+        if not subcommand or subcommand == "list":
+            if not state.active_goals:
+                return "No active goals."
+            lines = ["**Active Goals:**"]
+            for g in state.active_goals:
+                lines.append(f"  [{g.status}] `{g.id}` — {g.description[:120]}")
+            return "\n".join(lines)
+
+        if subcommand == "clear":
+            count = len(state.active_goals)
+            state.active_goals.clear()
+            self._save_concierge_state(msg.external_id, state)
+            return f"Cleared {count} goal(s)."
+
+        goal = ConciergeGoal(description=subcommand)
+        state.active_goals.append(goal)
+        self._save_concierge_state(msg.external_id, state)
+
+        logger.warning(
+            "GoalLoopExecutor not wired — goal stored but not executed "
+            "(goal_id=%s, description=%s)",
+            goal.id,
+            goal.description[:80],
+        )
+
+        return (
+            f"Goal stored: `{goal.id}` — {goal.description[:120]}\n\n"
+            f"**Note:** Autonomous goal execution is not yet wired. "
+            f"The goal is tracked for context but will not auto-execute."
+        )
+
+    # ------------------------------------------------------------------
+    # Utility
+    # ------------------------------------------------------------------
+
     def _complete_event(self, *, content: str, stream_channel_id: str | None = None) -> ChatCompleteEvent:
         return ChatCompleteEvent(
             message_id=uuid.uuid4().hex[:12],
