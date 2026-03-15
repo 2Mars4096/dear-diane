@@ -3,8 +3,8 @@
  * except Chat (which has its own input in ChatPanel).
  * Cmd+J toggles expansion. Sends route to chat mode on submit.
  */
-import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Paperclip, X } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Send, X } from "lucide-react";
 import { useAppStore } from "../../store/useAppStore";
 
 export default function PersistentChatBar() {
@@ -14,17 +14,14 @@ export default function PersistentChatBar() {
   const [input, setInput] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
-  if (activeMode === "chat") return null;
-
   const handleSend = () => {
     if (!input.trim()) return;
     const msg = input;
     setInput("");
     setChatBarExpanded(false);
-    useAppStore.getState().setMode("chat");
-    window.dispatchEvent(
-      new CustomEvent("persistent-chat:send", { detail: { message: msg } }),
-    );
+    const store = useAppStore.getState();
+    store.setPendingChatMessage(msg);
+    store.setMode("chat");
   };
 
   useEffect(() => {
@@ -49,6 +46,8 @@ export default function PersistentChatBar() {
     ta.style.height =
       Math.min(ta.scrollHeight, chatBarExpanded ? 120 : 36) + "px";
   }, [input, chatBarExpanded]);
+
+  if (activeMode === "chat") return null;
 
   return (
     <div
@@ -81,15 +80,7 @@ export default function PersistentChatBar() {
           </button>
         </div>
         {chatBarExpanded && (
-          <div className="flex items-center justify-between mt-1 text-[10px] text-gray-400">
-            <div className="flex gap-2">
-              <button
-                className="hover:text-gray-600 transition-colors"
-                title="Attach file"
-              >
-                <Paperclip size={12} />
-              </button>
-            </div>
+          <div className="flex items-center justify-end mt-1 text-[10px] text-gray-400">
             <div className="flex items-center gap-2">
               <span>Enter to send · Shift+Enter for newline</span>
               <button

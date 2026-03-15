@@ -1,9 +1,10 @@
 /**
  * AppShell: top-level layout that wraps all mode workspaces.
  * Structure: WorkspaceTabs (top) → ModeBar → Breadcrumb → SidebarHost + active mode workspace (center) → overlays.
- * Each mode is lazy-rendered but kept mounted to preserve state.
+ * Each mode is deferred-mounted per workspace and remounts when the active workspace changes,
+ * so mode-local frontend UI state does not leak across workspaces.
  */
-import { useEffect, useState, lazy, Suspense } from "react";
+import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import ModeBar, { useModeShortcuts } from "./ModeBar";
 import WorkspaceTabs, { useWorkspaceShortcuts } from "./WorkspaceTabs";
 import Breadcrumb from "./Breadcrumb";
@@ -16,6 +17,7 @@ import UpdateNotification from "./UpdateNotification";
 import { ChatSkeleton, EditorSkeleton } from "./PanelSkeleton";
 import { useTitleAndFavicon } from "../../hooks/useTitleAndFavicon";
 import { useEventRouter } from "../../hooks/useEventRouter";
+import { useWorkspaceSession } from "../../hooks/useWorkspaceSession";
 import { useAppStore } from "../../store/useAppStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import ToastContainer from "../ToastContainer";
@@ -34,21 +36,53 @@ const MODE_LABELS: Record<string, string> = {
   analytics: "Analytics Mode",
   content: "Content Mode",
 };
+const activatedModesByWorkspace = new Map<string, Set<string>>();
+
+function shouldRenderModeForWorkspace(
+  workspaceKey: string,
+  modeKey: string,
+  isActive: boolean,
+) {
+  let mountedModes = activatedModesByWorkspace.get(workspaceKey);
+  if (!mountedModes) {
+    mountedModes = new Set<string>();
+    activatedModesByWorkspace.set(workspaceKey, mountedModes);
+  }
+  if (isActive) {
+    mountedModes.add(modeKey);
+  }
+  return mountedModes.has(modeKey);
+}
 
 function ModePanel({
+  workspaceKey,
+  modeKey,
   isActive,
   children,
   className = "",
 }: {
+  workspaceKey: string;
+  modeKey: string;
   isActive: boolean;
   children: React.ReactNode;
   className?: string;
 }) {
+  const everActive = shouldRenderModeForWorkspace(
+    workspaceKey,
+    modeKey,
+    isActive,
+  );
+
+  if (!everActive) return null;
+
   return (
     <div
-      className={`absolute inset-0 transition-opacity duration-200 ${className} ${
-        isActive ? "opacity-100 z-10" : "opacity-0 z-0 pointer-events-none"
-      }`}
+      className={`absolute inset-0 ${className}`}
+      style={
+        isActive
+          ? { zIndex: 10 }
+          : { zIndex: 0, visibility: "hidden", pointerEvents: "none" }
+      }
     >
       {children}
     </div>
@@ -58,36 +92,77 @@ function ModePanel({
 function useDefaultWorkspace() {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const createWorkspace = useWorkspaceStore((s) => s.createWorkspace);
+  const activeMode = useAppStore((s) => s.activeMode);
 
   useEffect(() => {
     if (workspaces.length === 0) {
-      createWorkspace("Scratch");
+      if (activeMode === "research") {
+        createWorkspace(undefined, "research");
+      } else {
+        createWorkspace("Scratch");
+      }
     }
-  }, [workspaces.length, createWorkspace]);
+  }, [workspaces.length, createWorkspace, activeMode]);
 }
 
 function useSyncWorkspaceMode() {
   const activeMode = useAppStore((s) => s.activeMode);
-  const activeWs = useWorkspaceStore((s) => s.getActiveWorkspace());
+  const activeWsId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const activeWsLastMode = useWorkspaceStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    return ws?.lastActiveMode;
+  });
+  const activeWsName = useWorkspaceStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    return ws?.name;
+  });
   const updateWorkspace = useWorkspaceStore((s) => s.updateWorkspace);
+  const prevActiveWsId = useRef<string | null>(null);
 
   useEffect(() => {
-    if (activeWs && activeWs.lastActiveMode !== activeMode) {
-      updateWorkspace(activeWs.id, { lastActiveMode: activeMode });
+    const workspaceChanged = prevActiveWsId.current !== activeWsId;
+    prevActiveWsId.current = activeWsId;
+
+    if (!activeWsId || workspaceChanged) return;
+
+    const updates: {
+      lastActiveMode?: typeof activeMode;
+      name?: string;
+    } = {};
+
+    if (activeWsLastMode !== activeMode) {
+      updates.lastActiveMode = activeMode;
     }
-  }, [activeMode, activeWs, updateWorkspace]);
+    if (activeMode === "research" && activeWsName === "Scratch") {
+      updates.name = "Research Project";
+    }
+
+    if (Object.keys(updates).length > 0) {
+      updateWorkspace(activeWsId, updates);
+    }
+  }, [activeMode, activeWsId, activeWsLastMode, activeWsName, updateWorkspace]);
 }
 
 export default function AppShell() {
   const activeMode = useAppStore((s) => s.activeMode);
-  const activeWorkspace = useWorkspaceStore((s) => s.getActiveWorkspace());
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const workspaceName = useWorkspaceStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    return ws?.name;
+  });
+  const workspaceColor = useWorkspaceStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    return ws?.color;
+  });
   const globalPaletteVisible = useAppStore((s) => s.globalPaletteVisible);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
+  const workspaceRenderKey = activeWorkspaceId ?? "no-workspace";
 
   useModeShortcuts();
   useWorkspaceShortcuts();
   useDefaultWorkspace();
   useSyncWorkspaceMode();
+  useWorkspaceSession();
   useTitleAndFavicon();
   useEventRouter();
 
@@ -133,34 +208,54 @@ export default function AppShell() {
 
       <div className="flex-1 min-h-0 flex">
         <SidebarHost
+          key={`sidebar-${workspaceRenderKey}`}
           mode={activeMode}
-          workspaceName={activeWorkspace?.name}
-          workspaceColor={activeWorkspace?.color}
+          workspaceName={workspaceName}
+          workspaceColor={workspaceColor}
         />
-        <div className="flex-1 min-h-0 relative">
-        <ModePanel isActive={activeMode === "chat"} className="overflow-hidden flex flex-col">
-          <ErrorBoundary name="Chat">
+        <div
+          key={`viewport-${workspaceRenderKey}`}
+          className="flex-1 min-h-0 relative"
+        >
+        <ModePanel
+          workspaceKey={workspaceRenderKey}
+          modeKey="chat"
+          isActive={activeMode === "chat"}
+        >
+          <ErrorBoundary name="Chat" isActive={activeMode === "chat"}>
             <Suspense fallback={<ChatSkeleton />}>
               <ChatMode />
             </Suspense>
           </ErrorBoundary>
         </ModePanel>
-        <ModePanel isActive={activeMode === "development"}>
-          <ErrorBoundary name="Development">
+        <ModePanel
+          workspaceKey={workspaceRenderKey}
+          modeKey="development"
+          isActive={activeMode === "development"}
+        >
+          <ErrorBoundary name="Development" isActive={activeMode === "development"}>
             <Suspense fallback={<EditorSkeleton />}>
               <CodeMode />
             </Suspense>
           </ErrorBoundary>
         </ModePanel>
-        <ModePanel isActive={activeMode === "operations"}>
-          <ErrorBoundary name="Operations">
+        <ModePanel
+          workspaceKey={workspaceRenderKey}
+          modeKey="operations"
+          isActive={activeMode === "operations"}
+        >
+          <ErrorBoundary name="Operations" isActive={activeMode === "operations"}>
             <Suspense fallback={<EditorSkeleton />}>
               <OperationsMode />
             </Suspense>
           </ErrorBoundary>
         </ModePanel>
-        <ModePanel isActive={activeMode === "research"}>
-          <ErrorBoundary name="Research">
+        <ModePanel
+          workspaceKey={workspaceRenderKey}
+          modeKey="research"
+          isActive={activeMode === "research"}
+        >
+          <ErrorBoundary name="Research" isActive={activeMode === "research"}>
             <Suspense fallback={<EditorSkeleton />}>
               <ResearchMode />
             </Suspense>
@@ -168,7 +263,12 @@ export default function AppShell() {
         </ModePanel>
 
         {PLACEHOLDER_MODES.map((m) => (
-          <ModePanel key={m} isActive={activeMode === m}>
+          <ModePanel
+            key={m}
+            workspaceKey={workspaceRenderKey}
+            modeKey={m}
+            isActive={activeMode === m}
+          >
             <div className="flex items-center justify-center h-full text-gray-400">
               <div className="text-center">
                 <p className="text-lg font-medium">{MODE_LABELS[m]}</p>

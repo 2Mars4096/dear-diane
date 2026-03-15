@@ -3,19 +3,36 @@ import { Component, type ReactNode } from "react";
 interface Props {
   fallback?: ReactNode;
   name?: string;
+  isActive?: boolean;
   children: ReactNode;
 }
 
 interface State {
   hasError: boolean;
   error: Error | null;
+  componentStack?: string;
 }
 
 export default class ErrorBoundary extends Component<Props, State> {
-  state: State = { hasError: false, error: null };
+  state: State = { hasError: false, error: null, componentStack: undefined };
 
   static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, error };
+    return { hasError: true, error, componentStack: undefined };
+  }
+
+  componentDidCatch(error: Error, info: { componentStack: string }) {
+    console.error(
+      `[ErrorBoundary:${this.props.name ?? "unknown"}]`,
+      error,
+      info.componentStack,
+    );
+    this.setState({ componentStack: info.componentStack });
+  }
+
+  componentDidUpdate(prevProps: Props) {
+    if (this.state.hasError && this.props.isActive && !prevProps.isActive) {
+      this.setState({ hasError: false, error: null, componentStack: undefined });
+    }
   }
 
   render() {
@@ -33,8 +50,19 @@ export default class ErrorBoundary extends Component<Props, State> {
             <p className="text-xs text-gray-400 mb-4 break-all">
               {this.state.error?.message}
             </p>
+            {this.state.componentStack && (
+              <pre className="mb-4 max-h-40 overflow-auto rounded bg-gray-50 px-3 py-2 text-left text-[10px] text-gray-500 whitespace-pre-wrap">
+                {this.state.componentStack.trim()}
+              </pre>
+            )}
             <button
-              onClick={() => this.setState({ hasError: false, error: null })}
+              onClick={() =>
+                this.setState({
+                  hasError: false,
+                  error: null,
+                  componentStack: undefined,
+                })
+              }
               className="px-4 py-2 text-xs font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition-colors"
             >
               Try again

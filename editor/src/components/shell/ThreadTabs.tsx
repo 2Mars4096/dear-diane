@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 import { Plus, X, MessageSquare } from "lucide-react";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 
