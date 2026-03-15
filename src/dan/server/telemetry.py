@@ -395,43 +395,50 @@ class SQLiteTelemetryStore(TelemetryStore):
             db_path = _TELEMETRY_DB or str(Path.home() / ".dan" / "telemetry.db")
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn: sqlite3.Connection | None = None
         self._lock = threading.Lock()
         self._record_fail_warned = False
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        if self._conn is None:
-            self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-            self._conn.row_factory = sqlite3.Row
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-        return self._conn
+        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
 
     def _init_db(self) -> None:
         conn = self._get_conn()
-        conn.executescript(_SCHEMA_SQL)
-        existing_columns = {
-            row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()
-        }
-        for column_name in ("parameter_key", "parameter_value"):
-            if column_name not in existing_columns:
-                conn.execute(f"ALTER TABLE events ADD COLUMN {column_name} TEXT")
-        conn.commit()
+        try:
+            conn.executescript(_SCHEMA_SQL)
+            existing_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info(events)").fetchall()
+            }
+            for column_name in ("parameter_key", "parameter_value"):
+                if column_name not in existing_columns:
+                    conn.execute(f"ALTER TABLE events ADD COLUMN {column_name} TEXT")
+            conn.commit()
+        finally:
+            conn.close()
 
     # -- Sync helpers (run in thread) ----------------------------------------
 
     def _record_sync(self, event: TelemetryEvent) -> None:
         conn = self._get_conn()
-        with self._lock:
-            conn.execute(_INSERT_SQL, _event_to_row(event))
-            conn.commit()
+        try:
+            with self._lock:
+                conn.execute(_INSERT_SQL, _event_to_row(event))
+                conn.commit()
+        finally:
+            conn.close()
 
     def _query_sync(self, filters: TelemetryQuery | None) -> list[TelemetryEvent]:
         sql, params = self._build_select(filters)
         conn = self._get_conn()
-        with self._lock:
-            rows = conn.execute(sql, params).fetchall()
+        try:
+            with self._lock:
+                rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
         return [_row_to_event(dict(r)) for r in rows]
 
     def _aggregate_sync(
@@ -471,8 +478,11 @@ class SQLiteTelemetryStore(TelemetryStore):
             ORDER BY sum_cost DESC
         """
         conn = self._get_conn()
-        with self._lock:
-            rows = conn.execute(sql, params).fetchall()
+        try:
+            with self._lock:
+                rows = conn.execute(sql, params).fetchall()
+        finally:
+            conn.close()
         result: list[AggregateRow] = []
         for r in rows:
             rd = dict(r)
@@ -517,10 +527,13 @@ class SQLiteTelemetryStore(TelemetryStore):
     def _prune_sync(self, older_than_days: int) -> int:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
         conn = self._get_conn()
-        with self._lock:
-            cur = conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
-            conn.commit()
-        return cur.rowcount
+        try:
+            with self._lock:
+                cur = conn.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
+                conn.commit()
+            return cur.rowcount
+        finally:
+            conn.close()
 
     # -- Async public API ----------------------------------------------------
 
@@ -557,9 +570,7 @@ class SQLiteTelemetryStore(TelemetryStore):
         return await asyncio.to_thread(self._prune_sync, days)
 
     async def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        return None
 
     # -- SQL helpers ---------------------------------------------------------
 
