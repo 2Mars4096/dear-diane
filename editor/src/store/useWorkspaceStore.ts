@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import type { AppMode } from "./useAppStore";
 
 export interface Workspace {
   id: string;
@@ -7,11 +8,16 @@ export interface Workspace {
   icon?: string;
   color?: string;
   pinnedPaths: string[];
-  lastActiveMode: string;
+  lastActiveMode: AppMode;
   openThreadIds: string[];
   activeThreadId: string | null;
   createdAt: number;
   lastAccessedAt: number;
+  researchConfig?: {
+    pdfRoots?: string[];
+    noteRoots?: string[];
+    corpusTopic?: string;
+  };
 }
 
 export const WORKSPACE_COLORS = [
@@ -29,7 +35,8 @@ interface WorkspaceState {
   workspaces: Workspace[];
   activeWorkspaceId: string | null;
 
-  createWorkspace: (name?: string) => string;
+  createWorkspace: (name?: string, mode?: AppMode) => string;
+  deriveWorkspaceName: (wsId: string) => void;
   removeWorkspace: (id: string) => void;
   setActiveWorkspace: (id: string) => void;
   updateWorkspace: (id: string, updates: Partial<Workspace>) => void;
@@ -48,13 +55,21 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       workspaces: [],
       activeWorkspaceId: null,
 
-      createWorkspace: (name) => {
+      createWorkspace: (name, mode) => {
         const id = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        let defaultName: string;
+        if (name) {
+          defaultName = name;
+        } else if (mode === "research") {
+          defaultName = "Research Project";
+        } else {
+          defaultName = `Workspace ${get().workspaces.length + 1}`;
+        }
         const workspace: Workspace = {
           id,
-          name: name || `Workspace ${get().workspaces.length + 1}`,
+          name: defaultName,
           pinnedPaths: [],
-          lastActiveMode: "chat",
+          lastActiveMode: mode || "chat",
           openThreadIds: [],
           activeThreadId: null,
           createdAt: Date.now(),
@@ -65,6 +80,26 @@ export const useWorkspaceStore = create<WorkspaceState>()(
           activeWorkspaceId: id,
         }));
         return id;
+      },
+
+      deriveWorkspaceName: (wsId) => {
+        const ws = get().workspaces.find((w) => w.id === wsId);
+        if (!ws) return;
+
+        if (ws.researchConfig?.corpusTopic) {
+          get().updateWorkspace(wsId, { name: ws.researchConfig.corpusTopic });
+          return;
+        }
+
+        if (ws.pinnedPaths.length > 0) {
+          const lastSegment = ws.pinnedPaths[0].split("/").filter(Boolean).pop();
+          if (lastSegment && lastSegment !== "Scratch") {
+            const formatted = lastSegment
+              .replace(/[-_]/g, " ")
+              .replace(/\b\w/g, (c) => c.toUpperCase());
+            get().updateWorkspace(wsId, { name: formatted });
+          }
+        }
       },
 
       removeWorkspace: (id) => {

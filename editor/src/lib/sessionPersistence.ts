@@ -1,6 +1,16 @@
 import { useCodeStore } from "../store/useCodeStore";
+import {
+  useResearchStore,
+  type ResearchNote,
+  type ResearchPaper,
+} from "../store/useResearchStore";
+import { MODE_CONFIGS, type AppMode } from "../store/useAppStore";
 
-const STORAGE_KEY = "dan-editor-session";
+const LEGACY_KEY = "dan-editor-session";
+
+function storageKey(workspaceId: string) {
+  return `dan-session-${workspaceId}`;
+}
 
 export interface EditorSession {
   pinnedRoots: string[];
@@ -10,46 +20,126 @@ export interface EditorSession {
   showSidebar: boolean;
   activeSidebarPanel: string;
   recentFiles: string[];
+  expandedDirs: Record<string, boolean>;
+  currentBranch: string;
   savedAt: number;
 }
 
-export function saveSession(): void {
-  const state = useCodeStore.getState();
-  const session: EditorSession = {
-    pinnedRoots: state.pinnedRoots,
-    openFilePaths: state.openFiles.map((f) => f.path),
-    activeFilePath: state.activeFilePath,
-    showTerminal: state.showTerminal,
-    showSidebar: state.showSidebar,
-    activeSidebarPanel: state.activeSidebarPanel,
-    recentFiles: state.recentFiles,
-    savedAt: Date.now(),
-  };
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-  } catch {
-    // localStorage may be full or unavailable — silently skip
-  }
+export interface ResearchSession {
+  primaryTab: string;
+  contextTab: string;
+  secondaryTab: string;
+  activePaperId: string | null;
+  papers: ResearchPaper[];
+  notes: ResearchNote[];
+  documentContent: string;
+  showPipeline: boolean;
+  showSecondary: boolean;
+  showContextPanel: boolean;
+  activeRailSection: string;
 }
 
-export function loadSession(): EditorSession | null {
+export interface WorkspaceSession {
+  code: EditorSession;
+  research: ResearchSession;
+  lastActiveMode: AppMode;
+  savedAt: number;
+}
+
+function coerceAppMode(value: unknown): AppMode {
+  if (
+    typeof value === "string" &&
+    MODE_CONFIGS.some((mode) => mode.id === value)
+  ) {
+    return value as AppMode;
+  }
+  return "chat";
+}
+
+export function saveSession(workspaceId?: string, lastActiveMode: AppMode = "chat"): void {
+  const codeState = useCodeStore.getState();
+  const researchState = useResearchStore.getState();
+
+  const session: WorkspaceSession = {
+    code: {
+      pinnedRoots: codeState.pinnedRoots,
+      openFilePaths: codeState.openFiles.map((f) => f.path),
+      activeFilePath: codeState.activeFilePath,
+      showTerminal: codeState.showTerminal,
+      showSidebar: codeState.showSidebar,
+      activeSidebarPanel: codeState.activeSidebarPanel,
+      recentFiles: codeState.recentFiles,
+      expandedDirs: codeState.expandedDirs,
+      currentBranch: codeState.currentBranch,
+      savedAt: Date.now(),
+    },
+    research: {
+      primaryTab: researchState.primaryTab,
+      contextTab: researchState.contextTab,
+      secondaryTab: researchState.secondaryTab,
+      activePaperId: researchState.activePaperId,
+      papers: researchState.papers,
+      notes: researchState.notes,
+      documentContent: researchState.documentContent,
+      showPipeline: researchState.showPipeline,
+      showSecondary: researchState.showSecondary,
+      showContextPanel: researchState.showContextPanel,
+      activeRailSection: researchState.activeRailSection,
+    },
+    lastActiveMode,
+    savedAt: Date.now(),
+  };
+
+  const key = workspaceId ? storageKey(workspaceId) : LEGACY_KEY;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as EditorSession;
-    if (!Array.isArray(parsed.openFilePaths) || !Array.isArray(parsed.pinnedRoots)) {
+    localStorage.setItem(key, JSON.stringify(session));
+  } catch { /* quota or unavailable */ }
+}
+
+export function loadSession(workspaceId?: string): WorkspaceSession | null {
+  const key = workspaceId ? storageKey(workspaceId) : LEGACY_KEY;
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) {
+      if (workspaceId) return loadSession();
       return null;
     }
-    return parsed;
+    const parsed = JSON.parse(raw);
+    if (parsed.code) {
+      return {
+        ...parsed,
+        lastActiveMode: coerceAppMode(parsed.lastActiveMode),
+      } as WorkspaceSession;
+    }
+    if (Array.isArray(parsed.openFilePaths)) {
+      return {
+        code: parsed as EditorSession,
+        research: {
+          primaryTab: "editor",
+          contextTab: "references",
+          secondaryTab: "code",
+          activePaperId: null,
+          papers: [],
+          notes: [],
+          documentContent: "",
+          showPipeline: false,
+          showSecondary: false,
+          showContextPanel: false,
+          activeRailSection: "library",
+        },
+        lastActiveMode: "chat",
+        savedAt: parsed.savedAt ?? Date.now(),
+      };
+    }
+    return null;
   } catch {
     return null;
   }
 }
 
-export function clearSession(): void {
+export function clearSession(workspaceId?: string): void {
+  const key = workspaceId ? storageKey(workspaceId) : LEGACY_KEY;
   try {
-    localStorage.removeItem(STORAGE_KEY);
-  } catch {
-    // ignore
-  }
+    localStorage.removeItem(key);
+  } catch { /* ignore */ }
 }
