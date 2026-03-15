@@ -10,16 +10,16 @@ from dan.tools._workspace import validate_path
 TOOL_METADATA = {
     "tool_id": "file_delete",
     "description": (
-        "Delete a file or directory within the workspace. "
-        "For directories, set recursive=true (otherwise only empty directories are removed). "
-        "Path must be within the workspace root."
+        "Delete a file or directory. Relative paths resolve against the workspace root; "
+        "absolute and ~/ paths are allowed. "
+        "For directories, set recursive=true (otherwise only empty directories are removed)."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "path": {
                 "type": "string",
-                "description": "Path to the file or directory to delete.",
+                "description": "Path to the file or directory to delete. Relative paths resolve against the workspace root; absolute and ~/ paths are allowed.",
             },
             "recursive": {
                 "type": "boolean",

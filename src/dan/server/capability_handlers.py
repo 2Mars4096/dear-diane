@@ -698,9 +698,9 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
 
 
 def register_tool_capabilities(registry: ChatCapabilityRegistry) -> None:
-    if os.environ.get('DAN_FULL_TOOLS') != '1':
+    if os.environ.get('DAN_FULL_TOOLS', '1') == '0':
         return
-    logger.info('DAN_FULL_TOOLS=1: Registering 13 extra built-in tools.')
+    logger.info('DAN_FULL_TOOLS enabled: Registering extra built-in tools.')
     registry.register("python_eval", PYTHON_EVAL_CAPABILITY_SCHEMA, handle_python_eval, modes=["agent", "debug"], category="extra")
     registry.register("csv_read", CSV_READ_CAPABILITY_SCHEMA, handle_csv_read, modes=["agent", "conversation"], category="extra", cacheable=True)
     registry.register("compress", COMPRESS_CAPABILITY_SCHEMA, handle_compress, modes=["agent"], category="extra")

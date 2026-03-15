@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 def _workspace_root() -> str:
@@ -17,7 +20,11 @@ def validate_path(path: str) -> str:
     """
     expanded = os.path.expanduser(path)
     if os.path.isabs(expanded):
-        return os.path.realpath(expanded)
+        resolved = os.path.realpath(expanded)
+        root = os.path.realpath(_workspace_root())
+        if resolved != root and not resolved.startswith(root + os.sep):
+            logger.info("Operating outside workspace root: %s", resolved)
+        return resolved
 
     root = os.path.realpath(_workspace_root())
     resolved = os.path.realpath(os.path.join(root, expanded))

@@ -10,20 +10,20 @@ from dan.tools._workspace import validate_path
 TOOL_METADATA = {
     "tool_id": "file_copy",
     "description": (
-        "Copy a file or directory within the workspace. "
-        "Use recursive=true for directories. "
-        "Both source and destination must be within the workspace root."
+        "Copy a file or directory. Relative paths resolve against the workspace root; "
+        "absolute and ~/ paths are allowed. "
+        "Use recursive=true for directories."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "source": {
                 "type": "string",
-                "description": "Path to the source file or directory.",
+                "description": "Source path. Relative paths resolve against the workspace root; absolute and ~/ paths are allowed.",
             },
             "destination": {
                 "type": "string",
-                "description": "Path for the copy.",
+                "description": "Destination path. Relative paths resolve against the workspace root; absolute and ~/ paths are allowed.",
             },
             "recursive": {
                 "type": "boolean",
