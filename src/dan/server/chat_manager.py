@@ -2173,6 +2173,12 @@ class ChatManager:
                     )
                 except Exception as exc:
                     is_timeout = isinstance(exc, (asyncio.TimeoutError, TimeoutError))
+                    _is_transient_followup = (
+                        is_timeout
+                        or "timeout" in str(exc).lower()
+                        or "rate" in str(exc).lower()
+                        or "connection" in str(exc).lower()
+                    )
                     missing_action_hints = followup_missing_action_hints
                     logger.warning(
                         "Multi-turn complete() %s at turn %d: %s (tools=%s, missing_actions=%s, force_file_write=%s)",
@@ -2184,20 +2190,58 @@ class ChatManager:
                         force_file_write_next_turn,
                     )
 
-                    # Try a no-tools synthesis before giving up — the model
-                    # may be able to produce a useful answer from what's already
-                    # in the conversation history even if the tool follow-up timed out.
+                    # --- Retry once on transient errors before synthesis ---
+                    if _is_transient_followup:
+                        _backoff = 3
+                        logger.info(
+                            "Retrying follow-up call after transient error (backoff %ds)",
+                            _backoff,
+                        )
+                        await asyncio.sleep(_backoff)
+                        try:
+                            retry_result: CompletionResult | None = None
+                            async for step in _iter_guarded_complete(
+                                request_kwargs={
+                                    "messages": messages,
+                                    "model": effective_model,
+                                    "temperature": 0.7,
+                                    "max_tokens": completion_max_tokens,
+                                    "tools": followup_tools,
+                                    "tool_choice": followup_tool_choice,
+                                },
+                                interrupted_content=lambda: "\n\n".join(combined_text_parts)
+                                if combined_text_parts
+                                else "",
+                                emit_progress_ack=True,
+                            ):
+                                if isinstance(step, CompletionResult):
+                                    retry_result = step
+                                else:
+                                    yield step
+                                    if isinstance(step, ChatInterruptedEvent):
+                                        return
+                            if retry_result is not None:
+                                result = retry_result
+                                usage_totals = _merge_usage_totals(usage_totals, result.usage)
+                                logger.info("Follow-up retry succeeded at turn %d", _turn)
+                                continue  # back to top of tool loop
+                        except Exception as retry_exc:
+                            logger.info("Follow-up retry also failed: %s", retry_exc)
+
+                    # --- Synthesis: try no-tools call to salvage a response ---
                     synthesis_ok = False
+                    synthesis_messages = list(messages)
+                    synthesis_messages.append({
+                        "role": "user",
+                        "content": (
+                            "The previous tool call timed out. Using ONLY the tool "
+                            "results already in this conversation, provide the best "
+                            "answer you can. Do not call any tools."
+                        ),
+                    })
+
+                    # Attempt synthesis with the current model first
                     try:
-                        synthesis_messages = list(messages)
-                        synthesis_messages.append({
-                            "role": "user",
-                            "content": (
-                                "The previous tool call timed out. Using ONLY the tool "
-                                "results already in this conversation, provide the best "
-                                "answer you can. Do not call any tools."
-                            ),
-                        })
                         synthesis_result = await asyncio.wait_for(
                             provider.complete(
                                 messages=synthesis_messages,
@@ -2213,6 +2257,36 @@ class ChatManager:
                             logger.info("Mid-loop timeout recovery synthesis succeeded")
                     except Exception as synth_exc:
                         logger.debug("Mid-loop timeout recovery synthesis failed: %s", synth_exc)
+
+                    # Fallback: try synthesis with DAN_LLM_MODEL if different
+                    if not synthesis_ok and effective_model != self._chat_model:
+                        logger.info(
+                            "Attempting synthesis fallback with model %s (was %s)",
+                            self._chat_model,
+                            effective_model,
+                        )
+                        try:
+                            fallback_provider = self._providers.resolve(self._chat_model)
+                            synthesis_result = await asyncio.wait_for(
+                                fallback_provider.complete(
+                                    messages=synthesis_messages,
+                                    model=self._chat_model,
+                                    temperature=0.7,
+                                    max_tokens=completion_max_tokens,
+                                ),
+                                timeout=min(_LLM_CALL_TIMEOUT_SECONDS, 60),
+                            )
+                            if synthesis_result and (synthesis_result.text or "").strip():
+                                result = synthesis_result
+                                synthesis_ok = True
+                                logger.info(
+                                    "Mid-loop timeout recovery synthesis succeeded with fallback model %s",
+                                    self._chat_model,
+                                )
+                        except Exception as fb_exc:
+                            logger.debug(
+                                "Fallback model synthesis also failed: %s", fb_exc
+                            )
 
                     if synthesis_ok:
                         content = result.text or ""
@@ -2246,7 +2320,7 @@ class ChatManager:
                         )
                         return
 
-                    # Synthesis also failed — build a contextual error message
+                    # All recovery attempts exhausted — build a contextual error
                     # that includes tool summaries so "continue" has context.
                     tool_summary_lines = [p for p in combined_text_parts if p.strip()]
                     if tool_summary_lines:
