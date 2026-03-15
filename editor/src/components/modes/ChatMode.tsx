@@ -6,7 +6,6 @@
 import { useState, useCallback } from "react";
 import ChatPanel from "../ChatPanel";
 import ThreadTabs, { useThreadCloseShortcut } from "../shell/ThreadTabs";
-import WorkspaceContextBar from "../chat/WorkspaceContextBar";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 
 export default function ChatMode() {
@@ -75,7 +74,6 @@ export default function ChatMode() {
         onCloseThread={handleCloseThread}
         onNewThread={handleNewThread}
       />
-      <WorkspaceContextBar />
       <div className="flex-1 min-h-0 relative">
         <ChatPanel
           fullScreen

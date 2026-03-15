@@ -2,6 +2,7 @@ import {
   useState,
   useRef,
   useEffect,
+  useLayoutEffect,
   useCallback,
   useMemo,
   type KeyboardEvent,
@@ -833,11 +834,18 @@ export default function ChatPanel({
   }, [graphId]);
 
   // -------------------------------------------------------------------------
-  // Auto-scroll on new messages
+  // Auto-scroll on new messages (useLayoutEffect prevents one-frame lag)
   // -------------------------------------------------------------------------
 
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  const prevMessageCountRef = useRef(messages.length);
+  useLayoutEffect(() => {
+    const prevCount = prevMessageCountRef.current;
+    prevMessageCountRef.current = messages.length;
+    if (messages.length > prevCount) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+    } else if (messages.length > 0) {
+      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
   }, [messages]);
 
   useEffect(() => {
@@ -873,17 +881,17 @@ export default function ChatPanel({
   }, [chatFocusTrigger]);
 
   // -------------------------------------------------------------------------
-  // Textarea auto-resize
+  // Textarea auto-resize (useLayoutEffect prevents visible height flash)
   // -------------------------------------------------------------------------
 
   const adjustTextarea = useCallback(() => {
     const ta = textareaRef.current;
     if (!ta) return;
-    ta.style.height = "auto";
+    ta.style.height = "0";
     ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
   }, []);
 
-  useEffect(adjustTextarea, [inputText, adjustTextarea]);
+  useLayoutEffect(adjustTextarea, [inputText, adjustTextarea]);
 
   // -------------------------------------------------------------------------
   // Mention system
