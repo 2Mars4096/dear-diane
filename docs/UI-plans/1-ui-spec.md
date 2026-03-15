@@ -1,6 +1,6 @@
 # 1: DAN Custom UI — Master Specification
 
-**Status:** in-progress (Phases 1–3 complete, Phases 4–5 not yet planned)
+**Status:** in-progress (Phases 1–4 complete, Phases 5–6 not yet planned)
 **Goal:** Build a workspace-based desktop app that is as convenient as ChatGPT for simple tasks, as powerful as Cursor/VS Code for coding, and fully leverages DAN's workflow orchestration for complex tail tasks.
 
 ## Vision
@@ -110,7 +110,7 @@ Full IDE for building features, debugging, code review, shipping software. The t
 For: academic papers, literature reviews, systematic investigations.
 
 **Central artifact:** A document being authored, plus a long-running domain knowledge distillation track when needed.
-**Layout:** Writing pane + PDF reader + reference panel + review panel + recipe/distillation tab + pipeline progress.
+**Layout:** Function-first internal surfaces with one-word labels: **Desk** (center, active work with **Editor** / **PDF Reader** / **Furnace** tabs), **Library** (PDFs/files/notes), **Plan** (outline/planning), **Training** (long-running recipe distillation → opens Furnace). Terminal panel (shared with Development mode) replaces old bottom dock. See [1-7-research-simplification](1-7-research-simplification.md).
 
 ### Analytics
 
@@ -231,12 +231,21 @@ Full VS Code parity. Extensions ecosystem. Marketplace framework.
 Academic papers, literature reviews, systematic investigations.
 - [1-3-research-mode](1-3-research-mode.md) — 92/92 done
 
-### Phase 4: Analytics + Operations
+### Phase 4: Research Workbench Refinement — complete
+Configurable paper roots, function-first surfaces, progressive disclosure, workspace naming.
+- [1-6-research-workbench-refinement](1-6-research-workbench-refinement.md) — 16/16 done
+- [1-7-research-simplification](1-7-research-simplification.md) — replaced bottom dock with terminal, added Furnace center-desk tab, fixed Scratch naming
+
+### Phase 5: Code Mode Production Patch
+Fix blocking infrastructure (build errors, single-launch, onboarding), upgrade LSP/AI quality to production grade, close small broken features.
+- [1-8-code-mode-patch](1-8-code-mode-patch.md) — build fix, single-launch, onboarding, LSP wiring, @ refs, multi-file edits, bug fixes
+
+### Phase 6: Analytics + Operations
 Data science workspace + workflow management.
 - Analytics mode (data tables, code cells, charts, experiment tracker)
 - Operations mode (evolve current workflow editor into operations workspace)
 
-### Phase 5: Polish + Custom Modes
+### Phase 7: Polish + Custom Modes
 User-configurable layouts. Mode auto-detection. Domain learning integration. Recipe marketplace. If the long-running recipe/distillation tab outgrows Research mode, it can later become its own dedicated surface.
 
 ## Design Principles

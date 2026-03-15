@@ -617,8 +617,13 @@
     - [x] [1-5-marketplace-extensions](UI-plans/1-5-marketplace-extensions.md) — **100% (59/59).** Done: MarketplaceManager + types + Open VSX adapter (w/ configurable URL) + VSIX handling + Extensions Panel UI + theme/grammar/snippet/langconfig/iconTheme loaders + DAN Skills adapter (7/7) + MCP Server adapter (8/8, incl. auto-connect + chat integration) + trust model + safe mode + enable scope + update checking + extension host process + partial vscode API shim + activation events + curated essentials + compatibility tier + native-first fallback + marketplace settings UI + plugin architecture (7-1, 7-2) + Recipe Store adapter (6-1..6-6: recipe model, browser, install, marketplace, creation, versioning) + Skill Hub remote API (4-3) + ADAPTER_GUIDE.md extensibility docs (7-3, 7-4)
   - [x] **Phase 3: Research Mode**
     - [x] [1-3-research-mode](UI-plans/1-3-research-mode.md) — **100% complete (92/92).** All features done including: persistent PDF annotations (5 colors + notes + export), split PDF reader (dual-pane with independent nav), citation-linked navigation (clickable citations → PDF reader), per-page AI summaries (cached), tool integration for code cells (5 tools).
-  - [ ] Phase 4: Analytics + Operations modes → (not yet planned)
-  - [ ] Phase 5: Polish + Custom modes + auto-detection → (not yet planned)
+  - [x] **Phase 4: Research Workbench Refinement**
+    - [x] [1-6-research-workbench-refinement](UI-plans/1-6-research-workbench-refinement.md) — configurable PDF/note roots, function-first surfaces (`Desk`, `Library`, `Plan`, `Training`), progressive disclosure, workspace naming
+    - [x] [1-7-research-simplification](UI-plans/1-7-research-simplification.md) — replaced bottom dock with terminal, added Furnace center-desk tab, fixed Scratch naming
+  - [ ] **Phase 5: Code Mode Production Patch**
+    - [ ] [1-8-code-mode-patch](UI-plans/1-8-code-mode-patch.md) — fix TypeScript build (~70 errors), single-launch (Electron spawns backend), first-run onboarding, wire LSP to OutlineView/SymbolSearch/PeekDefinition, @ references in chat, multi-file agent edit flow, fix `/cost`+`/retry`, debug QoL
+  - [ ] Phase 6: Analytics + Operations modes → (not yet planned)
+  - [ ] Phase 7: Polish + Custom modes + auto-detection → (not yet planned)
 
 ### Adapter abstraction
 > Extract a shared adapter interface so adding a new surface is minimal wiring.
@@ -642,12 +647,17 @@
 - [ ] **Cooking-themed identity** — rebrand around stove/pot metaphor: tokens burn to cook, workflows are recipes, knowledge distillation is flavor extraction. Consistent theming across CLI output, UI chrome, docs, and packaging.
 
 ### 100-Paper Domain Learning Experiment
-- [ ] **Domain recipe distillation (100-paper experiment)** — use memory + self-evolvement system to ingest ~100 papers in one research area over an extended session. Measure paper-writing quality before vs. after distillation. Validates whether the learning pipeline produces meaningful domain expertise. Core question: does burning tokens on 100 papers yield measurably better output?
-- [ ] **Domain-flavour memory architecture** — generalize memory mechanisms to extract the core "taste" (conventions, terminology, methodological patterns, citation norms, rhetorical style) of each research domain. General enough to work across domains, specific enough to capture what makes each field distinctive. Builds on existing memory kernel (29-1) + domain learning (31-21).
-- [ ] **UI: cooking area + recipe area** — two workspace surfaces: (1) **Cooking area** — where active work happens (coding, writing, analysis); (2) **Recipe area** — where long-running learning sessions digest papers over hours/days, showing progress, extracted knowledge, and distillation status. Initial implementation: a Distillation tab inside Research mode. If it later proves too large or different in workflow, it can graduate into its own dedicated surface.
-- [ ] **Recipe marketplace** — sell distilled domain knowledge ("recipes") extracted from actual token-burning sessions (e.g., reading 100 supply-chain papers). Recipes are richer than skills: they encode domain taste, not just procedural steps. Marketplace for buying/selling/sharing recipes. Differentiation from skills: recipes are empirically distilled from reading real papers, skills are authored procedural knowledge.
-- [ ] **Paper quality scoring website (possibly separate project)** — upload a paper, get a structured quality score. Multi-model review (like [APE](https://ape.socialcatalystlab.org/methodology)): advisor pass/fail, exhibit review, prose review, referee reports, head-to-head tournament against published papers. Use as the before/after measurement for the 100-paper experiment. Could be a standalone service or a DAN-published workflow endpoint.
-- [ ] **Latent group subconsciousness extraction** — after reading 100 papers, build directional association vectors for the field's core concepts (e.g. `supply_chain → [disruption, resilience, bullwhip, dual_sourcing, ...]` ranked by salience). These vectors capture the field's collective intuition — what practitioners/reviewers implicitly expect when they encounter a concept. A "good idea" is one that activates a latent association people recognize but haven't explicitly formulated ("oh, I've sort of thought about this but never seriously pursued it"). The 100-paper learning should extract these association vectors and use them to (1) evaluate whether a proposed research question aligns with the field's latent expectations, and (2) generate questions that sit in the high-salience-but-unexplored zone. Open problem: how to measure/validate these vectors against actual reviewer reactions. Possible approaches: predict acceptance/citation from alignment score, compare extracted vectors across fields, or test whether vector-informed question generation produces higher-rated proposals.
+- [x] [36-recipe-distillation-spec](plans/36-recipe-distillation-spec.md) — backend spec: resumable recipe training, ingredient provenance, corpus memory schema, `recipe.md`/`skill.md` artifact contract, distillation pipeline
+  - [x] [36-1](plans/36-1-recipe-training-lifecycle.md) — resumable training lifecycle, checkpoints, resume semantics, benchmark history
+  - [x] [36-2](plans/36-2-ingredient-provenance.md) — ingredient ledger, version diffs, acquisition/source tracking, market-facing provenance
+  - [x] [36-3](plans/36-3-paper-corpus-memory.md) — corpus memory metadata, taxonomy, promotion rules, retrieval bundles
+  - [x] [36-4](plans/36-4-recipe-artifact-contract.md) — `recipe.md` / `skill.md` contract, required sections, projection rules, versioning
+  - [x] [36-5-paper-acquisition-workflow](plans/36-5-paper-acquisition-workflow.md) — university proxy download, bibtex-ID naming, summary, and note creation workflow
+  - [ ] **Domain recipe distillation (100-paper experiment)** — ingest ~100 papers, measure writing quality before vs. after. Core question: does burning tokens on 100 papers yield measurably better output?
+  - [ ] **Domain-flavour memory architecture** — extract core "taste" per domain. Builds on memory kernel (29-1) + domain learning (31-21).
+  - [ ] **Recipe marketplace** — sell distilled domain knowledge. Differentiation from skills: recipes are empirically distilled from reading real papers, skills are authored procedural knowledge.
+  - [ ] **Paper quality scoring website (possibly separate project)** — structured multi-model review score. Before/after measurement for the 100-paper experiment.
+  - [ ] **Latent group subconsciousness extraction** — directional association vectors for field concepts, identifying high-salience-but-unexplored question zones.
 
 ### Future vision
 - [x] ~~**Multi-agent group chat**~~ → promoted and completed in [Phase 20](#phase-20--telegram-multi-bot-platform) (Plan 30, Telegram-first). Discord adapter deferred to future phase.

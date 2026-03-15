@@ -168,5 +168,6 @@ Research mode lives inside the same workspace shell as Chat and Code. That means
 - PDF handling uses existing `pdf_read` tool + RAG infrastructure (`dan.executors.rag`).
 - Review panel maps to DAN's existing review-loop workflow pattern (GateNode with review/revise body).
 - The long-running 100-paper learning area starts as a tab inside Research mode, not a separate top-level mode. If it eventually grows too large or too different from the writing workflow, it can later split into its own dedicated surface.
+- Follow-up refinement is tracked in [1-6-research-workbench-refinement](1-6-research-workbench-refinement.md): configurable PDF/note roots, function-first surfaces with one-word labels (`Desk`, `Library`, `Plan`, `Training`), the one-word stove metaphor set (`Cooktop`, `Pantry`, `Board`, `Furnace`) for secondary copy, progressive disclosure, and workspace naming. Backend recipe-training, memory schema, and distillation pipeline are in [36-recipe-distillation-spec](../plans/36-recipe-distillation-spec.md).
 - Consider existing OSS components: react-pdf for PDF rendering, CodeMirror/Monaco for editor, KaTeX for math.
 - The research mode is the proof-of-concept for the entire job-based mode architecture. If this works well, the other modes follow the same pattern.

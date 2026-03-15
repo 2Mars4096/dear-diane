@@ -2,6 +2,9 @@
 
 ## Open Bugs
 
+- ~~**Python workspaces logged `spawn pyright-langserver ENOENT` on startup.**~~ **FIXED 2026-03-15.** `lspManager.ts` launched the Python language server as a globally installed `pyright-langserver` binary, while the rest of the editor already assumed project-managed tooling. On machines without a global Pyright install, opening a Python project emitted startup errors even though the editor could otherwise function. Fix: added local editor devDependencies for `pyright`, `typescript-language-server`, and `vscode-langservers-extracted`, then switched all bundled LSP launches to `npx --no-install` so they resolve from project-local binaries instead of relying on global installs. Also corrected the JSON/CSS/HTML launcher names to match the actual binaries from `vscode-langservers-extracted`.
+- ~~**"Maximum update depth exceeded" crash when opening a folder in Development mode.**~~ **FIXED 2026-03-15.** There were two separate loop sources. First, `useSyncWorkspaceMode` in `AppShell.tsx` subscribed to `getActiveWorkspace()` via Zustand selector, which returns a new object reference on every workspace store update (because `updateWorkspace` creates `{ ...w, ...updates }`). The effect depended on the whole workspace object and also called `updateWorkspace`, creating a cascade: update → new ref → effect fires → update → ... Combined with `useWorkspaceSession` restoring a saved mode that differed from the current mode, the interleaved mode-sync and session-restore effects generated enough `setState` cycles to exceed React's 50-iteration limit. Fix: replaced `getActiveWorkspace()` selectors with primitive-field selectors (`activeWsId`, `activeWsLastMode`, `activeWsName`) so effect deps only change when the actual values change, not on every object re-creation. Also fixed the same pattern in `AppShell`'s render (only extracts `name`/`color`) and `ResearchMode`'s `LibrarySection`/`FurnacePanel` (extract specific `researchConfig` sub-fields). Second follow-up cause: `FileExplorer.tsx` `TreeNode` used `useCodeStore((s) => s.openFiles.map((f) => f.path))`, which creates a fresh array each render; in Zustand v5 this kind of derived selector can trigger `useSyncExternalStore` render loops when many tree nodes mount. Replaced it with a stable per-entry boolean selector (`some((f) => f.path === entry.path)`). Related ENOENT errors for `package.json` in opened folders are a separate non-fatal issue in the Electron main process file-read handler.
+- ~~**Switching between Chat and non-Chat modes could blank the whole UI.**~~ **FIXED 2026-03-15.** Live repro showed `Chat -> Research` crashed React with `Rendered more hooks than during the previous render` in `PersistentChatBar`. Root cause: `PersistentChatBar.tsx` returned early when `activeMode === "chat"` before later hooks (`useEffect`) were reached, so hook order changed across Chat/non-Chat renders. Fix: move the conditional return after all hooks. Follow-up hardening: `ChatMode.tsx` no longer subscribes to `activeMode` or conditionally mounts its header chrome; the parent mode panel now owns visibility.
 - ~~**Chat input floated to the top after sending a message (Electron only).**~~ **FIXED 2026-03-14.** Neither `h-full` chains nor `flex-1` chains propagated height from `ModePanel (absolute inset-0)` through `ChatMode` to `ChatPanel` in Electron's Chromium — the conversation column got `height: auto`. Worked fine in the browser. Fix: added `position: relative` wrapper in ChatMode, changed ChatPanel root to `position: absolute; inset: 0` — bypasses flex height chain entirely. Also locked viewport with `html, body { height: 100%; overflow: hidden }`.
 - ~~**Refresh loaded the wrong chat — two competing persistence systems.**~~ **FIXED 2026-03-14.** `ChatPanel` used its own `localStorage` key while the workspace store (zustand persist) also tracked `activeThreadId` per workspace. On refresh, `ChatPanel` read from its stale key instead of the workspace store's correct rehydrated value. Fix: initial thread loading now checks workspace store's `activeThreadId` first.
 - ~~**Raw web search/fetch content leaked into chat responses via `combined_text_parts`.**~~ **FIXED 2026-03-14.** `combined_text_parts` accumulated raw `cap_result.message` (up to 100K chars of web content) alongside LLM text parts. Seven fallback paths used this buffer as the response, dumping raw web page text to the user. Root cause: line 2036 in `chat_manager.py` appended raw tool results to the same buffer used for fallback display. Fix: replaced with `_summarize_tool_result()` producing one-line summaries.
@@ -31,7 +34,7 @@
 - ~~**Mid-stream chat state could still be lost on disconnect because autosave used one-render-behind state and skipped several intermediate events.**~~ **FIXED 2026-03-12.** The first throttled autosave pass read `messagesRef.current` immediately after `setMessages(...)`, so it could miss the newest token delta, and it never persisted tool-start states, file attachments, non-terminal run events, or pending snapshots on WebSocket close/error. Fixed by introducing a shared persistence helper that receives the exact updated message array from each state transition, debounces partial saves, persists milestone updates immediately, and flushes pending snapshots on run/chat disconnects and stream errors.
 - ~~**A newer terminal chat save could still be overwritten by an older delayed autosave snapshot.**~~ **FIXED 2026-03-12.** `ChatPanel.tsx` used debounced autosaves for milestone updates and immediate saves for terminal `chat_complete` / `chat_interrupted` / `chat_mutation` events, but the delayed snapshot was not cancelled when a newer immediate save for the same thread landed. Result: a stale autosave payload could flush a few seconds later and clobber the latest persisted assistant state, including attachment/tool/run metadata from the final turn. Fixed by extracting `editor/src/lib/threadPersistenceCoordinator.ts`, which cancels superseded pending snapshots for the same thread before running the immediate save. Added regression coverage in `editor/src/lib/__tests__/threadPersistenceCoordinator.test.ts`.
 - ~~**Complex report-generation requests used a weak conversation-mode prompt, causing tool churn without a timely final answer.**~~ **FIXED 2026-03-12.** `DirectTaskHandler` hardcoded `mode="conversation"` for all direct-task fallbacks, which gave the LLM fewer tool capabilities and a weaker prompt for large report-generation asks like "write a comprehensive 2026 report in tex, download and cite figures." Fixed by adding `_looks_like_complex_direct_task()` and promoting matching requests to `agent` mode with `allow_mutation_tool=False`. The non-build fast path is preserved; an earlier attempt to bypass the fast path sent these requests into the heavy solver/intent-compiler pipeline (617+ seconds), which was far worse.
-- ~~**Chat hangs silently after completing tool calls when the LLM API stalls.**~~ **FIXED 2026-03-12.** The tool-loop follow-up `provider.complete()` call in `send_message_with_tools()` had no wall-clock timeout. If the LLM API endpoint hung (observed with kimi-k2.5 via custom endpoint), the generator blocked inside `provider.complete()`, no heartbeat events could be emitted (they're yielded from the same generator), the WS consumer eventually disconnected, and the orphaned `_produce()` task leaked forever. The user saw "Still working — Gathering relevant context" with completed tool calls and a file attachment, but no final text. Fixed by adding `_LLM_CALL_TIMEOUT_SECONDS` (default 120s, configurable via `DAN_LLM_CALL_TIMEOUT`) plus a shared guarded-completion path for the initial call, continuation, follow-up, retry/replan, and synthesis branches. Also fixed the `_produce()` task leak: `chat_events_ws` now cancels the producer task when the WS consumer disconnects.
+- ~~**Chat hangs silently after completing tool calls when the LLM API stalls.**~~ **FIXED 2026-03-12; follow-up FIXED 2026-03-15.** The tool-loop follow-up `provider.complete()` call in `send_message_with_tools()` had no wall-clock timeout. If the LLM API endpoint hung (observed with kimi-k2.5 via custom endpoint), the generator blocked inside `provider.complete()`, no heartbeat events could be emitted (they're yielded from the same generator), the WS consumer eventually disconnected, and the orphaned `_produce()` task leaked forever. The user saw "Still working — Gathering relevant context" with completed tool calls and a file attachment, but no final text. Fixed by adding `_LLM_CALL_TIMEOUT_SECONDS` (default 120s, configurable via `DAN_LLM_CALL_TIMEOUT`) plus a shared guarded-completion path for the initial call, continuation, follow-up, retry/replan, and synthesis branches. Also fixed the `_produce()` task leak: `chat_events_ws` now cancels the producer task when the WS consumer disconnects. **Follow-up (2026-03-15):** When the follow-up call timed out, there was no retry and the synthesis fallback used the same stalled model, so systematically slow providers (observed with glm-5) hit 5 consecutive timeouts with no self-healing. Fixed by adding: (1) transient-error retry with 3s backoff before synthesis — if the retry succeeds the tool loop continues normally; (2) model fallback in synthesis — when the same-model synthesis fails and `effective_model != self._chat_model`, a second synthesis attempt uses `DAN_LLM_MODEL` via its own provider resolution.
 - ~~**Editor chat could show false `Graph changed since your last message` warnings on unchanged workflows.**~~ **FIXED 2026-03-12.** `ChatPanel.tsx` computed `client_graph_revision` from the graph currently loaded in the editor, but `useGraphStore.loadGraph()` fetches `GET /api/graphs/{id}?layout=true`, so the client was hashing a layout-adjusted graph while the server compared against the persisted workflow revision. Combined with server-side canonicalization, long-running chats could surface `revision_mismatch` on progress heartbeats even when the user had not changed the workflow. Fixed by returning canonical `graph_revision` values from graph load/save APIs, storing that revision in `useGraphStore`, and preferring the server-authored revision over local hashing in the chat panel. Added regressions in `tests/test_server/test_chat_integration.py` and `editor/src/lib/__tests__/chatGraphRevision.test.ts`.
 - ~~**33-10 final code-review patches: composed compilation wiring, orphaned subgraphs, JSON extraction.**~~ **FIXED 2026-03-12.** Addressed edge cases found in final review. (1) `IntentCompiler._compile_segment` and `_build_segment` now correctly track the *first* entry node when falling back to individual stage compilation, preventing upstream nodes from being wired incorrectly into the *exit* of the segment (e.g. bypassing a conditional gate). (2) `unwrap_loop` macro in `structural_mutations.py` now recursively deletes associated `body_graph`, `then_graph`, `else_graph`, and `sub_graph` references to prevent orphaned subgraphs in the JSON payload. (3) `_parse_scores` in `tests/eval/judge.py` now uses `text.find("{")` and `text.rfind("}")` instead of a fragile regex that failed on nested braces. (4) `parallelize` macro now appends a truncation warning to `MutationMacroResult.error` instead of silently dropping nodes beyond the limit of 5. (5) `_negate_condition_ast` explicitly handles `ast.Name`.
 - ~~**33-10 follow-up edge cases in tool inference and review-condition normalization.**~~ **FIXED 2026-03-12.** `_infer_tool_id()` originally matched raw substrings, so phrases like `profile customer behavior` could hit the generic `file` fallback. `_normalize_review_condition()` also had several semantic edge cases: it could rewrite comparison operators inside quoted literals, negate compound stop-conditions per comparison instead of negating the whole expression, mishandle placeholder-like string contents during literal restoration, and leave malformed stop-conditions in the wrong polarity. Fixed by switching tool inference to longest-first word-boundary phrases, removing the generic `file` catch-all, masking/restoring string literals safely, AST-negating threshold stop-conditions across `and`/`or`, restoring placeholders in reverse order, and falling back to `quality_score < 8` on malformed stop-conditions. Added focused regressions for quoted literals, placeholder collisions, OR/AND conditions, reversed thresholds, malformed expressions, and the `profile` false positive.
@@ -81,6 +84,290 @@
 - ~~**Concierge LLM classifier could silently select an unsupported micro model on generic OpenAI-compatible endpoints, then fall back to brittle routing.**~~ **FIXED 2026-03-10.** The first `classify_intent_llm()` implementation auto-resolved a provider-tier "micro" model (`gpt-4o-mini` / Haiku / Flash) from registered provider names. On deployments that only expose a generic `default` provider backed by an OpenAI-compatible endpoint (for example `vectorengine.ai` serving `deepseek-v3.2` / `MiniMax-M2.5`), that logic could pick a provider-specific model string the endpoint did not support. The classifier call failed, routing silently fell back to heuristics, and topical requests could still hit old dead-end paths. Fixed by using the configured chat/default model as the classifier fallback whenever only the generic default provider is present, and by moving to a hybrid classifier that trusts strong heuristics before calling the LLM.
 
 - ~~**Experience lookup could end the conversation with "No similar workflows found."**~~ **FIXED 2026-03-10.** `ExperienceHandler` returned the raw capability message when workflow-history lookup found no matches, which produced a dead-end user reply for open-ended questions like "have we done anything similar to a supply chain risk analysis before?" Fixed by falling back to a normal helpful chat response when history search returns no matches, while still preserving the "no matching saved workflows" context.
+
+## Code Review & Test Findings (2026-03-15)
+
+### Python Tests
+- **`test_eval_runner.py` fails to collect with ImportError.** The test imports `_any_event_needs_clarification` from `tests.eval.runner`, but that function does not exist in `runner.py`. Changelog (2026-03-12) documents adding it for clarification scanning; it was either removed or never exported. Tests in `test_eval_runner.py` cannot run until the import is fixed or the function is restored.
+- **`test_max_tool_turns_cap` fails: audit records not persisted under "server" surface.** The test monkeypatches `ChatAuditStore` to use `tmp_path/audit`, then calls `send_message_with_tools()` directly (no HTTP). The scenario does not pass `audit_metadata` with `surface_id="server"`. When `audit_metadata` is absent or has empty `surface_id`, `_try_persist_audit` uses `surface or "server"` from mutation_parser, but the chat_manager path may default `surface_id` to `""`, which `_safe_segment` converts to `"default"`. The test loads `load_by_surface("server")` and finds no records. Fix: either pass `audit_metadata={"surface_id": "server"}` in the scenario test, or ensure `send_message_with_tools` defaults surface to `"server"` when called without request context.
+
+### Editor / TypeScript Build
+- **Editor build fails with 70+ TypeScript errors.** `npm run build` in `editor/` reports errors across many files. Categories: (1) Unused imports/variables (TS6133) in ModePreview, CallHierarchy, CodebaseQA, DebugPanel, ExtensionsPanel, FileExplorer, GitGraph, GitHubPanel, GitPanel, InlineEdit, MergeEditor, MonacoTabs, ProblemsPanel, TaskRunner, CodeCells, DataBrowser, PageSummary, WritingPane, RunHistoryPanel, PersistentChatBar, ThreadTabs, useLspDocSync; (2) Missing/incorrect types: ConfigPanel.tsx lines 1386/1388 — `graphId` not in scope (used in TestCaseSection block but ConfigPanel may not have `graphId` from useGraphStore in that render branch); GraphCanvas.tsx — CompositeNode input_ports schema mismatch, IsValidConnection type; LogPanel.tsx — JSX namespace not found; ProblemsPanel.tsx — `resource` vs `source` on IMarkerData; InlineCompletion.tsx — SettingsState cast, `freeInlineCompletions` vs `provideInlineCompletions`; InlineEdit.tsx, WritingPane.tsx — `editor.IRange` not exported from Monaco; useMonacoLsp.ts — CompletionList return type mismatch; (3) ExtensionsPanel, GitPanel, GitHubPanel — `Expected 1 arguments, but got 0` on some calls. Editor unit tests (66) pass; full build is blocked.
+
+### Runtime / Server
+- **`/cost` and `/retry` reference `ctx.project.thread_id` which does not exist on `Project`.** Already documented; confirmed in runtime.py. Will AttributeError when those commands run.
+
+### Summary
+- **Python:** 1 collection error (eval runner), 1 failing test (max_tool_turns_cap audit)
+- **Editor:** 66 unit tests pass; full build blocked by ~70 TypeScript errors
+- **Existing open bugs** (MetaController timeout, guard exceptions, editor build, etc.) remain
+
+## Extended Code Review & Test Audit (2026-03-15, continued)
+
+### Full Python Test Run (91 failed, 6218 passed, 20 skipped)
+
+**Chat / Stream / Integration:**
+- **test_stop_generation** — Expected `chat_interrupted` or `chat_complete` after stop, got `set()`. Stop endpoint may not be propagating events correctly to the test consumer.
+- **test_capability_run_stream_handoff_survives_fast_completion** — `ReconnectableChatStream` has no `get_nowait`. Test uses old `asyncio.Queue` API; chat streams were refactored to `ReconnectableChatStream` which only has async `get()`.
+- **test_export_thread_markdown** — Assert `'Export Test' in ...` fails; export may use different thread or title source.
+- **test_export_thread_json** — Assert `'Test message' == 'JSON Export'`; export content mismatch.
+
+**Chat Manager / Prompts:**
+- **test_system_prompt_lists_node_types** — Assert `'gate' in ...` fails. `_build_graph_summary` or node-type listing may omit `gate`; prompts.py has gate in `_default_ports` but the assembled prompt may not include it in the workflow block.
+- **test_research_prompt (9 tests)** — All fail: (1) `"## Research & Report Behavior"` not in `UNIFIED_SYSTEM_PROMPT` — research section lives in `_RESEARCH_REPORT_PROMPT_HINT` and is injected via `task_hints` only when `_looks_like_research_report_request`; tests assert on raw template; (2) `test_format_placeholders_still_valid` — `KeyError: 'current_date'` — test passes only 3 placeholders but template requires `current_date`, `capability_reference`, `task_hints`; (3) ordering tests fail because research section is conditional.
+
+**Chat Stream Lifecycle:**
+- **test_reap_stale_chat_streams_preserves_active_producer** — `app_module._register_chat_stream` not found. `_register_chat_stream` lives in `routers/chat.py`; `app.py` does not re-export it via `_ROUTER_REEXPORTS`. Test expects app to expose it.
+
+**Concierge:**
+- **test_concierge_reassurance (8 tests)** — `Concierge.__init__() got an unexpected keyword argument 'context_resolver'`. Concierge no longer takes `context_resolver`; it uses `project_store`, `chat_manager`, `capability_context`, etc. Tests use outdated mock constructor.
+
+**Gateway:**
+- **test_dispatch_text_invalid_graph_returns_422** — `execute_plan() got an unexpected keyword argument 'user_text'`. Mock `_Planner` in test has `execute_plan(plan)` without `user_text`; gateway calls `planner.execute_plan(plan, user_text=goal)`.
+- **test_dispatch_text_non_dict_graph_returns_422** — Same `user_text` kwarg mismatch.
+
+**Multi-Turn Tools:**
+- **test_cancel_event_interrupts_post_tool_followup_complete** — Content mismatch: expected `'draft content'`, got `'Read draft.md (13 chars)'` (tool result summary instead of raw content).
+- **test_cancel_event_interrupts_turn_cap_synthesis_complete** — Same pattern.
+- **test_unexpected_provider_cancellation_on_later_turn_yields_complete** — `asyncio.exceptions.CancelledError` not handled.
+
+**Unified Prompt Cleanup:**
+- **test_build_messages_includes_debug_context_in_unified_prompt** — `TypeError: 'coroutine' object is not subscriptable`. Test awaits or indexes a coroutine incorrectly.
+
+**Tools / Workspace:**
+- **test_browser_control** — Download path assertion: expected `/tmp/report.csv`, got `~/.dan/downloads/report.csv`. Browser download may use a different default destination.
+- **test_builtin_tools (4)** — `test_file_delete/copy/move_rejects_outside_workspace`, `test_csv_read_rejects_outside_workspace` — `Failed: DID NOT RAISE ValueError`. Workspace sandbox may not be enforced for these tools, or `DAN_WORKSPACE_ROOT` in test env allows the path.
+- **test_file_tools** — `test_rejects_absolute_path_outside_root` — `DID NOT RAISE ValueError`. Same workspace-root check may be relaxed or bypassed.
+
+### Backend Wiring & Connections
+
+**Gateway ↔ execute_plan:** `execute_plan_direct` in `meta/planner.py` returns `"graph_data"` but gateway expects `"graph"`. Other `execute_plan` paths return `"graph"`; direct-build path is inconsistent. Causes 422 when text dispatch uses direct build.
+
+**app.py re-exports:** `_register_chat_stream`, `_chat_streams`, `_CHAT_STREAM_TTL_SECONDS`, `_reap_stale_chat_streams` live in `routers/chat.py`. `app.py` re-exports `_chat_streams` only indirectly (not in `_ROUTER_REEXPORTS`). Tests that `import dan.server.app` and expect `_register_chat_stream` fail.
+
+**Concierge constructor:** `Concierge.__init__` takes `project_store`, `chat_manager`, `capability_context`, etc. No `context_resolver`. Tests using `context_resolver=MagicMock()` are stale.
+
+### Frontend–Backend Connections
+
+**api.ts** — Central API client: `/api/graphs`, `/api/chat`, `/api/runs`, `/api/health`, etc. Used by: ChatPanel, ConfigPanel, useGraphStore, EditorToolbar, RunHistoryPanel, HumanInputDialog, NodePalette, TestCasePanel, MentionAutocomplete, backgroundStreamRegistry, BlockExportDialog, OperationsMode. WebSocket URLs: `/api/chat/{channelId}/events`, `/api/runs/{runId}/events`. Wiring appears correct.
+
+**Convenience & power:** Editor provides graph CRUD, validation, chat, runs, blocks, test cases, mutations. Backend supports multi-surface (gateway, adapters), concierge, tools. Gaps: (1) test suite has many stale mocks and API mismatches; (2) workspace sandbox enforcement may be inconsistent across tools; (3) research prompt tests assert on implementation detail (raw template) rather than rendered output.
+
+### Orphaned / Unnecessary Connections
+
+- No systematic dead-import scan. `chat_manager` re-exports from `dan.server.chat.*` for compatibility.
+- `researchEventDemo.ts` — Demo/simulation utility; may be unused in production.
+- Some editor components import but never use (e.g. CoverageOverlay, isCoverageVisible in CodeMode).
+
+## User-Perspective Review: Convenience & Power (2026-03-15)
+
+Review from the user's standpoint — how easily they can get started and how much they can accomplish.
+
+### Convenience — Getting There
+
+**Strengths:**
+- **`dan-up`** — Single command to start server and drop into chat; zero-friction entry.
+- **`dan-chat --local`** — Works without server; good for offline or quick one-offs.
+- **Chat EmptyState** — Clear prompts ("Build a workflow", "Ask About Your Workflow") with one-click suggestions; mode-specific (agent/ask/plan/debug/auto).
+- **Research QuickStartPanel** — 6 templates (Literature Review, New Paper, Review Paper, Compare Papers, Summarize Paper, Learn 100 Papers) with domain filtering.
+- **README Quick Start** — Prerequisites, install, configure, run; `.env.example` with commented "Quick Profiles" bundle.
+- **CLI reference** — `docs/cli.md` documents 11 commands with options and env vars.
+
+**Friction points:**
+- **Two terminals for editor** — `dan-serve` + `cd editor && npm run dev`; new users must run both. `dan-up` only drops into chat, not the visual editor.
+- **Quick Profiles off by default** — `DAN_LEARNING_MODE`, `DAN_FULL_TOOLS`, `DAN_ENABLE_TIER_POLICY` are commented in `.env.example`. Users get a weaker experience unless they uncomment.
+- **No single "first run" flow** — README shows Python workflow, editor, and CLI; no guided path for "I want to build X."
+- **Editor build fails** — `npm run build` blocked by TypeScript errors; dev mode works, but production builds and Electron packaging are broken.
+- **MCP optional** — `pip install -e ".[mcp]"` is separate; users may miss MCP tools if they don't read that section.
+
+### Power — Doing Projects
+
+**Strengths:**
+- **Three authoring surfaces** — Python DSL, visual editor, markdown; all compile to same graph.
+- **Natural-language goals** — `dan-run "Summarize the latest AI papers"`; MetaController plans and runs.
+- **Chat as control plane** — Build, modify, run, publish, export from conversation; `/run`, `/show`, `/undo`, `/help`.
+- **24+ capability tools** — Experience search, run lifecycle, graph listing; LLM picks by intent.
+- **Multi-surface** — CLI, editor, Telegram, WhatsApp, gateway; shared run management.
+- **Rich editor** — Multi-tab workflows, node palette, gates, live execution, human-in-the-loop, validation.
+- **Research mode** — Writing pane, PDF reader, references, distillation, Furnace; domain profiles.
+
+**Gaps / hard-to-reach power:**
+- **Learning/tools off** — With defaults, users get fewer tools and no learning; power is gated behind env vars.
+- **"Graph changed since your last message"** — Stale-revision warning can confuse; user may not know whether to dismiss or refresh.
+- **Mode switching** — Chat/Code/Research/Operations; no clear guidance on when to switch or what each mode is for.
+- **Research quick-starts dispatch to chat** — `dispatchResearchCommand` sends to persistent chat; if user is in Code mode, flow may feel disconnected.
+- **No "run from here" in Research** — Quick-starts set pipeline stages and content but don't clearly show how to execute the full pipeline.
+- **Workspace sandbox** — Tests expect `ValueError` for paths outside root; tools may not enforce. User could write outside workspace without realizing.
+- **`/cost` and `/retry`** — Reference non-existent `ctx.project.thread_id`; will fail if user runs those commands.
+
+### Recommendations (document only)
+
+- Add a "first run" wizard or `dan init` that creates `.env` with Quick Profiles enabled and prints next steps.
+- Document a single recommended path: "For visual workflow building: `dan-serve` + `cd editor && npm run dev`" with `dan-up` as the chat-only alternative.
+- Surface Quick Profile toggles in the editor (e.g. Settings) so users can enable learning/full tools without editing `.env`.
+- Fix editor build so `npm run build` and Electron packaging work for distribution.
+- Add a mode-switch hint or tooltip: "Code = files/terminal, Research = papers/writing, Chat = workflow authoring."
+
+### Summary
+
+- **Convenience:** Good — `dan-up`, chat empty states, quick-starts. Friction: two terminals for editor, Quick Profiles off by default, no guided first run.
+- **Power:** Strong — NL goals, multi-surface, rich editor, research mode. Gaps: power gated by env, mode switching unclear, some CLI commands broken (`/cost`, `/retry`).
+
+## Main Mechanisms & Key Modules Review (2026-03-15)
+
+Review of core mechanisms and how they work together in tandem.
+
+### Core Data Flows
+
+**Chat → Concierge → Graph/Run:**
+- `ChatManager` holds `graph_store`, `capability_context`; `CapabilityContext` has `graph_store`, `run_manager`, `chat_manager`, etc.
+- Concierge dispatches to tier executors; tier executors call `chat_manager.send_message_with_tools()` directly.
+- Capability handlers receive `CapabilityContext` with workflow_id, graph_store, run_manager.
+- **Works well:** Handlers can load graphs, start runs, list experiences; chat gets graph context for prompts.
+
+**Gateway → Planner:**
+- `gateway/router.py` calls `planner.execute_plan(plan, user_text=goal)` and expects `exec_result.get("graph")`.
+- `execute_plan` delegates to `execute_plan_direct` for `GenerateCodePlan` when `DAN_DIRECT_BUILD` is on.
+- `execute_plan_direct` returns `{"workflow_id": ..., "graph_data": graph_data, ...}` — **uses `graph_data` not `graph`**.
+- **Broken:** Gateway gets `None` for `graph` when direct build path is used; raises 422.
+
+**Run Events → Chat Handoff:**
+- `chat_complete` can carry `stream_channel_id` for a `run-*` channel; client reconnects to that channel for run output.
+- `chat_message` handler: `/run` parses → `RunManager.start_run` → `_pipe_run_events` subscribes to run queue, pushes to `run-*` stream.
+- **Works:** Run events flow from RunManager to chat stream; client sees both chat completion and run progress.
+
+### Event Routing
+
+**Two WebSocket paths:**
+1. **Main WS** (`/ws`): `wsConnection` connects here; `eventRouter` subscribes to `wsConnection.on("*")`.
+2. **Chat stream WS** (`/api/chat/{channel}/events`): Dedicated per chat/run channel; chat tokens, tool results, run events.
+
+**Research mode events:**
+- `eventRouter` routes `artifact_created`, `node_started`, `node_completed` → `dan:engine-event-raw` CustomEvents (only when `activeMode === "research"`).
+- `useResearchEvents` listens for `dan:engine-event-raw` and bridges to `researchEventRouter` → research store.
+- **Source:** Main WS receives events from `GlobalEventBus` / run engine broadcasts. Chat stream events are not forwarded to main WS.
+- **Gap:** If a workflow run is started from chat (e.g. `/run` or build-then-run), run events go to the chat stream WS, not the main WS. Research mode would not receive `node_started`/`node_completed` for pipeline stage updates unless the backend also broadcasts to the main WS.
+
+**Mode sync:** `useEventRouter` syncs `activeMode` from `useAppStore` to `eventRouter.setActiveMode()`. Mode switching is correct.
+
+### Research QuickStart ↔ Backend
+
+**Flow:**
+- QuickStart actions call `dispatchResearchCommand("/research literature-review \"topic\"")` → `persistent-chat:send` CustomEvent.
+- `PersistentChatBar` listens and sends to chat API.
+- Backend receives plain text; no `/research` command handler exists — concierge treats it as natural language.
+- QuickStart also sets `store.setPrimaryTab("editor")`, `store.togglePipeline()`, etc. — local UI state only.
+
+**Gaps:**
+- Pipeline stages in Research UI are local state; they do not auto-sync with backend run progress unless the backend emits `node_started`/`node_completed` to the main WS.
+- No dedicated research workflow type; "literature review" is a conversational request that may or may not produce a structured workflow.
+- Research events from `researchEventRouter` (artifact_created, distillation_progress) expect backend to emit; if those come from chat-stream-only paths, Research mode won't see them.
+
+### CapabilityContext & Handlers
+
+**Shared context:** `CapabilityContext` is built at startup; per-request copies are created with `workflow_id` set. Handlers have `graph_store`, `run_manager`, `chat_manager`, `event_bus`, etc.
+
+**Works:** Run lifecycle, experience search, graph listing, publish, introspection — all wired.
+
+**Missing:** `event_bus` is optional; if handlers emit to a bus that the main WS consumes, Research mode could receive events. Need to verify whether capability handlers emit to the main bus or only to chat stream.
+
+### UX Improvement Areas (from mechanism review)
+
+1. **Gateway direct-build:** `execute_plan_direct` should return `graph` (or gateway should accept `graph_data`). Blocks gateway text-dispatch when direct build is used.
+2. **Research pipeline sync:** Pipeline stages in Research mode should reflect backend run progress. Either: (a) backend broadcasts run events to main WS; or (b) chat stream events are bridged to research store when Research mode is active.
+3. **Event source clarity:** Document which events come from main WS vs chat stream; ensure Research mode receives pipeline events when runs originate from chat.
+4. **Research command:** Optional `/research` command could set structured pipeline + dispatch to a research-specific handler for clearer UX.
+5. **CapabilityContext.event_bus:** Verify handlers emit to the bus that main WS consumers receive; if not, Research pipeline UI stays disconnected from chat-originated runs.
+
+### Summary
+
+- **Chat ↔ Concierge ↔ Graph/Run:** ✓ Works well.
+- **Gateway ↔ Planner:** ✗ Direct build returns `graph_data`; gateway expects `graph`.
+- **Event routing:** Mode sync ✓; Research mode may not receive run events when runs start from chat.
+- **Research QuickStart:** Sends to chat; pipeline stages are local; no backend sync.
+
+## User Interactions Review (2026-03-15)
+
+Focus on input affordances, feedback, error recovery, and discoverability.
+
+### Input Surfaces
+
+**Chat input:**
+- **Chat mode:** Full `ChatPanel` with textarea, Send, Stop, Queue, Voice (fullScreen), attachments (drop zone), mode selector, thread tabs.
+- **PersistentChatBar (non-Chat modes):** Single-line textarea, Send, Cmd+J to expand; placeholder "Ask DAN anything… (⌘J to expand)". Sends via `persistent-chat:send` → switches to Chat mode.
+- **ChatSidebar (Code mode):** Separate lightweight chat with "Ask about your code…" placeholder.
+
+**Potential race:** `PersistentChatBar` does `setMode("chat")` then immediately `dispatchEvent(persistent-chat:send)`. `ChatPanel` listens only when mounted. `ModePanel` uses `shouldRenderModeForWorkspace` — Chat mode is not mounted until it has been activated at least once. If the user goes straight to Research and never opens Chat, Chat mode is never mounted; the event fires before React re-renders; message can be lost. **Mitigation:** Defer dispatch (e.g. `requestAnimationFrame` or `setTimeout(0)`) so it runs after mode switch and Chat mount.
+
+**PersistentChatBar Paperclip:** Button has `title="Attach file"` but no `onClick` — non-functional. User may expect file attachment from non-Chat modes.
+
+### Feedback & Loading States
+
+**Strengths:**
+- Chat: Typing indicator (thinking/executing), Stop button when streaming, Queue strip with Push/Edit/Remove for queued messages.
+- Error banner with Retry button; stale-revision banner with Dismiss.
+- Build-just-completed: "Workflow built successfully" + "Run this workflow" CTA.
+- Plan mode: Approve/Revise buttons after assistant plan.
+- Escalation banner with mode switch + preference (always/ask/never).
+
+**Gaps:**
+- Stale-revision: "Dismiss" only hides; no "Refresh context" or "Retry with current graph" — user may not know whether to continue or resend.
+- Error retry: `retryLast` re-sends last user message; no indication of what will be retried.
+- Loading states: Some panels (CallHierarchy, DebugPanel, QuickOpen) show loading; others (e.g. Research QuickStart dispatch) give no feedback that the message was sent or is processing.
+
+### Error Recovery
+
+**Strengths:**
+- ErrorBoundary: "Something went wrong" + "Try again" (resets error state).
+- GraphDiffPreview: "Try again" on failed apply.
+- Chat: Retry on error; reconnect logic for stream drops.
+- HumanInputDialog: Submit (Cmd+Enter) with loading state.
+
+**Gaps:**
+- No global "connection lost" or "backend unavailable" banner when API/WS fails across the app.
+- ToastContainer for editor actions (import, publish, etc.) but chat errors use inline banners — inconsistent.
+- PersistentChatBar: No feedback if send fails (e.g. no graph, network error); user may not realize the message was dropped.
+
+### Discoverability
+
+**Strengths:**
+- ModeBar: Tooltips with shortcuts (⌘1, ⌘2, …).
+- Chat input hint: "Enter to send · Shift+Enter for newline · ⌘K command palette".
+- GlobalCommandPalette (⌘K): Commands with shortcuts.
+- KeybindingsPanel: Searchable shortcuts.
+- EmptyState: One-click prompt suggestions per mode.
+
+**Gaps:**
+- Cmd+J (PersistentChatBar expand): Not in GlobalCommandPalette; only in placeholder. Users in Code/Research may not discover it.
+- Slash commands (/run, /show, /undo, /help, /research…): No in-UI list or autocomplete; power users only.
+- Mode switching: No hint on first visit that ⌘1–6 switch modes; ModeBar labels don't say "press ⌘2 for Research".
+- Research QuickStart: Dispatches to chat but user is switched away from Research UI; may not see the response unless they notice the mode change.
+
+### Confirmation & Destructive Actions
+
+**Strengths:**
+- Graph delete: `confirm("Delete ...?")`.
+- Mutation preview: Apply/Reject with diff.
+- Plan mode: Explicit Approve before mutation.
+
+**Gaps:**
+- Some `confirm()` dialogs are native browser modals — not styled; inconsistent with app.
+- No undo for graph delete or thread delete.
+
+### Recommendations (document only)
+
+1. **PersistentChatBar:** Defer `persistent-chat:send` until after mode switch (e.g. `queueMicrotask` or store-based pending message).
+2. **Paperclip:** Wire attach or remove; avoid dead affordance.
+3. **Stale-revision:** Add "Retry with current graph" alongside Dismiss.
+4. **Discoverability:** Add Cmd+J to GlobalCommandPalette; surface slash-command help in chat (e.g. type `/` for suggestions).
+5. **Cross-mode send feedback:** After PersistentChatBar send, show a brief toast ("Sent to Chat") or ensure Chat mode is visible with the message in progress.
+
+### Summary
+
+- **Input:** Multiple surfaces (Chat, PersistentChatBar, ChatSidebar); potential race when sending from never-activated Chat; Paperclip non-functional.
+- **Feedback:** Good typing/queue/error UI; stale-revision and retry could be clearer.
+- **Discoverability:** Mode shortcuts and EmptyState help; Cmd+J and slash commands under-documented.
+- **Recovery:** ErrorBoundary and chat retry work; no global connection banner; cross-mode send feedback missing.
 
 ## Phase 33 Eval Findings (2026-03-11)
 
