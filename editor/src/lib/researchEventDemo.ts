@@ -1,3 +1,5 @@
+/** @internal Demo/testing utility — not used in production builds. */
+
 import { dispatchEngineEvent } from "./researchEventRouter";
 
 /**

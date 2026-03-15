@@ -14,6 +14,7 @@ import GlobalCommandPalette from "./GlobalCommandPalette";
 import ErrorBoundary from "./ErrorBoundary";
 import PersistentChatBar from "./PersistentChatBar";
 import UpdateNotification from "./UpdateNotification";
+import ConnectionBanner from "./ConnectionBanner";
 import { ChatSkeleton, EditorSkeleton } from "./PanelSkeleton";
 import { useTitleAndFavicon } from "../../hooks/useTitleAndFavicon";
 import { useEventRouter } from "../../hooks/useEventRouter";
@@ -202,6 +203,7 @@ export default function AppShell() {
   return (
     <div className="h-screen w-screen flex flex-col bg-white dark:bg-gray-950">
       <UpdateNotification />
+      <ConnectionBanner />
       <WorkspaceTabs />
       <ModeBar />
       <Breadcrumb />
