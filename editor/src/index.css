@@ -19,6 +19,60 @@ html, body {
   overflow: hidden;
 }
 
+/*
+ * Light-mode bridge for older panels that still hardcode dark-only Tailwind
+ * utility tokens. This keeps the appearance setting feeling live while those
+ * surfaces are migrated to explicit light/dark classes.
+ */
+:root[data-resolved-appearance="light"] [class~="bg-[#1e1e1e]"],
+:root[data-resolved-appearance="light"] [class~="bg-[#252526]"],
+:root[data-resolved-appearance="light"] [class~="bg-gray-900"] {
+  background-color: #ffffff !important;
+}
+
+:root[data-resolved-appearance="light"] [class~="bg-[#3c3c3c]"],
+:root[data-resolved-appearance="light"] [class~="bg-gray-800"],
+:root[data-resolved-appearance="light"] [class~="bg-gray-800/50"],
+:root[data-resolved-appearance="light"] [class~="bg-gray-800/40"],
+:root[data-resolved-appearance="light"] [class~="bg-gray-800/30"] {
+  background-color: #f3f4f6 !important;
+}
+
+:root[data-resolved-appearance="light"] [class~="border-[#3c3c3c]"],
+:root[data-resolved-appearance="light"] [class~="border-[#2d2d2d]"],
+:root[data-resolved-appearance="light"] [class~="border-gray-800"] {
+  border-color: #d1d5db !important;
+}
+
+:root[data-resolved-appearance="light"] [class~="text-gray-200"],
+:root[data-resolved-appearance="light"] [class~="text-gray-300"] {
+  color: #111827 !important;
+}
+
+:root[data-resolved-appearance="light"] [class~="text-gray-400"] {
+  color: #374151 !important;
+}
+
+:root[data-resolved-appearance="light"] [class~="text-gray-500"],
+:root[data-resolved-appearance="light"] [class~="text-gray-600"] {
+  color: #6b7280 !important;
+}
+
+:root[data-resolved-appearance="light"] [class~="hover:bg-white/5"]:hover {
+  background-color: #e5e7eb !important;
+}
+
+:root[data-resolved-appearance="light"] [class~="hover:bg-gray-800/40"]:hover,
+:root[data-resolved-appearance="light"] [class~="hover:bg-gray-800/50"]:hover,
+:root[data-resolved-appearance="light"] [class~="hover:bg-gray-800/60"]:hover {
+  background-color: #e5e7eb !important;
+}
+
+:root[data-resolved-appearance="light"] [class~="hover:text-gray-300"]:hover,
+:root[data-resolved-appearance="light"] [class~="hover:text-gray-200"]:hover {
+  color: #111827 !important;
+}
+
 .app-drag-region {
   -webkit-app-region: drag;
 }

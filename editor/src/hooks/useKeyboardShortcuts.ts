@@ -13,6 +13,21 @@ export function useKeyboardShortcuts() {
   const groupIntoComposite = useGraphStore((s) => s.groupIntoComposite);
 
   useEffect(() => {
+    const hasDocumentSelection = () => {
+      const selection = window.getSelection();
+      return Boolean(selection && !selection.isCollapsed && selection.toString().length > 0);
+    };
+
+    const isNativeClipboardZone = (target: EventTarget | null) => {
+      const el = target instanceof Element ? target : null;
+      if (!el) return false;
+      return Boolean(
+        el.closest("[data-native-clipboard]") ||
+        el.closest("[data-chat-copy-zone]") ||
+        el.closest("[data-mode-chat-copy-zone]"),
+      );
+    };
+
     const handler = (e: KeyboardEvent) => {
       const mod = e.metaKey || e.ctrlKey;
       if (!mod) return;
@@ -38,9 +53,11 @@ export function useKeyboardShortcuts() {
         e.preventDefault();
         redo();
       } else if (e.key === "c" && !isTextInput) {
+        if (hasDocumentSelection() || isNativeClipboardZone(e.target)) return;
         e.preventDefault();
         copySelected();
       } else if (e.key === "v" && !isTextInput) {
+        if (isNativeClipboardZone(e.target)) return;
         e.preventDefault();
         pasteClipboard();
       } else if (e.key === "d" && !isTextInput) {

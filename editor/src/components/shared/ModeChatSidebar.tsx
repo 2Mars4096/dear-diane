@@ -11,7 +11,7 @@ import {
   type KeyboardEvent,
   type ChangeEvent,
 } from "react";
-import { X, Trash2, Send, Loader2, Sparkles, Maximize2 } from "lucide-react";
+import { X, Trash2, Send, Loader2, Sparkles, Maximize2, Paperclip, FileText, ImageIcon } from "lucide-react";
 import { Marked, Renderer } from "marked";
 import DOMPurify from "dompurify";
 import hljs from "../../lib/hljs";
@@ -19,31 +19,96 @@ import { useAppStore, type AppMode } from "../../store/useAppStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { nativeTerminal } from "../../lib/electronBridge";
 import { useCodeStore } from "../../store/useCodeStore";
+import type { ChatMessage } from "../../types/chat";
+import {
+  type ComposerAttachmentDraft,
+  fileToAttachmentDraft,
+  normalizeAttachmentDrafts,
+  startEditorChat,
+  streamEditorChatResponse,
+} from "../../lib/editorChat";
 
 /* ------------------------------------------------------------------ */
 /*  Chat sender registry (per-mode)                                    */
 /* ------------------------------------------------------------------ */
 
 const chatSenders = new Map<AppMode, (text: string) => void>();
+const chatAttachmentReceivers = new Map<
+  AppMode,
+  (attachment: ComposerAttachmentDraft) => void
+>();
+const pendingModeMessages = new Map<AppMode, string[]>();
+const pendingModeAttachments = new Map<AppMode, ComposerAttachmentDraft[]>();
+let persistentChatBridgeInstalled = false;
 
 export function registerModeChatSender(mode: AppMode, fn: (text: string) => void) {
   chatSenders.set(mode, fn);
+  const pending = pendingModeMessages.get(mode);
+  if (pending?.length) {
+    pendingModeMessages.delete(mode);
+    queueMicrotask(() => {
+      for (const message of pending) fn(message);
+    });
+  }
 }
 
 export function sendToModeChat(mode: AppMode, text: string) {
-  chatSenders.get(mode)?.(text);
+  const sender = chatSenders.get(mode);
+  if (sender) {
+    sender(text);
+    return;
+  }
+  const pending = pendingModeMessages.get(mode) ?? [];
+  pending.push(text);
+  pendingModeMessages.set(mode, pending);
+}
+
+export function registerModeChatAttachmentReceiver(
+  mode: AppMode,
+  fn: (attachment: ComposerAttachmentDraft) => void,
+) {
+  chatAttachmentReceivers.set(mode, fn);
+  const pending = pendingModeAttachments.get(mode);
+  if (pending?.length) {
+    pendingModeAttachments.delete(mode);
+    queueMicrotask(() => {
+      for (const attachment of pending) fn(attachment);
+    });
+  }
+}
+
+export function appendAttachmentToModeChat(
+  mode: AppMode,
+  attachment: ComposerAttachmentDraft,
+) {
+  const receiver = chatAttachmentReceivers.get(mode);
+  if (receiver) {
+    receiver(attachment);
+    return;
+  }
+  const pending = pendingModeAttachments.get(mode) ?? [];
+  pending.push(attachment);
+  pendingModeAttachments.set(mode, pending);
+}
+
+if (typeof window !== "undefined" && !persistentChatBridgeInstalled) {
+  persistentChatBridgeInstalled = true;
+  window.addEventListener("persistent-chat:send", ((event: Event) => {
+    const customEvent = event as CustomEvent<{ message?: string }>;
+    const message = customEvent.detail?.message?.trim();
+    if (!message) return;
+    const activeMode = useAppStore.getState().activeMode;
+    if (activeMode === "chat") return;
+    if (!chatSenders.has(activeMode)) {
+      window.dispatchEvent(new CustomEvent("app:toggleModeChatSidebar"));
+    }
+    sendToModeChat(activeMode, message);
+  }) as EventListener);
 }
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
 /* ------------------------------------------------------------------ */
-
-interface ChatMessage {
-  id: string;
-  role: "user" | "assistant";
-  content: string;
-  timestamp: number;
-}
 
 export interface ModeChatSidebarProps {
   mode: AppMode;
@@ -120,7 +185,7 @@ const markedInstance = (() => {
     return (
       `<div class="my-1.5 rounded-md overflow-hidden border border-gray-700/50" data-code="${encoded}">` +
       `<div class="flex items-center justify-between px-2 py-1 bg-gray-900 border-b border-gray-700/50">${langLabel}${buttons}</div>` +
-      `<pre class="bg-gray-950 text-gray-100 p-2 overflow-x-auto text-[11px] leading-relaxed font-mono m-0"><code>${highlighted}</code></pre>` +
+      `<pre data-mode-chat-copy-zone="true" class="bg-gray-950 text-gray-100 p-2 overflow-x-auto text-[11px] leading-relaxed font-mono m-0"><code>${highlighted}</code></pre>` +
       `</div>`
     );
   };
@@ -144,27 +209,6 @@ function renderMarkdown(src: string): string {
 }
 
 /* ------------------------------------------------------------------ */
-/*  API helper                                                         */
-/* ------------------------------------------------------------------ */
-
-const API_BASE = "/api";
-
-async function sendChatRequest(
-  message: string,
-  threadId?: string,
-): Promise<Response> {
-  return fetch(`${API_BASE}/chat/editor/message`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message,
-      mode: "auto",
-      thread_id: threadId ?? null,
-    }),
-  });
-}
-
-/* ------------------------------------------------------------------ */
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -176,9 +220,12 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
   );
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [userAttachments, setUserAttachments] = useState<ComposerAttachmentDraft[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   const threadIdRef = useRef<string | undefined>(undefined);
   const messagesRef = useRef(messages);
@@ -213,6 +260,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     setMessages(loadChatHistory(workspaceId, mode));
     threadIdRef.current = undefined;
     setStreaming(false);
+    setUserAttachments([]);
   }, [workspaceId, mode]);
 
   useEffect(() => {
@@ -229,6 +277,51 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     },
     [],
   );
+
+  const appendAttachment = useCallback((attachment: ComposerAttachmentDraft) => {
+    setUserAttachments((prev) => [...prev, attachment]);
+  }, []);
+
+  const handleFileSelection = useCallback(
+    (e: ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(e.target.files ?? []);
+      if (files.length > 0) {
+        setUserAttachments((prev) => [...prev, ...files.map(fileToAttachmentDraft)]);
+      }
+      e.target.value = "";
+    },
+    [],
+  );
+
+  const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = Array.from(e.clipboardData.files ?? []);
+    if (files.length === 0) return;
+    e.preventDefault();
+    setUserAttachments((prev) => [...prev, ...files.map(fileToAttachmentDraft)]);
+  }, []);
+
+  const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (e.dataTransfer.types.includes("Files")) {
+      e.preventDefault();
+      setIsDragOver(true);
+    }
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+      setIsDragOver(false);
+    }
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!e.dataTransfer.files.length) return;
+    e.preventDefault();
+    setIsDragOver(false);
+    setUserAttachments((prev) => [
+      ...prev,
+      ...Array.from(e.dataTransfer.files).map(fileToAttachmentDraft),
+    ]);
+  }, []);
 
   /* ------ Code block click handler ----------------------------------- */
 
@@ -283,16 +376,32 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
 
   const doSend = useCallback(
     async (text: string) => {
-      if (!text.trim() || streaming) return;
+      if (streaming) return;
+      const trimmed = text.trim();
+      const pendingAttachments = userAttachments;
+      if (!trimmed && pendingAttachments.length === 0) return;
+      const attachments = await normalizeAttachmentDrafts(pendingAttachments);
 
       const ctx = contextProvider?.() ?? "";
-      const fullMessage = ctx ? `${ctx}\n\n${text.trim()}` : text.trim();
+      const fullMessage = ctx ? (trimmed ? `${ctx}\n\n${trimmed}` : ctx) : trimmed;
 
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: "user",
-        content: text.trim(),
+        content:
+          trimmed ||
+          (attachments.length === 1
+            ? `Attached ${attachments[0].name}`
+            : `Attached ${attachments.length} items`),
         timestamp: Date.now(),
+        attachments:
+          attachments.length > 0
+            ? attachments.map((attachment) => ({
+                path: attachment.path ?? attachment.source ?? attachment.name,
+                filename: attachment.name,
+                size: attachment.size,
+              }))
+            : undefined,
       };
 
       const assistantMsg: ChatMessage = {
@@ -304,6 +413,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
       setInput("");
+      setUserAttachments([]);
       setStreaming(true);
 
       if (textareaRef.current) textareaRef.current.style.height = "auto";
@@ -312,81 +422,160 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       abortRef.current = controller;
 
       try {
-        const resp = await sendChatRequest(fullMessage, threadIdRef.current);
-        if (!resp.ok) {
-          const errText = await resp.text().catch(() => "Unknown error");
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsg.id
-                ? { ...m, content: `Failed to connect: ${errText}` }
-                : m,
-            ),
-          );
-          setStreaming(false);
-          return;
-        }
+        const { threadId, response } = await startEditorChat({
+          message: fullMessage,
+          history: messagesRef.current.flatMap((message) =>
+            message.role === "user" || message.role === "assistant"
+              ? [{ role: message.role, content: message.content }]
+              : [],
+          ),
+          threadId: threadIdRef.current,
+          mode: "auto",
+          scope: `mode-chat:${mode}`,
+          attachments,
+          surfaceContext: {
+            mode,
+            workspace_id: workspaceId,
+          },
+        });
+        threadIdRef.current = threadId;
 
-        const data = await resp.json();
-        if (data.thread_id) threadIdRef.current = data.thread_id;
-        const channelId: string | undefined = data.stream_channel_id;
-
-        if (channelId) {
-          const proto = location.protocol === "https:" ? "wss:" : "ws:";
-          const ws = new WebSocket(
-            `${proto}//${location.host}/api/chat/${channelId}/events`,
-          );
-
-          ws.onmessage = (ev) => {
-            if (controller.signal.aborted) { ws.close(); return; }
-            try {
-              const evt = JSON.parse(ev.data);
-              if (evt.type === "token" && typeof evt.token === "string") {
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantMsg.id ? { ...m, content: m.content + evt.token } : m,
-                  ),
-                );
-              } else if (evt.type === "content" && typeof evt.content === "string") {
-                setMessages((prev) =>
-                  prev.map((m) =>
-                    m.id === assistantMsg.id ? { ...m, content: m.content + evt.content } : m,
-                  ),
-                );
-              } else if (evt.type === "done" || evt.type === "end") {
-                ws.close();
-              }
-            } catch { /* ignore */ }
-          };
-
-          ws.onclose = () => {
-            setStreaming(false);
-            abortRef.current = null;
-          };
-
-          ws.onerror = () => {
+        const ws = streamEditorChatResponse(response, {
+          onQueued: (position) => {
             setMessages((prev) =>
-              prev.map((m) =>
-                m.id === assistantMsg.id && !m.content
-                  ? { ...m, content: "Connection lost. Please try again." }
-                  : m,
+              prev.map((message) =>
+                message.id === assistantMsg.id
+                  ? {
+                      ...message,
+                      content:
+                        position > 1
+                          ? `Queued behind ${position} earlier messages...`
+                          : "Queued behind an earlier message...",
+                    }
+                  : message,
+              ),
+            );
+          },
+          onProgress: (content) => {
+            if (controller.signal.aborted) return;
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMsg.id ? { ...message, content } : message,
+              ),
+            );
+          },
+          onToolCallStart: (toolCall) => {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMsg.id
+                  ? {
+                      ...message,
+                      toolCalls: [
+                        ...(message.toolCalls ?? []),
+                        {
+                          id: toolCall.id,
+                          toolName: toolCall.toolName,
+                          argsPreview: toolCall.argsPreview,
+                          status: "running",
+                        },
+                      ],
+                    }
+                  : message,
+              ),
+            );
+          },
+          onToolCallResult: (toolCall) => {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMsg.id
+                  ? {
+                      ...message,
+                      toolCalls: (message.toolCalls ?? []).map((existing) =>
+                        existing.id === toolCall.id
+                          ? {
+                              ...existing,
+                              status:
+                                toolCall.status === "running" ||
+                                toolCall.status === "error" ||
+                                toolCall.status === "success"
+                                  ? toolCall.status
+                                  : "success",
+                              outputPreview: toolCall.outputPreview,
+                              durationMs: toolCall.durationMs,
+                            }
+                          : existing,
+                      ),
+                    }
+                  : message,
+              ),
+            );
+          },
+          onFileAttachment: (attachment) => {
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMsg.id
+                  ? {
+                      ...message,
+                      attachments: (message.attachments ?? []).some(
+                        (existing) => existing.path === attachment.path,
+                      )
+                        ? message.attachments
+                        : [
+                            ...(message.attachments ?? []),
+                            {
+                              path: attachment.path,
+                              filename: attachment.filename,
+                              size: attachment.size,
+                            },
+                          ],
+                    }
+                  : message,
+              ),
+            );
+          },
+          onComplete: (content) => {
+            if (controller.signal.aborted) return;
+            setMessages((prev) =>
+              prev.map((message) =>
+                message.id === assistantMsg.id ? { ...message, content } : message,
               ),
             );
             setStreaming(false);
             abortRef.current = null;
-          };
-        } else {
-          const responseText =
-            typeof data.response === "string"
-              ? data.response
-              : typeof data.content === "string"
-                ? data.content
-                : JSON.stringify(data);
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsg.id ? { ...m, content: responseText } : m,
-            ),
+          },
+          onError: (message) => {
+            setMessages((prev) =>
+              prev.map((entry) =>
+                entry.id === assistantMsg.id
+                  ? { ...entry, content: message || "Failed to connect to DAN server." }
+                  : entry,
+              ),
+            );
+            setStreaming(false);
+            abortRef.current = null;
+          },
+          onCloseWithoutTerminalEvent: () => {
+            setMessages((prev) =>
+              prev.map((entry) =>
+                entry.id === assistantMsg.id && !entry.content
+                  ? { ...entry, content: "Connection lost. Please try again." }
+                  : entry,
+              ),
+            );
+            setStreaming(false);
+            abortRef.current = null;
+          },
+        });
+
+        if (ws) {
+          controller.signal.addEventListener(
+            "abort",
+            () => {
+              ws.close();
+              abortRef.current = null;
+            },
+            { once: true },
           );
-          setStreaming(false);
         }
       } catch {
         setMessages((prev) =>
@@ -400,7 +589,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         abortRef.current = null;
       }
     },
-    [contextProvider, streaming],
+    [contextProvider, mode, streaming, userAttachments, workspaceId],
   );
 
   const handleKeyDown = useCallback(
@@ -415,13 +604,18 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
 
   useEffect(() => {
     registerModeChatSender(mode, doSend);
-    return () => { chatSenders.delete(mode); };
-  }, [doSend, mode]);
+    registerModeChatAttachmentReceiver(mode, appendAttachment);
+    return () => {
+      chatSenders.delete(mode);
+      chatAttachmentReceivers.delete(mode);
+    };
+  }, [appendAttachment, doSend, mode]);
 
   const handleClear = useCallback(() => {
     if (abortRef.current) abortRef.current.abort();
     if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
     setMessages([]);
+    setUserAttachments([]);
     threadIdRef.current = undefined;
     setStreaming(false);
     if (workspaceId) {
@@ -435,30 +629,37 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
   };
 
   return (
-    <div className="h-full w-full flex flex-col bg-gray-900 text-gray-300">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-800 shrink-0">
-        <span className="text-[11px] font-semibold tracking-widest text-gray-400 uppercase">
+    <div
+      className={`h-full w-full flex flex-col bg-white text-gray-800 dark:bg-gray-900 dark:text-gray-300 ${
+        isDragOver ? "ring-2 ring-blue-500/50 ring-inset" : ""
+      }`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 shrink-0 dark:border-gray-800">
+        <span className="text-[11px] font-semibold tracking-widest text-gray-500 uppercase dark:text-gray-400">
           AI Chat
         </span>
         <div className="flex items-center gap-1">
           <button
             onClick={() => { useAppStore.getState().setMode("chat"); onClose(); }}
             title="Open full Chat mode (threads, history, slash commands)"
-            className="p-1 text-gray-500 hover:text-blue-400 transition-colors rounded"
+            className="rounded p-1 text-gray-500 transition-colors hover:text-blue-600 dark:hover:text-blue-400"
           >
             <Maximize2 size={14} />
           </button>
           <button
             onClick={handleClear}
             title="Clear chat"
-            className="p-1 text-gray-500 hover:text-gray-300 transition-colors rounded"
+            className="rounded p-1 text-gray-500 transition-colors hover:text-gray-800 dark:hover:text-gray-300"
           >
             <Trash2 size={14} />
           </button>
           <button
             onClick={onClose}
             title="Close chat (⌘J)"
-            className="p-1 text-gray-500 hover:text-gray-300 transition-colors rounded"
+            className="rounded p-1 text-gray-500 transition-colors hover:text-gray-800 dark:hover:text-gray-300"
           >
             <X size={14} />
           </button>
@@ -467,15 +668,22 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
 
       <div ref={scrollRef} onClick={handleMessageClick} className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-3">
         {messages.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-full text-gray-600 text-xs gap-2 select-none">
-            <Sparkles size={24} className="text-gray-700" />
-            <span>Ask anything about your code</span>
+          <div className="flex h-full select-none flex-col items-center justify-center gap-2 text-xs text-gray-500 dark:text-gray-600">
+            <Sparkles size={24} className="text-gray-400 dark:text-gray-700" />
+            <span>
+              {mode === "research"
+                ? "Ask about the active paper, notes, or figures"
+                : "Ask anything about your code"}
+            </span>
             <button
               onClick={() => { useAppStore.getState().setMode("chat"); onClose(); }}
-              className="mt-1 text-[10px] text-gray-500 hover:text-blue-400 transition-colors"
+              className="mt-1 text-[10px] text-gray-500 transition-colors hover:text-blue-600 dark:hover:text-blue-400"
             >
               Open full Chat for threads, / commands &amp; history
             </button>
+            <span className="text-[10px] text-gray-400 dark:text-gray-600">
+              Drag files here or paste an image/file into the composer
+            </span>
           </div>
         )}
 
@@ -487,14 +695,15 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             <div
               className={
                 msg.role === "user"
-                  ? "bg-blue-600 text-white rounded-lg px-3 py-2 max-w-[85%] text-[13px] leading-relaxed"
-                  : "bg-gray-800 text-gray-200 rounded-lg px-3 py-2 max-w-[85%] text-[13px] leading-relaxed"
+                  ? "max-w-[85%] rounded-lg bg-blue-600 px-3 py-2 text-[13px] leading-relaxed text-white"
+                  : "max-w-[85%] rounded-lg bg-gray-100 px-3 py-2 text-[13px] leading-relaxed text-gray-800 dark:bg-gray-800 dark:text-gray-200"
               }
             >
               {msg.role === "user" ? (
                 <span className="whitespace-pre-wrap break-words">{msg.content}</span>
               ) : msg.content ? (
                 <div
+                  data-mode-chat-copy-zone="true"
                   className="break-words [&>p]:my-1 [&>ul]:my-1 [&>ol]:my-1 [&>p:first-child]:mt-0 [&>p:last-child]:mb-0"
                   dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
                 />
@@ -504,31 +713,111 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
                   Thinking…
                 </span>
               ) : null}
+              {msg.attachments && msg.attachments.length > 0 && (
+                <div className="mt-2 space-y-1.5">
+                  {msg.attachments.map((attachment) => (
+                    <div
+                      key={`${msg.id}-${attachment.path}`}
+                      title={attachment.path || attachment.filename}
+                      className="rounded-md border border-black/10 bg-black/5 px-2 py-1.5 text-[11px] dark:border-white/10 dark:bg-white/5"
+                    >
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <FileText size={11} className="shrink-0" />
+                        <span className="truncate font-medium">{attachment.filename}</span>
+                      </div>
+                      {attachment.path && attachment.path !== attachment.filename && (
+                        <div className="mt-0.5 truncate text-[10px] text-gray-500 dark:text-gray-400">
+                          {attachment.path}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {msg.toolCalls && msg.toolCalls.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {msg.toolCalls.map((toolCall) => (
+                    <span
+                      key={toolCall.id}
+                      className="rounded-full border border-black/10 bg-black/5 px-2 py-0.5 text-[10px] dark:border-white/10 dark:bg-white/5"
+                    >
+                      {toolCall.status === "running" ? "Running" : toolCall.status === "error" ? "Tool error" : "Tool"}
+                      {" "}
+                      {toolCall.toolName}
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
-            <span className="text-[10px] text-gray-600 mt-0.5 px-1">
+            <span className="mt-0.5 px-1 text-[10px] text-gray-500 dark:text-gray-600">
               {formatTime(msg.timestamp)}
             </span>
           </div>
         ))}
       </div>
 
-      <div className="px-3 py-2 border-t border-gray-800 shrink-0">
+      <div className="px-3 py-2 border-t border-gray-200 shrink-0 dark:border-gray-800">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={handleFileSelection}
+        />
+        {userAttachments.length > 0 && (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {userAttachments.map((attachment) => (
+              <div
+                key={attachment.id}
+                title={attachment.path || attachment.name}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-gray-300 bg-gray-100 px-2 py-1 text-[11px] text-gray-700 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
+              >
+                {attachment.kind === "figure" ? (
+                  <ImageIcon size={11} className="shrink-0" />
+                ) : (
+                  <FileText size={11} className="shrink-0" />
+                )}
+                <span className="truncate max-w-[180px]">{attachment.name}</span>
+                <button
+                  onClick={() =>
+                    setUserAttachments((prev) =>
+                      prev.filter((entry) => entry.id !== attachment.id),
+                    )
+                  }
+                  className="text-gray-500 transition-colors hover:text-gray-800 dark:hover:text-gray-200"
+                  title={`Remove ${attachment.name}`}
+                >
+                  <X size={10} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex items-end gap-2">
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={streaming}
+            title="Append files"
+            className="shrink-0 rounded-lg border border-gray-300 bg-white p-2 text-gray-600 transition-colors hover:border-blue-400 hover:text-blue-600 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-gray-600"
+          >
+            <Paperclip size={16} />
+          </button>
           <textarea
             ref={textareaRef}
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
+            onPaste={handlePaste}
             placeholder="Ask anything…"
             rows={1}
             disabled={streaming}
-            className="flex-1 bg-gray-800 border border-gray-700 text-white rounded-lg px-3 py-2 text-[13px] resize-none placeholder-gray-500 focus:outline-none focus:border-gray-600 disabled:opacity-50"
+            className="flex-1 resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-[13px] text-gray-900 placeholder-gray-500 focus:border-blue-500 focus:outline-none disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-white dark:focus:border-gray-600"
             style={{ maxHeight: 96 }}
           />
           <button
             onClick={() => doSend(input)}
-            disabled={!input.trim() || streaming}
-            className="p-2 bg-blue-600 hover:bg-blue-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition-colors shrink-0"
+            disabled={(!input.trim() && userAttachments.length === 0) || streaming}
+            className="shrink-0 rounded-lg bg-blue-600 p-2 text-white transition-colors hover:bg-blue-500 disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700"
           >
             {streaming ? (
               <Loader2 size={16} className="animate-spin" />

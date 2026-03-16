@@ -8,6 +8,7 @@ import {
   PenTool,
   Workflow,
   Command,
+  Settings2,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import NotificationCenter from "./NotificationCenter";
@@ -63,6 +64,14 @@ export default function ModeBar() {
 
       {/* Right-side actions */}
       <div className="flex items-center gap-1">
+        <button
+          onClick={() => window.dispatchEvent(new CustomEvent("app:openSettings"))}
+          className="app-no-drag inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-200 dark:text-gray-300 dark:hover:text-white dark:hover:bg-white/10 transition-colors"
+          title="Settings (⌘,)"
+        >
+          <Settings2 size={14} />
+          <span>Settings</span>
+        </button>
         <button
           onClick={() => setGlobalPaletteVisible(true)}
           className="app-no-drag p-1.5 rounded text-gray-500 hover:text-gray-800 hover:bg-gray-200 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-white/10 transition-colors"
