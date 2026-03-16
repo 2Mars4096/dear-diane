@@ -23,12 +23,19 @@ const extensionHost = new ExtensionHost();
 const isDev = !app.isPackaged;
 const VITE_DEV_URL = "http://localhost:5173";
 const BACKEND_PORT = 8000;
+const PROD_SERVER_PORT = 45173;
 
 // --- Production backend + proxy server ---
 
 let backendProcess: ChildProcess | null = null;
 let prodServer: http.Server | null = null;
 let prodServerPort = 0;
+
+function getPersistentGraphsDir(): string {
+  return path.join(app.getPath("userData"), "graphs");
+}
+
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 function findPython(): string {
   const candidates = [
@@ -52,24 +59,32 @@ function findPython(): string {
 function startBackend(): Promise<void> {
   return new Promise((resolve, reject) => {
     const danServe = process.env.DAN_SERVE_CMD;
+    const graphsDir = process.env.DAN_GRAPHS_DIR || getPersistentGraphsDir();
+    fs.mkdirSync(graphsDir, { recursive: true });
+    const env = {
+      ...process.env,
+      DAN_GRAPHS_DIR: graphsDir,
+    };
     let proc: ChildProcess;
 
     if (danServe) {
       const parts = danServe.split(/\s+/);
       proc = spawn(parts[0], [...parts.slice(1), "--no-reload"], {
-        env: { ...process.env },
+        env,
         stdio: ["ignore", "pipe", "pipe"],
       });
     } else {
       const python = findPython();
       proc = spawn(python, ["-m", "dan.server", "--no-reload"], {
-        env: { ...process.env },
+        env,
         stdio: ["ignore", "pipe", "pipe"],
       });
     }
 
     backendProcess = proc;
     let started = false;
+
+    console.log(`Using DAN_GRAPHS_DIR=${graphsDir}`);
 
     proc.stdout?.on("data", (d: Buffer) => {
       const text = d.toString();
@@ -198,7 +213,7 @@ function startProductionServer(distDir: string): Promise<number> {
       proxyReq.end();
     });
 
-    server.listen(0, "127.0.0.1", () => {
+    server.listen(PROD_SERVER_PORT, "127.0.0.1", () => {
       const addr = server.address() as net.AddressInfo;
       prodServerPort = addr.port;
       prodServer = server;
@@ -1646,39 +1661,63 @@ async function autoConnectMcpServers() {
 
 // --- App lifecycle ---
 
-app.whenReady().then(async () => {
-  if (!isDev) {
-    const distDir = path.join(__dirname, "../dist");
-    console.log("Starting DAN backend server...");
-    try {
-      await startBackend();
-      console.log("Backend server started.");
-    } catch (err) {
-      console.error("Backend failed to start:", err);
+if (!hasSingleInstanceLock) {
+  app.quit();
+} else {
+  app.on("second-instance", () => {
+    if (!app.isReady()) return;
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      return;
     }
-    await startProductionServer(distDir);
-  }
-
-  createWindow();
-  createTray();
-
-  lspManager.setMainWindow(mainWindow!);
-  debugManager.setMainWindow(mainWindow!);
-
-  autoConnectMcpServers();
-
-  // Auto-updater disabled — no release server configured.
-  // Enable when a GitHub/S3 publish target is set in package.json.
-  // if (!isDev) { setupAutoUpdater(); }
-
-  app.on("activate", () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
-      lspManager.setMainWindow(mainWindow!);
-      debugManager.setMainWindow(mainWindow!);
-    }
+    createWindow();
+    lspManager.setMainWindow(mainWindow!);
+    debugManager.setMainWindow(mainWindow!);
   });
-});
+
+  app.whenReady().then(async () => {
+    if (!isDev) {
+      const distDir = path.join(__dirname, "../dist");
+      console.log("Starting DAN backend server...");
+      try {
+        await startBackend();
+        console.log("Backend server started.");
+        await startProductionServer(distDir);
+        console.log(`Production UI server started on http://127.0.0.1:${prodServerPort}`);
+      } catch (err) {
+        console.error("DAN local services failed to start:", err);
+        dialog.showErrorBox(
+          "DAN Startup Failed",
+          `DAN could not start its local services.\n\n${String(err)}`,
+        );
+        app.quit();
+        return;
+      }
+    }
+
+    createWindow();
+    createTray();
+
+    lspManager.setMainWindow(mainWindow!);
+    debugManager.setMainWindow(mainWindow!);
+
+    autoConnectMcpServers();
+
+    // Auto-updater disabled — no release server configured.
+    // Enable when a GitHub/S3 publish target is set in package.json.
+    // if (!isDev) { setupAutoUpdater(); }
+
+    app.on("activate", () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        createWindow();
+        lspManager.setMainWindow(mainWindow!);
+        debugManager.setMainWindow(mainWindow!);
+      }
+    });
+  });
+}
 
 app.on("before-quit", () => {
   extensionHost.stop();
