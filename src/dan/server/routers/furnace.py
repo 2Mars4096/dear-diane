@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 from typing import Any
@@ -397,6 +398,46 @@ async def cancel_session(session_id: str):
     store.save(session)
     _publish_progress(session_id, {"type": "session_cancelled"})
     return {"session_id": session_id, "status": "failed"}
+
+
+@router.delete("/api/furnace/sessions/{session_id}")
+async def delete_session(session_id: str, delete_artifacts: bool = True):
+    """Delete a furnace session and optionally its persisted artifacts."""
+    _require_furnace()
+    store = get_furnace_session_store()
+    session = store.load(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    if session.status == "active":
+        raise HTTPException(
+            status_code=409,
+            detail="Session is currently active. Pause/cancel it before deleting.",
+        )
+
+    deleted = store.delete(session_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    queue = _session_progress.pop(session_id, None)
+    if queue is not None:
+        try:
+            queue.put_nowait({"type": "session_deleted", "session_id": session_id})
+        except asyncio.QueueFull:
+            pass
+    _session_locks.pop(session_id, None)
+
+    artifact_dir = ARTIFACTS_ROOT / session_id
+    artifacts_deleted = False
+    if delete_artifacts and artifact_dir.exists():
+        shutil.rmtree(artifact_dir, ignore_errors=True)
+        artifacts_deleted = not artifact_dir.exists()
+
+    return {
+        "session_id": session_id,
+        "deleted": True,
+        "artifacts_deleted": artifacts_deleted if delete_artifacts else False,
+    }
 
 
 @router.get("/api/furnace/sessions")
