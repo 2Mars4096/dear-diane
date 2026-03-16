@@ -81,6 +81,7 @@ graphs/meta-*.json
 # Editor build output (pre-built before packaging)
 editor/dist/
 editor/dist-electron/
+editor/release/
 
 # JavaScript / TypeScript artifacts (future editor)
 node_modules/
