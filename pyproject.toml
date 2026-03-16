@@ -51,6 +51,7 @@ dan-down = "dan.cli.down:main"
 dan-service = "dan.cli.service:main"
 dan-bot = "dan.cli.bot:main"
 dan-editor = "dan.cli.editor:main"
+dan-furnace = "dan.cli.furnace:main"
 
 [project.optional-dependencies]
 pdf = ["pypdf>=4.0", "pymupdf>=1.24"]

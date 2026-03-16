@@ -21,6 +21,7 @@ _SUBCOMMANDS = {
     "status": ("dan.cli.status", "main"),
     "logs": ("dan.cli.logs", "main"),
     "editor": ("dan.cli.editor", "main"),
+    "furnace": ("dan.cli.furnace", "main"),
 }
 
 
@@ -55,6 +56,7 @@ def _print_help() -> None:
     print("  up         Start server + services")
     print("  down       Stop server + services")
     print("  editor     Start server + visual editor")
+    print("  furnace    Direct furnace control CLI")
     print("  service    Manage background services")
     print("  status     Show server status")
     print("  logs       View server logs")

@@ -37,6 +37,28 @@ _DEFAULT_URL = "http://127.0.0.1:8000"
 _PING_TIMEOUT = 3.0
 
 
+def _looks_like_path_input(line: str) -> bool:
+    """Treat absolute/relative paths as plain message text, not slash commands."""
+    stripped = line.strip()
+    if not stripped.startswith("/"):
+        return False
+    token = stripped.split()[0]
+    if token in {"/", "/help", "/exit"}:
+        return False
+    if token.startswith("//"):
+        return False
+    if token.startswith(("/Users/", "/home/", "/tmp/", "/var/", "/opt/", "/usr/")):
+        return True
+    if "/" in token[1:]:
+        return True
+    return False
+
+
+def _is_slash_command_input(line: str) -> bool:
+    stripped = line.strip()
+    return stripped.startswith("/") and not _looks_like_path_input(stripped)
+
+
 class ChatClient:
     """Standalone chat client using httpx + websockets. Does not extend DanClient (21-7)."""
 
@@ -1016,7 +1038,7 @@ async def _run_repl(
             continue
 
         # --- Unknown slash-command suggestion ---
-        if line.startswith("/"):
+        if _is_slash_command_input(line):
             from dan.server.concierge.command_registry import get_default_registry
             _reg = get_default_registry()
             if _reg.match(line) is None:
@@ -1307,7 +1329,7 @@ async def _run_repl(
         # Drain messages typed during streaming and replay through server API
         queued_replay = msg_queue.drain()
         for q_line in queued_replay:
-            if q_line.startswith("/"):
+            if _is_slash_command_input(q_line):
                 pending_lines.append(q_line)
             else:
                 await _replay_queued_through_api(q_line)
