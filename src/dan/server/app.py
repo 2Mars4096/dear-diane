@@ -71,6 +71,8 @@ _notification_manager: Any | None = None
 _concierge: Any | None = None
 _dispatcher: Any | None = None
 _mcp_bridge: Any | None = None
+_furnace_session_store: Any | None = None
+_furnace_enabled: bool = False
 
 
 def _get_engine_config():
@@ -385,6 +387,7 @@ from dan.server.routers.publishing import router as publishing_router
 from dan.server.routers.blocks import router as blocks_router
 from dan.server.routers.chat import router as chat_router
 from dan.server.routers.adapters import router as adapters_router
+from dan.server.routers.furnace import router as furnace_router
 
 app.include_router(misc_router)
 app.include_router(graphs_router)
@@ -396,6 +399,7 @@ app.include_router(publishing_router)
 app.include_router(blocks_router)
 app.include_router(chat_router)
 app.include_router(adapters_router)
+app.include_router(furnace_router)
 
 
 # ------------------------------------------------------------------

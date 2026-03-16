@@ -85,6 +85,10 @@ class AppState:
     adapter_renderers: dict[str, tuple[Any, Any]] = field(default_factory=dict)
     adapter_surface_types: dict[str, str] = field(default_factory=dict)
 
+    # -- Furnace / recipe distillation ----------------------------------------
+    furnace_session_store: Any = None
+    furnace_enabled: bool = False
+
     # -- Misc ----------------------------------------------------------------
     graphs_dir: str = ""
     skill_store: Any = None

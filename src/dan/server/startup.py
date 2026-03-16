@@ -340,6 +340,18 @@ async def init_stores(state: AppState) -> None:
     state.block_registry = BlockRegistry(workspace=Path(workspace_root))
     state.block_registry.scan()
 
+    state.furnace_enabled = os.environ.get(
+        "DAN_FURNACE_API_ENABLED", "1"
+    ).lower() in ("1", "true", "yes")
+    if state.furnace_enabled:
+        from dan.engine.recipe.session_store import FurnaceSessionStore
+
+        furnace_dir = os.environ.get("DAN_FURNACE_DIR")
+        state.furnace_session_store = FurnaceSessionStore(
+            base_dir=furnace_dir or None
+        )
+        logger.info("Furnace API enabled (sessions dir: %s)", state.furnace_session_store._base_dir)
+
 
 async def init_engine(state: AppState) -> None:
     """Phase 2: create EngineConfig, TierTracker, TelemetryStore, RunManager."""
@@ -1082,3 +1094,5 @@ def _mirror_state_to_globals(state: AppState) -> None:
     _app_mod._notification_manager = state.notification_manager
     _app_mod._self_knowledge_index = state.self_knowledge_index
     _app_mod._experience_index_cache = state.experience_index_cache
+    _app_mod._furnace_session_store = state.furnace_session_store
+    _app_mod._furnace_enabled = state.furnace_enabled
