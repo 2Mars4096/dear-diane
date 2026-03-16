@@ -170,7 +170,7 @@ Layout modes NEVER restrict backend capabilities. Code mode still has full agent
 ### Shared Infrastructure
 
 - **App shell:** Workspace tabs (top), mode bar, sidebar, notification area, settings
-- **Chat bar:** Always-visible input at the bottom of any mode. In Chat mode, this is the primary composer integrated into the conversation view. In other modes, this is the single source of truth for composing messages; side chat panels show transcript/status, not a second independent input box.
+- **Per-mode chat sidebar:** Each non-Chat mode has a toggleable right-side chat panel (`ModeChatSidebar`) with persistent per-workspace history and mode-specific context injection. `Cmd+J` or `Cmd+L` toggles it. Replaces the old `PersistentChatBar` (deleted in [1-9](1-9-shell-chrome-purge.md)). In Chat mode, the primary composer IS the conversation view.
 - **Panel framework:** Resizable, rearrangeable panels per mode layout. Generic `Panel` component.
 - **Event router:** Maps engine events to the right panel in the active mode.
 - **Workspace context:** Persistent across mode switches. Same workspace, same memory, same threads.
@@ -239,6 +239,10 @@ Configurable paper roots, function-first surfaces, progressive disclosure, works
 ### Phase 5: Code Mode Production Patch
 Fix blocking infrastructure (build errors, single-launch, onboarding), upgrade LSP/AI quality to production grade, close small broken features.
 - [1-8-code-mode-patch](1-8-code-mode-patch.md) — build fix, single-launch, onboarding, LSP wiring, @ refs, multi-file edits, bug fixes
+
+### Phase 5.5: Shell Chrome Purge & Per-Mode Chat
+Kill redundant shell chrome, give every mode its own persistent chat sidebar, add Workflow + Furnace access to Development mode.
+- [1-9-shell-chrome-purge](1-9-shell-chrome-purge.md) — delete Breadcrumb, SidebarHost, PersistentChatBar; shared ModeChatSidebar with persistent per-workspace history; Workflow + Furnace activity bar items in CodeMode; Research right-drawer discoverability
 
 ### Phase 6: Analytics + Operations
 Data science workspace + workflow management.

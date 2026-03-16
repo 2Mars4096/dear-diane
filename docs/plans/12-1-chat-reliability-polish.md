@@ -43,6 +43,10 @@
   - [ ] 8-1. Audit plans 10-5, 10-6, 10-2: mark genuinely incomplete tasks as deferred (not completed) *(deferred — same as parent)*
   - [ ] 8-2. Move deferred items to backlog in `todo.md` or into this phase's tasks *(deferred — same as parent)*
   - [ ] 8-3. Update plan statuses to reflect reality *(deferred — same as parent)*
+- [x] 9. Follow-up routing and provider compatibility hardening
+  - [x] 9-1. Add heuristic triage fallback so unparseable triage JSON still infers `write_file` / `read_file` / `search_web` / `workflow_edit` hints for short imperative follow-ups
+  - [x] 9-2. Preserve extra OpenAI-compatible tool-call metadata across turns and fall back to the default tool-capable provider when a resolved native provider lacks tool-call support
+  - [x] 9-3. Make post-tool recovery prompts and terminal error text reflect the real failure class (timeout vs provider/tool-history incompatibility)
 
 ## Decisions
 
@@ -69,3 +73,4 @@
 - 2026-03-12 handoff hardening follow-up: once a capability tool produces `stream_channel_id`, all later post-tool terminal `ChatCompleteEvent` paths now preserve it, including the normal completion branch and the forced partial-synthesis turn-cap branch. That keeps downstream `run-*` event streaming alive after the chat loop emits its final answer instead of silently dropping the handoff at the last step.
 - 2026-03-12 compaction/cancellation follow-up: `_compact_context()` now drops orphan `tool` messages before any budget-based early return, so malformed transcripts cannot preserve invalid tool-call state into later completions. Focused regressions also now cover explicit cancellation while a continuation, post-tool follow-up, or forced turn-cap synthesis completion is still in flight.
 - 2026-03-12 persistence follow-up: `ChatPanel.tsx` now routes thread autosave through a shared `threadPersistenceCoordinator`, which cancels superseded delayed snapshots for the same thread before an immediate terminal save runs. That prevents late debounced milestone saves (attachments/tool updates/run events) from overwriting the newest `chat_complete`/`chat_interrupted`/`chat_mutation` snapshot a few seconds later.
+- 2026-03-16 routing/provider follow-up: triage now has a heuristic fallback for unparseable JSON so short follow-ups like "update it" still infer file-write intent from live context; tool-using chat falls back to the default OpenAI-compatible provider when a resolved native provider lacks tool-calling support; OpenAI-compatible tool histories now preserve extra fields such as Gemini `thought_signature`; and post-tool recovery prompts distinguish timeouts from provider transcript incompatibilities.

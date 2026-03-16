@@ -12,6 +12,7 @@
 | [36-3](36-3-paper-corpus-memory.md) | Paper-corpus memory schema | `paper_corpus` metadata layer on MemoryKernel, knowledge_kind taxonomy, retrieval bundles |
 | [36-4](36-4-recipe-artifact-contract.md) | `recipe.md` and `skill.md` artifact contract | Frontmatter, required sections, skill projection rules, benchmark hooks |
 | [36-5](36-5-paper-acquisition-workflow.md) | Paper acquisition workflow | University proxy download, bibtex-ID naming, KB note creation, summary/provenance handoff |
+| [36-7](36-7-furnace-end-to-end.md) | Furnace end-to-end | API integration, session naming, recipe variants, PDF reading upgrade, structural extraction, multi-source ingestion |
 
 Detailed subplans exist because Plan `36` is too broad to execute safely as a single unit. Further descendant plans can still be created just-in-time when one of these slices grows large enough.
 
