@@ -14,6 +14,7 @@ interface ElectronAPI {
   fs: {
     readFile: (filePath: string) => Promise<string>;
     writeFile: (filePath: string, content: string) => Promise<void>;
+    writeTempAttachment: (payload: { name?: string; mimeType?: string; dataUrl: string }) => Promise<string>;
     readDir: (dirPath: string) => Promise<Array<{ name: string; isDirectory: boolean }>>;
     stat: (filePath: string) => Promise<{ size: number; mtime: number; isDirectory: boolean }>;
     mkdir: (dirPath: string) => Promise<void>;
@@ -271,6 +272,17 @@ export const nativeFs = {
       return true;
     }
     return false;
+  },
+
+  async writeTempAttachment(payload: {
+    name?: string;
+    mimeType?: string;
+    dataUrl: string;
+  }): Promise<string | null> {
+    if (window.electronAPI) {
+      return window.electronAPI.fs.writeTempAttachment(payload);
+    }
+    return null;
   },
 
   async readDir(dirPath: string): Promise<Array<{ name: string; isDirectory: boolean }> | null> {

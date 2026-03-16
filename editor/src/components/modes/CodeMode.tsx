@@ -76,14 +76,14 @@ import { activateAllInstalledExtensions } from "../../lib/extensions/extensionAc
 
 function WorkflowSidebarPanel() {
   return (
-    <div className="h-full flex flex-col text-gray-300">
-      <div className="px-3 py-2 border-b border-gray-800 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+    <div className="h-full flex flex-col text-gray-800 dark:text-gray-300">
+      <div className="border-b border-gray-200 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:border-gray-800 dark:text-gray-400">
         Workflows
       </div>
       <div className="flex-1 overflow-y-auto px-3 py-2">
-        <div className="text-xs text-gray-500 space-y-2">
+        <div className="space-y-2 text-xs text-gray-500 dark:text-gray-500">
           <p>Available workflows from your workspace.</p>
-          <button className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-800 transition-colors flex items-center gap-2">
+          <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-800">
             <Play size={12} className="text-green-400" />
             <span>Run Workflow…</span>
           </button>
@@ -95,14 +95,14 @@ function WorkflowSidebarPanel() {
 
 function FurnaceSidebarPanel() {
   return (
-    <div className="h-full flex flex-col text-gray-300">
-      <div className="px-3 py-2 border-b border-gray-800 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+    <div className="h-full flex flex-col text-gray-800 dark:text-gray-300">
+      <div className="border-b border-gray-200 px-3 py-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500 dark:border-gray-800 dark:text-gray-400">
         Furnace
       </div>
       <div className="flex-1 overflow-y-auto px-3 py-2">
-        <div className="text-xs text-gray-500 space-y-2">
+        <div className="space-y-2 text-xs text-gray-500 dark:text-gray-500">
           <p>Training sessions and recipe management.</p>
-          <button className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-800 transition-colors flex items-center gap-2">
+          <button className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-800">
             <Plus size={12} className="text-orange-400" />
             <span>New Recipe</span>
           </button>
@@ -130,8 +130,8 @@ function ActivityItem({ icon, active, title, onClick }: ActivityItemProps) {
       onClick={onClick}
       className={`w-full flex items-center justify-center py-2.5 transition-colors ${
         active
-          ? "text-white border-l-2 border-white"
-          : "text-gray-500 hover:text-gray-300 border-l-2 border-transparent"
+          ? "border-l-2 border-blue-600 bg-blue-50/80 text-blue-700 dark:border-white dark:bg-transparent dark:text-white"
+          : "border-l-2 border-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-transparent dark:hover:text-gray-300"
       }`}
     >
       {icon}
@@ -140,7 +140,7 @@ function ActivityItem({ icon, active, title, onClick }: ActivityItemProps) {
 }
 
 function ActivitySeparator() {
-  return <div className="w-5 border-t border-gray-700/50 my-1 mx-auto" />;
+  return <div className="my-1 mx-auto w-5 border-t border-gray-300 dark:border-gray-700/50" />;
 }
 
 /* ------------------------------------------------------------------ */
@@ -430,15 +430,15 @@ function BottomPanelTabs({
   ];
 
   return (
-    <div className="flex items-center bg-[#252526] border-b border-[#3c3c3c] shrink-0">
+    <div className="flex items-center border-b border-gray-200 bg-gray-50 shrink-0 dark:border-[#3c3c3c] dark:bg-[#252526]">
       {tabs.map((t) => (
         <button
           key={t.id}
           onClick={() => onTabChange(t.id)}
           className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wide border-b transition-colors ${
             activeTab === t.id
-              ? "text-white border-white"
-              : "text-gray-500 hover:text-gray-300 border-transparent"
+              ? "border-blue-600 text-blue-700 dark:border-white dark:text-white"
+              : "border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-gray-300"
           }`}
         >
           {t.icon}
@@ -604,7 +604,7 @@ export default function CodeMode() {
   })();
 
   return (
-    <div className="h-full w-full flex flex-col bg-gray-900">
+    <div className="h-full w-full flex flex-col bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-white">
       {recoveredFileCount > 0 && (
         <CrashRecoveryBanner
           fileCount={recoveredFileCount}
@@ -613,7 +613,7 @@ export default function CodeMode() {
       )}
       <div className="flex-1 min-h-0 flex">
         {/* Activity bar */}
-        <div className="w-[40px] bg-gray-900 border-r border-gray-800 flex flex-col shrink-0">
+        <div className="w-[40px] bg-white border-r border-gray-200 flex flex-col shrink-0 dark:bg-gray-900 dark:border-gray-800">
           <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center py-1">
             {/* Core IDE */}
             <ActivityItem
@@ -696,14 +696,14 @@ export default function CodeMode() {
             />
           </div>
 
-          <div className="border-t border-gray-800 py-1 flex flex-col items-center shrink-0 bg-gray-900">
+          <div className="border-t border-gray-200 py-1 flex flex-col items-center shrink-0 bg-white dark:border-gray-800 dark:bg-gray-900">
             <button
               title="AI Chat (⌘J)"
               onClick={() => setShowChatSidebar((v) => !v)}
               className={`w-full flex items-center justify-center py-2 transition-colors border-l-2 ${
                 showChatSidebar
-                  ? "text-white border-blue-400 bg-blue-500/10"
-                  : "text-blue-400 hover:text-blue-300 border-transparent hover:bg-blue-500/5"
+                  ? "border-blue-500 bg-blue-50 text-blue-700 dark:border-blue-400 dark:bg-blue-500/10 dark:text-white"
+                  : "border-transparent text-blue-500 hover:bg-blue-50 hover:text-blue-700 dark:text-blue-400 dark:hover:bg-blue-500/5 dark:hover:text-blue-300"
               }`}
             >
               <MessageSquare size={20} />
@@ -721,7 +721,7 @@ export default function CodeMode() {
         <Allotment proportionalLayout={false}>
           {showSidebar && (
             <Allotment.Pane preferredSize={250} minSize={150} maxSize={500}>
-              <div className="h-full bg-gray-900 overflow-hidden">
+              <div className="h-full bg-white overflow-hidden dark:bg-gray-900">
                 {sidebarContent}
               </div>
             </Allotment.Pane>
@@ -731,14 +731,14 @@ export default function CodeMode() {
             <div className="flex flex-col h-full">
             <WorkspaceInfo />
             <CoverageSummaryBar />
-            <div className="flex items-center justify-end gap-2 px-3 py-1.5 border-b border-[#3c3c3c] bg-[#252526] shrink-0">
+            <div className="flex items-center justify-end gap-2 border-b border-gray-200 bg-gray-50 px-3 py-1.5 shrink-0 dark:border-[#3c3c3c] dark:bg-[#252526]">
               <button
                 onClick={() => setShowChatSidebar((v) => !v)}
                 title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
                 className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
                   showChatSidebar
-                    ? "border-blue-500/30 bg-blue-500/10 text-blue-300"
-                    : "border-transparent text-blue-400 hover:bg-white/5 hover:text-blue-300"
+                    ? "border-blue-500/30 bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"
+                    : "border-transparent text-blue-500 hover:bg-blue-50 hover:text-blue-700 dark:text-blue-400 dark:hover:bg-white/5 dark:hover:text-blue-300"
                 }`}
               >
                 <MessageSquare size={13} />
@@ -806,6 +806,9 @@ export default function CodeMode() {
                   const state = useCodeStore.getState();
                   const activeFile = state.openFiles.find((f) => f.path === state.activeFilePath);
                   const lines: string[] = ["[Workspace Context]"];
+                  if (state.currentBranch) {
+                    lines.push(`Git branch: ${state.currentBranch}`);
+                  }
                   if (activeFile) {
                     const lineCount = activeFile.content.split("\n").length;
                     lines.push(`Active file: ${activeFile.path} (${activeFile.language}, ${lineCount} lines)`);

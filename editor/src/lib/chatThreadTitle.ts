@@ -1,5 +1,8 @@
 export function normalizeThreadTitleInput(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
+  const clean = value.replace(/\s+/g, " ").trim();
+  // Guard against persisted literal placeholders from older payloads.
+  if (/^(undefined|null)$/i.test(clean)) return "";
+  return clean;
 }
 
 const PATH_RE = /(?:^|[\s(])((?:~?\/|\/)[^\s,;:()]+)/g;

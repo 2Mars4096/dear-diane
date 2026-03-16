@@ -1,25 +1,17 @@
 /**
  * AI-powered code actions: explain, generate tests, docs, refactoring,
  * error fixes, commit messages, and codebase Q&A.
- *
- * All actions call the DAN server's editor message endpoint.
  */
 
-const API_BASE = "/api";
+import { requestEditorChatText } from "./editorChat";
 
 async function aiRequest(message: string, action: string): Promise<string> {
-  const response = await fetch(`${API_BASE}/chat/editor/message`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      message,
-      mode: "auto",
-      context: { action },
-    }),
+  return requestEditorChatText({
+    message,
+    mode: "ask",
+    scope: `code-action:${action}`,
+    surfaceContext: { action },
   });
-  if (!response.ok) throw new Error(`AI request failed: ${response.status}`);
-  const data = await response.json();
-  return data.content ?? data.response ?? data.message ?? "";
 }
 
 export async function explainCode(

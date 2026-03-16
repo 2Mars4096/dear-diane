@@ -23,7 +23,7 @@ function Toggle({
       aria-checked={checked}
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full transition-colors ${
-        checked ? "bg-blue-600" : "bg-gray-600"
+        checked ? "bg-blue-600" : "bg-gray-300 dark:bg-gray-600"
       }`}
     >
       <span
@@ -48,7 +48,7 @@ function Select<T extends string>({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value as T)}
-      className="bg-[#3c3c3c] border border-[#555] rounded px-2 py-1 text-sm text-white outline-none focus:border-blue-500 min-w-[140px]"
+      className="min-w-[140px] rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 outline-none focus:border-blue-500 dark:border-[#555] dark:bg-[#3c3c3c] dark:text-white"
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -77,7 +77,7 @@ function NumberInput({
   return (
     <div className="flex items-center gap-1">
       <button
-        className="w-6 h-6 flex items-center justify-center rounded bg-[#3c3c3c] border border-[#555] text-white hover:bg-[#4c4c4c] text-sm"
+        className="flex h-6 w-6 items-center justify-center rounded border border-gray-300 bg-white text-sm text-gray-700 hover:bg-gray-100 dark:border-[#555] dark:bg-[#3c3c3c] dark:text-white dark:hover:bg-[#4c4c4c]"
         onClick={() => onChange(clamp(value - step))}
       >
         -
@@ -89,10 +89,10 @@ function NumberInput({
         max={max}
         step={step}
         onChange={(e) => onChange(clamp(Number(e.target.value)))}
-        className="w-16 bg-[#3c3c3c] border border-[#555] rounded px-2 py-1 text-sm text-white text-center outline-none focus:border-blue-500 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+        className="w-16 rounded border border-gray-300 bg-white px-2 py-1 text-center text-sm text-gray-900 outline-none focus:border-blue-500 [appearance:textfield] dark:border-[#555] dark:bg-[#3c3c3c] dark:text-white [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
       />
       <button
-        className="w-6 h-6 flex items-center justify-center rounded bg-[#3c3c3c] border border-[#555] text-white hover:bg-[#4c4c4c] text-sm"
+        className="flex h-6 w-6 items-center justify-center rounded border border-gray-300 bg-white text-sm text-gray-700 hover:bg-gray-100 dark:border-[#555] dark:bg-[#3c3c3c] dark:text-white dark:hover:bg-[#4c4c4c]"
         onClick={() => onChange(clamp(value + step))}
       >
         +
@@ -113,7 +113,7 @@ function TextInput({
       type="text"
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="bg-[#3c3c3c] border border-[#555] rounded px-2 py-1 text-sm text-white outline-none focus:border-blue-500 min-w-[200px]"
+      className="min-w-[200px] rounded border border-gray-300 bg-white px-2 py-1 text-sm text-gray-900 outline-none focus:border-blue-500 dark:border-[#555] dark:bg-[#3c3c3c] dark:text-white"
     />
   );
 }
@@ -132,11 +132,11 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="flex items-center justify-between py-2.5 border-b border-[#2d2d2d]">
+    <div className="flex items-center justify-between border-b border-gray-200 py-2.5 dark:border-[#2d2d2d]">
       <div className="flex flex-col gap-0.5 mr-4">
-        <span className="text-sm text-gray-300">{label}</span>
+        <span className="text-sm text-gray-800 dark:text-gray-300">{label}</span>
         {description && (
-          <span className="text-xs text-gray-500">{description}</span>
+          <span className="text-xs text-gray-500 dark:text-gray-500">{description}</span>
         )}
       </div>
       {children}
@@ -146,7 +146,7 @@ function SettingRow({
 
 function SectionHeader({ title }: { title: string }) {
   return (
-    <h3 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mt-6 mb-2 first:mt-0">
+    <h3 className="mt-6 mb-2 text-[11px] font-semibold uppercase tracking-wider text-gray-500 first:mt-0 dark:text-gray-400">
       {title}
     </h3>
   );
@@ -334,10 +334,10 @@ function WorkspaceOverrideRow({ settingKey: _key, label, rootPath: _root, global
   const isOverridden = wsValue !== undefined;
 
   return (
-    <div className="flex items-center justify-between py-2 border-b border-[#2d2d2d]">
+    <div className="flex items-center justify-between border-b border-gray-200 py-2 dark:border-[#2d2d2d]">
       <div className="flex flex-col gap-0.5 mr-4">
-        <span className="text-sm text-gray-300">{label}</span>
-        <span className="text-xs text-gray-500">
+        <span className="text-sm text-gray-800 dark:text-gray-300">{label}</span>
+        <span className="text-xs text-gray-500 dark:text-gray-500">
           Global: {String(globalValue)}
           {isOverridden && <span className="text-blue-400 ml-2">Workspace: {String(wsValue)}</span>}
         </span>
@@ -345,7 +345,7 @@ function WorkspaceOverrideRow({ settingKey: _key, label, rootPath: _root, global
       {isOverridden && (
         <button
           onClick={onClear}
-          className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-300 px-2 py-1 rounded hover:bg-[#3c3c3c] transition-colors"
+          className="flex items-center gap-1 rounded px-2 py-1 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-800 dark:hover:bg-[#3c3c3c] dark:hover:text-gray-300"
           title="Reset to global"
         >
           <X size={12} /> Reset
@@ -392,7 +392,7 @@ function WorkspaceSettings() {
         {Object.keys(wsOverrides).length > 0 && (
           <button
             onClick={() => settings.clearAllWorkspaceOverrides(rootPath)}
-            className="flex items-center gap-1.5 rounded px-2.5 py-1 text-xs text-gray-400 hover:text-white hover:bg-[#3c3c3c] transition-colors"
+            className="flex items-center gap-1.5 rounded px-2.5 py-1 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-[#3c3c3c] dark:hover:text-white"
           >
             <RotateCcw size={13} /> Clear All
           </button>
@@ -512,14 +512,14 @@ export default function SettingsPanel() {
   const [activeTab, setActiveTab] = useState<SettingsTab>("user");
 
   return (
-    <div className="h-full overflow-y-auto bg-[#1e1e1e] text-white">
-      <div className="sticky top-0 z-10 border-b border-[#2d2d2d] bg-[#1e1e1e]">
+    <div className="h-full overflow-y-auto bg-white text-gray-900 dark:bg-[#1e1e1e] dark:text-white">
+      <div className="sticky top-0 z-10 border-b border-gray-200 bg-white dark:border-[#2d2d2d] dark:bg-[#1e1e1e]">
         <div className="flex items-center justify-between px-6 py-3">
           <h2 className="text-base font-semibold">Settings</h2>
           {activeTab === "user" && (
             <button
               onClick={settings.resetToDefaults}
-              className="flex items-center gap-1.5 rounded px-2.5 py-1 text-xs text-gray-400 hover:text-white hover:bg-[#3c3c3c] transition-colors"
+              className="flex items-center gap-1.5 rounded px-2.5 py-1 text-xs text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-[#3c3c3c] dark:hover:text-white"
               title="Reset all settings to defaults"
             >
               <RotateCcw size={13} />
@@ -534,8 +534,8 @@ export default function SettingsPanel() {
               onClick={() => setActiveTab(tab)}
               className={`px-4 py-1.5 text-xs font-medium border-b-2 transition-colors ${
                 activeTab === tab
-                  ? "text-white border-white"
-                  : "text-gray-500 hover:text-gray-300 border-transparent"
+                  ? "border-blue-600 text-blue-700 dark:border-white dark:text-white"
+                  : "border-transparent text-gray-500 hover:text-gray-900 dark:hover:text-gray-300"
               }`}
             >
               {tab === "user" ? "User" : "Workspace"}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback, useState } from "react";
+import { useEffect, useRef, useCallback, useState, useMemo } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -7,6 +7,7 @@ import { Plus, X, Columns2, Copy, ClipboardPaste, Eraser, ScreenShare, CheckSqua
 import { useCodeStore } from "../../store/useCodeStore";
 import { useSettingsStore, type TerminalProfile } from "../../store/useSettingsStore";
 import { nativeTerminal } from "../../lib/electronBridge";
+import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 
 interface TermContextMenu {
   x: number;
@@ -25,12 +26,6 @@ const TERM_OPTIONS = {
   macOptionIsMeta: true,
   macOptionClickForcesSelection: true,
   allowTransparency: true,
-  theme: {
-    background: "#1e1e1e",
-    foreground: "#d4d4d4",
-    cursor: "#d4d4d4",
-    selectionBackground: "#264f78",
-  },
 } as const;
 
 interface XtermInstance {
@@ -58,6 +53,28 @@ export default function TerminalPanel() {
   const [splitTerminalIds, setSplitTerminalIds] = useState<[string, string] | null>(null);
   const [termCtxMenu, setTermCtxMenu] = useState<TermContextMenu | null>(null);
   const [showProfileMenu, setShowProfileMenu] = useState(false);
+  const appTheme = useSettingsStore((s) => s.theme);
+  const terminalProfiles = useSettingsStore((s) => s.terminalProfiles);
+  const resolvedMonacoTheme = resolveMonacoTheme(appTheme);
+  const isTerminalDark = resolvedMonacoTheme !== "vs";
+  const splitBorderColor = isTerminalDark ? "#3c3c3c" : "#d1d5db";
+  const terminalTheme = useMemo(
+    () =>
+      isTerminalDark
+        ? {
+            background: "#1e1e1e",
+            foreground: "#d4d4d4",
+            cursor: "#d4d4d4",
+            selectionBackground: "#264f78",
+          }
+        : {
+            background: "#ffffff",
+            foreground: "#1f2937",
+            cursor: "#111827",
+            selectionBackground: "#bfdbfe",
+          },
+    [isTerminalDark],
+  );
 
   const activeSplitSide = splitTerminalIds
     ? activeTerminalId === splitTerminalIds[0] ? "left" : "right"
@@ -75,7 +92,10 @@ export default function TerminalPanel() {
       setActiveTerminalRef.current(termId);
     });
 
-    const terminal = new Terminal({ ...TERM_OPTIONS });
+    const terminal = new Terminal({
+      ...TERM_OPTIONS,
+      theme: terminalTheme,
+    });
     const fitAddon = new FitAddon();
     const webLinksAddon = new WebLinksAddon();
 
@@ -112,7 +132,7 @@ export default function TerminalPanel() {
     terminal.onData((data) => {
       nativeTerminal.write(termId, data);
     });
-  }, []);
+  }, [terminalTheme]);
 
   const createTerminalInstance = useCallback(async (profile?: TerminalProfile): Promise<string | null> => {
     const pinnedRoots = useCodeStore.getState().pinnedRoots;
@@ -188,6 +208,13 @@ export default function TerminalPanel() {
   }, []);
 
   useEffect(() => {
+    for (const [, inst] of xtermMapRef.current) {
+      inst.terminal.options.theme = terminalTheme;
+      inst.terminal.refresh(0, Math.max(0, inst.terminal.rows - 1));
+    }
+  }, [terminalTheme]);
+
+  useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
 
@@ -202,7 +229,7 @@ export default function TerminalPanel() {
           inst.container.style.flex = "1";
           inst.container.style.width = "";
           inst.container.style.minWidth = "0";
-          inst.container.style.borderRight = isLeft ? "1px solid #3c3c3c" : "";
+          inst.container.style.borderRight = isLeft ? `1px solid ${splitBorderColor}` : "";
           requestAnimationFrame(() => {
             inst.fitAddon.fit();
             const dims = inst.fitAddon.proposeDimensions();
@@ -236,7 +263,7 @@ export default function TerminalPanel() {
         }
       }
     }
-  }, [activeTerminalId, splitTerminalIds]);
+  }, [activeTerminalId, splitTerminalIds, splitBorderColor]);
 
   useEffect(() => {
     const wrapper = wrapperRef.current;
@@ -398,7 +425,10 @@ export default function TerminalPanel() {
         setActiveTerminalRef.current(id);
       });
 
-      const terminal = new Terminal({ ...TERM_OPTIONS });
+      const terminal = new Terminal({
+        ...TERM_OPTIONS,
+        theme: terminalTheme,
+      });
       const fitAddon = new FitAddon();
       const webLinksAddon = new WebLinksAddon();
       terminal.loadAddon(fitAddon);
@@ -440,7 +470,7 @@ export default function TerminalPanel() {
 
     window.addEventListener("chat:shellCommand", handler);
     return () => window.removeEventListener("chat:shellCommand", handler);
-  }, [addTerminal, setActiveTerminal]);
+  }, [addTerminal, setActiveTerminal, terminalTheme]);
 
   useEffect(() => {
     if (!showProfileMenu) return;
@@ -473,9 +503,9 @@ export default function TerminalPanel() {
   );
 
   return (
-    <div className="flex h-full w-full flex-col" style={{ background: "#1e1e1e" }}>
+    <div className="flex h-full w-full flex-col bg-white dark:bg-[#1e1e1e]">
       {/* Tab bar */}
-      <div className="flex items-center gap-0 bg-[#252526] px-1 border-b border-[#3c3c3c]">
+      <div className="flex items-center gap-0 bg-gray-100 dark:bg-[#252526] px-1 border-b border-gray-300 dark:border-[#3c3c3c]">
         {terminals.map((t) => {
           const isInSplit = splitTerminalIds != null &&
             (splitTerminalIds[0] === t.id || splitTerminalIds[1] === t.id);
@@ -487,12 +517,12 @@ export default function TerminalPanel() {
             <button
               key={t.id}
               onClick={() => handleTabClick(t.id)}
-              className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-r border-[#3c3c3c] transition-colors ${
+              className={`group flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-r border-gray-300 dark:border-[#3c3c3c] transition-colors ${
                 isActive
-                  ? "bg-[#1e1e1e] text-white"
+                  ? "bg-white text-gray-900 dark:bg-[#1e1e1e] dark:text-white"
                   : isInSplit
-                    ? "bg-[#2a2a2a] text-gray-300"
-                    : "bg-[#2d2d2d] text-gray-400 hover:text-gray-200"
+                    ? "bg-gray-100 text-gray-700 dark:bg-[#2a2a2a] dark:text-gray-300"
+                    : "bg-gray-50 text-gray-500 hover:text-gray-800 dark:bg-[#2d2d2d] dark:text-gray-400 dark:hover:text-gray-200"
               }`}
             >
               <span className="truncate max-w-[120px]">{t.title}</span>
@@ -501,7 +531,7 @@ export default function TerminalPanel() {
               )}
               <span
                 onClick={(e) => handleClose(e, t.id)}
-                className="ml-1 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-white/10 transition-opacity"
+                className="ml-1 rounded p-0.5 opacity-0 group-hover:opacity-100 hover:bg-gray-200 dark:hover:bg-white/10 transition-opacity"
               >
                 <X size={12} />
               </span>
@@ -512,7 +542,7 @@ export default function TerminalPanel() {
         <button
           onClick={handleSplit}
           className={`flex items-center justify-center p-1.5 transition-colors ${
-            splitTerminalIds ? "text-blue-400 hover:text-blue-300" : "text-gray-400 hover:text-white"
+            splitTerminalIds ? "text-blue-500 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300" : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-white"
           }`}
           title={splitTerminalIds ? "Unsplit Terminal" : "Split Terminal"}
         >
@@ -522,33 +552,33 @@ export default function TerminalPanel() {
         <div className="relative flex items-center">
           <button
             onClick={() => createTerminalInstance()}
-            className="flex items-center justify-center p-1.5 text-gray-400 hover:text-white transition-colors"
+            className="flex items-center justify-center p-1.5 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-white transition-colors"
             title="New Terminal"
           >
             <Plus size={14} />
           </button>
           <button
             onClick={() => setShowProfileMenu((v) => !v)}
-            className="flex items-center justify-center p-1 text-gray-400 hover:text-white transition-colors -ml-0.5"
+            className="flex items-center justify-center p-1 text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-white transition-colors -ml-0.5"
             title="Select Terminal Profile"
           >
             <ChevronDown size={10} />
           </button>
 
           {showProfileMenu && (
-            <div className="absolute top-full right-0 mt-1 bg-gray-800 border border-gray-700 rounded shadow-lg py-1 z-50 min-w-[160px]">
-              {useSettingsStore.getState().terminalProfiles.map((profile) => (
+            <div className="absolute top-full right-0 mt-1 bg-white dark:bg-gray-800 border border-gray-300 dark:border-gray-700 rounded shadow-lg py-1 z-50 min-w-[160px]">
+              {terminalProfiles.map((profile) => (
                 <button
                   key={profile.id}
                   onClick={() => {
                     createTerminalInstance(profile);
                     setShowProfileMenu(false);
                   }}
-                  className="block w-full text-left px-3 py-1.5 text-xs text-gray-300 hover:bg-gray-700"
+                  className="block w-full text-left px-3 py-1.5 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
                 >
                   {profile.name}
                   {profile.isDefault && (
-                    <span className="text-gray-500 ml-1">(default)</span>
+                    <span className="text-gray-500 dark:text-gray-500 ml-1">(default)</span>
                   )}
                 </button>
               ))}
@@ -566,41 +596,41 @@ export default function TerminalPanel() {
 
       {termCtxMenu && (
         <div
-          className="fixed z-50 min-w-[180px] rounded-md bg-[#252526] border border-[#3c3c3c] shadow-xl py-1 text-sm text-gray-300"
+          className="fixed z-50 min-w-[180px] rounded-md bg-white dark:bg-[#252526] border border-gray-300 dark:border-[#3c3c3c] shadow-xl py-1 text-sm text-gray-700 dark:text-gray-300"
           style={{ left: termCtxMenu.x, top: termCtxMenu.y }}
         >
           {termCtxMenu.hasSelection && (
             <button
               onClick={handleTermCopy}
-              className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-[#094771] transition-colors text-left"
+              className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-[#094771] transition-colors text-left"
             >
               <Copy size={14} /> Copy
-              <span className="ml-auto text-xs text-gray-500">⌘C</span>
+              <span className="ml-auto text-xs text-gray-500 dark:text-gray-500">⌘C</span>
             </button>
           )}
           <button
             onClick={handleTermPaste}
-            className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-[#094771] transition-colors text-left"
+            className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-[#094771] transition-colors text-left"
           >
             <ClipboardPaste size={14} /> Paste
-            <span className="ml-auto text-xs text-gray-500">⌘V</span>
+            <span className="ml-auto text-xs text-gray-500 dark:text-gray-500">⌘V</span>
           </button>
           <button
             onClick={handleTermSelectAll}
-            className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-[#094771] transition-colors text-left"
+            className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-[#094771] transition-colors text-left"
           >
             <CheckSquare size={14} /> Select All
           </button>
-          <div className="border-t border-[#3c3c3c] my-1" />
+          <div className="border-t border-gray-300 dark:border-[#3c3c3c] my-1" />
           <button
             onClick={handleTermClear}
-            className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-[#094771] transition-colors text-left"
+            className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-[#094771] transition-colors text-left"
           >
             <Eraser size={14} /> Clear Terminal
           </button>
           <button
             onClick={() => { setTermCtxMenu(null); handleSplit(); }}
-            className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-[#094771] transition-colors text-left"
+            className="flex items-center gap-2 w-full px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-[#094771] transition-colors text-left"
           >
             <ScreenShare size={14} /> Split Terminal
           </button>

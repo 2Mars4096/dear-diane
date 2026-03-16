@@ -17,6 +17,11 @@ describe("chatThreadTitle helpers", () => {
     expect(normalizeThreadTitleInput("   \n\t  ")).toBe("");
   });
 
+  it("treats literal null-like placeholders as empty", () => {
+    expect(normalizeThreadTitleInput("undefined")).toBe("");
+    expect(normalizeThreadTitleInput(" null ")).toBe("");
+  });
+
   it("provides a fallback display title", () => {
     expect(getDisplayThreadTitle("", "Untitled chat")).toBe("Untitled chat");
     expect(getDisplayThreadTitle("Energy Outlook", "Untitled chat")).toBe(

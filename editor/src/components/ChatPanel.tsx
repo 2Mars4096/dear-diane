@@ -78,6 +78,12 @@ import {
   safeTokenUsage,
   toBackendMessage,
 } from "../lib/chatMessagePersistence";
+import {
+  buildAttachmentContext,
+  fileToAttachmentDraft,
+  normalizeAttachmentDrafts,
+  resolveAttachmentName,
+} from "../lib/editorChat";
 import { createThreadPersistenceCoordinator } from "../lib/threadPersistenceCoordinator";
 import { describeLatestToolProgress } from "../lib/toolCallPresentation";
 import {
@@ -348,6 +354,28 @@ interface ChatPanelProps {
   onThreadTitleUpdate?: (threadId: string, title: string) => void;
 }
 
+type PendingQueueItem = {
+  id: string;
+  content: string;
+  timestamp: number;
+  attachments?: File[];
+};
+
+function describeQueuedItem(item: PendingQueueItem): string {
+  if (item.content) return item.content;
+  const attachments = item.attachments ?? [];
+  if (attachments.length === 1) {
+    return `Attached ${resolveAttachmentName(
+      attachments[0].name,
+      attachments[0].type || undefined,
+    )}`;
+  }
+  if (attachments.length > 1) {
+    return `Attached ${attachments.length} items`;
+  }
+  return "(empty message)";
+}
+
 export default function ChatPanel({
   fullScreen = false,
   workspaceId: _workspaceId,
@@ -391,6 +419,7 @@ export default function ChatPanel({
   const [editingTitle, setEditingTitle] = useState(false);
   const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
   const [threadTitle, setThreadTitle] = useState("");
+  const [isComposerFocused, setIsComposerFocused] = useState(false);
   const [sessionMarkers, setSessionMarkers] = useState<
     Record<string, { historyCursor: number }>
   >({});
@@ -410,12 +439,17 @@ export default function ChatPanel({
   const [mutationConfirmMode, setMutationConfirmMode] = useState<boolean>(() =>
     readMutationConfirmPreference(),
   );
-  const [pendingQueue, setPendingQueue] = useState<
-    Array<{ id: string; content: string; timestamp: number }>
-  >([]);
+  const [pendingQueue, setPendingQueue] = useState<PendingQueueItem[]>([]);
   const pendingQueueRef = useRef(pendingQueue);
   pendingQueueRef.current = pendingQueue;
-  const sendMessageRef = useRef<((text: string) => void) | null>(null);
+  const sendMessageRef = useRef<
+    ((
+      text?: string,
+      historyOverride?: ChatMessage[],
+      modeOverride?: ChatMode,
+      attachmentsOverride?: File[],
+    ) => void) | null
+  >(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<
     Array<{
@@ -518,7 +552,9 @@ export default function ChatPanel({
           const backendMsgs = (data.messages ?? []) as Record<string, unknown>[];
           setMessages(backendMsgs.map(fromBackendMessage));
           setIsStreaming(false);
-          if (data.title) setThreadTitle(data.title as string);
+          setThreadTitle(
+            getDisplayThreadTitle((data.title as string | undefined) ?? "", ""),
+          );
         }).catch(() => {});
         bgStreamReloadRef.current?.(wfId);
       }
@@ -533,7 +569,16 @@ export default function ChatPanel({
       if (q.length > 0) {
         const next = q[0];
         setPendingQueue((prev) => prev.slice(1));
-        setTimeout(() => sendMessageRef.current?.(next.content), 100);
+        setTimeout(
+          () =>
+            sendMessageRef.current?.(
+              next.content,
+              undefined,
+              undefined,
+              next.attachments,
+            ),
+          100,
+        );
       }
     }
   }, [isStreaming]);
@@ -611,8 +656,8 @@ export default function ChatPanel({
       const { threads: list } = await api.listChatThreads(wfId);
       setThreads(list);
       const active = list.find((t) => t.id === activeThreadIdRef.current);
-      if (active?.title) {
-        setThreadTitle(active.title);
+      if (active) {
+        setThreadTitle(getDisplayThreadTitle(active.title, ""));
       }
       return list;
     } catch (err) {
@@ -664,7 +709,10 @@ export default function ChatPanel({
         const backendMsgs = (data.messages ?? []) as Record<string, unknown>[];
         setMessages(backendMsgs.map(fromBackendMessage));
         setActiveThreadId(threadId);
-        const title = (data.title as string) || "";
+        const title = getDisplayThreadTitle(
+          (data.title as string | undefined) ?? "",
+          "",
+        );
         setThreadTitle(title);
         setShowThreadList(false);
         setError(null);
@@ -1212,18 +1260,37 @@ export default function ChatPanel({
   // -------------------------------------------------------------------------
 
   const sendMessage = useCallback(
-    async (text?: string, historyOverride?: ChatMessage[], modeOverride?: ChatMode) => {
+    async (
+      text?: string,
+      historyOverride?: ChatMessage[],
+      modeOverride?: ChatMode,
+      attachmentsOverride?: File[],
+    ) => {
       const content = (text ?? inputText).trim();
-      if (!content) return;
+      const sourceAttachments = attachmentsOverride ?? userAttachments;
+      const pendingAttachmentDrafts = sourceAttachments.map(fileToAttachmentDraft);
+      if (!content && pendingAttachmentDrafts.length === 0) return;
 
       if (isStreaming && !historyOverride) {
         setPendingQueue((q) => [
           ...q,
-          { id: crypto.randomUUID(), content, timestamp: Date.now() },
+          {
+            id: crypto.randomUUID(),
+            content,
+            timestamp: Date.now(),
+            attachments:
+              sourceAttachments.length > 0 ? [...sourceAttachments] : undefined,
+          },
         ]);
         setInputText("");
+        setUserAttachments([]);
         return;
       }
+
+      const attachmentDrafts = await normalizeAttachmentDrafts(pendingAttachmentDrafts);
+      const firstAttachmentPath =
+        attachmentDrafts.find((attachment) => typeof attachment.path === "string" && attachment.path)
+          ?.path ?? null;
 
       let threadId = activeThreadIdRef.current;
       if (!threadId && graphId) {
@@ -1244,8 +1311,20 @@ export default function ChatPanel({
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
         role: "user",
-        content,
+        content:
+          content ||
+          (attachmentDrafts.length === 1
+            ? `Attached ${attachmentDrafts[0].name}`
+            : `Attached ${attachmentDrafts.length} items`),
         timestamp: Date.now(),
+        attachments:
+          attachmentDrafts.length > 0
+            ? attachmentDrafts.map((attachment) => ({
+                path: attachment.path ?? attachment.name,
+                filename: attachment.name,
+                size: attachment.size,
+              }))
+            : undefined,
       };
 
       const assistantId = crypto.randomUUID();
@@ -1297,6 +1376,12 @@ export default function ChatPanel({
             preferLocal: isGraphDirty,
           })
         : graphRevision ?? undefined;
+      const attachmentContext = await buildAttachmentContext(attachmentDrafts);
+      const messageWithAttachments = attachmentContext
+        ? content
+          ? `${content}\n\n${attachmentContext}`
+          : `Please use the appended attachments as context.\n\n${attachmentContext}`
+        : content;
 
       try {
         const res = await fetch("/api/chat/message", {
@@ -1304,7 +1389,7 @@ export default function ChatPanel({
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             workflow_id: graphId,
-            message: content,
+            message: messageWithAttachments,
             history: (historyOverride ?? messagesRef.current).map((m) => ({
               role: m.role,
               content: m.content,
@@ -1312,6 +1397,16 @@ export default function ChatPanel({
             thread_id: threadId,
             client_graph_revision: clientGraphRevision,
             mode: modeOverride || useGraphStore.getState().chatMode,
+            attachment_path: firstAttachmentPath,
+            surface_context: {
+              appended_attachments: attachmentDrafts.map((attachment) => ({
+                kind: attachment.kind,
+                name: attachment.name,
+                path: attachment.path ?? null,
+                caption: attachment.caption ?? null,
+                source: attachment.source ?? null,
+              })),
+            },
             mentions: parseMentions(content)
               .segments.filter((s) => s.type === "mention")
               .map((s) => ({
@@ -1907,6 +2002,7 @@ export default function ChatPanel({
       scheduleThreadPersist,
       classifyBackendDisconnectState,
       fetchThreads,
+      userAttachments,
     ],
   );
   sendMessageRef.current = sendMessage;
@@ -1960,7 +2056,10 @@ export default function ChatPanel({
     if (imageItem) {
       const file = imageItem.getAsFile();
       if (file) {
-        setPasteHint({ type: "image", file });
+        e.preventDefault();
+        setPasteHint(null);
+        setUserAttachments((prev) => [...prev, file]);
+        useGraphStore.getState().addToast({ type: "info", message: "Screenshot attached" });
       }
     }
   }, []);
@@ -2504,19 +2603,8 @@ export default function ChatPanel({
   // Shared conversation content (used in both fullScreen and sidebar layouts)
   // -------------------------------------------------------------------------
   const conversationHeader = fullScreen ? (
-    <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#3c3c3c] flex-shrink-0 bg-[#252526]">
+    <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 dark:border-[#3c3c3c] flex-shrink-0 bg-gray-50 dark:bg-[#252526]">
       <div className="flex items-center gap-2 min-w-0 flex-1">
-        <button
-          onClick={() => setShowThreadList(!showThreadList)}
-          className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-            showThreadList ? "bg-white/10 text-gray-200" : "text-gray-400 hover:bg-white/5 hover:text-gray-200"
-          }`}
-          title="Chat history (⌘⇧L)"
-        >
-          <History size={13} />
-          <span>History</span>
-        </button>
-        <div className="w-px h-4 bg-gray-700" />
         {editingTitle ? (
           <input
             autoFocus
@@ -2526,15 +2614,15 @@ export default function ChatPanel({
               if (e.key === "Enter") handleTitleSave((e.target as HTMLInputElement).value);
               if (e.key === "Escape") setEditingTitle(false);
             }}
-            className="text-sm font-semibold text-gray-200 bg-[#1e1e1e] border border-gray-700 rounded px-1.5 py-0.5 outline-none focus:border-indigo-400 min-w-0 flex-1"
+            className="text-sm font-semibold text-gray-900 dark:text-gray-200 bg-white dark:bg-[#1e1e1e] border border-gray-300 dark:border-gray-700 rounded px-1.5 py-0.5 outline-none focus:border-indigo-400 min-w-0 flex-1"
           />
         ) : (
           <div className="flex items-center gap-1 min-w-0 flex-1">
             <span
               onClick={() => activeThreadId && setEditingTitle(true)}
-              className={`text-sm font-semibold text-gray-200 truncate transition-colors ${
+              className={`text-sm font-semibold text-gray-900 dark:text-gray-200 truncate transition-colors ${
                 activeThreadId
-                  ? "cursor-pointer hover:text-indigo-400"
+                  ? "cursor-pointer hover:text-indigo-600 dark:hover:text-indigo-400"
                   : ""
               }`}
               title={activeThreadId ? "Rename chat title" : undefined}
@@ -2544,7 +2632,7 @@ export default function ChatPanel({
             {activeThreadId && (
               <button
                 onClick={() => setEditingTitle(true)}
-                className="text-gray-500 hover:text-indigo-400 p-0.5 rounded transition-colors flex-shrink-0"
+                className="text-gray-400 dark:text-gray-500 hover:text-indigo-600 dark:hover:text-indigo-400 p-0.5 rounded transition-colors flex-shrink-0"
                 title="Rename chat title"
               >
                 <PencilLine size={12} />
@@ -2555,25 +2643,37 @@ export default function ChatPanel({
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
         {(lastPromptTokens > 0 || totalTokens > 0) && (
-          <span className="text-[10px] text-gray-500 tabular-nums" title={`${totalTokens.toLocaleString()} total tokens used`}>
+          <span className="text-[10px] text-gray-500 dark:text-gray-500 tabular-nums" title={`${totalTokens.toLocaleString()} total tokens used`}>
             {contextWindow > 0 && lastPromptTokens > 0
               ? `~${formatTokenCount(lastPromptTokens)} / ${formatTokenCount(contextWindow)}`
               : `${totalTokens.toLocaleString()} tok`}
           </span>
         )}
-        <button onClick={() => handleExport("md")} className="text-gray-400 hover:text-gray-200 p-0.5 rounded transition-colors" title="Export as Markdown">
+        <button
+          onClick={() => setShowThreadList((prev) => !prev)}
+          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+            showThreadList
+              ? "bg-gray-200 text-gray-900 dark:bg-white/10 dark:text-gray-200"
+              : "text-gray-500 dark:text-gray-400 hover:bg-gray-200/70 dark:hover:bg-white/5 hover:text-gray-900 dark:hover:text-gray-200"
+          }`}
+          title="Chat history (⌘⇧L)"
+        >
+          <History size={13} />
+          <span>History</span>
+        </button>
+        <button onClick={() => handleExport("md")} className="text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200 p-0.5 rounded transition-colors" title="Export as Markdown">
           <Download size={13} />
         </button>
         <button
           onClick={() => setShowContextPanel((prev) => !prev)}
-          className={`p-0.5 rounded transition-colors ${showContextPanel ? "text-indigo-400 bg-indigo-500/10" : "text-gray-400 hover:text-gray-200"}`}
+          className={`p-0.5 rounded transition-colors ${showContextPanel ? "text-indigo-600 dark:text-indigo-400 bg-indigo-500/10" : "text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-200"}`}
           title="Context panel (⌘I)"
         >
           <Info size={13} />
         </button>
         <button
           onClick={handleNewChat}
-          className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-gray-400 hover:bg-white/5 hover:text-gray-200 transition-colors"
+          className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-gray-500 dark:text-gray-400 hover:bg-gray-200/70 dark:hover:bg-white/5 hover:text-gray-900 dark:hover:text-gray-200 transition-colors"
           title="New chat (⌘N)"
         >
           <Plus size={13} />
@@ -2646,7 +2746,7 @@ export default function ChatPanel({
   );
 
   const modeSelector = (
-    <div className={`flex items-center gap-1 px-3 py-1.5 border-b flex-shrink-0 ${fullScreen ? "justify-center border-[#3c3c3c] bg-[#1e1e1e]" : "border-gray-100 bg-gray-50/50"}`}>
+    <div className={`flex items-center gap-1 px-3 py-1.5 border-b flex-shrink-0 ${fullScreen ? "justify-center border-gray-200 dark:border-[#3c3c3c] bg-gray-50 dark:bg-[#1e1e1e]" : "border-gray-100 bg-gray-50/50"}`}>
       <div className={`flex items-center gap-1 ${fullScreen ? "max-w-3xl w-full" : ""}`}>
         {(["auto", "agent", "ask", "plan", "debug"] as const).map((m) => {
           const cfg = MODE_CONFIG[m];
@@ -2667,17 +2767,17 @@ export default function ChatPanel({
               className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
                 active
                   ? fullScreen
-                    ? "bg-white/10 text-gray-200 shadow-sm border border-gray-700"
+                    ? "bg-white text-gray-900 shadow-sm border border-gray-200 dark:bg-white/10 dark:text-gray-200 dark:border-gray-700"
                     : "bg-white text-gray-800 shadow-sm border border-gray-200"
                   : fullScreen
-                    ? "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                    ? "text-gray-500 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-300 hover:bg-gray-200/70 dark:hover:bg-white/5"
                     : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
               }`}
             >
               <Icon size={11} />
               {cfg.label}
               {m === "auto" && active && detectedMode && (
-                <span className="text-[9px] text-violet-600 font-normal">
+                <span className="text-[9px] text-violet-700 dark:text-violet-400 font-normal">
                   → {detectedMode.charAt(0).toUpperCase() + detectedMode.slice(1)}
                 </span>
               )}
@@ -2782,20 +2882,20 @@ export default function ChatPanel({
                   <div className="relative inline-block ml-4 mt-1">
                     <button
                       onClick={() => setSwitchPrefMenu((v) => !v)}
-                      className="text-[10px] text-gray-400 hover:text-gray-600 transition-colors flex items-center gap-0.5"
+                      className="text-[10px] text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 transition-colors flex items-center gap-0.5"
                       title="Switch preference"
                     >
                       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
                       Preference
                     </button>
                     {switchPrefMenu && (
-                      <div className="absolute bottom-full mb-1 left-0 z-50 rounded border border-gray-200 bg-white shadow-lg py-1 min-w-[130px]">
+                      <div className="absolute bottom-full mb-1 left-0 z-50 rounded border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#252526] shadow-lg py-1 min-w-[130px]">
                         {(["always", "ask", "never"] as SwitchAction[]).map((action) => {
                           const current = getSwitchPreference(escalation.targetMode);
                           return (
                             <button
                               key={action}
-                              className={`w-full text-left px-3 py-1 text-[11px] hover:bg-gray-100 ${current === action ? "text-indigo-600 font-medium" : "text-gray-600"}`}
+                              className={`w-full text-left px-3 py-1 text-[11px] hover:bg-gray-100 dark:hover:bg-white/5 ${current === action ? "text-indigo-600 dark:text-indigo-400 font-medium" : "text-gray-700 dark:text-gray-300"}`}
                               onClick={() => {
                                 setSwitchPreference(escalation.targetMode, action);
                                 setSwitchPrefMenu(false);
@@ -2884,22 +2984,32 @@ export default function ChatPanel({
   );
 
   const queueStrip = pendingQueue.length > 0 ? (
-    <div className={`flex-shrink-0 max-h-36 overflow-y-auto ${fullScreen ? "px-4 py-2 border-t border-[#3c3c3c] bg-[#252526]" : "px-3 py-2 border-t border-gray-100 bg-gray-50/50"}`}>
+    <div className={`flex-shrink-0 max-h-36 overflow-y-auto ${fullScreen ? "px-4 py-2 border-t border-gray-200 dark:border-[#3c3c3c] bg-gray-100/70 dark:bg-[#252526]" : "px-3 py-2 border-t border-gray-100 bg-gray-50/50"}`}>
       <div className={`${fullScreen ? "max-w-3xl mx-auto" : ""} space-y-1`}>
-        <div className={`text-[10px] font-medium px-1 ${fullScreen ? "text-gray-400" : "text-gray-500"}`}>
+        <div className={`text-[10px] font-medium px-1 ${fullScreen ? "text-gray-600 dark:text-gray-400" : "text-gray-500"}`}>
           Queued messages ({pendingQueue.length})
         </div>
         {pendingQueue.map((item, idx) => (
           <div
             key={item.id}
-            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 group ${fullScreen ? "bg-white/5 border border-gray-700" : "bg-white border border-gray-100"}`}
+            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 group ${fullScreen ? "bg-white border border-gray-200 dark:bg-white/5 dark:border-gray-700" : "bg-white border border-gray-100"}`}
           >
-            <GripVertical size={12} className="text-gray-300 flex-shrink-0" />
-            <span className="flex-1 text-xs text-gray-700 truncate min-w-0">
-              {item.content}
+            <GripVertical size={12} className="text-gray-400 dark:text-gray-300 flex-shrink-0" />
+            <span className="flex-1 text-xs text-gray-700 dark:text-gray-200 truncate min-w-0">
+              {describeQueuedItem(item)}
             </span>
+            {item.attachments && item.attachments.length > 0 && (
+              <span className="flex-shrink-0 rounded-full border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-600">
+                {item.attachments.length === 1
+                  ? "1 attachment"
+                  : `${item.attachments.length} attachments`}
+              </span>
+            )}
             <div className="flex items-center gap-0.5 flex-shrink-0">
-              {idx === 0 && isStreaming && activeChannelId && (
+              {idx === 0 &&
+                isStreaming &&
+                activeChannelId &&
+                (!item.attachments || item.attachments.length === 0) && (
                 <button
                   onClick={() => {
                     const chId = activeChannelIdRef.current;
@@ -2920,9 +3030,10 @@ export default function ChatPanel({
                 onClick={() => {
                   setPendingQueue((q) => q.filter((_, i) => i !== idx));
                   setInputText(item.content);
+                  setUserAttachments(item.attachments ?? []);
                   requestAnimationFrame(() => textareaRef.current?.focus());
                 }}
-                className="text-gray-400 hover:text-indigo-500 p-0.5 rounded transition-colors"
+                className="text-gray-500 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 p-0.5 rounded transition-colors"
                 title="Edit this message"
               >
                 <PencilLine size={11} />
@@ -2936,7 +3047,7 @@ export default function ChatPanel({
                       return next;
                     });
                   }}
-                  className="text-gray-400 hover:text-indigo-500 p-0.5 rounded transition-colors"
+                  className="text-gray-500 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 p-0.5 rounded transition-colors"
                   title="Move up in queue"
                 >
                   <ArrowUp size={11} />
@@ -2944,7 +3055,7 @@ export default function ChatPanel({
               )}
               <button
                 onClick={() => setPendingQueue((q) => q.filter((_, i) => i !== idx))}
-                className="text-gray-400 hover:text-red-500 p-0.5 rounded transition-colors"
+                className="text-gray-500 dark:text-gray-400 hover:text-red-500 p-0.5 rounded transition-colors"
                 title="Remove from queue"
               >
                 <X size={11} />
@@ -2957,9 +3068,9 @@ export default function ChatPanel({
   ) : null;
 
   const inputArea = (
-    <div className={`flex-shrink-0 ${fullScreen ? "px-4 py-4 bg-[#1e1e1e] border-t border-[#3c3c3c]" : "p-3 border-t border-gray-200"}`}>
+    <div className={`flex-shrink-0 ${fullScreen ? "px-4 py-4 bg-gray-50 dark:bg-[#1e1e1e] border-t border-gray-200 dark:border-[#3c3c3c]" : "p-3 border-t border-gray-200"}`}>
       <div className={fullScreen ? "max-w-3xl mx-auto" : ""}>
-        {fullScreen && !isStreaming && messages.length > 0 && (
+        {fullScreen && isComposerFocused && !isStreaming && messages.length > 0 && (
           <RecentCommandsBar
             onSelect={(cmd) => {
               setInputText(cmd);
@@ -2969,18 +3080,30 @@ export default function ChatPanel({
         )}
         {userAttachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-2 px-1">
-            {userAttachments.map((f, i) => (
-              <span key={i} className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] text-gray-600 bg-gray-100 border border-gray-200 rounded-full">
-                <Upload size={10} className="text-gray-400" />
-                {f.name.length > 20 ? f.name.slice(0, 18) + "…" : f.name}
+            {userAttachments.map((f, i) => {
+              const attachmentName = resolveAttachmentName(
+                f.name,
+                f.type || undefined,
+              );
+              return (
+              <span
+                key={i}
+                title={attachmentName}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-gray-200 dark:border-gray-700 bg-gray-100 dark:bg-gray-800 px-2 py-0.5 text-[11px] text-gray-700 dark:text-gray-300"
+              >
+                <Upload size={10} className="text-gray-500 dark:text-gray-400" />
+                <span className="max-w-[220px] truncate">
+                  {attachmentName}
+                </span>
                 <button
                   onClick={() => setUserAttachments((prev) => prev.filter((_, j) => j !== i))}
-                  className="text-gray-400 hover:text-red-500 transition-colors"
+                  className="text-gray-500 dark:text-gray-400 hover:text-red-500 transition-colors"
                 >
                   <X size={10} />
                 </button>
               </span>
-            ))}
+              );
+            })}
           </div>
         )}
         {inputText.startsWith("/") && inputText.length < 15 && (
@@ -2992,7 +3115,7 @@ export default function ChatPanel({
             }}
           />
         )}
-        <div className={`flex items-end gap-2 border rounded-xl px-3 py-2.5 transition-all ${fullScreen ? "border-gray-700 shadow-sm focus-within:shadow-md focus-within:border-indigo-500 bg-[#252526]" : "border-gray-200 focus-within:shadow-md focus-within:border-indigo-300 focus-within:shadow-sm"}`}>
+        <div className={`flex items-end gap-2 border rounded-xl px-3 py-2.5 transition-all ${fullScreen ? "border-gray-300 dark:border-gray-700 shadow-sm focus-within:shadow-md focus-within:border-indigo-500 bg-white dark:bg-[#252526]" : "border-gray-200 focus-within:shadow-md focus-within:border-indigo-300 focus-within:shadow-sm"}`}>
           <textarea
             ref={textareaRef}
             value={inputText}
@@ -3001,6 +3124,8 @@ export default function ChatPanel({
             onKeyUp={checkMention}
             onClick={checkMention}
             onPaste={handlePaste}
+            onFocus={() => setIsComposerFocused(true)}
+            onBlur={() => setIsComposerFocused(false)}
             placeholder={
               isStreaming
                 ? "Type to queue next message…"
@@ -3013,7 +3138,7 @@ export default function ChatPanel({
                 : "Ask about your workflow… (@ to mention)"
             }
             rows={1}
-            className={`flex-1 resize-none placeholder-gray-500 bg-transparent outline-none max-h-[160px] leading-snug ${fullScreen ? "text-[15px] min-h-[28px] text-gray-200" : "text-sm min-h-[24px] text-gray-900"}`}
+            className={`flex-1 resize-none placeholder-gray-500 dark:placeholder:text-gray-500 bg-transparent outline-none max-h-[160px] leading-snug ${fullScreen ? "text-[15px] min-h-[28px] text-gray-900 dark:text-gray-200" : "text-sm min-h-[24px] text-gray-900"}`}
           />
           {mentionQuery !== null && (
             <MentionAutocomplete
@@ -3039,7 +3164,7 @@ export default function ChatPanel({
                   <Square size={fullScreen ? 18 : 16} />
                 </button>
               ) : (
-                <span className="text-gray-300 p-0.5" title="Waiting for run updates">
+                <span className="text-gray-400 dark:text-gray-300 p-0.5" title="Waiting for run updates">
                   <Loader2 size={fullScreen ? 18 : 16} className="animate-spin" />
                 </span>
               )}
@@ -3055,14 +3180,14 @@ export default function ChatPanel({
               <button
                 onClick={() => sendMessage()}
                 disabled={!inputText.trim()}
-                className="text-indigo-500 hover:text-indigo-700 disabled:text-gray-300 transition-colors p-0.5"
+                className="text-indigo-500 hover:text-indigo-700 disabled:text-gray-400 dark:disabled:text-gray-500 transition-colors p-0.5"
               >
                 <Send size={fullScreen ? 18 : 16} />
               </button>
             </div>
           )}
         </div>
-        <div className={`text-[10px] mt-1.5 px-1 ${fullScreen ? "text-gray-500" : "text-gray-400"}`}>
+        <div className={`text-[10px] mt-1.5 px-1 ${fullScreen ? "text-gray-500 dark:text-gray-500" : "text-gray-400"}`}>
           {isStreaming
             ? "Enter to queue · Shift+Enter for newline" + (fullScreen ? " · ⌘K command palette" : "")
             : "Enter to send · Shift+Enter for newline" + (fullScreen ? " · ⌘K command palette" : "")}
@@ -3104,7 +3229,7 @@ export default function ChatPanel({
   if (fullScreen) {
     return (
       <div
-        className="relative h-full flex bg-[#1e1e1e] overflow-hidden"
+        className="relative h-full flex bg-gray-50 dark:bg-[#1e1e1e] overflow-hidden"
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -3117,8 +3242,14 @@ export default function ChatPanel({
             </div>
           </div>
         )}
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-clip bg-gray-50 dark:bg-[#1e1e1e]">
+          {conversationHeader}
+          {modeSelector}
+          {messagesArea}
+          {bottomDock}
+        </div>
         {showThreadList && (
-          <div className="w-72 flex-shrink-0 border-r border-[#3c3c3c] flex flex-col bg-[#252526]">
+          <div className="w-72 flex-shrink-0 border-l border-gray-200 dark:border-[#3c3c3c] flex flex-col bg-white dark:bg-[#252526]">
             <ThreadListView
               threads={threads}
               loading={loadingThreads}
@@ -3138,12 +3269,6 @@ export default function ChatPanel({
             />
           </div>
         )}
-        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-clip bg-[#1e1e1e]">
-          {conversationHeader}
-          {modeSelector}
-          {messagesArea}
-          {bottomDock}
-        </div>
         {showContextPanel && (
           <ContextPanel
             messages={messages}
@@ -3317,17 +3442,17 @@ function ThreadListView({
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 flex-shrink-0">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
         <div className="flex items-center gap-2">
-          <History size={14} className="text-indigo-500" />
-          <span className="text-sm font-semibold text-gray-800">
+          <History size={14} className="text-indigo-500 dark:text-indigo-400" />
+          <span className="text-sm font-semibold text-gray-800 dark:text-gray-100">
             Chat History
           </span>
         </div>
         <div className="flex items-center gap-1">
           <button
             onClick={onNewChat}
-            className="text-indigo-500 hover:text-indigo-700 p-1 rounded transition-colors"
+            className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 p-1 rounded transition-colors"
             title="New Chat"
           >
             <Plus size={14} />
@@ -3335,7 +3460,7 @@ function ThreadListView({
           {onClose && (
             <button
               onClick={onClose}
-              className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors"
+              className="text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 p-0.5 rounded transition-colors"
             >
               <X size={14} />
             </button>
@@ -3344,21 +3469,21 @@ function ThreadListView({
       </div>
 
       {/* Search bar */}
-      <div className="px-3 py-2 border-b border-gray-100 flex-shrink-0">
-        <div className="flex items-center gap-2 bg-gray-50 rounded-lg px-2.5 py-1.5">
-          <Search size={12} className="text-gray-400 flex-shrink-0" />
+      <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
+        <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-800 rounded-lg px-2.5 py-1.5">
+          <Search size={12} className="text-gray-400 dark:text-gray-500 flex-shrink-0" />
           <input
             type="text"
             value={searchQuery}
             onChange={(e) => onSearch(e.target.value)}
             placeholder="Search conversations…"
-            className="text-xs text-gray-700 placeholder-gray-400 bg-transparent outline-none flex-1 min-w-0"
+            className="text-xs text-gray-700 dark:text-gray-200 placeholder-gray-400 dark:placeholder:text-gray-500 bg-transparent outline-none flex-1 min-w-0"
           />
-          {isSearching && <Loader2 size={12} className="text-gray-300 animate-spin flex-shrink-0" />}
+          {isSearching && <Loader2 size={12} className="text-gray-300 dark:text-gray-500 animate-spin flex-shrink-0" />}
           {searchQuery && !isSearching && (
             <button
               onClick={() => onSearch("")}
-              className="text-gray-400 hover:text-gray-600"
+              className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-200"
             >
               <X size={12} />
             </button>
@@ -3370,7 +3495,7 @@ function ThreadListView({
         {/* Show search results if there's a query */}
         {searchQuery.trim() ? (
           searchResults.length === 0 && !isSearching ? (
-            <div className="text-center py-8 text-xs text-gray-400">
+            <div className="text-center py-8 text-xs text-gray-400 dark:text-gray-500">
               No results for "{searchQuery}"
             </div>
           ) : (
@@ -3379,12 +3504,12 @@ function ThreadListView({
                 <div
                   key={`${r.thread_id}-${r.message_id}-${i}`}
                   onClick={() => onSelectThread(r.thread_id)}
-                  className="px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors"
+                  className="px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer transition-colors"
                 >
-                  <div className="text-xs font-medium text-gray-700 truncate">
+                  <div className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
                     {r.thread_title}
                   </div>
-                  <div className="text-[10px] text-gray-400 mt-0.5 line-clamp-2">
+                  <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 line-clamp-2">
                     {r.message_preview}
                   </div>
                 </div>
@@ -3393,14 +3518,14 @@ function ThreadListView({
           )
         ) : loading ? (
           <div className="flex items-center justify-center py-12">
-            <Loader2 size={20} className="text-gray-300 animate-spin" />
+            <Loader2 size={20} className="text-gray-300 dark:text-gray-500 animate-spin" />
           </div>
         ) : threads.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
-            <div className="w-10 h-10 rounded-full bg-gray-50 flex items-center justify-center mb-3">
-              <MessageSquare size={20} className="text-gray-300" />
+            <div className="w-10 h-10 rounded-full bg-gray-50 dark:bg-gray-800 flex items-center justify-center mb-3">
+              <MessageSquare size={20} className="text-gray-300 dark:text-gray-500" />
             </div>
-            <p className="text-sm text-gray-400 mb-4">
+            <p className="text-sm text-gray-400 dark:text-gray-500 mb-4">
               No conversations yet
             </p>
             <button
@@ -3415,8 +3540,8 @@ function ThreadListView({
             {sortedPinned.length > 0 && (
               <>
                 <div className="px-3 pt-2 pb-1">
-                  <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-1">
-                    <Pin size={9} className="text-indigo-400" />
+                  <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                    <Pin size={9} className="text-indigo-500 dark:text-indigo-400" />
                     Pinned
                   </span>
                 </div>
@@ -3435,14 +3560,14 @@ function ThreadListView({
                   />
                 ))}
                 {sortedUnpinned.length > 0 && (
-                  <div className="mx-3 my-1 border-t border-gray-100" />
+                  <div className="mx-3 my-1 border-t border-gray-100 dark:border-gray-800" />
                 )}
               </>
             )}
             {groupThreadsByDate(sortedUnpinned).map(({ label, threads: group }) => (
               <div key={label}>
                 <div className="px-3 pt-2 pb-1">
-                  <span className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider">
+                  <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
                     {label}
                   </span>
                 </div>
@@ -3526,9 +3651,9 @@ function ThreadRow({
     <div
       onClick={onSelect}
       onContextMenu={openContextMenu}
-      className="group flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50 cursor-pointer transition-colors"
+      className="group flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer transition-colors"
     >
-      {pinned && <Pin size={10} className="text-indigo-400 flex-shrink-0" />}
+      {pinned && <Pin size={10} className="text-indigo-500 dark:text-indigo-400 flex-shrink-0" />}
       {isStreamingInBg && (
         <span className="flex-shrink-0 w-2 h-2 rounded-full bg-indigo-400 dan-bg-stream-pulse" title="Working in background" />
       )}
@@ -3548,24 +3673,24 @@ function ThreadRow({
                 setDraftTitle(title);
               }
             }}
-            className="w-full text-sm text-gray-800 bg-white border border-gray-200 rounded px-1.5 py-0.5 outline-none focus:border-indigo-300"
+            className="w-full text-sm text-gray-800 dark:text-gray-100 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-1.5 py-0.5 outline-none focus:border-indigo-300"
           />
         ) : (
-          <div className="text-sm text-gray-800 truncate">{displayTitle}</div>
+          <div className="text-sm text-gray-800 dark:text-gray-100 truncate">{displayTitle}</div>
         )}
         <div className="flex items-center gap-2 mt-0.5">
-          <span className="text-[10px] text-gray-400">
+          <span className="text-[10px] text-gray-400 dark:text-gray-500">
             {thread.message_count} msg
             {thread.message_count !== 1 ? "s" : ""}
           </span>
-          <span className="text-[10px] text-gray-300">·</span>
-          <span className="text-[10px] text-gray-400">
+          <span className="text-[10px] text-gray-300 dark:text-gray-600">·</span>
+          <span className="text-[10px] text-gray-400 dark:text-gray-500">
             {relativeTimeShort(thread.updated_at)}
           </span>
           {thread.mode && (
             <>
-              <span className="text-[10px] text-gray-300">·</span>
-              <span className="text-[10px] text-gray-400 capitalize">
+              <span className="text-[10px] text-gray-300 dark:text-gray-600">·</span>
+              <span className="text-[10px] text-gray-400 dark:text-gray-500 capitalize">
                 {thread.mode}
               </span>
             </>

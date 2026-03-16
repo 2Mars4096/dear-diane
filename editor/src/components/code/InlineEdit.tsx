@@ -8,8 +8,7 @@ import {
 import { Check, X, Loader2, Undo2, History } from "lucide-react";
 import type { editor as monacoEditor, IDisposable, IRange } from "monaco-editor";
 import { useCodeStore } from "../../store/useCodeStore";
-
-const API_BASE = "/api";
+import { startEditorChat, streamEditorChatResponse } from "../../lib/editorChat";
 const MAX_HISTORY = 5;
 
 let promptHistory: string[] = [];
@@ -23,14 +22,6 @@ function saveHistory(prompt: string) {
   try {
     localStorage.setItem("dan-inline-edit-history", JSON.stringify(promptHistory));
   } catch { /* ignore */ }
-}
-
-async function sendEditRequest(message: string): Promise<Response> {
-  return fetch(`${API_BASE}/chat/editor/message`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, mode: "auto", thread_id: null }),
-  });
 }
 
 function buildEditPrompt(
@@ -353,73 +344,60 @@ export default function InlineEdit({ editor, onClose }: Props) {
     abortRef.current = controller;
 
     try {
-      const resp = await sendEditRequest(fullPrompt);
-      if (!resp.ok) {
-        const errText = await resp.text().catch(() => "Request failed");
-        setError(errText);
-        setPhase("prompt");
-        return;
-      }
+      const { response } = await startEditorChat({
+        message: fullPrompt,
+        mode: "ask",
+        scope: "inline-edit",
+      });
 
-      const data = await resp.json();
-      const channelId: string | undefined = data.stream_channel_id;
+      let accumulated = "";
+      let tokenCount = 0;
 
-      if (channelId) {
-        const proto = location.protocol === "https:" ? "wss:" : "ws:";
-        const ws = new WebSocket(
-          `${proto}//${location.host}/api/chat/${channelId}/events`,
-        );
-
-        let accumulated = "";
-        let tokenCount = 0;
-
-        ws.onmessage = (e) => {
-          if (controller.signal.aborted) {
-            ws.close();
-            return;
-          }
-          try {
-            const evt = JSON.parse(e.data);
-            if (evt.type === "token" && typeof evt.token === "string") {
-              accumulated += evt.token;
-              tokenCount++;
-              setStreamedResult(accumulated);
-              setStreamTokens(tokenCount);
-            } else if (evt.type === "content" && typeof evt.content === "string") {
-              accumulated += evt.content;
-              tokenCount++;
-              setStreamedResult(accumulated);
-              setStreamTokens(tokenCount);
-            } else if (evt.type === "done" || evt.type === "end") {
-              ws.close();
-            }
-          } catch { /* ignore */ }
-        };
-
-        ws.onclose = () => {
-          if (!controller.signal.aborted) {
-            const cleaned = stripCodeFences(accumulated);
-            setStreamedResult(cleaned);
-            applyPreview(cleaned);
-          }
+      const ws = streamEditorChatResponse(response, {
+        onProgress: (content) => {
+          if (controller.signal.aborted) return;
+          accumulated = content;
+          tokenCount += 1;
+          setStreamedResult(accumulated);
+          setStreamTokens(tokenCount);
+        },
+        onComplete: (content) => {
+          if (controller.signal.aborted) return;
+          accumulated = content;
+          const cleaned = stripCodeFences(accumulated);
+          setStreamedResult(cleaned);
+          applyPreview(cleaned);
           abortRef.current = null;
-        };
-
-        ws.onerror = () => {
-          setError("Connection lost");
+        },
+        onError: (message) => {
+          if (controller.signal.aborted) return;
+          setError(message || "Connection lost");
           setPhase("prompt");
           abortRef.current = null;
-        };
-      } else {
-        const text =
-          typeof data.response === "string"
-            ? data.response
-            : typeof data.content === "string"
-              ? data.content
-              : JSON.stringify(data);
-        const cleaned = stripCodeFences(text);
-        setStreamedResult(cleaned);
-        applyPreview(cleaned);
+        },
+        onCloseWithoutTerminalEvent: () => {
+          if (controller.signal.aborted) return;
+          const cleaned = stripCodeFences(accumulated);
+          if (cleaned.trim()) {
+            setStreamedResult(cleaned);
+            applyPreview(cleaned);
+          } else {
+            setError("Connection lost");
+            setPhase("prompt");
+          }
+          abortRef.current = null;
+        },
+      });
+
+      if (ws) {
+        controller.signal.addEventListener(
+          "abort",
+          () => {
+            ws.close();
+            abortRef.current = null;
+          },
+          { once: true },
+        );
       }
     } catch {
       setError("Failed to connect to server");

@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { Check, X, Loader2, RotateCcw, ChevronRight, ChevronDown, Copy, Wrench } from "lucide-react";
+import { Check, X, Loader2, RotateCcw, ChevronRight, ChevronDown, Copy, Wrench, FileText } from "lucide-react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { Marked, Renderer } from "marked";
@@ -91,7 +91,7 @@ const _markedInstance = (() => {
     return _ph(
       `<div class="my-2 rounded-lg overflow-hidden border border-gray-700/50">` +
         `<div class="flex items-center justify-between px-3 py-1.5 bg-gray-800 border-b border-gray-700/50">${langLabel}${copyBtn}</div>` +
-        `<pre class="bg-gray-900 text-gray-100 p-3 overflow-x-auto text-[12px] leading-relaxed font-mono m-0"><code>${highlighted}</code></pre>` +
+        `<pre data-chat-copy-zone="true" class="bg-gray-900 text-gray-100 p-3 overflow-x-auto text-[12px] leading-relaxed font-mono m-0"><code>${highlighted}</code></pre>` +
         `<input type="hidden" data-code-raw="${idx}" value="${text.replace(/"/g, "&quot;")}" />` +
       `</div>`,
     );
@@ -249,6 +249,7 @@ function RichContentRenderer({
     return (
       <div
         onClick={onClick}
+        data-chat-copy-zone="true"
         className="text-sm leading-relaxed [&_pre]:my-2 [&_code]:break-words [&_a]:underline"
         dangerouslySetInnerHTML={{ __html: html }}
       />
@@ -321,6 +322,7 @@ function RichBlockRenderer({
       return (
         <div
           onClick={onClick}
+          data-chat-copy-zone="true"
           dangerouslySetInnerHTML={{ __html: html }}
         />
       );
@@ -671,12 +673,12 @@ export default function ChatMessageBubble({
       <div
         className={`max-w-[85%] ${
           isUser
-            ? "bg-indigo-50 text-gray-900 rounded-2xl rounded-br-md"
-            : "bg-gray-50 text-gray-900 rounded-2xl rounded-bl-md"
+            ? "bg-indigo-50 dark:bg-indigo-500/20 text-gray-900 dark:text-gray-100 rounded-2xl rounded-br-md"
+            : "bg-gray-50 dark:bg-gray-800/80 text-gray-900 dark:text-gray-100 rounded-2xl rounded-bl-md"
         } px-3.5 py-2.5 shadow-xs${isStreaming && !isUser ? " dan-streaming-bubble" : ""}`}
       >
         {isStreaming && !isUser && (message.progressStatus || showLoadingPlaceholder) && (
-          <div className="flex items-center gap-1.5 py-0.5 mb-1 text-xs text-gray-400 dan-progress-pulse">
+          <div className="flex items-center gap-1.5 py-0.5 mb-1 text-xs text-gray-500 dark:text-gray-400 dan-progress-pulse">
             <Loader2 size={11} className="animate-spin flex-shrink-0" />
             <span className="truncate">{message.progressStatus || "Working..."}</span>
             {message.progressFilePath && (
@@ -696,6 +698,7 @@ export default function ChatMessageBubble({
         ) : isUser && hasMentions ? (
           <div
             onClick={handleClick}
+            data-chat-copy-zone="true"
             className="text-sm whitespace-pre-wrap"
             dangerouslySetInnerHTML={{ __html: html }}
           />
@@ -713,17 +716,34 @@ export default function ChatMessageBubble({
         )}
 
         {message.attachments && message.attachments.length > 0 && (
-          <div className="mt-2 space-y-1">
+          <div className="mt-2 space-y-1.5">
             {message.attachments.map((att, idx) => (
               <div
                 key={`${att.path}-${idx}`}
-                className="text-xs rounded-md border border-gray-200 bg-white/70 px-2 py-1"
+                title={att.path || att.filename}
+                className={`rounded-lg border px-2.5 py-1.5 ${
+                  isUser
+                    ? "border-indigo-200 bg-white/90"
+                    : "border-gray-200 dark:border-gray-700 bg-white/70 dark:bg-gray-900/50"
+                }`}
               >
-                <span className="font-medium">📎 {att.filename}</span>
-                {typeof att.size === "number" && (
-                  <span className="text-gray-500"> ({Math.round(att.size / 1024)}KB)</span>
+                <div className="flex min-w-0 items-center gap-1.5 text-xs">
+                  <FileText
+                    size={12}
+                    className={`shrink-0 ${isUser ? "text-indigo-500 dark:text-indigo-300" : "text-gray-500 dark:text-gray-400"}`}
+                  />
+                  <span className="min-w-0 truncate font-medium">{att.filename}</span>
+                  {typeof att.size === "number" && (
+                    <span className="shrink-0 text-[10px] text-gray-500 dark:text-gray-400">
+                      {Math.max(1, Math.round(att.size / 1024))}KB
+                    </span>
+                  )}
+                </div>
+                {att.path && att.path !== att.filename && (
+                  <div className="mt-0.5 truncate text-[10px] text-gray-500 dark:text-gray-400">
+                    {att.path}
+                  </div>
                 )}
-                {att.path && <span className="text-gray-500"> — <code>{att.path}</code></span>}
               </div>
             ))}
           </div>
@@ -751,25 +771,25 @@ export default function ChatMessageBubble({
         )}
 
         <div className="flex items-center justify-between mt-1.5 gap-3">
-          <span className="text-[10px] text-gray-400">
+          <span className="text-[10px] text-gray-500 dark:text-gray-400">
             {relativeTime(message.timestamp)}
           </span>
 
           <div className="flex items-center gap-2">
             {displayElapsed !== null && (
-              <span className={`text-[10px] tabular-nums ${isStreaming && !isUser ? "text-indigo-400" : "text-gray-400"}`}>
+              <span className={`text-[10px] tabular-nums ${isStreaming && !isUser ? "text-indigo-500 dark:text-indigo-400" : "text-gray-500 dark:text-gray-400"}`}>
                 {displayElapsed.toFixed(1)}s
               </span>
             )}
             {tokens !== null && (
-              <span className="text-[10px] text-gray-400">
+              <span className="text-[10px] text-gray-500 dark:text-gray-400">
                 {tokens.toLocaleString()} tokens
               </span>
             )}
             {onCopyMarkdown && message.content && (
               <button
                 onClick={onCopyMarkdown}
-                className="text-gray-300 hover:text-gray-500 transition-colors"
+                className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
                 title="Copy as Markdown"
               >
                 <Copy size={11} />
