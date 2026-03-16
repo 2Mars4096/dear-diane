@@ -1,0 +1,270 @@
+"""CLI entry point for the DAN workflow generation quality evaluation.
+
+Usage:
+    python -m tests.eval                          # Run all prompts
+    python -m tests.eval --tier T1                # Run only tier T1
+    python -m tests.eval --tier T1 --tier T2      # Run T1 and T2
+    python -m tests.eval --pilot                  # Run pilot subset (~10 prompts)
+    python -m tests.eval --complex                # Run complex battery (T4 + multi-turn m1/m2/m3)
+    python -m tests.eval --prompt "Build a chain" # Single ad-hoc prompt
+    python -m tests.eval --report results/X.jsonl # Regenerate report from JSONL
+    python -m tests.eval --execute                # Enable execution testing
+    python -m tests.eval --lane agent             # agent | build | both
+    python -m tests.eval --execution-path inline  # inline | codegen | auto (plan 32-7)
+
+See docs/eval-run-guide.md for full run commands.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import os
+import sys
+from pathlib import Path
+
+from tests.eval import PROMPTS_FILE, PromptFixture
+from tests.eval.durability_checks import run_durability_suite
+from tests.eval.metrics import EvalLogger
+from tests.eval.report import ReportGenerator
+from tests.eval.runner import EvalRunner, load_prompts
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="python -m tests.eval",
+        description="DAN Workflow Generation Quality Evaluation",
+    )
+    parser.add_argument(
+        "--tier",
+        action="append",
+        metavar="TIER",
+        help="Tier(s) to run (e.g. T1, T2). Repeatable.",
+    )
+    parser.add_argument(
+        "--pilot",
+        action="store_true",
+        help="Run the pilot subset (~10 prompts).",
+    )
+    parser.add_argument(
+        "--complex",
+        action="store_true",
+        help="Run complex battery only (T4 + multi-turn m1/m2/m3).",
+    )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        metavar="TEXT",
+        help="Run a single ad-hoc prompt instead of the fixture battery.",
+    )
+    parser.add_argument(
+        "--report",
+        type=str,
+        metavar="PATH",
+        help="Regenerate report from an existing JSONL results file.",
+    )
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Enable execution testing for validated graphs.",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        metavar="MODEL",
+        help="Model identifier (stored in records; not yet wired to server).",
+    )
+    parser.add_argument(
+        "--lane",
+        type=str,
+        choices=["agent", "build", "both"],
+        default="both",
+        help="Evaluation lane (default: both).",
+    )
+    parser.add_argument(
+        "--execution-path",
+        type=str,
+        choices=["inline", "codegen", "auto"],
+        default="auto",
+        help="Execution path for eval: inline (direct build), codegen (sandbox), auto (default). Sets DAN_EVAL_EXECUTION_PATH.",
+    )
+    parser.add_argument(
+        "--keep-graphs",
+        action="store_true",
+        help="Don't delete created graphs after evaluation.",
+    )
+    parser.add_argument(
+        "--base-url",
+        type=str,
+        default="http://localhost:8000",
+        help="DAN server URL (default: http://localhost:8000).",
+    )
+    parser.add_argument(
+        "--db-path",
+        type=str,
+        metavar="PATH",
+        help="Path to telemetry DB (default: ~/.dan/telemetry.db).",
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=2.0,
+        metavar="N",
+        help="Delay in seconds between prompts (default: 2).",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Repeat battery N times for flakiness measurement (default: 1).",
+    )
+    parser.add_argument(
+        "--no-save",
+        action="store_true",
+        help="Skip saving the JSON report file.",
+    )
+    parser.add_argument(
+        "--durability",
+        action="store_true",
+        help="Run durability smoke checks (D1-D4) on first valid graph from battery (33-4).",
+    )
+    parser.add_argument(
+        "--no-store-graphs",
+        action="store_true",
+        help="Skip storing generated graph JSON alongside results (33-2 task 5-3).",
+    )
+    parser.add_argument(
+        "--judge",
+        action="store_true",
+        help="Enable LLM-as-judge semantic scoring for generated graphs (advisory, does not affect pass/fail).",
+    )
+    parser.add_argument(
+        "--tag",
+        action="append",
+        metavar="TAG",
+        help="Filter prompts by tag (e.g. --tag practical). Repeatable.",
+    )
+    return parser
+
+
+def main() -> None:
+    parser = _build_parser()
+    args = parser.parse_args()
+
+    if args.report:
+        _report_only(args)
+        return
+
+    if args.prompt:
+        prompts = [PromptFixture(id="adhoc", tier="adhoc", prompt=args.prompt)]
+    else:
+        prompts = load_prompts(
+            tier=args.tier,
+            pilot_only=args.pilot,
+            complex_only=getattr(args, "complex", False),
+            tags=args.tag,
+        )
+
+    if not prompts:
+        print("No prompts matched the given filters.", file=sys.stderr)
+        sys.exit(1)
+
+    # Set execution path for eval (plan 32-7 task 6-4)
+    os.environ["DAN_EVAL_EXECUTION_PATH"] = args.execution_path
+
+    lanes: list[str] | None = None
+    if args.lane and args.lane != "both":
+        lanes = [args.lane]
+
+    asyncio.run(_run(args, prompts, lanes))
+
+
+async def _run_durability(
+    args: argparse.Namespace,
+    records: list,
+    runner: EvalRunner,
+) -> None:
+    """Run D1-D4 durability checks on first valid graph (33-4 task 6)."""
+    valid = next(
+        (r for r in records if r.graph_created and r.graph_id and r.graph_id.strip()
+         and r.validation and r.validation.passed),
+        None,
+    )
+    if not valid:
+        print("No valid graph for durability checks.", file=sys.stderr)
+        return
+    print(f"\n--- Durability (33-4) on {valid.graph_id} ---")
+    try:
+        result = await run_durability_suite(
+            runner._client,
+            valid.graph_id,
+            follow_up="Add a review step after the summarize node.",
+        )
+        for check, data in result.items():
+            print(f"  {check}: {data}")
+    except Exception as exc:
+        print(f"Durability error: {exc}", file=sys.stderr)
+
+
+def _report_only(args: argparse.Namespace) -> None:
+    path = Path(args.report)
+    if not path.exists():
+        print(f"Results file not found: {path}", file=sys.stderr)
+        sys.exit(1)
+
+    records = EvalLogger.load_records(path)
+    if not records:
+        print("No records found in the results file.", file=sys.stderr)
+        sys.exit(1)
+    graphs_dir = path.parent / f"{path.stem}_graphs"
+    rg = ReportGenerator(records, graphs_dir=graphs_dir if graphs_dir.exists() else None)
+    rg.print_report()
+    if not args.no_save:
+        out = path.with_suffix(".report.json")
+        rg.save_json(out)
+        print(f"\nReport saved to {out}")
+
+
+async def _run(
+    args: argparse.Namespace,
+    prompts: list[PromptFixture],
+    lanes: list[str] | None,
+) -> None:
+    logger = EvalLogger(store_graphs=not getattr(args, "no_store_graphs", False))
+    runner = EvalRunner(
+        base_url=args.base_url,
+        db_path=args.db_path,
+        execute=args.execute,
+        keep_graphs=args.keep_graphs,
+        delay=args.delay,
+        execution_path=getattr(args, "execution_path", "auto"),
+        judge=getattr(args, "judge", False),
+    )
+    all_records: list = []
+    for run_idx in range(args.runs):
+        if args.runs > 1:
+            print(f"\n--- Run {run_idx + 1}/{args.runs} ---")
+        records = await runner.run_battery(prompts, lanes=lanes, logger=logger)
+        all_records.extend(records)
+        if run_idx < args.runs - 1:
+            await runner.cleanup(close_client=False)
+
+    if args.durability and all_records:
+        await _run_durability(args, all_records, runner)
+
+    await runner.cleanup()
+
+    rg = ReportGenerator(all_records, runs=args.runs)
+    rg.print_report()
+    if args.runs > 1:
+        rg.print_flakiness_report(all_records, args.runs)
+
+    if not args.no_save:
+        out = logger.output_path.with_suffix(".report.json")
+        rg.save_json(out)
+        print(f"\nReport saved to {out}")
+
+
+if __name__ == "__main__":
+    main()
