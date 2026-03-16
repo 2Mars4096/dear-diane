@@ -170,6 +170,7 @@ class ChatGenerationSummaryEvent(BaseModel):
     fallback_chain: list[str] = Field(default_factory=list)
     node_count: int | None = None
     complexity_tier: str | None = None
+    pre_generation_ms: int | None = None
 
 
 class ChatInjectedMessageEvent(BaseModel):

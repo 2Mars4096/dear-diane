@@ -2943,6 +2943,7 @@ class ChatManager:
             INTENT_EXTRACTION_SYSTEM_PROMPT,
             build_intent_tool_schema,
         )
+        from dan.meta.tool_catalog import render_tool_id_list
         from dan.meta.intent_schema import WorkflowIntent
         from dan.meta.graph_quality import (
             compute_quality_report,
@@ -2999,9 +3000,11 @@ class ChatManager:
                 token_usage={},
                 context_window=0,
                 graph_revision="",
-                detected_mode="progress_generation",
+                detected_mode="progress_ack",
             ))
             _progress_emitted = True
+
+        _pre_generation_ms: int | None = None
 
         def _build_summary_event() -> ChatGenerationSummaryEvent:
             return ChatGenerationSummaryEvent(
@@ -3012,6 +3015,7 @@ class ChatManager:
                 fallback_chain=list(fallback_chain),
                 node_count=_result_node_count,
                 complexity_tier=complexity_tier,
+                pre_generation_ms=_pre_generation_ms,  # TODO: populate from intent extraction timing
             )
 
         def _fit_check(graph_dict: dict) -> None:
@@ -3026,7 +3030,11 @@ class ChatManager:
                     count, min_nodes, max_nodes,
                 )
 
-        _quality_threshold_override = int(os.environ.get("DAN_GRAPH_QUALITY_THRESHOLD", "0") or "0")
+        _quality_threshold_raw = os.environ.get("DAN_GRAPH_QUALITY_THRESHOLD")
+        try:
+            _quality_threshold_override = int(_quality_threshold_raw) if _quality_threshold_raw is not None else -1
+        except (ValueError, TypeError):
+            _quality_threshold_override = -1
         provider = self._resolve_provider(pii_session_key=workflow_id, model=_model)
 
         def _quality_error_for_graph(graph_dict: dict, *, warning_message: str) -> GenerationError | None:
@@ -3039,7 +3047,7 @@ class ChatManager:
                 score=report.overall_score,
                 concerns=report.concerns,
             ))
-            threshold = _quality_threshold_override if _quality_threshold_override > 0 else tier_quality_threshold(None, user_message)
+            threshold = _quality_threshold_override if _quality_threshold_override >= 0 else tier_quality_threshold(None, user_message)
             if threshold > 0 and report.overall_score < threshold:
                 logger.warning(
                     warning_message,
@@ -3090,7 +3098,13 @@ class ChatManager:
         intent: WorkflowIntent | None = None
         intent_tool = build_intent_tool_schema()
         intent_messages = [
-            {"role": "system", "content": INTENT_EXTRACTION_SYSTEM_PROMPT},
+            {"role": "system", "content": (
+                INTENT_EXTRACTION_SYSTEM_PROMPT
+                + "\n\nAvailable tool_ids for tool_call stages (use these exact IDs): "
+                + render_tool_id_list()
+                + ". Do NOT invent tool_ids not in this list. If no tool matches, use "
+                + "code_execution with inline Python instead."
+            )},
             {"role": "user", "content": user_message},
         ]
         for attempt in range(2):
