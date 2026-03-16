@@ -57,10 +57,33 @@ def _find_node_in_subgraphs(graph: dict, node_id: str) -> tuple[dict, dict] | No
     return None
 
 
+def _get_edges_by_type(graph: dict, edge_type: str) -> list[dict]:
+    """Get edges of a given type, handling both flat-list and legacy dict formats."""
+    edges = graph.get("edges", [])
+    if isinstance(edges, list):
+        return [e for e in edges if e.get("edge_type") == edge_type]
+    return edges.get(edge_type, [])
+
+
+def _remove_data_edge(graph: dict, edge: dict) -> None:
+    """Remove a specific data edge, handling both flat-list and legacy dict formats."""
+    edges = graph.get("edges", [])
+    if isinstance(edges, list):
+        try:
+            edges.remove(edge)
+        except ValueError:
+            pass
+    else:
+        try:
+            edges.get("data", []).remove(edge)
+        except ValueError:
+            pass
+
+
 def _get_downstream_edges(graph: dict, node_id: str) -> list[dict]:
     """Get all data edges where node_id is the source."""
     return [
-        e for e in graph.get("edges", {}).get("data", [])
+        e for e in _get_edges_by_type(graph, "data")
         if e.get("source_node_id") == node_id
     ]
 
@@ -68,42 +91,53 @@ def _get_downstream_edges(graph: dict, node_id: str) -> list[dict]:
 def _get_upstream_edges(graph: dict, node_id: str) -> list[dict]:
     """Get all data edges where node_id is the target."""
     return [
-        e for e in graph.get("edges", {}).get("data", [])
+        e for e in _get_edges_by_type(graph, "data")
         if e.get("target_node_id") == node_id
     ]
 
 
 def _remove_edges_involving(graph: dict, node_id: str) -> list[dict]:
     """Remove all data edges involving node_id. Returns removed edges."""
-    data_edges = graph.get("edges", {}).get("data", [])
+    data_edges = _get_edges_by_type(graph, "data")
     removed = [
         e for e in data_edges
         if e.get("source_node_id") == node_id or e.get("target_node_id") == node_id
     ]
-    graph["edges"]["data"] = [e for e in data_edges if e not in removed]
+    for e in removed:
+        _remove_data_edge(graph, e)
     return removed
 
 
 def _add_data_edge(graph: dict, src_id: str, src_port: str, tgt_id: str, tgt_port: str) -> None:
-    if "edges" not in graph:
-        graph["edges"] = {"data": [], "control": [], "context": []}
-    graph["edges"].setdefault("data", []).append({
+    edge = {
         "source_node_id": src_id,
         "source_port": src_port,
         "target_node_id": tgt_id,
         "target_port": tgt_port,
-    })
+    }
+    edges = graph.get("edges")
+    if edges is None:
+        graph["edges"] = [dict(edge, edge_type="data")]
+    elif isinstance(edges, list):
+        edges.append(dict(edge, edge_type="data"))
+    else:
+        edges.setdefault("data", []).append(edge)
 
 
 def _add_control_edge(graph: dict, src_id: str, src_port: str, tgt_id: str, tgt_port: str) -> None:
-    if "edges" not in graph:
-        graph["edges"] = {"data": [], "control": [], "context": []}
-    graph["edges"].setdefault("control", []).append({
+    edge = {
         "source_node_id": src_id,
         "source_port": src_port,
         "target_node_id": tgt_id,
         "target_port": tgt_port,
-    })
+    }
+    edges = graph.get("edges")
+    if edges is None:
+        graph["edges"] = [dict(edge, edge_type="control")]
+    elif isinstance(edges, list):
+        edges.append(dict(edge, edge_type="control"))
+    else:
+        edges.setdefault("control", []).append(edge)
 
 
 def _gen_id(prefix: str) -> str:
@@ -207,7 +241,7 @@ def wrap_in_review_loop(
     _add_control_edge(graph, gate_id, "continue", node_id, "input")
 
     for edge in downstream:
-        graph["edges"]["data"].remove(edge)
+        _remove_data_edge(graph, edge)
         _add_data_edge(graph, gate_id, "done", edge["target_node_id"], edge["target_port"])
 
     return MutationMacroResult(
@@ -260,13 +294,13 @@ def fan_out_node(
     graph["nodes"].extend([fe_node, reduce_node])
 
     for edge in upstream:
-        graph["edges"]["data"].remove(edge)
+        _remove_data_edge(graph, edge)
         _add_data_edge(graph, edge["source_node_id"], edge["source_port"], fe_id, "items")
 
     _add_data_edge(graph, fe_id, "results", reduce_id, "data")
 
     for edge in downstream:
-        graph["edges"]["data"].remove(edge)
+        _remove_data_edge(graph, edge)
         _add_data_edge(graph, reduce_id, "result", edge["target_node_id"], edge["target_port"])
 
     return MutationMacroResult(
@@ -294,7 +328,7 @@ def insert_validator(
         return MutationMacroResult(success=False, error=f"Target node '{target_id}' not found")
 
     edge_to_split = None
-    for e in graph.get("edges", {}).get("data", []):
+    for e in _get_edges_by_type(graph, "data"):
         if e["source_node_id"] == source_id and e["target_node_id"] == target_id:
             edge_to_split = e
             break
@@ -315,7 +349,7 @@ def insert_validator(
     }
 
     graph["nodes"].append(validator_node)
-    graph["edges"]["data"].remove(edge_to_split)
+    _remove_data_edge(graph, edge_to_split)
 
     _add_data_edge(graph, source_id, edge_to_split["source_port"], validator_id, "data")
     _add_data_edge(graph, validator_id, "valid", target_id, edge_to_split["target_port"])
@@ -357,7 +391,7 @@ def insert_tool(
     if position == "after":
         downstream = _get_downstream_edges(graph, anchor_id)
         for edge in downstream:
-            graph["edges"]["data"].remove(edge)
+            _remove_data_edge(graph, edge)
             _add_data_edge(graph, tool_node_id, "result", edge["target_node_id"], edge["target_port"])
         _add_data_edge(graph, anchor_id, "text", tool_node_id, "data")
         edges_added = 1 + len(downstream)
@@ -365,7 +399,7 @@ def insert_tool(
     else:
         upstream = _get_upstream_edges(graph, anchor_id)
         for edge in upstream:
-            graph["edges"]["data"].remove(edge)
+            _remove_data_edge(graph, edge)
             _add_data_edge(graph, edge["source_node_id"], edge["source_port"], tool_node_id, "data")
         _add_data_edge(graph, tool_node_id, "result", anchor_id, "text")
         edges_added = 1 + len(upstream)
@@ -425,13 +459,11 @@ def parallelize(
     graph["nodes"].extend([par_node, merge_node])
 
     for e in all_upstream:
-        if e in graph["edges"]["data"]:
-            graph["edges"]["data"].remove(e)
+        _remove_data_edge(graph, e)
         _add_data_edge(graph, e["source_node_id"], e["source_port"], par_id, "input")
 
     for e in all_downstream:
-        if e in graph["edges"]["data"]:
-            graph["edges"]["data"].remove(e)
+        _remove_data_edge(graph, e)
         _add_data_edge(graph, merge_id, "result", e["target_node_id"], e["target_port"])
 
     _add_data_edge(graph, par_id, "results", merge_id, "data")
@@ -828,7 +860,7 @@ def dispatch_compound_mutations(
 def summarize_graph(graph: dict) -> str:
     """Produce a compact text summary of a graph for codegen context."""
     nodes = graph.get("nodes", [])
-    edges = graph.get("edges", {}).get("data", [])
+    edges = _get_edges_by_type(graph, "data")
 
     lines = [f"Workflow: {graph.get('metadata', {}).get('name', 'unnamed')}"]
     lines.append(f"Nodes ({len(nodes)}):")
