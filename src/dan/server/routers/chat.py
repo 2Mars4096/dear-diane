@@ -162,6 +162,88 @@ class ChatMessageRequest(BaseModel):
         return self
 
 
+class EditorCompletionRequest(BaseModel):
+    prefix: str
+    suffix: str = ""
+    language: str = "text"
+    filePath: str | None = None
+    maxTokens: int = 100
+
+
+def _attachment_tool_hint(path: str, kind: str | None = None) -> str:
+    lower = path.lower()
+    if kind == "figure" or lower.endswith((".png", ".jpg", ".jpeg", ".webp", ".gif")):
+        return "image_describe"
+    if lower.endswith(".pdf"):
+        return "pdf_read"
+    if lower.endswith(".csv"):
+        return "csv_read"
+    return "file_read"
+
+
+def _build_attachment_prompt_context(req: ChatMessageRequest) -> str:
+    lines: list[str] = []
+    seen: set[str] = set()
+
+    if req.attachment_path:
+        hint = _attachment_tool_hint(req.attachment_path)
+        token = f"path:{req.attachment_path}"
+        seen.add(token)
+        lines.append(
+            f"- Primary attached file path: `{req.attachment_path}`. "
+            f"If the user is asking about the attachment, inspect it with `{hint}` before claiming no file was attached."
+        )
+
+    surface_context = req.surface_context if isinstance(req.surface_context, dict) else {}
+    raw_attachments = surface_context.get("appended_attachments")
+    if isinstance(raw_attachments, list):
+        for item in raw_attachments[:8]:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "Attachment").strip() or "Attachment"
+            kind = str(item.get("kind") or "file").strip() or "file"
+            path = str(item.get("path") or "").strip()
+            caption = str(item.get("caption") or "").strip()
+            source = str(item.get("source") or "").strip()
+            token = f"{kind}:{path or name}:{caption}"
+            if token in seen:
+                continue
+            seen.add(token)
+            if path:
+                hint = _attachment_tool_hint(path, kind=kind)
+                detail_parts = [f"name={name}", f"path={path}", f"suggested_tool={hint}"]
+                if caption:
+                    detail_parts.append(f"caption={caption}")
+                if source:
+                    detail_parts.append(f"source={source}")
+                lines.append(
+                    "- Appended attachment: "
+                    + ", ".join(detail_parts)
+                    + ". If the user refers to this file/figure, inspect it rather than saying no attachment was provided."
+                )
+            else:
+                detail_parts = [f"name={name}", f"kind={kind}"]
+                if caption:
+                    detail_parts.append(f"caption={caption}")
+                if source:
+                    detail_parts.append(f"source={source}")
+                lines.append(
+                    "- Appended attachment metadata: "
+                    + ", ".join(detail_parts)
+                    + ". No filesystem path was exposed for this attachment, so rely on the metadata already provided."
+                )
+
+    if not lines:
+        return ""
+    return (
+        "## Appended attachments\n"
+        "FACT: the current user turn includes one or more attached files/figures. "
+        "Do not say that no file/image was attached when this section is present. "
+        "If the user asks about an attached PDF/image/file, use the attachment metadata below and inspect the path with the suggested tool when needed.\n"
+        + "\n".join(lines)
+    )
+
+
 class StopRequest(BaseModel):
     message_id: str | None = None
 
@@ -281,6 +363,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
     )
     _register_chat_stream(stream_channel_id, queue)
     cancel_event = cm.register_stream(stream_channel_id)
+    attachment_prompt_context = _build_attachment_prompt_context(req)
 
     structured_mentions = [
         MentionRef(type=m.type, identifier=m.identifier)
@@ -362,6 +445,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                         "mentions": structured_mentions,
                         "cancel_event": cancel_event,
                         "selected_path": req.attachment_path,
+                        "attachment_prompt_context": attachment_prompt_context,
                         "surface_context": req.surface_context,
                         "stream_channel_id": stream_channel_id,
                     },
@@ -381,6 +465,9 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                 extra_kwargs: dict[str, Any] = {}
                 if use_tools:
                     extra_kwargs["stream_channel_id"] = stream_channel_id
+                if attachment_prompt_context:
+                    extra_kwargs["prompt_context"] = attachment_prompt_context
+                    extra_kwargs["extra_system_instructions"] = attachment_prompt_context
                 event_stream = send(
                     workflow_id=req.workflow_id,
                     message=req.message,
@@ -612,6 +699,61 @@ async def _handle_run_command(
 
 
 # ------------------------------------------------------------------
+# Legacy editor completion endpoint
+# ------------------------------------------------------------------
+
+
+@router.post("/api/chat/editor/complete")
+async def editor_inline_complete(req: EditorCompletionRequest):
+    cm = get_chat_manager()
+    gs = get_graph_store()
+
+    if gs.get_graph("_scratch") is None:
+        gs.save_graph("_scratch", {"nodes": [], "edges": []})
+
+    prompt = (
+        "You are an inline code completion model.\n"
+        "Return ONLY the exact text to insert at the cursor.\n"
+        "Do not wrap the answer in markdown fences.\n"
+        "Do not repeat the prefix or suffix.\n\n"
+        f"Language: {req.language}\n"
+        f"File: {req.filePath or 'unknown'}\n"
+        f"Max tokens: {req.maxTokens}\n\n"
+        "[Prefix]\n"
+        "```\n"
+        f"{req.prefix}\n"
+        "```\n\n"
+        "[Suffix]\n"
+        "```\n"
+        f"{req.suffix}\n"
+        "```\n"
+    )
+
+    accumulated = ""
+    async for event in cm.send_message(
+        workflow_id="_scratch",
+        message=prompt,
+        history=[],
+        thread_id=f"editor-complete-{uuid.uuid4().hex[:8]}",
+        mode="ask",
+    ):
+        payload = event.model_dump()
+        event_type = payload.get("type")
+        if event_type == "chat_token":
+            accumulated = str(payload.get("accumulated") or accumulated)
+        elif event_type in {"chat_complete", "chat_interrupted"}:
+            accumulated = str(payload.get("content") or accumulated)
+            break
+        elif event_type == "chat_error":
+            raise HTTPException(
+                status_code=500,
+                detail=str(payload.get("error") or "Inline completion failed"),
+            )
+
+    return {"completion": accumulated.strip()}
+
+
+# ------------------------------------------------------------------
 # Chat events WebSocket
 # ------------------------------------------------------------------
 
@@ -658,18 +800,19 @@ async def chat_events_ws(websocket: WebSocket, channel_id: str):
         queue.detach_consumer()
         task = _chat_produce_tasks.get(channel_id)
         producer_running = task is not None and not task.done()
-        if should_preserve_chat_stream(
+        preserve_stream = should_preserve_chat_stream(
             queue,
             producer_running=producer_running,
-        ):
+        )
+        if preserve_stream:
             _chat_streams[channel_id] = (queue, time.monotonic())
             if not producer_running:
                 _chat_produce_tasks.pop(channel_id, None)
-            return
-        _chat_streams.pop(channel_id, None)
-        task = _chat_produce_tasks.pop(channel_id, None)
-        if task is not None and not task.done():
-            task.cancel()
+        else:
+            _chat_streams.pop(channel_id, None)
+            task = _chat_produce_tasks.pop(channel_id, None)
+            if task is not None and not task.done():
+                task.cancel()
 
 
 # ------------------------------------------------------------------

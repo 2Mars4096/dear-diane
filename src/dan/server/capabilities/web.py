@@ -1,6 +1,7 @@
 """Web capability handlers: web_search, web_fetch, http_request."""
 from __future__ import annotations
 
+import asyncio
 import re as _re
 from typing import Any
 
@@ -11,6 +12,59 @@ from dan.server.capabilities._helpers import (
     _failure_result,
     _sanitize_web_content,
 )
+
+_MAX_AUTO_FETCH_RESULTS = 2
+_FETCH_EXCERPT_MAX = 1800
+
+
+def _format_search_result(index: int, item: dict[str, Any]) -> str:
+    title = str(item.get("title", "") or "").strip() or "(untitled result)"
+    snippet = str(item.get("snippet", "") or "").strip()
+    url = str(item.get("url", "") or "").strip()
+
+    lines = [f"[{index}] {title}"]
+    if snippet:
+        lines.append(f"Snippet: {snippet}")
+    if url:
+        lines.append(f"URL: {url}")
+    return "\n".join(lines)
+
+
+def _truncate_grounding_excerpt(content: str, limit: int = _FETCH_EXCERPT_MAX) -> str:
+    content = content.strip()
+    if len(content) > limit:
+        return content[:limit] + "\n[...truncated]"
+    return content
+
+
+async def _fetch_grounding_excerpt(index: int, url: str) -> dict[str, Any]:
+    try:
+        from dan.tools.web_fetch import web_fetch
+
+        fetched = await web_fetch(url=url)
+        content = _sanitize_web_content(fetched.get("content", ""))
+        content = _truncate_grounding_excerpt(content)
+        if not content:
+            return {
+                "index": index,
+                "url": url,
+                "success": False,
+                "error": "Fetched page returned no usable text.",
+            }
+        return {
+            "index": index,
+            "url": url,
+            "success": True,
+            "content": content,
+        }
+    except Exception as exc:
+        error = str(exc).strip() or type(exc).__name__
+        return {
+            "index": index,
+            "url": url,
+            "success": False,
+            "error": error[:240],
+        }
 
 
 async def handle_web_search(
@@ -42,36 +96,66 @@ async def handle_web_search(
     if not results:
         return CapabilityResult(success=True, message="No web results found for that query.")
 
-    lines = []
-    for item in results[:num]:
-        title = item.get("title", "").strip()
-        snippet = item.get("snippet", "").strip()
-        url = item.get("url", "").strip()
-        parts = [p for p in (title, snippet, url) if p]
-        if parts:
-            lines.append(" — ".join(parts))
+    provider = str(result.get("provider", "") or "").strip()
+    result_payload = dict(result)
+    result_payload["query"] = query
+    result_payload["fetch_content_requested"] = fetch_content
+    result_payload["grounded_result_count"] = 0
+    result_payload["fetched_results"] = []
 
-    message = "\n\n".join(lines)
+    lines = [f'Web search results for "{query}"']
+    if provider:
+        lines[0] += f" (provider: {provider})"
+    lines.append("Results are numbered for citation; snippets may be incomplete without fetched page content.")
+    lines.append("")
+
+    for index, item in enumerate(results[:num], start=1):
+        lines.append(_format_search_result(index, item))
+        lines.append("")
+
+    message = "\n".join(lines).strip()
 
     if fetch_content and results:
-        top_url = results[0].get("url", "").strip()
-        if top_url:
-            try:
-                from dan.tools.web_fetch import web_fetch
-                fetched = await web_fetch(url=top_url)
-                content = fetched.get("content", "")
-                content = _sanitize_web_content(content)
-                if len(content) > 6000:
-                    content = content[:6000] + "\n[...truncated]"
-                if content.strip():
-                    message += f"\n\n--- Content from {top_url} ---\n{content}"
-            except Exception:
-                pass
+        fetch_targets: list[tuple[int, str]] = []
+        for index, item in enumerate(results[:num], start=1):
+            url = str(item.get("url", "") or "").strip()
+            if not url:
+                continue
+            fetch_targets.append((index, url))
+            if len(fetch_targets) >= _MAX_AUTO_FETCH_RESULTS:
+                break
+
+        if fetch_targets:
+            fetched_results = await asyncio.gather(*[
+                _fetch_grounding_excerpt(index, url) for index, url in fetch_targets
+            ])
+            result_payload["fetched_results"] = fetched_results
+            result_payload["grounded_result_count"] = sum(
+                1 for item in fetched_results if item.get("success")
+            )
+
+            fetched_sections: list[str] = []
+            for fetched in fetched_results:
+                idx = int(fetched.get("index", 0) or 0)
+                url = str(fetched.get("url", "") or "").strip()
+                if fetched.get("success"):
+                    fetched_sections.append(
+                        f"[{idx}] Fetched content from {url}\n{fetched.get('content', '')}"
+                    )
+                else:
+                    fetched_sections.append(
+                        f"[{idx}] Fetch failed for {url}: {fetched.get('error', 'unknown error')}"
+                    )
+            if fetched_sections:
+                message += (
+                    "\n\nFetched page excerpts (top results fetched in parallel):\n\n"
+                    + "\n\n".join(fetched_sections)
+                )
 
     return CapabilityResult(
         success=True,
         message=message,
-        data=result,
+        data=result_payload,
     )
 
 

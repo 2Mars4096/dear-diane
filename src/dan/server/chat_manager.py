@@ -1104,6 +1104,7 @@ class ChatManager:
             if allow_mutation_tool and mode not in READ_ONLY_MODES:
                 all_tools.append(MUTATION_TOOL_SCHEMA)
             satisfied_tool_names: set[str] = set()
+            successful_tool_results: list[dict[str, Any]] = []
             force_file_write_next_turn = False
 
             def _tool_request_config(
@@ -1126,6 +1127,7 @@ class ChatManager:
                     _tool_choice_for_action_hints(
                         required_action_hints,
                         satisfied_tool_names,
+                        tool_results=successful_tool_results,
                         allow_exact_tool_choice=exact_tool_choice_supported,
                     ),
                 )
@@ -1398,6 +1400,7 @@ class ChatManager:
                     missing_action_hints = _missing_action_hints(
                         required_action_hints,
                         satisfied_tool_names,
+                        tool_results=successful_tool_results,
                     )
 
                     if was_truncated and _turn < max_tool_turns - 1:
@@ -2063,6 +2066,11 @@ class ChatManager:
                     cap_args = pending["args"]
                     if pending["status"] == "success":
                         satisfied_tool_names.add(cap_name)
+                        successful_tool_results.append({
+                            "tool_name": cap_name,
+                            "status": pending["status"],
+                            "cap_result": cap_result,
+                        })
                     yield ChatToolCallResultEvent(
                         tool_call_id=pending["event_tool_call_id"],
                         tool_name=cap_name,
@@ -2133,6 +2141,21 @@ class ChatManager:
                     "tool_calls": raw_tool_calls,
                 })
                 messages.extend(tool_result_messages)
+                if any(
+                    pending["status"] == "success"
+                    and pending["tool_name"] in ("web_search", "web_fetch", "http_request")
+                    for pending in capability_results
+                ):
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "Grounding requirement: for live or current claims, answer ONLY from the web/tool "
+                            "evidence already retrieved in this conversation. If the evidence is only snippets "
+                            "or does not support a claim, say you could not verify it yet. Prefer fetched "
+                            "page content over snippets. When results are numbered, cite them inline as [1], [2] "
+                            "and include markdown links to the source URLs when helpful."
+                        ),
+                    })
 
                 pending_write_file = (
                     "write_file" in required_action_hints
@@ -2170,6 +2193,7 @@ class ChatManager:
                 followup_missing_action_hints = _missing_action_hints(
                     required_action_hints,
                     satisfied_tool_names,
+                    tool_results=successful_tool_results,
                 )
 
                 try:
@@ -2437,6 +2461,7 @@ class ChatManager:
             missing_action_hints = _missing_action_hints(
                 required_action_hints,
                 satisfied_tool_names,
+                tool_results=successful_tool_results,
             )
             turn_cap_note: str | None = None
             if final_cap_calls:

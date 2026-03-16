@@ -20,6 +20,9 @@ _ACTION_HINT_TOOL_MAP: dict[str, frozenset[str]] = {
     "read_file": frozenset({"file_read", "pdf_read", "list_directory"}),
     "search_web": frozenset({"web_search", "web_fetch", "http_request"}),
     "write_file": frozenset({"file_write"}),
+    # Run-control turns (e.g. furnace session lifecycle) should execute API control
+    # actions instead of ending as narrative prose.
+    "run_control": frozenset({"http_request"}),
 }
 
 _MISSING_TARGET_PROBE_TOOLS = frozenset({
@@ -82,12 +85,42 @@ def _dedupe_action_hints(required_action_hints: list[str] | None) -> list[str]:
     return ordered
 
 
+def _has_grounded_web_support(
+    satisfied_tool_names: set[str],
+    tool_results: list[dict[str, Any]] | None = None,
+) -> bool:
+    if "web_fetch" in satisfied_tool_names or "http_request" in satisfied_tool_names:
+        return True
+    if not tool_results:
+        return False
+
+    for result in tool_results:
+        if str(result.get("status") or "success").strip().lower() != "success":
+            continue
+        if str(result.get("tool_name") or "").strip() != "web_search":
+            continue
+        cap_result = result.get("cap_result")
+        data = getattr(cap_result, "data", None)
+        if not isinstance(data, dict):
+            continue
+        grounded_count = data.get("grounded_result_count")
+        if isinstance(grounded_count, int) and grounded_count > 0:
+            return True
+    return False
+
+
 def _missing_action_hints(
     required_action_hints: list[str] | None,
     satisfied_tool_names: set[str],
+    *,
+    tool_results: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     missing: list[str] = []
     for hint in _dedupe_action_hints(required_action_hints):
+        if hint == "search_web":
+            if not _has_grounded_web_support(satisfied_tool_names, tool_results):
+                missing.append(hint)
+            continue
         tool_names = _ACTION_HINT_TOOL_MAP.get(hint)
         if tool_names and satisfied_tool_names.isdisjoint(tool_names):
             missing.append(hint)
@@ -98,11 +131,13 @@ def _tool_choice_for_action_hints(
     required_action_hints: list[str] | None,
     satisfied_tool_names: set[str],
     *,
+    tool_results: list[dict[str, Any]] | None = None,
     allow_exact_tool_choice: bool = False,
 ) -> str | dict[str, Any]:
     missing_action_hints = _missing_action_hints(
         required_action_hints,
         satisfied_tool_names,
+        tool_results=tool_results,
     )
     if not missing_action_hints:
         return "auto"
@@ -122,18 +157,20 @@ def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> s
     search_pending = "search_web" in missing_action_hints
     write_pending = "write_file" in missing_action_hints
     read_pending = "read_file" in missing_action_hints
+    run_control_pending = "run_control" in missing_action_hints
     handled_read = False
 
     if search_pending and write_pending:
         instructions.append(
             "You still need to gather live web information AND write the "
-            "requested output. Do your research FIRST (web_search / web_fetch), "
+            "requested output. Do your research FIRST (web_search, then web_fetch "
+            "or web_search with fetch_content=true), "
             "then write incrementally:\n"
             "1. First file_write with mode='overwrite' — preamble + first section only.\n"
             "2. Subsequent file_write calls with mode='append' — one section each.\n"
             "3. Final file_write with mode='append' — close the document "
             "(\\end{document} or equivalent).\n"
-            "Do NOT write until you have gathered sufficient data."
+            "Do NOT rely on search snippets alone, and do NOT write until you have gathered sufficient data."
         )
     elif read_pending and write_pending:
         instructions.append(
@@ -163,7 +200,9 @@ def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> s
         )
     elif search_pending:
         instructions.append(
-            "You still need to gather live web information. Use web_search or web_fetch before finalizing."
+            "You still need grounded live web information. Use web_search to identify sources, "
+            "then web_fetch (or web_search with fetch_content=true) on the most relevant result "
+            "before finalizing. Do not rely on snippets alone."
         )
 
     if read_pending and not handled_read:
@@ -172,6 +211,13 @@ def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> s
             "Prefer chunked reads: use file_read or pdf_read with specific "
             "start_line/end_line ranges (or grep to locate sections) instead of "
             "re-reading the whole file."
+        )
+    if run_control_pending:
+        instructions.append(
+            "You still need to perform run control. Use http_request against local "
+            "furnace endpoints (for example `/api/furnace/sessions`, then "
+            "`/api/furnace/sessions/{id}/sources`, then `/api/furnace/sessions/{id}/start`) "
+            "before finalizing. Return session_id and current status in the final answer."
         )
     if not instructions:
         instructions.append("A required capability step is still missing. Use an appropriate tool before finalizing.")

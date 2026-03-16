@@ -12,6 +12,8 @@ _CONFIGURABLE_PREFIXES = (
     "DAN_GOOGLE_API_KEY", "DAN_ANTHROPIC_API_KEY", "DAN_OPENAI_API_KEY",
     "DAN_STATA_", "DAN_MCP_", "DAN_TOOL_", "DAN_PATH_",
     "DAN_LLM_MODEL", "DAN_CHAT_MODEL", "DAN_LLM_BASE_URL",
+    "DAN_BOT_NAME", "DAN_ENABLE_TIER_POLICY", "DAN_FULL_TOOLS",
+    "DAN_TELEMETRY", "DAN_LEARNING_MODE",
 )
 
 
@@ -58,6 +60,9 @@ async def handle_get_config(args: dict[str, Any], ctx: CapabilityContext) -> Cap
             features.append(f)
 
     tier_policy = os.environ.get("DAN_ENABLE_TIER_POLICY", "0") == "1"
+    full_tools = os.environ.get("DAN_FULL_TOOLS", "1") != "0"
+    telemetry_enabled = os.environ.get("DAN_TELEMETRY", "1") == "1"
+    learning_mode = os.environ.get("DAN_LEARNING_MODE", "0") == "1"
 
     mcp_servers = []
     if getattr(ctx, "mcp_bridge", None):
@@ -69,6 +74,9 @@ async def handle_get_config(args: dict[str, Any], ctx: CapabilityContext) -> Cap
         "bot_name": os.environ.get("DAN_BOT_NAME", "DAN"),
         "active_learning_features": features,
         "tier_policy_enabled": tier_policy,
+        "full_tools_enabled": full_tools,
+        "telemetry_enabled": telemetry_enabled,
+        "learning_mode_enabled": learning_mode,
         "mcp_servers_connected": mcp_servers,
     }
 
@@ -92,7 +100,14 @@ async def handle_set_config(args: dict[str, Any], ctx: CapabilityContext) -> Cap
     os.environ[key] = value
 
     if key in ("DAN_LLM_MODEL", "DAN_CHAT_MODEL") and hasattr(ctx, "chat_manager") and ctx.chat_manager:
-        ctx.chat_manager._chat_model = value
+        ctx.chat_manager._chat_model = value or os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
+
+    if key == "DAN_BOT_NAME":
+        try:
+            from dan.server.concierge import identity as concierge_identity
+            concierge_identity._cached_bot_name = None
+        except Exception:
+            pass
 
     try:
         from dan.utils.env import update_env_file

@@ -104,3 +104,16 @@ def validate_path_segment(value: str, name: str) -> str:
 def resolve_cache_dir(config: Any):
     from dan.server.app import _resolve_cache_dir
     return _resolve_cache_dir(config)
+
+
+def get_furnace_session_store():
+    from dan.server.app import _furnace_session_store
+    if _furnace_session_store is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=503, detail="Furnace not initialised")
+    return _furnace_session_store
+
+
+def is_furnace_enabled() -> bool:
+    from dan.server.app import _furnace_enabled
+    return _furnace_enabled

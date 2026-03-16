@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
+from dan.server.capabilities.config import _update_env_file
 from dan.server.routers.dependencies import (
     get_run_manager,
     get_graph_store,
@@ -26,6 +27,53 @@ from dan.server.routers.dependencies import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+_RUNTIME_CONFIG_KEYS = (
+    "DAN_CHAT_MODEL",
+    "DAN_LLM_MODEL",
+    "DAN_LLM_BASE_URL",
+    "DAN_BOT_NAME",
+    "DAN_ENABLE_TIER_POLICY",
+    "DAN_FULL_TOOLS",
+    "DAN_TELEMETRY",
+    "DAN_LEARNING_MODE",
+)
+
+_RESTART_REQUIRED_CONFIG_KEYS = {
+    "DAN_LLM_BASE_URL",
+    "DAN_ENABLE_TIER_POLICY",
+    "DAN_FULL_TOOLS",
+    "DAN_TELEMETRY",
+    "DAN_LEARNING_MODE",
+}
+
+
+def _normalize_env_bool(key: str, default: bool) -> str:
+    raw = str(os.environ.get(key, "")).strip().lower()
+    if not raw:
+        return "1" if default else "0"
+    return "1" if raw in ("1", "true", "yes", "on") else "0"
+
+
+def _read_runtime_config_values() -> dict[str, str]:
+    from dan.server.app import _chat_manager
+
+    chat_model = (
+        getattr(_chat_manager, "_chat_model", "") or os.environ.get("DAN_CHAT_MODEL", "").strip()
+    )
+    if not chat_model:
+        chat_model = os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6").strip() or "claude-sonnet-4-6"
+
+    return {
+        "DAN_CHAT_MODEL": chat_model,
+        "DAN_LLM_MODEL": os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6"),
+        "DAN_LLM_BASE_URL": os.environ.get("DAN_LLM_BASE_URL", "https://api.vectorengine.ai/v1"),
+        "DAN_BOT_NAME": os.environ.get("DAN_BOT_NAME", "DAN"),
+        "DAN_ENABLE_TIER_POLICY": _normalize_env_bool("DAN_ENABLE_TIER_POLICY", False),
+        "DAN_FULL_TOOLS": _normalize_env_bool("DAN_FULL_TOOLS", True),
+        "DAN_TELEMETRY": _normalize_env_bool("DAN_TELEMETRY", True),
+        "DAN_LEARNING_MODE": _normalize_env_bool("DAN_LEARNING_MODE", False),
+    }
 
 
 # ------------------------------------------------------------------
@@ -50,6 +98,66 @@ async def health_check() -> dict[str, Any]:
 async def health():
     """Minimal liveness probe for desktop/editor reconnect flows."""
     return {"status": "ok", "pid": os.getpid(), "timestamp": time.time()}
+
+
+@router.get("/api/config")
+async def get_runtime_config() -> dict[str, Any]:
+    """Return the subset of runtime settings that the desktop UI can edit."""
+    return {
+        "values": _read_runtime_config_values(),
+        "restart_required_keys": sorted(_RESTART_REQUIRED_CONFIG_KEYS),
+    }
+
+
+@router.post("/api/config")
+async def set_runtime_config(body: dict[str, Any]) -> dict[str, Any]:
+    """Persist a runtime setting to both the live server env and project .env."""
+    key = str(body.get("key") or "").strip().upper()
+    if key not in _RUNTIME_CONFIG_KEYS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported config key '{key}'.",
+        )
+
+    raw_value = body.get("value", "")
+    if isinstance(raw_value, bool):
+        value = "1" if raw_value else "0"
+    else:
+        value = str(raw_value).strip()
+
+    os.environ[key] = value
+
+    from dan.server.app import _chat_manager
+
+    if key in ("DAN_LLM_MODEL", "DAN_CHAT_MODEL") and _chat_manager is not None:
+        _chat_manager._chat_model = (
+            os.environ.get("DAN_CHAT_MODEL", "").strip()
+            or os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6").strip()
+            or "claude-sonnet-4-6"
+        )
+
+    if key == "DAN_BOT_NAME":
+        try:
+            from dan.server.concierge import identity as concierge_identity
+
+            concierge_identity._cached_bot_name = None
+        except Exception:
+            pass
+
+    try:
+        _update_env_file(key, value)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Saved '{key}' in the running server, but failed to update .env: {exc}",
+        ) from exc
+
+    return {
+        "status": "ok",
+        "key": key,
+        "value": value,
+        "restart_required": key in _RESTART_REQUIRED_CONFIG_KEYS,
+    }
 
 
 # ------------------------------------------------------------------

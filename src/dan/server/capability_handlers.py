@@ -161,15 +161,16 @@ WEB_SEARCH_CAPABILITY_SCHEMA = build_tool_schema(
     description=(
         "Search the web for current information. Use when the user asks about "
         "live data, recent events, or facts you don't have. "
-        "For research tasks, use fetch_content=true to automatically read "
-        "the top result — saves a separate web_fetch call."
+        "For grounded factual answers or research tasks, use fetch_content=true "
+        "to automatically read the top results in parallel — saves separate "
+        "web_fetch calls."
     ),
     parameters={
         "type": "object",
         "properties": {
             "query": {"type": "string", "description": "Search query — be specific and include relevant keywords."},
             "num_results": {"type": "integer", "description": "Number of results to return (1-10). Default 3. Use 1 for quick lookups, more for research."},
-            "fetch_content": {"type": "boolean", "description": "If true, automatically fetch and include content from the top result. Saves a separate web_fetch call."},
+            "fetch_content": {"type": "boolean", "description": "If true, automatically fetch and include content from the top search results in parallel. Use this for grounded live answers instead of relying only on snippets."},
         },
         "required": ["query"],
     },
