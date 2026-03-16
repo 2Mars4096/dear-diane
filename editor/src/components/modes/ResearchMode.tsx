@@ -1254,9 +1254,18 @@ function FurnacePanel() {
       total_cost_usd: number;
       updated_at: number;
     }) => {
+      const normalizedName = (summary.name || "").trim().toLowerCase();
+      const normalizedTopic = (summary.topic || "").trim().toLowerCase();
       const existing = useResearchStore
         .getState()
-        .trainingSessions.find((s) => s.sessionId === summary.session_id);
+        .trainingSessions.find((s) => {
+          if (s.sessionId === summary.session_id) return true;
+          // Backfill legacy local sessions that predate sessionId persistence.
+          if (s.sessionId) return false;
+          const nameMatch = (s.name || "").trim().toLowerCase() === normalizedName;
+          const topicMatch = (s.topic || "").trim().toLowerCase() === normalizedTopic;
+          return nameMatch && topicMatch;
+        });
       if (!existing) {
         addTrainingSession({
           sessionId: summary.session_id,
@@ -1277,6 +1286,7 @@ function FurnacePanel() {
         return;
       }
       updateTrainingSession(existing.id, {
+        sessionId: summary.session_id,
         name: summary.name || existing.name,
         topic: summary.topic || existing.topic,
         status: summary.status === "active" ? "running" : (summary.status as TrainingSession["status"]),
@@ -1714,7 +1724,6 @@ function FurnaceSessionCard({ session }: { session: TrainingSession }) {
   }, [sid, session.id, updateTrainingSession]);
 
   const handleDelete = useCallback(async () => {
-    if (!sid) return;
     const ok = window.confirm(
       `Delete session "${session.name}"?\n\nThis removes it from the Furnace session list.`,
     );
@@ -1722,25 +1731,54 @@ function FurnaceSessionCard({ session }: { session: TrainingSession }) {
 
     setLoading(true);
     try {
-      if (session.status === "running" || session.status === "paused") {
-        await furnaceCancelSession(sid);
+      let backendSid = session.sessionId;
+      if (!backendSid) {
+        // Legacy sessions may exist locally without a bound backend session_id.
+        const listed = await furnaceListSessions();
+        const fallback = listed.sessions.find(
+          (s) => s.name === session.name && s.topic === session.topic,
+        );
+        backendSid = fallback?.session_id;
       }
-      await furnaceDeleteSession(sid, { delete_artifacts: true });
+
+      // If no backend match exists, still allow local cleanup so UI can recover.
+      if (!backendSid) {
+        removeTrainingSession(session.id);
+        window.dispatchEvent(
+          new CustomEvent("dan:notification", {
+            detail: {
+              type: "info",
+              title: "Session removed",
+              message: `"${session.name}" was removed from local history.`,
+            },
+          }),
+        );
+        return;
+      }
+
+      if (session.status === "running" || session.status === "paused") {
+        await furnaceCancelSession(backendSid);
+      }
+      await furnaceDeleteSession(backendSid, { delete_artifacts: true });
       removeTrainingSession(session.id);
-    } catch {
+    } catch (err) {
+      const message =
+        err instanceof Error && err.message
+          ? err.message
+          : `Could not delete session "${session.name}".`;
       window.dispatchEvent(
         new CustomEvent("dan:notification", {
           detail: {
             type: "error",
             title: "Delete failed",
-            message: `Could not delete session "${session.name}".`,
+            message,
           },
         }),
       );
     } finally {
       setLoading(false);
     }
-  }, [sid, session.id, session.name, session.status, removeTrainingSession]);
+  }, [session.id, session.name, session.sessionId, session.status, session.topic, removeTrainingSession]);
 
   return (
     <div className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg">
@@ -1833,8 +1871,8 @@ function FurnaceSessionCard({ session }: { session: TrainingSession }) {
           className="inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] text-gray-500 hover:text-red-400 hover:bg-red-900/20 disabled:opacity-50"
           title="Delete this session"
         >
-          <Trash2 size={11} />
-          Delete
+          {loading ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+          {loading ? "Deleting..." : "Delete"}
         </button>
       </div>
     </div>
