@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any, AsyncIterator
 
 from dan.providers import (
@@ -16,7 +17,8 @@ from dan.providers import (
 class AnthropicProvider:
     """Provider for Anthropic's Claude models via the native API."""
 
-    supports_tool_calls = False
+    supports_exact_tool_choice = True
+    supports_tool_calls = True
 
     def __init__(self, config: ProviderConfig) -> None:
         try:
@@ -83,6 +85,134 @@ class AnthropicProvider:
         system_text = "\n\n".join(text for text, _ in system_parts)
         return system_text, non_system
 
+    @staticmethod
+    def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
+        if isinstance(raw, dict):
+            return dict(raw)
+        if raw is None:
+            return {}
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+            except (TypeError, ValueError):
+                return {"value": raw}
+            if isinstance(parsed, dict):
+                return parsed
+            return {"value": parsed}
+        return {"value": raw}
+
+    @staticmethod
+    def _stringify_tool_arguments(raw: Any) -> str:
+        try:
+            return json.dumps(raw if raw is not None else {}, sort_keys=True)
+        except TypeError:
+            return json.dumps({})
+
+    @classmethod
+    def _tool_schema_to_anthropic(cls, tool: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(tool, dict):
+            return None
+        func = tool.get("function")
+        if not isinstance(func, dict):
+            return None
+        name = str(func.get("name") or "").strip()
+        if not name:
+            return None
+        payload: dict[str, Any] = {
+            "name": name,
+            "input_schema": func.get("parameters") or {"type": "object", "properties": {}},
+        }
+        description = str(func.get("description") or "").strip()
+        if description:
+            payload["description"] = description
+        return payload
+
+    @classmethod
+    def _tool_choice_to_anthropic(
+        cls,
+        tool_choice: Any,
+    ) -> dict[str, Any] | None:
+        if tool_choice in (None, "", "auto"):
+            return None
+        if tool_choice == "required":
+            return {"type": "any"}
+        if isinstance(tool_choice, dict):
+            func = tool_choice.get("function")
+            if isinstance(func, dict):
+                name = str(func.get("name") or "").strip()
+                if name:
+                    return {"type": "tool", "name": name}
+        return None
+
+    @classmethod
+    def _convert_messages(
+        cls,
+        messages: list[dict[str, Any]],
+    ) -> tuple[str | list[dict[str, Any]] | None, list[dict[str, Any]]]:
+        system_text, non_system = cls._split_system(messages)
+        converted: list[dict[str, Any]] = []
+        pending_tool_results: list[dict[str, Any]] = []
+
+        def flush_tool_results() -> None:
+            nonlocal pending_tool_results
+            if pending_tool_results:
+                converted.append({"role": "user", "content": pending_tool_results})
+                pending_tool_results = []
+
+        for msg in non_system:
+            role = str(msg.get("role") or "user")
+            if role == "tool":
+                tool_result_id = str(msg.get("tool_call_id") or "").strip()
+                if tool_result_id:
+                    pending_tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_result_id,
+                        "content": str(msg.get("content") or ""),
+                    })
+                continue
+
+            flush_tool_results()
+
+            if role == "assistant":
+                blocks: list[dict[str, Any]] = []
+                content = msg.get("content", "")
+                if isinstance(content, str) and content:
+                    blocks.append({"type": "text", "text": content})
+                elif isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict):
+                            blocks.append(dict(part))
+
+                for tc in msg.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        continue
+                    func = tc.get("function")
+                    if not isinstance(func, dict):
+                        continue
+                    name = str(func.get("name") or "").strip()
+                    if not name:
+                        continue
+                    blocks.append({
+                        "type": "tool_use",
+                        "id": str(tc.get("id") or ""),
+                        "name": name,
+                        "input": cls._parse_tool_arguments(func.get("arguments")),
+                    })
+
+                converted.append({
+                    "role": "assistant",
+                    "content": blocks if blocks else str(content or ""),
+                })
+                continue
+
+            converted.append({
+                "role": "user",
+                "content": msg.get("content", ""),
+            })
+
+        flush_tool_results()
+        return system_text, converted
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -91,7 +221,9 @@ class AnthropicProvider:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> CompletionResult:
-        system_text, user_messages = self._split_system(messages)
+        tools = kwargs.pop("tools", None)
+        tool_choice = kwargs.pop("tool_choice", None)
+        system_text, user_messages = self._convert_messages(messages)
         call_kwargs: dict[str, Any] = {
             "model": model,
             "messages": user_messages,
@@ -101,6 +233,19 @@ class AnthropicProvider:
         }
         if system_text:
             call_kwargs["system"] = system_text
+        if tools:
+            translated_tools = [
+                payload
+                for payload in (
+                    self._tool_schema_to_anthropic(tool) for tool in tools
+                )
+                if payload is not None
+            ]
+            if translated_tools:
+                call_kwargs["tools"] = translated_tools
+        translated_tool_choice = self._tool_choice_to_anthropic(tool_choice)
+        if translated_tool_choice is not None:
+            call_kwargs["tool_choice"] = translated_tool_choice
         call_kwargs.setdefault("timeout", self._timeout_seconds)
 
         try:
@@ -119,14 +264,28 @@ class AnthropicProvider:
                 ) from exc
             raise
         text = ""
+        tool_calls: list[dict[str, Any]] = []
         for block in resp.content:
-            if getattr(block, "type", None) == "text":
+            block_type = getattr(block, "type", None)
+            if block_type == "text":
                 text += getattr(block, "text", "")
+            elif block_type == "tool_use":
+                tool_calls.append({
+                    "id": str(getattr(block, "id", "") or ""),
+                    "type": "function",
+                    "function": {
+                        "name": str(getattr(block, "name", "") or ""),
+                        "arguments": self._stringify_tool_arguments(
+                            getattr(block, "input", {}) or {}
+                        ),
+                    },
+                })
         usage = self._extract_usage(resp)
         cached_input, cache_write = self._extract_cache_tokens(resp)
         finish_reason = getattr(resp, "stop_reason", "") or ""
         return CompletionResult(
             text=text, usage=usage, model=model,
+            tool_calls=tool_calls or None,
             cached_input_tokens=cached_input,
             cache_write_tokens=cache_write,
             finish_reason=finish_reason,
@@ -140,7 +299,9 @@ class AnthropicProvider:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
-        system_text, user_messages = self._split_system(messages)
+        tools = kwargs.pop("tools", None)
+        tool_choice = kwargs.pop("tool_choice", None)
+        system_text, user_messages = self._convert_messages(messages)
         call_kwargs: dict[str, Any] = {
             "model": model,
             "messages": user_messages,
@@ -150,6 +311,19 @@ class AnthropicProvider:
         }
         if system_text:
             call_kwargs["system"] = system_text
+        if tools:
+            translated_tools = [
+                payload
+                for payload in (
+                    self._tool_schema_to_anthropic(tool) for tool in tools
+                )
+                if payload is not None
+            ]
+            if translated_tools:
+                call_kwargs["tools"] = translated_tools
+        translated_tool_choice = self._tool_choice_to_anthropic(tool_choice)
+        if translated_tool_choice is not None:
+            call_kwargs["tool_choice"] = translated_tool_choice
         call_kwargs.setdefault("timeout", self._timeout_seconds)
 
         accumulated = ""
