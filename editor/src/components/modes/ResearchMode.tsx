@@ -45,6 +45,7 @@ import {
   Gauge,
   Clock,
   X,
+  Trash2,
   Settings2,
   FolderOpen,
   Clipboard,
@@ -71,6 +72,7 @@ import {
   furnacePauseSession,
   furnaceResumeSession,
   furnaceCancelSession,
+  furnaceDeleteSession,
 } from "../../lib/api";
 import { handleFurnaceSSEEvent } from "../../lib/researchEventRouter";
 import { parseFurnaceSources, splitSourceTextBlock } from "../../lib/furnaceSources";
@@ -1654,6 +1656,7 @@ function FurnacePanel() {
 
 function FurnaceSessionCard({ session }: { session: TrainingSession }) {
   const updateTrainingSession = useResearchStore((s) => s.updateTrainingSession);
+  const removeTrainingSession = useResearchStore((s) => s.removeTrainingSession);
   const [loading, setLoading] = useState(false);
   const sid = session.sessionId ?? session.id;
   const pct =
@@ -1709,6 +1712,35 @@ function FurnaceSessionCard({ session }: { session: TrainingSession }) {
       setLoading(false);
     }
   }, [sid, session.id, updateTrainingSession]);
+
+  const handleDelete = useCallback(async () => {
+    if (!sid) return;
+    const ok = window.confirm(
+      `Delete session "${session.name}"?\n\nThis removes it from the Furnace session list.`,
+    );
+    if (!ok) return;
+
+    setLoading(true);
+    try {
+      if (session.status === "running" || session.status === "paused") {
+        await furnaceCancelSession(sid);
+      }
+      await furnaceDeleteSession(sid, { delete_artifacts: true });
+      removeTrainingSession(session.id);
+    } catch {
+      window.dispatchEvent(
+        new CustomEvent("dan:notification", {
+          detail: {
+            type: "error",
+            title: "Delete failed",
+            message: `Could not delete session "${session.name}".`,
+          },
+        }),
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, [sid, session.id, session.name, session.status, removeTrainingSession]);
 
   return (
     <div className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg">
@@ -1794,6 +1826,17 @@ function FurnaceSessionCard({ session }: { session: TrainingSession }) {
           </button>
         </div>
       )}
+      <div className="mt-2 flex justify-end">
+        <button
+          onClick={() => void handleDelete()}
+          disabled={loading}
+          className="inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] text-gray-500 hover:text-red-400 hover:bg-red-900/20 disabled:opacity-50"
+          title="Delete this session"
+        >
+          <Trash2 size={11} />
+          Delete
+        </button>
+      </div>
     </div>
   );
 }

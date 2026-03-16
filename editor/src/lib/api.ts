@@ -783,6 +783,18 @@ export const furnaceCancelSession = (sessionId: string) =>
     { method: "POST" },
   );
 
+export const furnaceDeleteSession = (sessionId: string, options?: { delete_artifacts?: boolean }) => {
+  const search = new URLSearchParams();
+  if (options?.delete_artifacts != null) {
+    search.set("delete_artifacts", String(options.delete_artifacts));
+  }
+  const qs = search.toString();
+  return request<{ session_id: string; deleted: boolean; artifacts_deleted: boolean }>(
+    `/furnace/sessions/${encodeURIComponent(sessionId)}${qs ? `?${qs}` : ""}`,
+    { method: "DELETE" },
+  );
+};
+
 export const furnaceListSessions = (params?: FurnaceListSessionsParams) => {
   const search = new URLSearchParams();
   if (params?.corpus_id) search.set("corpus_id", params.corpus_id);
