@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import importlib
 
 import pytest
 
 from dan.server.concierge.models import Project, ResolvedContext, Task
 from dan.server.concierge.project_store import ProjectStore
-from dan.server.concierge.triage import triage
+from dan.server.concierge.triage import fast_classify_text, triage
 
+triage_module = importlib.import_module("dan.server.concierge.triage")
 
 def _make_context(
     *,
@@ -210,3 +212,217 @@ async def test_triage_fallback_infers_write_file_for_short_resume_edit():
     assert result.route.target == "file"
     assert "write_file" in result.route.action_hints
     assert result.is_resume is True
+
+
+@pytest.mark.asyncio
+async def test_triage_forces_furnace_prompt_to_run_control_when_llm_misroutes():
+    context, _project, _task = _make_context(task_label="General task")
+
+    result = await triage(
+        "help me create a furnace session on supply chain risks and read /tmp/paper.pdf",
+        context,
+        _llm_json(
+            {
+                "tier": 1,
+                "intent": "agent",
+                "route": {
+                    "mode": "agent",
+                    "target": "file",
+                    "action_hints": ["write_file"],
+                },
+                "confidence": 0.7,
+                "goal": "Create furnace session",
+                "deliverable": "Done",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "wrongly biased to file write",
+            }
+        ),
+    )
+
+    assert result.intent == "agent"
+    assert result.tier == 2
+    assert result.route is not None
+    assert result.route.target == "run"
+    assert "run_control" in result.route.action_hints
+    assert "write_file" not in result.route.action_hints
+    assert "read_file" in result.route.action_hints
+
+
+@pytest.mark.asyncio
+async def test_triage_fallback_for_furnace_prompt_prefers_run_control_over_write_file():
+    context, _project, _task = _make_context(task_label="General task")
+
+    async def _bad_complete(_messages):
+        return "not json"
+
+    result = await triage(
+        "start furnace session and add this paper /tmp/ersahin2024supply.pdf",
+        context,
+        _bad_complete,
+    )
+
+    assert result.intent == "agent"
+    assert result.tier == 2
+    assert result.route is not None
+    assert result.route.target == "run"
+    assert "run_control" in result.route.action_hints
+    assert "write_file" not in result.route.action_hints
+
+
+@pytest.mark.asyncio
+async def test_triage_furnace_folder_path_prefers_read_file():
+    context, _project, _task = _make_context(task_label="General task")
+
+    async def _bad_complete(_messages):
+        return "not json"
+
+    result = await triage(
+        "start furnace session using folder /Users/lizhi/Dropbox/Projects/papers",
+        context,
+        _bad_complete,
+    )
+
+    assert result.intent == "agent"
+    assert result.route is not None
+    assert result.route.target == "run"
+    assert "run_control" in result.route.action_hints
+    assert "read_file" in result.route.action_hints
+    assert "write_file" not in result.route.action_hints
+
+
+@pytest.mark.asyncio
+async def test_triage_furnace_topic_only_prefers_search_web():
+    context, _project, _task = _make_context(task_label="General task")
+
+    async def _bad_complete(_messages):
+        return "not json"
+
+    result = await triage(
+        "start a furnace session on supply chain risk topic and learn online",
+        context,
+        _bad_complete,
+    )
+
+    assert result.intent == "agent"
+    assert result.route is not None
+    assert result.route.target == "run"
+    assert "run_control" in result.route.action_hints
+    assert "search_web" in result.route.action_hints
+    assert "write_file" not in result.route.action_hints
+
+
+def test_fast_classify_text_handles_simple_social_turn():
+    result = fast_classify_text("Thanks!")
+    assert result is not None
+    assert result.tier == 0
+    assert result.is_social is True
+    assert result.social_response == "You're welcome."
+
+
+def test_fast_classify_text_ignores_non_social_turn():
+    result = fast_classify_text("Please summarize this file")
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_triage_embedding_primary_takes_precedence_over_llm(monkeypatch):
+    context, _project, _task = _make_context(task_label="General task")
+
+    async def _embed_result(_text, _context):
+        return triage_module.TriageResult(
+            tier=2,
+            intent="agent",
+            route=triage_module.RouteDecision(
+                mode=triage_module.RouteMode.AGENT,
+                target="run",
+                action_hints=["run_control"],
+                rationale="embedding test",
+            ),
+            confidence=0.92,
+            goal="Start furnace",
+            deliverable="Start furnace",
+        )
+
+    monkeypatch.setattr(triage_module, "_embedding_triage_result", _embed_result)
+
+    result = await triage(
+        "start furnace session",
+        context,
+        _llm_json(
+            {
+                "tier": 1,
+                "intent": "ask",
+                "route": {
+                    "mode": "ask",
+                    "target": "general",
+                    "action_hints": ["status_check"],
+                },
+                "confidence": 0.8,
+                "goal": "wrong",
+                "deliverable": "wrong",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "llm fallback",
+            }
+        ),
+    )
+
+    assert result.intent == "agent"
+    assert result.route is not None
+    assert result.route.target == "run"
+    assert "run_control" in result.route.action_hints
+
+
+@pytest.mark.asyncio
+async def test_triage_embedding_none_falls_back_to_llm(monkeypatch):
+    context, _project, _task = _make_context(task_label="General task")
+
+    async def _no_embed(_text, _context):
+        return None
+
+    monkeypatch.setattr(triage_module, "_embedding_triage_result", _no_embed)
+
+    result = await triage(
+        "what is the status",
+        context,
+        _llm_json(
+            {
+                "tier": 1,
+                "intent": "ask",
+                "route": {
+                    "mode": "ask",
+                    "target": "general",
+                    "action_hints": ["status_check"],
+                },
+                "confidence": 0.9,
+                "goal": "status",
+                "deliverable": "status",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "llm route",
+            }
+        ),
+    )
+
+    assert result.intent == "ask"
+    assert result.route is not None
+    assert result.route.target == "general"

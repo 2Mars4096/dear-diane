@@ -240,7 +240,7 @@ async def test_tier0_social_path_returns_immediate_response(tmp_path: Path) -> N
     events = [
         event
         async for event in concierge.process(
-            SurfaceMessage(surface="cli", external_id="cli-user", text="hello")
+            SurfaceMessage(surface="cli", external_id="cli-user", text="greetings")
         )
     ]
 
@@ -251,6 +251,31 @@ async def test_tier0_social_path_returns_immediate_response(tmp_path: Path) -> N
         and getattr(event, "detected_mode", None) != "progress_ack"
     ]
     assert [event.content for event in terminal_events] == ["Hi there!"]
+    assert concierge.chat_manager.call_log == []
+
+
+@pytest.mark.asyncio
+async def test_fast_social_turn_skips_triage_llm_call(tmp_path: Path) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        raise AssertionError("triage should be bypassed by fast social classifier")
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(surface="cli", external_id="cli-user", text="thanks!")
+        )
+    ]
+    terminal_events = [
+        event
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    ]
+    assert [event.content for event in terminal_events] == ["You're welcome."]
     assert concierge.chat_manager.call_log == []
 
 
@@ -634,6 +659,74 @@ async def test_confirm_yes_replays_pending_action_instead_of_falling_back_to_got
     assert concierge.chat_manager.call_log == ["Explain the pending task"]
     assert "Confirmed execution." in terminal_messages
     assert "Got it." not in terminal_messages
+
+
+@pytest.mark.asyncio
+async def test_clarify_unmatched_reply_requests_explicit_number(tmp_path: Path) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    project = concierge.project_store.create_project("Pending Project", "cli-user")
+    concierge.project_store.add_task(project.project_id, "Pending task", "cli-user")
+    concierge.project_store.set_pending_action(
+        project.project_id,
+        PendingAction(
+            kind="clarify",
+            intent="ask",
+            original_text="Pick a file to continue",
+            options=["/tmp/a.md", "/tmp/b.md"],
+        ),
+        "cli-user",
+    )
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        raise AssertionError("triage should not run for clarification handling")
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(surface="cli", external_id="cli-user", text="something else")
+        )
+    ]
+    terminal_messages = [
+        event.content
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    ]
+    assert any("Please reply with a number" in content for content in terminal_messages)
+    refreshed = concierge.project_store.get_project(project.project_id, "cli-user")
+    assert refreshed is not None
+    assert refreshed.pending_action is not None
+
+
+@pytest.mark.asyncio
+async def test_mixed_execution_order_preserved_on_root_session(tmp_path: Path) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Run mixed plan",
+            deliverable="Run mixed plan",
+            subtasks=["search docs", "summarize findings"],
+            execution_order="mixed",
+        )
+
+    dispatcher = _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["search docs"] = _complete_stream("Search complete.")
+    concierge.chat_manager._responses["summarize findings"] = _complete_stream("Summary complete.")
+
+    async for _event in concierge.process(
+        SurfaceMessage(surface="cli", external_id="cli-user", text="Run mixed plan")
+    ):
+        pass
+
+    root = dispatcher._session_manager.get_root("cli-user")
+    assert root is not None
+    assert root.child_execution == "mixed"
 
 
 @pytest.mark.asyncio
