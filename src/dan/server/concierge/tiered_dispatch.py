@@ -125,8 +125,12 @@ class TieredDispatcher:
             triage, triage_context = await self._do_triage(msg)
 
         session = self._session_manager.create_root(msg, triage, triage.tier)
-        if getattr(triage, "execution_order", "") == "serial":
+        execution_order = getattr(triage, "execution_order", "")
+        if execution_order == "serial":
             session.child_execution = "serial"
+        elif execution_order == "mixed":
+            # Preserve mixed intent. Multi-step executor treats mixed conservatively.
+            session.child_execution = "mixed"
         else:
             session.child_execution = "parallel"
 
@@ -207,6 +211,13 @@ class TieredDispatcher:
 
     async def _do_triage(self, msg: SurfaceMessage) -> tuple[Any, Any]:
         """Run triage LLM call. Returns (TriageResult, ResolvedContext)."""
+        from .triage import fast_classify_text
+
+        fast = fast_classify_text(msg.text)
+        if fast is not None:
+            context = self._concierge._resolve_context(msg)
+            return fast, context
+
         context = self._concierge._resolve_context(msg)
         concierge_state = getattr(self._concierge, "_concierge_state", None)
         llm_complete = getattr(self._concierge, "_triage_llm_complete", None)

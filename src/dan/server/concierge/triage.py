@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import os
 import re
+import math
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
@@ -54,6 +56,113 @@ _WORKFLOW_EDIT_RE = re.compile(
     r"\b(?:add|remove|delete|rename|connect|disconnect|move|update|change|modify|edit|fix|patch|rewire)\b",
     re.IGNORECASE,
 )
+_FURNACE_INTENT_RE = re.compile(
+    r"(?:\bfurnace\b|\bdistill(?:ation)?\b|\brecipe\s+session\b|\bpill-\d+\b|\bstart\s+furnace\b|\bstart\s+session\b|蒸馏|熔炉|配方会话|炉子会话|启动会话|启动furnace|开始furnace|开始蒸馏)",
+    re.IGNORECASE,
+)
+_TOPIC_ONLY_ONLINE_RE = re.compile(
+    r"\b(?:topic|learn|online|web|internet|research)\b",
+    re.IGNORECASE,
+)
+_TRIAGE_EMBEDDING_ENABLED = os.environ.get("DAN_TRIAGE_EMBEDDING_ENABLED", "1").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+_TRIAGE_EMBEDDING_MODEL = (
+    os.environ.get("DAN_TRIAGE_EMBEDDING_MODEL", "").strip()
+    or os.environ.get("DAN_DEFAULT_EMBEDDING_MODEL", "").strip()
+    or "text-embedding-3-small"
+)
+_TRIAGE_EMBEDDING_MIN_CONFIDENCE = float(
+    os.environ.get("DAN_TRIAGE_EMBEDDING_MIN_CONFIDENCE", "0.34")
+)
+_TRIAGE_EMBEDDING_HINT_THRESHOLD = float(
+    os.environ.get("DAN_TRIAGE_EMBEDDING_HINT_THRESHOLD", "0.30")
+)
+_EMBEDDING_PROTOTYPE_CACHE: dict[tuple[str, str], dict[str, list[list[float]]]] = {}
+
+_EMBEDDING_INTENT_PROTOTYPES: dict[str, tuple[str, ...]] = {
+    "ask": (
+        "explain this",
+        "what is the status",
+        "read-only answer",
+        "请解释一下",
+        "请告诉我状态",
+        "solo quiero una respuesta",
+    ),
+    "agent": (
+        "do the task and execute steps",
+        "read file then update and save",
+        "run the session and control execution",
+        "请帮我执行任务并处理文件",
+        "启动会话并执行",
+        "ejecuta la tarea y guarda结果",
+    ),
+    "plan": (
+        "design workflow structure",
+        "add node and connect edge",
+        "plan automation architecture",
+        "设计工作流结构",
+        "规划自动化流程",
+        "planificar flujo de trabajo",
+    ),
+}
+_EMBEDDING_TARGET_PROTOTYPES: dict[str, tuple[str, ...]] = {
+    "run": (
+        "start session run control",
+        "execute pipeline",
+        "resume pause cancel run",
+        "启动会话 运行流程",
+    ),
+    "file": (
+        "read local file path",
+        "open folder and inspect files",
+        "读取本地文件 路径",
+    ),
+    "web": (
+        "search web online research",
+        "look up latest internet information",
+        "在线搜索 最新信息",
+    ),
+    "workflow": (
+        "edit workflow graph nodes and edges",
+        "change automation topology",
+        "编辑工作流 节点 边",
+    ),
+    "general": (
+        "general assistant work",
+        "multi-step execution task",
+        "通用助手任务",
+    ),
+}
+_EMBEDDING_HINT_PROTOTYPES: dict[str, tuple[str, ...]] = {
+    "read_file": (
+        "read file",
+        "inspect local path",
+        "查看文件 路径",
+    ),
+    "search_web": (
+        "search online",
+        "web research",
+        "在线搜索",
+    ),
+    "write_file": (
+        "write file",
+        "save output",
+        "写入文件 保存",
+    ),
+    "run_control": (
+        "start run",
+        "resume pause cancel session",
+        "启动 暂停 恢复 会话",
+    ),
+    "workflow_edit": (
+        "edit workflow graph",
+        "add remove node edge",
+        "编辑工作流 节点 边",
+    ),
+}
 _SOCIAL_TOKENS = frozenset({
     "hi",
     "hello",
@@ -68,6 +177,20 @@ _SOCIAL_TOKENS = frozenset({
     "yes",
     "no",
 })
+_SOCIAL_REPLIES = {
+    "hi": "Hello.",
+    "hello": "Hello.",
+    "hey": "Hello.",
+    "thanks": "You're welcome.",
+    "thank you": "You're welcome.",
+    "ok": "Got it.",
+    "okay": "Got it.",
+    "cool": "Got it.",
+    "great": "Great.",
+    "sounds good": "Sounds good.",
+    "yes": "Got it.",
+    "no": "Got it.",
+}
 _FILE_CONTEXT_MARKERS = (
     "file",
     "folder",
@@ -119,6 +242,205 @@ class TriageResult(BaseModel):
     context_needs: list[str] = Field(default_factory=list)
     subtasks: list[str] = Field(default_factory=list)
     execution_order: Literal["parallel", "serial", "mixed"] = "parallel"
+
+
+def fast_classify_text(text: str) -> TriageResult | None:
+    """Return an immediate tier-0 triage for obvious social turns.
+
+    This intentionally handles only exact low-risk matches so normal turns
+    continue through full triage.
+    """
+    normalized = text.strip().lower()
+    if not normalized:
+        return None
+    normalized = normalized.rstrip("!.?").strip()
+    if normalized not in _SOCIAL_TOKENS:
+        return None
+    response = _SOCIAL_REPLIES.get(normalized, "Got it.")
+    return TriageResult(
+        tier=0,
+        intent="ask",
+        confidence=0.99,
+        goal=normalized[:200],
+        deliverable=response,
+        is_social=True,
+        social_response=response,
+        rationale="Fast lexical social classification",
+    )
+
+
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    if not a or not b or len(a) != len(b):
+        return -1.0
+    dot = 0.0
+    norm_a = 0.0
+    norm_b = 0.0
+    for x, y in zip(a, b):
+        dot += x * y
+        norm_a += x * x
+        norm_b += y * y
+    if norm_a <= 0 or norm_b <= 0:
+        return -1.0
+    return dot / (math.sqrt(norm_a) * math.sqrt(norm_b))
+
+
+def _embedding_api_settings() -> tuple[str, str, str]:
+    api_key = (
+        os.environ.get("DAN_EMBEDDING_API_KEY", "").strip()
+        or os.environ.get("DAN_OPENAI_API_KEY", "").strip()
+        or os.environ.get("DAN_LLM_API_KEY", "").strip()
+    )
+    base_url = (
+        os.environ.get("DAN_EMBEDDING_BASE_URL", "").strip()
+        or os.environ.get("DAN_OPENAI_BASE_URL", "").strip()
+        or os.environ.get("DAN_LLM_BASE_URL", "").strip()
+        or "https://api.vectorengine.ai/v1"
+    )
+    model = _TRIAGE_EMBEDDING_MODEL
+    return api_key, base_url, model
+
+
+async def _embed_texts(texts: list[str], *, model: str, api_key: str, base_url: str) -> list[list[float]] | None:
+    if not texts:
+        return []
+    try:
+        from openai import AsyncOpenAI
+    except Exception:
+        logger.debug("Embedding routing unavailable: openai package missing")
+        return None
+    try:
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        response = await client.embeddings.create(input=texts, model=model)
+        return [list(item.embedding) for item in response.data]
+    except Exception:
+        logger.debug("Embedding routing call failed", exc_info=True)
+        return None
+
+
+async def _prototype_vectors(model: str, api_key: str, base_url: str) -> dict[str, list[list[float]]] | None:
+    cache_key = (model, base_url)
+    cached = _EMBEDDING_PROTOTYPE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    labels: list[str] = []
+    texts: list[str] = []
+    for intent, examples in _EMBEDDING_INTENT_PROTOTYPES.items():
+        for example in examples:
+            labels.append(f"intent:{intent}")
+            texts.append(example)
+    for target, examples in _EMBEDDING_TARGET_PROTOTYPES.items():
+        for example in examples:
+            labels.append(f"target:{target}")
+            texts.append(example)
+    for hint, examples in _EMBEDDING_HINT_PROTOTYPES.items():
+        for example in examples:
+            labels.append(f"hint:{hint}")
+            texts.append(example)
+
+    vectors = await _embed_texts(texts, model=model, api_key=api_key, base_url=base_url)
+    if vectors is None or len(vectors) != len(labels):
+        return None
+
+    grouped: dict[str, list[list[float]]] = {}
+    for label, vector in zip(labels, vectors):
+        grouped.setdefault(label, []).append(vector)
+    _EMBEDDING_PROTOTYPE_CACHE[cache_key] = grouped
+    return grouped
+
+
+def _best_label_score(query: list[float], grouped: dict[str, list[list[float]]], prefix: str) -> tuple[str, float]:
+    best_label = ""
+    best_score = -1.0
+    for label, vectors in grouped.items():
+        if not label.startswith(prefix):
+            continue
+        local_best = max((_cosine_similarity(query, vec) for vec in vectors), default=-1.0)
+        if local_best > best_score:
+            best_score = local_best
+            best_label = label.split(":", 1)[1]
+    return best_label, best_score
+
+
+async def _embedding_triage_result(text: str, context: ResolvedContext) -> TriageResult | None:
+    if not _TRIAGE_EMBEDDING_ENABLED:
+        return None
+    stripped = text.strip()
+    if len(stripped) < 3:
+        return None
+    if fast_classify_text(stripped) is not None:
+        return None
+
+    api_key, base_url, model = _embedding_api_settings()
+    if not api_key:
+        return None
+
+    query_vectors = await _embed_texts([stripped], model=model, api_key=api_key, base_url=base_url)
+    if not query_vectors:
+        return None
+    grouped = await _prototype_vectors(model, api_key, base_url)
+    if not grouped:
+        return None
+
+    query = query_vectors[0]
+    intent, intent_score = _best_label_score(query, grouped, "intent:")
+    if not intent or intent_score < _TRIAGE_EMBEDDING_MIN_CONFIDENCE:
+        return None
+
+    target, _target_score = _best_label_score(query, grouped, "target:")
+    if not target:
+        target = "general"
+
+    action_hints: list[str] = []
+    for hint_name in _EMBEDDING_HINT_PROTOTYPES:
+        label = f"hint:{hint_name}"
+        vectors = grouped.get(label, [])
+        score = max((_cosine_similarity(query, vec) for vec in vectors), default=-1.0)
+        if score >= _TRIAGE_EMBEDDING_HINT_THRESHOLD and hint_name not in action_hints:
+            action_hints.append(hint_name)
+
+    has_path = bool(_PATH_HINT_RE.search(stripped))
+    if has_path and "read_file" not in action_hints:
+        action_hints.append("read_file")
+    if _WEB_INTENT_RE.search(stripped) and "search_web" not in action_hints:
+        action_hints.append("search_web")
+
+    if intent == "plan":
+        target = "workflow"
+        if "workflow_edit" not in action_hints:
+            action_hints.append("workflow_edit")
+    elif intent == "agent":
+        if target == "workflow" and "workflow_edit" not in action_hints:
+            action_hints.append("workflow_edit")
+        if target == "run" and "run_control" not in action_hints:
+            action_hints.append("run_control")
+    else:
+        action_hints = [hint for hint in action_hints if hint in {"read_file", "search_web", "status_check"}]
+
+    tier = 2 if (
+        intent == "plan"
+        or "workflow_edit" in action_hints
+        or "write_file" in action_hints
+        or "run_control" in action_hints
+        or ("search_web" in action_hints and intent == "agent")
+    ) else 1
+    mode = RouteMode(intent)
+    route = RouteDecision(
+        mode=mode,
+        target=target,
+        action_hints=action_hints,
+        rationale="Embedding triage classifier",
+    )
+    goal = _fallback_goal(text, context)
+    return TriageResult(
+        tier=tier,
+        intent=intent,
+        route=route,
+        confidence=max(0.0, min(1.0, intent_score)),
+        goal=goal,
+        deliverable=goal,
+        rationale="Embedding-first routing",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -481,7 +803,49 @@ def _post_process_triage_result(
     result.context_needs = normalize_context_needs(result.context_needs)
     result.entities = _resolve_entities(result.entities, context, project_store)
     _post_process_resume(result, text, context, project_store)
+    result = _enforce_furnace_route(result, text)
     return result
+
+
+def _enforce_furnace_route(result: TriageResult, text: str) -> TriageResult:
+    if not _FURNACE_INTENT_RE.search(text):
+        return result
+
+    has_path = bool(_PATH_HINT_RE.search(text))
+    wants_online = bool(_TOPIC_ONLY_ONLINE_RE.search(text))
+
+    route = result.route
+    hints: list[str] = []
+    if route is not None:
+        for hint in route.action_hints:
+            hint_text = str(hint).strip()
+            if not hint_text:
+                continue
+            if hint_text in {"write_file", "workflow_edit"}:
+                continue
+            if hint_text not in hints:
+                hints.append(hint_text)
+
+    if "run_control" not in hints:
+        hints.append("run_control")
+    if has_path and "read_file" not in hints:
+        hints.append("read_file")
+    if (not has_path or wants_online) and "search_web" not in hints:
+        hints.append("search_web")
+
+    forced_route = RouteDecision(
+        mode=RouteMode.AGENT,
+        target="run",
+        action_hints=hints,
+        rationale="Furnace/distillation request forced to run-control route",
+    )
+    return result.model_copy(
+        update={
+            "tier": max(2, int(result.tier)),
+            "intent": "agent",
+            "route": forced_route,
+        }
+    )
 
 
 def _looks_like_question(text: str) -> bool:
@@ -670,6 +1034,27 @@ async def triage(
     behavior_store: BehaviorStore | None = None,
     project_store: ProjectStore | None = None,
 ) -> TriageResult:
+    fast = fast_classify_text(text)
+    if fast is not None:
+        return _post_process_triage_result(
+            fast,
+            text,
+            context,
+            project_store=project_store,
+        )
+
+    try:
+        embedded = await _embedding_triage_result(text, context)
+        if embedded is not None:
+            return _post_process_triage_result(
+                embedded,
+                text,
+                context,
+                project_store=project_store,
+            )
+    except Exception:
+        logger.debug("Embedding triage stage failed; falling through to LLM triage", exc_info=True)
+
     messages = _build_triage_messages(text, context, concierge_state)
     try:
         result = await llm_complete(messages)

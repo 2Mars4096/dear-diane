@@ -260,11 +260,42 @@ def _extract_chat_params(
             if hint_text and hint_text not in required_action_hints:
                 required_action_hints.append(hint_text)
 
+    # Furnace/run-control turns should be operational (session lifecycle API calls),
+    # not purely narrative summaries.
+    normalized_message = (message or "").lower()
+    if (
+        "run_control" in required_action_hints
+        and any(token in normalized_message for token in ("furnace", "distill", "recipe session", "start session"))
+    ):
+        run_control_instruction = (
+            "For this turn, execute run control operations instead of prose-only output. "
+            "If starting a furnace session, call local API endpoints in order: "
+            "POST /api/furnace/sessions -> POST /api/furnace/sessions/{id}/sources "
+            "-> POST /api/furnace/sessions/{id}/start when source inputs are provided. "
+            "Your final response must include session_id and status."
+        )
+    else:
+        run_control_instruction = ""
+
     allow_mutation_tool = metadata.get("allow_mutation_tool")
     if not isinstance(allow_mutation_tool, bool):
         allow_mutation_tool = "workflow_edit" in required_action_hints
 
     stream_channel_id = str(metadata.get("stream_channel_id") or "").strip() or None
+    attachment_prompt_context = str(metadata.get("attachment_prompt_context") or "").strip()
+    prompt_context = system_prompt
+    if attachment_prompt_context:
+        prompt_context = (
+            f"{system_prompt}\n\n{attachment_prompt_context}"
+            if system_prompt
+            else attachment_prompt_context
+        )
+    if run_control_instruction:
+        prompt_context = (
+            f"{prompt_context}\n\n{run_control_instruction}"
+            if prompt_context
+            else run_control_instruction
+        )
 
     result = {
         "workflow_id": workflow_id,
@@ -275,10 +306,11 @@ def _extract_chat_params(
         "mode": mode,
         "cancel_event": cancel_event,
         "debug_context": debug_context,
-        "prompt_context": system_prompt,
+        "prompt_context": prompt_context,
         "mentions": mentions,
         "allow_mutation_tool": allow_mutation_tool,
         "surface": surface,
+        "extra_system_instructions": attachment_prompt_context,
         "required_action_hints": required_action_hints,
         "stream_channel_id": stream_channel_id,
     }

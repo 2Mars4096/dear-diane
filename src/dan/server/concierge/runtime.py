@@ -1694,19 +1694,17 @@ class Concierge:
                 if reply_norm and (reply_norm in option_lower or reply_norm in basename):
                     return self._build_clarification_resume(project, msg, pending, idx, context)
             if pending.options:
-                fallback_idx = 0
-                replay = self._build_clarification_resume(project, msg, pending, fallback_idx, context)
-                replay_msg = replay[3].model_copy(
-                    update={
-                        "metadata": {
-                            **replay[3].metadata,
-                            "clarification_auto_note": (
-                                f"Proceeding with {pending.options[fallback_idx]} after one clarification round."
-                            ),
-                        }
-                    }
+                numbered_options = "\n".join(
+                    f"{idx + 1}. {option}" for idx, option in enumerate(pending.options[:8])
                 )
-                return replay[0], replay[1], replay[2], replay_msg
+                return self._complete_event(
+                    content=(
+                        f"{format_prefix(project.label)} I couldn't match that reply. "
+                        f"Please reply with a number:\n{numbered_options}"
+                    )
+                ), context, TriageResult(
+                    tier=1, intent=pending.intent, confidence=1.0, goal=pending.original_text,
+                ), msg
             return self._complete_event(content=f"{format_prefix(project.label)} I couldn't resolve that choice."), context, TriageResult(
                 tier=1, intent=pending.intent, confidence=1.0, goal=pending.original_text,
             ), msg
