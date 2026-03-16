@@ -35,6 +35,57 @@ function getPersistentGraphsDir(): string {
   return path.join(app.getPath("userData"), "graphs");
 }
 
+function getPersistentChatAttachmentsDir(): string {
+  return path.join(app.getPath("userData"), "chat-attachments");
+}
+
+function sanitizeAttachmentStem(name?: string): string {
+  const base = (name || "attachment").replace(/\.[^.]+$/, "").trim();
+  const sanitized = base
+    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return sanitized || "attachment";
+}
+
+function inferAttachmentExtension(name?: string, mimeType?: string | null): string {
+  const ext = path.extname(name || "").toLowerCase();
+  if (ext) return ext;
+  switch ((mimeType || "").toLowerCase()) {
+    case "image/png":
+      return ".png";
+    case "image/jpeg":
+      return ".jpg";
+    case "image/webp":
+      return ".webp";
+    case "image/gif":
+      return ".gif";
+    case "image/svg+xml":
+      return ".svg";
+    case "application/pdf":
+      return ".pdf";
+    case "text/plain":
+      return ".txt";
+    case "application/json":
+      return ".json";
+    default:
+      return "";
+  }
+}
+
+function parseDataUrl(dataUrl: string): { mimeType: string | null; buffer: Buffer } {
+  const match = /^data:([^;,]+)?(?:;charset=[^;,]+)?(;base64)?,([\s\S]*)$/.exec(dataUrl);
+  if (!match) {
+    throw new Error("Invalid attachment data URL");
+  }
+  const mimeType = match[1] || null;
+  const isBase64 = Boolean(match[2]);
+  const payload = match[3] || "";
+  const buffer = isBase64
+    ? Buffer.from(payload, "base64")
+    : Buffer.from(decodeURIComponent(payload), "utf-8");
+  return { mimeType, buffer };
+}
+
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 
 function findPython(): string {
@@ -56,8 +107,29 @@ function findPython(): string {
   return candidates[candidates.length - 1];
 }
 
+function isPortInUse(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const sock = new net.Socket();
+    sock.setTimeout(1500);
+    sock.once("connect", () => { sock.destroy(); resolve(true); });
+    sock.once("error", () => resolve(false));
+    sock.once("timeout", () => { sock.destroy(); resolve(false); });
+    sock.connect(port, "127.0.0.1");
+  });
+}
+
+let backendOwnedByUs = false;
+
 function startBackend(): Promise<void> {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
+    const alreadyRunning = await isPortInUse(BACKEND_PORT);
+    if (alreadyRunning) {
+      console.log(`Backend already running on port ${BACKEND_PORT}, reusing.`);
+      backendOwnedByUs = false;
+      resolve();
+      return;
+    }
+
     const danServe = process.env.DAN_SERVE_CMD;
     const graphsDir = process.env.DAN_GRAPHS_DIR || getPersistentGraphsDir();
     fs.mkdirSync(graphsDir, { recursive: true });
@@ -82,6 +154,7 @@ function startBackend(): Promise<void> {
     }
 
     backendProcess = proc;
+    backendOwnedByUs = true;
     let started = false;
 
     console.log(`Using DAN_GRAPHS_DIR=${graphsDir}`);
@@ -315,6 +388,28 @@ ipcMain.handle("fs:readFile", async (_event, filePath: string) => {
 ipcMain.handle("fs:writeFile", async (_event, filePath: string, content: string) => {
   await fs.promises.writeFile(expandHome(filePath), content, "utf-8");
 });
+
+ipcMain.handle(
+  "fs:writeTempAttachment",
+  async (
+    _event,
+    payload: { name?: string; mimeType?: string; dataUrl: string },
+  ) => {
+    const parsed = parseDataUrl(payload.dataUrl);
+    const mimeType = payload.mimeType || parsed.mimeType;
+    const ext = inferAttachmentExtension(payload.name, mimeType);
+    const fileName = [
+      Date.now(),
+      Math.random().toString(36).slice(2, 8),
+      sanitizeAttachmentStem(payload.name),
+    ].join("-") + ext;
+    const dir = getPersistentChatAttachmentsDir();
+    await fs.promises.mkdir(dir, { recursive: true });
+    const targetPath = path.join(dir, fileName);
+    await fs.promises.writeFile(targetPath, parsed.buffer);
+    return targetPath;
+  },
+);
 
 ipcMain.handle("fs:readDir", async (_event, dirPath: string) => {
   const entries = await fs.promises.readdir(expandHome(dirPath), { withFileTypes: true });
@@ -1738,7 +1833,7 @@ app.on("before-quit", () => {
     prodServer.close();
     prodServer = null;
   }
-  if (backendProcess) {
+  if (backendProcess && backendOwnedByUs) {
     backendProcess.kill();
     backendProcess = null;
   }

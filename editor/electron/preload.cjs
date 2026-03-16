@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   fs: {
     readFile: (filePath) => ipcRenderer.invoke("fs:readFile", filePath),
     writeFile: (filePath, content) => ipcRenderer.invoke("fs:writeFile", filePath, content),
+    writeTempAttachment: (payload) => ipcRenderer.invoke("fs:writeTempAttachment", payload),
     readDir: (dirPath) => ipcRenderer.invoke("fs:readDir", dirPath),
     stat: (filePath) => ipcRenderer.invoke("fs:stat", filePath),
     mkdir: (dirPath) => ipcRenderer.invoke("fs:mkdir", dirPath),

@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   fs: {
     readFile: (filePath: string) => ipcRenderer.invoke("fs:readFile", filePath),
     writeFile: (filePath: string, content: string) => ipcRenderer.invoke("fs:writeFile", filePath, content),
+    writeTempAttachment: (payload: { name?: string; mimeType?: string; dataUrl: string }) =>
+      ipcRenderer.invoke("fs:writeTempAttachment", payload),
     readDir: (dirPath: string) => ipcRenderer.invoke("fs:readDir", dirPath),
     stat: (filePath: string) => ipcRenderer.invoke("fs:stat", filePath),
   },
