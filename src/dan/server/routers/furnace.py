@@ -36,6 +36,7 @@ READ_CHUNK_PAGES = int(os.environ.get("DAN_FURNACE_READ_CHUNK_PAGES", "20"))
 READ_CHUNK_TIMEOUT_SECONDS = float(
     os.environ.get("DAN_FURNACE_READ_CHUNK_TIMEOUT_SECONDS", "0")
 )
+RECIPE_PILL_MAX_CHARS = int(os.environ.get("DAN_FURNACE_RECIPE_PILL_MAX_CHARS", "8000"))
 
 _session_locks: dict[str, asyncio.Lock] = {}
 _session_progress: dict[str, asyncio.Queue[dict[str, Any]]] = {}
@@ -787,8 +788,33 @@ async def _execute_furnace_pipeline(
         })
 
     # --- Persist recipe artifacts ---
-    recipe_md = phase_output
+    recipe_full_md = _strip_markdown_fence(phase_output)
+    recipe_md = recipe_full_md
+    if len(recipe_full_md) > RECIPE_PILL_MAX_CHARS:
+        try:
+            recipe_md = await _compress_recipe_to_pill(
+                recipe_full_md,
+                app=app,
+                max_chars=RECIPE_PILL_MAX_CHARS,
+            )
+            _publish_progress(
+                session_id,
+                {
+                    "type": "recipe_compacted",
+                    "max_chars": RECIPE_PILL_MAX_CHARS,
+                    "full_chars": len(recipe_full_md),
+                    "pill_chars": len(recipe_md),
+                },
+            )
+        except Exception:
+            logger.warning(
+                "Recipe compaction failed; falling back to trimmed full recipe",
+                exc_info=True,
+            )
+            recipe_md = recipe_full_md[:RECIPE_PILL_MAX_CHARS].strip()
+
     (artifact_dir / "recipe.md").write_text(recipe_md, encoding="utf-8")
+    (artifact_dir / "recipe_full.md").write_text(recipe_full_md, encoding="utf-8")
 
     try:
         from dan.engine.recipe.recipe_compiler import RecipeCompiler
@@ -1030,6 +1056,42 @@ async def _run_furnace_phase(
     except Exception as exc:
         logger.exception("LLM call failed for phase %s", phase.value)
         raise
+
+
+def _strip_markdown_fence(text: str) -> str:
+    """Remove optional top-level markdown code fences."""
+    content = str(text or "").strip()
+    if content.startswith("```"):
+        lines = content.splitlines()
+        if len(lines) >= 2 and lines[-1].strip() == "```":
+            return "\n".join(lines[1:-1]).strip()
+    return content
+
+
+async def _compress_recipe_to_pill(recipe_text: str, app: Any, max_chars: int) -> str:
+    """Compress long recipe output into a concise, execution-ready pill."""
+    target_words = max(250, min(900, max_chars // 9))
+    system_prompt = (
+        "You are a recipe condenser. Rewrite the input into a compact, operational recipe pill. "
+        "Keep only high-signal content and remove repetition and narrative filler.\n\n"
+        "Output strict markdown with exactly these sections in this order:\n"
+        "## Domain Thesis\n## Core Concepts\n## Association Vectors\n"
+        "## Methods And Identification\n## Rhetorical Taste\n"
+        "## Writing Rules\n## Anti-Patterns\n\n"
+        "Rules:\n"
+        "- Total length <= target word budget.\n"
+        "- Each section 2-5 bullets, one line each.\n"
+        "- Every bullet must be actionable or decision-relevant.\n"
+        "- Include brief evidence tags like [src: ...] where possible.\n"
+        "- Do not use code fences."
+    )
+    user_prompt = (
+        f"Condense this recipe into <= {target_words} words. "
+        f"Preserve only the strongest field signals.\n\n{recipe_text[:120000]}"
+    )
+    compressed = await _llm_call(system_prompt, user_prompt, app)
+    cleaned = _strip_markdown_fence(compressed)
+    return cleaned[:max_chars].strip()
 
 
 async def _llm_call(system_prompt: str, user_prompt: str, app: Any) -> str:
