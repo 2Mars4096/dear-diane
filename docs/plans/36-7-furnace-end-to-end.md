@@ -1,7 +1,7 @@
 # 36-7: Furnace End-to-End
 
 **Parent:** [36-recipe-distillation-spec](36-recipe-distillation-spec.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Wire the furnace distillation pipeline end-to-end: API layer connecting frontend to backend, user-facing session naming, recipe variants/branching, upgraded PDF reading, multi-source ingestion (notebooks, blogs, docs), and structural extraction.
 
 ## Context
@@ -53,90 +53,90 @@ Resolution: add `name`, `topic`, `description` to backend model; map backend `"a
 
 ## Tasks
 
-- [ ] 1. **API integration layer**
-  - [ ] 1-1. REST endpoint: `POST /api/furnace/sessions` — creates `FurnaceSession` + `IngredientLedger`, accepts `name`, `topic`, `description`, `target_count`, returns session info
-  - [ ] 1-2. REST endpoint: `POST /api/furnace/sessions/{id}/sources` — add papers/sources to session (by paper_id, PDF path, or URL)
-  - [ ] 1-3. REST endpoint: `POST /api/furnace/sessions/{id}/start` — triggers the read→distill pipeline, begins execution
-  - [ ] 1-4. REST endpoint: `POST /api/furnace/sessions/{id}/pause` / `resume` / `cancel`
-  - [ ] 1-5. REST endpoint: `GET /api/furnace/sessions` — list sessions (filterable by corpus, recipe, status)
-  - [ ] 1-6. REST endpoint: `GET /api/furnace/sessions/{id}` — session detail + progress + source queue status
-  - [ ] 1-7. REST endpoint: `GET /api/furnace/sessions/{id}/recipe` — returns compiled `recipe.md` / `skill.md` from `RecipeCompiler`
-  - [ ] 1-8. WebSocket or SSE progress stream: per-source status changes, phase transitions, extraction counts, cost running total
-  - [ ] 1-9. Wire frontend `handleStartSession` (FurnacePanel) → `POST /sessions` + `POST /sessions/{id}/sources` + `POST /sessions/{id}/start`
-  - [ ] 1-10. Wire frontend `DistillationTab` progress/results → `GET /sessions/{id}` + SSE stream
-  - [ ] 1-11. Wire frontend "Export Recipe" button → `GET /sessions/{id}/recipe`
-  - [ ] 1-12. Bridge backend progress events → `researchEventRouter` → `useResearchStore` updates
-  - [ ] 1-13. Idempotency and lock semantics: prevent double-start and concurrent mutating operations on the same session
-  - [ ] 1-14. Path/security guardrails for `POST /sessions/{id}/sources`: only allow configured roots and validated URLs
-  - [ ] 1-15. Persist compiled artifacts (`recipe.md`, `skill.md`) to disk and return stable artifact references
+- [x] 1. **API integration layer**
+  - [x] 1-1. REST endpoint: `POST /api/furnace/sessions` — creates `FurnaceSession` + `IngredientLedger`, accepts `name`, `topic`, `description`, `target_count`, returns session info
+  - [x] 1-2. REST endpoint: `POST /api/furnace/sessions/{id}/sources` — add papers/sources to session (by paper_id, PDF path, or URL)
+  - [x] 1-3. REST endpoint: `POST /api/furnace/sessions/{id}/start` — triggers the read→distill pipeline, begins execution
+  - [x] 1-4. REST endpoint: `POST /api/furnace/sessions/{id}/pause` / `resume` / `cancel`
+  - [x] 1-5. REST endpoint: `GET /api/furnace/sessions` — list sessions (filterable by corpus, recipe, status)
+  - [x] 1-6. REST endpoint: `GET /api/furnace/sessions/{id}` — session detail + progress + source queue status
+  - [x] 1-7. REST endpoint: `GET /api/furnace/sessions/{id}/recipe` — returns compiled `recipe.md` / `skill.md` from `RecipeCompiler`
+  - [x] 1-8. WebSocket or SSE progress stream: per-source status changes, phase transitions, extraction counts, cost running total
+  - [x] 1-9. Wire frontend `handleStartSession` (FurnacePanel) → `POST /sessions` + `POST /sessions/{id}/sources` + `POST /sessions/{id}/start`
+  - [x] 1-10. Wire frontend `DistillationTab` progress/results → `GET /sessions/{id}` + SSE stream
+  - [x] 1-11. Wire frontend "Export Recipe" button → `GET /sessions/{id}/recipe`
+  - [x] 1-12. Bridge backend progress events → `researchEventRouter` → `useResearchStore` updates
+  - [x] 1-13. Idempotency and lock semantics: prevent double-start and concurrent mutating operations on the same session
+  - [x] 1-14. Path/security guardrails for `POST /sessions/{id}/sources`: only allow configured roots and validated URLs
+  - [x] 1-15. Persist compiled artifacts (`recipe.md`, `skill.md`) to disk and return stable artifact references
 
-- [ ] 2. **User-facing session naming & identity** *(do alongside task 1)*
-  - [ ] 2-1. Add `name: str`, `topic: str`, `description: str` fields to `FurnaceSession` model
-  - [ ] 2-2. Add `name` param to `FurnaceSessionStore.create_session()`
-  - [ ] 2-3. Add `find_by_name(name)` to `FurnaceSessionStore`
-  - [ ] 2-4. Frontend: session name input in FurnacePanel setup (pre-filled from topic, editable)
-  - [ ] 2-5. Session list UI: show name, status, paper count, progress — sortable and searchable
+- [x] 2. **User-facing session naming & identity** *(do alongside task 1)*
+  - [x] 2-1. Add `name: str`, `topic: str`, `description: str` fields to `FurnaceSession` model
+  - [x] 2-2. Add `name` param to `FurnaceSessionStore.create_session()`
+  - [x] 2-3. Add `find_by_name(name)` to `FurnaceSessionStore`
+  - [x] 2-4. Frontend: session name input in FurnacePanel setup (pre-filled from topic, editable)
+  - [x] 2-5. Session list UI: show name, status, paper count, progress — sortable and searchable
   - [ ] 2-6. Chat-referenceable: concierge can look up sessions by name (e.g. "open my supply-chain distillation")
   - [ ] 2-7. Preference capture path: when user states roots/notation rules in chat, persist confirmed preferences to `MemoryKernel`
-  - [ ] 2-8. Config hydration at session create: resolve roots/rules by precedence (`workspace` > `memory` > `env`) and snapshot into session metadata
+  - [x] 2-8. Config hydration at session create: resolve roots/rules by precedence (`workspace` > `memory` > `env`) and snapshot into session metadata
 
 - [ ] 3. **Recipe variants / branching** *(defer until first full run works)*
-  - [ ] 3-1. `recipe_id` naming convention: `{domain}-pill-{N}` (e.g. `supply-chain-pill-10`, `supply-chain-pill-50-empirical`)
-  - [ ] 3-2. Add `variant_label` field to `FurnaceSession` (defines the variant identity — which paper subset and why)
-  - [ ] 3-3. Multiple sessions can share the same `corpus_id` but produce different recipes with different ingredient subsets
+  - [x] 3-1. `recipe_id` naming convention: `{domain}-pill-{N}` (e.g. `supply-chain-pill-10`, `supply-chain-pill-50-empirical`)
+  - [x] 3-2. Add `variant_label` field to `FurnaceSession` (defines the variant identity — which paper subset and why)
+  - [x] 3-3. Multiple sessions can share the same `corpus_id` but produce different recipes with different ingredient subsets
   - [ ] 3-4. `RecipeVersion` inherits `variant_label` from its session for display purposes
   - [ ] 3-5. Variant comparison view: side-by-side recipe outputs from different pill sizes
   - [ ] 3-6. Frontend: "Create Variant" action from existing session — fork with subset or superset of papers
   - [ ] 3-7. Ingredient ledger supports cross-variant queries (which papers are in pill-10 but not pill-20)
   - [ ] 3-8. Variant lineage fields: `parent_session_id`, `forked_from_version`, and diff summary on creation
 
-- [ ] 4. **PDF reading upgrade**
-  - [ ] 4-1. Hybrid reading strategy: text-mode first pass on all pages, detect pages needing vision, vision-mode second pass on flagged pages only
-  - [ ] 4-2. Page classification heuristic: low text density, "Figure"/"Table" markers, equation indicators (`\begin{`, unicode math blocks)
-  - [ ] 4-3. Equation-aware vision prompt: explicitly request LaTeX notation for equations (not natural language descriptions)
-  - [ ] 4-4. Table-aware vision prompt: request markdown table format or structured JSON
-  - [ ] 4-5. Add `mode="hybrid"` to `pdf_read` tool (runs text first, then vision on flagged pages, merges results)
-  - [ ] 4-6. Evaluate `marker` / `docling` as a third `mode="structured"` option (cheaper at scale, native equation/table extraction)
+- [x] 4. **PDF reading upgrade**
+  - [x] 4-1. Hybrid reading strategy: text-mode first pass on all pages, detect pages needing vision, vision-mode second pass on flagged pages only
+  - [x] 4-2. Page classification heuristic: low text density, "Figure"/"Table" markers, equation indicators (`\begin{`, unicode math blocks)
+  - [x] 4-3. Equation-aware vision prompt: explicitly request LaTeX notation for equations (not natural language descriptions)
+  - [x] 4-4. Table-aware vision prompt: request markdown table format or structured JSON
+  - [x] 4-5. Add `mode="hybrid"` to `pdf_read` tool (runs text first, then vision on flagged pages, merges results)
+  - [x] 4-6. Evaluate `marker` / `docling` as a third `mode="structured"` option (cheaper at scale, native equation/table extraction)
 
-- [ ] 5. **Structural extraction with per-section summaries**
-  - [ ] 5-1. Add `structure` key to extraction output: `[{heading, level, one_sentence_summary}]`
-  - [ ] 5-2. Update extraction prompt in `build_paper_acquisition_workflow` and `build_batch_distillation_workflow`
-  - [ ] 5-3. Use structure in aggregate pass: detect dominant section patterns across papers in a field
+- [x] 5. **Structural extraction with per-section summaries**
+  - [x] 5-1. Add `structure` key to extraction output: `[{heading, level, one_sentence_summary}]`
+  - [x] 5-2. Update extraction prompt in `build_paper_acquisition_workflow` and `build_batch_distillation_workflow`
+  - [x] 5-3. Use structure in aggregate pass: detect dominant section patterns across papers in a field
   - [ ] 5-4. Store structure as `knowledge_kind = "source_metadata"` in corpus memory (compact — just headings + summaries)
-  - [ ] 5-5. Token budget management: for long papers (40+ pages), chunk by section headers, extract per-chunk, merge
-  - [ ] 5-6. Chunked extraction: split paper text by detected section boundaries, run extraction LLM per-chunk, combine into single paper-level output
+  - [x] 5-5. Token budget management: for long papers (40+ pages), chunk by section headers, extract per-chunk, merge
+  - [x] 5-6. Chunked extraction: split paper text by detected section boundaries, run extraction LLM per-chunk, combine into single paper-level output
 
-- [ ] 6. **Multi-source ingestion**
-  - [ ] 6-1. Generalize `paper_queue` → `source_queue`, `PaperStatus` → `SourceStatus` (keep backward compat aliases)
+- [x] 6. **Multi-source ingestion**
+  - [x] 6-1. Generalize `paper_queue` → `source_queue`, `PaperStatus` → `SourceStatus` (keep backward compat aliases)
   - [ ] 6-2. Source-type-specific extraction prompts: different prompt templates for papers, notebooks, blogs, docs
   - [ ] 6-3. Notebook reader: `web_fetch` or browser automation to grab `.ipynb` content; parse code cells + markdown cells
   - [ ] 6-4. Notebook extraction focus: problem solved, libraries/methods, tricks/heuristics, pipeline structure, evaluation metric + score
-  - [ ] 6-5. Blog/doc reader: `web_fetch` with HTML-to-markdown; extract key claims, methods, code patterns
-  - [ ] 6-6. Source type auto-detection in normalize pass: classify by URL pattern, file extension, or content heuristics
+  - [x] 6-5. Blog/doc reader: `web_fetch` with HTML-to-markdown; extract key claims, methods, code patterns
+  - [x] 6-6. Source type auto-detection in normalize pass: classify by URL pattern, file extension, or content heuristics
   - [ ] 6-7. Knowledge kind weighting by source type: notebooks weight `method`/`dataset`/`measure` higher; papers weight `rhetorical_move`/`citation_norm` higher
-  - [ ] 6-8. Frontend: source input in setup supports URLs (Kaggle, blog) alongside PDF paths and paper IDs
-  - [ ] 6-9. Backward-compatible migration for persisted session files (`paper_queue` → `source_queue`, `PaperStatus` aliases)
+  - [x] 6-8. Frontend: source input in setup supports URLs (Kaggle, blog) alongside PDF paths and paper IDs
+  - [x] 6-9. Backward-compatible migration for persisted session files (`paper_queue` → `source_queue`, `PaperStatus` aliases)
 
-- [ ] 7. **Read pipeline (ingestion → extraction bridge)**
-  - [ ] 7-1. Build a `for_each` batch reader step that reads all sources in the queue before the 5-pass furnace starts
-  - [ ] 7-2. For PDFs: call `pdf_read` (hybrid mode) per source, store extracted text in session artifacts
-  - [ ] 7-3. For URLs: call `web_fetch` or browser tools per source, store extracted content
-  - [ ] 7-4. Feed the collected texts as input to the normalize → extract → aggregate → infer → project pipeline
-  - [ ] 7-5. Track per-source read status (`PENDING` → `INGESTED` → `EXTRACTED`) in the session store
+- [x] 7. **Read pipeline (ingestion → extraction bridge)**
+  - [x] 7-1. Build a `for_each` batch reader step that reads all sources in the queue before the 5-pass furnace starts
+  - [x] 7-2. For PDFs: call `pdf_read` (hybrid mode) per source, store extracted text in session artifacts
+  - [x] 7-3. For URLs: call `web_fetch` or browser tools per source, store extracted content
+  - [x] 7-4. Feed the collected texts as input to the normalize → extract → aggregate → infer → project pipeline
+  - [x] 7-5. Track per-source read status (`PENDING` → `INGESTED` → `EXTRACTED`) in the session store
 
-- [ ] 8. **Quality & cost controls**
-  - [ ] 8-1. Pre-run cost estimate: count sources × estimated pages × mode cost, show in setup UI before starting
-  - [ ] 8-2. Budget ceiling: user-set max cost; pause session when `total_cost_usd` exceeds limit
+- [x] 8. **Quality & cost controls**
+  - [x] 8-1. Pre-run cost estimate: count sources × estimated pages × mode cost, show in setup UI before starting
+  - [x] 8-2. Budget ceiling: user-set max cost; pause session when `total_cost_usd` exceeds limit
   - [ ] 8-3. Dedup at extract time: lightweight exact-match term dedup before aggregation
-  - [ ] 8-4. Incremental re-extraction: skip sources already extracted in a previous session (check `SourceStatus.EXTRACTED`)
+  - [x] 8-4. Incremental re-extraction: skip sources already extracted in a previous session (check `SourceStatus.EXTRACTED`)
   - [ ] 8-5. Citation graph extraction: extract reference lists, match against corpus, weight highly-cited-within-corpus sources higher in aggregation
 
-- [ ] 9. **Testing, migration, and rollout gates**
-  - [ ] 9-1. Backend unit tests: session API CRUD/start/pause/resume/cancel, source add validation, artifact export
+- [x] 9. **Testing, migration, and rollout gates**
+  - [x] 9-1. Backend unit tests: session API CRUD/start/pause/resume/cancel, source add validation, artifact export
   - [ ] 9-2. Backend integration tests: end-to-end single session run with mocked tools and streamed progress
   - [ ] 9-3. Migration tests: load old session/ledger JSON and verify aliases + forward save behavior
   - [ ] 9-4. Frontend tests: FurnacePanel start flow, DistillationTab live progress, export recipe, error/reconnect states
-  - [ ] 9-5. Rollout guard: feature flag (`DAN_FURNACE_API_ENABLED`) with fallback to current local-only UI behavior
+  - [x] 9-5. Rollout guard: feature flag (`DAN_FURNACE_API_ENABLED`) with fallback to current local-only UI behavior
 
 ## Dependencies
 
@@ -179,3 +179,5 @@ Resolution: add `name`, `topic`, `description` to backend model; map backend `"a
 - Task 7 fills a real gap: the existing `build_batch_distillation_workflow` takes `{input}` text but nothing reads the PDFs and feeds them in.
 - The `PaperStatus` → `SourceStatus` rename (task 6-1) should be designed up front even if implemented later, to avoid double-migration.
 - Release recommendation: ship behind a feature flag until task 9 test gates pass.
+- 2026-03-16 hardening: long-paper PDF ingestion now runs in chunked page windows with per-chunk timeouts and chunk-summary artifacts to avoid single-read stalls.
+- 2026-03-16 reliability follow-up: added dedicated `dan-furnace` portal (`36-8`) so users can run furnace lifecycle APIs directly without concierge drift.

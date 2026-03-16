@@ -1,7 +1,7 @@
 # 1-8: Code Mode Production Patch
 
 **Parent:** [1-ui-spec](1-ui-spec.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Fix broken infrastructure and close the gap between "180 checkboxes done" and "I can actually develop a real project in this IDE."
 
 ## Context
@@ -110,7 +110,7 @@ This plan fixes the **blocking** issues, upgrades the **weakest links** to real-
 
 - [ ] 13. **Editor reliability**
   - [ ] 13-1. Suppress stale-revision warning when no graph is loaded — the server-authored `graph_revision` fix landed 2026-03-12 (`getClientGraphRevision` prefers server revision); remaining issue is the banner still renders whenever `staleRevision` is true regardless of whether `graphId` is null
-  - [ ] 13-2. Fix `persistent-chat:send` event loss — ChatPanel only listens when `fullScreen={true}` inside ChatMode, which only mounts after the user has visited Chat mode at least once. Research mode's QuickStartPanel, PdfReader, and ReferencePanel all dispatch this event. Fix: either eagerly mount ChatPanel's listener in AppShell, or queue events and replay when ChatPanel mounts
+  - [x] 13-2. Fix `persistent-chat:send` event loss — Research mode's QuickStartPanel, PdfReader, and ReferencePanel still dispatch `persistent-chat:send`, but the shared `ModeChatSidebar` now installs a bridge that routes those events into the active mode sidebar, auto-opens the sidebar when needed, and queues/replays messages if the sender is not mounted yet
 
 ## Priority & Sequencing
 
@@ -155,3 +155,7 @@ These are important but large enough to warrant their own plans:
 - Task 7 (new language servers) differs from existing servers: Go/Rust/C++ language servers are system binaries, not npm packages. The existing TS/Python/JSON servers use `npx --no-install` from local devDeps — that pattern won't work for `gopls` or `rust-analyzer`. Need a separate detection + user-friendly install-hint pattern.
 - `MultiFileEdit.tsx` already covers the component UI (DiffEditor, per-file accept/reject, Accept All). The work is pure wiring: detecting multi-file write batches in ChatSidebar and routing them to the existing component.
 - The `persistent-chat:send` race is particularly insidious because it silently drops messages — no error, no feedback. Research mode quick-starts rely on this event to kick off workflows via chat.
+- 2026-03-16: Added shared `editorChat.ts` so editor/research AI callers that still pointed at the dead `/api/chat/editor/message` route now go through the live `/api/chat/message` pipeline instead. This rewired `ModeChatSidebar`, `InlineEdit`, `aiCodeActions`, `WritingPane`, `CodeCells`, and `PageSummary`.
+- 2026-03-16: Restored a compatibility backend route for `/api/chat/editor/complete` so `InlineCompletion.tsx` keeps working while the rest of the editor AI surface migrates to the shared helper.
+- 2026-03-16: Per-mode chat sidebars and full Chat now turn appended file chips into explicit prompt context, and Research figure cards gained an `Ask AI` action that appends figure metadata/source context to Research chat.
+- 2026-03-16: Follow-up hardening for attachments: frontend now passes the first attached path via `attachment_path`, uploaded research figures retain their original file path, and the backend promotes attached file/image metadata into explicit system instructions with tool hints so the assistant acknowledges visible attachments and can inspect attached image paths instead of denying they exist.
