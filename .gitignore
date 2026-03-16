@@ -108,5 +108,8 @@ pnpm-debug.log*
 !/tests/test_adapters/
 /tests/test_adapters/*
 !/tests/test_adapters/test_telegram.py
+!/tests/eval/
+!/tests/eval/**
+!/tests/test_eval_runner.py
 tests/__pycache__/
 tests/.DS_Store
