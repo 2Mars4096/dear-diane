@@ -401,9 +401,9 @@
 - [ ] [33-generation-quality-eval](plans/33-generation-quality-eval.md) — workflow generation quality evaluation: dual-lane measurement, durability, analysis
   - [x] [33-1-manual-pilot](plans/33-1-manual-pilot.md) — A. 10 prompts through live system (`agent` vs `build`), rough baseline *(completed: build lane 60% pass, T1 100%, T2 0%, T5 edge cases correct)*
   - [x] [33-2-test-harness](plans/33-2-test-harness.md) — B. Automated runner, telemetry reader, JSONL logging, metrics, report *(harness implemented: client, runner, metrics, report, CLI)*
-  - [ ] [33-3-small-task-battery](plans/33-3-small-task-battery.md) — C. Small-task battery — re-run pending with fixture enforcement (33-10 B), tool_id inference (33-10 C), tool-aware extraction (33-10 F). Prior: 54.9% pass.
-  - [ ] [33-4-complex-workflow-battery](plans/33-4-complex-workflow-battery.md) — D. Complex workflows — re-run pending with fixture enforcement. Prior: T4 50%, multi-turn 80%.
-  - [ ] [33-5-analysis-and-fixes](plans/33-5-analysis-and-fixes.md) — E. Cycle 3 analysis: honest baseline from fixture enforcement, compare to Cycle 2 (54.9%), triage expectation_mismatch failures
+  - [ ] [33-3-small-task-battery](plans/33-3-small-task-battery.md) — C. Small-task battery — re-run pending. Pipeline fixes landed 2026-03-16: progress events, quality gate default, tool-aware extraction, mutation edge format, harness correctness. Prior: 54.9% pass.
+  - [ ] [33-4-complex-workflow-battery](plans/33-4-complex-workflow-battery.md) — D. Complex workflows — re-run pending. Multi-turn mutation path now functional (edge format fix). Prior: T4 50%, multi-turn 80%.
+  - [ ] [33-5-analysis-and-fixes](plans/33-5-analysis-and-fixes.md) — E. Cycle 3+ analysis: re-run with all pipeline + harness fixes, triage expectation_mismatch failures, compare to Cycle 2/3
   - [x] [33-6-intent-compiler-activation](plans/33-6-intent-compiler-activation.md) — F. Intent compiler activation at 68.4% on T1/T2 (100% pass rate when activated). All patch tasks done.
   - [x] [33-7-semantic-quality-gates](plans/33-7-semantic-quality-gates.md) — G. Quality scoring with tier-adaptive thresholds, keyword tuning from eval (avg 93.9). All patch tasks done.
   - [x] [33-8-codegen-resilience](plans/33-8-codegen-resilience.md) — H. Generation failure budget, terminal failure reasons, sandbox timeout classification. All patch tasks done. *(Note: original tasks 1-12 claimed shipped but granular eval categories [task 7] not reflected in battery output — verification moved to 33-9 G.14)*

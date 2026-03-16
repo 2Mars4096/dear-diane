@@ -131,6 +131,7 @@ A and B are independent and can be done in parallel. C, D, and F are related and
 
 - Review-condition normalization stays conservative by defaulting unknown or malformed conditions to `quality_score < 8` instead of guessing at custom state variables or partially parsed stop-conditions.
 - Tool inference should only match phrase-level, word-boundary keywords; generic fallbacks like bare `file` are too risky because they create false positives (`profile` → `file_read`).
+- **(2026-03-16) Task F fully wired into live path.** The `chat_manager.py` intent extraction now appends `render_tool_id_list()` + "Do NOT invent tool_ids" to the system prompt, matching what `extract_workflow_intent()` already did. Previously, only the standalone helper included the tool catalog — the live path omitted it.
 
 ## Notes
 

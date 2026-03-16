@@ -98,7 +98,7 @@ Add a **semantic quality scoring layer** that runs after structural validation b
 
 ## Decisions
 
-- Quality gates are advisory in the build pipeline (threshold defaults to 0) and primary in the eval harness. Shipped and tested.
+- Quality gates are advisory in the build pipeline (threshold defaults to 0) and primary in the eval harness. Shipped and tested. *(2026-03-16: fixed a bug where threshold=0 fell through to tier-adaptive thresholds instead of "accept all"; now uses -1 sentinel for "not set" and `>= 0` condition.)*
 - Post-mutation and post-diagnosis quality checks implemented (tasks 2-5, 2-6).
 - P1: Tier-adaptive thresholds (T1→30, T2→40, T3→50, T4→60) and `is_acceptable_simple_graph()` exemption now wired into `_quality_error_for_graph()`. `estimate_prompt_complexity()` and `expected_node_range()` are the shared primitives for 33-9.
 - P3: `DAN_MAX_GENERATION_SECONDS` and `DAN_GRAPH_QUALITY_THRESHOLD` with tier-adaptive behavior documented in architecture.md.

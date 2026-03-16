@@ -144,9 +144,13 @@ Every test produces a JSONL record with: prompt, lane, model, timing, observed e
 - [x] Eval pass/fail enforces fixture expectations (min_nodes, topology, node_types) — `_determine_status()` returns `expectation_mismatch` on violations (33-10 B)
 - [x] Tool keyword inference removes unsafe `web_search` default — `_TOOL_KEYWORD_MAP` with 30+ mappings (33-10 C)
 - [x] Codegen prompt includes tool catalog — 17 registered tool_ids with descriptions injected (33-10 D)
-- [x] Intent extraction tool-aware — 19 tool_ids in extraction system prompt, few-shot with csv/email/code (33-10 F)
+- [x] Intent extraction tool-aware — 19 tool_ids in extraction system prompt, few-shot with csv/email/code (33-10 F). *(2026-03-16: live path in chat_manager.py now also includes tool catalog, matching extract_workflow_intent())*
 - [ ] LLM-as-judge scoring validates semantic correctness beyond structural checks (33-10 E — implemented, pending eval run)
 - [ ] Cycle 3 re-run with all 33-10 patches produces honest baseline and informs remaining priorities
+- [x] Progress events use `progress_ack` detected_mode — no longer terminate client streams (2026-03-16)
+- [x] Structural mutation macros handle flat edge lists — multi-turn mutation path now functional on persisted graphs (2026-03-16)
+- [x] Quality gate default threshold=0 truly means "accept all" — fixed sentinel logic (2026-03-16)
+- [x] Eval harness multi-turn, durability, clarification, guard_events, and gitignore correctness fixes (2026-03-16)
 
 ## Decisions
 

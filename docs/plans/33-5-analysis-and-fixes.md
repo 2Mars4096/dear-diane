@@ -146,9 +146,9 @@ Write up:
   - [x] 12-2. Genuine improvements: T1 +21.2pp, T2 +12.5pp, T4 +23.3pp (more graphs, better quality)
 - [ ] 13. Prioritize next fixes
   - [ ] 13-1. **P0: Intent compiler under-noding** — single biggest issue. 9 single-node graphs for multi-step prompts. Fix: intent compiler patterns must expand to multi-node; or fall back to codegen when prompt complexity exceeds intent compiler capability.
-  - [ ] 13-2. **P1: Multi-turn mutation stagnation** — follow-ups don't modify graphs. Fix: structural mutation macros not activating. Debug mutation dispatch for "add review loop" / "make it fan out" follow-ups.
+  - [ ] 13-2. **P1: Multi-turn mutation stagnation** — follow-ups don't modify graphs. ~~Fix: structural mutation macros not activating.~~ *(2026-03-16: root cause identified and fixed — mutation macros assumed legacy dict edge format `edges.data/control` but real graphs use flat `edges: list[Edge]`. `_get_edges_by_type()` helper now handles both formats. Re-run needed to verify multi-turn follow-ups now modify graphs correctly.)*
   - [ ] 13-3. **P1: T5 edge case detection in build lane** — 5/6 T5 prompts misrouted. Fix: build lane should still detect non-workflow requests before building. Or: accept that build lane always builds and only test T5 in agent lane.
-  - [ ] 13-4. **P2: Missing non-LLM node types** — tool, code, gate, for_each nodes rarely generated. Fix: intent compiler patterns should produce tool/code nodes when prompt mentions file/web/code/email; codegen prompt should use tool catalog (33-10 D).
+  - [ ] 13-4. **P2: Missing non-LLM node types** — tool, code, gate, for_each nodes rarely generated. Fix: intent compiler patterns should produce tool/code nodes when prompt mentions file/web/code/email; codegen prompt should use tool catalog (33-10 D). *(2026-03-16: codegen tool catalog already landed (33-10 D); live intent extraction now also includes tool catalog. Re-run needed to measure impact.)*
 - [ ] 14. Produce summary for next fix cycle
 - [ ] 15. Update docs: bugs.md, todo.md, changelog.md
 
@@ -180,3 +180,4 @@ Write up:
 - **Remaining verbosity signal:** If builder codegen still frequently emits manual `NodeRef(...)` recovery, that is likely the next post-33 ergonomics slice.
 - **Guard pipeline (31-19) false positives:** If `guard_short_circuit` appears for legitimate build requests, tune guard thresholds.
 - **Self-adaptive behavior (31-22):** If `DAN_BEHAVIOR_TIER >= 1`, log whether behavior proposals were generated during the battery run.
+- **File reference note (2026-03-16):** The failure-triage table above references pre-rewrite filenames (`classifier.py`, `solver.py`, `entity_grounding.py`, `runtime.py`). These were replaced by `triage.py`, `tiered_dispatch.py`, `tier_executors.py` during the Plan 34 concierge rewrite. The fixes referenced by checked-off tasks were applied to the correct current files.

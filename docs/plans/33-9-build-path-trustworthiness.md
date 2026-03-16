@@ -184,9 +184,11 @@ Full battery: 51 records, 54.9% pass rate. Results file: `tests/eval/results/202
 - D.10: Non-build fast path checks `classification.intent in {CONVERSATION, STATUS_CHECK, DIRECT_TASK}` with `confidence >= 0.7` after Guard 1. Skips memory retrieval, correction detection, action policy, solver/goal orchestrator.
 - E.11: Three agent-lane blockers identified and fixed: (1) CONFIRM bypass extended to high-confidence WORKFLOW_BUILD intents, (2) reuse prompt suppressed for non-reuse requests (only shows when candidate score >= 0.8 and success_rate >= 0.7), (3) solver heuristic no longer overrides WORKFLOW_BUILD to WORKFLOW_REUSE when classifier is confident.
 - E.11-4: Reuse fallthrough: when `_handle_reuse_workflow` fails, `reuse_workflow_id` is cleared and `plan_action` forced to "generate" so meta_controller doesn't retry reuse. Explicit reuse requests auto-select "adapt" instead of prompting.
-- A.1: `ChatGenerationSummaryEvent` emitted at every return point with 7 fields. Eval harness captures and reports path distribution per tier.
+- A.1: `ChatGenerationSummaryEvent` emitted at every return point with 7 fields. Eval harness captures and reports path distribution per tier. *(2026-03-16: added `pre_generation_ms` as 8th field.)*
 - C.5-2: Node ranges calibrated from 42 eval-tier graphs: T1 (2,5), T2 (3,8), T3 (4,10), T4 (6,15).
 - G.14: `_classify_no_graph()` decomposes failures into 7 granular categories with priority-ordered classification.
+- **(2026-03-16) F.12 progress events fixed.** `_emit_progress()` was emitting `detected_mode="progress_generation"` which the eval harness and editor frontend treated as terminal. Changed to `"progress_ack"` so progress events are keepalives.
+- **(2026-03-16) Structural mutations edge format fixed.** `structural_mutations.py` assumed legacy dict edge format (`edges.data/control`); now handles both flat-list and dict formats via `_get_edges_by_type()` helper. Multi-turn mutation path is now functional on real persisted graphs.
 
 ## Notes
 
