@@ -152,6 +152,10 @@ class FurnaceSession(BaseModel):
     session_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12])
     corpus_id: str
     recipe_id: str
+    name: str = ""
+    topic: str = ""
+    description: str = ""
+    variant_label: str = ""
     status: Literal["active", "paused", "completed", "failed"] = "active"
     current_phase: FurnacePhase = FurnacePhase.NORMALIZE
     current_batch_index: int = 0
@@ -159,13 +163,23 @@ class FurnaceSession(BaseModel):
     checkpoints: list[BatchCheckpoint] = Field(default_factory=list)
     total_token_usage: int = 0
     total_cost_usd: float = 0.0
+    budget_limit_usd: float = 100.0
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+    @property
+    def source_queue(self) -> dict[str, PaperStatus]:
+        """Alias for paper_queue — forward-compatible with multi-source ingestion."""
+        return self.paper_queue
+
     def papers_by_status(self, status: PaperStatus) -> list[str]:
         """Return paper IDs with the given status."""
         return [pid for pid, s in self.paper_queue.items() if s == status]
+
+    def sources_by_status(self, status: PaperStatus) -> list[str]:
+        """Alias for papers_by_status — forward-compatible with multi-source."""
+        return self.papers_by_status(status)
 
     def advance_phase(self) -> FurnacePhase | None:
         """Move to next phase; returns new phase or None if already at last."""
@@ -253,3 +267,4 @@ KNOWLEDGE_KIND_TO_MEMORY_TYPE: dict[KnowledgeKind, str] = {
 
 # Backward compatibility aliases
 PaperCorpusMetadata = CorpusMetadata
+SourceStatus = PaperStatus

@@ -47,8 +47,9 @@ class FurnaceSessionStore:
         self,
         corpus_id: str | None = None,
         recipe_id: str | None = None,
+        status: str | None = None,
     ) -> list[FurnaceSession]:
-        """List all sessions, optionally filtered by corpus_id or recipe_id."""
+        """List all sessions, optionally filtered by corpus_id, recipe_id, or status."""
         sessions: list[FurnaceSession] = []
         for p in self._base_dir.glob("*.json"):
             try:
@@ -56,6 +57,8 @@ class FurnaceSessionStore:
                 if corpus_id and s.corpus_id != corpus_id:
                     continue
                 if recipe_id and s.recipe_id != recipe_id:
+                    continue
+                if status and s.status != status:
                     continue
                 sessions.append(s)
             except Exception as exc:
@@ -75,16 +78,39 @@ class FurnaceSessionStore:
         self,
         corpus_id: str,
         recipe_id: str,
-        paper_ids: list[str],
+        paper_ids: list[str] | None = None,
+        *,
+        name: str = "",
+        topic: str = "",
+        description: str = "",
+        target_count: int = 0,
     ) -> FurnaceSession:
         """Create a new session with papers in PENDING status."""
+        queue = {pid: PaperStatus.PENDING for pid in (paper_ids or [])}
         session = FurnaceSession(
             corpus_id=corpus_id,
             recipe_id=recipe_id,
-            paper_queue={pid: PaperStatus.PENDING for pid in paper_ids},
+            name=name or topic or corpus_id,
+            topic=topic,
+            description=description,
+            status="paused",
+            paper_queue=queue,
+            metadata={"target_count": target_count} if target_count else {},
         )
         self.save(session)
         return session
+
+    def find_by_name(self, name: str) -> FurnaceSession | None:
+        """Find first session matching *name* (case-insensitive substring)."""
+        needle = name.lower()
+        for p in self._base_dir.glob("*.json"):
+            try:
+                s = FurnaceSession.model_validate_json(p.read_text(encoding="utf-8"))
+                if needle in s.name.lower():
+                    return s
+            except Exception:
+                continue
+        return None
 
     def add_checkpoint(
         self,

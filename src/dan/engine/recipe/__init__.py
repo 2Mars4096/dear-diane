@@ -15,6 +15,7 @@ from dan.engine.recipe.models import (
     PaperStatus,
     RecipeVersion,
     ResearchLibraryConfig,
+    SourceStatus,
     SourceType,
     VersionDiff,
 )
@@ -42,11 +43,15 @@ from dan.engine.recipe.acquisition import (
 from dan.engine.recipe.workflows import (
     build_paper_acquisition_workflow,
     build_batch_distillation_workflow,
+    build_source_reader_workflow,
+    build_chunked_extraction_workflow,
 )
 
 __all__ = [
     "build_batch_distillation_workflow",
+    "build_chunked_extraction_workflow",
     "build_paper_acquisition_workflow",
+    "build_source_reader_workflow",
     "AcquisitionSource",
     "BatchCheckpoint",
     "CorpusMetadata",
@@ -77,6 +82,7 @@ __all__ = [
     "resolve_paper_paths",
     "RecipeVersion",
     "ResearchLibraryConfig",
+    "SourceStatus",
     "SourceType",
     "VersionDiff",
     "WRITING_RETRIEVAL_POLICY",
