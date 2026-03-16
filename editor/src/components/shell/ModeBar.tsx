@@ -30,8 +30,8 @@ export default function ModeBar() {
   const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
 
   return (
-    <div className={`flex items-center gap-1 bg-gray-900 px-3 h-10 flex-shrink-0 app-drag-region ${isElectron && isMac ? "pl-20" : ""}`}>
-      <span className="text-white font-bold text-sm mr-3 tracking-wide select-none">DAN</span>
+    <div className={`flex items-center gap-1 bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-3 h-10 flex-shrink-0 app-drag-region ${isElectron && isMac ? "pl-20" : ""}`}>
+      <span className="text-gray-900 dark:text-white font-bold text-sm mr-3 tracking-wide select-none">DAN</span>
       <div className="flex items-center gap-0.5">
         {MODE_CONFIGS.map((mode) => {
           const Icon = ICON_MAP[mode.icon];
@@ -45,10 +45,10 @@ export default function ModeBar() {
               className={`
                 app-no-drag flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all
                 ${isActive
-                  ? "bg-white/15 text-white"
+                  ? "bg-gray-200 text-gray-900 dark:bg-white/15 dark:text-white"
                   : mode.enabled
-                    ? "text-gray-400 hover:text-white hover:bg-white/5"
-                    : "text-gray-600 cursor-not-allowed"
+                    ? "text-gray-500 hover:text-gray-900 hover:bg-gray-200 dark:text-gray-400 dark:hover:text-white dark:hover:bg-white/5"
+                    : "text-gray-400 dark:text-gray-600 cursor-not-allowed"
                 }
               `}
             >
@@ -65,7 +65,7 @@ export default function ModeBar() {
       <div className="flex items-center gap-1">
         <button
           onClick={() => setGlobalPaletteVisible(true)}
-          className="app-no-drag p-1.5 rounded text-gray-400 hover:text-gray-200 hover:bg-white/10 transition-colors"
+          className="app-no-drag p-1.5 rounded text-gray-500 hover:text-gray-800 hover:bg-gray-200 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-white/10 transition-colors"
           title="Command Palette (⇧⌘P)"
         >
           <Command size={15} />

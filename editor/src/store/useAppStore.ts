@@ -43,14 +43,9 @@ const AUTO_DISMISS_MS = 30_000;
 
 interface AppState {
   activeMode: AppMode;
-  sidebarOpen: boolean;
-  chatBarExpanded: boolean;
 
   activeChatThreadId: string | null;
   activeChatWorkflowId: string | null;
-
-  pendingChatMessage: string | null;
-  setPendingChatMessage: (msg: string | null) => void;
 
   globalPaletteVisible: boolean;
   setGlobalPaletteVisible: (v: boolean) => void;
@@ -64,8 +59,6 @@ interface AppState {
   clearAll: () => void;
 
   setMode: (mode: AppMode) => void;
-  toggleSidebar: () => void;
-  setChatBarExpanded: (expanded: boolean) => void;
   setActiveChatThread: (threadId: string | null, workflowId: string | null) => void;
 }
 
@@ -77,14 +70,9 @@ function getModeFromHash(): AppMode {
 
 export const useAppStore = create<AppState>((set, get) => ({
   activeMode: getModeFromHash(),
-  sidebarOpen: false,
-  chatBarExpanded: false,
 
   activeChatThreadId: null,
   activeChatWorkflowId: null,
-
-  pendingChatMessage: null,
-  setPendingChatMessage: (msg) => set({ pendingChatMessage: msg }),
 
   globalPaletteVisible: false,
   setGlobalPaletteVisible: (v) => set({ globalPaletteVisible: v }),
@@ -137,10 +125,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     window.location.hash = mode;
     set({ activeMode: mode });
   },
-
-  toggleSidebar: () => set((s) => ({ sidebarOpen: !s.sidebarOpen })),
-
-  setChatBarExpanded: (expanded) => set({ chatBarExpanded: expanded }),
 
   setActiveChatThread: (threadId, workflowId) =>
     set({ activeChatThreadId: threadId, activeChatWorkflowId: workflowId }),

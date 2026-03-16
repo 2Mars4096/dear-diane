@@ -26,6 +26,8 @@ import {
   Loader2,
 } from "lucide-react";
 import { useResearchStore, type ResearchPaper } from "../../store/useResearchStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 
 // ---------------------------------------------------------------------------
 // Markdown rendering with KaTeX math support
@@ -673,6 +675,7 @@ function useAIAction() {
 
 export default function WritingPane() {
   const { documentContent, setDocumentContent } = useResearchStore();
+  const theme = useSettingsStore((s) => resolveMonacoTheme(s.theme));
   const [viewMode, setViewMode] = useState<ViewMode>("split");
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null);
   const [toolbar, setToolbar] = useState<FloatingToolbarState>({
@@ -829,7 +832,7 @@ export default function WritingPane() {
               language="markdown"
               value={documentContent}
               onChange={handleChange}
-              theme="vs-dark"
+              theme={theme}
               onMount={handleEditorMount}
               options={{
                 wordWrap: "on",

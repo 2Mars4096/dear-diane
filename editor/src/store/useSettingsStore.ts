@@ -18,7 +18,7 @@ const DEFAULT_TERMINAL_PROFILES: TerminalProfile[] = [
 ];
 
 export interface EditorSettings {
-  theme: "vs-dark" | "vs" | "hc-black";
+  theme: "system" | "vs-dark" | "vs" | "hc-black";
   fontSize: number;
   fontFamily: string;
   tabSize: number;
@@ -73,7 +73,7 @@ interface SettingsState extends EditorSettings {
 }
 
 const DEFAULT_SETTINGS: EditorSettings = {
-  theme: "vs-dark",
+  theme: "system",
   fontSize: 13,
   fontFamily: "SF Mono, Menlo, Monaco, monospace",
   tabSize: 2,
@@ -144,6 +144,19 @@ export const useSettingsStore = create<SettingsState>()(
         return state[key] as EditorSettings[typeof key];
       },
     }),
-    { name: "dan-editor-settings" },
+    {
+      name: "dan-editor-settings",
+      version: 2,
+      migrate: (persistedState, version) => {
+        const state = persistedState as Partial<SettingsState> | undefined;
+        if (!state) return persistedState as SettingsState;
+
+        if (version < 2 && (state.theme === undefined || state.theme === "vs-dark")) {
+          return { ...state, theme: "system" } as SettingsState;
+        }
+
+        return state as SettingsState;
+      },
+    },
   ),
 );

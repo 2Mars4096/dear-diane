@@ -14,6 +14,8 @@ import {
 } from "lucide-react";
 import { Allotment } from "allotment";
 import { nativeGit } from "../../lib/electronBridge";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 
 interface ConflictRegion {
   id: number;
@@ -132,12 +134,14 @@ function ReadOnlyPane({
   language,
   highlightClass,
   label,
+  theme,
 }: {
   title: string;
   content: string;
   language: string;
   highlightClass: string;
   label: string;
+  theme: string;
 }) {
   return (
     <div className="flex h-full flex-col">
@@ -149,7 +153,7 @@ function ReadOnlyPane({
         <Editor
           value={content}
           language={language}
-          theme="vs-dark"
+          theme={theme}
           options={{
             readOnly: true,
             minimap: { enabled: false },
@@ -167,6 +171,7 @@ function ReadOnlyPane({
 }
 
 export default function MergeEditor({ cwd, filePath, onClose, onResolved }: Props) {
+  const theme = useSettingsStore((s) => resolveMonacoTheme(s.theme));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [conflictFile, setConflictFile] = useState<ConflictFile | null>(null);
@@ -444,6 +449,7 @@ export default function MergeEditor({ cwd, filePath, onClose, onResolved }: Prop
                   language={language}
                   highlightClass="bg-green-900/40 border-b border-green-800/50"
                   label="HEAD"
+                  theme={theme}
                 />
               </Allotment.Pane>
 
@@ -455,6 +461,7 @@ export default function MergeEditor({ cwd, filePath, onClose, onResolved }: Prop
                     language={language}
                     highlightClass="bg-gray-800 border-b border-gray-700"
                     label="Common Ancestor"
+                    theme={theme}
                   />
                 </Allotment.Pane>
               )}
@@ -466,6 +473,7 @@ export default function MergeEditor({ cwd, filePath, onClose, onResolved }: Prop
                   language={language}
                   highlightClass="bg-blue-900/40 border-b border-blue-800/50"
                   label="Theirs"
+                  theme={theme}
                 />
               </Allotment.Pane>
             </Allotment>
@@ -482,7 +490,7 @@ export default function MergeEditor({ cwd, filePath, onClose, onResolved }: Prop
                 <Editor
                   value={mergedContent}
                   language={language}
-                  theme="vs-dark"
+                  theme={theme}
                   onChange={handleEditorChange}
                   onMount={handleEditorMount}
                   options={{

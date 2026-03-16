@@ -9,7 +9,7 @@ import ThreadTabs, { useThreadCloseShortcut } from "../shell/ThreadTabs";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 
 export default function ChatMode() {
-  const activeWorkspace = useWorkspaceStore((s) => s.getActiveWorkspace());
+  const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const openThread = useWorkspaceStore((s) => s.openThread);
   const closeThread = useWorkspaceStore((s) => s.closeThread);
   const setActiveThread = useWorkspaceStore((s) => s.setActiveThread);
@@ -53,13 +53,6 @@ export default function ChatMode() {
     [setActiveThread],
   );
 
-  const handleCloseThread = useCallback(
-    (threadId: string) => {
-      closeThread(threadId);
-    },
-    [closeThread],
-  );
-
   const handleNewThread = useCallback(() => {
     window.dispatchEvent(new CustomEvent("workspace:newThread"));
   }, []);
@@ -67,17 +60,17 @@ export default function ChatMode() {
   useThreadCloseShortcut();
 
   return (
-    <div className="absolute inset-0 overflow-hidden flex flex-col bg-white">
+    <div className="h-full flex flex-col overflow-hidden bg-[#1e1e1e]">
       <ThreadTabs
         threadTitles={threadTitles}
         onSelectThread={handleSelectThread}
-        onCloseThread={handleCloseThread}
+        onCloseThread={closeThread}
         onNewThread={handleNewThread}
       />
-      <div className="flex-1 min-h-0 relative">
+      <div className="flex-1 min-h-0">
         <ChatPanel
           fullScreen
-          workspaceId={activeWorkspace?.id}
+          workspaceId={workspaceId ?? undefined}
           onThreadOpen={handleThreadOpen}
           onThreadTitleUpdate={handleThreadTitleUpdate}
         />

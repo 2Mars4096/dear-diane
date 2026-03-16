@@ -3,6 +3,7 @@ import Editor, { type OnMount } from "@monaco-editor/react";
 import type { editor as monacoEditor } from "monaco-editor";
 import { useCodeStore } from "../../store/useCodeStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 
 // ---------------------------------------------------------------------------
 // Zen mode: fullscreen distraction-free editor
@@ -16,7 +17,7 @@ interface ZenModeProps {
 export default function ZenMode({ filePath, onExit }: ZenModeProps) {
   const file = useCodeStore((s) => s.openFiles.find((f) => f.path === filePath));
   const updateFileContent = useCodeStore((s) => s.updateFileContent);
-  const theme = useSettingsStore((s) => s.theme);
+  const theme = useSettingsStore((s) => resolveMonacoTheme(s.theme));
   const fontFamily = useSettingsStore((s) => s.fontFamily);
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null);
 

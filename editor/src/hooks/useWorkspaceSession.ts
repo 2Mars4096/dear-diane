@@ -37,7 +37,9 @@ function applyCodeSession(code: WorkspaceSession["code"]) {
       | "tasks"
       | "testing"
       | "outline"
-      | "debug",
+      | "debug"
+      | "workflow"
+      | "furnace",
     recentFiles: code.recentFiles,
   });
 

@@ -2,7 +2,7 @@
  * Code mode: VS Code-like IDE workspace with resizable panels.
  * Layout: ActivityBar | Sidebar | (EditorTabs / TerminalPanel) | StatusBar
  */
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Allotment } from "allotment";
 import {
   Files,
@@ -19,6 +19,10 @@ import {
   FlaskConical,
   ListTree,
   Bug,
+  Workflow,
+  Flame,
+  Play,
+  Plus,
 } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
 import { useAppStore } from "../../store/useAppStore";
@@ -32,7 +36,7 @@ import KeybindingsPanel from "../code/KeybindingsPanel";
 import TerminalPanel from "../code/TerminalPanel";
 import ProblemsPanel, { useProblemsCount } from "../code/ProblemsPanel";
 import OutputPanel from "../code/OutputPanel";
-import ChatSidebar from "../code/ChatSidebar";
+import ModeChatSidebar from "../shared/ModeChatSidebar";
 import QuickOpen from "../code/QuickOpen";
 import CommandPalette from "../code/CommandPalette";
 import SymbolSearch from "../code/SymbolSearch";
@@ -67,6 +71,48 @@ import { goBack, goForward } from "../../hooks/useCursorHistory";
 import { activateAllInstalledExtensions } from "../../lib/extensions/extensionActivator";
 
 /* ------------------------------------------------------------------ */
+/*  Sidebar panels (Workflow, Furnace)                                */
+/* ------------------------------------------------------------------ */
+
+function WorkflowSidebarPanel() {
+  return (
+    <div className="h-full flex flex-col text-gray-300">
+      <div className="px-3 py-2 border-b border-gray-800 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+        Workflows
+      </div>
+      <div className="flex-1 overflow-y-auto px-3 py-2">
+        <div className="text-xs text-gray-500 space-y-2">
+          <p>Available workflows from your workspace.</p>
+          <button className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-800 transition-colors flex items-center gap-2">
+            <Play size={12} className="text-green-400" />
+            <span>Run Workflow…</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function FurnaceSidebarPanel() {
+  return (
+    <div className="h-full flex flex-col text-gray-300">
+      <div className="px-3 py-2 border-b border-gray-800 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+        Furnace
+      </div>
+      <div className="flex-1 overflow-y-auto px-3 py-2">
+        <div className="text-xs text-gray-500 space-y-2">
+          <p>Training sessions and recipe management.</p>
+          <button className="w-full text-left px-2 py-1.5 rounded hover:bg-gray-800 transition-colors flex items-center gap-2">
+            <Plus size={12} className="text-orange-400" />
+            <span>New Recipe</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
 /*  Activity bar                                                      */
 /* ------------------------------------------------------------------ */
 
@@ -91,6 +137,10 @@ function ActivityItem({ icon, active, title, onClick }: ActivityItemProps) {
       {icon}
     </button>
   );
+}
+
+function ActivitySeparator() {
+  return <div className="w-5 border-t border-gray-700/50 my-1 mx-auto" />;
 }
 
 /* ------------------------------------------------------------------ */
@@ -146,22 +196,20 @@ function StatusBar() {
 /*  Keyboard shortcuts                                                */
 /* ------------------------------------------------------------------ */
 
-let zenPending = false;
-let zenTimeout: ReturnType<typeof setTimeout> | undefined;
-
 function useCodeShortcuts() {
   const activeMode = useAppStore((s) => s.activeMode);
-  const toggleSidebar = useCodeStore((s) => s.toggleSidebar);
   const toggleTerminal = useCodeStore((s) => s.toggleTerminal);
   const activeFilePath = useCodeStore((s) => s.activeFilePath);
   const markFileSaved = useCodeStore((s) => s.markFileSaved);
   const closeFile = useCodeStore((s) => s.closeFile);
-  const reopenClosedFile = useCodeStore((s) => s.reopenClosedFile);
 
   const setActiveSidebarPanel = useCodeStore((s) => s.setActiveSidebarPanel);
   const setQuickOpenVisible = useCodeStore((s) => s.setQuickOpenVisible);
   const setCommandPaletteVisible = useCodeStore((s) => s.setCommandPaletteVisible);
   const toggleSettings = useCodeStore((s) => s.toggleSettings);
+
+  const zenPendingRef = useRef(false);
+  const zenTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const handleSaveAll = useCallback(async () => {
     const state = useCodeStore.getState();
@@ -206,10 +254,10 @@ function useCodeShortcuts() {
       if (activeMode !== "development") return;
       const meta = e.metaKey || e.ctrlKey;
 
-      if (!meta && zenPending && e.key === "z") {
+      if (!meta && zenPendingRef.current && e.key === "z") {
         e.preventDefault();
-        zenPending = false;
-        clearTimeout(zenTimeout);
+        zenPendingRef.current = false;
+        clearTimeout(zenTimeoutRef.current);
         const state = useCodeStore.getState();
         if (state.zenModeFilePath) {
           state.setZenModeFilePath(null);
@@ -220,11 +268,11 @@ function useCodeShortcuts() {
       }
 
       if (meta && e.key === "k") {
-        zenPending = true;
-        clearTimeout(zenTimeout);
-        zenTimeout = setTimeout(() => { zenPending = false; }, 1500);
+        zenPendingRef.current = true;
+        clearTimeout(zenTimeoutRef.current);
+        zenTimeoutRef.current = setTimeout(() => { zenPendingRef.current = false; }, 1500);
       } else if (!meta || e.key !== "k") {
-        if (zenPending && e.key !== "z") zenPending = false;
+        if (zenPendingRef.current && e.key !== "z") zenPendingRef.current = false;
       }
 
       if (e.altKey && !meta && e.key === "ArrowLeft") {
@@ -291,9 +339,6 @@ function useCodeShortcuts() {
       if (e.key === "b" && e.shiftKey) {
         e.preventDefault();
         window.dispatchEvent(new CustomEvent("taskRunner:runBuild"));
-      } else if (e.key === "b") {
-        e.preventDefault();
-        toggleSidebar();
       } else if (e.key === "`") {
         e.preventDefault();
         toggleTerminal();
@@ -313,8 +358,10 @@ function useCodeShortcuts() {
               state.setPendingWriteConfirmation({ filePath: activeFilePath, content: file.content });
               return;
             }
+            nativeFs.writeFile(activeFilePath, file.content).then((ok) => {
+              if (ok) markFileSaved(activeFilePath);
+            });
           }
-          markFileSaved(activeFilePath);
         }
       } else if (e.key === "w") {
         e.preventDefault();
@@ -353,7 +400,7 @@ function useCodeShortcuts() {
         }
       }
     },
-    [activeMode, toggleSidebar, toggleTerminal, activeFilePath, markFileSaved, closeFile, reopenClosedFile, handleSaveAll, setActiveSidebarPanel, setQuickOpenVisible, setCommandPaletteVisible, toggleSettings, navigateCursorHistory],
+    [activeMode, toggleTerminal, activeFilePath, markFileSaved, closeFile, handleSaveAll, setActiveSidebarPanel, setQuickOpenVisible, setCommandPaletteVisible, toggleSettings, navigateCursorHistory],
   );
 
   useEffect(() => {
@@ -477,6 +524,24 @@ export default function CodeMode() {
     return () => window.removeEventListener("codemode:toggleQA", handler);
   }, []);
 
+  useEffect(() => {
+    const handler = () => {
+      if (useAppStore.getState().activeMode !== "development") return;
+      setShowChatSidebar((v) => !v);
+    };
+    window.addEventListener("app:toggleModeChatSidebar", handler);
+    return () => window.removeEventListener("app:toggleModeChatSidebar", handler);
+  }, []);
+
+  useEffect(() => {
+    const handler = () => {
+      if (useAppStore.getState().activeMode !== "development") return;
+      useCodeStore.getState().toggleSidebar();
+    };
+    window.addEventListener("app:toggleModeSidebar", handler);
+    return () => window.removeEventListener("app:toggleModeSidebar", handler);
+  }, []);
+
   // Listen for call hierarchy trigger
   useEffect(() => {
     const handler = () => {
@@ -532,6 +597,8 @@ export default function CodeMode() {
       case "timeline": return <LocalHistoryPanel />;
       case "outline": return <OutlineView />;
       case "debug": return <DebugPanel />;
+      case "workflow": return <WorkflowSidebarPanel />;
+      case "furnace": return <FurnaceSidebarPanel />;
       default: return <FileExplorer />;
     }
   })();
@@ -546,69 +613,101 @@ export default function CodeMode() {
       )}
       <div className="flex-1 min-h-0 flex">
         {/* Activity bar */}
-        <div className="w-[40px] bg-gray-900 border-r border-gray-800 flex flex-col items-center py-1 shrink-0">
-          <ActivityItem
-            icon={<Files size={20} />}
-            active={showSidebar && activeSidebarPanel === "explorer"}
-            title="Explorer (Cmd+B)"
-            onClick={() => handleActivityClick("explorer")}
-          />
-          <ActivityItem
-            icon={<Search size={20} />}
-            active={showSidebar && activeSidebarPanel === "search"}
-            title="Search (Cmd+Shift+F)"
-            onClick={() => handleActivityClick("search")}
-          />
-          <ActivityItem
-            icon={<GitBranch size={20} />}
-            active={showSidebar && activeSidebarPanel === "git"}
-            title="Source Control"
-            onClick={() => handleActivityClick("git")}
-          />
-          <ActivityItem
-            icon={<Blocks size={20} />}
-            active={showSidebar && activeSidebarPanel === "extensions"}
-            title="Extensions (⌘⇧X)"
-            onClick={() => handleActivityClick("extensions")}
-          />
-          <ActivityItem
-            icon={<ListTodo size={20} />}
-            active={showSidebar && activeSidebarPanel === "tasks"}
-            title="Tasks (⌘⇧B: Build)"
-            onClick={() => handleActivityClick("tasks")}
-          />
-          <ActivityItem
-            icon={<FlaskConical size={20} />}
-            active={showSidebar && activeSidebarPanel === "testing"}
-            title="Testing (⌘⇧T: Test)"
-            onClick={() => handleActivityClick("testing")}
-          />
-          <ActivityItem
-            icon={<Clock size={20} />}
-            active={showSidebar && activeSidebarPanel === "timeline"}
-            title="Timeline"
-            onClick={() => handleActivityClick("timeline")}
-          />
-          <ActivityItem
-            icon={<ListTree size={20} />}
-            active={showSidebar && activeSidebarPanel === "outline"}
-            title="Outline"
-            onClick={() => handleActivityClick("outline")}
-          />
-          <ActivityItem
-            icon={<Bug size={20} />}
-            active={showSidebar && activeSidebarPanel === "debug"}
-            title="Debug (F5)"
-            onClick={() => handleActivityClick("debug")}
-          />
-
-          <div className="mt-auto flex flex-col items-center">
+        <div className="w-[40px] bg-gray-900 border-r border-gray-800 flex flex-col shrink-0">
+          <div className="flex-1 min-h-0 overflow-y-auto flex flex-col items-center py-1">
+            {/* Core IDE */}
             <ActivityItem
-              icon={<MessageSquare size={20} />}
-              active={showChatSidebar}
-              title="AI Chat"
-              onClick={() => setShowChatSidebar((v) => !v)}
+              icon={<Files size={20} />}
+              active={showSidebar && activeSidebarPanel === "explorer"}
+              title="Explorer (Cmd+B)"
+              onClick={() => handleActivityClick("explorer")}
             />
+            <ActivityItem
+              icon={<Search size={20} />}
+              active={showSidebar && activeSidebarPanel === "search"}
+              title="Search (Cmd+Shift+F)"
+              onClick={() => handleActivityClick("search")}
+            />
+            <ActivityItem
+              icon={<GitBranch size={20} />}
+              active={showSidebar && activeSidebarPanel === "git"}
+              title="Source Control"
+              onClick={() => handleActivityClick("git")}
+            />
+
+            <ActivitySeparator />
+
+            {/* Build & Quality */}
+            <ActivityItem
+              icon={<Blocks size={20} />}
+              active={showSidebar && activeSidebarPanel === "extensions"}
+              title="Extensions (⌘⇧X)"
+              onClick={() => handleActivityClick("extensions")}
+            />
+            <ActivityItem
+              icon={<ListTodo size={20} />}
+              active={showSidebar && activeSidebarPanel === "tasks"}
+              title="Tasks (⌘⇧B: Build)"
+              onClick={() => handleActivityClick("tasks")}
+            />
+            <ActivityItem
+              icon={<FlaskConical size={20} />}
+              active={showSidebar && activeSidebarPanel === "testing"}
+              title="Testing (⌘⇧T: Test)"
+              onClick={() => handleActivityClick("testing")}
+            />
+
+            <ActivitySeparator />
+
+            {/* Navigation & Debug */}
+            <ActivityItem
+              icon={<Clock size={20} />}
+              active={showSidebar && activeSidebarPanel === "timeline"}
+              title="Timeline"
+              onClick={() => handleActivityClick("timeline")}
+            />
+            <ActivityItem
+              icon={<ListTree size={20} />}
+              active={showSidebar && activeSidebarPanel === "outline"}
+              title="Outline"
+              onClick={() => handleActivityClick("outline")}
+            />
+            <ActivityItem
+              icon={<Bug size={20} />}
+              active={showSidebar && activeSidebarPanel === "debug"}
+              title="Debug (F5)"
+              onClick={() => handleActivityClick("debug")}
+            />
+
+            <ActivitySeparator />
+
+            {/* DAN-specific */}
+            <ActivityItem
+              icon={<Workflow size={20} />}
+              active={showSidebar && activeSidebarPanel === "workflow"}
+              title="Workflows"
+              onClick={() => handleActivityClick("workflow")}
+            />
+            <ActivityItem
+              icon={<Flame size={20} />}
+              active={showSidebar && activeSidebarPanel === "furnace"}
+              title="Furnace"
+              onClick={() => handleActivityClick("furnace")}
+            />
+          </div>
+
+          <div className="border-t border-gray-800 py-1 flex flex-col items-center shrink-0 bg-gray-900">
+            <button
+              title="AI Chat (⌘J)"
+              onClick={() => setShowChatSidebar((v) => !v)}
+              className={`w-full flex items-center justify-center py-2 transition-colors border-l-2 ${
+                showChatSidebar
+                  ? "text-white border-blue-400 bg-blue-500/10"
+                  : "text-blue-400 hover:text-blue-300 border-transparent hover:bg-blue-500/5"
+              }`}
+            >
+              <MessageSquare size={20} />
+            </button>
             <ActivityItem
               icon={<Settings size={20} />}
               active={showSettings}
@@ -632,6 +731,21 @@ export default function CodeMode() {
             <div className="flex flex-col h-full">
             <WorkspaceInfo />
             <CoverageSummaryBar />
+            <div className="flex items-center justify-end gap-2 px-3 py-1.5 border-b border-[#3c3c3c] bg-[#252526] shrink-0">
+              <button
+                onClick={() => setShowChatSidebar((v) => !v)}
+                title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
+                className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                  showChatSidebar
+                    ? "border-blue-500/30 bg-blue-500/10 text-blue-300"
+                    : "border-transparent text-blue-400 hover:bg-white/5 hover:text-blue-300"
+                }`}
+              >
+                <MessageSquare size={13} />
+                <span>AI Chat</span>
+                <span className="text-[10px] text-gray-500">⌘J</span>
+              </button>
+            </div>
             <Allotment vertical proportionalLayout={false} className="flex-1 min-h-0">
               <Allotment.Pane>
                 {mergeEditorState ? (
@@ -685,7 +799,29 @@ export default function CodeMode() {
 
           {showChatSidebar && (
             <Allotment.Pane preferredSize={350} minSize={250} maxSize={500}>
-              <ChatSidebar onClose={() => setShowChatSidebar(false)} />
+              <ModeChatSidebar
+                mode="development"
+                onClose={() => setShowChatSidebar(false)}
+                contextProvider={() => {
+                  const state = useCodeStore.getState();
+                  const activeFile = state.openFiles.find((f) => f.path === state.activeFilePath);
+                  const lines: string[] = ["[Workspace Context]"];
+                  if (activeFile) {
+                    const lineCount = activeFile.content.split("\n").length;
+                    lines.push(`Active file: ${activeFile.path} (${activeFile.language}, ${lineCount} lines)`);
+                  }
+                  if (state.openFiles.length > 0) {
+                    lines.push(`Open files: ${state.openFiles.map((f) => f.path.split("/").pop()).join(", ")}`);
+                  }
+                  if (state.pinnedRoots.length > 0) {
+                    lines.push(`Workspace roots: ${state.pinnedRoots.join(", ")}`);
+                  }
+                  if (activeFile) {
+                    lines.push("", "[Active File Content (first 200 lines)]", activeFile.content.split("\n").slice(0, 200).join("\n"));
+                  }
+                  return lines.join("\n");
+                }}
+              />
             </Allotment.Pane>
           )}
         </Allotment>

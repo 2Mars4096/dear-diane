@@ -21,6 +21,9 @@ import HumanInputDialog from "../HumanInputDialog";
 import BlockExportDialog from "../BlockExportDialog";
 import CommandPalette from "../CommandPalette";
 import ChatPanel from "../ChatPanel";
+import ModeChatSidebar from "../shared/ModeChatSidebar";
+import { MessageSquare } from "lucide-react";
+import { useAppStore } from "../../store/useAppStore";
 import { importBlock } from "../../lib/api";
 
 type BottomTab = "logs" | "output" | "history" | "optimizations";
@@ -38,6 +41,7 @@ export default function OperationsMode() {
   const addToast = useGraphStore((s) => s.addToast);
   const [bottomTab, setBottomTab] = useState<BottomTab>("logs");
   const [panelHeight, setPanelHeight] = useState(DEFAULT_PANEL_HEIGHT);
+  const [showChatSidebar, setShowChatSidebar] = useState(false);
   const dragging = useRef(false);
 
   const [blockExportNodeId, setBlockExportNodeId] = useState<string | null>(null);
@@ -109,6 +113,15 @@ export default function OperationsMode() {
     if (historyFocusCounter > 0) setBottomTab("history");
   }, [historyFocusCounter]);
 
+  useEffect(() => {
+    const handleChatToggle = () => {
+      if (useAppStore.getState().activeMode !== "operations") return;
+      setShowChatSidebar((v) => !v);
+    };
+    window.addEventListener("app:toggleModeChatSidebar", handleChatToggle);
+    return () => window.removeEventListener("app:toggleModeChatSidebar", handleChatToggle);
+  }, []);
+
   return (
     <ReactFlowProvider>
       <div className="flex flex-col h-full">
@@ -150,6 +163,14 @@ export default function OperationsMode() {
                     )}
                   </button>
                 ))}
+                <span className="flex-1" />
+                <button
+                  onClick={() => setShowChatSidebar((v) => !v)}
+                  title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
+                  className={`p-1.5 transition-colors shrink-0 ${showChatSidebar ? "text-indigo-500" : "text-gray-500 hover:text-indigo-600"}`}
+                >
+                  <MessageSquare size={14} />
+                </button>
               </div>
               <div className="flex-1 overflow-hidden">
                 {bottomTab === "logs" && <LogPanel />}
@@ -163,6 +184,21 @@ export default function OperationsMode() {
           <ConfigPanel />
 
           <ChatPanel />
+
+          {showChatSidebar && (
+            <div className="w-[350px] min-w-[250px] border-l border-gray-200 shrink-0">
+              <ModeChatSidebar
+                mode="operations"
+                onClose={() => setShowChatSidebar(false)}
+                contextProvider={() => {
+                  const gs = useGraphStore.getState();
+                  const lines: string[] = ["[Operations Context]"];
+                  if (gs.graphId) lines.push(`Active workflow: ${gs.graphId}`);
+                  return lines.join("\n");
+                }}
+              />
+            </div>
+          )}
         </div>
 
         <CommandPalette />

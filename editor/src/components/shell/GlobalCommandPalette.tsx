@@ -42,7 +42,7 @@ function pushRecent(id: string) {
 /* ------------------------------------------------------------------ */
 
 function getGlobalCommands(): GlobalCommand[] {
-  const { setMode, toggleSidebar, setChatBarExpanded, setGlobalPaletteVisible } =
+  const { setMode, setGlobalPaletteVisible } =
     useAppStore.getState();
   const { createWorkspace, workspaces, activeWorkspaceId, setActiveWorkspace } =
     useWorkspaceStore.getState();
@@ -112,14 +112,14 @@ function getGlobalCommands(): GlobalCommand[] {
       label: "Toggle Sidebar",
       category: "General",
       shortcut: "⌘B",
-      action: toggleSidebar,
+      action: () => window.dispatchEvent(new CustomEvent("app:toggleModeSidebar")),
     },
     {
-      id: "chatbar.toggle",
-      label: "Toggle Chat Bar",
+      id: "chatSidebar.toggle",
+      label: "Toggle AI Chat Sidebar",
       category: "General",
       shortcut: "⌘J",
-      action: () => setChatBarExpanded(!useAppStore.getState().chatBarExpanded),
+      action: () => window.dispatchEvent(new CustomEvent("app:toggleModeChatSidebar")),
     },
     {
       id: "palette.close",

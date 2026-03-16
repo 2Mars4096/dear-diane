@@ -23,6 +23,8 @@ import { nativeFs, nativeTerminal } from "../../lib/electronBridge";
 /*  Chat sender registration (for cross-component message injection)   */
 /* ------------------------------------------------------------------ */
 
+import { sendToModeChat } from "../shared/ModeChatSidebar";
+
 let chatSendFunction: ((text: string) => void) | null = null;
 
 export function registerChatSender(fn: (text: string) => void) {
@@ -30,7 +32,11 @@ export function registerChatSender(fn: (text: string) => void) {
 }
 
 export function sendToChat(text: string) {
-  if (chatSendFunction) chatSendFunction(text);
+  if (chatSendFunction) {
+    chatSendFunction(text);
+  } else {
+    sendToModeChat("development", text);
+  }
 }
 
 /* ------------------------------------------------------------------ */

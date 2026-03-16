@@ -1,18 +1,15 @@
 /**
  * AppShell: top-level layout that wraps all mode workspaces.
- * Structure: WorkspaceTabs (top) → ModeBar → Breadcrumb → SidebarHost + active mode workspace (center) → overlays.
+ * Structure: WorkspaceTabs (top) → ModeBar → mode viewport (full remaining height).
  * Each mode is deferred-mounted per workspace and remounts when the active workspace changes,
  * so mode-local frontend UI state does not leak across workspaces.
  */
 import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import ModeBar, { useModeShortcuts } from "./ModeBar";
 import WorkspaceTabs, { useWorkspaceShortcuts } from "./WorkspaceTabs";
-import Breadcrumb from "./Breadcrumb";
-import SidebarHost from "./SidebarHost";
 import GlobalSettingsPanel from "./GlobalSettingsPanel";
 import GlobalCommandPalette from "./GlobalCommandPalette";
 import ErrorBoundary from "./ErrorBoundary";
-import PersistentChatBar from "./PersistentChatBar";
 import UpdateNotification from "./UpdateNotification";
 import ConnectionBanner from "./ConnectionBanner";
 import { ChatSkeleton, EditorSkeleton } from "./PanelSkeleton";
@@ -113,10 +110,6 @@ function useSyncWorkspaceMode() {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     return ws?.lastActiveMode;
   });
-  const activeWsName = useWorkspaceStore((s) => {
-    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
-    return ws?.name;
-  });
   const updateWorkspace = useWorkspaceStore((s) => s.updateWorkspace);
   const prevActiveWsId = useRef<string | null>(null);
 
@@ -126,35 +119,15 @@ function useSyncWorkspaceMode() {
 
     if (!activeWsId || workspaceChanged) return;
 
-    const updates: {
-      lastActiveMode?: typeof activeMode;
-      name?: string;
-    } = {};
-
     if (activeWsLastMode !== activeMode) {
-      updates.lastActiveMode = activeMode;
+      updateWorkspace(activeWsId, { lastActiveMode: activeMode });
     }
-    if (activeMode === "research" && activeWsName === "Scratch") {
-      updates.name = "Research Project";
-    }
-
-    if (Object.keys(updates).length > 0) {
-      updateWorkspace(activeWsId, updates);
-    }
-  }, [activeMode, activeWsId, activeWsLastMode, activeWsName, updateWorkspace]);
+  }, [activeMode, activeWsId, activeWsLastMode, updateWorkspace]);
 }
 
 export default function AppShell() {
   const activeMode = useAppStore((s) => s.activeMode);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const workspaceName = useWorkspaceStore((s) => {
-    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
-    return ws?.name;
-  });
-  const workspaceColor = useWorkspaceStore((s) => {
-    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
-    return ws?.color;
-  });
   const globalPaletteVisible = useAppStore((s) => s.globalPaletteVisible);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
   const workspaceRenderKey = activeWorkspaceId ?? "no-workspace";
@@ -185,8 +158,14 @@ export default function AppShell() {
     registerGlobalShortcut({
       id: "global.sidebar",
       keys: "cmd+b",
-      action: () => useAppStore.getState().toggleSidebar(),
+      action: () => window.dispatchEvent(new CustomEvent("app:toggleModeSidebar")),
       description: "Toggle Sidebar",
+    });
+    registerGlobalShortcut({
+      id: "global.chatSidebar",
+      keys: "cmd+j",
+      action: () => window.dispatchEvent(new CustomEvent("app:toggleModeChatSidebar")),
+      description: "Toggle AI Chat Sidebar",
     });
 
     const onOpenSettings = () => setShowGlobalSettings(true);
@@ -206,19 +185,8 @@ export default function AppShell() {
       <ConnectionBanner />
       <WorkspaceTabs />
       <ModeBar />
-      <Breadcrumb />
 
-      <div className="flex-1 min-h-0 flex">
-        <SidebarHost
-          key={`sidebar-${workspaceRenderKey}`}
-          mode={activeMode}
-          workspaceName={workspaceName}
-          workspaceColor={workspaceColor}
-        />
-        <div
-          key={`viewport-${workspaceRenderKey}`}
-          className="flex-1 min-h-0 relative"
-        >
+      <div className="flex-1 min-h-0 relative" key={`viewport-${workspaceRenderKey}`}>
         <ModePanel
           workspaceKey={workspaceRenderKey}
           modeKey="chat"
@@ -279,10 +247,8 @@ export default function AppShell() {
             </div>
           </ModePanel>
         ))}
-        </div>
       </div>
 
-      <PersistentChatBar />
       <ToastContainer />
       {showGlobalSettings && (
         <GlobalSettingsPanel onClose={() => setShowGlobalSettings(false)} />

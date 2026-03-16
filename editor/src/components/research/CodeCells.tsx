@@ -25,6 +25,8 @@ import {
   useResearchStore,
   type CellTool,
 } from "../../store/useResearchStore";
+import { useSettingsStore } from "../../store/useSettingsStore";
+import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -642,6 +644,7 @@ function CellItem({
 }) {
   const [editorHeight, setEditorHeight] = useState(MIN_LINES * LINE_HEIGHT);
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null);
+  const theme = useSettingsStore((s) => resolveMonacoTheme(s.theme));
   const isCodeTool = cell.tool === "python_eval";
 
   const handleMount: OnMount = (editor) => {
@@ -752,7 +755,7 @@ function CellItem({
             value={cell.code}
             onChange={(v) => onUpdate({ code: v ?? "" })}
             onMount={handleMount}
-            theme="vs-dark"
+            theme={theme}
             options={{
               minimap: { enabled: false },
               scrollBeyondLastLine: false,

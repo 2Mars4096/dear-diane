@@ -4,6 +4,7 @@ import type { editor as monacoEditor } from "monaco-editor";
 import { X, ChevronUp, ChevronDown, ArrowLeftRight, Check } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 import { nativeFs } from "../../lib/electronBridge";
 
 const EXT_LANG: Record<string, string> = {
@@ -71,7 +72,7 @@ function stripAISuffix(path: string): string {
 export default function DiffView() {
   const diffFile = useCodeStore((s) => s.diffFile);
   const closeDiff = useCodeStore((s) => s.closeDiff);
-  const theme = useSettingsStore((s) => s.theme);
+  const theme = useSettingsStore((s) => resolveMonacoTheme(s.theme));
 
   const diffEditorRef = useRef<monacoEditor.IStandaloneDiffEditor | null>(null);
   const [renderSideBySide, setRenderSideBySide] = useState(true);

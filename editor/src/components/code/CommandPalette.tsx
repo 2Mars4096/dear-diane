@@ -20,6 +20,11 @@ interface Command {
 function getCommands(): Command[] {
   return [
     {
+      id: "theme.system",
+      label: "Preferences: Color Theme - System",
+      action: () => useSettingsStore.getState().updateSetting("theme", "system"),
+    },
+    {
       id: "theme.dark",
       label: "Preferences: Color Theme - Dark",
       action: () => useSettingsStore.getState().updateSetting("theme", "vs-dark"),

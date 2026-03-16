@@ -64,10 +64,12 @@ import {
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useCodeStore } from "../../store/useCodeStore";
+import { useAppStore } from "../../store/useAppStore";
 import DomainProfileSelector, {
   getActiveProfile,
 } from "../research/DomainProfile";
 import TerminalPanel from "../code/TerminalPanel";
+import ModeChatSidebar from "../shared/ModeChatSidebar";
 
 /* ------------------------------------------------------------------ */
 /*  Lazy-loaded panel components                                       */
@@ -1512,12 +1514,24 @@ export default function ResearchMode() {
   useResearchShortcuts();
   const { pipelineActive } = useAutoShowFurnace();
 
+  const [showChatSidebar, setShowChatSidebar] = useState(false);
   const showPipeline = useResearchStore((s) => s.showPipeline);
   const showContextPanel = useResearchStore((s) => s.showContextPanel);
   const togglePipeline = useResearchStore((s) => s.togglePipeline);
   const toggleContextPanel = useResearchStore((s) => s.toggleContextPanel);
   const showTerminal = useCodeStore((s) => s.showTerminal);
   const toggleTerminal = useCodeStore((s) => s.toggleTerminal);
+
+  useEffect(() => {
+    const handleChatToggle = () => {
+      if (useAppStore.getState().activeMode !== "research") return;
+      setShowChatSidebar((v) => !v);
+    };
+    window.addEventListener("app:toggleModeChatSidebar", handleChatToggle);
+    return () => {
+      window.removeEventListener("app:toggleModeChatSidebar", handleChatToggle);
+    };
+  }, []);
 
   return (
     <div className="h-full flex bg-[#1e1e1e] text-gray-200">
@@ -1539,15 +1553,24 @@ export default function ResearchMode() {
           )}
           <span className="flex-1" />
           <button
-            onClick={toggleContextPanel}
-            title={showContextPanel ? "Hide right drawer" : "Show right drawer"}
-            className="text-gray-500 hover:text-gray-300 transition-colors"
+            onClick={() => setShowChatSidebar((v) => !v)}
+            title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
+            className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-medium transition-colors ${
+              showChatSidebar
+                ? "border-blue-500/30 bg-blue-500/10 text-blue-300"
+                : "border-transparent text-blue-400 hover:bg-white/5 hover:text-blue-300"
+            }`}
           >
-            {showContextPanel ? (
-              <PanelRightClose size={13} />
-            ) : (
-              <PanelRightOpen size={13} />
-            )}
+            <MessageSquareText size={11} />
+            Chat
+          </button>
+          <button
+            onClick={toggleContextPanel}
+            title={showContextPanel ? "Hide context drawer (⌘I)" : "Show context drawer (⌘I)"}
+            className={`flex items-center gap-1 text-[10px] transition-colors ${showContextPanel ? "text-blue-400" : "text-gray-500 hover:text-gray-300"}`}
+          >
+            {showContextPanel ? <PanelRightClose size={11} /> : <PanelRightOpen size={11} />}
+            Context
           </button>
           <button
             onClick={toggleTerminal}
@@ -1566,45 +1589,84 @@ export default function ResearchMode() {
         {pipelineActive && showPipeline && <PipelineProgress />}
       </div>
 
-      {/* Main area: Desk (center) + Right Drawer (optional) | Terminal (optional) */}
-      <div className="flex-1 min-w-0 flex flex-col">
-        <Allotment vertical>
-          <Allotment.Pane minSize={200}>
-            <Allotment>
-              <Allotment.Pane minSize={300}>
-                <PrimaryPanel />
-              </Allotment.Pane>
-              {showContextPanel && (
-                <Allotment.Pane preferredSize={320} minSize={200}>
-                  <ContextPanel />
+      {/* Main area: Desk (center) + Right Drawer (optional) | Terminal (optional) | Chat sidebar */}
+      <div className="flex-1 min-w-0 flex">
+        <div className="flex-1 min-w-0 flex flex-col">
+          <div className="flex items-center justify-end gap-2 px-3 py-1.5 border-b border-gray-800 bg-[#252526] shrink-0">
+            <button
+              onClick={() => setShowChatSidebar((v) => !v)}
+              title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
+              className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                showChatSidebar
+                  ? "border-blue-500/30 bg-blue-500/10 text-blue-300"
+                  : "border-transparent text-blue-400 hover:bg-white/5 hover:text-blue-300"
+              }`}
+            >
+              <MessageSquareText size={13} />
+              <span>AI Chat</span>
+              <span className="text-[10px] text-gray-500">⌘J</span>
+            </button>
+          </div>
+          <Allotment vertical>
+            <Allotment.Pane minSize={200}>
+              <Allotment>
+                <Allotment.Pane minSize={300}>
+                  <PrimaryPanel />
                 </Allotment.Pane>
-              )}
-            </Allotment>
-          </Allotment.Pane>
-
-          {showTerminal && (
-            <Allotment.Pane preferredSize={200} minSize={100}>
-              <div className="h-full flex flex-col border-t border-gray-800">
-                <div className="flex items-center bg-[#252526] border-b border-gray-800 px-2 py-0.5 shrink-0">
-                  <span className="text-[10px] text-gray-400 flex items-center gap-1.5">
-                    <TerminalIcon size={11} /> Terminal
-                  </span>
-                  <span className="flex-1" />
-                  <button
-                    onClick={toggleTerminal}
-                    className="text-gray-500 hover:text-gray-300 p-0.5 transition-colors"
-                    title="Close terminal"
-                  >
-                    <X size={12} />
-                  </button>
-                </div>
-                <div className="flex-1 min-h-0">
-                  <TerminalPanel />
-                </div>
-              </div>
+                {showContextPanel && (
+                  <Allotment.Pane preferredSize={320} minSize={200}>
+                    <ContextPanel />
+                  </Allotment.Pane>
+                )}
+              </Allotment>
             </Allotment.Pane>
-          )}
-        </Allotment>
+
+            {showTerminal && (
+              <Allotment.Pane preferredSize={200} minSize={100}>
+                <div className="h-full flex flex-col border-t border-gray-800">
+                  <div className="flex items-center bg-[#252526] border-b border-gray-800 px-2 py-0.5 shrink-0">
+                    <span className="text-[10px] text-gray-400 flex items-center gap-1.5">
+                      <TerminalIcon size={11} /> Terminal
+                    </span>
+                    <span className="flex-1" />
+                    <button
+                      onClick={toggleTerminal}
+                      className="text-gray-500 hover:text-gray-300 p-0.5 transition-colors"
+                      title="Close terminal"
+                    >
+                      <X size={12} />
+                    </button>
+                  </div>
+                  <div className="flex-1 min-h-0">
+                    <TerminalPanel />
+                  </div>
+                </div>
+              </Allotment.Pane>
+            )}
+          </Allotment>
+        </div>
+        {showChatSidebar && (
+          <div className="w-[350px] min-w-[250px] max-w-[500px] border-l border-gray-800 shrink-0">
+            <ModeChatSidebar
+              mode="research"
+              onClose={() => setShowChatSidebar(false)}
+              contextProvider={() => {
+                const rs = useResearchStore.getState();
+                const lines: string[] = ["[Research Context]"];
+                if (rs.activePaperId) {
+                  const paper = rs.papers.find((p) => p.id === rs.activePaperId);
+                  if (paper) lines.push(`Active paper: ${paper.title}`);
+                }
+                lines.push(`Rail section: ${rs.activeRailSection}`);
+                lines.push(`Primary tab: ${rs.primaryTab}`);
+                if (rs.documentContent) {
+                  lines.push("", "[Document excerpt]", rs.documentContent.slice(0, 2000));
+                }
+                return lines.join("\n");
+              }}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

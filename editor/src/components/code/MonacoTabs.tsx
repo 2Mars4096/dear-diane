@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useCodeStore, type OpenFile } from "../../store/useCodeStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 import { nativeFs } from "../../lib/electronBridge";
 import { useGitBlame } from "../../hooks/useGitBlame";
 import { getLargeFileConfig } from "../../lib/largeFileMode";
@@ -422,6 +423,7 @@ export default function MonacoTabs() {
   } = useCodeStore();
 
   const settings = useSettingsStore();
+  const monacoTheme = resolveMonacoTheme(settings.theme);
 
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null);
   const tabBarRef = useRef<HTMLDivElement>(null);
@@ -586,6 +588,21 @@ export default function MonacoTabs() {
       label: "Inline AI Edit",
       keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyK],
       run: () => setInlineEditVisible(true),
+    });
+
+    editor.addAction({
+      id: "ask-ai-about-selection",
+      label: "Ask DAN about Selection",
+      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyA],
+      precondition: "editorHasSelection",
+      run: (ed) => {
+        const sel = ed.getSelection();
+        if (!sel || sel.isEmpty()) return;
+        const text = ed.getModel()?.getValueInRange(sel) ?? "";
+        if (!text) return;
+        const afp = useCodeStore.getState().activeFilePath ?? "unknown file";
+        sendToChat(`Explain this code from ${afp}:\n\`\`\`\n${text}\n\`\`\``);
+      },
     });
 
     editor.addAction({
@@ -954,7 +971,7 @@ export default function MonacoTabs() {
             path={activeFile.path}
             language={activeFile.language}
             value={activeFile.content}
-            theme={settings.theme}
+            theme={monacoTheme}
             onChange={handleChange}
             onMount={handleEditorMount}
             options={{

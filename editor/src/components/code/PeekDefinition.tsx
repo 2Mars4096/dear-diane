@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import Editor from "@monaco-editor/react";
 import { X, ChevronLeft, ChevronRight } from "lucide-react";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 import { detectLanguageFromPath } from "../../lib/snippets";
 
 // ---------------------------------------------------------------------------
@@ -33,7 +34,7 @@ export default function PeekDefinition({
 }: PeekDefinitionProps) {
   const [activeIndex, setActiveIndex] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
-  const theme = useSettingsStore((s) => s.theme);
+  const theme = useSettingsStore((s) => resolveMonacoTheme(s.theme));
   const activeDef = definitions[activeIndex];
 
   const handleKeyDown = useCallback(

@@ -4,6 +4,7 @@ import type { editor as monacoEditor } from "monaco-editor";
 import { X, MoreVertical } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 import { nativeFs } from "../../lib/electronBridge";
 
 // ---------------------------------------------------------------------------
@@ -23,6 +24,7 @@ export default function SplitEditor({ filePath, onClose }: SplitEditorProps) {
   const openFiles = useCodeStore((s) => s.openFiles);
   const updateFileContent = useCodeStore((s) => s.updateFileContent);
   const settings = useSettingsStore();
+  const monacoTheme = resolveMonacoTheme(settings.theme);
   const editorRef = useRef<monacoEditor.IStandaloneCodeEditor | null>(null);
   const [externalContent, setExternalContent] = useState<string | null>(null);
 
@@ -115,7 +117,7 @@ export default function SplitEditor({ filePath, onClose }: SplitEditorProps) {
           path={`split-${filePath}`}
           language={language}
           value={content}
-          theme={settings.theme}
+          theme={monacoTheme}
           onChange={handleChange}
           onMount={handleMount}
           options={{

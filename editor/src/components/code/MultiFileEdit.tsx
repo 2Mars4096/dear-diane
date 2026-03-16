@@ -6,6 +6,7 @@ import { useCallback, useMemo, useState } from "react";
 import { DiffEditor } from "@monaco-editor/react";
 import { Check, X, Sparkles, ChevronRight } from "lucide-react";
 import { useSettingsStore } from "../../store/useSettingsStore";
+import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 
 export interface FileEdit {
   filePath: string;
@@ -46,7 +47,7 @@ export default function MultiFileEdit({
   onClose,
 }: MultiFileEditProps) {
   const [activeFile, setActiveFile] = useState(edits[0]?.filePath ?? "");
-  const theme = useSettingsStore((s) => s.theme);
+  const theme = useSettingsStore((s) => resolveMonacoTheme(s.theme));
 
   const activeEdit = useMemo(
     () => edits.find((e) => e.filePath === activeFile),

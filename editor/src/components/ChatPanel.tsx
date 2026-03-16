@@ -405,8 +405,7 @@ export default function ChatPanel({
   const [detectedMode, setDetectedMode] = useState<string | null>(null);
   const [escalation, setEscalation] = useState<{ targetMode: import("../store/useAppStore").AppMode; reason: string } | null>(null);
   const setMode = useAppStore((s) => s.setMode);
-  const pendingChatMessage = useAppStore((s) => s.pendingChatMessage);
-  const setPendingChatMessage = useAppStore((s) => s.setPendingChatMessage);
+  
   const [switchPrefMenu, setSwitchPrefMenu] = useState(false);
   const [mutationConfirmMode, setMutationConfirmMode] = useState<boolean>(() =>
     readMutationConfirmPreference(),
@@ -445,7 +444,7 @@ export default function ChatPanel({
   } | null>(null);
   const [userAttachments, setUserAttachments] = useState<File[]>([]);
 
-  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
   const applyingRef = useRef(false);
@@ -839,19 +838,26 @@ export default function ChatPanel({
 
   const prevMessageCountRef = useRef(messages.length);
   useLayoutEffect(() => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
     const prevCount = prevMessageCountRef.current;
     prevMessageCountRef.current = messages.length;
     if (messages.length > prevCount) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+      el.scrollTop = el.scrollHeight;
     } else if (messages.length > 0) {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+      if (isNearBottom) {
+        el.scrollTop = el.scrollHeight;
+      }
     }
   }, [messages]);
 
   useEffect(() => {
     if (!error && !staleRevision) return;
+    const el = messagesContainerRef.current;
+    if (!el) return;
     const timer = window.setTimeout(() => {
-      messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+      el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
     }, 0);
     return () => window.clearTimeout(timer);
   }, [error, staleRevision]);
@@ -2102,12 +2108,7 @@ export default function ChatPanel({
     return () => window.removeEventListener("persistent-chat:send", onPersistentSend);
   }, [sendMessage]);
 
-  useEffect(() => {
-    if (!fullScreen) return;
-    if (!pendingChatMessage) return;
-    setPendingChatMessage(null);
-    sendMessage(pendingChatMessage);
-  }, [fullScreen, pendingChatMessage, sendMessage, setPendingChatMessage]);
+  
 
   useEffect(() => {
     if (!fullScreen) return;
@@ -2143,11 +2144,14 @@ export default function ChatPanel({
       }
     };
     const handleNewThread = () => handleNewChat();
+    const handleToggleHistory = () => setShowThreadList((v) => !v);
     window.addEventListener("workspace:selectThread", handleSelectThread);
     window.addEventListener("workspace:newThread", handleNewThread);
+    window.addEventListener("chat:toggleHistory", handleToggleHistory);
     return () => {
       window.removeEventListener("workspace:selectThread", handleSelectThread);
       window.removeEventListener("workspace:newThread", handleNewThread);
+      window.removeEventListener("chat:toggleHistory", handleToggleHistory);
     };
   }, [fullScreen, graphId, loadThread, handleNewChat]);
 
@@ -2500,19 +2504,19 @@ export default function ChatPanel({
   // Shared conversation content (used in both fullScreen and sidebar layouts)
   // -------------------------------------------------------------------------
   const conversationHeader = fullScreen ? (
-    <div className="flex items-center justify-between px-4 py-2.5 border-b border-gray-200 flex-shrink-0 bg-gray-50/30">
+    <div className="flex items-center justify-between px-4 py-2.5 border-b border-[#3c3c3c] flex-shrink-0 bg-[#252526]">
       <div className="flex items-center gap-2 min-w-0 flex-1">
         <button
           onClick={() => setShowThreadList(!showThreadList)}
           className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-            showThreadList ? "bg-gray-200 text-gray-700" : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+            showThreadList ? "bg-white/10 text-gray-200" : "text-gray-400 hover:bg-white/5 hover:text-gray-200"
           }`}
           title="Chat history (⌘⇧L)"
         >
           <History size={13} />
           <span>History</span>
         </button>
-        <div className="w-px h-4 bg-gray-200" />
+        <div className="w-px h-4 bg-gray-700" />
         {editingTitle ? (
           <input
             autoFocus
@@ -2522,15 +2526,15 @@ export default function ChatPanel({
               if (e.key === "Enter") handleTitleSave((e.target as HTMLInputElement).value);
               if (e.key === "Escape") setEditingTitle(false);
             }}
-            className="text-sm font-semibold text-gray-800 bg-gray-50 border border-gray-200 rounded px-1.5 py-0.5 outline-none focus:border-indigo-300 min-w-0 flex-1"
+            className="text-sm font-semibold text-gray-200 bg-[#1e1e1e] border border-gray-700 rounded px-1.5 py-0.5 outline-none focus:border-indigo-400 min-w-0 flex-1"
           />
         ) : (
           <div className="flex items-center gap-1 min-w-0 flex-1">
             <span
               onClick={() => activeThreadId && setEditingTitle(true)}
-              className={`text-sm font-semibold text-gray-800 truncate transition-colors ${
+              className={`text-sm font-semibold text-gray-200 truncate transition-colors ${
                 activeThreadId
-                  ? "cursor-pointer hover:text-indigo-600"
+                  ? "cursor-pointer hover:text-indigo-400"
                   : ""
               }`}
               title={activeThreadId ? "Rename chat title" : undefined}
@@ -2540,7 +2544,7 @@ export default function ChatPanel({
             {activeThreadId && (
               <button
                 onClick={() => setEditingTitle(true)}
-                className="text-gray-300 hover:text-indigo-500 p-0.5 rounded transition-colors flex-shrink-0"
+                className="text-gray-500 hover:text-indigo-400 p-0.5 rounded transition-colors flex-shrink-0"
                 title="Rename chat title"
               >
                 <PencilLine size={12} />
@@ -2551,25 +2555,25 @@ export default function ChatPanel({
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
         {(lastPromptTokens > 0 || totalTokens > 0) && (
-          <span className="text-[10px] text-gray-400 tabular-nums" title={`${totalTokens.toLocaleString()} total tokens used`}>
+          <span className="text-[10px] text-gray-500 tabular-nums" title={`${totalTokens.toLocaleString()} total tokens used`}>
             {contextWindow > 0 && lastPromptTokens > 0
               ? `~${formatTokenCount(lastPromptTokens)} / ${formatTokenCount(contextWindow)}`
               : `${totalTokens.toLocaleString()} tok`}
           </span>
         )}
-        <button onClick={() => handleExport("md")} className="text-gray-400 hover:text-gray-600 p-0.5 rounded transition-colors" title="Export as Markdown">
+        <button onClick={() => handleExport("md")} className="text-gray-400 hover:text-gray-200 p-0.5 rounded transition-colors" title="Export as Markdown">
           <Download size={13} />
         </button>
         <button
           onClick={() => setShowContextPanel((prev) => !prev)}
-          className={`p-0.5 rounded transition-colors ${showContextPanel ? "text-indigo-500 bg-indigo-50" : "text-gray-400 hover:text-gray-600"}`}
+          className={`p-0.5 rounded transition-colors ${showContextPanel ? "text-indigo-400 bg-indigo-500/10" : "text-gray-400 hover:text-gray-200"}`}
           title="Context panel (⌘I)"
         >
           <Info size={13} />
         </button>
         <button
           onClick={handleNewChat}
-          className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-800 transition-colors"
+          className="flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium text-gray-400 hover:bg-white/5 hover:text-gray-200 transition-colors"
           title="New chat (⌘N)"
         >
           <Plus size={13} />
@@ -2642,7 +2646,7 @@ export default function ChatPanel({
   );
 
   const modeSelector = (
-    <div className={`flex items-center gap-1 px-3 py-1.5 border-b border-gray-100 bg-gray-50/50 flex-shrink-0 ${fullScreen ? "justify-center" : ""}`}>
+    <div className={`flex items-center gap-1 px-3 py-1.5 border-b flex-shrink-0 ${fullScreen ? "justify-center border-[#3c3c3c] bg-[#1e1e1e]" : "border-gray-100 bg-gray-50/50"}`}>
       <div className={`flex items-center gap-1 ${fullScreen ? "max-w-3xl w-full" : ""}`}>
         {(["auto", "agent", "ask", "plan", "debug"] as const).map((m) => {
           const cfg = MODE_CONFIG[m];
@@ -2662,8 +2666,12 @@ export default function ChatPanel({
               }}
               className={`flex items-center gap-1 px-2.5 py-1 text-[11px] font-medium rounded-md transition-colors ${
                 active
-                  ? "bg-white text-gray-800 shadow-sm border border-gray-200"
-                  : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
+                  ? fullScreen
+                    ? "bg-white/10 text-gray-200 shadow-sm border border-gray-700"
+                    : "bg-white text-gray-800 shadow-sm border border-gray-200"
+                  : fullScreen
+                    ? "text-gray-500 hover:text-gray-300 hover:bg-white/5"
+                    : "text-gray-500 hover:text-gray-700 hover:bg-gray-100"
               }`}
             >
               <Icon size={11} />
@@ -2716,8 +2724,8 @@ export default function ChatPanel({
   }, [isStreaming, messages, inputText]);
 
   const messagesArea = (
-    <div className={`flex-1 overflow-y-auto py-4 min-h-0 ${fullScreen ? "px-4" : "px-3"}`}>
-      <div className={fullScreen ? "max-w-3xl mx-auto" : ""}>
+    <div ref={messagesContainerRef} className={`flex-1 overflow-y-auto py-4 min-h-0 ${fullScreen ? "px-4" : "px-3"}`}>
+      <div className={fullScreen ? `max-w-3xl mx-auto${messages.length === 0 ? " h-full" : ""}` : ""}>
         {messages.length === 0 ? (
           <EmptyState
             onSelect={(t) => sendMessage(t)}
@@ -2871,21 +2879,20 @@ export default function ChatPanel({
             <span className="text-[10px] text-gray-400">or continue chatting to refine</span>
           </div>
         )}
-        <div ref={messagesEndRef} />
       </div>
     </div>
   );
 
   const queueStrip = pendingQueue.length > 0 ? (
-    <div className={`flex-shrink-0 border-t border-gray-100 bg-gray-50/50 max-h-36 overflow-y-auto ${fullScreen ? "px-4 py-2" : "px-3 py-2"}`}>
+    <div className={`flex-shrink-0 max-h-36 overflow-y-auto ${fullScreen ? "px-4 py-2 border-t border-[#3c3c3c] bg-[#252526]" : "px-3 py-2 border-t border-gray-100 bg-gray-50/50"}`}>
       <div className={`${fullScreen ? "max-w-3xl mx-auto" : ""} space-y-1`}>
-        <div className="text-[10px] font-medium text-gray-500 px-1">
+        <div className={`text-[10px] font-medium px-1 ${fullScreen ? "text-gray-400" : "text-gray-500"}`}>
           Queued messages ({pendingQueue.length})
         </div>
         {pendingQueue.map((item, idx) => (
           <div
             key={item.id}
-            className="flex items-center gap-1.5 bg-white rounded-lg px-2.5 py-1.5 group border border-gray-100"
+            className={`flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 group ${fullScreen ? "bg-white/5 border border-gray-700" : "bg-white border border-gray-100"}`}
           >
             <GripVertical size={12} className="text-gray-300 flex-shrink-0" />
             <span className="flex-1 text-xs text-gray-700 truncate min-w-0">
@@ -2950,7 +2957,7 @@ export default function ChatPanel({
   ) : null;
 
   const inputArea = (
-    <div className={`flex-shrink-0 border-t border-gray-200 ${fullScreen ? "px-4 py-4 bg-white" : "p-3"}`}>
+    <div className={`flex-shrink-0 ${fullScreen ? "px-4 py-4 bg-[#1e1e1e] border-t border-[#3c3c3c]" : "p-3 border-t border-gray-200"}`}>
       <div className={fullScreen ? "max-w-3xl mx-auto" : ""}>
         {fullScreen && !isStreaming && messages.length > 0 && (
           <RecentCommandsBar
@@ -2985,7 +2992,7 @@ export default function ChatPanel({
             }}
           />
         )}
-        <div className={`flex items-end gap-2 border border-gray-200 rounded-xl px-3 py-2.5 focus-within:shadow-md focus-within:border-indigo-300 transition-all ${fullScreen ? "shadow-sm" : "focus-within:shadow-sm"}`}>
+        <div className={`flex items-end gap-2 border rounded-xl px-3 py-2.5 transition-all ${fullScreen ? "border-gray-700 shadow-sm focus-within:shadow-md focus-within:border-indigo-500 bg-[#252526]" : "border-gray-200 focus-within:shadow-md focus-within:border-indigo-300 focus-within:shadow-sm"}`}>
           <textarea
             ref={textareaRef}
             value={inputText}
@@ -3006,7 +3013,7 @@ export default function ChatPanel({
                 : "Ask about your workflow… (@ to mention)"
             }
             rows={1}
-            className={`flex-1 resize-none text-gray-900 placeholder-gray-400 bg-transparent outline-none max-h-[160px] leading-snug ${fullScreen ? "text-[15px] min-h-[28px]" : "text-sm min-h-[24px]"}`}
+            className={`flex-1 resize-none placeholder-gray-500 bg-transparent outline-none max-h-[160px] leading-snug ${fullScreen ? "text-[15px] min-h-[28px] text-gray-200" : "text-sm min-h-[24px] text-gray-900"}`}
           />
           {mentionQuery !== null && (
             <MentionAutocomplete
@@ -3055,7 +3062,7 @@ export default function ChatPanel({
             </div>
           )}
         </div>
-        <div className="text-[10px] text-gray-400 mt-1.5 px-1">
+        <div className={`text-[10px] mt-1.5 px-1 ${fullScreen ? "text-gray-500" : "text-gray-400"}`}>
           {isStreaming
             ? "Enter to queue · Shift+Enter for newline" + (fullScreen ? " · ⌘K command palette" : "")
             : "Enter to send · Shift+Enter for newline" + (fullScreen ? " · ⌘K command palette" : "")}
@@ -3084,13 +3091,20 @@ export default function ChatPanel({
     </div>
   );
 
+  const bottomDock = (
+    <div className={fullScreen ? "flex-shrink-0 bg-[#1e1e1e]" : "flex-shrink-0"}>
+      {queueStrip}
+      {inputArea}
+    </div>
+  );
+
   // -------------------------------------------------------------------------
   // Full-screen layout: thread sidebar + conversation side-by-side
   // -------------------------------------------------------------------------
   if (fullScreen) {
     return (
       <div
-        className="absolute inset-0 flex bg-white overflow-hidden"
+        className="relative h-full flex bg-[#1e1e1e] overflow-hidden"
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
@@ -3104,7 +3118,7 @@ export default function ChatPanel({
           </div>
         )}
         {showThreadList && (
-          <div className="w-72 flex-shrink-0 border-r border-gray-200 flex flex-col">
+          <div className="w-72 flex-shrink-0 border-r border-[#3c3c3c] flex flex-col bg-[#252526]">
             <ThreadListView
               threads={threads}
               loading={loadingThreads}
@@ -3124,12 +3138,11 @@ export default function ChatPanel({
             />
           </div>
         )}
-        <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-clip bg-[#1e1e1e]">
           {conversationHeader}
           {modeSelector}
           {messagesArea}
-          {queueStrip}
-          {inputArea}
+          {bottomDock}
         </div>
         {showContextPanel && (
           <ContextPanel
@@ -3215,8 +3228,7 @@ export default function ChatPanel({
             {conversationHeader}
             {modeSelector}
             {messagesArea}
-            {queueStrip}
-            {inputArea}
+            {bottomDock}
           </>
         )}
       </div>
@@ -3612,8 +3624,8 @@ function EmptyState({ onSelect, mode, isEmptyGraph, fullScreen }: { onSelect: (t
         <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center mb-5 shadow-lg">
           <MessageSquare size={28} className="text-white" />
         </div>
-        <h2 className="text-xl font-semibold text-gray-800 mb-2">What can I help you with?</h2>
-        <p className="text-sm text-gray-400 mb-8 max-w-md">
+        <h2 className="text-xl font-semibold text-gray-200 mb-2">What can I help you with?</h2>
+        <p className="text-sm text-gray-500 mb-8 max-w-md">
           Ask me anything — research, analysis, coding, writing. I can build multi-step workflows, search the web, read files, and more.
         </p>
         <div className="grid grid-cols-2 gap-2 max-w-lg w-full">
@@ -3621,7 +3633,7 @@ function EmptyState({ onSelect, mode, isEmptyGraph, fullScreen }: { onSelect: (t
             <button
               key={prompt}
               onClick={() => onSelect(prompt)}
-              className="text-left text-sm text-gray-600 bg-gray-50 hover:bg-indigo-50 hover:text-indigo-700 border border-gray-100 hover:border-indigo-200 rounded-xl px-4 py-3 transition-all"
+              className="text-left text-sm text-gray-400 bg-white/5 hover:bg-indigo-500/10 hover:text-indigo-300 border border-gray-700 hover:border-indigo-500/30 rounded-xl px-4 py-3 transition-all"
             >
               {prompt}
             </button>

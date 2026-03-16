@@ -90,8 +90,8 @@ function WorkspaceTab({
           app-no-drag group flex items-center gap-1.5 pl-2.5 pr-1 h-7 rounded-t text-[11px] font-medium
           cursor-pointer select-none transition-colors whitespace-nowrap max-w-[180px]
           ${isActive
-            ? "bg-gray-800 text-white"
-            : "bg-transparent text-gray-400 hover:text-gray-200 hover:bg-gray-800/50"
+            ? "bg-white text-gray-900 dark:bg-gray-800 dark:text-white"
+            : "bg-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-200/70 dark:text-gray-400 dark:hover:text-gray-200 dark:hover:bg-gray-800/50"
           }
         `}
       >
@@ -106,7 +106,7 @@ function WorkspaceTab({
               if (e.key === "Enter") commitRename();
               if (e.key === "Escape") setEditing(false);
             }}
-            className="bg-transparent border-b border-gray-500 text-white text-[11px] w-24 outline-none"
+            className="bg-transparent border-b border-gray-400 dark:border-gray-500 text-gray-900 dark:text-white text-[11px] w-24 outline-none"
             onClick={(e) => e.stopPropagation()}
           />
         ) : (
@@ -114,7 +114,7 @@ function WorkspaceTab({
         )}
         <button
           onClick={(e) => { e.stopPropagation(); onClose(); }}
-          className="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-white/10 transition-opacity"
+          className="ml-0.5 p-0.5 rounded opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:bg-gray-200 dark:hover:bg-white/10 transition-opacity"
         >
           <X size={12} />
         </button>
@@ -123,17 +123,17 @@ function WorkspaceTab({
       {showCtx && (
         <div
           ref={ctxRef}
-          className="fixed z-[9999] bg-gray-800 border border-gray-700 rounded shadow-xl py-1 min-w-[160px] text-[11px] text-gray-200"
+          className="fixed z-[9999] bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded shadow-xl py-1 min-w-[160px] text-[11px] text-gray-700 dark:text-gray-200"
           style={{ left: ctxPos.x, top: ctxPos.y }}
         >
           <button
-            className="w-full text-left px-3 py-1.5 hover:bg-white/10 flex items-center gap-2"
+            className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-white/10 flex items-center gap-2"
             onClick={() => { setShowCtx(false); setEditValue(ws.name); setEditing(true); }}
           >
             <PenLine size={12} /> Rename
           </button>
 
-          <div className="px-3 py-1.5 hover:bg-white/10">
+          <div className="px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-white/10">
             <div className="flex items-center gap-2 mb-1">
               <Palette size={12} /> Color
             </div>
@@ -142,7 +142,7 @@ function WorkspaceTab({
                 <button
                   key={c.id}
                   onClick={() => { onChangeColor(c.id); setShowCtx(false); }}
-                  className={`w-4 h-4 rounded-full border-2 transition-transform hover:scale-125 ${ws.color === c.id ? "border-white" : "border-transparent"}`}
+                  className={`w-4 h-4 rounded-full border-2 transition-transform hover:scale-125 ${ws.color === c.id ? "border-gray-700 dark:border-white" : "border-transparent"}`}
                   style={{ backgroundColor: c.hex }}
                 />
               ))}
@@ -150,14 +150,14 @@ function WorkspaceTab({
           </div>
 
           <button
-            className="w-full text-left px-3 py-1.5 hover:bg-white/10 flex items-center gap-2"
+            className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-white/10 flex items-center gap-2"
             onClick={() => { setShowCtx(false); onCloseOthers(); }}
           >
             <XCircle size={12} /> Close Others
           </button>
-          <div className="border-t border-gray-700 my-1" />
+          <div className="border-t border-gray-200 dark:border-gray-700 my-1" />
           <button
-            className="w-full text-left px-3 py-1.5 hover:bg-white/10 flex items-center gap-2 text-red-400"
+            className="w-full text-left px-3 py-1.5 hover:bg-gray-100 dark:hover:bg-white/10 flex items-center gap-2 text-red-500 dark:text-red-400"
             onClick={() => { setShowCtx(false); onClose(); }}
           >
             <X size={12} /> Close
@@ -213,7 +213,7 @@ export default function WorkspaceTabs() {
 
   return (
     <div
-      className={`flex items-end bg-[#1a1a1a] h-[30px] flex-shrink-0 app-drag-region ${isElectron && isMac ? "pl-[72px]" : ""}`}
+      className={`flex items-end bg-gray-100 dark:bg-[#1a1a1a] border-b border-gray-200 dark:border-gray-800 h-[30px] flex-shrink-0 app-drag-region ${isElectron && isMac ? "pl-[72px]" : ""}`}
     >
       <div
         ref={scrollRef}
@@ -238,7 +238,7 @@ export default function WorkspaceTabs() {
       <button
         onClick={() => createWorkspace()}
         title="New Workspace (⌘⇧N)"
-        className="app-no-drag flex items-center justify-center w-7 h-7 text-gray-500 hover:text-gray-300 hover:bg-white/5 rounded transition-colors flex-shrink-0"
+        className="app-no-drag flex items-center justify-center w-7 h-7 text-gray-500 hover:text-gray-800 hover:bg-gray-200 rounded transition-colors dark:hover:text-gray-300 dark:hover:bg-white/5 flex-shrink-0"
       >
         <Plus size={14} />
       </button>

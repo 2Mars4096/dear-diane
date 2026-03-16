@@ -63,7 +63,7 @@ interface CodeState {
 
   showTerminal: boolean;
   showSidebar: boolean;
-  activeSidebarPanel: "explorer" | "search" | "git" | "extensions" | "timeline" | "tasks" | "testing" | "outline" | "debug";
+  activeSidebarPanel: "explorer" | "search" | "git" | "extensions" | "timeline" | "tasks" | "testing" | "outline" | "debug" | "workflow" | "furnace";
 
   diffFile: { original: string; modified: string; originalPath: string; modifiedPath: string } | null;
   showDiff: boolean;
@@ -134,13 +134,13 @@ interface CodeState {
   setShowSidebar: (show: boolean) => void;
   toggleTerminal: () => void;
   toggleSidebar: () => void;
-  setActiveSidebarPanel: (panel: "explorer" | "search" | "git" | "extensions" | "timeline" | "tasks" | "testing" | "outline" | "debug") => void;
+  setActiveSidebarPanel: (panel: "explorer" | "search" | "git" | "extensions" | "timeline" | "tasks" | "testing" | "outline" | "debug" | "workflow" | "furnace") => void;
 
   restoreSession: (session: {
     pinnedRoots: string[];
     showTerminal: boolean;
     showSidebar: boolean;
-    activeSidebarPanel: "explorer" | "search" | "git" | "extensions" | "timeline" | "tasks" | "testing" | "outline" | "debug";
+    activeSidebarPanel: "explorer" | "search" | "git" | "extensions" | "timeline" | "tasks" | "testing" | "outline" | "debug" | "workflow" | "furnace";
     recentFiles?: string[];
   }) => void;
 

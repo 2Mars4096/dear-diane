@@ -166,10 +166,11 @@ function UserSettings() {
     <>
       <SectionHeader title="Appearance" />
 
-      <SettingRow label="Theme" description="Color theme for the editor">
+      <SettingRow label="Theme" description="Color theme for the app and editor">
         <Select<EditorSettings["theme"]>
           value={settings.theme}
           options={[
+            { value: "system", label: "System" },
             { value: "vs-dark", label: "Dark (VS Dark)" },
             { value: "vs", label: "Light" },
             { value: "hc-black", label: "High Contrast Dark" },
