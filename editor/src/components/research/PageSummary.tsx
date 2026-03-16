@@ -13,6 +13,7 @@ import {
   useResearchStore,
   type PageSummaryData,
 } from "../../store/useResearchStore";
+import { requestEditorChatText } from "../../lib/editorChat";
 
 // ---------------------------------------------------------------------------
 // Summary card for a single page
@@ -169,28 +170,13 @@ export default function PageSummaryPanel({
     async (page: number) => {
       setGeneratingPage(page);
       try {
-        const resp = await fetch("/api/chat/editor/message", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: `Summarize page ${page} of the current PDF. Return a JSON object with these fields: claims (array of key claims), methods (array of methodology notes), keyTerms (array of important terms), figures (array of figures/tables referenced). Keep each item concise (1 sentence max). Return ONLY valid JSON.`,
-            mode: "auto",
-            thread_id: null,
-          }),
+        const raw = await requestEditorChatText({
+          message:
+            `Summarize page ${page} of the current PDF. Return a JSON object with these fields: claims (array of key claims), methods (array of methodology notes), keyTerms (array of important terms), figures (array of figures/tables referenced). Keep each item concise (1 sentence max). Return ONLY valid JSON.`,
+          mode: "ask",
+          scope: "research-page-summary",
+          surfaceContext: { paper_id: paperId, page },
         });
-
-        if (!resp.ok) {
-          setGeneratingPage(null);
-          return;
-        }
-
-        const data = await resp.json();
-        const raw =
-          typeof data.response === "string"
-            ? data.response
-            : typeof data.content === "string"
-              ? data.content
-              : null;
 
         let parsed: Partial<PageSummaryData> = {};
         if (raw) {

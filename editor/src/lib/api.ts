@@ -656,6 +656,42 @@ export const getPublishStatus = (graphId: string) =>
 export const getMcpConfig = (graphId: string) =>
   request<{ config: Record<string, unknown> }>(`/graphs/${graphId}/mcp-config`);
 
+export type RuntimeConfigKey =
+  | "DAN_CHAT_MODEL"
+  | "DAN_LLM_MODEL"
+  | "DAN_LLM_BASE_URL"
+  | "DAN_BOT_NAME"
+  | "DAN_ENABLE_TIER_POLICY"
+  | "DAN_FULL_TOOLS"
+  | "DAN_TELEMETRY"
+  | "DAN_LEARNING_MODE";
+
+export type RuntimeSettingsMap = Record<RuntimeConfigKey, string>;
+
+export interface RuntimeSettingsResponse {
+  values: RuntimeSettingsMap;
+  restart_required_keys: RuntimeConfigKey[];
+}
+
+export interface RuntimeSettingUpdateResponse {
+  status: string;
+  key: RuntimeConfigKey;
+  value: string;
+  restart_required: boolean;
+}
+
+export const getRuntimeSettings = () =>
+  request<RuntimeSettingsResponse>("/config");
+
+export const setRuntimeSetting = (
+  key: RuntimeConfigKey,
+  value: string,
+) =>
+  request<RuntimeSettingUpdateResponse>("/config", {
+    method: "POST",
+    body: JSON.stringify({ key, value }),
+  });
+
 // -- Adapters (21-4) ---------------------------------------------------------
 
 export interface AdapterInfo {
@@ -674,3 +710,118 @@ export const stopAdapter = (adapterId: string) =>
     method: "POST",
     body: JSON.stringify({ adapter_id: adapterId }),
   });
+
+// -- Furnace ----------------------------------------------------------------
+
+export interface FurnaceCreateSessionBody {
+  name?: string;
+  topic?: string;
+  description?: string;
+  corpus_id?: string;
+  recipe_id?: string;
+  target_count?: number;
+}
+
+export interface FurnaceSessionSummary {
+  session_id: string;
+  name: string;
+  topic: string;
+  status: string;
+  current_phase: string;
+  source_count: number;
+  processed_count: number;
+  total_cost_usd: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export interface FurnaceAddSourcesBody {
+  source_ids?: string[];
+  pdf_paths?: string[];
+  urls?: string[];
+}
+
+export interface FurnaceListSessionsParams {
+  corpus_id?: string;
+  recipe_id?: string;
+  status?: string;
+}
+
+export const furnaceCreateSession = (body: FurnaceCreateSessionBody) =>
+  request<{ session: Record<string, unknown>; artifact_dir: string }>(
+    "/furnace/sessions",
+    { method: "POST", body: JSON.stringify(body) },
+  );
+
+export const furnaceAddSources = (sessionId: string, body: FurnaceAddSourcesBody) =>
+  request<{ session_id: string; added: number; total_sources: number }>(
+    `/furnace/sessions/${encodeURIComponent(sessionId)}/sources`,
+    { method: "POST", body: JSON.stringify(body) },
+  );
+
+export const furnaceStartSession = (sessionId: string) =>
+  request<{ session_id: string; status: string }>(
+    `/furnace/sessions/${encodeURIComponent(sessionId)}/start`,
+    { method: "POST" },
+  );
+
+export const furnacePauseSession = (sessionId: string) =>
+  request<{ session_id: string; status: string }>(
+    `/furnace/sessions/${encodeURIComponent(sessionId)}/pause`,
+    { method: "POST" },
+  );
+
+export const furnaceResumeSession = (sessionId: string) =>
+  request<{ session_id: string; status: string }>(
+    `/furnace/sessions/${encodeURIComponent(sessionId)}/resume`,
+    { method: "POST" },
+  );
+
+export const furnaceCancelSession = (sessionId: string) =>
+  request<{ session_id: string; status: string }>(
+    `/furnace/sessions/${encodeURIComponent(sessionId)}/cancel`,
+    { method: "POST" },
+  );
+
+export const furnaceListSessions = (params?: FurnaceListSessionsParams) => {
+  const search = new URLSearchParams();
+  if (params?.corpus_id) search.set("corpus_id", params.corpus_id);
+  if (params?.recipe_id) search.set("recipe_id", params.recipe_id);
+  if (params?.status) search.set("status", params.status);
+  const qs = search.toString();
+  return request<{ sessions: FurnaceSessionSummary[] }>(
+    `/furnace/sessions${qs ? `?${qs}` : ""}`,
+  );
+};
+
+export const furnaceGetSession = (sessionId: string) =>
+  request<{ session: Record<string, unknown> }>(
+    `/furnace/sessions/${encodeURIComponent(sessionId)}`,
+  );
+
+export const furnaceGetRecipe = (sessionId: string) =>
+  request<{
+    session_id: string;
+    recipe_md: string | null;
+    skill_md: string | null;
+    artifact_dir: string;
+  }>(`/furnace/sessions/${encodeURIComponent(sessionId)}/recipe`);
+
+export function furnaceConnectSSE(
+  sessionId: string,
+  onEvent: (event: Record<string, unknown>) => void,
+  onClose?: () => void,
+): EventSource {
+  const url = `${BASE}/furnace/sessions/${encodeURIComponent(sessionId)}/events`;
+  const es = new EventSource(url);
+  es.onmessage = (e) => {
+    try {
+      onEvent(JSON.parse(e.data));
+    } catch { /* ignore */ }
+  };
+  es.onerror = () => {
+    es.close();
+    onClose?.();
+  };
+  return es;
+}

@@ -39,6 +39,147 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+const FURNACE_EVENT_TYPES = [
+  "session_started",
+  "session_completed",
+  "session_failed",
+  "session_paused",
+  "session_resumed",
+  "session_cancelled",
+  "session_warning",
+  "phase_started",
+  "phase_completed",
+  "phase_failed",
+  "source_status",
+  "budget_exceeded",
+];
+
+export function handleFurnaceSSEEvent(event: Record<string, unknown>): void {
+  const type = event.type as string;
+  if (!FURNACE_EVENT_TYPES.includes(type)) return;
+
+  const store = useResearchStore.getState();
+  const sessionId = event.session_id as string | undefined;
+  if (sessionId) {
+    const timestamp =
+      typeof event.timestamp === "number"
+        ? event.timestamp * 1000
+        : Date.now();
+    const phase =
+      typeof event.phase === "string"
+        ? event.phase
+        : undefined;
+    const sourceStatus =
+      typeof event.status === "string"
+        ? event.status
+        : undefined;
+    const sourceId =
+      typeof event.source_id === "string"
+        ? event.source_id
+        : undefined;
+    const statusMessage = (() => {
+      if (type === "session_started") return "Session started";
+      if (type === "session_resumed") return "Session resumed";
+      if (type === "session_paused") return "Session paused";
+      if (type === "session_cancelled") return "Session cancelled";
+      if (type === "session_completed") return "Session completed";
+      if (type === "session_failed") return `Session failed${event.error ? `: ${String(event.error)}` : ""}`;
+      if (type === "phase_started" && phase) return `Running ${phase} phase`;
+      if (type === "phase_completed" && phase) return `${phase} phase completed`;
+      if (type === "phase_failed" && phase) return `${phase} phase failed`;
+      if (type === "source_status" && sourceId && sourceStatus) return `${sourceId}: ${sourceStatus}`;
+      if (type === "budget_exceeded") return "Budget exceeded - session paused";
+      return undefined;
+    })();
+    const recentEvent = statusMessage;
+
+    if (
+      type === "session_started" ||
+      type === "session_completed" ||
+      type === "session_failed" ||
+      type === "session_paused" ||
+      type === "session_resumed" ||
+      type === "session_cancelled"
+    ) {
+      const status =
+        type === "session_started"
+          ? "active"
+          : type === "session_completed"
+            ? "completed"
+            : type === "session_failed" || type === "session_cancelled"
+              ? "failed"
+              : type === "session_paused"
+                ? "paused"
+                : "active";
+      store.updateTrainingSessionFromBackend(sessionId, {
+        session_id: sessionId,
+        status,
+        current_phase: phase,
+        status_message: statusMessage,
+        recent_events: recentEvent
+          ? [
+              recentEvent,
+              ...(
+                store.trainingSessions.find((t) => t.sessionId === sessionId || t.id === sessionId)?.recentEvents ??
+                []
+              ),
+            ].slice(0, 6)
+          : undefined,
+        last_activity_at: timestamp,
+      });
+    }
+    if (
+      type === "phase_started" ||
+      type === "phase_completed" ||
+      type === "phase_failed" ||
+      type === "source_status"
+    ) {
+      store.updateTrainingSessionFromBackend(sessionId, {
+        current_phase: phase,
+        status_message: statusMessage,
+        recent_events: recentEvent
+          ? [
+              recentEvent,
+              ...(
+                store.trainingSessions.find((t) => t.sessionId === sessionId || t.id === sessionId)?.recentEvents ??
+                []
+              ),
+            ].slice(0, 6)
+          : undefined,
+        last_activity_at: timestamp,
+      });
+    }
+    if (type === "budget_exceeded") {
+      store.updateTrainingSessionFromBackend(sessionId, {
+        status: "paused",
+        status_message: statusMessage,
+        recent_events: recentEvent
+          ? [
+              recentEvent,
+              ...(
+                store.trainingSessions.find((t) => t.sessionId === sessionId || t.id === sessionId)?.recentEvents ??
+                []
+              ),
+            ].slice(0, 6)
+          : undefined,
+        total_cost_usd:
+          typeof event.total_cost === "number" ? event.total_cost : undefined,
+        last_activity_at: timestamp,
+      });
+    }
+  }
+  window.dispatchEvent(
+    new CustomEvent("research:distillation-update", { detail: event }),
+  );
+  if (type === "session_completed" && event.artifact_dir) {
+    window.dispatchEvent(
+      new CustomEvent("research:distillation-output", {
+        detail: event,
+      }),
+    );
+  }
+}
+
 let initialized = false;
 
 /**

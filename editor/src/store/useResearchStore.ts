@@ -99,6 +99,8 @@ type SecondaryTab = "code" | "figures" | "data";
 
 export interface TrainingSession {
   id: string;
+  sessionId?: string;
+  recipeId?: string;
   name: string;
   topic: string;
   status: "idle" | "running" | "paused" | "completed" | "failed";
@@ -108,6 +110,12 @@ export interface TrainingSession {
   lastActivityAt?: number;
   extractedPatterns?: number;
   extractedTerms?: number;
+  currentPhase?: string;
+  sourceCount?: number;
+  failedSources?: number;
+  totalCostUsd?: number;
+  statusMessage?: string;
+  recentEvents?: string[];
 }
 
 interface ResearchState {
@@ -160,6 +168,7 @@ interface ResearchState {
   trainingSessions: TrainingSession[];
   addTrainingSession: (session: Omit<TrainingSession, "id" | "startedAt">) => void;
   updateTrainingSession: (id: string, updates: Partial<TrainingSession>) => void;
+  updateTrainingSessionFromBackend: (sessionId: string, backend: Record<string, unknown>) => void;
   removeTrainingSession: (id: string) => void;
 
   activeQuickStart: string | null;
@@ -188,6 +197,27 @@ interface ResearchState {
 
 function uid() {
   return `r-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+const TRAINING_SESSIONS_STORAGE_KEY = "dan-research-training-sessions";
+
+function loadTrainingSessions(): TrainingSession[] {
+  try {
+    const raw = localStorage.getItem(TRAINING_SESSIONS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as TrainingSession[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistTrainingSessions(sessions: TrainingSession[]) {
+  try {
+    localStorage.setItem(TRAINING_SESSIONS_STORAGE_KEY, JSON.stringify(sessions));
+  } catch {
+    // Ignore quota/unavailable storage.
+  }
 }
 
 export const useResearchStore = create<ResearchState>((set, get) => ({
@@ -264,17 +294,65 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
   activeRailSection: "library",
   setActiveRailSection: (section) => set({ activeRailSection: section }),
 
-  trainingSessions: [],
+  trainingSessions: loadTrainingSessions(),
   addTrainingSession: (session) =>
-    set((s) => ({
-      trainingSessions: [...s.trainingSessions, { ...session, id: uid(), startedAt: Date.now() }],
-    })),
+    set((s) => {
+      const next = [...s.trainingSessions, { ...session, id: uid(), startedAt: Date.now() }];
+      persistTrainingSessions(next);
+      return { trainingSessions: next };
+    }),
   updateTrainingSession: (id, updates) =>
-    set((s) => ({
-      trainingSessions: s.trainingSessions.map((t) => (t.id === id ? { ...t, ...updates } : t)),
-    })),
+    set((s) => {
+      const next = s.trainingSessions.map((t) => (t.id === id ? { ...t, ...updates } : t));
+      persistTrainingSessions(next);
+      return { trainingSessions: next };
+    }),
+  updateTrainingSessionFromBackend: (sessionId, backend) =>
+    set((s) => {
+      const rawStatus = backend.status as string | undefined;
+      const status =
+        rawStatus === "active"
+          ? "running"
+          : rawStatus;
+      const sess = s.trainingSessions.find(
+        (t) => t.sessionId === sessionId || t.id === sessionId,
+      );
+      if (!sess) return s;
+      const next = s.trainingSessions.map((t) =>
+          t.sessionId === sessionId || t.id === sessionId
+            ? {
+                ...t,
+                sessionId: (backend.session_id as string) ?? t.sessionId,
+                recipeId: (backend.recipe_id as string) ?? t.recipeId,
+                name: (backend.name as string) ?? t.name,
+                topic: (backend.topic as string) ?? t.topic,
+                status: (status as TrainingSession["status"]) ?? t.status,
+                targetPapers: (backend.target_count as number) ?? t.targetPapers,
+                processedPapers: (backend.processed_count as number) ?? t.processedPapers,
+                currentPhase: (backend.current_phase as string) ?? t.currentPhase,
+                sourceCount: (backend.source_count as number) ?? t.sourceCount,
+                failedSources: (backend.failed_sources as number) ?? t.failedSources,
+                totalCostUsd: (backend.total_cost_usd as number) ?? t.totalCostUsd,
+                statusMessage: (backend.status_message as string) ?? t.statusMessage,
+                recentEvents: Array.isArray(backend.recent_events)
+                  ? (backend.recent_events as string[])
+                  : t.recentEvents,
+                lastActivityAt:
+                  (backend.last_activity_at as number) ??
+                  (backend.updated_at as number) ??
+                  Date.now(),
+              }
+            : t,
+        );
+      persistTrainingSessions(next);
+      return { trainingSessions: next };
+    }),
   removeTrainingSession: (id) =>
-    set((s) => ({ trainingSessions: s.trainingSessions.filter((t) => t.id !== id) })),
+    set((s) => {
+      const next = s.trainingSessions.filter((t) => t.id !== id);
+      persistTrainingSessions(next);
+      return { trainingSessions: next };
+    }),
 
   activeQuickStart: null,
   setActiveQuickStart: (id) => set({ activeQuickStart: id }),

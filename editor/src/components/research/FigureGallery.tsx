@@ -10,6 +10,12 @@ import {
   ChevronLeft,
   ChevronRight,
 } from "lucide-react";
+import {
+  appendAttachmentToModeChat,
+} from "../shared/ModeChatSidebar";
+import {
+  figureToAttachmentDraft,
+} from "../../lib/editorChat";
 
 /* ------------------------------------------------------------------ */
 /*  Types                                                              */
@@ -20,6 +26,7 @@ interface ResearchFigure {
   title: string;
   caption: string;
   src: string;
+  path?: string;
   cellId?: string;
   createdAt: number;
 }
@@ -187,19 +194,46 @@ function FigureCard({
         <p className="text-[9px] text-gray-600 truncate">{figure.caption}</p>
       </div>
       <div className="px-1.5 pb-1 flex items-center justify-between opacity-0 group-hover:opacity-100 transition-opacity">
-        <button
-          className="text-[9px] text-purple-400 hover:text-purple-300 flex items-center gap-0.5"
-          onClick={(e) => {
-            e.stopPropagation();
-            window.dispatchEvent(
-              new CustomEvent("research:insert-figure", {
-                detail: { figureId: figure.id, src: figure.src, caption: figure.caption },
-              }),
-            );
-          }}
-        >
-          <FileDown size={10} /> Insert into paper
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            className="text-[9px] text-purple-400 hover:text-purple-300 flex items-center gap-0.5"
+            onClick={(e) => {
+              e.stopPropagation();
+              appendAttachmentToModeChat(
+                "research",
+                figureToAttachmentDraft({
+                  title: figure.title,
+                  caption: figure.caption,
+                  src: figure.src,
+                  path: figure.path,
+                  source: figure.cellId ? `code cell ${figure.cellId}` : "figure gallery",
+                }),
+              );
+              window.dispatchEvent(
+                new CustomEvent("persistent-chat:send", {
+                  detail: {
+                    message: `Please analyze the appended figure "${figure.title}" and explain the important takeaway.`,
+                  },
+                }),
+              );
+            }}
+          >
+            <ImageIcon size={10} /> Ask AI
+          </button>
+          <button
+            className="text-[9px] text-purple-400 hover:text-purple-300 flex items-center gap-0.5"
+            onClick={(e) => {
+              e.stopPropagation();
+              window.dispatchEvent(
+                new CustomEvent("research:insert-figure", {
+                  detail: { figureId: figure.id, src: figure.src, caption: figure.caption },
+                }),
+              );
+            }}
+          >
+            <FileDown size={10} /> Insert into paper
+          </button>
+        </div>
         <button
           className="text-gray-600 hover:text-red-400 transition-colors"
           onClick={(e) => {
@@ -244,6 +278,10 @@ export default function FigureGallery() {
               title: file.name.replace(/\.[^.]+$/, ""),
               caption: "",
               src: reader.result as string,
+              path:
+                typeof (file as File & { path?: string }).path === "string"
+                  ? (file as File & { path?: string }).path
+                  : undefined,
               createdAt: Date.now(),
             },
           ]);

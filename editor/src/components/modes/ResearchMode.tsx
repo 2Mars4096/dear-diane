@@ -10,6 +10,7 @@ import {
   useEffect,
   useCallback,
   useMemo,
+  useRef,
   lazy,
   Suspense,
   type ReactNode,
@@ -61,6 +62,18 @@ import {
   type PipelinePreset,
   type TrainingSession,
 } from "../../store/useResearchStore";
+import {
+  furnaceCreateSession,
+  furnaceAddSources,
+  furnaceStartSession,
+  furnaceConnectSSE,
+  furnaceListSessions,
+  furnacePauseSession,
+  furnaceResumeSession,
+  furnaceCancelSession,
+} from "../../lib/api";
+import { handleFurnaceSSEEvent } from "../../lib/researchEventRouter";
+import { parseFurnaceSources, splitSourceTextBlock } from "../../lib/furnaceSources";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { useCodeStore } from "../../store/useCodeStore";
@@ -164,8 +177,8 @@ function TabButton({
       onClick={onClick}
       className={`flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium whitespace-nowrap transition-colors ${
         active
-          ? "text-gray-200 border-b-2 border-purple-500 bg-[#1e1e1e]"
-          : "text-gray-500 hover:text-gray-300 border-b-2 border-transparent"
+          ? "border-b-2 border-purple-500 bg-purple-50 text-purple-700 dark:bg-[#1e1e1e] dark:text-gray-200"
+          : "border-b-2 border-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-transparent dark:hover:text-gray-300"
       }`}
     >
       {children}
@@ -193,13 +206,13 @@ function NavSection({
     <div>
       <button
         onClick={() => setOpen((v) => !v)}
-        className="w-full flex items-center gap-2 px-3 py-1.5 text-[11px] font-medium text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-[11px] font-medium text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-gray-200"
       >
         {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
         {icon}
         <span className="flex-1 text-left">{label}</span>
         {count > 0 && (
-          <span className="text-[9px] text-gray-600 bg-gray-800 px-1.5 rounded-full">
+          <span className="rounded-full bg-gray-100 px-1.5 text-[9px] text-gray-500 dark:bg-gray-800 dark:text-gray-600">
             {count}
           </span>
         )}
@@ -229,8 +242,8 @@ function NavItem({
       onClick={onClick}
       className={`w-full text-left px-4 pl-7 py-1.5 flex items-start gap-2 transition-colors ${
         active
-          ? "bg-purple-900/20 border-l-2 border-purple-500"
-          : "hover:bg-gray-800/40 border-l-2 border-transparent"
+          ? "bg-purple-50 border-l-2 border-purple-500 dark:bg-purple-900/20"
+          : "hover:bg-gray-100 border-l-2 border-transparent dark:hover:bg-gray-800/40"
       }`}
     >
       <span
@@ -244,14 +257,14 @@ function NavItem({
       />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1">
-          <p className="text-[11px] text-gray-300 truncate flex-1">{label}</p>
+          <p className="flex-1 truncate text-[11px] text-gray-800 dark:text-gray-300">{label}</p>
           {badge && (
             <span className="text-[8px] text-amber-400 bg-amber-400/10 px-1 rounded shrink-0">
               {badge}
             </span>
           )}
         </div>
-        <p className="text-[9px] text-gray-600 truncate">{subtitle}</p>
+        <p className="truncate text-[9px] text-gray-500 dark:text-gray-600">{subtitle}</p>
       </div>
     </button>
   );
@@ -318,24 +331,24 @@ function LibrarySection() {
     <div className="flex-1 overflow-y-auto">
       {/* Configured roots */}
       {(effectiveRoots.pdf.length > 0 || effectiveRoots.note.length > 0) && (
-        <div className="px-3 py-1.5 border-b border-gray-800/50">
+        <div className="px-3 py-1.5 border-b border-gray-200 dark:border-gray-800/50">
           {effectiveRoots.pdf.map((root) => (
             <div
               key={root}
-              className="text-[9px] text-gray-600 truncate flex items-center gap-1 py-0.5"
+              className="flex items-center gap-1 py-0.5 text-[9px] text-gray-500 truncate dark:text-gray-600"
               title={root}
             >
-              <FileText size={9} className="shrink-0 text-gray-700" />
+              <FileText size={9} className="shrink-0 text-gray-500 dark:text-gray-700" />
               {root.split("/").pop()}
             </div>
           ))}
           {effectiveRoots.note.map((root) => (
             <div
               key={root}
-              className="text-[9px] text-gray-600 truncate flex items-center gap-1 py-0.5"
+              className="flex items-center gap-1 py-0.5 text-[9px] text-gray-500 truncate dark:text-gray-600"
               title={root}
             >
-              <StickyNote size={9} className="shrink-0 text-gray-700" />
+              <StickyNote size={9} className="shrink-0 text-gray-500 dark:text-gray-700" />
               {root.split("/").pop()}
             </div>
           ))}
@@ -384,7 +397,7 @@ function LibrarySection() {
             useResearchStore.getState().setShowContextPanel(true);
             useResearchStore.getState().setContextTab("notes");
           }}
-          className="w-full text-left px-4 pl-7 py-1 text-[11px] text-gray-400 hover:bg-gray-800/40"
+          className="w-full px-4 py-1 pl-7 text-left text-[11px] text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/40"
         >
           View all notes
         </button>
@@ -431,7 +444,7 @@ function PlanSection() {
                 setShowContextPanel(true);
                 setContextTab("outline");
               }}
-              className="w-full text-left px-4 py-0.5 text-[11px] text-gray-400 hover:text-gray-200 hover:bg-gray-800/40 truncate transition-colors"
+              className="w-full truncate px-4 py-0.5 text-left text-[11px] text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/40 dark:hover:text-gray-200"
               style={{ paddingLeft: `${12 + (h.level - 1) * 10}px` }}
             >
               {h.text}
@@ -447,7 +460,7 @@ function PlanSection() {
             setShowContextPanel(true);
             setContextTab("reviews");
           }}
-          className="w-full text-left px-4 pl-7 py-1 text-[11px] text-gray-400 hover:bg-gray-800/40"
+          className="w-full px-4 py-1 pl-7 text-left text-[11px] text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/40"
         >
           Open reviews
         </button>
@@ -459,7 +472,7 @@ function PlanSection() {
             setShowContextPanel(true);
             setContextTab("references");
           }}
-          className="w-full text-left px-4 pl-7 py-1 text-[11px] text-gray-400 hover:bg-gray-800/40"
+          className="w-full px-4 py-1 pl-7 text-left text-[11px] text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/40"
         >
           Open references
         </button>
@@ -492,7 +505,7 @@ function TrainingSection() {
             </p>
             <button
               onClick={openFurnace}
-              className="text-[10px] text-purple-400 hover:text-purple-300 flex items-center gap-1"
+              className="flex items-center gap-1 text-[10px] text-purple-500 hover:text-purple-600 dark:text-purple-400 dark:hover:text-purple-300"
             >
               <Plus size={10} /> Start a session
             </button>
@@ -510,7 +523,7 @@ function TrainingSection() {
 
       <button
         onClick={openFurnace}
-        className="w-full text-left px-4 pl-7 py-1 text-[11px] text-gray-400 hover:bg-gray-800/40"
+        className="w-full px-4 py-1 pl-7 text-left text-[11px] text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800/40"
       >
         Open Furnace
       </button>
@@ -549,13 +562,13 @@ function TrainingSessionItem({
   return (
     <button
       onClick={onClick}
-      className="w-full text-left px-4 pl-7 py-1.5 hover:bg-gray-800/40 transition-colors group"
+      className="group w-full px-4 py-1.5 pl-7 text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-800/40"
     >
       <div className="flex items-center gap-2">
         <span className={statusColors[session.status]}>
           {statusIcons[session.status]}
         </span>
-        <span className="text-[11px] text-gray-300 truncate flex-1">
+        <span className="flex-1 truncate text-[11px] text-gray-800 dark:text-gray-300">
           {session.name}
         </span>
       </div>
@@ -566,7 +579,7 @@ function TrainingSessionItem({
           </span>
           <span>{pct}%</span>
         </div>
-        <div className="mt-0.5 h-0.5 bg-gray-800 rounded-full overflow-hidden">
+        <div className="mt-0.5 h-0.5 rounded-full bg-gray-200 overflow-hidden dark:bg-gray-800">
           <div
             className="h-full bg-purple-500/70 rounded-full transition-all"
             style={{ width: `${pct}%` }}
@@ -590,15 +603,15 @@ function FunctionRail() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Section tabs */}
-      <div className="flex border-b border-gray-800">
+      <div className="flex border-b border-gray-200 dark:border-gray-800">
         {RAIL_SECTIONS.map((sec) => (
           <button
             key={sec.id}
             onClick={() => setActiveSection(sec.id)}
             className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[10px] font-medium transition-colors ${
               activeSection === sec.id
-                ? "text-gray-200 border-b-2 border-purple-500 bg-[#1e1e1e]"
-                : "text-gray-500 hover:text-gray-300 border-b-2 border-transparent"
+                ? "border-b-2 border-purple-500 bg-purple-50 text-purple-700 dark:bg-[#1e1e1e] dark:text-gray-200"
+                : "border-b-2 border-transparent text-gray-500 hover:bg-gray-100 hover:text-gray-900 dark:hover:bg-transparent dark:hover:text-gray-300"
             }`}
             title={sec.label}
           >
@@ -616,16 +629,16 @@ function FunctionRail() {
       </div>
 
       {/* Domain profile (always visible) */}
-      <div className="border-t border-gray-800 shrink-0">
+      <div className="border-t border-gray-200 shrink-0 dark:border-gray-800">
         <button
           onClick={() => setShowProfileSelector((v) => !v)}
-          className="w-full flex items-center gap-2 px-3 py-2 text-[11px] text-gray-400 hover:text-gray-200 hover:bg-gray-800/60 transition-colors"
+          className="flex w-full items-center gap-2 px-3 py-2 text-[11px] text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-gray-200"
         >
           <Settings2 size={12} />
           <span className="flex-1 text-left truncate">
             {activeProfile.name}
           </span>
-          <span className="text-[9px] text-gray-600 bg-gray-800 px-1.5 rounded-full">
+          <span className="rounded-full bg-gray-100 px-1.5 text-[9px] text-gray-500 dark:bg-gray-800 dark:text-gray-600">
             {activeProfile.citationStyle.toUpperCase()}
           </span>
           {showProfileSelector ? (
@@ -838,7 +851,7 @@ function PipelineProgress() {
     stages.length > 0 ? (completed / stages.length) * 100 : 0;
 
   return (
-    <div className="border-t border-gray-800 flex-shrink-0">
+    <div className="border-t border-gray-200 flex-shrink-0 dark:border-gray-800">
       {/* Header */}
       <div className="px-3 py-2 text-[10px] font-semibold text-gray-500 uppercase tracking-wider flex items-center justify-between">
         <div className="flex items-center gap-1.5">
@@ -858,8 +871,8 @@ function PipelineProgress() {
             onClick={() => handlePresetSwitch(preset)}
             className={`flex-1 py-0.5 text-[9px] rounded transition-colors ${
               pipelinePreset === preset
-                ? "bg-purple-900/40 text-purple-300 border border-purple-500/30"
-                : "text-gray-600 hover:text-gray-400 border border-transparent hover:border-gray-700"
+                ? "border border-purple-500/30 bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300"
+                : "border border-transparent text-gray-600 hover:border-gray-300 hover:text-gray-800 dark:hover:border-gray-700 dark:hover:text-gray-400"
             }`}
           >
             {preset === "research" ? "Research" : "Distillation"}
@@ -869,7 +882,7 @@ function PipelineProgress() {
 
       {/* Progress bar */}
       <div className="px-3 pb-1.5">
-        <div className="h-1 bg-gray-800 rounded-full overflow-hidden">
+        <div className="h-1 rounded-full bg-gray-200 overflow-hidden dark:bg-gray-800">
           <div
             className="h-full bg-gradient-to-r from-purple-600 to-blue-500 rounded-full transition-all duration-700 ease-out"
             style={{ width: `${progressPct}%` }}
@@ -892,7 +905,7 @@ function PipelineProgress() {
             <div className="flex items-center group">
               <button
                 onClick={() => handleStageClick(stage.id)}
-                className="flex-1 flex items-center gap-2 py-1 px-1 rounded hover:bg-gray-800/50 transition-colors text-left"
+                className="flex-1 flex items-center gap-2 py-1 px-1 rounded text-left transition-colors hover:bg-gray-100 dark:hover:bg-gray-800/50"
               >
                 <StageIcon status={stage.status} />
                 <span
@@ -954,7 +967,7 @@ function PipelineProgress() {
                 }
               }}
               placeholder="Stage name…"
-              className="flex-1 bg-gray-800 border border-gray-700 rounded px-1.5 py-0.5 text-[10px] text-gray-300 placeholder-gray-600 outline-none focus:border-purple-500/50"
+              className="flex-1 rounded border border-gray-300 bg-white px-1.5 py-0.5 text-[10px] text-gray-800 placeholder-gray-500 outline-none focus:border-purple-500/50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:placeholder-gray-600"
             />
             <button
               onClick={handleAddStage}
@@ -984,10 +997,10 @@ function PipelineProgress() {
 
       {/* Action buttons */}
       <div className="px-3 pb-2 flex gap-1.5">
-        <button className="flex-1 py-1 text-[10px] text-gray-400 bg-gray-800 rounded hover:bg-gray-700 transition-colors">
+        <button className="flex-1 rounded bg-gray-100 py-1 text-[10px] text-gray-600 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700">
           Pause
         </button>
-        <button className="flex-1 py-1 text-[10px] text-gray-400 bg-gray-800 rounded hover:bg-gray-700 transition-colors">
+        <button className="flex-1 rounded bg-gray-100 py-1 text-[10px] text-gray-600 transition-colors hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700">
           Cancel
         </button>
       </div>
@@ -1025,7 +1038,7 @@ function PrimaryPanel() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="flex border-b border-gray-800 bg-[#252526]">
+      <div className="flex border-b border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-[#252526]">
         <TabButton
           active={primaryTab === "editor"}
           onClick={() => setPrimaryTab("editor")}
@@ -1089,8 +1102,8 @@ function ContextPanel() {
   const setContextTab = useResearchStore((s) => s.setContextTab);
 
   return (
-    <div className="h-full flex flex-col border-l border-gray-800">
-      <div className="flex border-b border-gray-800 bg-[#252526] overflow-x-auto">
+    <div className="h-full flex flex-col border-l border-gray-200 dark:border-gray-800">
+      <div className="flex border-b border-gray-200 bg-gray-50 overflow-x-auto dark:border-gray-800 dark:bg-[#252526]">
         {CONTEXT_TABS.map((tab) => (
           <TabButton
             key={tab.id}
@@ -1198,6 +1211,7 @@ const FURNACE_SESSION_STATUS_COLORS: Record<TrainingSession["status"], string> =
 function FurnacePanel() {
   const trainingSessions = useResearchStore((s) => s.trainingSessions);
   const addTrainingSession = useResearchStore((s) => s.addTrainingSession);
+  const updateTrainingSession = useResearchStore((s) => s.updateTrainingSession);
   const wsId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const wsResearchConfig = useWorkspaceStore((s) => {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
@@ -1206,6 +1220,7 @@ function FurnacePanel() {
   const updateWorkspace = useWorkspaceStore((s) => s.updateWorkspace);
   const pdfRoots = useSettingsStore((s) => s.researchPdfRoots);
   const noteRoots = useSettingsStore((s) => s.researchNoteRoots);
+  const papers = useResearchStore((s) => s.papers);
   const wsPdfRoots = wsResearchConfig?.pdfRoots;
   const wsNoteRoots = wsResearchConfig?.noteRoots;
   const corpusTopic = wsResearchConfig?.corpusTopic ?? "";
@@ -1214,23 +1229,236 @@ function FurnacePanel() {
   const effectiveNoteRoots = wsNoteRoots && wsNoteRoots.length > 0 ? wsNoteRoots : noteRoots;
 
   const [topic, setTopic] = useState(corpusTopic);
+  const [sessionName, setSessionName] = useState("");
   const [targetPapers, setTargetPapers] = useState(100);
+  const [sourceText, setSourceText] = useState("");
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const sseRefs = useRef<Map<string, EventSource>>(new Map());
 
-  const handleStartSession = () => {
-    if (!topic.trim()) return;
-    if (wsId) {
-      updateWorkspace(wsId, {
-        researchConfig: { ...wsResearchConfig, corpusTopic: topic.trim() },
+  useEffect(() => {
+    if (topic && !sessionName) setSessionName(topic.trim());
+  }, [topic]);
+
+  const upsertSessionSummary = useCallback(
+    (summary: {
+      session_id: string;
+      name: string;
+      topic: string;
+      status: string;
+      current_phase: string;
+      source_count: number;
+      processed_count: number;
+      total_cost_usd: number;
+      updated_at: number;
+    }) => {
+      const existing = useResearchStore
+        .getState()
+        .trainingSessions.find((s) => s.sessionId === summary.session_id);
+      if (!existing) {
+        addTrainingSession({
+          sessionId: summary.session_id,
+          recipeId: "",
+          name: summary.name || summary.topic || "Untitled Session",
+          topic: summary.topic || "",
+          status: summary.status === "active" ? "running" : (summary.status as TrainingSession["status"]),
+          targetPapers: Math.max(0, summary.source_count || 0),
+          processedPapers: Math.max(0, summary.processed_count || 0),
+          currentPhase: summary.current_phase,
+          sourceCount: summary.source_count,
+          totalCostUsd: summary.total_cost_usd,
+          lastActivityAt: summary.updated_at ? summary.updated_at * 1000 : Date.now(),
+          statusMessage: summary.current_phase
+            ? `Current phase: ${summary.current_phase}`
+            : undefined,
+        });
+        return;
+      }
+      updateTrainingSession(existing.id, {
+        name: summary.name || existing.name,
+        topic: summary.topic || existing.topic,
+        status: summary.status === "active" ? "running" : (summary.status as TrainingSession["status"]),
+        targetPapers: summary.source_count || existing.targetPapers,
+        processedPapers: summary.processed_count ?? existing.processedPapers,
+        currentPhase: summary.current_phase || existing.currentPhase,
+        sourceCount: summary.source_count ?? existing.sourceCount,
+        totalCostUsd: summary.total_cost_usd ?? existing.totalCostUsd,
+        lastActivityAt: summary.updated_at ? summary.updated_at * 1000 : Date.now(),
       });
+    },
+    [addTrainingSession, updateTrainingSession],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const syncSessions = async () => {
+      try {
+        const data = await furnaceListSessions();
+        if (cancelled) return;
+        for (const session of data.sessions) {
+          upsertSessionSummary({
+            session_id: session.session_id,
+            name: session.name,
+            topic: session.topic,
+            status: session.status,
+            current_phase: session.current_phase,
+            source_count: session.source_count,
+            processed_count: session.processed_count,
+            total_cost_usd: session.total_cost_usd,
+            updated_at: session.updated_at,
+          });
+        }
+      } catch {
+        // Ignore transient refresh errors.
+      }
+    };
+
+    void syncSessions();
+    const interval = window.setInterval(syncSessions, 15000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [upsertSessionSummary]);
+
+  useEffect(() => {
+    const activeSessionIds = new Set(
+      trainingSessions
+        .filter((s) => (s.status === "running" || s.status === "paused") && s.sessionId)
+        .map((s) => s.sessionId as string),
+    );
+
+    for (const [sid, es] of sseRefs.current) {
+      if (!activeSessionIds.has(sid)) {
+        es.close();
+        sseRefs.current.delete(sid);
+      }
     }
-    addTrainingSession({
-      name: topic.trim(),
-      topic: topic.trim(),
-      status: "idle",
-      targetPapers,
-      processedPapers: 0,
-    });
-  };
+
+    for (const sid of activeSessionIds) {
+      if (sseRefs.current.has(sid)) continue;
+      const es = furnaceConnectSSE(
+        sid,
+        (ev) => handleFurnaceSSEEvent(ev as Record<string, unknown>),
+        () => {
+          const activeNow = useResearchStore
+            .getState()
+            .trainingSessions.some(
+              (s) => s.sessionId === sid && (s.status === "running" || s.status === "paused"),
+            );
+          if (activeNow) {
+            window.setTimeout(() => {
+              if (sseRefs.current.has(sid)) return;
+              const retry = furnaceConnectSSE(
+                sid,
+                (ev) => handleFurnaceSSEEvent(ev as Record<string, unknown>),
+                () => {
+                  sseRefs.current.delete(sid);
+                },
+              );
+              sseRefs.current.set(sid, retry);
+            }, 2000);
+          }
+          sseRefs.current.delete(sid);
+        },
+      );
+      sseRefs.current.set(sid, es);
+    }
+  }, [trainingSessions]);
+
+  const handleStartSession = useCallback(async () => {
+    if (!topic.trim()) return;
+    setError(null);
+    setStarting(true);
+    try {
+      if (wsId) {
+        updateWorkspace(wsId, {
+          researchConfig: { ...wsResearchConfig, corpusTopic: topic.trim() },
+        });
+      }
+      const { session } = await furnaceCreateSession({
+        name: sessionName.trim() || topic.trim(),
+        topic: topic.trim(),
+        target_count: targetPapers,
+      });
+      const sid = session.session_id as string;
+      const rid = session.recipe_id as string;
+      const name = (session.name as string) || topic.trim();
+      const status = session.status === "active" ? "running" : "idle";
+      addTrainingSession({
+        sessionId: sid,
+        recipeId: rid,
+        name,
+        topic: topic.trim(),
+        status,
+        targetPapers,
+        processedPapers: (session.processed_count as number) ?? 0,
+      });
+      const localId = useResearchStore
+        .getState()
+        .trainingSessions.find((s) => s.sessionId === sid)?.id;
+      {
+        const manual = parseFurnaceSources(splitSourceTextBlock(sourceText));
+        const sourceIds = Array.from(
+          new Set([
+            ...manual.source_ids,
+            ...papers.filter((p) => p.id).map((p) => p.id),
+          ]),
+        );
+        const pdfPaths = Array.from(
+          new Set([
+            ...manual.pdf_paths,
+            ...papers.filter((p) => p.filePath).map((p) => p.filePath!),
+          ]),
+        );
+        const urls = Array.from(new Set(manual.urls));
+        const hasAny = sourceIds.length > 0 || pdfPaths.length > 0 || urls.length > 0;
+        try {
+          if (hasAny) {
+            await furnaceAddSources(sid, {
+              source_ids: sourceIds,
+              pdf_paths: pdfPaths,
+              urls,
+            });
+          }
+        } catch { /* ignore */ }
+      }
+      await furnaceStartSession(sid);
+      if (localId) {
+        updateTrainingSession(localId, { status: "running" });
+      }
+      if (!sseRefs.current.has(sid)) {
+        const es = furnaceConnectSSE(
+          sid,
+          (ev) => handleFurnaceSSEEvent(ev as Record<string, unknown>),
+          () => { sseRefs.current.delete(sid); },
+        );
+        sseRefs.current.set(sid, es);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStarting(false);
+    }
+  }, [
+    topic,
+    sessionName,
+    targetPapers,
+    sourceText,
+    wsId,
+    wsResearchConfig,
+    papers,
+    addTrainingSession,
+    updateTrainingSession,
+    updateWorkspace,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      for (const [, es] of sseRefs.current) es.close();
+      sseRefs.current.clear();
+    };
+  }, []);
 
   return (
     <div className="h-full flex flex-col overflow-y-auto">
@@ -1252,6 +1480,11 @@ function FurnacePanel() {
           <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
             <SquarePen size={14} /> Recipe Definition
           </h3>
+          {error && (
+            <p className="text-xs text-red-400 bg-red-900/20 px-3 py-2 rounded">
+              {error}
+            </p>
+          )}
           <div className="space-y-2">
             <label className="block text-[11px] text-gray-500">
               Domain / Topic
@@ -1262,6 +1495,39 @@ function FurnacePanel() {
               placeholder="e.g. Supply Chain Resilience, Network Economics, ..."
               className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none focus:border-purple-500/50"
             />
+          </div>
+          <div className="space-y-2">
+            <label className="block text-[11px] text-gray-500">
+              Session Name
+            </label>
+            <input
+              value={sessionName}
+              onChange={(e) => setSessionName(e.target.value)}
+              placeholder="Pre-filled from topic"
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none focus:border-purple-500/50"
+            />
+          </div>
+          <div className="space-y-2">
+            <label className="block text-[11px] text-gray-500">
+              Sources (optional, one per line: PDF path / URL / source id)
+            </label>
+            <textarea
+              value={sourceText}
+              onChange={(e) => setSourceText(e.target.value)}
+              placeholder={"/Users/.../paper.pdf\nhttps://arxiv.org/abs/...."}
+              className="w-full bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-sm text-gray-200 placeholder-gray-600 outline-none focus:border-purple-500/50 h-20 resize-y"
+            />
+            <p className="text-[10px] text-gray-600">
+              Tip: you can paste multiple PDF paths/URLs. We will also include papers already in your library list.
+            </p>
+            <div className="rounded-lg border border-gray-700/60 bg-gray-900/40 px-3 py-2">
+              <p className="text-[10px] text-gray-500 mb-1">Quick run examples</p>
+              <div className="space-y-1 text-[10px] text-gray-400 font-mono">
+                <div>/Users/.../elliott2022supply.pdf</div>
+                <div>https://arxiv.org/abs/2401.12345</div>
+                <div>supply-network-fragility</div>
+              </div>
+            </div>
           </div>
           <div className="flex gap-4">
             <div className="flex-1 space-y-1">
@@ -1279,11 +1545,16 @@ function FurnacePanel() {
             </div>
             <div className="flex items-end">
               <button
-                onClick={handleStartSession}
-                disabled={!topic.trim()}
+                onClick={() => void handleStartSession()}
+                disabled={!topic.trim() || starting}
                 className="flex items-center gap-2 px-4 py-2 bg-orange-600/80 hover:bg-orange-600 disabled:bg-gray-700 disabled:text-gray-500 text-white text-sm rounded-lg transition-colors"
               >
-                <Play size={14} /> Start Session
+                {starting ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <Play size={14} />
+                )}{" "}
+                Run Furnace
               </button>
             </div>
           </div>
@@ -1351,27 +1622,26 @@ function FurnacePanel() {
 
         {/* Distillation Pipeline */}
         <section className="space-y-3">
-          <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2">
+          <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-2">
             <Gauge size={14} /> Distillation Pipeline
           </h3>
-          <div className="grid grid-cols-5 gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 rounded-lg border border-gray-300 dark:border-gray-700/50 bg-gray-50 dark:bg-gray-800/30 px-2 py-2">
             {["Normalize", "Extract", "Aggregate", "Infer Taste", "Project"].map(
-              (step, i) => (
-                <div
-                  key={step}
-                  className="flex flex-col items-center gap-1 p-3 bg-gray-800/40 rounded-lg border border-gray-700/50"
-                >
-                  <span className="text-[9px] text-gray-600 font-medium">
-                    {i + 1}
-                  </span>
-                  <span className="text-[10px] text-gray-400 text-center">
+              (step, i, all) => (
+                <div key={step} className="flex items-center gap-1.5">
+                  <span className="rounded-md border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 px-2.5 py-1 text-[11px] font-medium text-gray-700 dark:text-gray-300">
                     {step}
                   </span>
+                  {i < all.length - 1 && (
+                    <span className="text-[10px] text-gray-400 dark:text-gray-500">
+                      →
+                    </span>
+                  )}
                 </div>
               ),
             )}
           </div>
-          <p className="text-[10px] text-gray-600">
+          <p className="text-[10px] text-gray-600 dark:text-gray-500">
             Five-pass furnace loop: Normalize metadata, Extract facts &
             methods, Aggregate cross-paper, Infer taste & associations,
             Project recipe.md + evaluate.
@@ -1383,10 +1653,62 @@ function FurnacePanel() {
 }
 
 function FurnaceSessionCard({ session }: { session: TrainingSession }) {
+  const updateTrainingSession = useResearchStore((s) => s.updateTrainingSession);
+  const [loading, setLoading] = useState(false);
+  const sid = session.sessionId ?? session.id;
   const pct =
     session.targetPapers > 0
       ? Math.round((session.processedPapers / session.targetPapers) * 100)
       : 0;
+  const phaseLabel =
+    session.currentPhase && session.currentPhase !== "idle"
+      ? session.currentPhase.replace(/_/g, " ")
+      : null;
+  const totalSources = session.sourceCount ?? session.targetPapers;
+  const lastActivityText = (() => {
+    if (!session.lastActivityAt) return null;
+    const diff = Date.now() - session.lastActivityAt;
+    if (diff < 60_000) return "just now";
+    const mins = Math.floor(diff / 60_000);
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    return `${days}d ago`;
+  })();
+
+  const handlePause = useCallback(async () => {
+    if (!sid) return;
+    setLoading(true);
+    try {
+      await furnacePauseSession(sid);
+      updateTrainingSession(session.id, { status: "paused" });
+    } finally {
+      setLoading(false);
+    }
+  }, [sid, session.id, updateTrainingSession]);
+
+  const handleResume = useCallback(async () => {
+    if (!sid) return;
+    setLoading(true);
+    try {
+      await furnaceResumeSession(sid);
+      updateTrainingSession(session.id, { status: "running" });
+    } finally {
+      setLoading(false);
+    }
+  }, [sid, session.id, updateTrainingSession]);
+
+  const handleCancel = useCallback(async () => {
+    if (!sid) return;
+    setLoading(true);
+    try {
+      await furnaceCancelSession(sid);
+      updateTrainingSession(session.id, { status: "failed" });
+    } finally {
+      setLoading(false);
+    }
+  }, [sid, session.id, updateTrainingSession]);
 
   return (
     <div className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg">
@@ -1403,9 +1725,20 @@ function FurnaceSessionCard({ session }: { session: TrainingSession }) {
       </div>
       <div className="flex items-center gap-3 text-[10px] text-gray-500 mb-1.5">
         <span>
-          {session.processedPapers}/{session.targetPapers} papers
+          {session.processedPapers}/{totalSources} papers
         </span>
         <span>{pct}%</span>
+        {phaseLabel && (
+          <span className="capitalize">
+            phase: {phaseLabel}
+          </span>
+        )}
+        {session.totalCostUsd !== undefined && (
+          <span>${session.totalCostUsd.toFixed(3)}</span>
+        )}
+        {lastActivityText && (
+          <span>updated {lastActivityText}</span>
+        )}
         {session.extractedPatterns !== undefined && (
           <span>{session.extractedPatterns} patterns</span>
         )}
@@ -1419,6 +1752,48 @@ function FurnaceSessionCard({ session }: { session: TrainingSession }) {
           style={{ width: `${pct}%` }}
         />
       </div>
+      {session.statusMessage && (
+        <p className="mt-2 text-[10px] text-gray-400">
+          {session.statusMessage}
+        </p>
+      )}
+      {session.recentEvents && session.recentEvents.length > 0 && (
+        <div className="mt-1.5 space-y-1">
+          {session.recentEvents.slice(0, 3).map((entry, idx) => (
+            <div key={`${entry}-${idx}`} className="text-[10px] text-gray-500 truncate">
+              • {entry}
+            </div>
+          ))}
+        </div>
+      )}
+      {(session.status === "running" || session.status === "paused") && (
+        <div className="flex gap-1.5 mt-2">
+          {session.status === "running" ? (
+            <button
+              onClick={() => void handlePause()}
+              disabled={loading}
+              className="px-2 py-1 text-[10px] bg-gray-700 text-gray-300 rounded hover:bg-gray-600 disabled:opacity-50"
+            >
+              Pause
+            </button>
+          ) : (
+            <button
+              onClick={() => void handleResume()}
+              disabled={loading}
+              className="px-2 py-1 text-[10px] bg-green-900/30 text-green-400 rounded hover:bg-green-900/50 disabled:opacity-50"
+            >
+              Resume
+            </button>
+          )}
+          <button
+            onClick={() => void handleCancel()}
+            disabled={loading}
+            className="px-2 py-1 text-[10px] bg-red-900/30 text-red-400 rounded hover:bg-red-900/50 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1534,18 +1909,18 @@ export default function ResearchMode() {
   }, []);
 
   return (
-    <div className="h-full flex bg-[#1e1e1e] text-gray-200">
+    <div className="h-full flex bg-gray-50 text-gray-900 dark:bg-[#1e1e1e] dark:text-gray-200">
       {/* Left Rail: Function-first nav + Pipeline */}
-      <div className="w-56 border-r border-gray-800 flex flex-col bg-[#1e1e1e] shrink-0">
+      <div className="w-56 border-r border-gray-200 flex flex-col bg-white shrink-0 dark:border-gray-800 dark:bg-[#1e1e1e]">
         <FunctionRail />
 
         {/* Toggle bar: pipeline + panels */}
-        <div className="border-t border-gray-800 px-2 py-1 flex items-center gap-1 shrink-0">
+        <div className="border-t border-gray-200 px-2 py-1 flex items-center gap-1 shrink-0 dark:border-gray-800">
           {pipelineActive && (
             <button
               onClick={togglePipeline}
               title={showPipeline ? "Hide pipeline" : "Show pipeline"}
-              className="text-[10px] text-gray-500 hover:text-gray-300 flex items-center gap-1 transition-colors"
+              className="flex items-center gap-1 text-[10px] text-gray-500 transition-colors hover:text-gray-900 dark:hover:text-gray-300"
             >
               <Gauge size={11} />
               {showPipeline ? "Hide" : "Show"} Pipeline
@@ -1557,8 +1932,8 @@ export default function ResearchMode() {
             title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
             className={`flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] font-medium transition-colors ${
               showChatSidebar
-                ? "border-blue-500/30 bg-blue-500/10 text-blue-300"
-                : "border-transparent text-blue-400 hover:bg-white/5 hover:text-blue-300"
+                ? "border-blue-500/30 bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"
+                : "border-transparent text-blue-500 hover:bg-blue-50 hover:text-blue-600 dark:text-blue-400 dark:hover:bg-white/5 dark:hover:text-blue-300"
             }`}
           >
             <MessageSquareText size={11} />
@@ -1567,7 +1942,7 @@ export default function ResearchMode() {
           <button
             onClick={toggleContextPanel}
             title={showContextPanel ? "Hide context drawer (⌘I)" : "Show context drawer (⌘I)"}
-            className={`flex items-center gap-1 text-[10px] transition-colors ${showContextPanel ? "text-blue-400" : "text-gray-500 hover:text-gray-300"}`}
+            className={`flex items-center gap-1 text-[10px] transition-colors ${showContextPanel ? "text-blue-500 dark:text-blue-400" : "text-gray-500 hover:text-gray-900 dark:hover:text-gray-300"}`}
           >
             {showContextPanel ? <PanelRightClose size={11} /> : <PanelRightOpen size={11} />}
             Context
@@ -1575,7 +1950,7 @@ export default function ResearchMode() {
           <button
             onClick={toggleTerminal}
             title={showTerminal ? "Hide terminal (⌘`)" : "Show terminal (⌘`)"}
-            className="text-gray-500 hover:text-gray-300 transition-colors"
+            className="text-gray-500 transition-colors hover:text-gray-900 dark:hover:text-gray-300"
           >
             {showTerminal ? (
               <PanelBottomClose size={13} />
@@ -1592,14 +1967,14 @@ export default function ResearchMode() {
       {/* Main area: Desk (center) + Right Drawer (optional) | Terminal (optional) | Chat sidebar */}
       <div className="flex-1 min-w-0 flex">
         <div className="flex-1 min-w-0 flex flex-col">
-          <div className="flex items-center justify-end gap-2 px-3 py-1.5 border-b border-gray-800 bg-[#252526] shrink-0">
+          <div className="flex items-center justify-end gap-2 border-b border-gray-200 bg-gray-50 px-3 py-1.5 shrink-0 dark:border-gray-800 dark:bg-[#252526]">
             <button
               onClick={() => setShowChatSidebar((v) => !v)}
               title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
               className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
                 showChatSidebar
-                  ? "border-blue-500/30 bg-blue-500/10 text-blue-300"
-                  : "border-transparent text-blue-400 hover:bg-white/5 hover:text-blue-300"
+                  ? "border-blue-500/30 bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"
+                  : "border-transparent text-blue-500 hover:bg-blue-50 hover:text-blue-600 dark:text-blue-400 dark:hover:bg-white/5 dark:hover:text-blue-300"
               }`}
             >
               <MessageSquareText size={13} />
@@ -1623,15 +1998,15 @@ export default function ResearchMode() {
 
             {showTerminal && (
               <Allotment.Pane preferredSize={200} minSize={100}>
-                <div className="h-full flex flex-col border-t border-gray-800">
-                  <div className="flex items-center bg-[#252526] border-b border-gray-800 px-2 py-0.5 shrink-0">
+                <div className="h-full flex flex-col border-t border-gray-200 dark:border-gray-800">
+                  <div className="flex items-center bg-gray-50 border-b border-gray-200 px-2 py-0.5 shrink-0 dark:border-gray-800 dark:bg-[#252526]">
                     <span className="text-[10px] text-gray-400 flex items-center gap-1.5">
                       <TerminalIcon size={11} /> Terminal
                     </span>
                     <span className="flex-1" />
                     <button
                       onClick={toggleTerminal}
-                      className="text-gray-500 hover:text-gray-300 p-0.5 transition-colors"
+                      className="p-0.5 text-gray-500 transition-colors hover:text-gray-900 dark:hover:text-gray-300"
                       title="Close terminal"
                     >
                       <X size={12} />
@@ -1646,7 +2021,7 @@ export default function ResearchMode() {
           </Allotment>
         </div>
         {showChatSidebar && (
-          <div className="w-[350px] min-w-[250px] max-w-[500px] border-l border-gray-800 shrink-0">
+          <div className="w-[350px] min-w-[250px] max-w-[500px] border-l border-gray-200 shrink-0 dark:border-gray-800">
             <ModeChatSidebar
               mode="research"
               onClose={() => setShowChatSidebar(false)}
@@ -1655,7 +2030,37 @@ export default function ResearchMode() {
                 const lines: string[] = ["[Research Context]"];
                 if (rs.activePaperId) {
                   const paper = rs.papers.find((p) => p.id === rs.activePaperId);
-                  if (paper) lines.push(`Active paper: ${paper.title}`);
+                  if (paper) {
+                    lines.push(`Active paper: ${paper.title}`);
+                    if (paper.filePath) lines.push(`Paper path: ${paper.filePath}`);
+                    if (paper.authors.length > 0) {
+                      lines.push(`Authors: ${paper.authors.join(", ")}`);
+                    }
+                    if (paper.year) lines.push(`Year: ${paper.year}`);
+                  }
+                  const annotations = rs.annotations
+                    .filter((annotation) => annotation.paperId === rs.activePaperId)
+                    .slice(-3);
+                  if (annotations.length > 0) {
+                    lines.push(
+                      "",
+                      "[Recent annotations]",
+                      ...annotations.map(
+                        (annotation) => `- Page ${annotation.page}: ${annotation.text.slice(0, 240)}`,
+                      ),
+                    );
+                  }
+                  const figureMentions = Object.values(rs.pageSummaries)
+                    .filter((summary) => summary.paperId === rs.activePaperId)
+                    .flatMap((summary) =>
+                      summary.figures.map(
+                        (figure) => `- Page ${summary.page}: ${figure}`,
+                      ),
+                    )
+                    .slice(0, 5);
+                  if (figureMentions.length > 0) {
+                    lines.push("", "[Figure / table mentions]", ...figureMentions);
+                  }
                 }
                 lines.push(`Rail section: ${rs.activeRailSection}`);
                 lines.push(`Primary tab: ${rs.primaryTab}`);

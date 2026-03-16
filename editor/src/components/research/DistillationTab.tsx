@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
   Flame,
   Loader2,
@@ -19,6 +19,19 @@ import {
   GitBranch,
   Map,
 } from "lucide-react";
+import { useResearchStore } from "../../store/useResearchStore";
+import {
+  furnaceConnectSSE,
+  furnaceGetRecipe,
+  furnaceCreateSession,
+  furnaceAddSources,
+  furnaceStartSession,
+  furnacePauseSession,
+  furnaceResumeSession,
+  furnaceCancelSession,
+} from "../../lib/api";
+import { handleFurnaceSSEEvent } from "../../lib/researchEventRouter";
+import { parseFurnaceSources } from "../../lib/furnaceSources";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -114,34 +127,235 @@ const EMPTY_OUTPUTS: DistillationOutputs = {
 // ---------------------------------------------------------------------------
 
 export default function DistillationTab() {
+  const trainingSessions = useResearchStore((s) => s.trainingSessions);
+  const addTrainingSession = useResearchStore((s) => s.addTrainingSession);
+  const updateTrainingSession = useResearchStore((s) => s.updateTrainingSession);
+  const papersInLibrary = useResearchStore((s) => s.papers);
   const [mode, setMode] = useState<Mode>("setup");
   const [config, setConfig] = useState<DistillationConfig>(DEFAULT_CONFIG);
   const [progress, setProgress] = useState<DistillationProgress>(EMPTY_PROGRESS);
   const [outputs, setOutputs] = useState<DistillationOutputs>(EMPTY_OUTPUTS);
   const [papers, setPapers] = useState<PinnedPaper[]>([]);
+  const [exportSessionId, setExportSessionId] = useState<string | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [startError, setStartError] = useState<string | null>(null);
+  const sseRef = useRef<EventSource | null>(null);
 
-  const handleStart = useCallback(() => {
-    setProgress(EMPTY_PROGRESS);
-    setOutputs(EMPTY_OUTPUTS);
-    setMode("running");
+  const runningSession = useMemo(
+    () => trainingSessions.find((s) => s.status === "running" || s.status === "paused"),
+    [trainingSessions],
+  );
+  const completedSession = useMemo(
+    () =>
+      trainingSessions
+        .filter((s) => s.status === "completed" && s.sessionId)
+        .sort((a, b) => (b.lastActivityAt ?? 0) - (a.lastActivityAt ?? 0))[0],
+    [trainingSessions],
+  );
+
+  useEffect(() => {
+    if (runningSession) {
+      setMode(runningSession.status === "paused" ? "paused" : "running");
+    }
+  }, [runningSession]);
+
+  useEffect(() => {
+    if (!runningSession?.sessionId) return;
+    sseRef.current?.close();
+    sseRef.current = furnaceConnectSSE(
+      runningSession.sessionId,
+      (ev) => handleFurnaceSSEEvent(ev as Record<string, unknown>),
+      () => { sseRef.current = null; },
+    );
+    return () => {
+      sseRef.current?.close();
+      sseRef.current = null;
+    };
+  }, [runningSession?.sessionId]);
+
+  useEffect(() => {
+    const onUpdate = (e: Event) => {
+      const d = (e as CustomEvent).detail as Record<string, unknown>;
+      const type = d.type as string;
+      setProgress((prev) => {
+        const next = { ...prev };
+        if (type === "source_status") {
+          const status = d.status as string;
+          if (status === "ingested") next.ingested += 1;
+          if (status === "skipped") next.failures += 1;
+        }
+        if (type === "phase_completed") {
+          const phase = d.phase as string;
+          if (phase === "read") next.read = next.ingested;
+          if (phase === "extract" || phase === "normalize" || phase === "aggregate" || phase === "infer")
+            next.extracted = Math.max(next.extracted, next.ingested);
+          if (phase === "project") next.distilled = next.extracted || next.ingested;
+        }
+        if (type === "session_completed" && d.session_id) {
+          setExportSessionId(d.session_id as string);
+        }
+        return next;
+      });
+      if (type === "session_completed") {
+        setMode("results");
+      }
+      if (type === "session_paused") setMode("paused");
+      if (type === "session_started" || type === "session_resumed") setMode("running");
+    };
+    const onOutput = (e: Event) => {
+      const d = (e as CustomEvent).detail as Record<string, unknown>;
+      if (d.artifact_dir) setExportSessionId(d.session_id as string);
+      setMode("results");
+    };
+    window.addEventListener("research:distillation-update", onUpdate);
+    window.addEventListener("research:distillation-output", onOutput);
+    return () => {
+      window.removeEventListener("research:distillation-update", onUpdate);
+      window.removeEventListener("research:distillation-output", onOutput);
+    };
   }, []);
 
-  const handlePause = useCallback(() => setMode("paused"), []);
-  const handleResume = useCallback(() => setMode("running"), []);
-  const handleCancel = useCallback(() => setMode("setup"), []);
+  const handleStart = useCallback(async () => {
+    if (!config.topic.trim()) return;
+    setStartError(null);
+    setStarting(true);
+    setProgress(EMPTY_PROGRESS);
+    setOutputs(EMPTY_OUTPUTS);
+    try {
+      const { session } = await furnaceCreateSession({
+        name: config.topic.trim(),
+        topic: config.topic.trim(),
+        description: config.criteria.trim(),
+        target_count: config.targetCount,
+      });
+      const sid = String(session.session_id || "");
+      if (!sid) throw new Error("Missing session_id from furnace create response");
 
-  const handleExportRecipe = useCallback(() => {
-    const blob = new Blob(
-      [JSON.stringify({ config, outputs, exportedAt: new Date().toISOString() }, null, 2)],
-      { type: "application/json" },
-    );
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `distillation-${config.topic.slice(0, 30).replace(/\s+/g, "-")}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, [config, outputs]);
+      addTrainingSession({
+        sessionId: sid,
+        recipeId: String(session.recipe_id || ""),
+        name: String(session.name || config.topic.trim()),
+        topic: config.topic.trim(),
+        status: "idle",
+        targetPapers: config.targetCount,
+        processedPapers: 0,
+      });
+      const localId = useResearchStore
+        .getState()
+        .trainingSessions.find((s) => s.sessionId === sid)?.id;
+
+      const parsed = parseFurnaceSources(config.sources);
+      const sourceIds = Array.from(
+        new Set([
+          ...parsed.source_ids,
+          ...papersInLibrary.filter((p) => p.id).map((p) => p.id),
+        ]),
+      );
+      const pdfPaths = Array.from(
+        new Set([
+          ...parsed.pdf_paths,
+          ...papersInLibrary.filter((p) => p.filePath).map((p) => p.filePath!),
+        ]),
+      );
+      if (sourceIds.length > 0 || pdfPaths.length > 0 || parsed.urls.length > 0) {
+        await furnaceAddSources(sid, {
+          source_ids: sourceIds,
+          pdf_paths: pdfPaths,
+          urls: parsed.urls,
+        });
+      }
+
+      await furnaceStartSession(sid);
+      if (localId) updateTrainingSession(localId, { status: "running" });
+      setMode("running");
+    } catch (err) {
+      setStartError(err instanceof Error ? err.message : String(err));
+      setMode("setup");
+    } finally {
+      setStarting(false);
+    }
+  }, [
+    addTrainingSession,
+    config.criteria,
+    config.sources,
+    config.targetCount,
+    config.topic,
+    papersInLibrary,
+    updateTrainingSession,
+  ]);
+
+  const handlePause = useCallback(async () => {
+    if (runningSession?.sessionId) {
+      try {
+        await furnacePauseSession(runningSession.sessionId);
+        updateTrainingSession(runningSession.id, { status: "paused" });
+      } catch { /* ignore */ }
+    }
+    setMode("paused");
+  }, [runningSession, updateTrainingSession]);
+
+  const handleResume = useCallback(async () => {
+    if (runningSession?.sessionId) {
+      try {
+        await furnaceResumeSession(runningSession.sessionId);
+        updateTrainingSession(runningSession.id, { status: "running" });
+      } catch { /* ignore */ }
+    }
+    setMode("running");
+  }, [runningSession, updateTrainingSession]);
+
+  const handleCancel = useCallback(async () => {
+    if (runningSession?.sessionId) {
+      try {
+        await furnaceCancelSession(runningSession.sessionId);
+        updateTrainingSession(runningSession.id, { status: "failed" });
+      } catch { /* ignore */ }
+    }
+    setMode("setup");
+  }, [runningSession, updateTrainingSession]);
+
+  const handleExportRecipe = useCallback(async () => {
+    const sid = exportSessionId ?? completedSession?.sessionId;
+    if (sid) {
+      try {
+        const res = await furnaceGetRecipe(sid);
+        const parts: string[] = [];
+        if (res.recipe_md) parts.push(`# Recipe\n\n${res.recipe_md}`);
+        if (res.skill_md) parts.push(`\n# Skill\n\n${res.skill_md}`);
+        const blob = new Blob(parts.length ? parts : [JSON.stringify({ config, outputs, exportedAt: new Date().toISOString() }, null, 2)], {
+          type: parts.length ? "text/markdown" : "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `recipe-${sid}.md`;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch {
+        const blob = new Blob(
+          [JSON.stringify({ config, outputs, exportedAt: new Date().toISOString() }, null, 2)],
+          { type: "application/json" },
+        );
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `distillation-${config.topic.slice(0, 30).replace(/\s+/g, "-")}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    } else {
+      const blob = new Blob(
+        [JSON.stringify({ config, outputs, exportedAt: new Date().toISOString() }, null, 2)],
+        { type: "application/json" },
+      );
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `distillation-${config.topic.slice(0, 30).replace(/\s+/g, "-")}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+  }, [config, outputs, exportSessionId, completedSession?.sessionId]);
 
   const togglePinPaper = useCallback((id: string) => {
     setPapers((prev) =>
@@ -160,7 +374,9 @@ export default function DistillationTab() {
       <DistillationSetup
         config={config}
         setConfig={setConfig}
-        onStart={handleStart}
+        onStart={() => void handleStart()}
+        starting={starting}
+        error={startError}
       />
     );
   }
@@ -197,10 +413,14 @@ function DistillationSetup({
   config,
   setConfig,
   onStart,
+  starting,
+  error,
 }: {
   config: DistillationConfig;
   setConfig: (c: DistillationConfig) => void;
   onStart: () => void;
+  starting: boolean;
+  error: string | null;
 }) {
   const [sourceInput, setSourceInput] = useState("");
 
@@ -223,11 +443,16 @@ function DistillationSetup({
           </h3>
         </div>
         <p className="text-xs text-gray-400 mb-6">
-          Define a domain and let DAN systematically discover, read, and distill
-          knowledge from papers. This runs in the background and can take hours.
+          Define a topic, add sources, and run furnace directly from this tab.
+          This starts a real backend session and can run in the background.
         </p>
 
         <div className="space-y-4">
+          {error && (
+            <div className="text-xs text-red-300 bg-red-900/30 border border-red-800/60 rounded px-3 py-2">
+              {error}
+            </div>
+          )}
           {/* Topic */}
           <div>
             <label className="block text-xs text-gray-400 mb-1">
@@ -281,7 +506,7 @@ function DistillationSetup({
           {/* Source URLs / folders */}
           <div>
             <label className="block text-xs text-gray-400 mb-1">
-              Sources (optional — URLs, folders, search queries)
+              Sources (optional — PDF path, URL, or source id)
             </label>
             <div className="flex gap-1.5">
               <input
@@ -303,6 +528,14 @@ function DistillationSetup({
               >
                 Add
               </button>
+            </div>
+            <div className="mt-1.5 rounded border border-gray-700/60 bg-gray-900/40 px-2 py-1.5">
+              <p className="text-[10px] text-gray-500 mb-1">Quick examples</p>
+              <div className="space-y-0.5 text-[10px] text-gray-400 font-mono">
+                <div>/Users/.../paper.pdf</div>
+                <div>https://arxiv.org/abs/2401.12345</div>
+                <div>source-id-or-slug</div>
+              </div>
             </div>
             {config.sources.length > 0 && (
               <div className="flex flex-wrap gap-1 mt-1.5">
@@ -348,11 +581,11 @@ function DistillationSetup({
           {/* Start button */}
           <button
             onClick={onStart}
-            disabled={!config.topic.trim()}
+            disabled={!config.topic.trim() || starting}
             className="w-full py-2.5 bg-orange-600 hover:bg-orange-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-lg text-sm font-medium flex items-center justify-center gap-2 transition-colors"
           >
-            <Flame size={16} />
-            Start Learning
+            {starting ? <Loader2 size={16} className="animate-spin" /> : <Flame size={16} />}
+            Run Furnace
           </button>
         </div>
       </div>

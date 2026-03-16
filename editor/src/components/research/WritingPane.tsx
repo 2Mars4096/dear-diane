@@ -28,6 +28,7 @@ import {
 import { useResearchStore, type ResearchPaper } from "../../store/useResearchStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { resolveMonacoTheme } from "../../lib/appearanceTheme";
+import { requestEditorChatText } from "../../lib/editorChat";
 
 // ---------------------------------------------------------------------------
 // Markdown rendering with KaTeX math support
@@ -610,7 +611,7 @@ function registerCitationProvider() {
 }
 
 // ---------------------------------------------------------------------------
-// AI Action execution (mock — sends to /api/chat/editor/message)
+// AI Action execution
 // ---------------------------------------------------------------------------
 
 function useAIAction() {
@@ -627,28 +628,15 @@ function useAIAction() {
     ) => {
       setLoading(true);
       try {
-        const resp = await fetch("/api/chat/editor/message", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: `${action.prompt}\n\nText:\n${selectedText}`,
-            mode: "auto",
-            thread_id: null,
-          }),
+        const result = await requestEditorChatText({
+          message: `${action.prompt}\n\nText:\n${selectedText}`,
+          mode: "ask",
+          scope: `research-writing:${action.label.toLowerCase()}`,
+          surfaceContext: {
+            action: action.label,
+            selected_text: selectedText,
+          },
         });
-
-        if (!resp.ok) {
-          setLoading(false);
-          return;
-        }
-
-        const data = await resp.json();
-        const result =
-          typeof data.response === "string"
-            ? data.response
-            : typeof data.content === "string"
-              ? data.content
-              : null;
 
         if (result) {
           const model = editor.getModel();

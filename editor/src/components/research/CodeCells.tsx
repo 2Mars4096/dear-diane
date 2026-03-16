@@ -25,6 +25,7 @@ import {
   useResearchStore,
   type CellTool,
 } from "../../store/useResearchStore";
+import { requestEditorChatText } from "../../lib/editorChat";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 
@@ -160,28 +161,12 @@ async function executeToolCall(
   };
 
   try {
-    const resp = await fetch("/api/chat/editor/message", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        message: messageMap[tool] || content,
-        mode: "auto",
-        thread_id: null,
-      }),
+    const result = await requestEditorChatText({
+      message: messageMap[tool] || content,
+      mode: "ask",
+      scope: `research-code-cell:${tool}`,
+      surfaceContext: { tool, params },
     });
-
-    if (!resp.ok) {
-      return { type: "error", data: { message: `API error: ${resp.status}` } };
-    }
-
-    const data = await resp.json();
-    const result =
-      typeof data.response === "string"
-        ? data.response
-        : typeof data.content === "string"
-          ? data.content
-          : "No response";
-
     return { type: "text", data: result };
   } catch (err: any) {
     return { type: "error", data: { message: err.message || "Tool execution failed" } };
