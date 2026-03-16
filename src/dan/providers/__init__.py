@@ -47,6 +47,11 @@ def supports_exact_tool_choice(provider: Any) -> bool:
     return bool(getattr(provider, "supports_exact_tool_choice", False))
 
 
+def supports_tool_calls(provider: Any) -> bool:
+    """True when the provider can execute OpenAI-style tool-calling requests."""
+    return bool(getattr(provider, "supports_tool_calls", True))
+
+
 @dataclass
 class StreamChunk:
     """Single chunk from a streaming LLM response."""

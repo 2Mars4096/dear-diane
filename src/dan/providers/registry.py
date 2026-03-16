@@ -75,5 +75,8 @@ class ProviderRegistry:
     def has_provider(self, name: str) -> bool:
         return name in self._providers
 
+    def get(self, name: str) -> LLMProvider | None:
+        return self._providers.get(name)
+
     def provider_names(self) -> list[str]:
         return sorted(self._providers)

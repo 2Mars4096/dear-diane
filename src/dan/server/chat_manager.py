@@ -32,7 +32,12 @@ except ImportError:
     _tiktoken_available = False
 
 from dan.models.graph import Graph
-from dan.providers import CompletionResult, StreamChunk, supports_exact_tool_choice
+from dan.providers import (
+    CompletionResult,
+    StreamChunk,
+    supports_exact_tool_choice,
+    supports_tool_calls,
+)
 from dan.providers.registry import ProviderRegistry
 from dan.providers.costs import estimate_cost
 from dan.server.capability_registry import CapabilityResult
@@ -91,6 +96,9 @@ from dan.server.chat.helpers import (  # noqa: F401
     _looks_like_missing_target_error,
     _write_file_escalation_prompt,
     _is_transient_llm_error,
+    _classify_llm_error_kind,
+    _build_tool_followup_recovery_prompt,
+    _build_tool_followup_error_intro,
     _clean_tool_result,
     _summarize_tool_result,
     _extract_cited_sources,
@@ -398,6 +406,18 @@ class ChatManager:
         so deeper call stacks can access it without explicit parameter passing.
         """
         provider = self._providers.resolve(model or self._chat_model)
+        return self._wrap_provider_for_pii(
+            provider,
+            pii_session_key=pii_session_key,
+        )
+
+    def _wrap_provider_for_pii(
+        self,
+        provider: Any,
+        *,
+        pii_session_key: str | None = None,
+    ) -> Any:
+        """Wrap a resolved provider with request-scoped PII protection if enabled."""
         try:
             from dan.server.concierge.pii_tokenizer import (
                 SensitiveWordRegistry,
@@ -646,6 +666,31 @@ class ChatManager:
                 pii_session_key=thread_id or workflow_id,
                 model=effective_model,
             )
+            raw_provider = getattr(provider, "_provider", provider)
+            if not supports_tool_calls(provider):
+                default_provider = self._providers.get("default")
+                if (
+                    default_provider is not None
+                    and default_provider is not raw_provider
+                    and supports_tool_calls(default_provider)
+                ):
+                    logger.warning(
+                        "Resolved provider %s for model %s does not support tool-calling; "
+                        "falling back to default provider for tool loop",
+                        type(raw_provider).__name__,
+                        effective_model,
+                    )
+                    provider = self._wrap_provider_for_pii(
+                        default_provider,
+                        pii_session_key=thread_id or workflow_id,
+                    )
+                else:
+                    logger.warning(
+                        "Resolved provider %s for model %s does not support tool-calling "
+                        "and no tool-capable default provider is available",
+                        type(raw_provider).__name__,
+                        effective_model,
+                    )
             exact_tool_choice_supported = supports_exact_tool_choice(provider)
             message_id = uuid.uuid4().hex[:12]
             final_content = ""
@@ -1021,6 +1066,31 @@ class ChatManager:
                 pii_session_key=thread_id or workflow_id,
                 model=effective_model,
             )
+            raw_provider = getattr(provider, "_provider", provider)
+            if not supports_tool_calls(provider):
+                default_provider = self._providers.get("default")
+                if (
+                    default_provider is not None
+                    and default_provider is not raw_provider
+                    and supports_tool_calls(default_provider)
+                ):
+                    logger.warning(
+                        "Resolved provider %s for model %s does not support tool-calling; "
+                        "falling back to default provider for tool loop",
+                        type(raw_provider).__name__,
+                        effective_model,
+                    )
+                    provider = self._wrap_provider_for_pii(
+                        default_provider,
+                        pii_session_key=thread_id or workflow_id,
+                    )
+                else:
+                    logger.warning(
+                        "Resolved provider %s for model %s does not support tool-calling "
+                        "and no tool-capable default provider is available",
+                        type(raw_provider).__name__,
+                        effective_model,
+                    )
             exact_tool_choice_supported = supports_exact_tool_choice(provider)
             message_id = uuid.uuid4().hex[:12]
             usage_totals: dict[str, int] = {}
@@ -2172,17 +2242,22 @@ class ChatManager:
                         len(messages),
                     )
                 except Exception as exc:
-                    is_timeout = isinstance(exc, (asyncio.TimeoutError, TimeoutError))
-                    _is_transient_followup = (
-                        is_timeout
-                        or "timeout" in str(exc).lower()
-                        or "rate" in str(exc).lower()
-                        or "connection" in str(exc).lower()
-                    )
+                    failure_kind = _classify_llm_error_kind(exc)
+                    is_timeout = failure_kind == "timeout"
+                    _is_transient_followup = failure_kind in {
+                        "timeout",
+                        "rate_limit",
+                        "server_error",
+                        "connection",
+                    }
                     missing_action_hints = followup_missing_action_hints
+                    failure_label = {
+                        "timeout": "timed out",
+                        "tool_history_incompatible": "failed due to tool-history incompatibility",
+                    }.get(failure_kind, "failed")
                     logger.warning(
                         "Multi-turn complete() %s at turn %d: %s (tools=%s, missing_actions=%s, force_file_write=%s)",
-                        "timed out" if is_timeout else "failed",
+                        failure_label,
                         _turn,
                         exc,
                         ",".join(tool_names_this_turn) or "none",
@@ -2233,11 +2308,7 @@ class ChatManager:
                     synthesis_messages = list(messages)
                     synthesis_messages.append({
                         "role": "user",
-                        "content": (
-                            "The previous tool call timed out. Using ONLY the tool "
-                            "results already in this conversation, provide the best "
-                            "answer you can. Do not call any tools."
-                        ),
+                        "content": _build_tool_followup_recovery_prompt(exc),
                     })
 
                     # Attempt synthesis with the current model first
@@ -2329,14 +2400,7 @@ class ChatManager:
                         )
                     else:
                         progress_note = ""
-                    if is_timeout:
-                        error_intro = (
-                            "The language model took too long to respond after using tools."
-                        )
-                    else:
-                        error_intro = (
-                            "I encountered an error generating a response after using tools."
-                        )
+                    error_intro = _build_tool_followup_error_intro(exc)
                     combined_content = f"{error_intro}\n\n{progress_note}\n\nPlease ask me to continue or summarize.".strip()
                     self._record_conversation_summary(
                         workflow_id=workflow_id,

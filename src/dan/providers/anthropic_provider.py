@@ -16,6 +16,8 @@ from dan.providers import (
 class AnthropicProvider:
     """Provider for Anthropic's Claude models via the native API."""
 
+    supports_tool_calls = False
+
     def __init__(self, config: ProviderConfig) -> None:
         try:
             from anthropic import AsyncAnthropic

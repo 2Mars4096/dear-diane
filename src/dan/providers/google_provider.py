@@ -17,6 +17,8 @@ from dan.providers import (
 class GoogleProvider:
     """Provider for Google Gemini models via the generativeai SDK."""
 
+    supports_tool_calls = False
+
     def __init__(self, config: ProviderConfig) -> None:
         try:
             import google.generativeai as genai

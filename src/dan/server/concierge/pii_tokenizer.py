@@ -352,6 +352,9 @@ class TokenizingProviderWrapper:
         self._explicit_session = session
         self._registry = registry or SensitiveWordRegistry()
 
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._provider, name)
+
     @property
     def _session(self) -> PIISession:
         if self._explicit_session is not None:

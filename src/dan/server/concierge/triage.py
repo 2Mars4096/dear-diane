@@ -28,6 +28,67 @@ _RESUME_CUE_RE = re.compile(
     r"\b(?:resume|continue|keep going|pick (?:it )?back up|pick up where|where were we|left off|go back to|back to)\b",
     re.IGNORECASE,
 )
+_QUESTION_START_RE = re.compile(
+    r"^(?:what|how|why|where|when|which|who|can you|could you|would you|is|are|do|did|does|have you|has|should)\b",
+    re.IGNORECASE,
+)
+_ANAPHORA_RE = re.compile(r"\b(?:it|that|this|them|those|these)\b", re.IGNORECASE)
+_PATH_HINT_RE = re.compile(r"(?:~?/|\.{1,2}/|[A-Za-z]:\\)")
+_WRITE_INTENT_RE = re.compile(
+    r"\b(?:write|draft|create|save|update|edit|rewrite|revise|modify|patch|fix|append)\b",
+    re.IGNORECASE,
+)
+_READ_INTENT_RE = re.compile(
+    r"\b(?:read|review|reviewed|inspect|check|open|look(?:\s+into)?|show|summarize|verify)\b",
+    re.IGNORECASE,
+)
+_WEB_INTENT_RE = re.compile(
+    r"\b(?:web|online|internet|latest|current|news|recent|search|look up|browse|research)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_ENTITY_RE = re.compile(
+    r"\b(?:workflow|graph|node|edge|port|subgraph)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_EDIT_RE = re.compile(
+    r"\b(?:add|remove|delete|rename|connect|disconnect|move|update|change|modify|edit|fix|patch|rewire)\b",
+    re.IGNORECASE,
+)
+_SOCIAL_TOKENS = frozenset({
+    "hi",
+    "hello",
+    "hey",
+    "thanks",
+    "thank you",
+    "ok",
+    "okay",
+    "cool",
+    "great",
+    "sounds good",
+    "yes",
+    "no",
+})
+_FILE_CONTEXT_MARKERS = (
+    "file",
+    "folder",
+    "document",
+    "doc",
+    "paper",
+    "report",
+    "draft",
+    "log",
+    "note",
+    "notes",
+    "readme",
+    ".md",
+    ".txt",
+    ".tex",
+    ".py",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".pdf",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -423,6 +484,120 @@ def _post_process_triage_result(
     return result
 
 
+def _looks_like_question(text: str) -> bool:
+    stripped = text.strip()
+    return stripped.endswith("?") or bool(_QUESTION_START_RE.search(stripped))
+
+
+def _context_text(context: ResolvedContext) -> str:
+    parts = [
+        context.project.label,
+        context.project.summary,
+        context.task.label,
+        " ".join(context.task.pending_steps),
+    ]
+    return " ".join(part for part in parts if part).lower()
+
+
+def _infer_fallback_action_hints(text: str, context: ResolvedContext) -> list[str]:
+    lower = text.lower()
+    context_text = _context_text(context)
+    has_anaphora = bool(_ANAPHORA_RE.search(text))
+    file_context_like = (
+        bool(_PATH_HINT_RE.search(text))
+        or any(marker in lower for marker in _FILE_CONTEXT_MARKERS)
+        or (has_anaphora and any(marker in context_text for marker in _FILE_CONTEXT_MARKERS))
+    )
+    workflow_context_like = bool(_WORKFLOW_ENTITY_RE.search(text)) or (
+        has_anaphora and bool(_WORKFLOW_ENTITY_RE.search(context_text))
+    )
+
+    hints: list[str] = []
+    if workflow_context_like and _WORKFLOW_EDIT_RE.search(text):
+        hints.append("workflow_edit")
+        return hints
+
+    if _WEB_INTENT_RE.search(text):
+        hints.append("search_web")
+    if _WRITE_INTENT_RE.search(text) and (file_context_like or has_anaphora or "write" in lower or "draft" in lower):
+        hints.append("write_file")
+    if _READ_INTENT_RE.search(text) and (file_context_like or has_anaphora):
+        hints.append("read_file")
+    return hints
+
+
+def _fallback_goal(text: str, context: ResolvedContext) -> str:
+    stripped = text.strip()
+    if stripped and _ANAPHORA_RE.search(stripped) and context.task.label:
+        return context.task.label[:200]
+    return stripped[:200]
+
+
+def _fallback_triage_result(text: str, context: ResolvedContext) -> TriageResult:
+    stripped = text.strip()
+    lower = stripped.lower()
+    goal = _fallback_goal(text, context)
+    social = lower in _SOCIAL_TOKENS
+    if social:
+        response = "How can I help?"
+        if "thank" in lower:
+            response = "You're welcome."
+        elif lower in {"hi", "hello", "hey"}:
+            response = "Hello."
+        return TriageResult(
+            tier=0,
+            intent="ask",
+            confidence=0.55,
+            goal=goal,
+            deliverable=response,
+            is_social=True,
+            social_response=response,
+            rationale="Heuristic fallback for simple social turn",
+        )
+
+    action_hints = _infer_fallback_action_hints(text, context)
+    route: RouteDecision | None = None
+    intent = "ask"
+    tier = 1
+    confidence = 0.5
+    question_like = _looks_like_question(text)
+    has_resume_pronoun = bool(_ANAPHORA_RE.search(text)) and not context.is_new_task
+
+    if action_hints:
+        intent = "agent"
+        confidence = 0.58
+        if "workflow_edit" in action_hints:
+            target = "workflow"
+        elif any(hint in action_hints for hint in ("read_file", "write_file")):
+            target = "file"
+        elif action_hints == ["search_web"]:
+            target = "web"
+        else:
+            target = "general"
+        route = RouteDecision(
+            mode=RouteMode.AGENT,
+            target=target,
+            action_hints=action_hints,
+            rationale="Heuristic fallback after triage parse failure",
+        )
+        if "write_file" in action_hints or "workflow_edit" in action_hints or len(action_hints) > 1:
+            tier = 2
+    elif not question_like and stripped:
+        intent = "agent"
+        confidence = 0.52
+
+    return TriageResult(
+        tier=tier,
+        intent=intent,
+        route=route,
+        confidence=confidence,
+        goal=goal,
+        deliverable=goal,
+        is_resume=_strongly_suggests_resume(text) or has_resume_pronoun,
+        rationale="Heuristic fallback after triage LLM failure or unparseable output",
+    )
+
+
 def _parse_triage_response(raw_text: str) -> TriageResult | None:
     json_str = _extract_json(raw_text)
     if not json_str:
@@ -514,4 +689,9 @@ async def triage(
     except Exception:
         logger.warning("Triage LLM call failed, falling back to safe default", exc_info=True)
 
-    return TriageResult(tier=1, intent="ask", confidence=0.5, goal=text[:200])
+    return _post_process_triage_result(
+        _fallback_triage_result(text, context),
+        text,
+        context,
+        project_store=project_store,
+    )

@@ -6,11 +6,8 @@ from typing import Any, AsyncIterator
 
 from openai import (
     AsyncOpenAI,
-    APIError,
-    APITimeoutError,
     AuthenticationError,
     PermissionDeniedError,
-    RateLimitError,
 )
 
 from dan.providers import (
@@ -26,6 +23,7 @@ class OpenAIProvider:
     """Provider for OpenAI and any OpenAI-compatible endpoint (e.g. vectorengine.ai)."""
 
     supports_exact_tool_choice = True
+    supports_tool_calls = True
 
     def __init__(self, config: ProviderConfig) -> None:
         self._timeout_seconds = resolve_provider_timeout(config)
@@ -61,6 +59,46 @@ class OpenAIProvider:
         for m in messages:
             (system if m.get("role") == "system" else non_system).append(m)
         return system + non_system
+
+    @staticmethod
+    def _dump_model_object(obj: Any) -> dict[str, Any]:
+        if isinstance(obj, dict):
+            return dict(obj)
+        if obj is None:
+            return {}
+        if hasattr(obj, "model_dump"):
+            try:
+                dumped = obj.model_dump(mode="python", exclude_none=True)
+            except TypeError:
+                dumped = obj.model_dump(exclude_none=True)
+            if isinstance(dumped, dict):
+                return dumped
+        return {}
+
+    @staticmethod
+    def _merge_model_extra(base: dict[str, Any], obj: Any) -> dict[str, Any]:
+        extra = getattr(obj, "model_extra", None)
+        if isinstance(extra, dict):
+            for key, value in extra.items():
+                base.setdefault(key, value)
+        return base
+
+    @classmethod
+    def _serialize_tool_call(cls, tool_call: Any) -> dict[str, Any]:
+        raw = cls._merge_model_extra(cls._dump_model_object(tool_call), tool_call)
+        raw.setdefault("id", getattr(tool_call, "id", ""))
+        raw.setdefault("type", getattr(tool_call, "type", "function"))
+
+        function_obj = getattr(tool_call, "function", None)
+        function_payload = raw.get("function")
+        if not isinstance(function_payload, dict):
+            function_payload = cls._dump_model_object(function_obj)
+        function_payload = cls._merge_model_extra(function_payload or {}, function_obj)
+        if function_obj is not None:
+            function_payload.setdefault("name", getattr(function_obj, "name", ""))
+            function_payload.setdefault("arguments", getattr(function_obj, "arguments", ""))
+        raw["function"] = function_payload
+        return raw
 
     async def complete(
         self,
@@ -98,17 +136,7 @@ class OpenAIProvider:
         usage = self._extract_usage(resp)
         tool_calls = None
         if hasattr(message, "tool_calls") and message.tool_calls:
-            tool_calls = [
-                {
-                    "id": tc.id,
-                    "type": tc.type,
-                    "function": {
-                        "name": tc.function.name,
-                        "arguments": tc.function.arguments,
-                    },
-                }
-                for tc in message.tool_calls
-            ]
+            tool_calls = [self._serialize_tool_call(tc) for tc in message.tool_calls]
         cached_input = (usage or {}).get("cached_input_tokens", 0)
         finish_reason = getattr(resp.choices[0], "finish_reason", "") or ""
         return CompletionResult(

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -55,6 +56,12 @@ _PARALLEL_TOOL_FAMILY_MAP: dict[str, str] = {
     "file_grep": "grep",
     "web_search": "search",
 }
+_TOOL_HISTORY_COMPAT_MARKERS = (
+    "thought_signature",
+    "functioncall parts",
+    "tool-call transcript",
+    "tool call transcript",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -244,19 +251,71 @@ def _write_file_escalation_prompt(*, missing_target: bool) -> str:
 
 def _is_transient_llm_error(exc: Exception) -> bool:
     """True if the exception is a transient LLM API error worth retrying."""
-    msg = str(exc).lower()
-    if "429" in msg or "rate" in msg or "rate limit" in msg:
-        return True
-    if "500" in msg or "502" in msg or "503" in msg or "internal server" in msg:
-        return True
-    if "timeout" in msg or "timed out" in msg:
-        return True
-    if "connection" in msg or "connect" in msg or "network" in msg:
+    kind = _classify_llm_error_kind(exc)
+    if kind == "tool_history_incompatible":
+        return False
+    if kind in {"timeout", "rate_limit", "server_error", "connection"}:
         return True
     exc_cls = type(exc).__name__
     if exc_cls in ("RateLimitError", "APITimeoutError", "TimeoutError", "ConnectError"):
         return True
     return False
+
+
+def _classify_llm_error_kind(exc: Exception) -> str:
+    """Return a coarse error class for retry and recovery decisions."""
+    msg = str(exc).lower()
+    if any(marker in msg for marker in _TOOL_HISTORY_COMPAT_MARKERS):
+        return "tool_history_incompatible"
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timeout" in msg or "timed out" in msg:
+        return "timeout"
+    if "429" in msg or "rate" in msg or "rate limit" in msg:
+        return "rate_limit"
+    if "500" in msg or "502" in msg or "503" in msg or "internal server" in msg:
+        return "server_error"
+    if "connection" in msg or "connect" in msg or "network" in msg:
+        return "connection"
+    return "other"
+
+
+def _build_tool_followup_recovery_prompt(exc: Exception) -> str:
+    """Prompt for no-tools synthesis after a post-tool follow-up failure."""
+    kind = _classify_llm_error_kind(exc)
+    if kind == "timeout":
+        reason = "The previous follow-up model call timed out after the tools finished."
+    elif kind == "tool_history_incompatible":
+        reason = (
+            "The previous follow-up model call failed because the provider "
+            "rejected the tool-call transcript metadata."
+        )
+    elif kind == "rate_limit":
+        reason = "The previous follow-up model call hit a rate or quota limit."
+    elif kind == "connection":
+        reason = "The previous follow-up model call failed because of a connection problem."
+    elif kind == "server_error":
+        reason = "The previous follow-up model call failed because the provider returned a server error."
+    else:
+        reason = f"The previous follow-up model call failed with {type(exc).__name__}."
+    return (
+        f"{reason} Using ONLY the tool results already in this conversation, "
+        "provide the best answer you can. Do not call any tools."
+    )
+
+
+def _build_tool_followup_error_intro(exc: Exception) -> str:
+    """User-facing summary for a post-tool follow-up failure."""
+    kind = _classify_llm_error_kind(exc)
+    if kind == "timeout":
+        return "The language model took too long to respond after using tools."
+    if kind == "tool_history_incompatible":
+        return "The provider rejected the tool-call transcript while generating the follow-up response."
+    if kind == "rate_limit":
+        return "The provider hit a rate or quota limit after using tools."
+    if kind == "connection":
+        return "A connection issue interrupted the post-tool response."
+    if kind == "server_error":
+        return "The provider returned a server error after using tools."
+    return "I encountered an error generating a response after using tools."
 
 
 # ---------------------------------------------------------------------------
