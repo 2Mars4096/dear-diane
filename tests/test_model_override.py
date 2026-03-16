@@ -63,6 +63,10 @@ class _RecordingProvider:
         )
 
 
+class _NonToolProvider(_RecordingProvider):
+    supports_tool_calls = False
+
+
 def _make_manager(
     provider: _RecordingProvider,
     default_model: str = "default-model",
@@ -280,6 +284,40 @@ async def test_send_message_with_tools_default_model_when_no_override(monkeypatc
     complete_events = [e for e in events if isinstance(e, ChatCompleteEvent)]
     assert len(complete_events) >= 1
     assert "claude-sonnet-default" in provider.recorded_models
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_falls_back_to_default_provider_for_non_tool_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Tool-using chat should avoid providers that do not implement tool-calling."""
+    default_provider = _RecordingProvider()
+    google_provider = _NonToolProvider()
+
+    registry = ProviderRegistry()
+    registry.register("default", default_provider)
+    registry.register("google", google_provider)
+    graph_store = SimpleNamespace(get_graph=lambda wf_id: dict(MINIMAL_GRAPH))
+    mgr = ChatManager(registry, graph_store=graph_store)
+    mgr._chat_model = "default-model"
+
+    async def _fake_build_messages(self, *args, **kwargs):
+        return [{"role": "user", "content": "hi"}]
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="hello",
+            history=[],
+            model_override="gemini-3.1-pro-preview",
+        )
+    )
+
+    assert any(isinstance(e, ChatCompleteEvent) for e in events)
+    assert default_provider.recorded_models == ["gemini-3.1-pro-preview"]
+    assert google_provider.recorded_models == []
 
 
 # ------------------------------------------------------------------

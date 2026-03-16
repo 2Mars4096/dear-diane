@@ -194,3 +194,19 @@ async def test_triage_normalizes_and_deduplicates_context_needs():
         "domain:finance",
         "reuse",
     ]
+
+
+@pytest.mark.asyncio
+async def test_triage_fallback_infers_write_file_for_short_resume_edit():
+    context, _project, _task = _make_context(task_label="Update the quarterly report draft")
+
+    async def _bad_complete(_messages):
+        return "definitely not valid json"
+
+    result = await triage("update it", context, _bad_complete)
+
+    assert result.intent == "agent"
+    assert result.route is not None
+    assert result.route.target == "file"
+    assert "write_file" in result.route.action_hints
+    assert result.is_resume is True
