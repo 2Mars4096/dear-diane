@@ -453,6 +453,7 @@
 
 ### strengthen workflow to make it more powerful and easier to use
 - [ ] **Finish native light-theme migration for legacy shell panels** — current settings/light-mode patch adds a scoped compatibility bridge in `editor/src/index.css` plus top-level shell updates, but older dark-only panel internals should still be converted to explicit light/dark classes component-by-component.
+- [x] **Enable deleting specific Furnace sessions from UI** — Research-mode session cards now call a real backend delete endpoint and remove deleted sessions from local state so they do not reappear after refresh.
 - [x] **Improve furnace training UX with progressive feedback + restore** — Furnace session cards now show current phase, live status text, and recent event lines; sessions are persisted locally, synced from backend on refresh, and active sessions auto-reconnect to SSE so progress resumes without manual restart.
 - [x] **Reduce furnace pipeline chrome density** — removed redundant numeric labels in Research/Furnace distillation pipeline and switched to compact ordered chips to reclaim space while preserving sequence clarity.
 - [x] **Make terminal honor light/dark appearance end-to-end** — terminal chrome and live xterm palette now update with the app appearance setting (`system`/light/dark), including tab strip, context menu, and text/background contrast.

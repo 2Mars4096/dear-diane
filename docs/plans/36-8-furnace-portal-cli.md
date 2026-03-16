@@ -26,4 +26,5 @@
 - `watch` uses SSE (`/api/furnace/sessions/{id}/events`) and prints compact phase/source/session progress lines.
 - `ignite` is the recommended entry for fast operational use after `dan-up`.
 - 2026-03-16 UX follow-up: Research-mode Furnace cards now mirror `watch`-style progressive feedback (phase/status/recent events), persist sessions in local store across refresh, hydrate from `furnaceListSessions()` on load, and auto-reconnect SSE for active sessions so users can resume monitoring without re-creating sessions.
+- 2026-03-16 session lifecycle follow-up: added explicit session deletion from Research-mode cards, backed by `DELETE /api/furnace/sessions/{session_id}` (with active-session guard + optional artifact cleanup) so users can prune obsolete/failed runs cleanly.
 - 2026-03-16 input-hardening follow-up: source parsing now defensively splits accidental one-line multi-entry pastes (for example space-joined absolute PDF paths) in both frontend (`furnaceSources.ts`) and backend (`/api/furnace/sessions/{id}/sources`) to reduce skipped-source runs from formatting mistakes.
