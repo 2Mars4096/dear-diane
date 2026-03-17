@@ -374,12 +374,13 @@ class LLMExecutor:
                 },
                 {"role": "user", "content": text},
             ]
-            result = await provider.complete(
-                messages=messages,
-                model=summary_model,
-                temperature=0.0,
-                max_tokens=config.max_summary_tokens,
-            )
+            async with context.llm_slot():
+                result = await provider.complete(
+                    messages=messages,
+                    model=summary_model,
+                    temperature=0.0,
+                    max_tokens=config.max_summary_tokens,
+                )
             usage = result.usage
             if usage and context.cost_tracker is not None:
                 context.cost_tracker.record(
@@ -1140,13 +1141,23 @@ class LLMExecutor:
                                     for k, v in tier_params.items():
                                         if k not in ("temperature", "max_tokens"):
                                             fallback_kwargs[k] = v
-                                result = await fb_provider.complete(
-                                    messages=messages,
-                                    model=current_model,
-                                    temperature=fb_temp,
-                                    max_tokens=fb_max,
-                                    **fallback_kwargs,
-                                )
+                                if context is not None:
+                                    async with context.llm_slot():
+                                        result = await fb_provider.complete(
+                                            messages=messages,
+                                            model=current_model,
+                                            temperature=fb_temp,
+                                            max_tokens=fb_max,
+                                            **fallback_kwargs,
+                                        )
+                                else:
+                                    result = await fb_provider.complete(
+                                        messages=messages,
+                                        model=current_model,
+                                        temperature=fb_temp,
+                                        max_tokens=fb_max,
+                                        **fallback_kwargs,
+                                    )
                                 return result.text, None, result.usage, result.tool_calls
                             return "", f"No provider for fallback model '{current_model}'", None, None
                         except Exception as fb_exc:
@@ -1197,41 +1208,69 @@ class LLMExecutor:
             extra_kwargs["tools"] = self._sorted_tool_schemas(tools)
 
         if tools:
-            result = await provider.complete(
-                messages=messages,
-                model=model,
-                temperature=effective_temperature,
-                max_tokens=effective_max_tokens,
-                **extra_kwargs,
-            )
+            if context is not None:
+                async with context.llm_slot():
+                    result = await provider.complete(
+                        messages=messages,
+                        model=model,
+                        temperature=effective_temperature,
+                        max_tokens=effective_max_tokens,
+                        **extra_kwargs,
+                    )
+            else:
+                result = await provider.complete(
+                    messages=messages,
+                    model=model,
+                    temperature=effective_temperature,
+                    max_tokens=effective_max_tokens,
+                    **extra_kwargs,
+                )
             return result.text, result.usage, result.tool_calls
 
         try:
             accumulated = ""
             chunk_count = 0
             last_usage = None
-            stream_iter = provider.stream(
-                messages=messages,
-                model=model,
-                temperature=effective_temperature,
-                max_tokens=effective_max_tokens,
-                **tier_extra,
-            )
-            if inspect.isawaitable(stream_iter):
-                stream_iter = await stream_iter
-
-            async for chunk in stream_iter:
-                accumulated = chunk.accumulated
-                chunk_count += 1
-                if context and chunk_count % 5 == 0 and not chunk.done:
-                    await context.emit_event(
-                        event_type="intermediate_text",
-                        node_id=node.id,
-                        node_type="llm_operator",
-                        data={"delta": chunk.delta, "text": accumulated, "attempt": attempt},
+            if context is not None:
+                async with context.llm_slot():
+                    stream_iter = provider.stream(
+                        messages=messages,
+                        model=model,
+                        temperature=effective_temperature,
+                        max_tokens=effective_max_tokens,
+                        **tier_extra,
                     )
-                if chunk.done:
-                    last_usage = chunk.usage
+                    if inspect.isawaitable(stream_iter):
+                        stream_iter = await stream_iter
+
+                    async for chunk in stream_iter:
+                        accumulated = chunk.accumulated
+                        chunk_count += 1
+                        if chunk_count % 5 == 0 and not chunk.done:
+                            await context.emit_event(
+                                event_type="intermediate_text",
+                                node_id=node.id,
+                                node_type="llm_operator",
+                                data={"delta": chunk.delta, "text": accumulated, "attempt": attempt},
+                            )
+                        if chunk.done:
+                            last_usage = chunk.usage
+            else:
+                stream_iter = provider.stream(
+                    messages=messages,
+                    model=model,
+                    temperature=effective_temperature,
+                    max_tokens=effective_max_tokens,
+                    **tier_extra,
+                )
+                if inspect.isawaitable(stream_iter):
+                    stream_iter = await stream_iter
+
+                async for chunk in stream_iter:
+                    accumulated = chunk.accumulated
+                    chunk_count += 1
+                    if chunk.done:
+                        last_usage = chunk.usage
 
             if context and accumulated:
                 await context.emit_event(
@@ -1242,13 +1281,23 @@ class LLMExecutor:
                 )
             return accumulated, last_usage, None
         except Exception:
-            result = await provider.complete(
-                messages=messages,
-                model=model,
-                temperature=effective_temperature,
-                max_tokens=effective_max_tokens,
-                **tier_extra,
-            )
+            if context is not None:
+                async with context.llm_slot():
+                    result = await provider.complete(
+                        messages=messages,
+                        model=model,
+                        temperature=effective_temperature,
+                        max_tokens=effective_max_tokens,
+                        **tier_extra,
+                    )
+            else:
+                result = await provider.complete(
+                    messages=messages,
+                    model=model,
+                    temperature=effective_temperature,
+                    max_tokens=effective_max_tokens,
+                    **tier_extra,
+                )
             return result.text, result.usage, result.tool_calls
 
     @staticmethod

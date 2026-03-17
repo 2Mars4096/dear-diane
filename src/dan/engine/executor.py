@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid as _uuid
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol, runtime_checkable
 
@@ -17,6 +20,8 @@ if TYPE_CHECKING:
     from dan.rag import EmbeddingRegistry
 
 from dan.rag import DEFAULT_EMBEDDING_MODEL
+
+_NODE_SLOT_DEPTH: ContextVar[int] = ContextVar("dan_node_slot_depth", default=0)
 
 
 # ---------------------------------------------------------------------------
@@ -126,6 +131,12 @@ class EngineConfig:
     checkpoint_enabled: bool = True
     output_norm_max_retries: int = 3
     max_concurrency: int | None = None
+    llm_max_concurrency: int | None = None
+    node_semaphore_acquire_timeout_sec: float | None = 30.0
+    max_subgraph_depth: int = 32
+    eager_dispatch: bool = False
+    checkpoint_batch_size: int = 5
+    checkpoint_interval_sec: float = 10.0
     providers: dict[str, ProviderConfig] = field(default_factory=dict)
     model_provider_map: dict[str, str] = field(default_factory=dict)
     embedding_providers: dict[str, ProviderConfig] = field(default_factory=dict)
@@ -260,6 +271,8 @@ class ExecutionContext:
         # -- 18-5: Task-level model tiering ------------------------------------
         graph: Any | None = None,
         tier_tracker: Any | None = None,
+        node_semaphore: Any | None = None,
+        llm_semaphore: Any | None = None,
     ) -> None:
         self.state = state
         self.config = config
@@ -285,6 +298,8 @@ class ExecutionContext:
         # -- 18-5: Task-level model tiering
         self.graph = graph
         self.tier_tracker = tier_tracker
+        self.node_semaphore = node_semaphore
+        self.llm_semaphore = llm_semaphore
         # -- 16-3: Auto-wrap legacy callback into renderer protocol
         if human_renderer is not None:
             self.human_renderer: HumanRenderer | None = human_renderer
@@ -293,6 +308,43 @@ class ExecutionContext:
         else:
             self.human_renderer = None
         self._workflow_id = ""
+
+    @asynccontextmanager
+    async def node_slot(self):
+        """Acquire the shared node-concurrency slot when configured."""
+        depth = _NODE_SLOT_DEPTH.get()
+        token = _NODE_SLOT_DEPTH.set(depth + 1)
+        try:
+            if self.node_semaphore is None or depth > 0:
+                yield
+                return
+            timeout = getattr(self.config, "node_semaphore_acquire_timeout_sec", None)
+            if timeout is None or timeout <= 0:
+                async with self.node_semaphore:
+                    yield
+                return
+            try:
+                await asyncio.wait_for(self.node_semaphore.acquire(), timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError(
+                    "Timed out waiting for a global node-concurrency slot. "
+                    "Possible nested subgraph deadlock."
+                ) from exc
+            try:
+                yield
+            finally:
+                self.node_semaphore.release()
+        finally:
+            _NODE_SLOT_DEPTH.reset(token)
+
+    @asynccontextmanager
+    async def llm_slot(self):
+        """Acquire the shared LLM-concurrency slot when configured."""
+        if self.llm_semaphore is None:
+            yield
+            return
+        async with self.llm_semaphore:
+            yield
 
     @property
     def run_id(self) -> str:
@@ -450,6 +502,7 @@ class ExecutionContext:
                 scope=MemoryScope(scope),
                 mode=WriteMode(mode),
                 writer_node_id=writer_node_id,
+                owner_node_id=self.layer_path[0] if self.layer_path else writer_node_id,
             )
         )
 
@@ -458,6 +511,12 @@ class ExecutionContext:
         writes = list(self._memory_writes)
         self._memory_writes.clear()
         return writes
+
+    def restore_memory_writes(self, writes: list) -> None:
+        """Prepend deferred memory writes back onto the shared queue."""
+        if not writes:
+            return
+        self._memory_writes[:0] = list(writes)
 
     async def run_subgraph(
         self,

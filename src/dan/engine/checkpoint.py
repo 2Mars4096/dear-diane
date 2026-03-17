@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import asyncio
 import time as _time
 from pathlib import Path
 from typing import Any, Literal, Protocol, runtime_checkable
@@ -45,18 +46,24 @@ class FileSystemCheckpointStore:
         return self.base_dir / run_id
 
     async def save(self, run_id: str, state: dict[str, Any]) -> None:
-        run_dir = self._run_dir(run_id)
-        run_dir.mkdir(parents=True, exist_ok=True)
-        path = run_dir / "checkpoint.json"
-        data = json.dumps(state, indent=2, default=str)
-        path.write_text(data, encoding="utf-8")
+        def _write() -> None:
+            run_dir = self._run_dir(run_id)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            path = run_dir / "checkpoint.json"
+            data = json.dumps(state, indent=2, default=str)
+            path.write_text(data, encoding="utf-8")
+
+        await asyncio.to_thread(_write)
 
     async def load(self, run_id: str) -> dict[str, Any] | None:
-        path = self._run_dir(run_id) / "checkpoint.json"
-        if not path.exists():
-            return None
-        text = path.read_text(encoding="utf-8")
-        return json.loads(text)
+        def _read() -> dict[str, Any] | None:
+            path = self._run_dir(run_id) / "checkpoint.json"
+            if not path.exists():
+                return None
+            text = path.read_text(encoding="utf-8")
+            return json.loads(text)
+
+        return await asyncio.to_thread(_read)
 
     async def list_runs(self) -> list[str]:
         if not self.base_dir.exists():
@@ -108,6 +115,8 @@ class CheckpointData(BaseModel):
     # Persisted outputs for completed nodes, keyed by node_id.
     # Values are dicts mapping port_name -> value (from PortDataStore).
     node_outputs: dict[str, Any] = Field(default_factory=dict)
+    pending_node_ids: list[str] = Field(default_factory=list)
+    checkpoint_trigger: str = ""
 
 
 # ---------------------------------------------------------------------------

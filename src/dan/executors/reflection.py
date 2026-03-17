@@ -162,12 +162,13 @@ class ReflectionExecutor:
 
         try:
             provider = context.provider_registry.resolve(model)
-            result = await provider.complete(
-                messages=messages,
-                model=model,
-                temperature=0.3,
-                max_tokens=2000,
-            )
+            async with context.llm_slot():
+                result = await provider.complete(
+                    messages=messages,
+                    model=model,
+                    temperature=0.3,
+                    max_tokens=2000,
+                )
             raw_text = result.text
             usage = result.usage
         except Exception as exc:

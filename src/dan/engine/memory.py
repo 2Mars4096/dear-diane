@@ -41,6 +41,7 @@ class MemoryEntry(BaseModel):
     updated_at: float = Field(default_factory=time.time)
     source_run_id: str | None = None
     writer_node_id: str | None = None
+    owner_node_id: str | None = None
     write_mode: WriteMode = WriteMode.SET
 
 
@@ -52,3 +53,4 @@ class MemoryWriteRequest(BaseModel):
     scope: MemoryScope = MemoryScope.SESSION
     mode: WriteMode = WriteMode.SET
     writer_node_id: str | None = None
+    owner_node_id: str | None = None

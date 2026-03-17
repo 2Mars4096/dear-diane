@@ -1104,6 +1104,54 @@ async def test_no_model_override_without_tier_resolver(tmp_path: Path) -> None:
     assert "model_override" not in call
 
 
+@pytest.mark.asyncio
+async def test_run_children_parallel_does_not_use_legacy_busy_poll_sleep(
+    tmp_path: Path,
+) -> None:
+    import dan.server.concierge.tier_executors as tier_executors
+
+    concierge = _make_concierge(tmp_path)
+    executor = MultiStepExecutor(concierge, dispatcher=None)
+    executor._child_progress_event = lambda session, child: None
+
+    async def fake_run_child(child: Any, manager: Any) -> AsyncIterator[Any]:
+        yield ChatCompleteEvent(
+            message_id=f"{child.id}-done",
+            content=f"{child.task} complete",
+            graph_revision="",
+        )
+
+    executor._run_child = fake_run_child
+
+    original_sleep = tier_executors.asyncio.sleep
+
+    async def guarded_sleep(delay: float, *args: Any, **kwargs: Any) -> Any:
+        assert delay != 0.01
+        return await original_sleep(delay, *args, **kwargs)
+
+    class _Manager:
+        def update_state(self, *_: Any) -> None:
+            return None
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(tier_executors.asyncio, "sleep", guarded_sleep)
+    try:
+        children = [
+            SimpleNamespace(id="child-1", task="task 1"),
+            SimpleNamespace(id="child-2", task="task 2"),
+        ]
+        session = _FakeSession(triage=_FakeTriage())
+        events = [
+            event
+            async for event in executor._run_children_parallel(children, session, _Manager())
+        ]
+    finally:
+        monkeypatch.undo()
+
+    assert len(events) == 2
+    assert all(isinstance(event, ChatCompleteEvent) for event in events)
+
+
 # ---------------------------------------------------------------------------
 # Triage model uses tier resolver
 # ---------------------------------------------------------------------------

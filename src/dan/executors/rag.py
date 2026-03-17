@@ -206,11 +206,12 @@ class RAGExecutor:
             prompt += f"Chunk {i}:\n{chunk_text}\n\n"
 
         try:
-            result = await provider.complete(
-                messages=[{"role": "user", "content": prompt}],
-                model=context.config.llm_default_model,
-                temperature=0.0,
-            )
+            async with context.llm_slot():
+                result = await provider.complete(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=context.config.llm_default_model,
+                    temperature=0.0,
+                )
             
             import re
             text = result.text.strip()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import heapq
 import hashlib
 import json
 import logging
@@ -43,6 +44,20 @@ except ImportError:
 EventCallback = Callable[[EngineEvent], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
+_NODE_SLOT_BYPASS_TYPES = frozenset({
+    "while_loop",
+    "for_each",
+    "parallel_subagents",
+    "orchestrator",
+    "composite",
+    "agent_team",
+    "goal_loop",
+    "llm_operator",
+    "router",
+    "vote",
+    "reflection",
+    "rag",
+})
 
 _VALIDATION_WARNING_PATTERNS = (
     "schema safety bypassed",
@@ -711,6 +726,147 @@ class Engine:
                 return True
         return False
 
+    def _use_eager_dispatch(self) -> bool:
+        return bool(getattr(self.config, "eager_dispatch", False)) or os.getenv(
+            "DAN_EAGER_DISPATCH", "0",
+        ) == "1"
+
+    def _llm_max_concurrency(self) -> int | None:
+        raw = os.getenv("DAN_MAX_CONCURRENT_LLM")
+        if raw is not None and raw.strip():
+            try:
+                value = int(raw)
+                return value if value > 0 else None
+            except ValueError:
+                logger.warning("Ignoring invalid DAN_MAX_CONCURRENT_LLM=%r", raw)
+        configured = getattr(self.config, "llm_max_concurrency", None)
+        if configured is not None and configured > 0:
+            return configured
+        if self.config.max_concurrency is not None and self.config.max_concurrency > 0:
+            return self.config.max_concurrency
+        return None
+
+    @staticmethod
+    def _build_dependency_graph(
+        graph: Graph,
+        node_ids: set[str] | None = None,
+        excluded_edge_ids: set[str] | None = None,
+    ) -> tuple[dict[str, int], dict[str, list[str]]]:
+        """Build in-degree and successor maps from data edges."""
+        active_nodes = node_ids or {node.id for node in graph.nodes}
+        excluded = excluded_edge_ids or set()
+        in_degree: dict[str, int] = defaultdict(int)
+        dependents: dict[str, list[str]] = defaultdict(list)
+        for node_id in active_nodes:
+            in_degree.setdefault(node_id, 0)
+        for edge in graph.edges:
+            if not isinstance(edge, DataEdge):
+                continue
+            if edge.id in excluded:
+                continue
+            if edge.source_node_id not in active_nodes or edge.target_node_id not in active_nodes:
+                continue
+            in_degree[edge.target_node_id] += 1
+            dependents[edge.source_node_id].append(edge.target_node_id)
+        for node_id in dependents:
+            dependents[node_id] = sorted(dependents[node_id])
+        return in_degree, dependents
+
+    @staticmethod
+    def _prepare_state_for_dispatch(
+        state: ExecutionState,
+        in_degree: dict[str, int],
+        dependents: dict[str, list[str]],
+        node_ids: set[str],
+    ) -> list[str]:
+        """Normalize restored state and return the initial ready heap."""
+        for node_id in node_ids:
+            if state.node_statuses.get(node_id) == NodeStatus.RUNNING:
+                state.mark(node_id, NodeStatus.PENDING)
+
+        for node_id in sorted(node_ids):
+            if state.is_terminal(node_id):
+                for dep in dependents.get(node_id, []):
+                    in_degree[dep] = max(0, in_degree[dep] - 1)
+
+        ready: list[str] = []
+        for node_id in sorted(node_ids):
+            if state.node_statuses.get(node_id) == NodeStatus.PENDING and in_degree[node_id] == 0:
+                heapq.heappush(ready, node_id)
+        return ready
+
+    async def _execute_ready_queue(
+        self,
+        graph: Graph,
+        state: ExecutionState,
+        context: ExecutionContext,
+        *,
+        node_ids: set[str] | None = None,
+        on_node_finished: Callable[[str], Awaitable[None]] | None = None,
+        excluded_edge_ids: set[str] | None = None,
+    ) -> None:
+        """Execute acyclic graph regions eagerly as dependencies complete."""
+        active_nodes = node_ids or {node.id for node in graph.nodes}
+        in_degree, dependents = self._build_dependency_graph(
+            graph,
+            active_nodes,
+            excluded_edge_ids=excluded_edge_ids,
+        )
+        ready = self._prepare_state_for_dispatch(state, in_degree, dependents, active_nodes)
+        queued = set(ready)
+        active: dict[str, asyncio.Task[None]] = {}
+
+        while ready or active:
+            while ready:
+                node_id = heapq.heappop(ready)
+                queued.discard(node_id)
+                if state.node_statuses.get(node_id) != NodeStatus.PENDING or node_id in active:
+                    continue
+                active[node_id] = asyncio.create_task(
+                    self._guarded_execute_node(node_id, graph, state, context),
+                )
+
+            if not active:
+                break
+
+            done, _ = await asyncio.wait(
+                set(active.values()),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            finished = sorted(
+                node_id for node_id, task in active.items() if task in done
+            )
+
+            for node_id in finished:
+                task = active.pop(node_id)
+                try:
+                    await task
+                except Exception as exc:
+                    logger.exception("Scheduler task failed for node '%s'", node_id)
+                    state.mark(node_id, NodeStatus.FAILED)
+                    state.node_errors[node_id] = f"Scheduler task exception: {exc}"
+
+                for dep in dependents.get(node_id, []):
+                    in_degree[dep] = max(0, in_degree[dep] - 1)
+                    if (
+                        in_degree[dep] == 0
+                        and state.node_statuses.get(dep) == NodeStatus.PENDING
+                        and dep not in queued
+                        and dep not in active
+                    ):
+                        heapq.heappush(ready, dep)
+                        queued.add(dep)
+
+                if on_node_finished is not None:
+                    await on_node_finished(node_id)
+
+                if self._check_halt(state):
+                    for pending_task in active.values():
+                        pending_task.cancel()
+                    if active:
+                        await asyncio.gather(*active.values(), return_exceptions=True)
+                    return
+
     async def _execute(
         self,
         graph: Graph,
@@ -841,6 +997,15 @@ class Engine:
                 },
             ))
 
+        eager_dispatch = self._use_eager_dispatch()
+        node_sem: asyncio.Semaphore | None = None
+        if self.config.max_concurrency is not None and self.config.max_concurrency > 0:
+            node_sem = asyncio.Semaphore(self.config.max_concurrency)
+        llm_sem: asyncio.Semaphore | None = None
+        llm_limit = self._llm_max_concurrency()
+        if llm_limit is not None:
+            llm_sem = asyncio.Semaphore(llm_limit)
+
         context = self._make_context(
             state, shared_context, artifacts, local_state, graph,
             session_id=session_id, memory_writes=memory_writes,
@@ -849,6 +1014,8 @@ class Engine:
             model_selector=model_selector,
             cost_tracker=cost_tracker,
             tier_tracker=getattr(self.config, "tier_tracker", None),
+            node_semaphore=node_sem,
+            llm_semaphore=llm_sem,
         )
         context._node_result_cache = node_result_cache
         context._semantic_cache = semantic_cache
@@ -861,47 +1028,105 @@ class Engine:
         if ecp is not None:
             context._error_context_provider = ecp
 
-        global_sem: asyncio.Semaphore | None = None
-        if self.config.max_concurrency is not None and self.config.max_concurrency > 0:
-            global_sem = asyncio.Semaphore(self.config.max_concurrency)
-
         levels, back_edges, cycle_regions = _topological_levels_with_backedges(graph)
 
+        checkpoint_task: asyncio.Task[None] | None = None
+        completed_since_checkpoint = 0
+        last_checkpoint_at = _time.monotonic()
+        checkpoint_batch_size = self._checkpoint_batch_size()
+        checkpoint_interval_sec = self._checkpoint_interval_sec()
+
+        async def _await_checkpoint_task() -> None:
+            nonlocal checkpoint_task
+            if checkpoint_task is None:
+                return
+            try:
+                await checkpoint_task
+            except Exception:
+                logger.warning("Background checkpoint save failed", exc_info=True)
+            finally:
+                checkpoint_task = None
+
+        async def _maybe_checkpoint(trigger: str = "", *, force: bool = False) -> None:
+            nonlocal checkpoint_task, completed_since_checkpoint, last_checkpoint_at
+            if self.checkpoint_store is None:
+                return
+            if not force:
+                completed_since_checkpoint += 1
+                elapsed = _time.monotonic() - last_checkpoint_at
+                if completed_since_checkpoint < checkpoint_batch_size and elapsed < checkpoint_interval_sec:
+                    return
+                trigger = "batch" if completed_since_checkpoint >= checkpoint_batch_size else "timer"
+
+            await self._flush_memory_writes(
+                context, workflow_id, session_id, state.run_id,
+            )
+            checkpoint = self._build_checkpoint_payload(
+                state,
+                shared_context,
+                artifacts,
+                local_state,
+                cost_tracker=cost_tracker,
+                graph=graph,
+                graph_id=workflow_id or "",
+                checkpoint_trigger=trigger,
+            )
+            await _await_checkpoint_task()
+            checkpoint_task = asyncio.create_task(
+                self._persist_checkpoint_payload(state.run_id, checkpoint),
+            )
+            completed_since_checkpoint = 0
+            last_checkpoint_at = _time.monotonic()
+
         if not back_edges:
-            for level in levels:
-                ready = [
-                    nid for nid in level
-                    if state.node_statuses.get(nid) == NodeStatus.PENDING
-                ]
-                if not ready:
-                    continue
-
-                tasks = [
-                    self._guarded_execute_node(nid, graph, state, context, global_sem)
-                    for nid in ready
-                ]
-                await asyncio.gather(*tasks)
-
-                await self._flush_memory_writes(
-                    context, workflow_id, session_id, state.run_id,
+            if eager_dispatch:
+                await self._execute_ready_queue(
+                    graph,
+                    state,
+                    context,
+                    on_node_finished=_maybe_checkpoint,
                 )
-                if self.checkpoint_store is not None:
-                    await self._save_checkpoint(
-                        state, shared_context, artifacts, local_state,
-                        graph=graph, graph_id=workflow_id or "",
-                    )
-
                 if self._check_halt(state):
+                    await _maybe_checkpoint("halt", force=True)
+                else:
+                    await _maybe_checkpoint("run_end", force=True)
+                await _await_checkpoint_task()
+            else:
+                for level in levels:
+                    ready = [
+                        nid for nid in level
+                        if state.node_statuses.get(nid) == NodeStatus.PENDING
+                    ]
+                    if not ready:
+                        continue
+
+                    tasks = [
+                        self._guarded_execute_node(nid, graph, state, context)
+                        for nid in ready
+                    ]
+                    await asyncio.gather(*tasks)
+
+                    await self._flush_memory_writes(
+                        context, workflow_id, session_id, state.run_id,
+                    )
                     if self.checkpoint_store is not None:
                         await self._save_checkpoint(
                             state, shared_context, artifacts, local_state,
-                            graph=graph, graph_id=workflow_id or "",
+                            graph=graph, graph_id=workflow_id or "", checkpoint_trigger="level",
                         )
-                    break
+
+                    if self._check_halt(state):
+                        if self.checkpoint_store is not None:
+                            await self._save_checkpoint(
+                                state, shared_context, artifacts, local_state,
+                                graph=graph, graph_id=workflow_id or "", checkpoint_trigger="halt",
+                            )
+                        break
         else:
             await self._execute_with_cycles(
                 graph, state, context, levels, back_edges, cycle_regions,
-                shared_context, artifacts, local_state, global_sem,
+                shared_context, artifacts, local_state,
+                cost_tracker=cost_tracker,
                 graph_id=workflow_id or "",
             )
 
@@ -967,14 +1192,9 @@ class Engine:
         graph: Graph,
         state: ExecutionState,
         context: ExecutionContext,
-        semaphore: asyncio.Semaphore | None = None,
     ) -> None:
-        """Optionally wrap _execute_node with a global concurrency semaphore."""
-        if semaphore is not None:
-            async with semaphore:
-                await self._execute_node(node_id, graph, state, context)
-        else:
-            await self._execute_node(node_id, graph, state, context)
+        """Run a node through the executor path."""
+        await self._execute_node(node_id, graph, state, context)
 
     # ------------------------------------------------------------------
     # Cycle-aware execution
@@ -991,12 +1211,241 @@ class Engine:
         shared_context: SharedContextStore,
         artifacts: ArtifactStore,
         local_state: LocalStateManager,
-        global_sem: asyncio.Semaphore | None = None,
+        cost_tracker: Any | None = None,
         *,
         skip_checkpoint: bool = False,
         graph_id: str = "",
     ) -> None:
         """Execute graph with cycle regions handled via bounded iteration."""
+        if self._use_eager_dispatch():
+            back_edge_ids = {
+                edge.id
+                for edge in graph.edges
+                if (
+                    isinstance(edge, DataEdge)
+                    and edge.source_node_id in back_edges
+                    and back_edges.get(edge.source_node_id) == edge.target_node_id
+                    and edge.source_port in ("continue", "loop")
+                )
+            }
+            cycle_gate_input_edge_ids = {
+                edge.id
+                for gate_id, nodes in cycle_regions.items()
+                for edge in graph.edges
+                if (
+                    isinstance(edge, DataEdge)
+                    and edge.target_node_id == gate_id
+                    and edge.source_node_id in (nodes - {gate_id})
+                )
+            }
+            blocked_cycle_nodes = {
+                nid
+                for gate_id, nodes in cycle_regions.items()
+                for nid in nodes
+                if nid != gate_id
+            }
+            in_degree, dependents = self._build_dependency_graph(
+                graph,
+                excluded_edge_ids=back_edge_ids | cycle_gate_input_edge_ids,
+            )
+
+            for node_id, status in list(state.node_statuses.items()):
+                if status == NodeStatus.RUNNING:
+                    state.mark(node_id, NodeStatus.PENDING)
+
+            ready: list[str] = []
+            queued: set[str] = set()
+            cycle_resume_gates: list[str] = []
+            for node_id in sorted(in_degree):
+                if state.is_terminal(node_id):
+                    gate_outputs = state.port_data.get_node_outputs(node_id)
+                    if (
+                        node_id in cycle_regions
+                        and state.node_statuses.get(node_id) == NodeStatus.COMPLETED
+                        and any(port in ("continue", "loop") for port in gate_outputs)
+                    ):
+                        cycle_resume_gates.append(node_id)
+                        continue
+                    for dep in dependents.get(node_id, []):
+                        in_degree[dep] = max(0, in_degree[dep] - 1)
+            for node_id in sorted(in_degree):
+                if (
+                    node_id not in blocked_cycle_nodes
+                    and node_id not in cycle_resume_gates
+                    and state.node_statuses.get(node_id) == NodeStatus.PENDING
+                    and in_degree[node_id] == 0
+                ):
+                    heapq.heappush(ready, node_id)
+                    queued.add(node_id)
+
+            active: dict[str, asyncio.Task[None]] = {}
+            cycle_tasks: dict[str, asyncio.Task[None]] = {}
+            executed_gates: set[str] = set()
+
+            async def _checkpoint(trigger: str) -> None:
+                if skip_checkpoint or self.checkpoint_store is None:
+                    return
+                await self._save_checkpoint(
+                    state,
+                    shared_context,
+                    artifacts,
+                    local_state,
+                    cost_tracker=cost_tracker,
+                    graph=graph,
+                    graph_id=graph_id,
+                    checkpoint_trigger=trigger,
+                )
+
+            async def _mark_cycle_region_skipped(gate_id: str) -> None:
+                for node_id in sorted(cycle_regions.get(gate_id, set()) - {gate_id}):
+                    if state.node_statuses.get(node_id) != NodeStatus.PENDING:
+                        continue
+                    state.mark(node_id, NodeStatus.SKIPPED)
+                    node = graph.node_by_id(node_id)
+                    await self._emit(EngineEvent(
+                        event_type=EventType.NODE_SKIPPED,
+                        run_id=state.run_id,
+                        node_id=node_id,
+                        node_type=getattr(node, "node_type", None),
+                    ))
+
+            async def _run_cycle_task(gate_id: str, back_edge_target: str) -> None:
+                await _checkpoint("cycle_boundary")
+                await self._iterate_cycle(
+                    graph,
+                    state,
+                    context,
+                    gate_id,
+                    cycle_regions[gate_id],
+                    back_edge_target,
+                    getattr(graph.node_by_id(gate_id), "max_iterations", 10),
+                    levels,
+                )
+                await _checkpoint("cycle_boundary")
+
+            for gate_id in cycle_resume_gates:
+                if gate_id not in back_edges or gate_id in cycle_tasks:
+                    continue
+                cycle_tasks[gate_id] = asyncio.create_task(
+                    _run_cycle_task(gate_id, back_edges[gate_id]),
+                )
+
+            while ready or active or cycle_tasks:
+                while ready:
+                    node_id = heapq.heappop(ready)
+                    queued.discard(node_id)
+                    if state.node_statuses.get(node_id) != NodeStatus.PENDING or node_id in active:
+                        continue
+                    active[node_id] = asyncio.create_task(
+                        self._guarded_execute_node(node_id, graph, state, context),
+                    )
+
+                if not active:
+                    if not cycle_tasks:
+                        break
+
+                done, _ = await asyncio.wait(
+                    set(active.values()) | set(cycle_tasks.values()),
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                finished = sorted(
+                    node_id for node_id, task in active.items() if task in done
+                )
+                finished_cycles = sorted(
+                    gate_id for gate_id, task in cycle_tasks.items() if task in done
+                )
+
+                for node_id in finished:
+                    task = active.pop(node_id)
+                    try:
+                        await task
+                    except Exception as exc:
+                        logger.exception("Cycle-aware scheduler task failed for node '%s'", node_id)
+                        state.mark(node_id, NodeStatus.FAILED)
+                        state.node_errors[node_id] = f"Scheduler task exception: {exc}"
+
+                    if node_id in cycle_regions and node_id not in executed_gates:
+                        gate_outputs = state.port_data.get_node_outputs(node_id)
+                        active_branch = None
+                        for port_name in gate_outputs:
+                            if port_name in ("continue", "loop"):
+                                active_branch = port_name
+                                break
+                        back_edge_target = back_edges.get(node_id)
+                        if active_branch is not None and back_edge_target:
+                            cycle_tasks[node_id] = asyncio.create_task(
+                                _run_cycle_task(node_id, back_edge_target),
+                            )
+                            continue
+                        else:
+                            await _mark_cycle_region_skipped(node_id)
+                        executed_gates.add(node_id)
+
+                    for dep in dependents.get(node_id, []):
+                        in_degree[dep] = max(0, in_degree[dep] - 1)
+                        if (
+                            dep not in blocked_cycle_nodes
+                            and in_degree[dep] == 0
+                            and state.node_statuses.get(dep) == NodeStatus.PENDING
+                            and dep not in queued
+                            and dep not in active
+                        ):
+                            heapq.heappush(ready, dep)
+                            queued.add(dep)
+
+                    if self._check_halt(state):
+                        for pending_task in active.values():
+                            pending_task.cancel()
+                        for pending_task in cycle_tasks.values():
+                            pending_task.cancel()
+                        if active or cycle_tasks:
+                            await asyncio.gather(
+                                *active.values(),
+                                *cycle_tasks.values(),
+                                return_exceptions=True,
+                            )
+                        await _checkpoint("halt")
+                        return
+
+                for gate_id in finished_cycles:
+                    task = cycle_tasks.pop(gate_id)
+                    try:
+                        await task
+                    except Exception as exc:
+                        logger.exception("Cycle iteration task failed for gate '%s'", gate_id)
+                        state.mark(gate_id, NodeStatus.FAILED)
+                        state.node_errors[gate_id] = f"Cycle iteration exception: {exc}"
+                    executed_gates.add(gate_id)
+                    for dep in dependents.get(gate_id, []):
+                        in_degree[dep] = max(0, in_degree[dep] - 1)
+                        if (
+                            dep not in blocked_cycle_nodes
+                            and in_degree[dep] == 0
+                            and state.node_statuses.get(dep) == NodeStatus.PENDING
+                            and dep not in queued
+                            and dep not in active
+                            and dep not in cycle_tasks
+                        ):
+                            heapq.heappush(ready, dep)
+                            queued.add(dep)
+
+                    if self._check_halt(state):
+                        for pending_task in active.values():
+                            pending_task.cancel()
+                        for pending_task in cycle_tasks.values():
+                            pending_task.cancel()
+                        if active or cycle_tasks:
+                            await asyncio.gather(
+                                *active.values(),
+                                *cycle_tasks.values(),
+                                return_exceptions=True,
+                            )
+                        await _checkpoint("halt")
+                        return
+
+            await _checkpoint("level")
+            return
+
         executed_gates: set[str] = set()
 
         for level in levels:
@@ -1008,7 +1457,7 @@ class Engine:
                 continue
 
             tasks = [
-                self._guarded_execute_node(nid, graph, state, context, global_sem)
+                self._guarded_execute_node(nid, graph, state, context)
                 for nid in ready
             ]
             await asyncio.gather(*tasks)
@@ -1017,7 +1466,8 @@ class Engine:
                 if not skip_checkpoint and self.checkpoint_store is not None:
                     await self._save_checkpoint(
                         state, shared_context, artifacts, local_state,
-                        graph=graph, graph_id=graph_id,
+                            cost_tracker=cost_tracker,
+                            graph=graph, graph_id=graph_id, checkpoint_trigger="halt",
                     )
                 break
 
@@ -1040,17 +1490,39 @@ class Engine:
                     cycle_nodes = cycle_regions[nid]
                     back_edge_target = back_edges.get(nid)
                     if back_edge_target:
+                        if not skip_checkpoint and self.checkpoint_store is not None:
+                            await self._save_checkpoint(
+                                state,
+                                shared_context,
+                                artifacts,
+                                local_state,
+                                cost_tracker=cost_tracker,
+                                graph=graph,
+                                graph_id=graph_id,
+                                checkpoint_trigger="cycle_boundary",
+                            )
                         await self._iterate_cycle(
                             graph, state, context, nid, cycle_nodes,
                             back_edge_target, max_iter, levels,
-                            global_sem,
                         )
+                        if not skip_checkpoint and self.checkpoint_store is not None:
+                            await self._save_checkpoint(
+                                state,
+                                shared_context,
+                                artifacts,
+                                local_state,
+                                cost_tracker=cost_tracker,
+                                graph=graph,
+                                graph_id=graph_id,
+                                checkpoint_trigger="cycle_boundary",
+                            )
                         executed_gates.add(nid)
 
             if not skip_checkpoint and self.checkpoint_store is not None:
                 await self._save_checkpoint(
                     state, shared_context, artifacts, local_state,
-                    graph=graph, graph_id=graph_id,
+                    cost_tracker=cost_tracker,
+                    graph=graph, graph_id=graph_id, checkpoint_trigger="level",
                 )
 
     async def _iterate_cycle(
@@ -1063,10 +1535,19 @@ class Engine:
         back_edge_target: str,
         max_iterations: int,
         levels: list[list[str]],
-        global_sem: asyncio.Semaphore | None = None,
     ) -> None:
         """Re-execute cycle region nodes until gate emits 'done' or max iterations."""
         gate_node = graph.node_by_id(gate_id)
+        back_edge_ids = {
+            edge.id
+            for edge in graph.edges
+            if (
+                isinstance(edge, DataEdge)
+                and edge.source_node_id == gate_id
+                and edge.target_node_id == back_edge_target
+                and edge.source_port in ("continue", "loop")
+            )
+        }
         has_state_schema = (
             gate_node is not None
             and getattr(gate_node, 'state_schema', None) is not None
@@ -1125,26 +1606,37 @@ class Engine:
                             f"__input__{back_edge_target}", port_name, value,
                         )
 
-                cycle_levels = [
-                    [nid for nid in level if nid in cycle_nodes]
-                    for level in levels
-                ]
-
-                for level in cycle_levels:
-                    ready = [
-                        nid for nid in level
-                        if state.node_statuses.get(nid) == NodeStatus.PENDING
-                    ]
-                    if not ready:
-                        continue
-                    tasks = [
-                        self._guarded_execute_node(nid, graph, state, context, global_sem)
-                        for nid in ready
-                    ]
-                    await asyncio.gather(*tasks)
-
+                if self._use_eager_dispatch():
+                    await self._execute_ready_queue(
+                        graph,
+                        state,
+                        context,
+                        node_ids=cycle_nodes,
+                        excluded_edge_ids=back_edge_ids,
+                    )
                     if self._check_halt(state):
                         return
+                else:
+                    cycle_levels = [
+                        [nid for nid in level if nid in cycle_nodes]
+                        for level in levels
+                    ]
+
+                    for level in cycle_levels:
+                        ready = [
+                            nid for nid in level
+                            if state.node_statuses.get(nid) == NodeStatus.PENDING
+                        ]
+                        if not ready:
+                            continue
+                        tasks = [
+                            self._guarded_execute_node(nid, graph, state, context)
+                            for nid in ready
+                        ]
+                        await asyncio.gather(*tasks)
+
+                        if self._check_halt(state):
+                            return
 
                 gate_outputs = state.port_data.get_node_outputs(gate_id)
                 exiting = "done" in gate_outputs or "false" in gate_outputs
@@ -1451,7 +1943,11 @@ class Engine:
 
         if not used_node_cache and not used_semantic_cache:
             try:
-                result = await executor.execute(node, inputs, context)
+                if node_type_str in _NODE_SLOT_BYPASS_TYPES:
+                    result = await executor.execute(node, inputs, context)
+                else:
+                    async with context.node_slot():
+                        result = await executor.execute(node, inputs, context)
             except Exception as exc:
                 logger.exception("Executor raised for node '%s'", node_id)
                 result = NodeResult(
@@ -1794,6 +2290,8 @@ class Engine:
         model_selector: Any | None = None,
         cost_tracker: Any | None = None,
         tier_tracker: Any | None = None,
+        node_semaphore: asyncio.Semaphore | None = None,
+        llm_semaphore: asyncio.Semaphore | None = None,
     ) -> ExecutionContext:
         tool_registry = None
         if self.executor_registry.has("tool_operator"):
@@ -1825,6 +2323,8 @@ class Engine:
                 model_selector=model_selector,
                 cost_tracker=cost_tracker,
                 tier_tracker=tier_tracker,
+                parent_node_semaphore=node_semaphore,
+                parent_llm_semaphore=llm_semaphore,
             )
 
         return ExecutionContext(
@@ -1851,6 +2351,8 @@ class Engine:
             human_renderer=self.human_renderer,
             graph=graph,
             tier_tracker=tier_tracker,
+            node_semaphore=node_semaphore,
+            llm_semaphore=llm_semaphore,
         )
 
     async def _run_subgraph(
@@ -1873,8 +2375,17 @@ class Engine:
         model_selector: Any | None = None,
         cost_tracker: Any | None = None,
         tier_tracker: Any | None = None,
+        parent_node_semaphore: asyncio.Semaphore | None = None,
+        parent_llm_semaphore: asyncio.Semaphore | None = None,
     ) -> dict[str, Any]:
         """Execute a named sub-graph and return its outputs."""
+        max_subgraph_depth = int(getattr(self.config, "max_subgraph_depth", 32))
+        if max_subgraph_depth > 0 and len(layer_path) > max_subgraph_depth:
+            raise RuntimeError(
+                f"Subgraph nesting depth {len(layer_path)} exceeds configured limit "
+                f"{max_subgraph_depth}"
+            )
+
         sub_graph = parent_graph.sub_graphs.get(sub_graph_key)
         if sub_graph is None and sub_graph_key.startswith("block:"):
             block_ref = sub_graph_key[len("block:"):]
@@ -1922,6 +2433,8 @@ class Engine:
             model_selector=model_selector,
             cost_tracker=cost_tracker,
             tier_tracker=tier_tracker,
+            node_semaphore=parent_node_semaphore,
+            llm_semaphore=parent_llm_semaphore,
         )
 
         if inputs:
@@ -1946,33 +2459,37 @@ class Engine:
                 for port_name, value in port_values.items():
                     sub_state.port_data.set(f"__input__{node_id}", port_name, value)
 
-        global_sem: asyncio.Semaphore | None = None
-        if self.config.max_concurrency is not None and self.config.max_concurrency > 0:
-            global_sem = asyncio.Semaphore(self.config.max_concurrency)
-
         levels, back_edges, cycle_regions = _topological_levels_with_backedges(sub_graph)
 
         if not back_edges:
-            for level in levels:
-                ready = [
-                    nid for nid in level
-                    if sub_state.node_statuses.get(nid) == NodeStatus.PENDING
-                ]
-                if not ready:
-                    continue
+            if self._use_eager_dispatch():
+                await self._execute_ready_queue(
+                    sub_graph,
+                    sub_state,
+                    sub_context,
+                )
+            else:
+                for level in levels:
+                    ready = [
+                        nid for nid in level
+                        if sub_state.node_statuses.get(nid) == NodeStatus.PENDING
+                    ]
+                    if not ready:
+                        continue
 
-                tasks = [
-                    self._guarded_execute_node(nid, sub_graph, sub_state, sub_context, global_sem)
-                    for nid in ready
-                ]
-                await asyncio.gather(*tasks)
+                    tasks = [
+                        self._guarded_execute_node(nid, sub_graph, sub_state, sub_context)
+                        for nid in ready
+                    ]
+                    await asyncio.gather(*tasks)
 
-                if self._check_halt(sub_state):
-                    break
+                    if self._check_halt(sub_state):
+                        break
         else:
             await self._execute_with_cycles(
                 sub_graph, sub_state, sub_context, levels, back_edges, cycle_regions,
-                shared_context, artifacts, local_state, global_sem,
+                shared_context, artifacts, local_state,
+                cost_tracker=cost_tracker,
                 skip_checkpoint=True, graph_id="",
             )
 
@@ -2013,6 +2530,92 @@ class Engine:
                 exc_info=True,
             )
 
+    def _checkpoint_batch_size(self) -> int:
+        raw = os.getenv("DAN_CHECKPOINT_BATCH_SIZE")
+        if raw is not None and raw.strip():
+            try:
+                value = int(raw)
+                return max(1, value)
+            except ValueError:
+                logger.warning("Ignoring invalid DAN_CHECKPOINT_BATCH_SIZE=%r", raw)
+        return max(1, int(getattr(self.config, "checkpoint_batch_size", 5)))
+
+    def _checkpoint_interval_sec(self) -> float:
+        raw = os.getenv("DAN_CHECKPOINT_INTERVAL_SEC")
+        if raw is not None and raw.strip():
+            try:
+                value = float(raw)
+                return max(0.1, value)
+            except ValueError:
+                logger.warning("Ignoring invalid DAN_CHECKPOINT_INTERVAL_SEC=%r", raw)
+        return max(0.1, float(getattr(self.config, "checkpoint_interval_sec", 10.0)))
+
+    def _build_checkpoint_payload(
+        self,
+        state: ExecutionState,
+        shared_context: SharedContextStore,
+        artifacts: ArtifactStore,
+        local_state: LocalStateManager,
+        cost_tracker: Any | None = None,
+        *,
+        graph: Graph | None = None,
+        graph_id: str = "",
+        checkpoint_trigger: str = "",
+    ) -> dict[str, Any]:
+        checkpoint: dict[str, Any] = {
+            "state": state.snapshot(),
+            "shared_context": shared_context.snapshot(),
+            "artifacts": artifacts.snapshot(),
+            "local_state": local_state.snapshot(),
+        }
+        if cost_tracker is not None:
+            checkpoint["cost_tracker"] = cost_tracker.snapshot()
+
+        from dan.engine.checkpoint import CheckpointData, compute_graph_revision_hash
+
+        completed_ids = [
+            nid for nid, s in state.node_statuses.items()
+            if s == NodeStatus.COMPLETED
+        ]
+        node_outputs: dict[str, Any] = {}
+        for nid in completed_ids:
+            outputs = state.port_data.get_node_outputs(nid)
+            if outputs:
+                node_outputs[nid] = outputs
+
+        pending_ids = [
+            nid for nid, s in state.node_statuses.items()
+            if s == NodeStatus.RUNNING
+        ]
+
+        graph_rev: str | None = None
+        if graph is not None:
+            try:
+                graph_rev = compute_graph_revision_hash(graph)
+            except Exception:
+                pass
+
+        checkpoint_data = CheckpointData(
+            run_id=state.run_id,
+            graph_id=graph_id,
+            graph_revision=graph_rev,
+            completed_node_ids=completed_ids,
+            node_outputs=node_outputs,
+            pending_node_ids=pending_ids,
+            checkpoint_trigger=checkpoint_trigger,
+        )
+        checkpoint["checkpoint_data"] = checkpoint_data.model_dump()
+        return checkpoint
+
+    async def _persist_checkpoint_payload(
+        self,
+        run_id: str,
+        checkpoint: dict[str, Any],
+    ) -> None:
+        if self.checkpoint_store is None:
+            return
+        await self.checkpoint_store.save(run_id, checkpoint)
+
     async def _flush_memory_writes(
         self,
         context: ExecutionContext,
@@ -2030,7 +2633,28 @@ class Engine:
         writes = context.drain_memory_writes()
         if not writes:
             return
+        deferred_writes: list[MemoryWriteRequest] = []
         for req in writes:
+            owner_node_id = req.owner_node_id or req.writer_node_id
+            if (
+                owner_node_id
+                and owner_node_id in context.state.node_statuses
+            ):
+                owner_status = context.state.node_statuses[owner_node_id]
+                if owner_status == NodeStatus.COMPLETED:
+                    pass
+                elif owner_status in (NodeStatus.FAILED, NodeStatus.SKIPPED):
+                    logger.warning(
+                        "Dropping memory write for key '%s' from non-completed owner '%s' (%s)",
+                        req.key,
+                        owner_node_id,
+                        owner_status.value,
+                    )
+                    continue
+                else:
+                    deferred_writes.append(req)
+                    continue
+
             if req.scope == MemoryScope.GLOBAL:
                 target_wf, target_sess = "_global", "_global"
             elif req.scope == MemoryScope.WORKFLOW:
@@ -2050,6 +2674,7 @@ class Engine:
                 scope=req.scope,
                 source_run_id=run_id,
                 writer_node_id=req.writer_node_id,
+                owner_node_id=req.owner_node_id,
                 write_mode=req.mode,
             )
             try:
@@ -2058,6 +2683,7 @@ class Engine:
                 logger.warning(
                     "Memory write failed for key '%s'", req.key, exc_info=True,
                 )
+        context.restore_memory_writes(deferred_writes)
 
     async def _save_checkpoint(
         self,
@@ -2069,48 +2695,21 @@ class Engine:
         *,
         graph: Graph | None = None,
         graph_id: str = "",
+        checkpoint_trigger: str = "",
     ) -> None:
         if self.checkpoint_store is None:
             return
-        checkpoint: dict[str, Any] = {
-            "state": state.snapshot(),
-            "shared_context": shared_context.snapshot(),
-            "artifacts": artifacts.snapshot(),
-            "local_state": local_state.snapshot(),
-        }
-        if cost_tracker is not None:
-            checkpoint["cost_tracker"] = cost_tracker.snapshot()
-
-        # -- Extended checkpoint metadata for checkpoint portals --------
-        from dan.engine.checkpoint import CheckpointData, compute_graph_revision_hash
-
-        completed_ids = [
-            nid for nid, s in state.node_statuses.items()
-            if s == NodeStatus.COMPLETED
-        ]
-        node_outputs: dict[str, Any] = {}
-        for nid in completed_ids:
-            outputs = state.port_data.get_node_outputs(nid)
-            if outputs:
-                node_outputs[nid] = outputs
-
-        graph_rev: str | None = None
-        if graph is not None:
-            try:
-                graph_rev = compute_graph_revision_hash(graph)
-            except Exception:
-                pass
-
-        checkpoint_data = CheckpointData(
-            run_id=state.run_id,
+        checkpoint = self._build_checkpoint_payload(
+            state,
+            shared_context,
+            artifacts,
+            local_state,
+            cost_tracker=cost_tracker,
+            graph=graph,
             graph_id=graph_id,
-            graph_revision=graph_rev,
-            completed_node_ids=completed_ids,
-            node_outputs=node_outputs,
+            checkpoint_trigger=checkpoint_trigger,
         )
-        checkpoint["checkpoint_data"] = checkpoint_data.model_dump()
-
-        await self.checkpoint_store.save(state.run_id, checkpoint)
+        await self._persist_checkpoint_payload(state.run_id, checkpoint)
 
     @staticmethod
     def _aggregate_usage(state: ExecutionState) -> dict[str, Any]:

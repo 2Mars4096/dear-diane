@@ -972,10 +972,11 @@ class RouterExecutor:
 
         if context.provider_registry is not None:
             provider = context.provider_registry.resolve(model)
-            result = await provider.complete(
-                messages=messages, model=model, temperature=effective_temp,
-                **extra_kwargs,
-            )
+            async with context.llm_slot():
+                result = await provider.complete(
+                    messages=messages, model=model, temperature=effective_temp,
+                    **extra_kwargs,
+                )
             return result.text.strip()
 
         from openai import AsyncOpenAI
@@ -983,11 +984,12 @@ class RouterExecutor:
             api_key=context.config.llm_api_key,
             base_url=context.config.llm_base_url,
         )
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=effective_temp,
-        )
+        async with context.llm_slot():
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=effective_temp,
+            )
         return (resp.choices[0].message.content or "").strip()
 
 
@@ -1952,12 +1954,13 @@ class OrchestratorExecutor:
                 for k, v in tier_params.items():
                     if k not in ("temperature", "max_tokens"):
                         extra_kwargs[k] = v
-            return await provider.complete(
-                messages=messages,
-                model=model,
-                temperature=effective_temp,
-                **extra_kwargs,
-            )
+            async with context.llm_slot():
+                return await provider.complete(
+                    messages=messages,
+                    model=model,
+                    temperature=effective_temp,
+                    **extra_kwargs,
+                )
 
         from openai import AsyncOpenAI
 
@@ -1965,12 +1968,13 @@ class OrchestratorExecutor:
             api_key=context.config.llm_api_key,
             base_url=context.config.llm_base_url,
         )
-        resp = await client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=0.0,
-            tools=OrchestratorExecutor.TOOL_SCHEMAS,
-        )
+        async with context.llm_slot():
+            resp = await client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.0,
+                tools=OrchestratorExecutor.TOOL_SCHEMAS,
+            )
         msg = resp.choices[0].message
         tool_calls_raw = None
         if msg.tool_calls:
@@ -2107,26 +2111,27 @@ class VoteExecutor:
         semaphore = asyncio.Semaphore(node.parallelism)
 
         async def _call(index: int, model: str) -> dict[str, Any] | None:
-            async with semaphore:
-                try:
-                    result = await self._call_llm(context, model, prompt, node)
-                    await context.emit_event(
-                        event_type="vote_cast",
-                        node_id=node.id,
-                        node_type="vote",
-                        data={"index": index, "model": model},
-                    )
-                    cost = self._compute_cost(model, result.usage)
-                    return {
-                        "index": index,
-                        "model": model,
-                        "text": result.text,
-                        "usage": result.usage,
-                        "cost": cost,
-                    }
-                except Exception as exc:
-                    logger.warning("Vote %d (%s) failed: %s", index, model, exc)
-                    return None
+            async with context.node_slot():
+                async with semaphore:
+                    try:
+                        result = await self._call_llm(context, model, prompt, node)
+                        await context.emit_event(
+                            event_type="vote_cast",
+                            node_id=node.id,
+                            node_type="vote",
+                            data={"index": index, "model": model},
+                        )
+                        cost = self._compute_cost(model, result.usage)
+                        return {
+                            "index": index,
+                            "model": model,
+                            "text": result.text,
+                            "usage": result.usage,
+                            "cost": cost,
+                        }
+                    except Exception as exc:
+                        logger.warning("Vote %d (%s) failed: %s", index, model, exc)
+                        return None
 
         tasks = [_call(i, m) for i, m in candidates]
         timeout = getattr(node, "timeout_seconds", None)
@@ -2230,18 +2235,20 @@ class VoteExecutor:
 
         if context.provider_registry is not None:
             provider = context.provider_registry.resolve(model)
-            return await provider.complete(
-                messages=messages, model=model, temperature=node.temperature,
-            )
+            async with context.llm_slot():
+                return await provider.complete(
+                    messages=messages, model=model, temperature=node.temperature,
+                )
 
         from openai import AsyncOpenAI
         client = AsyncOpenAI(
             api_key=context.config.llm_api_key,
             base_url=context.config.llm_base_url,
         )
-        resp = await client.chat.completions.create(
-            model=model, messages=messages, temperature=node.temperature,
-        )
+        async with context.llm_slot():
+            resp = await client.chat.completions.create(
+                model=model, messages=messages, temperature=node.temperature,
+            )
         from dan.providers import CompletionResult
         text = resp.choices[0].message.content or ""
         usage = {
@@ -2346,9 +2353,10 @@ class VoteExecutor:
         try:
             if context.provider_registry is not None:
                 provider = context.provider_registry.resolve(judge_model)
-                result = await provider.complete(
-                    messages=messages, model=judge_model, temperature=0.0,
-                )
+                async with context.llm_slot():
+                    result = await provider.complete(
+                        messages=messages, model=judge_model, temperature=0.0,
+                    )
                 judge_text = result.text.strip()
             else:
                 judge_text = "0"
