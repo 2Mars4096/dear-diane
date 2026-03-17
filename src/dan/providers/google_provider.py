@@ -75,6 +75,96 @@ class GoogleProvider:
         obj = part._pb if hasattr(part, "_pb") else part
         return self._message_to_dict(obj, preserving_proto_field_name=True)
 
+    @classmethod
+    def _to_gemini_messages(
+        cls,
+        messages: list[dict[str, Any]],
+    ) -> tuple[str | None, list[dict[str, Any]]]:
+        """Convert OpenAI-style messages to plain Gemini chat history dicts.
+
+        This compatibility helper avoids requiring protobuf objects during
+        tests or when using older ``start_chat()``-style Gemini clients.
+        """
+        system_parts: list[str] = []
+        history: list[dict[str, Any]] = []
+        pending_tool_parts: list[dict[str, Any]] = []
+        tool_name_by_id: dict[str, str] = {}
+
+        def flush_tool_parts() -> None:
+            nonlocal pending_tool_parts
+            if pending_tool_parts:
+                history.append({"role": "user", "parts": pending_tool_parts})
+                pending_tool_parts = []
+
+        for msg in messages:
+            role = str(msg.get("role") or "user")
+            content = msg.get("content", "")
+            if role == "system":
+                system_parts.append(str(content or ""))
+                continue
+
+            if role == "tool":
+                tool_call_id = str(msg.get("tool_call_id") or "").strip()
+                tool_name = tool_name_by_id.get(tool_call_id, "")
+                if tool_name:
+                    pending_tool_parts.append({
+                        "function_response": {
+                            "name": tool_name,
+                            "response": {"result": str(content or "")},
+                        }
+                    })
+                continue
+
+            flush_tool_parts()
+            gemini_role = "model" if role == "assistant" else "user"
+            parts: list[dict[str, Any]] = []
+            if isinstance(content, str) and content:
+                parts.append({"text": content})
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        parts.append({"text": str(part.get("text") or "")})
+
+            if role == "assistant":
+                for tc in msg.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        continue
+                    func = tc.get("function")
+                    if not isinstance(func, dict):
+                        continue
+                    name = str(func.get("name") or "").strip()
+                    if not name:
+                        continue
+                    parts.append({
+                        "function_call": {
+                            "name": name,
+                            "args": cls._parse_tool_arguments(func.get("arguments")),
+                        }
+                    })
+                    tool_name_by_id[str(tc.get("id") or "").strip()] = name
+
+            history.append({"role": gemini_role, "parts": parts})
+
+        flush_tool_parts()
+        system_text = "\n\n".join(part for part in system_parts if part) or None
+        return system_text, history
+
+    def _serialize_assistant_message(
+        self,
+        *,
+        text: str,
+        tool_calls: list[dict[str, Any]] | None,
+        parts: list[Any],
+    ) -> dict[str, Any]:
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": text if text.strip() else (None if tool_calls else text),
+            "gemini_parts": [self._part_to_dict(part) for part in parts],
+        }
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        return message
+
     def _build_text_part(self, text: str) -> Any:
         return self._protos.Part({"text": text}, ignore_unknown_fields=True)
 
@@ -186,6 +276,20 @@ class GoogleProvider:
         flush_tool_parts()
         system_text = "\n\n".join(part for part in system_parts if part) or None
         return system_text, contents
+
+    @staticmethod
+    def _legacy_prompt_from_history(
+        history: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], str]:
+        if history and history[-1].get("role") == "user":
+            last_parts = history[-1].get("parts", [])
+            prompt = "".join(
+                str(part.get("text") or "")
+                for part in last_parts
+                if isinstance(part, dict) and "text" in part
+            )
+            return history[:-1], prompt
+        return history, ""
 
     def _tool_schema_to_gemini_declaration(self, tool: dict[str, Any]) -> Any | None:
         if not isinstance(tool, dict):
@@ -299,7 +403,7 @@ class GoogleProvider:
     ) -> CompletionResult:
         tools = kwargs.pop("tools", None)
         tool_choice = kwargs.pop("tool_choice", None)
-        system_text, contents = self._to_gemini_contents(messages)
+        system_text, legacy_history = self._to_gemini_messages(messages)
 
         gen_config: dict[str, Any] = {"temperature": temperature}
         if max_tokens is not None:
@@ -310,18 +414,35 @@ class GoogleProvider:
             model_kwargs["system_instruction"] = system_text
 
         gm = self._genai.GenerativeModel(model, **model_kwargs)
-        gemini_tools = self._tools_to_gemini(tools)
-        gemini_tool_choice = self._tool_choice_to_gemini(tool_choice)
         try:
-            resp = await asyncio.wait_for(
-                gm.generate_content_async(
-                    contents=contents,
-                    generation_config=gen_config,
-                    tools=gemini_tools,
-                    tool_config=gemini_tool_choice,
-                ),
-                timeout=self._timeout_seconds,
-            )
+            if hasattr(gm, "generate_content_async"):
+                _, contents = self._to_gemini_contents(messages)
+                gemini_tools = self._tools_to_gemini(tools)
+                gemini_tool_choice = self._tool_choice_to_gemini(tool_choice)
+                resp = await asyncio.wait_for(
+                    gm.generate_content_async(
+                        contents=contents,
+                        generation_config=gen_config,
+                        tools=gemini_tools,
+                        tool_config=gemini_tool_choice,
+                    ),
+                    timeout=self._timeout_seconds,
+                )
+            elif hasattr(gm, "start_chat"):
+                if tools or tool_choice not in (None, "", "auto"):
+                    raise NotImplementedError(
+                        "Legacy Gemini start_chat fallback does not support tool-calling"
+                    )
+                history, prompt = self._legacy_prompt_from_history(legacy_history)
+                chat = gm.start_chat(history=history)
+                resp = await asyncio.wait_for(
+                    chat.send_message_async(prompt, generation_config=gen_config),
+                    timeout=self._timeout_seconds,
+                )
+            else:
+                raise AttributeError(
+                    "Gemini client missing both generate_content_async and start_chat"
+                )
         except Exception as exc:
             msg_lower = str(exc).lower()
             if "api key" in msg_lower or "403" in str(exc) or "401" in str(exc):
@@ -330,14 +451,26 @@ class GoogleProvider:
                     f"check your Google API key — {exc}"
                 ) from exc
             raise
-        text, tool_calls = self._extract_text_and_tool_calls(resp)
+        if hasattr(gm, "generate_content_async"):
+            text, tool_calls = self._extract_text_and_tool_calls(resp)
+        else:
+            text = str(getattr(resp, "text", "") or "")
+            tool_calls = None
         usage = self._extract_usage(resp)
         finish_reason = ""
+        raw_assistant_message = None
         try:
             candidates = getattr(resp, "candidates", None) or []
             if candidates:
                 fr = getattr(candidates[0], "finish_reason", None)
                 finish_reason = str(fr.name).lower() if fr else ""
+                candidate_content = getattr(candidates[0], "content", None)
+                candidate_parts = list(getattr(candidate_content, "parts", None) or [])
+                raw_assistant_message = self._serialize_assistant_message(
+                    text=text,
+                    tool_calls=tool_calls,
+                    parts=candidate_parts,
+                )
         except Exception:
             pass
         return CompletionResult(
@@ -346,6 +479,8 @@ class GoogleProvider:
             model=model,
             tool_calls=tool_calls,
             finish_reason=finish_reason,
+            raw_assistant_message=raw_assistant_message,
+            provider_metadata={"family": "google"},
         )
 
     async def stream(

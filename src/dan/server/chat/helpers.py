@@ -133,6 +133,7 @@ def _tool_choice_for_action_hints(
     *,
     tool_results: list[dict[str, Any]] | None = None,
     allow_exact_tool_choice: bool = False,
+    allow_required_tool_choice: bool = True,
 ) -> str | dict[str, Any]:
     missing_action_hints = _missing_action_hints(
         required_action_hints,
@@ -149,7 +150,9 @@ def _tool_choice_for_action_hints(
                 "type": "function",
                 "function": {"name": tool_name},
             }
-    return "required"
+    if allow_required_tool_choice:
+        return "required"
+    return "auto"
 
 
 def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> str:
@@ -253,6 +256,7 @@ def _force_single_tool_request(
     tool_name: str,
     *,
     allow_exact_tool_choice: bool,
+    allow_required_tool_choice: bool = True,
 ) -> tuple[list[dict[str, Any]], str | dict[str, Any]]:
     filtered_tools = [tool for tool in all_tools if _tool_schema_name(tool) == tool_name]
     if not filtered_tools:
@@ -262,7 +266,9 @@ def _force_single_tool_request(
             "type": "function",
             "function": {"name": tool_name},
         }
-    return filtered_tools, "required"
+    if allow_required_tool_choice:
+        return filtered_tools, "required"
+    return filtered_tools, "auto"
 
 
 def _looks_like_missing_target_error(

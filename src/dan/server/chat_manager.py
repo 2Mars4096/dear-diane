@@ -37,7 +37,7 @@ from dan.models.graph import Graph
 from dan.providers import (
     CompletionResult,
     StreamChunk,
-    supports_exact_tool_choice,
+    get_model_behavior,
     supports_tool_calls,
 )
 from dan.providers.registry import ProviderRegistry
@@ -239,6 +239,56 @@ def _sanitize_history_messages(history: list[dict[str, Any]]) -> list[dict[str, 
             continue
         sanitized.append({"role": role, "content": content})
     return sanitized
+
+
+def _build_assistant_followup_message(
+    *,
+    text: str,
+    tool_calls: list[dict[str, Any]],
+    raw_assistant_message: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Normalize an assistant-turn message for provider replay.
+
+    When *raw_assistant_message* is provided (e.g. from ``CompletionResult``),
+    it is used verbatim so that provider-specific fields like
+    ``reasoning_content`` survive the round-trip.
+    """
+    if raw_assistant_message:
+        msg = dict(raw_assistant_message)
+        if msg.get("content") is not None or msg.get("tool_calls"):
+            msg.setdefault("role", "assistant")
+            return msg
+
+    assistant_text = text or ""
+    if not tool_calls and not assistant_text.strip():
+        return None
+    assistant_message: dict[str, Any] = {"role": "assistant"}
+    if tool_calls:
+        assistant_message["tool_calls"] = tool_calls
+    if assistant_text.strip():
+        assistant_message["content"] = assistant_text
+    else:
+        assistant_message["content"] = None
+    return assistant_message
+
+
+def _disable_tool_access_in_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return a shallow copy of *messages* with a system-level tool-disable note."""
+    TOOL_DISABLE_NOTE = (
+        "\n\nTool calling is disabled for this response. "
+        "Answer directly in natural language. Do not reference any tools."
+    )
+    messages = list(messages)
+    if messages and messages[0].get("role") == "system":
+        messages[0] = {
+            **messages[0],
+            "content": (messages[0].get("content") or "") + TOOL_DISABLE_NOTE,
+        }
+    else:
+        messages.insert(0, {"role": "system", "content": TOOL_DISABLE_NOTE.strip()})
+    return messages
 
 
 class ChatManager:
@@ -761,7 +811,6 @@ class ChatManager:
                         type(raw_provider).__name__,
                         effective_model,
                     )
-            exact_tool_choice_supported = supports_exact_tool_choice(provider)
             message_id = uuid.uuid4().hex[:12]
             final_content = ""
             token_usage: dict[str, int] = {}
@@ -1165,7 +1214,12 @@ class ChatManager:
                         type(raw_provider).__name__,
                         effective_model,
                     )
-            exact_tool_choice_supported = supports_exact_tool_choice(provider)
+            model_behavior = get_model_behavior(provider, effective_model)
+            exact_tool_choice_supported = model_behavior.supports_exact_tool_choice
+            required_tool_choice_supported = model_behavior.supports_required_tool_choice
+            replay_raw_assistant_messages = (
+                model_behavior.assistant_replay_mode == "raw"
+            )
             message_id = uuid.uuid4().hex[:12]
             usage_totals: dict[str, int] = {}
             completion_max_tokens = _completion_max_tokens(effective_model)
@@ -1195,6 +1249,7 @@ class ChatManager:
                         all_tools,
                         "file_write",
                         allow_exact_tool_choice=exact_tool_choice_supported,
+                        allow_required_tool_choice=required_tool_choice_supported,
                     )
                 return (
                     all_tools,
@@ -1203,6 +1258,7 @@ class ChatManager:
                         satisfied_tool_names,
                         tool_results=successful_tool_results,
                         allow_exact_tool_choice=exact_tool_choice_supported,
+                        allow_required_tool_choice=required_tool_choice_supported,
                     ),
                 )
 
@@ -1364,8 +1420,9 @@ class ChatManager:
                     exc,
                 )
                 try:
+                    fallback_messages = _disable_tool_access_in_messages(messages)
                     async for event in self._stream_with_json_fallback(
-                        provider, messages, message_id,
+                        provider, fallback_messages, message_id,
                         revision, revision_mismatch, graph_dict,
                         workflow_id=workflow_id,
                         user_message=message,
@@ -2223,16 +2280,17 @@ class ChatManager:
                         "content": _clean_tool_result(cap_name, cap_result.message),
                     })
 
-                assistant_tool_message: dict[str, Any] = {
-                    "role": "assistant",
-                    "tool_calls": raw_tool_calls,
-                }
-                assistant_text = result.text or ""
-                if assistant_text.strip():
-                    assistant_tool_message["content"] = assistant_text
-                else:
-                    assistant_tool_message["content"] = None
-                messages.append(assistant_tool_message)
+                assistant_tool_message = _build_assistant_followup_message(
+                    text=result.text or "",
+                    tool_calls=raw_tool_calls,
+                    raw_assistant_message=(
+                        result.raw_assistant_message
+                        if replay_raw_assistant_messages
+                        else None
+                    ),
+                )
+                if assistant_tool_message is not None:
+                    messages.append(assistant_tool_message)
                 messages.extend(tool_result_messages)
                 if any(
                     pending["status"] == "success"

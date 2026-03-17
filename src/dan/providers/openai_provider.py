@@ -13,6 +13,7 @@ from openai import (
 from dan.providers import (
     CompletionResult,
     LLMAuthenticationError,
+    ModelBehaviorProfile,
     ProviderConfig,
     StreamChunk,
     resolve_provider_timeout,
@@ -24,6 +25,8 @@ class OpenAIProvider:
 
     supports_exact_tool_choice = True
     supports_tool_calls = True
+    supports_required_tool_choice = True
+    assistant_replay_mode = "raw"
 
     def __init__(self, config: ProviderConfig) -> None:
         self._timeout_seconds = resolve_provider_timeout(config)
@@ -43,6 +46,17 @@ class OpenAIProvider:
             float(timeout) if isinstance(timeout, (int, float)) else None
         )
         return instance
+
+    @classmethod
+    def get_model_behavior(cls, model: str) -> ModelBehaviorProfile:
+        normalized = str(model or "").strip().lower()
+        is_kimi = normalized.startswith("kimi-")
+        return ModelBehaviorProfile(
+            supports_tool_calls=True,
+            supports_exact_tool_choice=True,
+            supports_required_tool_choice=not is_kimi,
+            assistant_replay_mode="raw",
+        )
 
     @staticmethod
     def apply_cache_hints(
@@ -114,6 +128,21 @@ class OpenAIProvider:
         raw["function"] = function_payload
         return raw
 
+    @classmethod
+    def _serialize_assistant_message(cls, message: Any) -> dict[str, Any]:
+        raw = cls._merge_model_extra(cls._dump_model_object(message), message)
+        raw["role"] = "assistant"
+        if getattr(message, "tool_calls", None):
+            raw["tool_calls"] = [cls._serialize_tool_call(tc) for tc in message.tool_calls]
+        content = raw.get("content", getattr(message, "content", None))
+        if isinstance(content, str) and not content.strip() and raw.get("tool_calls"):
+            raw["content"] = None
+        elif content is None and raw.get("tool_calls"):
+            raw["content"] = None
+        else:
+            raw["content"] = content
+        return raw
+
     async def complete(
         self,
         messages: list[dict[str, Any]],
@@ -155,10 +184,13 @@ class OpenAIProvider:
             tool_calls = [self._serialize_tool_call(tc) for tc in message.tool_calls]
         cached_input = (usage or {}).get("cached_input_tokens", 0)
         finish_reason = getattr(resp.choices[0], "finish_reason", "") or ""
+        raw_assistant_message = self._serialize_assistant_message(message)
         return CompletionResult(
             text=text, usage=usage, model=model, tool_calls=tool_calls,
             cached_input_tokens=cached_input,
             finish_reason=finish_reason,
+            raw_assistant_message=raw_assistant_message,
+            provider_metadata={"family": "openai_compatible"},
         )
 
     async def stream(

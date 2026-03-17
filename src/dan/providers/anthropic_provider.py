@@ -108,6 +108,48 @@ class AnthropicProvider:
         except TypeError:
             return json.dumps({})
 
+    @staticmethod
+    def _serialize_content_block(block: Any) -> dict[str, Any]:
+        block_type = getattr(block, "type", None)
+        if block_type == "text":
+            return {
+                "type": "text",
+                "text": getattr(block, "text", ""),
+            }
+        if block_type == "tool_use":
+            return {
+                "type": "tool_use",
+                "id": str(getattr(block, "id", "") or ""),
+                "name": str(getattr(block, "name", "") or ""),
+                "input": getattr(block, "input", {}) or {},
+            }
+        payload: dict[str, Any] = {"type": str(block_type or "")}
+        for key in ("text", "thinking", "signature", "id", "name", "input"):
+            if hasattr(block, key):
+                value = getattr(block, key)
+                if value is not None:
+                    payload[key] = value
+        return payload
+
+    @classmethod
+    def _serialize_assistant_message(
+        cls,
+        *,
+        text: str,
+        tool_calls: list[dict[str, Any]],
+        content_blocks: list[Any],
+    ) -> dict[str, Any]:
+        message: dict[str, Any] = {
+            "role": "assistant",
+            "content": text if text.strip() else (None if tool_calls else text),
+            "anthropic_content": [
+                cls._serialize_content_block(block) for block in content_blocks
+            ],
+        }
+        if tool_calls:
+            message["tool_calls"] = tool_calls
+        return message
+
     @classmethod
     def _tool_schema_to_anthropic(cls, tool: dict[str, Any]) -> dict[str, Any] | None:
         if not isinstance(tool, dict):
@@ -283,12 +325,19 @@ class AnthropicProvider:
         usage = self._extract_usage(resp)
         cached_input, cache_write = self._extract_cache_tokens(resp)
         finish_reason = getattr(resp, "stop_reason", "") or ""
+        raw_assistant_message = self._serialize_assistant_message(
+            text=text,
+            tool_calls=tool_calls,
+            content_blocks=list(getattr(resp, "content", None) or []),
+        )
         return CompletionResult(
             text=text, usage=usage, model=model,
             tool_calls=tool_calls or None,
             cached_input_tokens=cached_input,
             cache_write_tokens=cache_write,
             finish_reason=finish_reason,
+            raw_assistant_message=raw_assistant_message,
+            provider_metadata={"family": "anthropic"},
         )
 
     async def stream(
