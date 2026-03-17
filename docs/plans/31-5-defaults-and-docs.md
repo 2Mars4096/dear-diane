@@ -81,6 +81,7 @@
 
 - This plan runs last (after 31-1 through 31-4) so it can document everything that was added.
 - The env var audit may discover additional undocumented vars; add them to `.env.example` as found.
+- 2026-03-17 follow-up: `.env.example` now explicitly distinguishes the baseline required LLM path from optional native-provider, tiering, and feature-specific settings for single-provider setups.
 - `docs/cli.md` is the most impactful doc to update — it's the primary reference for all commands and flags. `dan-ask` is a new entry point and all new slash commands need to go in the REPL commands table.
 - `docs/llm-api-guide.md` is what LLM callers use to construct valid tool calls — 13 new capability tools is a major surface area expansion that must be documented here.
 - `docs/bugs.md` is not updated in this plan — it's a tracking doc, not project-facing. Any bugs found during implementation go there as they're discovered.

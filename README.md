@@ -128,7 +128,7 @@ dan-run workflow.json --interactive        # prompt for HumanNode inputs
 
 ### `dan-chat` — Conversational Workflow Authoring
 
-Build, modify, and run workflows through an interactive REPL. Chat is the unified control plane — the LLM can search workflow history, start/cancel runs, publish/export workflows, and manage the full run lifecycle without leaving the conversation.
+Build, modify, and run workflows through an interactive REPL. Chat is the unified control plane — the LLM can search workflow history, start/cancel runs, publish/export workflows, and manage the full run lifecycle without leaving the conversation. In the desktop editor's full-screen Chat, conversations can now branch safely from prior turns/results and be revisited through a collapsible branch tree in the history rail.
 
 ```bash
 dan-chat                                  # start with scratch workflow
@@ -151,6 +151,7 @@ Inside the REPL, use slash commands to manage your session:
 - `/undo` — revert the last graph mutation
 - `/retry` — retry the last prompt
 - `/memory-delete`, `/memory-forget`, `/memory-confirm`, `/memory-reject` — manage learned memory
+- `/domains [list|known|add|remove|clear]` — inspect or edit saved common domains
 - `/help` — list all commands
 
 ### MCP Server Integration

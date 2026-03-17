@@ -11,7 +11,7 @@
 - ~~No conversation checkpoints (session-scoped undo only)~~ → basic auto-checkpoint DONE
 - ~~No export (can't share or archive a conversation)~~ → DONE
 - ~~No cross-thread search~~ → DONE
-- No thread branching or forking (stretch — task 7)
+- No explicit branch metadata/visual lineage yet (stretch — task 7 follow-ups)
 
 ## Tasks
 
@@ -49,9 +49,11 @@
   - [x] 6-3. Pin thread: pinned threads stay at top of list (metadata stored in `.meta.json` sidecar)
   - [ ] 6-4. Archive thread: move to "Archived" section, excluded from search by default (deferred)
 - [ ] 7. Thread branching (stretch — deferred)
-  - [ ] 7-1. "Branch from here": creates new thread with history up to selected message *(deferred — stretch goal, not blocking core UX)*
+  - [x] 7-1. "Branch from here": creates new thread with history up to selected message *(landed in [12-7](12-7-chat-branching-tree.md) via branch-based edit/resend + regenerate)*
   - [ ] 7-2. Branch indicator: show which thread was branched from *(deferred — stretch goal)*
   - [ ] 7-3. Visual: branching icon in thread list, parent-child relationship *(deferred — stretch goal)*
+  - [x] 7-4. User turn action: edit a past message and resend it into a new branched thread *(landed in [12-7](12-7-chat-branching-tree.md))*
+  - [x] 7-5. Assistant/result action: regenerate from the preceding user turn into a new branched thread *(landed in [12-7](12-7-chat-branching-tree.md))*
 
 ## Decisions
 
@@ -66,5 +68,6 @@
 - Stop generation (task 1) and export (task 4) are the highest-impact, lowest-effort items.
 - Message queuing (task 2) is surprisingly complex because queued messages might reference context that changes after the current response applies mutations. The simplest approach: re-resolve mentions when a queued message actually sends. **Deferred.**
 - Thread branching (task 7) is a stretch goal. **Deferred.**
+- 2026-03-16 follow-up: v1 branch-based turn rewriting now exists via [12-7](12-7-chat-branching-tree.md), but explicit parent/child branch metadata and lineage UI remain deferred.
 - Checkpoints (task 3) extend the existing `pushSnapshot` mechanism from in-memory to persistent. Only auto-checkpoint (3-1) and persistence (3-5) implemented; restore UI deferred.
 - Search scroll-to-message (5-4) and inverted index (5-2) deferred — substring search with thread-open is the MVP.

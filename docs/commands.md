@@ -327,7 +327,7 @@
 - **Kind:** chat
 - **Description:** List pending adaptations with confidence and approval status
 
-**Related:** `/corrections`
+**Related:** `/corrections`, `/domains`
 
 ### `/corrections`
 
@@ -335,7 +335,25 @@
 - **Kind:** chat
 - **Description:** List recent correction-driven learning events
 
-**Related:** `/adaptations`
+**Related:** `/adaptations`, `/domains`
+
+### `/domains`
+
+- **Aliases:** `/domain`
+- **Surfaces:** `CLI` `Editor` `TG` `WA`
+- **Kind:** chat
+- **Arguments:** `<list|known|add|remove|clear> [domain or comma-separated domains]`
+- **Description:** Inspect and edit saved canonical domain preferences
+
+| Subcommand | Arguments | Description |
+|------------|-----------|-------------|
+| `/domains list` | — | Show saved profile domains and a known-domain preview |
+| `/domains known` | — | List all known canonical domains from the live taxonomy |
+| `/domains add` | `<domain or comma-separated domains>` | Add one or more saved common domains |
+| `/domains remove` | `<domain or comma-separated domains>` | Remove one or more saved common domains |
+| `/domains clear` | — | Clear all saved common domains |
+
+**Related:** `/adaptations`, `/corrections`
 
 ## Computer Use Commands
 

@@ -173,7 +173,7 @@ Loading an existing workflow (`--workflow-id`) fetches the graph on startup and 
 
 **REPL & chat commands:**
 
-All slash commands (REPL-local and chat commands like `/model`, `/cost`, `/memory-*`, `/mcp`, etc.) are documented in the [Command Reference](commands.md), which is auto-generated from the canonical command registry. Use `/help` inside `dan-chat` to see commands available on the CLI surface.
+All slash commands (REPL-local and chat commands like `/model`, `/cost`, `/memory-*`, `/domains`, `/mcp`, etc.) are documented in the [Command Reference](commands.md), which is auto-generated from the canonical command registry. Use `/help` inside `dan-chat` to see commands available on the CLI surface.
 
 **Typical session:**
 
