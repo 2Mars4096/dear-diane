@@ -83,19 +83,27 @@ class FurnaceSessionStore:
         name: str = "",
         topic: str = "",
         description: str = "",
+        variant_label: str = "",
+        tags: list[str] | None = None,
         target_count: int = 0,
+        metadata: dict[str, Any] | None = None,
     ) -> FurnaceSession:
         """Create a new session with papers in PENDING status."""
         queue = {pid: PaperStatus.PENDING for pid in (paper_ids or [])}
+        session_metadata = dict(metadata or {})
+        if target_count:
+            session_metadata["target_count"] = target_count
         session = FurnaceSession(
             corpus_id=corpus_id,
             recipe_id=recipe_id,
             name=name or topic or corpus_id,
             topic=topic,
             description=description,
+            variant_label=variant_label,
+            tags=list(tags or []),
             status="paused",
             paper_queue=queue,
-            metadata={"target_count": target_count} if target_count else {},
+            metadata=session_metadata,
         )
         self.save(session)
         return session
@@ -153,6 +161,19 @@ class FurnaceSessionStore:
         for pid in paper_ids:
             if pid not in session.paper_queue:
                 session.paper_queue[pid] = PaperStatus.PENDING
+        self.save(session)
+        return session
+
+    def set_tags(
+        self,
+        session_id: str,
+        tags: list[str],
+    ) -> FurnaceSession | None:
+        """Replace a session's user-defined tags."""
+        session = self.load(session_id)
+        if session is None:
+            return None
+        session.tags = list(tags)
         self.save(session)
         return session
 

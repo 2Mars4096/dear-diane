@@ -156,6 +156,7 @@ class FurnaceSession(BaseModel):
     topic: str = ""
     description: str = ""
     variant_label: str = ""
+    tags: list[str] = Field(default_factory=list)
     status: Literal["active", "paused", "completed", "failed"] = "active"
     current_phase: FurnacePhase = FurnacePhase.NORMALIZE
     current_batch_index: int = 0

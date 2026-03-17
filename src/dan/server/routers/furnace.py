@@ -7,6 +7,7 @@ Progress is streamed via Server-Sent Events (SSE).
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -75,6 +76,9 @@ class CreateSessionRequest(BaseModel):
     description: str = ""
     corpus_id: str = ""
     recipe_id: str = ""
+    parent_session_id: str = ""
+    inherit_sources: bool = False
+    variant_label: str = ""
     target_count: int = 10
 
 
@@ -88,8 +92,15 @@ class SetBudgetRequest(BaseModel):
     budget_limit_usd: float
 
 
+class UpdateSessionTagsRequest(BaseModel):
+    tags: list[str] | None = None
+    add: list[str] = Field(default_factory=list)
+    remove: list[str] = Field(default_factory=list)
+
+
 class SessionSummary(BaseModel):
     session_id: str
+    recipe_id: str
     name: str
     topic: str
     status: str
@@ -97,6 +108,10 @@ class SessionSummary(BaseModel):
     source_count: int
     processed_count: int
     total_cost_usd: float
+    variant_label: str = ""
+    parent_session_id: str = ""
+    family_session_id: str = ""
+    tags: list[str] = Field(default_factory=list)
     created_at: float
     updated_at: float
 
@@ -108,8 +123,10 @@ def _session_to_summary(s: Any) -> dict[str, Any]:
     processed = sum(
         1 for st in s.paper_queue.values() if st == PaperStatus.EXTRACTED
     )
+    metadata = getattr(s, "metadata", {}) or {}
     return SessionSummary(
         session_id=s.session_id,
+        recipe_id=s.recipe_id,
         name=s.name,
         topic=s.topic,
         status=s.status,
@@ -117,6 +134,10 @@ def _session_to_summary(s: Any) -> dict[str, Any]:
         source_count=total,
         processed_count=processed,
         total_cost_usd=s.total_cost_usd,
+        variant_label=s.variant_label or "",
+        parent_session_id=str(metadata.get("parent_session_id") or ""),
+        family_session_id=str(metadata.get("family_session_id") or s.session_id),
+        tags=list(getattr(s, "tags", []) or []),
         created_at=s.created_at,
         updated_at=s.updated_at,
     ).model_dump()
@@ -199,6 +220,22 @@ def _split_pasted_entries(value: str) -> list[str]:
     return [text]
 
 
+def _normalize_tags(tags: list[str]) -> list[str]:
+    """Normalize user-defined session tags for consistent filtering."""
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in tags:
+        tag = re.sub(r"\s+", " ", str(raw or "").strip().lower())
+        if not tag:
+            continue
+        tag = tag[:32]
+        if tag in seen:
+            continue
+        seen.add(tag)
+        normalized.append(tag)
+    return normalized[:12]
+
+
 def _dedupe_keep_order(values: list[str]) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
@@ -208,6 +245,12 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
         seen.add(v)
         out.append(v)
     return out
+
+
+def _slug_fragment(value: str, fallback: str) -> str:
+    """Build a filesystem/API-friendly slug fragment."""
+    text = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")
+    return (text or fallback)[:30]
 
 
 # ---------------------------------------------------------------------------
@@ -220,17 +263,112 @@ async def create_session(body: CreateSessionRequest):
     """Create a new furnace training session with ingredient ledger."""
     _require_furnace()
     store = get_furnace_session_store()
+    provided = body.model_fields_set
 
-    corpus_id = body.corpus_id or f"corpus-{body.topic.lower().replace(' ', '-')[:30]}" if body.topic else f"corpus-{int(time.time())}"
-    recipe_id = body.recipe_id or f"{body.topic.lower().replace(' ', '-')[:30]}-pill" if body.topic else f"recipe-{int(time.time())}"
+    parent_session = None
+    if body.parent_session_id:
+        parent_session = store.load(body.parent_session_id)
+        if parent_session is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Parent session {body.parent_session_id} not found",
+            )
+
+    effective_topic = (
+        body.topic
+        if "topic" in provided
+        else (parent_session.topic if parent_session is not None else body.topic)
+    )
+    effective_description = (
+        body.description
+        if "description" in provided
+        else (
+            parent_session.description
+            if parent_session is not None
+            else body.description
+        )
+    )
+    effective_name = (
+        body.name
+        if "name" in provided
+        else (
+            parent_session.name
+            if parent_session is not None
+            else (effective_topic or "Untitled Session")
+        )
+    )
+    effective_target_count = (
+        body.target_count
+        if "target_count" in provided
+        else int(
+            ((parent_session.metadata or {}).get("target_count") if parent_session is not None else None)
+            or body.target_count
+        )
+    )
+    effective_variant_label = body.variant_label.strip()
+    if not effective_variant_label and parent_session is not None:
+        effective_variant_label = effective_name.strip()
+
+    corpus_id = (
+        body.corpus_id
+        or (
+            parent_session.corpus_id
+            if parent_session is not None
+            else f"corpus-{_slug_fragment(effective_topic, 'session')}"
+            if effective_topic
+            else f"corpus-{int(time.time())}"
+        )
+    )
+
+    if body.recipe_id:
+        recipe_id = body.recipe_id
+    elif effective_variant_label:
+        recipe_id = (
+            f"{_slug_fragment(effective_topic, 'recipe')}-pill-"
+            f"{_slug_fragment(effective_variant_label, 'variant')}"
+        )
+    elif effective_topic:
+        recipe_id = f"{_slug_fragment(effective_topic, 'recipe')}-pill"
+    else:
+        recipe_id = f"recipe-{int(time.time())}"
+
+    inherited_source_ids: list[str] = []
+    inherited_tags: list[str] = []
+    session_metadata: dict[str, Any] = {}
+    if parent_session is not None:
+        session_metadata = copy.deepcopy(parent_session.metadata or {})
+        inherited_tags = list(getattr(parent_session, "tags", []) or [])
+        session_metadata.pop("last_error", None)
+        session_metadata.pop("cancelled", None)
+        session_metadata["parent_session_id"] = parent_session.session_id
+        session_metadata["family_session_id"] = (
+            session_metadata.get("family_session_id")
+            or parent_session.metadata.get("family_session_id")
+            or parent_session.session_id
+        )
+        session_metadata["forked_from_recipe_id"] = parent_session.recipe_id
+        if parent_session.variant_label:
+            session_metadata["forked_from_variant_label"] = parent_session.variant_label
+        if body.inherit_sources:
+            inherited_source_ids = list(parent_session.paper_queue.keys())
+            session_metadata["inherited_source_count"] = len(inherited_source_ids)
+        else:
+            session_metadata.pop("pdf_paths", None)
+            session_metadata.pop("urls", None)
+            session_metadata.pop("source_types", None)
+            session_metadata.pop("inherited_source_count", None)
 
     session = store.create_session(
         corpus_id=corpus_id,
         recipe_id=recipe_id,
-        name=body.name or body.topic or "Untitled Session",
-        topic=body.topic,
-        description=body.description,
-        target_count=body.target_count,
+        paper_ids=inherited_source_ids,
+        name=effective_name,
+        topic=effective_topic,
+        description=effective_description,
+        variant_label=effective_variant_label,
+        tags=inherited_tags,
+        target_count=effective_target_count,
+        metadata=session_metadata,
     )
 
     artifact_dir = ARTIFACTS_ROOT / session.session_id
@@ -549,6 +687,34 @@ async def set_budget(session_id: str, body: SetBudgetRequest):
     return {
         "session_id": session_id,
         "budget_limit_usd": session.budget_limit_usd,
+    }
+
+
+@router.post("/api/furnace/sessions/{session_id}/tags")
+async def update_session_tags(session_id: str, body: UpdateSessionTagsRequest):
+    """Add, remove, or replace user-defined tags on a session."""
+    _require_furnace()
+    store = get_furnace_session_store()
+    session = store.load(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+
+    if body.tags is not None:
+        next_tags = _normalize_tags(body.tags)
+    else:
+        current = _normalize_tags(list(getattr(session, "tags", []) or []))
+        remove_set = set(_normalize_tags(body.remove))
+        next_tags = [tag for tag in current if tag not in remove_set]
+        for tag in _normalize_tags(body.add):
+            if tag not in next_tags:
+                next_tags.append(tag)
+
+    session.tags = next_tags
+    store.save(session)
+    return {
+        "session_id": session_id,
+        "tags": next_tags,
+        "session": _session_to_summary(session),
     }
 
 
