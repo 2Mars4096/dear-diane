@@ -10,6 +10,8 @@ interface BackgroundStream {
   assistantMessageId: string;
   messages: ChatMessage[];
   onComplete?: () => void;
+  hadTerminalEvent?: boolean;
+  closedIntentionally?: boolean;
 }
 
 const _streams = new Map<string, BackgroundStream>();
@@ -25,6 +27,31 @@ function saveMessages(stream: BackgroundStream) {
       messages: stream.messages.map(toBackendMessage),
     })
     .catch(() => {});
+}
+
+function markInterrupted(stream: BackgroundStream) {
+  const note = "Final assistant text was not captured because the live stream disconnected before completion. Review the tool output below or retry.";
+  const tail = "*[stream disconnected before final response]*";
+  stream.messages = stream.messages.map((message) =>
+    message.id === stream.assistantMessageId
+      ? {
+          ...message,
+          content: message.content.trim()
+            ? `${message.content}\n\n${tail}`
+            : note,
+          progressStatus: undefined,
+        }
+      : message,
+  );
+}
+
+function finalizeDetachedStream(stream: BackgroundStream) {
+  if (!stream.closedIntentionally && !stream.hadTerminalEvent) {
+    markInterrupted(stream);
+  }
+  stream.closedIntentionally = true;
+  saveMessages(stream);
+  cleanup(stream.threadId);
 }
 
 function handleEvent(stream: BackgroundStream, evt: ChatStreamEvent) {
@@ -51,10 +78,30 @@ function handleEvent(stream: BackgroundStream, evt: ChatStreamEvent) {
         : m,
     );
     if (!isProgressAck) {
+      stream.hadTerminalEvent = true;
       saveMessages(stream);
       cleanup(stream.threadId);
       return;
     }
+  } else if (evt.type === "chat_mutation") {
+    stream.messages = stream.messages.map((m) =>
+      m.id === aid
+        ? {
+            ...m,
+            content: evt.content || m.content,
+            mutationPlan: evt.mutation_plan ?? null,
+            dryRunResult: evt.dry_run_result ?? null,
+            mutationId: evt.message_id ?? m.mutationId ?? null,
+            mutationStatus: "proposed",
+            progressStatus: undefined,
+            tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
+          }
+        : m,
+    );
+    stream.hadTerminalEvent = true;
+    saveMessages(stream);
+    cleanup(stream.threadId);
+    return;
   } else if (evt.type === "chat_tool_call_start") {
     stream.messages = stream.messages.map((m) =>
       m.id === aid
@@ -90,14 +137,49 @@ function handleEvent(stream: BackgroundStream, evt: ChatStreamEvent) {
           }
         : m,
     );
+  } else if (evt.type === "chat_file_attachment") {
+    stream.messages = stream.messages.map((m) =>
+      m.id === aid
+        ? {
+            ...m,
+            attachments: (m.attachments || []).some(
+              (attachment) =>
+                attachment.path === (evt.path || undefined) &&
+                attachment.filename === (evt.filename ?? "File"),
+            )
+              ? (m.attachments || [])
+              : [
+                  ...(m.attachments || []),
+                  {
+                    path: evt.path || undefined,
+                    filename: evt.filename ?? "File",
+                    size: evt.size,
+                  },
+                ],
+          }
+        : m,
+    );
   } else if (
     evt.type === "chat_error" ||
     evt.type === "chat_interrupted"
   ) {
+    stream.hadTerminalEvent = true;
     if (evt.type === "chat_interrupted") {
       stream.messages = stream.messages.map((m) =>
         m.id === aid
           ? { ...m, content: (evt.content || m.content) + "\n\n*[generation stopped]*" }
+          : m,
+      );
+    } else {
+      stream.messages = stream.messages.map((m) =>
+        m.id === aid
+          ? {
+              ...m,
+              content: m.content.trim()
+                ? `${m.content}\n\n*[generation failed: ${evt.error ?? "unknown error"}]*`
+                : `Generation failed: ${evt.error ?? "Unknown error"}`,
+              progressStatus: undefined,
+            }
           : m,
       );
     }
@@ -125,6 +207,7 @@ export function detachToBackground(opts: {
 }) {
   const existing = _streams.get(opts.threadId);
   if (existing) {
+    existing.closedIntentionally = true;
     try { existing.ws.close(); } catch {}
     _streams.delete(opts.threadId);
   }
@@ -146,12 +229,10 @@ export function detachToBackground(opts: {
     } catch {}
   };
   opts.ws.onclose = () => {
-    saveMessages(stream);
-    cleanup(opts.threadId);
+    finalizeDetachedStream(stream);
   };
   opts.ws.onerror = () => {
-    saveMessages(stream);
-    cleanup(opts.threadId);
+    finalizeDetachedStream(stream);
   };
 
   _streams.set(opts.threadId, stream);
@@ -174,6 +255,7 @@ export function subscribe(listener: () => void): () => void {
 export function cancelBackground(threadId: string) {
   const stream = _streams.get(threadId);
   if (!stream) return;
+  stream.closedIntentionally = true;
   try { stream.ws.close(); } catch {}
   saveMessages(stream);
   cleanup(threadId);
@@ -181,6 +263,7 @@ export function cancelBackground(threadId: string) {
 
 export function shutdownAll() {
   for (const [threadId, stream] of _streams) {
+    stream.closedIntentionally = true;
     try { stream.ws.close(); } catch {}
     saveMessages(stream);
     _streams.delete(threadId);

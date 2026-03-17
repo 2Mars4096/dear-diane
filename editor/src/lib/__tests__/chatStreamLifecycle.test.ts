@@ -97,9 +97,21 @@ describe("chatStreamLifecycle", () => {
         closedIntentionally: false,
         closeCode: 1000,
         hadTransportError: true,
+        hadTerminalEvent: true,
         streamLabel: "Run stream",
       }),
     ).toBeNull();
+  });
+
+  it("shows a disconnect error for premature clean closes without a terminal event", () => {
+    expect(
+      getStreamDisconnectError({
+        closedIntentionally: false,
+        closeCode: 1000,
+        hadTransportError: false,
+        hadTerminalEvent: false,
+      }),
+    ).toContain("may be incomplete");
   });
 
   it("explains local backend restarts and mentions restored snapshots", () => {

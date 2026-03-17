@@ -7,6 +7,16 @@ export interface ToolCallInfo {
   durationMs?: number;
 }
 
+export interface ChatAttachment {
+  path?: string;
+  filename: string;
+  size?: number;
+  mimeType?: string;
+  kind?: "file" | "figure";
+  caption?: string;
+  source?: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -28,7 +38,7 @@ export interface ChatMessage {
   mentions?: Array<{ name: string; type: string; id: string }>;
   toolCalls?: ToolCallInfo[];
   runEvents?: RunEventPayload[];
-  attachments?: Array<{ path: string; filename: string; size?: number }>;
+  attachments?: ChatAttachment[];
   progressStatus?: string;
   progressFilePath?: string;
 }

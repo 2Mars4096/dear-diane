@@ -43,6 +43,8 @@ describe("chatMessagePersistence", () => {
           path: "/tmp/report.tex",
           filename: "report.tex",
           size: 2048,
+          mimeType: "application/x-tex",
+          kind: "file",
         },
       ],
     };

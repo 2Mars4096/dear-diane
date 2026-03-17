@@ -24,6 +24,16 @@ export interface ComposerAttachmentDraft {
   file?: File;
 }
 
+export interface ChatAttachmentRecord {
+  filename: string;
+  path?: string;
+  size?: number;
+  mimeType?: string;
+  kind?: ComposerAttachmentDraft["kind"];
+  caption?: string;
+  source?: string;
+}
+
 function mimeTypeFromDataUrl(dataUrl?: string): string | undefined {
   if (typeof dataUrl !== "string" || !dataUrl.startsWith("data:")) return undefined;
   const match = /^data:([^;,]+)/.exec(dataUrl);
@@ -157,6 +167,41 @@ export function fileToAttachmentDraft(file: File): ComposerAttachmentDraft {
     size: file.size,
     mimeType: file.type || undefined,
     file,
+  };
+}
+
+export function cloneAttachmentDraft(
+  attachment: ComposerAttachmentDraft,
+): ComposerAttachmentDraft {
+  return { ...attachment };
+}
+
+export function composerDraftToChatAttachment(
+  attachment: ComposerAttachmentDraft,
+): ChatAttachmentRecord {
+  return {
+    filename: resolveAttachmentName(attachment.name, attachment.mimeType),
+    path: attachment.path,
+    size: attachment.size,
+    mimeType: attachment.mimeType,
+    kind: attachment.kind,
+    caption: attachment.caption,
+    source: attachment.source,
+  };
+}
+
+export function chatAttachmentToComposerDraft(
+  attachment: ChatAttachmentRecord,
+): ComposerAttachmentDraft {
+  return {
+    id: crypto.randomUUID(),
+    kind: attachment.kind ?? "file",
+    name: resolveAttachmentName(attachment.filename, attachment.mimeType),
+    path: attachment.path,
+    size: attachment.size,
+    mimeType: attachment.mimeType,
+    caption: attachment.caption,
+    source: attachment.source,
   };
 }
 

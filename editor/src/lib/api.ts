@@ -329,6 +329,9 @@ export interface ChatThreadSummary {
   updated_at: string;
   pinned?: boolean;
   mode?: string;
+  parent_thread_id?: string | null;
+  branch_point_message_id?: string | null;
+  branch_type?: "edit" | "regenerate" | "explore" | null;
 }
 
 export const listChatThreads = (workflowId: string) =>
@@ -337,11 +340,28 @@ export const listChatThreads = (workflowId: string) =>
 export const getChatThread = (workflowId: string, threadId: string) =>
   request<Record<string, unknown>>(`/chats/${workflowId}/${threadId}`);
 
-export const createChatThread = (workflowId: string, title?: string) =>
-  request<Record<string, unknown>>(`/chats/${workflowId}`, {
+export interface CreateChatThreadOptions {
+  title?: string;
+  mode?: string;
+  parent_thread_id?: string;
+  branch_point_message_id?: string;
+  branch_type?: "edit" | "regenerate" | "explore";
+}
+
+export const createChatThread = (
+  workflowId: string,
+  titleOrOpts?: string | CreateChatThreadOptions,
+  mode?: string,
+) => {
+  const opts: CreateChatThreadOptions =
+    typeof titleOrOpts === "object" && titleOrOpts !== null
+      ? titleOrOpts
+      : { title: titleOrOpts, mode };
+  return request<Record<string, unknown>>(`/chats/${workflowId}`, {
     method: "POST",
-    body: JSON.stringify({ title }),
+    body: JSON.stringify(opts),
   });
+};
 
 export const updateChatThread = (
   workflowId: string,
@@ -719,11 +739,15 @@ export interface FurnaceCreateSessionBody {
   description?: string;
   corpus_id?: string;
   recipe_id?: string;
+  parent_session_id?: string;
+  inherit_sources?: boolean;
+  variant_label?: string;
   target_count?: number;
 }
 
 export interface FurnaceSessionSummary {
   session_id: string;
+  recipe_id: string;
   name: string;
   topic: string;
   status: string;
@@ -731,6 +755,10 @@ export interface FurnaceSessionSummary {
   source_count: number;
   processed_count: number;
   total_cost_usd: number;
+  variant_label: string;
+  parent_session_id: string;
+  family_session_id: string;
+  tags: string[];
   created_at: number;
   updated_at: number;
 }
@@ -745,6 +773,12 @@ export interface FurnaceListSessionsParams {
   corpus_id?: string;
   recipe_id?: string;
   status?: string;
+}
+
+export interface FurnaceUpdateSessionTagsBody {
+  tags?: string[];
+  add?: string[];
+  remove?: string[];
 }
 
 export const furnaceCreateSession = (body: FurnaceCreateSessionBody) =>
@@ -809,6 +843,15 @@ export const furnaceListSessions = (params?: FurnaceListSessionsParams) => {
 export const furnaceGetSession = (sessionId: string) =>
   request<{ session: Record<string, unknown> }>(
     `/furnace/sessions/${encodeURIComponent(sessionId)}`,
+  );
+
+export const furnaceUpdateSessionTags = (
+  sessionId: string,
+  body: FurnaceUpdateSessionTagsBody,
+) =>
+  request<{ session_id: string; tags: string[]; session: FurnaceSessionSummary }>(
+    `/furnace/sessions/${encodeURIComponent(sessionId)}/tags`,
+    { method: "POST", body: JSON.stringify(body) },
   );
 
 export const furnaceGetRecipe = (sessionId: string) =>

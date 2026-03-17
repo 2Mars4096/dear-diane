@@ -37,6 +37,9 @@ import {
   Upload,
   Link2,
   Code2,
+  ChevronDown,
+  ChevronRight,
+  GitBranch,
 } from "lucide-react";
 import { useGraphStore } from "../store/useGraphStore";
 import { useAppStore } from "../store/useAppStore";
@@ -79,7 +82,21 @@ import {
   toBackendMessage,
 } from "../lib/chatMessagePersistence";
 import {
+  buildBranchedThreadTitle,
+  buildThreadBranchTree,
+  getEditBranchTarget,
+  getExploreBranchTarget,
+  getRegenerateBranchTarget,
+  isSyntheticAttachmentSummary,
+  type ChatThreadBranchTree,
+  type ChatThreadSiblingInfo,
+} from "../lib/chatBranching";
+import {
   buildAttachmentContext,
+  chatAttachmentToComposerDraft,
+  cloneAttachmentDraft,
+  composerDraftToChatAttachment,
+  type ComposerAttachmentDraft,
   fileToAttachmentDraft,
   normalizeAttachmentDrafts,
   resolveAttachmentName,
@@ -358,7 +375,15 @@ type PendingQueueItem = {
   id: string;
   content: string;
   timestamp: number;
-  attachments?: File[];
+  attachments?: ComposerAttachmentDraft[];
+};
+
+type BranchType = "edit" | "regenerate" | "explore";
+
+type RewriteBranchState = {
+  sourceMessageId: string;
+  historyBefore: ChatMessage[];
+  branchType: BranchType;
 };
 
 function describeQueuedItem(item: PendingQueueItem): string {
@@ -367,7 +392,7 @@ function describeQueuedItem(item: PendingQueueItem): string {
   if (attachments.length === 1) {
     return `Attached ${resolveAttachmentName(
       attachments[0].name,
-      attachments[0].type || undefined,
+      attachments[0].mimeType,
     )}`;
   }
   if (attachments.length > 1) {
@@ -420,6 +445,7 @@ export default function ChatPanel({
   const [confirmDeleteThreadId, setConfirmDeleteThreadId] = useState<string | null>(null);
   const [threadTitle, setThreadTitle] = useState("");
   const [isComposerFocused, setIsComposerFocused] = useState(false);
+  const [rewriteTarget, setRewriteTarget] = useState<RewriteBranchState | null>(null);
   const [sessionMarkers, setSessionMarkers] = useState<
     Record<string, { historyCursor: number }>
   >({});
@@ -447,7 +473,8 @@ export default function ChatPanel({
       text?: string,
       historyOverride?: ChatMessage[],
       modeOverride?: ChatMode,
-      attachmentsOverride?: File[],
+      attachmentsOverride?: ComposerAttachmentDraft[],
+      threadIdOverride?: string | null,
     ) => void) | null
   >(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -476,7 +503,7 @@ export default function ChatPanel({
     value?: string;
     file?: File;
   } | null>(null);
-  const [userAttachments, setUserAttachments] = useState<File[]>([]);
+  const [userAttachments, setUserAttachments] = useState<ComposerAttachmentDraft[]>([]);
 
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const messagesRef = useRef(messages);
@@ -539,6 +566,7 @@ export default function ChatPanel({
   }, []);
 
   const [bgStreamIds, setBgStreamIds] = useState<Set<string>>(() => getBackgroundThreadIds());
+  const threadBranchTree = useMemo(() => buildThreadBranchTree(threads), [threads]);
   const bgStreamReloadRef = useRef<((wfId: string) => void) | null>(null);
   useEffect(() => {
     let prevIds = getBackgroundThreadIds();
@@ -704,6 +732,7 @@ export default function ChatPanel({
       if (isStreaming) detachCurrentStream();
       setIsStreaming(false);
       setPendingQueue([]);
+      setRewriteTarget(null);
       try {
         const data = await api.getChatThread(wfId, threadId);
         const backendMsgs = (data.messages ?? []) as Record<string, unknown>[];
@@ -785,6 +814,88 @@ export default function ChatPanel({
       return hadTransportError ? ("restarted" as const) : ("unknown" as const);
     },
     [probeBackendAvailability],
+  );
+
+  const createBranchedThread = useCallback(
+    async (
+      seedMessages: ChatMessage[],
+      nextUserContent: string,
+      lineage?: { branchType: BranchType; branchPointMessageId?: string },
+    ) => {
+      if (!graphId) {
+        setError("Chat branching is unavailable without an active workflow context.");
+        return null;
+      }
+
+      const nextMode = useGraphStore.getState().chatMode;
+      const branchTitle = buildBranchedThreadTitle(threadTitle, nextUserContent);
+      const parentThreadId = activeThreadIdRef.current || undefined;
+
+      try {
+        const created = await api.createChatThread(graphId, {
+          title: branchTitle,
+          mode: nextMode,
+          parent_thread_id: parentThreadId,
+          branch_point_message_id: lineage?.branchPointMessageId,
+          branch_type: lineage?.branchType,
+        });
+        const threadId =
+          typeof created.id === "string" && created.id.trim() ? created.id : null;
+        if (!threadId) {
+          throw new Error("Missing branched thread id");
+        }
+
+        await api.updateChatThread(graphId, threadId, {
+          title: branchTitle,
+          messages: seedMessages.map(toBackendMessage),
+          mode: nextMode,
+        });
+
+        const createdAt =
+          typeof created.created_at === "string"
+            ? created.created_at
+            : new Date().toISOString();
+        const updatedAt =
+          typeof created.updated_at === "string" ? created.updated_at : createdAt;
+        const summary: ChatThreadSummary = {
+          id: threadId,
+          title: branchTitle,
+          workflow_id: graphId,
+          message_count: seedMessages.length,
+          created_at: createdAt,
+          updated_at: updatedAt,
+          pinned: false,
+          mode: nextMode,
+          parent_thread_id: parentThreadId ?? null,
+          branch_point_message_id: lineage?.branchPointMessageId ?? null,
+          branch_type: lineage?.branchType ?? null,
+        };
+
+        setThreads((prev) => [summary, ...prev.filter((thread) => thread.id !== threadId)]);
+        setActiveThreadId(threadId);
+        activeThreadIdRef.current = threadId;
+        setThreadTitle(getDisplayThreadTitle(branchTitle, ""));
+        setShowThreadList(false);
+        setMessages(seedMessages);
+        setPendingQueue([]);
+        setSessionMarkers({});
+        setRewriteTarget(null);
+        setError(null);
+        onThreadOpen?.(threadId, branchTitle);
+        onThreadTitleUpdate?.(threadId, branchTitle);
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return threadId;
+      } catch (error) {
+        console.warn("Failed to create branched thread:", error);
+        setError("Failed to create branched chat thread.");
+        useGraphStore.getState().addToast({
+          type: "error",
+          message: "Failed to create branched chat thread",
+        });
+        return null;
+      }
+    },
+    [graphId, onThreadOpen, onThreadTitleUpdate, threadTitle],
   );
 
   // -------------------------------------------------------------------------
@@ -1177,6 +1288,7 @@ export default function ChatPanel({
               closedIntentionally: runWsClosedIntentionally,
               closeCode: event.code,
               hadTransportError: runWsHadTransportError,
+              hadTerminalEvent: runWsHadTerminalEvent,
               streamLabel: "Run stream connection",
               recoveryHint:
                 backendState === "unavailable"
@@ -1264,12 +1376,33 @@ export default function ChatPanel({
       text?: string,
       historyOverride?: ChatMessage[],
       modeOverride?: ChatMode,
-      attachmentsOverride?: File[],
+      attachmentsOverride?: ComposerAttachmentDraft[],
+      threadIdOverride?: string | null,
     ) => {
       const content = (text ?? inputText).trim();
       const sourceAttachments = attachmentsOverride ?? userAttachments;
-      const pendingAttachmentDrafts = sourceAttachments.map(fileToAttachmentDraft);
+      const pendingAttachmentDrafts = sourceAttachments.map(cloneAttachmentDraft);
       if (!content && pendingAttachmentDrafts.length === 0) return;
+
+      if (rewriteTarget && !historyOverride) {
+        const branchedThreadId = await createBranchedThread(
+          rewriteTarget.historyBefore,
+          content,
+          {
+            branchType: rewriteTarget.branchType,
+            branchPointMessageId: rewriteTarget.sourceMessageId,
+          },
+        );
+        if (!branchedThreadId) return;
+        await sendMessage(
+          content,
+          rewriteTarget.historyBefore,
+          modeOverride,
+          sourceAttachments.map(cloneAttachmentDraft),
+          branchedThreadId,
+        );
+        return;
+      }
 
       if (isStreaming && !historyOverride) {
         setPendingQueue((q) => [
@@ -1279,7 +1412,9 @@ export default function ChatPanel({
             content,
             timestamp: Date.now(),
             attachments:
-              sourceAttachments.length > 0 ? [...sourceAttachments] : undefined,
+              sourceAttachments.length > 0
+                ? sourceAttachments.map(cloneAttachmentDraft)
+                : undefined,
           },
         ]);
         setInputText("");
@@ -1292,11 +1427,12 @@ export default function ChatPanel({
         attachmentDrafts.find((attachment) => typeof attachment.path === "string" && attachment.path)
           ?.path ?? null;
 
-      let threadId = activeThreadIdRef.current;
+      let threadId = threadIdOverride ?? activeThreadIdRef.current;
       if (!threadId && graphId) {
         try {
           const draftTitle = deriveDraftThreadTitleFromMessage(content);
-          const data = await api.createChatThread(graphId, draftTitle);
+          const initialMode = modeOverride || useGraphStore.getState().chatMode;
+          const data = await api.createChatThread(graphId, draftTitle, initialMode);
           threadId = (data as Record<string, unknown>).id as string;
           setActiveThreadId(threadId);
           activeThreadIdRef.current = threadId;
@@ -1319,11 +1455,7 @@ export default function ChatPanel({
         timestamp: Date.now(),
         attachments:
           attachmentDrafts.length > 0
-            ? attachmentDrafts.map((attachment) => ({
-                path: attachment.path ?? attachment.name,
-                filename: attachment.name,
-                size: attachment.size,
-              }))
+            ? attachmentDrafts.map(composerDraftToChatAttachment)
             : undefined,
       };
 
@@ -1336,9 +1468,10 @@ export default function ChatPanel({
         timestamp: Date.now(),
       };
 
-      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      setMessages((prev) => [...(historyOverride ?? prev), userMsg, assistantMsg]);
       setInputText("");
       setUserAttachments([]);
+      setRewriteTarget(null);
       if (content.startsWith("/")) {
         trackCommand(content.split(/\s/)[0]);
       }
@@ -1939,6 +2072,7 @@ export default function ChatPanel({
                 closedIntentionally: wsClosedIntentionally,
                 closeCode: event.code,
                 hadTransportError: wsHadTransportError,
+                hadTerminalEvent: wsHadTerminalEvent,
                 backendState,
                 restoredSnapshot,
                 recoveryHint:
@@ -1987,6 +2121,7 @@ export default function ChatPanel({
     },
     [
       attachRunStream,
+      createBranchedThread,
       deriveDraftThreadTitleFromMessage,
       flushScheduledThreadPersist,
       fullScreen,
@@ -1998,6 +2133,7 @@ export default function ChatPanel({
       mutationConfirmMode,
       persistThreadMessages,
       refreshActiveThreadTitle,
+      rewriteTarget,
       restoreThreadSnapshotFromServer,
       scheduleThreadPersist,
       classifyBackendDisconnectState,
@@ -2007,15 +2143,95 @@ export default function ChatPanel({
   );
   sendMessageRef.current = sendMessage;
 
+  const handleEditAndResend = useCallback((message: ChatMessage) => {
+    const target = getEditBranchTarget(messagesRef.current, message.id);
+    if (!target) {
+      useGraphStore.getState().addToast({
+        type: "error",
+        message: "Could not prepare that message for editing.",
+      });
+      return;
+    }
+    setRewriteTarget({
+      sourceMessageId: message.id,
+      historyBefore: target.historyBefore,
+      branchType: "edit",
+    });
+    setInputText(target.content);
+    setUserAttachments(target.attachments);
+    setError(null);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, []);
+
+  const handleRegenerate = useCallback(
+    async (message: ChatMessage) => {
+      const target = getRegenerateBranchTarget(messagesRef.current, message.id);
+      if (!target) {
+        useGraphStore.getState().addToast({
+          type: "error",
+          message: "Could not regenerate that result.",
+        });
+        return;
+      }
+      const branchedThreadId = await createBranchedThread(
+        target.historyBefore,
+        target.content,
+        { branchType: "regenerate", branchPointMessageId: message.id },
+      );
+      if (!branchedThreadId) return;
+      useGraphStore.getState().addToast({
+        type: "info",
+        message: "Regenerating in a new branched thread",
+      });
+      await sendMessage(
+        target.content,
+        target.historyBefore,
+        undefined,
+        target.attachments,
+        branchedThreadId,
+      );
+    },
+    [createBranchedThread, sendMessage],
+  );
+
+  const handleExploreFromHere = useCallback((message: ChatMessage) => {
+    const target = getExploreBranchTarget(messagesRef.current, message.id);
+    if (!target) {
+      useGraphStore.getState().addToast({
+        type: "error",
+        message: "Could not set up exploration from this result.",
+      });
+      return;
+    }
+    setRewriteTarget({
+      sourceMessageId: message.id,
+      historyBefore: target.historyUpToHere,
+      branchType: "explore",
+    });
+    setInputText("");
+    setUserAttachments([]);
+    setError(null);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, []);
+
   const retryLast = useCallback(() => {
     const msgs = messagesRef.current;
     const lastUser = [...msgs].reverse().find((m) => m.role === "user");
     if (!lastUser) return;
     const idx = msgs.lastIndexOf(lastUser);
     const trimmed = msgs.slice(0, idx);
+    const retryAttachments = (lastUser.attachments ?? []).map(
+      chatAttachmentToComposerDraft,
+    );
+    const retryContent = isSyntheticAttachmentSummary(
+      lastUser.content,
+      lastUser.attachments,
+    )
+      ? ""
+      : lastUser.content;
     setMessages(trimmed);
     setError(null);
-    sendMessage(lastUser.content, trimmed);
+    sendMessage(retryContent, trimmed, undefined, retryAttachments);
   }, [sendMessage]);
 
   const handleKeyDown = useCallback(
@@ -2058,7 +2274,7 @@ export default function ChatPanel({
       if (file) {
         e.preventDefault();
         setPasteHint(null);
-        setUserAttachments((prev) => [...prev, file]);
+        setUserAttachments((prev) => [...prev, fileToAttachmentDraft(file)]);
         useGraphStore.getState().addToast({ type: "info", message: "Screenshot attached" });
       }
     }
@@ -2082,7 +2298,7 @@ export default function ChatPanel({
     setIsDragOver(false);
     const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
-      setUserAttachments((prev) => [...prev, ...files]);
+      setUserAttachments((prev) => [...prev, ...files.map(fileToAttachmentDraft)]);
     }
   }, []);
 
@@ -2192,6 +2408,7 @@ export default function ChatPanel({
     setIsStreaming(false);
     setSessionMarkers({});
     setPendingQueue([]);
+    setRewriteTarget(null);
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, [isStreaming, detachCurrentStream]);
 
@@ -2289,6 +2506,9 @@ export default function ChatPanel({
     async (threadId: string) => {
       if (!graphId) return;
       let snapshot: Record<string, unknown> | null = null;
+      const lineageSnapshot = threads.find((thread) => thread.id === threadId) ?? null;
+      const hasChildBranches =
+        (threadBranchTree.childrenByParentId[threadId]?.length ?? 0) > 0;
       try {
         snapshot = await api.getChatThread(graphId, threadId);
       } catch { /* proceed without undo capability */ }
@@ -2312,41 +2532,60 @@ export default function ChatPanel({
           const snapshotTitle = (snapshot as { title?: string }).title;
           const snapshotMessages = (snapshot as { messages?: unknown[] }).messages;
           const snapshotMode = (snapshot as { mode?: string }).mode;
+          const restoreAction = hasChildBranches
+            ? undefined
+            : {
+                label: "Undo",
+                onClick: async () => {
+                  try {
+                    const restored = await api.createChatThread(graphId, {
+                      title: snapshotTitle,
+                      mode: snapshotMode,
+                      parent_thread_id:
+                        lineageSnapshot?.parent_thread_id ?? undefined,
+                      branch_point_message_id:
+                        lineageSnapshot?.branch_point_message_id ?? undefined,
+                      branch_type: lineageSnapshot?.branch_type ?? undefined,
+                    });
+                    const restoredId = (restored as { id?: string }).id;
+                    if (!restoredId) {
+                      throw new Error("Missing restored thread id");
+                    }
+                    await api.updateChatThread(graphId, restoredId, {
+                      title: snapshotTitle,
+                      messages: snapshotMessages ?? [],
+                      mode: snapshotMode,
+                    });
+                    await fetchThreads(graphId);
+                    if (wasActive) {
+                      await loadThread(graphId, restoredId);
+                    }
+                    useGraphStore.getState().addToast({
+                      type: "success",
+                      message: `Restored "${title}"`,
+                    });
+                  } catch {
+                    useGraphStore.getState().addToast({
+                      type: "error",
+                      message: "Failed to restore conversation",
+                    });
+                  }
+                },
+              };
           useGraphStore.getState().addToast({
             type: "info",
-            message: `Deleted "${title}"`,
+            message: hasChildBranches
+              ? `Deleted "${title}" (undo unavailable for branch parents yet)`
+              : `Deleted "${title}"`,
             durationMs: 8000,
-            action: {
-              label: "Undo",
-              onClick: async () => {
-                try {
-                  const restored = await api.createChatThread(graphId);
-                  const restoredId = (restored as { id?: string }).id;
-                  if (!restoredId) {
-                    throw new Error("Missing restored thread id");
-                  }
-                  await api.updateChatThread(graphId, restoredId, {
-                    title: snapshotTitle,
-                    messages: snapshotMessages ?? [],
-                    mode: snapshotMode,
-                  });
-                  await fetchThreads(graphId);
-                  if (wasActive) {
-                    await loadThread(graphId, restoredId);
-                  }
-                  useGraphStore.getState().addToast({ type: "success", message: `Restored "${title}"` });
-                } catch {
-                  useGraphStore.getState().addToast({ type: "error", message: "Failed to restore conversation" });
-                }
-              },
-            },
+            action: restoreAction,
           });
         }
       } catch (err) {
         console.warn("Failed to delete thread:", err);
       }
     },
-    [graphId, activeThreadId, fetchThreads, loadThread],
+    [graphId, activeThreadId, fetchThreads, loadThread, threadBranchTree, threads],
   );
 
   const handleRenameThread = useCallback(
@@ -2843,6 +3082,16 @@ export default function ChatPanel({
                   onRevert={() => handleRevert(m.id)}
                   onPreviewMutation={chatMode === "ask" ? undefined : handlePreviewMutation}
                   onCopyMarkdown={() => handleCopyMessage(m)}
+                  onEditAndResend={
+                    m.role === "user" ? () => handleEditAndResend(m) : undefined
+                  }
+                  onRegenerate={
+                    m.role === "assistant" ? () => void handleRegenerate(m) : undefined
+                  }
+                  onExploreFromHere={
+                    m.role === "assistant" ? () => handleExploreFromHere(m) : undefined
+                  }
+                  disableHistoryActions={isStreaming || isRunStreaming}
                   isStreaming={isAssistantBubbleStreaming({
                     role: m.role,
                     isLastMessage: i === messages.length - 1,
@@ -3029,8 +3278,11 @@ export default function ChatPanel({
               <button
                 onClick={() => {
                   setPendingQueue((q) => q.filter((_, i) => i !== idx));
+                  setRewriteTarget(null);
                   setInputText(item.content);
-                  setUserAttachments(item.attachments ?? []);
+                  setUserAttachments(
+                    (item.attachments ?? []).map(cloneAttachmentDraft),
+                  );
                   requestAnimationFrame(() => textareaRef.current?.focus());
                 }}
                 className="text-gray-500 dark:text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 p-0.5 rounded transition-colors"
@@ -3078,12 +3330,27 @@ export default function ChatPanel({
             }}
           />
         )}
+        {rewriteTarget && (
+          <div className="mb-2 flex items-start gap-3 rounded-xl border border-indigo-200 dark:border-indigo-500/30 bg-indigo-50/80 dark:bg-indigo-500/10 px-3 py-2 text-xs text-indigo-700 dark:text-indigo-200">
+            <span className="flex-1">
+              {rewriteTarget.branchType === "explore"
+                ? "Exploring from a previous result. Your message will start a new branched thread from that point."
+                : "Editing an earlier turn. Sending will create a new branched thread from this point and keep the current thread unchanged."}
+            </span>
+            <button
+              onClick={() => setRewriteTarget(null)}
+              className="shrink-0 font-medium text-indigo-600 dark:text-indigo-300 hover:text-indigo-800 dark:hover:text-indigo-100 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
         {userAttachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-2 px-1">
             {userAttachments.map((f, i) => {
               const attachmentName = resolveAttachmentName(
                 f.name,
-                f.type || undefined,
+                f.mimeType,
               );
               return (
               <span
@@ -3205,7 +3472,10 @@ export default function ChatPanel({
                   prev.replace(pasteHint.value!, "```\n" + pasteHint.value + "\n```"),
                 );
               } else if (pasteHint.type === "image" && pasteHint.file) {
-                setUserAttachments((prev) => [...prev, pasteHint.file!]);
+                setUserAttachments((prev) => [
+                  ...prev,
+                  fileToAttachmentDraft(pasteHint.file!),
+                ]);
               }
               setPasteHint(null);
             }}
@@ -3252,7 +3522,9 @@ export default function ChatPanel({
           <div className="w-72 flex-shrink-0 border-l border-gray-200 dark:border-[#3c3c3c] flex flex-col bg-white dark:bg-[#252526]">
             <ThreadListView
               threads={threads}
+              activeThreadId={activeThreadId}
               loading={loadingThreads}
+              treeMode
               onNewChat={handleNewChat}
               onSelectThread={(id) => { handleSelectThread(id); setShowThreadList(false); }}
               onDeleteThread={handleDeleteThread}
@@ -3333,6 +3605,7 @@ export default function ChatPanel({
         {showThreadList ? (
           <ThreadListView
             threads={threads}
+            activeThreadId={activeThreadId}
             loading={loadingThreads}
             onNewChat={handleNewChat}
             onSelectThread={handleSelectThread}
@@ -3391,9 +3664,50 @@ export default function ChatPanel({
 // Sub-components
 // ---------------------------------------------------------------------------
 
+function getThreadBranchBadgeMeta(
+  branchType: ChatThreadSummary["branch_type"],
+): {
+  label: string;
+  icon: typeof GitBranch;
+  className: string;
+} {
+  switch (branchType) {
+    case "edit":
+      return {
+        label: "Edit",
+        icon: PencilLine,
+        className:
+          "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200",
+      };
+    case "regenerate":
+      return {
+        label: "Regen",
+        icon: RotateCcw,
+        className:
+          "border-sky-200 bg-sky-50 text-sky-700 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200",
+      };
+    case "explore":
+      return {
+        label: "Explore",
+        icon: GitBranch,
+        className:
+          "border-violet-200 bg-violet-50 text-violet-700 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-200",
+      };
+    default:
+      return {
+        label: "Branch",
+        icon: GitBranch,
+        className:
+          "border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-600/40 dark:bg-white/5 dark:text-gray-300",
+      };
+  }
+}
+
 function ThreadListView({
   threads,
+  activeThreadId,
   loading,
+  treeMode = false,
   onNewChat,
   onSelectThread,
   onDeleteThread,
@@ -3409,7 +3723,9 @@ function ThreadListView({
   onContextMenu,
 }: {
   threads: ChatThreadSummary[];
+  activeThreadId?: string | null;
   loading: boolean;
+  treeMode?: boolean;
   onNewChat: () => void;
   onSelectThread: (id: string) => void;
   onDeleteThread: (id: string) => void;
@@ -3429,16 +3745,66 @@ function ThreadListView({
   isSearching: boolean;
   onSearch: (query: string) => void;
   bgStreamIds?: Set<string>;
-  onContextMenu?: (menu: { x: number; y: number; threadId: string; threadTitle: string; pinned: boolean }) => void;
+  onContextMenu?: (menu: {
+    x: number;
+    y: number;
+    threadId: string;
+    threadTitle: string;
+    pinned: boolean;
+  }) => void;
 }) {
-  const pinnedThreads = threads.filter((t) => (t as ChatThreadSummary & { pinned?: boolean }).pinned);
-  const unpinnedThreads = threads.filter((t) => !(t as ChatThreadSummary & { pinned?: boolean }).pinned);
+  const pinnedThreads = threads.filter(
+    (thread) => (thread as ChatThreadSummary & { pinned?: boolean }).pinned,
+  );
+  const unpinnedThreads = threads.filter(
+    (thread) => !(thread as ChatThreadSummary & { pinned?: boolean }).pinned,
+  );
   const sortedUnpinned = [...unpinnedThreads].sort(
     (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
   );
   const sortedPinned = [...pinnedThreads].sort(
     (a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime(),
   );
+  const branchTree = useMemo(() => buildThreadBranchTree(threads), [threads]);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const [collapsedTreeIds, setCollapsedTreeIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+
+  const toggleTreeNode = useCallback((threadId: string) => {
+    setCollapsedTreeIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(threadId)) next.delete(threadId);
+      else next.add(threadId);
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!treeMode || !activeThreadId) return;
+    const ancestry = branchTree.ancestryByThreadId[activeThreadId] ?? [];
+    setCollapsedTreeIds((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const threadId of [...ancestry, activeThreadId]) {
+        if (next.delete(threadId)) changed = true;
+      }
+      return changed ? next : prev;
+    });
+  }, [treeMode, activeThreadId, branchTree]);
+
+  useEffect(() => {
+    if (!activeThreadId) return;
+    const frameId = requestAnimationFrame(() => {
+      const container = scrollContainerRef.current;
+      if (!container) return;
+      const row = container.querySelector<HTMLElement>(
+        `[data-thread-row-id="${activeThreadId}"]`,
+      );
+      row?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frameId);
+  }, [activeThreadId, searchQuery, treeMode, threads, collapsedTreeIds]);
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -3468,10 +3834,12 @@ function ThreadListView({
         </div>
       </div>
 
-      {/* Search bar */}
       <div className="px-3 py-2 border-b border-gray-100 dark:border-gray-800 flex-shrink-0">
         <div className="flex items-center gap-2 bg-gray-50 dark:bg-gray-800 rounded-lg px-2.5 py-1.5">
-          <Search size={12} className="text-gray-400 dark:text-gray-500 flex-shrink-0" />
+          <Search
+            size={12}
+            className="text-gray-400 dark:text-gray-500 flex-shrink-0"
+          />
           <input
             type="text"
             value={searchQuery}
@@ -3479,7 +3847,12 @@ function ThreadListView({
             placeholder="Search conversations…"
             className="text-xs text-gray-700 dark:text-gray-200 placeholder-gray-400 dark:placeholder:text-gray-500 bg-transparent outline-none flex-1 min-w-0"
           />
-          {isSearching && <Loader2 size={12} className="text-gray-300 dark:text-gray-500 animate-spin flex-shrink-0" />}
+          {isSearching && (
+            <Loader2
+              size={12}
+              className="text-gray-300 dark:text-gray-500 animate-spin flex-shrink-0"
+            />
+          )}
           {searchQuery && !isSearching && (
             <button
               onClick={() => onSearch("")}
@@ -3489,10 +3862,18 @@ function ThreadListView({
             </button>
           )}
         </div>
+        {treeMode && !searchQuery.trim() && threads.length > 0 && (
+          <div className="mt-2 flex items-center justify-between text-[10px] text-gray-400 dark:text-gray-500">
+            <span className="inline-flex items-center gap-1">
+              <GitBranch size={10} className="text-violet-500 dark:text-violet-300" />
+              Branch tree
+            </span>
+            <span>{branchTree.rootIds.length} root{branchTree.rootIds.length === 1 ? "" : "s"}</span>
+          </div>
+        )}
       </div>
 
-      <div className="flex-1 overflow-y-auto">
-        {/* Show search results if there's a query */}
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto">
         {searchQuery.trim() ? (
           searchResults.length === 0 && !isSearching ? (
             <div className="text-center py-8 text-xs text-gray-400 dark:text-gray-500">
@@ -3500,30 +3881,44 @@ function ThreadListView({
             </div>
           ) : (
             <div className="py-1">
-              {searchResults.map((r, i) => (
-                <div
-                  key={`${r.thread_id}-${r.message_id}-${i}`}
-                  onClick={() => onSelectThread(r.thread_id)}
-                  className="px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer transition-colors"
-                >
-                  <div className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
-                    {r.thread_title}
+              {searchResults.map((result, index) => {
+                const isActive = result.thread_id === activeThreadId;
+                return (
+                  <div
+                    key={`${result.thread_id}-${result.message_id}-${index}`}
+                    data-thread-row-id={result.thread_id}
+                    onClick={() => onSelectThread(result.thread_id)}
+                    className={`px-3 py-2.5 cursor-pointer transition-colors ${
+                      isActive
+                        ? "bg-indigo-50 dark:bg-indigo-500/10"
+                        : "hover:bg-gray-50 dark:hover:bg-white/5"
+                    }`}
+                  >
+                    <div className="text-xs font-medium text-gray-700 dark:text-gray-200 truncate">
+                      {result.thread_title}
+                    </div>
+                    <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 line-clamp-2">
+                      {result.message_preview}
+                    </div>
                   </div>
-                  <div className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5 line-clamp-2">
-                    {r.message_preview}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )
         ) : loading ? (
           <div className="flex items-center justify-center py-12">
-            <Loader2 size={20} className="text-gray-300 dark:text-gray-500 animate-spin" />
+            <Loader2
+              size={20}
+              className="text-gray-300 dark:text-gray-500 animate-spin"
+            />
           </div>
         ) : threads.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-center px-4">
             <div className="w-10 h-10 rounded-full bg-gray-50 dark:bg-gray-800 flex items-center justify-center mb-3">
-              <MessageSquare size={20} className="text-gray-300 dark:text-gray-500" />
+              <MessageSquare
+                size={20}
+                className="text-gray-300 dark:text-gray-500"
+              />
             </div>
             <p className="text-sm text-gray-400 dark:text-gray-500 mb-4">
               No conversations yet
@@ -3535,6 +3930,71 @@ function ThreadListView({
               Start a new chat
             </button>
           </div>
+        ) : treeMode ? (
+          <div className="py-1">
+            {(() => {
+              const pinnedRootIds = branchTree.rootIds.filter(
+                (id) => branchTree.byId[id]?.pinned
+              );
+              const unpinnedRootIds = branchTree.rootIds.filter(
+                (id) => !branchTree.byId[id]?.pinned
+              );
+
+              return (
+                <>
+                  {pinnedRootIds.length > 0 && (
+                    <>
+                      <div className="px-3 pt-2 pb-1">
+                        <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider flex items-center gap-1">
+                          <Pin size={9} className="text-indigo-500 dark:text-indigo-400" />
+                          Pinned
+                        </span>
+                      </div>
+                      {pinnedRootIds.map((threadId) => (
+                        <ThreadTreeNode
+                          key={threadId}
+                          threadId={threadId}
+                          depth={0}
+                          tree={branchTree}
+                          activeThreadId={activeThreadId ?? null}
+                          collapsedTreeIds={collapsedTreeIds}
+                          onToggleTreeNode={toggleTreeNode}
+                          onSelectThread={onSelectThread}
+                          onDeleteThread={onDeleteThread}
+                          onRenameThread={onRenameThread}
+                          onPinThread={onPinThread}
+                          onExportThread={onExportThread}
+                          bgStreamIds={bgStreamIds}
+                          onContextMenu={onContextMenu}
+                        />
+                      ))}
+                      {unpinnedRootIds.length > 0 && (
+                        <div className="mx-3 my-1 border-t border-gray-100 dark:border-gray-800" />
+                      )}
+                    </>
+                  )}
+                  {unpinnedRootIds.map((threadId) => (
+                    <ThreadTreeNode
+                      key={threadId}
+                      threadId={threadId}
+                      depth={0}
+                      tree={branchTree}
+                      activeThreadId={activeThreadId ?? null}
+                      collapsedTreeIds={collapsedTreeIds}
+                      onToggleTreeNode={toggleTreeNode}
+                      onSelectThread={onSelectThread}
+                      onDeleteThread={onDeleteThread}
+                      onRenameThread={onRenameThread}
+                      onPinThread={onPinThread}
+                      onExportThread={onExportThread}
+                      bgStreamIds={bgStreamIds}
+                      onContextMenu={onContextMenu}
+                    />
+                  ))}
+                </>
+              );
+            })()}
+          </div>
         ) : (
           <div className="py-1">
             {sortedPinned.length > 0 && (
@@ -3545,17 +4005,19 @@ function ThreadListView({
                     Pinned
                   </span>
                 </div>
-                {sortedPinned.map((t) => (
+                {sortedPinned.map((thread) => (
                   <ThreadRow
-                    key={t.id}
-                    thread={t}
-                    onSelect={() => onSelectThread(t.id)}
-                    onDelete={() => onDeleteThread(t.id)}
-                    onRename={(title) => onRenameThread(t.id, title)}
-                    onPin={() => onPinThread(t.id, false)}
-                    onExport={(fmt) => onExportThread(t.id, fmt)}
+                    key={thread.id}
+                    thread={thread}
+                    onSelect={() => onSelectThread(thread.id)}
+                    onDelete={() => onDeleteThread(thread.id)}
+                    onRename={(title) => onRenameThread(thread.id, title)}
+                    onPin={() => onPinThread(thread.id, false)}
+                    onExport={(format) => onExportThread(thread.id, format)}
                     pinned
-                    isStreamingInBg={bgStreamIds?.has(t.id) ?? false}
+                    isActive={thread.id === activeThreadId}
+                    siblingInfo={branchTree.siblingInfoByThreadId[thread.id]}
+                    isStreamingInBg={bgStreamIds?.has(thread.id) ?? false}
                     onContextMenu={onContextMenu}
                   />
                 ))}
@@ -3564,29 +4026,31 @@ function ThreadListView({
                 )}
               </>
             )}
-            {groupThreadsByDate(sortedUnpinned).map(({ label, threads: group }) => (
+            {groupThreadsByDate(sortedUnpinned).map(({ label, threads: groupedThreads }) => (
               <div key={label}>
                 <div className="px-3 pt-2 pb-1">
                   <span className="text-[10px] font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider">
                     {label}
                   </span>
                 </div>
-                {group.map((t) => (
+                {groupedThreads.map((thread) => (
                   <ThreadRow
-                    key={t.id}
-                    thread={t}
-                    onSelect={() => onSelectThread(t.id)}
-                    onDelete={() => onDeleteThread(t.id)}
-                    onRename={(title) => onRenameThread(t.id, title)}
+                    key={thread.id}
+                    thread={thread}
+                    onSelect={() => onSelectThread(thread.id)}
+                    onDelete={() => onDeleteThread(thread.id)}
+                    onRename={(title) => onRenameThread(thread.id, title)}
                     onPin={() =>
                       onPinThread(
-                        t.id,
-                        !(t as ChatThreadSummary & { pinned?: boolean }).pinned,
+                        thread.id,
+                        !(thread as ChatThreadSummary & { pinned?: boolean }).pinned,
                       )
                     }
-                    onExport={(fmt) => onExportThread(t.id, fmt)}
+                    onExport={(format) => onExportThread(thread.id, format)}
                     pinned={false}
-                    isStreamingInBg={bgStreamIds?.has(t.id) ?? false}
+                    isActive={thread.id === activeThreadId}
+                    siblingInfo={branchTree.siblingInfoByThreadId[thread.id]}
+                    isStreamingInBg={bgStreamIds?.has(thread.id) ?? false}
                     onContextMenu={onContextMenu}
                   />
                 ))}
@@ -3599,6 +4063,110 @@ function ThreadListView({
   );
 }
 
+function ThreadTreeNode({
+  threadId,
+  depth,
+  tree,
+  activeThreadId,
+  collapsedTreeIds,
+  onToggleTreeNode,
+  onSelectThread,
+  onDeleteThread,
+  onRenameThread,
+  onPinThread,
+  onExportThread,
+  bgStreamIds,
+  onContextMenu,
+}: {
+  threadId: string;
+  depth: number;
+  tree: ChatThreadBranchTree;
+  activeThreadId: string | null;
+  collapsedTreeIds: Set<string>;
+  onToggleTreeNode: (threadId: string) => void;
+  onSelectThread: (id: string) => void;
+  onDeleteThread: (id: string) => void;
+  onRenameThread: (id: string, title: string) => void;
+  onPinThread: (id: string, pinned: boolean) => void;
+  onExportThread: (id: string, format: "md" | "json") => void;
+  bgStreamIds?: Set<string>;
+  onContextMenu?: (menu: {
+    x: number;
+    y: number;
+    threadId: string;
+    threadTitle: string;
+    pinned: boolean;
+  }) => void;
+}) {
+  const thread = tree.byId[threadId];
+  if (!thread) return null;
+  const childIds = tree.childrenByParentId[threadId] ?? [];
+  const hasChildren = childIds.length > 0;
+  const isCollapsed = hasChildren && collapsedTreeIds.has(threadId);
+
+  return (
+    <div>
+      <ThreadRow
+        thread={thread}
+        onSelect={() => onSelectThread(thread.id)}
+        onDelete={() => onDeleteThread(thread.id)}
+        onRename={(title) => onRenameThread(thread.id, title)}
+        onPin={() =>
+          onPinThread(
+            thread.id,
+            !(thread as ChatThreadSummary & { pinned?: boolean }).pinned,
+          )
+        }
+        onExport={(format) => onExportThread(thread.id, format)}
+        pinned={Boolean((thread as ChatThreadSummary & { pinned?: boolean }).pinned)}
+        isActive={thread.id === activeThreadId}
+        siblingInfo={tree.siblingInfoByThreadId[thread.id]}
+        indentLevel={depth}
+        leadingSlot={
+          hasChildren ? (
+            <button
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleTreeNode(thread.id);
+              }}
+              className="flex h-4 w-4 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-white/10 dark:hover:text-gray-200"
+              title={isCollapsed ? "Expand branch" : "Collapse branch"}
+            >
+              {isCollapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+            </button>
+          ) : (
+            <span className="h-4 w-4 flex-shrink-0" />
+          )
+        }
+        isStreamingInBg={bgStreamIds?.has(thread.id) ?? false}
+        onContextMenu={onContextMenu}
+      />
+      {hasChildren && !isCollapsed && (
+        <div>
+          {childIds.map((childId) => (
+            <ThreadTreeNode
+              key={childId}
+              threadId={childId}
+              depth={depth + 1}
+              tree={tree}
+              activeThreadId={activeThreadId}
+              collapsedTreeIds={collapsedTreeIds}
+              onToggleTreeNode={onToggleTreeNode}
+              onSelectThread={onSelectThread}
+              onDeleteThread={onDeleteThread}
+              onRenameThread={onRenameThread}
+              onPinThread={onPinThread}
+              onExportThread={onExportThread}
+              bgStreamIds={bgStreamIds}
+              onContextMenu={onContextMenu}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ThreadRow({
   thread,
   onSelect,
@@ -3607,6 +4175,10 @@ function ThreadRow({
   pinned,
   isStreamingInBg,
   onContextMenu,
+  isActive = false,
+  siblingInfo,
+  indentLevel = 0,
+  leadingSlot,
 }: {
   thread: ChatThreadSummary;
   onSelect: () => void;
@@ -3616,12 +4188,31 @@ function ThreadRow({
   onExport?: (format: "md" | "json") => void;
   pinned: boolean;
   isStreamingInBg?: boolean;
-  onContextMenu?: (menu: { x: number; y: number; threadId: string; threadTitle: string; pinned: boolean }) => void;
+  onContextMenu?: (menu: {
+    x: number;
+    y: number;
+    threadId: string;
+    threadTitle: string;
+    pinned: boolean;
+  }) => void;
+  isActive?: boolean;
+  siblingInfo?: ChatThreadSiblingInfo;
+  indentLevel?: number;
+  leadingSlot?: React.ReactNode;
 }) {
   const title = getDisplayThreadTitle(thread.title, "Untitled chat");
   const displayTitle = title.length > 40 ? title.slice(0, 40) + "…" : title;
   const [editing, setEditing] = useState(false);
   const [draftTitle, setDraftTitle] = useState(title);
+  const hasParentThread = Boolean(thread.parent_thread_id);
+  const branchBadgeMeta = hasParentThread
+    ? getThreadBranchBadgeMeta(thread.branch_type ?? null)
+    : null;
+  const BranchBadgeIcon = branchBadgeMeta?.icon;
+  const activeSiblingLabel =
+    isActive && siblingInfo && siblingInfo.count > 1
+      ? `${siblingInfo.position}/${siblingInfo.count}`
+      : null;
 
   useEffect(() => {
     setDraftTitle(title);
@@ -3635,27 +4226,45 @@ function ThreadRow({
     onRename(trimmed);
   }, [draftTitle, onRename, title]);
 
-  const openContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    onContextMenu?.({
-      x: e.clientX,
-      y: e.clientY,
-      threadId: thread.id,
-      threadTitle: title,
-      pinned,
-    });
-  }, [onContextMenu, thread.id, title, pinned]);
+  const openContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onContextMenu?.({
+        x: e.clientX,
+        y: e.clientY,
+        threadId: thread.id,
+        threadTitle: title,
+        pinned,
+      });
+    },
+    [onContextMenu, thread.id, title, pinned],
+  );
 
   return (
     <div
+      data-thread-row-id={thread.id}
       onClick={onSelect}
       onContextMenu={openContextMenu}
-      className="group flex items-center gap-2 px-3 py-2.5 hover:bg-gray-50 dark:hover:bg-white/5 cursor-pointer transition-colors"
+      className={`group flex items-center gap-2 py-2.5 pr-3 cursor-pointer transition-colors ${
+        isActive
+          ? "bg-indigo-50 dark:bg-indigo-500/10"
+          : "hover:bg-gray-50 dark:hover:bg-white/5"
+      }`}
+      style={{ paddingLeft: 12 + indentLevel * 14 }}
     >
-      {pinned && <Pin size={10} className="text-indigo-500 dark:text-indigo-400 flex-shrink-0" />}
+      {leadingSlot}
+      {pinned && (
+        <Pin
+          size={10}
+          className="text-indigo-500 dark:text-indigo-400 flex-shrink-0"
+        />
+      )}
       {isStreamingInBg && (
-        <span className="flex-shrink-0 w-2 h-2 rounded-full bg-indigo-400 dan-bg-stream-pulse" title="Working in background" />
+        <span
+          className="flex-shrink-0 w-2 h-2 rounded-full bg-indigo-400 dan-bg-stream-pulse"
+          title="Working in background"
+        />
       )}
       <div className="flex-1 min-w-0">
         {editing ? (
@@ -3676,7 +4285,30 @@ function ThreadRow({
             className="w-full text-sm text-gray-800 dark:text-gray-100 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded px-1.5 py-0.5 outline-none focus:border-indigo-300"
           />
         ) : (
-          <div className="text-sm text-gray-800 dark:text-gray-100 truncate">{displayTitle}</div>
+          <div className="flex items-center gap-1.5 min-w-0">
+            <div
+              className={`flex-1 min-w-0 text-sm truncate ${
+                isActive
+                  ? "text-indigo-700 dark:text-indigo-100"
+                  : "text-gray-800 dark:text-gray-100"
+              }`}
+            >
+              {displayTitle}
+            </div>
+            {branchBadgeMeta && BranchBadgeIcon && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-medium flex-shrink-0 ${branchBadgeMeta.className}`}
+              >
+                <BranchBadgeIcon size={9} />
+                {branchBadgeMeta.label}
+              </span>
+            )}
+            {activeSiblingLabel && (
+              <span className="inline-flex items-center rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-500/20 dark:text-indigo-200 px-1.5 py-0.5 text-[9px] font-medium flex-shrink-0">
+                Active {activeSiblingLabel}
+              </span>
+            )}
+          </div>
         )}
         <div className="flex items-center gap-2 mt-0.5">
           <span className="text-[10px] text-gray-400 dark:text-gray-500">

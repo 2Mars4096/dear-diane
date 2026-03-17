@@ -72,12 +72,19 @@ export function getStreamDisconnectError(args: {
   closedIntentionally: boolean;
   closeCode: number;
   hadTransportError: boolean;
+  hadTerminalEvent?: boolean;
   streamLabel?: string;
   recoveryHint?: string;
   backendState?: "unknown" | "unavailable" | "restarted";
   restoredSnapshot?: boolean;
 }): string | null {
-  if (args.closedIntentionally || args.closeCode === 1000 || args.closeCode === 1005) {
+  if (args.closedIntentionally) {
+    return null;
+  }
+  if (
+    (args.closeCode === 1000 || args.closeCode === 1005) &&
+    args.hadTerminalEvent !== false
+  ) {
     return null;
   }
   const label = args.streamLabel ?? "Connection";

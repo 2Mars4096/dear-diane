@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { Check, X, Loader2, RotateCcw, ChevronRight, ChevronDown, Copy, Wrench, FileText } from "lucide-react";
+import { Check, X, Loader2, RotateCcw, ChevronRight, ChevronDown, Copy, Wrench, FileText, Pencil, GitBranch } from "lucide-react";
 import katex from "katex";
 import "katex/dist/katex.min.css";
 import { Marked, Renderer } from "marked";
@@ -506,6 +506,10 @@ interface ChatMessageProps {
   onRevert?: () => void;
   onPreviewMutation?: (message: ChatMessage) => void;
   onCopyMarkdown?: () => void;
+  onEditAndResend?: () => void;
+  onRegenerate?: () => void;
+  onExploreFromHere?: () => void;
+  disableHistoryActions?: boolean;
   isStreaming?: boolean;
 }
 
@@ -595,6 +599,10 @@ export default function ChatMessageBubble({
   onRevert,
   onPreviewMutation,
   onCopyMarkdown,
+  onEditAndResend,
+  onRegenerate,
+  onExploreFromHere,
+  disableHistoryActions,
   isStreaming,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
@@ -667,6 +675,23 @@ export default function ChatMessageBubble({
     content: message.content,
     toolCallCount: message.toolCalls?.length ?? 0,
   });
+  const showIncompleteTurnFallback =
+    !isUser &&
+    !isStreaming &&
+    !message.content.trim() &&
+    ((message.toolCalls?.length ?? 0) > 0 ||
+      (message.attachments?.length ?? 0) > 0 ||
+      (message.runEvents?.length ?? 0) > 0);
+  const showEditAndResend =
+    isUser && Boolean(onEditAndResend) && !disableHistoryActions;
+  const showRegenerate =
+    message.role === "assistant" &&
+    Boolean(onRegenerate) &&
+    !disableHistoryActions;
+  const showExploreFromHere =
+    message.role === "assistant" &&
+    Boolean(onExploreFromHere) &&
+    !disableHistoryActions;
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3`}>
@@ -704,6 +729,11 @@ export default function ChatMessageBubble({
           />
         ) : message.content ? (
           <RichContentRenderer content={message.content} onClick={handleClick} />
+        ) : showIncompleteTurnFallback ? (
+          <p className="text-sm italic text-gray-500 dark:text-gray-400">
+            Final assistant text was not captured for this turn. Review the tool
+            output below or retry.
+          </p>
         ) : null}
 
         {message.toolCalls && message.toolCalls.length > 0 && (
@@ -785,6 +815,33 @@ export default function ChatMessageBubble({
               <span className="text-[10px] text-gray-500 dark:text-gray-400">
                 {tokens.toLocaleString()} tokens
               </span>
+            )}
+            {showEditAndResend && (
+              <button
+                onClick={onEditAndResend}
+                className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                title="Edit and resend in new branch"
+              >
+                <Pencil size={11} />
+              </button>
+            )}
+            {showRegenerate && (
+              <button
+                onClick={onRegenerate}
+                className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                title="Regenerate in new branch"
+              >
+                <RotateCcw size={11} />
+              </button>
+            )}
+            {showExploreFromHere && (
+              <button
+                onClick={onExploreFromHere}
+                className="text-gray-400 dark:text-gray-500 hover:text-gray-600 dark:hover:text-gray-300 transition-colors"
+                title="Explore from here — ask a new question branching from this result"
+              >
+                <GitBranch size={11} />
+              </button>
             )}
             {onCopyMarkdown && message.content && (
               <button
