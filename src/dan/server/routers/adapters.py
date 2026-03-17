@@ -223,6 +223,16 @@ def _remove_sqlite_artifacts(path: Path) -> None:
             continue
 
 
+def _json_safe(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_json_safe(item) for item in value]
+    return str(value)
+
+
 def _load_telegram_desktop_state() -> dict[str, Any]:
     from dan.adapters.telegram_config import load_fleet_config
 
@@ -370,6 +380,7 @@ def _publish_adapter_event(adapter_id: str, event: dict[str, Any]) -> None:
         "timestamp": time.time(),
     }
     payload.update({k: v for k, v in event.items() if k != "type"})
+    payload = _json_safe(payload)
 
     if event_type == "qr":
         qr_data = str(payload.get("qr_data") or "").strip()
@@ -780,6 +791,11 @@ async def _stop_active_adapter(adapter_id: str, *, missing_ok: bool = False) -> 
         return False if missing_ok else False
 
     adapter, task = entry
+    if hasattr(adapter, "set_event_callback"):
+        try:
+            adapter.set_event_callback(None)
+        except Exception:
+            logger.debug("Failed to clear event callback for %s", adapter_id, exc_info=True)
     if not task.done():
         task.cancel()
     try:
@@ -960,7 +976,7 @@ async def save_adapter_config(adapter_type: str, body: dict[str, Any]):
         allowed_chat_ids = _coerce_int_list(body.get("allowed_chat_ids"))
         info: dict[str, Any] | None = None
         if token:
-            info = verify_bot_token(token)
+            info = await asyncio.to_thread(verify_bot_token, token)
             if info is None:
                 raise HTTPException(status_code=400, detail="Invalid Telegram bot token.")
         state = _save_telegram_desktop_state(
@@ -1023,13 +1039,13 @@ async def adapter_events(adapter_id: str):
                 key=lambda event: float(event.get("timestamp") or 0.0),
             )
             for event in snapshot_events:
-                yield f"data: {json.dumps(event)}\n\n"
+                yield f"data: {json.dumps(event, default=str)}\n\n"
 
             while True:
                 event = await queue.get()
                 if event is None:
                     break
-                yield f"data: {json.dumps(event)}\n\n"
+                yield f"data: {json.dumps(event, default=str)}\n\n"
         finally:
             subscribers = _adapter_event_subscribers.get(adapter_id)
             if subscribers is not None:

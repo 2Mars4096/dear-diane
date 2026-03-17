@@ -189,8 +189,11 @@ class WhatsAppWebAdapter:
             "connection_state": "starting",
             "paired": self._paired,
         })
-
-        self._client = NewClient(db_path)
+        try:
+            self._client = NewClient(db_path)
+        except Exception:
+            self._running = False
+            raise
 
         def on_qr(_client: Any, data_qr: bytes) -> None:
             qr_data = data_qr.decode("utf-8", errors="ignore").strip()
@@ -232,11 +235,11 @@ class WhatsAppWebAdapter:
                 "status": status,
             }
             if getattr(event, "BusinessName", ""):
-                payload["business_name"] = getattr(event, "BusinessName")
+                payload["business_name"] = str(getattr(event, "BusinessName"))
             if getattr(event, "ID", ""):
-                payload["id"] = getattr(event, "ID")
+                payload["id"] = str(getattr(event, "ID"))
             if getattr(event, "Platform", ""):
-                payload["platform"] = getattr(event, "Platform")
+                payload["platform"] = str(getattr(event, "Platform"))
             if error_text:
                 payload["message"] = error_text
 
@@ -330,6 +333,7 @@ class WhatsAppWebAdapter:
                         "WhatsApp reconnection failed after %d consecutive attempts",
                         max_retries,
                     )
+                    self._running = False
                     return
 
             delay = min(base_delay * (2 ** max(consecutive_failures - 1, 0)), max_delay)
