@@ -44,7 +44,7 @@ EventType = Literal[
 
 # Filterable columns used by query/aggregate.
 _FILTER_COLUMNS = (
-    "project_id", "task_id", "surface", "model", "event_type",
+    "project_id", "task_id", "surface", "session_id", "model", "event_type",
     "intent", "tool_name", "run_id", "parent_event_id",
 )
 
@@ -113,6 +113,7 @@ class TelemetryQuery(BaseModel):
     project_id: str | None = None
     task_id: str | None = None
     surface: str | None = None
+    session_id: str | None = None
     model: str | None = None
     event_type: str | None = None
     intent: str | None = None

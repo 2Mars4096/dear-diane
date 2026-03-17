@@ -577,6 +577,79 @@ class Concierge:
             )
             return self._complete_event(content=formatter(msg.surface or "all", group=group))
 
+        if descriptor.name == "/cost":
+            if self._telemetry_store is None:
+                return self._complete_event(
+                    content="Telemetry is not enabled — no cost data available.",
+                )
+            from dan.server.telemetry import TelemetryQuery as TQ
+
+            events = await self._telemetry_store.query(
+                TQ(session_id=msg.external_id),
+            )
+            if not events:
+                return self._complete_event(
+                    content="No token usage recorded for this session yet.",
+                )
+            per_model: dict[str, dict[str, float]] = {}
+            for ev in events:
+                m = ev.model or "unknown"
+                s = per_model.setdefault(m, {
+                    "prompt": 0, "completion": 0, "total": 0,
+                    "cost": 0.0, "calls": 0,
+                })
+                s["prompt"] += ev.prompt_tokens
+                s["completion"] += ev.completion_tokens
+                s["total"] += ev.total_tokens
+                s["cost"] += ev.estimated_cost
+                s["calls"] += 1
+            lines = ["**Session Token Usage**\n"]
+            g_p = g_c = g_t = 0
+            g_cost = 0.0
+            for model_name, s in sorted(
+                per_model.items(), key=lambda x: x[1]["cost"], reverse=True,
+            ):
+                lines.append(
+                    f"  **{model_name}** ({int(s['calls'])} calls): "
+                    f"{int(s['prompt']):,} prompt + {int(s['completion']):,} completion "
+                    f"= {int(s['total']):,} tokens — ${s['cost']:.4f}"
+                )
+                g_p += int(s["prompt"])
+                g_c += int(s["completion"])
+                g_t += int(s["total"])
+                g_cost += s["cost"]
+            lines.append(
+                f"\n**Total**: {g_p:,} prompt + {g_c:,} completion "
+                f"= {g_t:,} tokens — ${g_cost:.4f}"
+            )
+            return self._complete_event(content="\n".join(lines))
+
+        if descriptor.name == "/retry":
+            active = self.project_store.list_active(msg.external_id)
+            if not active:
+                return self._complete_event(
+                    content="No active project — nothing to retry.",
+                )
+            project = active[0]
+            task = self.project_store.get_current_task(
+                project.project_id, msg.external_id,
+            )
+            if task is None:
+                return self._complete_event(
+                    content="No active task — nothing to retry.",
+                )
+            last_user_text: str | None = None
+            for turn in reversed(task.turns):
+                if turn.role == "user":
+                    last_user_text = turn.content
+                    break
+            if not last_user_text:
+                return self._complete_event(
+                    content="No prior user message found to retry.",
+                )
+            msg.text = last_user_text
+            return None
+
         handler = registry.resolve_handler(descriptor.name)
         if handler is None:
             return None

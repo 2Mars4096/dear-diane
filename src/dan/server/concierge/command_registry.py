@@ -621,6 +621,22 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         },
     ))
 
+    # Session utilities
+    registry.register(CommandDescriptor(
+        name="/cost",
+        kind="chat",
+        surfaces=["all"],
+        help_text="Show session token usage and estimated cost per model",
+        group="session",
+    ))
+    registry.register(CommandDescriptor(
+        name="/retry",
+        kind="chat",
+        surfaces=["all"],
+        help_text="Resend the last user message in the current task",
+        group="session",
+    ))
+
     # Goal tracking
     registry.register(CommandDescriptor(
         name="/goal",

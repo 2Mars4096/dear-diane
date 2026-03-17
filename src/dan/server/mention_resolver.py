@@ -48,7 +48,8 @@ def _estimate_tokens(text: str, model: str = "") -> int:
 # ---------------------------------------------------------------------------
 
 MENTION_TYPE = Literal[
-    "node", "workflow", "subgraph", "file", "code", "docs", "chat"
+    "node", "workflow", "subgraph", "file", "code", "docs", "chat",
+    "symbol", "folder",
 ]
 
 
@@ -192,6 +193,49 @@ class FileResolver:
             resolved_content=full,
             token_count=_estimate_tokens(full, model),
         )
+
+    def resolve_folder(self, folder_path: str, model: str = "") -> ResolvedMention:
+        target = (self.workspace / folder_path).resolve()
+        if not _is_path_safe(target, self.workspace):
+            return ResolvedMention(
+                type="folder",
+                identifier=folder_path,
+                resolved_content=f"[Access denied: {folder_path}]",
+                token_count=10,
+            )
+        if not target.is_dir():
+            return ResolvedMention(
+                type="folder",
+                identifier=folder_path,
+                resolved_content=f"[Folder not found: {folder_path}]",
+                token_count=10,
+            )
+        try:
+            entries = sorted(
+                target.iterdir(),
+                key=lambda p: (not p.is_dir(), p.name.lower()),
+            )
+            listing: list[str] = []
+            for entry in entries[:_MAX_FILE_LIST]:
+                if entry.name in DENIED_PATTERNS or entry.name.startswith("."):
+                    continue
+                kind = "dir" if entry.is_dir() else "file"
+                listing.append(f"  [{kind}] {entry.name}")
+            content = "\n".join(listing) if listing else "(empty directory)"
+            full = f"--- Folder: {folder_path} ---\n{content}"
+            return ResolvedMention(
+                type="folder",
+                identifier=folder_path,
+                resolved_content=full,
+                token_count=_estimate_tokens(full, model),
+            )
+        except OSError as exc:
+            return ResolvedMention(
+                type="folder",
+                identifier=folder_path,
+                resolved_content=f"[Error reading {folder_path}: {exc}]",
+                token_count=10,
+            )
 
     def list_files(
         self, extensions: frozenset[str] | None = None
@@ -485,6 +529,17 @@ class MentionResolver:
             if mention.type == "chat":
                 return self.chat_resolver.resolve(
                     mention.identifier, workflow_id, model
+                )
+            if mention.type == "symbol":
+                return ResolvedMention(
+                    type="symbol",
+                    identifier=mention.identifier,
+                    resolved_content=f"[Symbol: {mention.identifier}]",
+                    token_count=_estimate_tokens(mention.identifier, model) + 5,
+                )
+            if mention.type == "folder":
+                return self.file_resolver.resolve_folder(
+                    mention.identifier, model,
                 )
             return ResolvedMention(
                 type=mention.type,

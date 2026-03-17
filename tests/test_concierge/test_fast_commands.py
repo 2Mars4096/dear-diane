@@ -21,6 +21,7 @@ from dan.server.concierge.dispatcher import _is_bypass_command
 from dan.server.concierge.models import SurfaceMessage, TaskTurn
 from dan.server.concierge.project_store import ProjectStore
 from dan.server.concierge.runtime import Concierge
+from dan.server.telemetry import InMemoryTelemetryStore, TelemetryEvent
 
 
 def _make_msg(text: str, external_id: str = "test-surface") -> SurfaceMessage:
@@ -208,3 +209,137 @@ class TestCorrectionFiltering:
         )
 
         assert c._correction_store.count() == 0
+
+
+# ---------------------------------------------------------------------------
+# /cost command
+# ---------------------------------------------------------------------------
+
+class TestCostCommand:
+    @pytest.mark.asyncio
+    async def test_cost_no_telemetry_store(self, tmp_path):
+        c = _build_concierge(tmp_path, telemetry_store=None)
+        events = await _collect(c, _make_msg("/cost"))
+        assert len(events) == 1
+        assert "not enabled" in events[0].content.lower()
+
+    @pytest.mark.asyncio
+    async def test_cost_no_data(self, tmp_path):
+        store = InMemoryTelemetryStore()
+        c = _build_concierge(tmp_path, telemetry_store=store)
+        events = await _collect(c, _make_msg("/cost"))
+        assert len(events) == 1
+        assert "no token usage" in events[0].content.lower()
+
+    @pytest.mark.asyncio
+    async def test_cost_with_token_data(self, tmp_path):
+        store = InMemoryTelemetryStore()
+        await store.record(TelemetryEvent(
+            event_type="chat_turn",
+            session_id="test-surface",
+            model="gpt-4o",
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            estimated_cost=0.0008,
+        ))
+        c = _build_concierge(tmp_path, telemetry_store=store)
+        events = await _collect(c, _make_msg("/cost"))
+
+        assert len(events) == 1
+        content = events[0].content
+        assert "gpt-4o" in content
+        assert "150" in content
+        assert "$0.0008" in content
+
+    @pytest.mark.asyncio
+    async def test_cost_multi_model_breakdown(self, tmp_path):
+        store = InMemoryTelemetryStore()
+        await store.record(TelemetryEvent(
+            event_type="chat_turn",
+            session_id="test-surface",
+            model="gpt-4o",
+            prompt_tokens=200,
+            completion_tokens=100,
+            total_tokens=300,
+            estimated_cost=0.002,
+        ))
+        await store.record(TelemetryEvent(
+            event_type="chat_turn",
+            session_id="test-surface",
+            model="claude-sonnet-4",
+            prompt_tokens=500,
+            completion_tokens=200,
+            total_tokens=700,
+            estimated_cost=0.005,
+        ))
+        await store.record(TelemetryEvent(
+            event_type="chat_turn",
+            session_id="other-surface",
+            model="gpt-4o",
+            prompt_tokens=999,
+            completion_tokens=999,
+            total_tokens=1998,
+            estimated_cost=0.1,
+        ))
+        c = _build_concierge(tmp_path, telemetry_store=store)
+        events = await _collect(c, _make_msg("/cost"))
+
+        assert len(events) == 1
+        content = events[0].content
+        assert "gpt-4o" in content
+        assert "claude-sonnet-4" in content
+        assert "1,000" in content  # grand total = 300 + 700
+        assert "1,998" not in content  # other session excluded
+
+
+# ---------------------------------------------------------------------------
+# /retry command
+# ---------------------------------------------------------------------------
+
+class TestRetryCommand:
+    @pytest.mark.asyncio
+    async def test_retry_no_project(self, tmp_path):
+        c = _build_concierge(tmp_path)
+        events = await _collect(c, _make_msg("/retry"))
+        assert len(events) == 1
+        assert "no active project" in events[0].content.lower()
+
+    @pytest.mark.asyncio
+    async def test_retry_no_user_messages(self, tmp_path):
+        c = _build_concierge(tmp_path)
+        project = c.project_store.create_project("test", "test-surface")
+        c.project_store.add_task(project.project_id, "task", "test-surface")
+        events = await _collect(c, _make_msg("/retry"))
+        assert len(events) == 1
+        assert "no prior user message" in events[0].content.lower()
+
+    @pytest.mark.asyncio
+    async def test_retry_replays_last_user_message(self, tmp_path):
+        c = _build_concierge(tmp_path)
+        project = c.project_store.create_project("test", "test-surface")
+        task = c.project_store.add_task(project.project_id, "task", "test-surface")
+        c.project_store.append_turn(
+            project.project_id, task.task_id,
+            TaskTurn(role="user", content="What is 2+2?", intent="ask"),
+            "test-surface",
+        )
+        c.project_store.append_turn(
+            project.project_id, task.task_id,
+            TaskTurn(role="assistant", content="4", intent=None),
+            "test-surface",
+        )
+
+        captured: dict[str, str] = {}
+        original_dispatch = c._tiered_dispatcher.dispatch
+
+        async def _capture_dispatch(msg: SurfaceMessage):
+            captured["text"] = msg.text
+            async for event in original_dispatch(msg):
+                yield event
+
+        c._tiered_dispatcher.dispatch = _capture_dispatch
+
+        events = await _collect(c, _make_msg("/retry"))
+        assert captured.get("text") == "What is 2+2?"
+        assert len(events) >= 1

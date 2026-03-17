@@ -38,7 +38,7 @@ class TestRegistryHealthCheck:
                 assert s in valid, f"{cmd.name}: unknown surface '{s}'"
 
     def test_chat_commands_have_handlers(self, registry: CommandRegistry):
-        no_handler_ok = {"/help", "/build"}
+        no_handler_ok = {"/help", "/build", "/cost", "/retry"}
         for cmd in registry.list_by_kind("chat"):
             if cmd.name in no_handler_ok:
                 continue
