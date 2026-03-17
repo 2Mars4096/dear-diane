@@ -70,7 +70,16 @@ async def handle_screenshot(args: dict[str, Any], ctx: CapabilityContext) -> Cap
         filename = f"screenshot_{ts}.png"
 
     dan_dir = Path.home() / ".dan" / "screenshots"
-    dan_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        dan_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return CapabilityResult(
+            success=False,
+            message=(
+                f"Cannot create screenshot directory {dan_dir}: {exc}. "
+                "This can happen in headless or read-only environments."
+            ),
+        )
     filepath = dan_dir / filename
 
     proc = await asyncio.create_subprocess_exec(
@@ -91,8 +100,10 @@ async def handle_screenshot(args: dict[str, Any], ctx: CapabilityContext) -> Cap
 
 
 async def handle_clipboard(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
-    import asyncio
     import sys
+
+    from dan.tools.clipboard import clipboard as write_clipboard
+    from dan.tools.clipboard import read_clipboard_text
 
     if sys.platform != "darwin":
         return CapabilityResult(success=False, message="Clipboard is only supported on macOS.")
@@ -100,13 +111,10 @@ async def handle_clipboard(args: dict[str, Any], ctx: CapabilityContext) -> Capa
     action = args.get("action", "read").strip()
 
     if action == "read":
-        proc = await asyncio.create_subprocess_exec(
-            "pbpaste",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        content = stdout.decode("utf-8", errors="replace")
+        try:
+            content = await read_clipboard_text()
+        except Exception as exc:
+            return CapabilityResult(success=False, message=str(exc))
         if not content:
             return CapabilityResult(success=True, message="(clipboard is empty)")
         if len(content) > 10_000:
@@ -117,14 +125,11 @@ async def handle_clipboard(args: dict[str, Any], ctx: CapabilityContext) -> Capa
         text = args.get("content", "")
         if not text:
             return CapabilityResult(success=False, message="No content provided to copy.")
-        proc = await asyncio.create_subprocess_exec(
-            "pbcopy",
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        await proc.communicate(input=text.encode("utf-8"))
-        return CapabilityResult(success=True, message=f"Copied {len(text)} chars to clipboard.")
+        try:
+            result = await write_clipboard(text=text)
+        except Exception as exc:
+            return CapabilityResult(success=False, message=str(exc))
+        return CapabilityResult(success=True, message=f"Copied {result['length']} chars to clipboard.")
 
     return CapabilityResult(success=False, message=f"Unknown action: {action}. Use 'read' or 'write'.")
 
