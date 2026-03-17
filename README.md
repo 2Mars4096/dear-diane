@@ -128,7 +128,7 @@ dan-run workflow.json --interactive        # prompt for HumanNode inputs
 
 ### `dan-chat` — Conversational Workflow Authoring
 
-Build, modify, and run workflows through an interactive REPL. Chat is the unified control plane — the LLM can search workflow history, start/cancel runs, publish/export workflows, and manage the full run lifecycle without leaving the conversation. In the desktop editor's full-screen Chat, conversations can now branch safely from prior turns/results and be revisited through a collapsible branch tree in the history rail.
+Build, modify, and run workflows through an interactive REPL. Chat is the unified control plane — the LLM can search workflow history, start/cancel runs, publish/export workflows, and manage the full run lifecycle without leaving the conversation. In the desktop editor, full-screen Chat now supports safe branch-based exploration with a collapsible branch tree, and the compact Research/Development sidebars inherit most of the same day-to-day UX: mode pills, slash-command affordances, mentions, smart paste, queued follow-ups, stop generation, richer tool/run rendering, and one-click handoff into full Chat.
 
 ```bash
 dan-chat                                  # start with scratch workflow
