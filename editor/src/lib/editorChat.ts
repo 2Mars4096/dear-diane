@@ -1,4 +1,4 @@
-import type { ChatStreamEvent } from "../types/chat";
+import type { ChatStreamEvent, RunEventPayload } from "../types/chat";
 import type { ChatMessageResponse } from "./api";
 import { connectChatStream } from "./api";
 import { isElectron, nativeFs } from "./electronBridge";
@@ -81,6 +81,8 @@ export interface StartEditorChatOptions {
   scope?: string;
   surfaceContext?: Record<string, unknown>;
   attachments?: ComposerAttachmentDraft[];
+  mentions?: Array<{ type: string; identifier: string }>;
+  signal?: AbortSignal;
 }
 
 export interface StreamEditorChatHandlers {
@@ -88,6 +90,8 @@ export interface StreamEditorChatHandlers {
   onProgress?: (content: string, delta: string) => void;
   onComplete?: (content: string, event: ChatStreamEvent | ChatMessageResponse) => void;
   onError?: (message: string) => void;
+  onRunEvent?: (event: RunEventPayload) => void;
+  onInjectedMessage?: (message: { id: string; content: string }) => void;
   onFileAttachment?: (attachment: { path: string; filename: string; size?: number }) => void;
   onToolCallStart?: (toolCall: {
     id: string;
@@ -102,7 +106,24 @@ export interface StreamEditorChatHandlers {
     outputPreview?: string;
     durationMs?: number;
   }) => void;
+  onChannelChange?: (channelId: string | null) => void;
   onCloseWithoutTerminalEvent?: () => void;
+}
+
+export interface EditorChatHistoryEntry {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export function sanitizeChatHistory(
+  history: Array<EditorChatHistoryEntry>,
+): EditorChatHistoryEntry[] {
+  return history.flatMap((entry) => {
+    const content = typeof entry.content === "string" ? entry.content : String(entry.content ?? "");
+    return content.trim()
+      ? [{ role: entry.role, content }]
+      : [];
+  });
 }
 
 const TEXT_EXTENSIONS = new Set([
@@ -405,11 +426,13 @@ export async function buildAttachmentContext(
 
 async function postChatMessage(
   body: Record<string, unknown>,
+  signal?: AbortSignal,
 ): Promise<ChatMessageResponse> {
   const response = await fetch("/api/chat/message", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    signal,
   });
   if (!response.ok) {
     throw new Error(await response.text().catch(() => `Request failed: ${response.status}`));
@@ -438,10 +461,11 @@ export async function startEditorChat(
   const response = await postChatMessage({
     workflow_id: "_scratch",
     message: fullMessage,
-    history: options.history ?? [],
+    history: sanitizeChatHistory(options.history ?? []),
     thread_id: threadId,
     mode: options.mode ?? "ask",
     attachment_path: firstAttachmentPath,
+    mentions: options.mentions ?? [],
     surface: `editor:${surfaceId}`,
     surface_type: "editor",
     surface_id: surfaceId,
@@ -456,7 +480,7 @@ export async function startEditorChat(
         source: attachment.source ?? null,
       })),
     },
-  });
+  }, options.signal);
   return { threadId, response };
 }
 
@@ -482,107 +506,194 @@ export function streamEditorChatResponse(
   }
 
   let accumulated = "";
-  let terminalEventSeen = false;
+  let currentWs: WebSocket | null = null;
 
-  const ws = connectChatStream(
-    response.stream_channel_id,
-    (rawEvent) => {
-      const event = rawEvent as unknown as ChatStreamEvent;
+  type StreamConnectionState = {
+    channelId: string;
+    suppressClose: boolean;
+    pendingClose: boolean;
+    terminalEventSeen: boolean;
+  };
 
-      if (event.type === "chat_queued") {
-        handlers.onQueued?.(typeof event.queue_position === "number" ? event.queue_position : 0);
-        return;
-      }
+  let currentState: StreamConnectionState | null = null;
 
-      if (event.type === "chat_token") {
-        const nextAccumulated =
-          typeof event.accumulated === "string"
-            ? event.accumulated
-            : accumulated + (event.delta ?? "");
-        const delta =
-          typeof event.delta === "string"
-            ? event.delta
-            : nextAccumulated.slice(accumulated.length);
-        accumulated = nextAccumulated;
-        handlers.onProgress?.(accumulated, delta);
-        return;
-      }
+  const closeConnection = (state: StreamConnectionState) => {
+    if (currentState === state && currentWs) {
+      currentWs.close();
+      return;
+    }
+    state.pendingClose = true;
+  };
 
-      if (event.type === "chat_tool_call_start") {
-        handlers.onToolCallStart?.({
-          id: event.tool_call_id ?? crypto.randomUUID(),
-          toolName: event.tool_name ?? "",
-          argsPreview: event.args_preview ?? "",
-        });
-        return;
-      }
+  const connectToChannel = (channelId: string) => {
+    const state: StreamConnectionState = {
+      channelId,
+      suppressClose: false,
+      pendingClose: false,
+      terminalEventSeen: false,
+    };
+    currentState = state;
 
-      if (event.type === "chat_tool_call_result") {
-        handlers.onToolCallResult?.({
-          id: event.tool_call_id ?? crypto.randomUUID(),
-          toolName: event.tool_name ?? "",
-          argsPreview: event.args_preview ?? "",
-          status: event.status ?? "success",
-          outputPreview: event.output_preview,
-          durationMs: event.duration_ms,
-        });
-        return;
-      }
+    const ws = connectChatStream(
+      channelId,
+      (rawEvent) => {
+        if (currentState !== state && !state.pendingClose) return;
 
-      if (event.type === "chat_file_attachment") {
-        handlers.onFileAttachment?.({
-          path: event.path ?? "",
-          filename: event.filename ?? "File",
-          size: event.size,
-        });
-        return;
-      }
+        const event = rawEvent as unknown as ChatStreamEvent;
 
-      if (event.type === "chat_error") {
-        terminalEventSeen = true;
-        handlers.onError?.(event.error ?? "Editor chat stream failed");
-        ws.close();
-        return;
-      }
-
-      if (event.type === "chat_interrupted") {
-        terminalEventSeen = true;
-        if (typeof event.content === "string") {
-          accumulated = event.content;
+        if (event.type === "chat_queued") {
+          handlers.onQueued?.(
+            typeof event.queue_position === "number" ? event.queue_position : 0,
+          );
+          const nextChannel = (event.stream_channel_id ?? "").trim();
+          if (nextChannel && nextChannel !== state.channelId) {
+            state.suppressClose = true;
+            handlers.onChannelChange?.(
+              nextChannel.startsWith("chat-") ? nextChannel : null,
+            );
+            closeConnection(state);
+            connectToChannel(nextChannel);
+          }
+          return;
         }
-        handlers.onComplete?.(accumulated, event);
-        ws.close();
-        return;
-      }
 
-      if (event.type === "chat_mutation") {
-        terminalEventSeen = true;
-        if (typeof event.content === "string" && event.content) {
-          accumulated = event.content;
+        if (event.type === "chat_token") {
+          const nextAccumulated =
+            typeof event.accumulated === "string"
+              ? event.accumulated
+              : accumulated + (event.delta ?? "");
+          const delta =
+            typeof event.delta === "string"
+              ? event.delta
+              : nextAccumulated.slice(accumulated.length);
+          accumulated = nextAccumulated;
+          handlers.onProgress?.(accumulated, delta);
+          return;
         }
-        handlers.onComplete?.(accumulated, event);
-        ws.close();
-        return;
-      }
 
-      if (event.type === "chat_complete") {
-        if (event.detected_mode === "progress_ack") return;
-        terminalEventSeen = true;
-        if (typeof event.content === "string" && event.content) {
-          accumulated = event.content;
+        if (event.type === "chat_tool_call_start") {
+          handlers.onToolCallStart?.({
+            id: event.tool_call_id ?? crypto.randomUUID(),
+            toolName: event.tool_name ?? "",
+            argsPreview: event.args_preview ?? "",
+          });
+          return;
         }
-        handlers.onComplete?.(accumulated, event);
-        ws.close();
+
+        if (event.type === "chat_tool_call_result") {
+          handlers.onToolCallResult?.({
+            id: event.tool_call_id ?? crypto.randomUUID(),
+            toolName: event.tool_name ?? "",
+            argsPreview: event.args_preview ?? "",
+            status: event.status ?? "success",
+            outputPreview: event.output_preview,
+            durationMs: event.duration_ms,
+          });
+          return;
+        }
+
+        if (event.type === "chat_file_attachment") {
+          handlers.onFileAttachment?.({
+            path: event.path ?? "",
+            filename: event.filename ?? "File",
+            size: event.size,
+          });
+          return;
+        }
+
+        if (event.type === "chat_injected_message") {
+          handlers.onInjectedMessage?.({
+            id: event.inject_id ?? crypto.randomUUID(),
+            content: event.content ?? "",
+          });
+          return;
+        }
+
+        if (event.type === "chat_run_event" && event.run_event) {
+          handlers.onRunEvent?.(event.run_event);
+          if (
+            event.run_event.event_type === "run_completed" ||
+            event.run_event.event_type === "run_failed" ||
+            event.run_event.event_type === "run_cancelled"
+          ) {
+            state.terminalEventSeen = true;
+          }
+          return;
+        }
+
+        if (event.type === "chat_error") {
+          state.terminalEventSeen = true;
+          handlers.onError?.(event.error ?? "Editor chat stream failed");
+          closeConnection(state);
+          return;
+        }
+
+        if (event.type === "chat_interrupted") {
+          state.terminalEventSeen = true;
+          if (typeof event.content === "string") {
+            accumulated = event.content;
+          }
+          handlers.onComplete?.(accumulated, event);
+          closeConnection(state);
+          return;
+        }
+
+        if (event.type === "chat_mutation") {
+          state.terminalEventSeen = true;
+          if (typeof event.content === "string" && event.content) {
+            accumulated = event.content;
+          }
+          handlers.onComplete?.(accumulated, event);
+          closeConnection(state);
+          return;
+        }
+
+        if (event.type === "chat_complete") {
+          if (event.detected_mode === "progress_ack") return;
+          state.terminalEventSeen = true;
+          if (typeof event.content === "string" && event.content) {
+            accumulated = event.content;
+          }
+          handlers.onComplete?.(accumulated, event);
+          const nextChannel = (event.stream_channel_id ?? "").trim();
+          if (nextChannel && nextChannel !== state.channelId) {
+            state.suppressClose = true;
+            handlers.onChannelChange?.(
+              nextChannel.startsWith("chat-") ? nextChannel : null,
+            );
+            closeConnection(state);
+            connectToChannel(nextChannel);
+            return;
+          }
+          closeConnection(state);
+        }
+      },
+      () => {
+        if (state.suppressClose) return;
+        if (!state.terminalEventSeen) {
+          handlers.onCloseWithoutTerminalEvent?.();
+        }
+      },
+    );
+
+    if (currentState === state) {
+      currentWs = ws;
+    }
+    if (state.pendingClose) {
+      ws.close();
+    }
+  };
+
+  connectToChannel(response.stream_channel_id);
+
+  return {
+    close: () => {
+      if (currentState) {
+        currentState.suppressClose = true;
       }
+      currentWs?.close();
     },
-    () => {
-      if (!terminalEventSeen) {
-        handlers.onCloseWithoutTerminalEvent?.();
-      }
-    },
-  );
-
-  return ws;
+  } as unknown as WebSocket;
 }
 
 export async function requestEditorChatText(
@@ -619,6 +730,18 @@ export async function requestEditorChatText(
         if (settled) return;
         settled = true;
         reject(new Error(message));
+      },
+      onRunEvent: (event) => {
+        if (
+          settled ||
+          (event.event_type !== "run_completed" &&
+            event.event_type !== "run_failed" &&
+            event.event_type !== "run_cancelled")
+        ) {
+          return;
+        }
+        settled = true;
+        resolve(accumulated || event.summary || "");
       },
       onCloseWithoutTerminalEvent: () => {
         if (settled) return;

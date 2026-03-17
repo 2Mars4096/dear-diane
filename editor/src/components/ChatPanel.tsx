@@ -100,6 +100,7 @@ import {
   fileToAttachmentDraft,
   normalizeAttachmentDrafts,
   resolveAttachmentName,
+  sanitizeChatHistory,
 } from "../lib/editorChat";
 import { createThreadPersistenceCoordinator } from "../lib/threadPersistenceCoordinator";
 import { describeLatestToolProgress } from "../lib/toolCallPresentation";
@@ -1523,10 +1524,13 @@ export default function ChatPanel({
           body: JSON.stringify({
             workflow_id: graphId,
             message: messageWithAttachments,
-            history: (historyOverride ?? messagesRef.current).map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
+            history: sanitizeChatHistory(
+              (historyOverride ?? messagesRef.current).flatMap((message) =>
+                message.role === "user" || message.role === "assistant"
+                  ? [{ role: message.role, content: message.content }]
+                  : [],
+              ),
+            ),
             thread_id: threadId,
             client_graph_revision: clientGraphRevision,
             mode: modeOverride || useGraphStore.getState().chatMode,

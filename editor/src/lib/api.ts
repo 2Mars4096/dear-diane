@@ -858,6 +858,7 @@ export const furnaceGetRecipe = (sessionId: string) =>
   request<{
     session_id: string;
     recipe_md: string | null;
+    recipe_full_md: string | null;
     skill_md: string | null;
     artifact_dir: string;
   }>(`/furnace/sessions/${encodeURIComponent(sessionId)}/recipe`);

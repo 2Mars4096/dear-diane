@@ -46,7 +46,7 @@ function renderKatex(tex: string, displayMode: boolean): string {
 function renderMentionHtml(name: string, type: string, id: string): string {
   const isCode = type === "code";
   const color = isCode
-    ? "bg-gray-800 text-gray-200 font-mono"
+    ? "bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-200 font-mono"
     : mentionTypeColor(type as MentionRef["type"]);
   const inner = isCode
     ? `<code class="text-[11px]">@${escapeHtml(name)}</code>`
@@ -64,7 +64,16 @@ function _ph(html: string): string {
   return `\x00PH${_preserved.length - 1}\x00`;
 }
 
-const _markedInstance = (() => {
+const SHELL_LANGS = new Set([
+  "sh",
+  "bash",
+  "shell",
+  "zsh",
+  "terminal",
+  "console",
+]);
+
+function createMarkedInstance(enableRunCodeBlocks: boolean) {
   const renderer = new Renderer();
 
   renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
@@ -84,21 +93,26 @@ const _markedInstance = (() => {
       highlighted = escapeHtml(text);
     }
     const langLabel = lang
-      ? `<span class="text-[10px] text-gray-400 font-sans">${escapeHtml(lang)}</span>`
+      ? `<span class="text-[10px] text-gray-500 dark:text-gray-400 font-sans">${escapeHtml(lang)}</span>`
       : "";
     const idx = _preserved.length;
-    const copyBtn = `<button data-copy-code="${idx}" class="text-[10px] text-gray-400 hover:text-gray-200 font-sans transition-colors">Copy</button>`;
+    const copyBtn = `<button data-copy-code="${idx}" class="text-[10px] text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 font-sans transition-colors">Copy</button>`;
+    const showRun = enableRunCodeBlocks && SHELL_LANGS.has(lang?.toLowerCase() ?? "");
+    const runBtn = showRun
+      ? `<button data-run-code="${idx}" class="text-[10px] text-emerald-600 hover:text-emerald-700 dark:text-emerald-400 dark:hover:text-emerald-300 font-sans transition-colors">Run</button>`
+      : "";
+    const actions = [copyBtn, runBtn].filter(Boolean).join("");
     return _ph(
-      `<div class="my-2 rounded-lg overflow-hidden border border-gray-700/50">` +
-        `<div class="flex items-center justify-between px-3 py-1.5 bg-gray-800 border-b border-gray-700/50">${langLabel}${copyBtn}</div>` +
-        `<pre data-chat-copy-zone="true" class="bg-gray-900 text-gray-100 p-3 overflow-x-auto text-[12px] leading-relaxed font-mono m-0"><code>${highlighted}</code></pre>` +
-        `<input type="hidden" data-code-raw="${idx}" value="${text.replace(/"/g, "&quot;")}" />` +
+      `<div data-code-block="${idx}" class="my-2 rounded-lg overflow-hidden border border-gray-200 dark:border-gray-700/50">` +
+        `<div class="flex items-center justify-between px-3 py-1.5 bg-gray-100 dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700/50">${langLabel}<div class="flex items-center gap-2">${actions}</div></div>` +
+        `<pre data-chat-copy-zone="true" class="bg-gray-50 text-gray-900 dark:bg-gray-900 dark:text-gray-100 p-3 overflow-x-auto text-[12px] leading-relaxed font-mono m-0"><code>${highlighted}</code></pre>` +
+        `<textarea hidden data-code-raw="${idx}">${escapeHtml(text)}</textarea>` +
       `</div>`,
     );
   };
 
   renderer.codespan = ({ text }: { text: string }) =>
-    `<code class="bg-gray-100 text-gray-800 px-1 py-0.5 rounded text-[12px] font-mono">${text}</code>`;
+    `<code class="bg-gray-100 text-gray-800 dark:bg-gray-800 dark:text-gray-100 px-1 py-0.5 rounded text-[12px] font-mono">${text}</code>`;
 
   // marked v17: renderer methods receive raw token objects, not pre-rendered
   // HTML strings. Methods that render child content must use this.parser.
@@ -132,30 +146,30 @@ const _markedInstance = (() => {
     }
 
     return (
-      `<div class="my-2 overflow-x-auto rounded-lg border border-gray-200">` +
-      `<table class="min-w-full divide-y divide-gray-200">` +
-      `<thead class="bg-gray-50">${headerRow}</thead>` +
-      (bodyRows ? `<tbody>${bodyRows}</tbody>` : "") +
+      `<div class="my-2 overflow-x-auto rounded-lg border border-gray-200 dark:border-gray-700">` +
+      `<table class="min-w-full divide-y divide-gray-200 dark:divide-gray-700">` +
+      `<thead class="bg-gray-50 dark:bg-gray-800/70">${headerRow}</thead>` +
+      (bodyRows ? `<tbody class="bg-white dark:bg-transparent">${bodyRows}</tbody>` : "") +
       `</table></div>`
     );
   };
 
   renderer.tablerow = ({ text }: { text: string }) =>
-    `<tr class="hover:bg-gray-50 transition-colors">${text}</tr>`;
+    `<tr class="hover:bg-gray-50 dark:hover:bg-gray-800/40 transition-colors">${text}</tr>`;
 
   renderer.tablecell = function(token: any) {
     const content = this.parser.parseInline(token.tokens);
     const tag = token.header ? "th" : "td";
     const cls = token.header
-      ? "px-3 py-2 text-left text-[11px] font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-200"
-      : "px-3 py-2 text-sm border-b border-gray-100";
+      ? "px-3 py-2 text-left text-[11px] font-semibold text-gray-600 dark:text-gray-300 uppercase tracking-wider border-b border-gray-200 dark:border-gray-700"
+      : "px-3 py-2 text-sm text-gray-800 dark:text-gray-100 border-b border-gray-100 dark:border-gray-800";
     const style = token.align ? ` style="text-align:${token.align}"` : "";
     return `<${tag} class="${cls}"${style}>${content}</${tag}>`;
   };
 
   renderer.blockquote = function(token: any) {
     const body = this.parser.parse(token.tokens);
-    return `<blockquote class="my-2 pl-3 border-l-2 border-indigo-300 text-gray-600 italic">${body}</blockquote>`;
+    return `<blockquote class="my-2 pl-3 border-l-2 border-indigo-300 dark:border-indigo-500/60 text-gray-600 dark:text-gray-300 italic">${body}</blockquote>`;
   };
 
   renderer.list = function(token: any) {
@@ -183,14 +197,14 @@ const _markedInstance = (() => {
     return `<p class="my-1">${text}</p>`;
   };
 
-  renderer.hr = () => `<hr class="my-3 border-gray-200" />`;
+  renderer.hr = () => `<hr class="my-3 border-gray-200 dark:border-gray-700" />`;
 
   renderer.link = function(token: any) {
     const text = this.parser.parseInline(token.tokens);
     const href: string = token.href ?? "";
     if (/^\s*javascript\s*:/i.test(href)) return escapeHtml(text);
     const safeHref = /^(https?:|mailto:|#)/.test(href) ? href : "#";
-    return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline hover:text-indigo-800">${text}</a>`;
+    return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 dark:text-indigo-300 underline hover:text-indigo-800 dark:hover:text-indigo-200">${text}</a>`;
   };
 
   renderer.strong = function(token: any) { return `<strong>${this.parser.parseInline(token.tokens)}</strong>`; };
@@ -198,13 +212,30 @@ const _markedInstance = (() => {
   renderer.del = function(token: any) { return `<del>${this.parser.parseInline(token.tokens)}</del>`; };
 
   return new Marked({ renderer, async: false });
-})();
+}
 
-function renderMarkdown(raw: string): string {
+const _markedInstance = createMarkedInstance(false);
+const _markedRunInstance = createMarkedInstance(true);
+
+function renderMarkdown(
+  raw: string,
+  options?: { enableRunCodeBlocks?: boolean },
+): string {
   _preserved.length = 0;
+  const rawMarkdownPreserved: string[] = [];
+  const preserveRawMarkdown = (value: string) => {
+    rawMarkdownPreserved.push(value);
+    return `\x00RAWMD${rawMarkdownPreserved.length - 1}\x00`;
+  };
+
+  // Preserve literal markdown code before mention/math extraction so tokens like
+  // @[foo](file:bar) inside code blocks stay literal source code.
+  let text = raw
+    .replace(/```[\s\S]*?```/g, (block) => preserveRawMarkdown(block))
+    .replace(/`[^`\n]+`/g, (inlineCode) => preserveRawMarkdown(inlineCode));
 
   // 1. Extract mentions before marked processes them
-  let text = raw.replace(
+  text = text.replace(
     /@\[([^\]]+)\]\((node|workflow|subgraph|file|code|docs|chat):([^)]+)\)/g,
     (_, name, type, id) => _ph(renderMentionHtml(name, type, id)),
   );
@@ -219,8 +250,17 @@ function renderMarkdown(raw: string): string {
     _ph(renderKatex(tex.trim(), false)),
   );
 
+  // Restore literal code markdown after mention/math extraction but before
+  // marked parses the document.
+  rawMarkdownPreserved.forEach((content, i) => {
+    text = text.replaceAll(`\x00RAWMD${i}\x00`, content);
+  });
+
   // 4. Run marked (handles headings, lists, tables, blockquotes, code, inline formatting)
-  let html = _markedInstance.parse(text) as string;
+  const markedInstance = options?.enableRunCodeBlocks
+    ? _markedRunInstance
+    : _markedInstance;
+  let html = markedInstance.parse(text) as string;
 
   // 5. Restore preserved placeholders
   _preserved.forEach((content, i) => {
@@ -237,15 +277,17 @@ function renderMarkdown(raw: string): string {
 function RichContentRenderer({
   content,
   onClick,
+  enableRunCodeBlocks,
 }: {
   content: string;
   onClick: (e: React.MouseEvent) => void;
+  enableRunCodeBlocks?: boolean;
 }) {
   const blocks = useMemo(() => parseRichBlocks(content), [content]);
   const hasRichBlocks = blocks.some((b) => b.type !== "markdown");
 
   if (!hasRichBlocks) {
-    const html = renderMarkdown(content);
+    const html = renderMarkdown(content, { enableRunCodeBlocks });
     return (
       <div
         onClick={onClick}
@@ -259,7 +301,12 @@ function RichContentRenderer({
   return (
     <div className="text-sm leading-relaxed [&_pre]:my-2 [&_code]:break-words [&_a]:underline">
       {blocks.map((block, i) => (
-        <RichBlockRenderer key={i} block={block} onClick={onClick} />
+        <RichBlockRenderer
+          key={i}
+          block={block}
+          onClick={onClick}
+          enableRunCodeBlocks={enableRunCodeBlocks}
+        />
       ))}
     </div>
   );
@@ -268,9 +315,11 @@ function RichContentRenderer({
 function RichBlockRenderer({
   block,
   onClick,
+  enableRunCodeBlocks,
 }: {
   block: RichBlock;
   onClick: (e: React.MouseEvent) => void;
+  enableRunCodeBlocks?: boolean;
 }) {
   switch (block.type) {
     case "chart":
@@ -318,7 +367,7 @@ function RichBlockRenderer({
 
     case "markdown":
     default: {
-      const html = renderMarkdown(block.raw);
+      const html = renderMarkdown(block.raw, { enableRunCodeBlocks });
       return (
         <div
           onClick={onClick}
@@ -511,6 +560,8 @@ interface ChatMessageProps {
   onExploreFromHere?: () => void;
   disableHistoryActions?: boolean;
   isStreaming?: boolean;
+  allowRunCodeBlocks?: boolean;
+  onRunCodeBlock?: (code: string) => void;
 }
 
 function ToolCallGroup({
@@ -604,6 +655,8 @@ export default function ChatMessageBubble({
   onExploreFromHere,
   disableHistoryActions,
   isStreaming,
+  allowRunCodeBlocks,
+  onRunCodeBlock,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
   const store = useGraphStore();
@@ -621,13 +674,23 @@ export default function ChatMessageBubble({
 
       const copyBtn = target.closest<HTMLButtonElement>("[data-copy-code]");
       if (copyBtn) {
-        const idx = copyBtn.dataset.copyCode;
-        const hidden = copyBtn.closest("div")?.parentElement?.querySelector<HTMLInputElement>(`[data-code-raw="${idx}"]`);
+        const codeBlock = copyBtn.closest<HTMLElement>("[data-code-block]");
+        const hidden = codeBlock?.querySelector<HTMLTextAreaElement>("[data-code-raw]");
         if (hidden) {
           navigator.clipboard.writeText(hidden.value).then(() => {
             copyBtn.textContent = "Copied!";
             setTimeout(() => { copyBtn.textContent = "Copy"; }, 1500);
           });
+        }
+        return;
+      }
+
+      const runBtn = target.closest<HTMLButtonElement>("[data-run-code]");
+      if (runBtn && onRunCodeBlock) {
+        const codeBlock = runBtn.closest<HTMLElement>("[data-code-block]");
+        const hidden = codeBlock?.querySelector<HTMLTextAreaElement>("[data-code-raw]");
+        if (hidden) {
+          onRunCodeBlock(hidden.value);
         }
         return;
       }
@@ -639,7 +702,7 @@ export default function ChatMessageBubble({
       const name = mentionBtn.textContent?.replace(/^@/, "") ?? "";
       navigateToMention({ name, type, id }, store);
     },
-    [store],
+    [onRunCodeBlock, store],
   );
 
   const tokens = (() => {
@@ -728,7 +791,11 @@ export default function ChatMessageBubble({
             dangerouslySetInnerHTML={{ __html: html }}
           />
         ) : message.content ? (
-          <RichContentRenderer content={message.content} onClick={handleClick} />
+          <RichContentRenderer
+            content={message.content}
+            onClick={handleClick}
+            enableRunCodeBlocks={allowRunCodeBlocks}
+          />
         ) : showIncompleteTurnFallback ? (
           <p className="text-sm italic text-gray-500 dark:text-gray-400">
             Final assistant text was not captured for this turn. Review the tool

@@ -50,7 +50,10 @@ const FURNACE_EVENT_TYPES = [
   "phase_started",
   "phase_completed",
   "phase_failed",
+  "phase_skipped",
+  "phase_progress",
   "source_status",
+  "source_chunk",
   "budget_exceeded",
 ];
 
@@ -87,7 +90,26 @@ export function handleFurnaceSSEEvent(event: Record<string, unknown>): void {
       if (type === "phase_started" && phase) return `Running ${phase} phase`;
       if (type === "phase_completed" && phase) return `${phase} phase completed`;
       if (type === "phase_failed" && phase) return `${phase} phase failed`;
-      if (type === "source_status" && sourceId && sourceStatus) return `${sourceId}: ${sourceStatus}`;
+      if (type === "phase_skipped" && phase) return `${phase} phase skipped (cached)`;
+      if (type === "phase_progress" && phase) {
+        const chars = typeof event.chars === "number" ? event.chars : 0;
+        const elapsed = typeof event.elapsed === "number" ? event.elapsed : 0;
+        const done = event.done === true;
+        if (done) return `${phase} phase: generation complete (${chars.toLocaleString()} chars, ${elapsed}s)`;
+        return `${phase} phase: generating… ${chars.toLocaleString()} chars (${elapsed}s)`;
+      }
+      if (type === "source_chunk" && sourceId) {
+        const startPg = typeof event.start_page === "number" ? event.start_page : 0;
+        const endPg = typeof event.end_page === "number" ? event.end_page : 0;
+        const totalPg = typeof event.total_pages === "number" ? event.total_pages : 0;
+        return `Reading ${sourceId}: pages ${startPg}–${endPg}${totalPg ? ` of ${totalPg}` : ""}`;
+      }
+      if (type === "source_status" && sourceId && sourceStatus) {
+        const idx = typeof event.source_index === "number" ? event.source_index : 0;
+        const total = typeof event.total_sources === "number" ? event.total_sources : 0;
+        const counter = idx && total ? ` (${idx}/${total})` : "";
+        return `${sourceId}: ${sourceStatus}${counter}`;
+      }
       if (type === "budget_exceeded") return "Budget exceeded - session paused";
       return undefined;
     })();
@@ -132,6 +154,7 @@ export function handleFurnaceSSEEvent(event: Record<string, unknown>): void {
       type === "phase_started" ||
       type === "phase_completed" ||
       type === "phase_failed" ||
+      type === "phase_skipped" ||
       type === "source_status"
     ) {
       store.updateTrainingSessionFromBackend(sessionId, {
@@ -148,6 +171,14 @@ export function handleFurnaceSSEEvent(event: Record<string, unknown>): void {
           : undefined,
         last_activity_at: timestamp,
       });
+    }
+    if (type === "phase_progress" || type === "source_chunk") {
+      const update: Record<string, unknown> = {
+        status_message: statusMessage,
+        last_activity_at: timestamp,
+      };
+      if (phase) update.current_phase = phase;
+      store.updateTrainingSessionFromBackend(sessionId, update);
     }
     if (type === "budget_exceeded") {
       store.updateTrainingSessionFromBackend(sessionId, {

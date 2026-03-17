@@ -8,25 +8,58 @@ import {
   useRef,
   useEffect,
   useCallback,
+  useMemo,
   type KeyboardEvent,
   type ChangeEvent,
 } from "react";
-import { X, Trash2, Send, Loader2, Sparkles, Maximize2, Paperclip, FileText, ImageIcon } from "lucide-react";
-import { Marked, Renderer } from "marked";
-import DOMPurify from "dompurify";
-import hljs from "../../lib/hljs";
+import {
+  X,
+  Trash2,
+  Send,
+  Loader2,
+  Sparkles,
+  Maximize2,
+  Paperclip,
+  FileText,
+  ImageIcon,
+  Square,
+  ArrowUp,
+  GripVertical,
+  PencilLine,
+  HelpCircle,
+  Bug,
+} from "lucide-react";
 import { useAppStore, type AppMode } from "../../store/useAppStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { nativeTerminal } from "../../lib/electronBridge";
 import { useCodeStore } from "../../store/useCodeStore";
 import type { ChatMessage } from "../../types/chat";
+import * as api from "../../lib/api";
 import {
   type ComposerAttachmentDraft,
+  cloneAttachmentDraft,
+  type EditorChatMode,
   fileToAttachmentDraft,
   normalizeAttachmentDrafts,
+  resolveAttachmentName,
+  sanitizeChatHistory,
   startEditorChat,
   streamEditorChatResponse,
 } from "../../lib/editorChat";
+import ChatMessageBubble from "../ChatMessage";
+import MentionAutocomplete from "../MentionAutocomplete";
+import {
+  findMentionQuery,
+  insertMention,
+  parseMentions,
+  type MentionRef,
+} from "../../lib/mentionParser";
+import {
+  safeTokenUsage,
+  toBackendMessage,
+} from "../../lib/chatMessagePersistence";
+import { deriveDraftThreadTitleFromMessage } from "../../lib/chatThreadTitle";
+import { describeLatestToolProgress } from "../../lib/toolCallPresentation";
 
 /* ------------------------------------------------------------------ */
 /*  Chat sender registry (per-mode)                                    */
@@ -116,6 +149,23 @@ export interface ModeChatSidebarProps {
   contextProvider?: () => string;
 }
 
+type SidebarChatMode = Exclude<EditorChatMode, "conversation">;
+
+interface PendingQueueItem {
+  id: string;
+  content: string;
+  timestamp: number;
+  attachments: ComposerAttachmentDraft[];
+  mode: SidebarChatMode;
+  mentions: Array<{ type: string; identifier: string }>;
+}
+
+interface StoredModeChatSession {
+  messages: ChatMessage[];
+  threadId: string | null;
+  chatMode: SidebarChatMode;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Persistence                                                        */
 /* ------------------------------------------------------------------ */
@@ -124,88 +174,243 @@ function chatStorageKey(workspaceId: string, mode: AppMode): string {
   return `dan-chat-${workspaceId}-${mode}`;
 }
 
-function loadChatHistory(workspaceId: string | null, mode: AppMode): ChatMessage[] {
-  if (!workspaceId) return [];
+function defaultStoredSession(): StoredModeChatSession {
+  return {
+    messages: [],
+    threadId: null,
+    chatMode: "auto",
+  };
+}
+
+function loadChatSession(
+  workspaceId: string | null,
+  mode: AppMode,
+): StoredModeChatSession {
+  if (!workspaceId) return defaultStoredSession();
   try {
     const raw = localStorage.getItem(chatStorageKey(workspaceId, mode));
-    if (!raw) return [];
+    if (!raw) return defaultStoredSession();
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+
+    // Legacy format stored the message array directly.
+    if (Array.isArray(parsed)) {
+      return {
+        ...defaultStoredSession(),
+        messages: parsed as ChatMessage[],
+      };
+    }
+
+    if (!parsed || typeof parsed !== "object") {
+      return defaultStoredSession();
+    }
+
+    return {
+      messages: Array.isArray((parsed as { messages?: unknown }).messages)
+        ? ((parsed as { messages: ChatMessage[] }).messages ?? [])
+        : [],
+      threadId:
+        typeof (parsed as { threadId?: unknown }).threadId === "string"
+          ? ((parsed as { threadId: string }).threadId ?? null)
+          : null,
+      chatMode:
+        typeof (parsed as { chatMode?: unknown }).chatMode === "string"
+          ? (((parsed as { chatMode: SidebarChatMode }).chatMode ?? "auto") as SidebarChatMode)
+          : "auto",
+    };
   } catch {
-    return [];
+    return defaultStoredSession();
   }
 }
 
 const MAX_PERSISTED_MESSAGES = 200;
 
-function saveChatHistory(workspaceId: string | null, mode: AppMode, messages: ChatMessage[]) {
+function saveChatSession(
+  workspaceId: string | null,
+  mode: AppMode,
+  session: StoredModeChatSession,
+) {
   if (!workspaceId) return;
   try {
-    localStorage.setItem(chatStorageKey(workspaceId, mode), JSON.stringify(messages.slice(-MAX_PERSISTED_MESSAGES)));
+    localStorage.setItem(
+      chatStorageKey(workspaceId, mode),
+      JSON.stringify({
+        ...session,
+        messages: session.messages.slice(-MAX_PERSISTED_MESSAGES),
+      }),
+    );
   } catch { /* quota */ }
 }
 
 /* ------------------------------------------------------------------ */
-/*  Markdown renderer                                                  */
+/*  Composer + command helpers                                         */
 /* ------------------------------------------------------------------ */
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const RECENT_COMMANDS_KEY = "dan-recent-commands";
+
+const MODE_CONFIG: Record<
+  SidebarChatMode,
+  { label: string; icon: typeof Sparkles; accent: string }
+> = {
+  agent: { label: "Agent", icon: Sparkles, accent: "indigo" },
+  ask: { label: "Ask", icon: HelpCircle, accent: "sky" },
+  plan: { label: "Plan", icon: FileText, accent: "amber" },
+  debug: { label: "Debug", icon: Bug, accent: "rose" },
+  auto: { label: "Auto", icon: PencilLine, accent: "violet" },
+};
+
+const LOCAL_SLASH_COMMANDS: Array<{ cmd: string; desc: string }> = [
+  { cmd: "/ask", desc: "Switch to Ask mode" },
+  { cmd: "/agent", desc: "Switch to Agent mode" },
+  { cmd: "/plan", desc: "Switch to Plan mode" },
+  { cmd: "/debug", desc: "Switch to Debug mode" },
+  { cmd: "/auto", desc: "Auto-detect the best mode" },
+  { cmd: "/clear", desc: "Clear this sidebar conversation" },
+  { cmd: "/chat", desc: "Open the current conversation in full Chat" },
+];
+
+function trackCommand(cmd: string) {
+  try {
+    const recent: string[] = JSON.parse(
+      localStorage.getItem(RECENT_COMMANDS_KEY) ?? "[]",
+    );
+    const updated = [cmd, ...recent.filter((entry) => entry !== cmd)].slice(0, 20);
+    localStorage.setItem(RECENT_COMMANDS_KEY, JSON.stringify(updated));
+  } catch {
+    /* ignore */
+  }
 }
 
-const SHELL_LANGS = new Set(["sh", "bash", "shell", "zsh", "terminal", "console"]);
-
-const markedInstance = (() => {
-  const renderer = new Renderer();
-
-  renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
-    let highlighted: string;
-    try {
-      highlighted =
-        lang && hljs.getLanguage(lang)
-          ? hljs.highlight(text, { language: lang }).value
-          : hljs.highlightAuto(text).value;
-    } catch {
-      highlighted = escapeHtml(text);
-    }
-    const langLabel = lang
-      ? `<span class="text-[10px] text-gray-500 font-sans">${escapeHtml(lang)}</span>`
-      : `<span></span>`;
-    const encoded = btoa(encodeURIComponent(text));
-    const isShell = SHELL_LANGS.has(lang?.toLowerCase() ?? "");
-    const copySvg = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
-    const runBtn = isShell
-      ? `<button data-action="run" class="text-green-400 hover:text-green-300 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors" title="Run in terminal">\u25B6 Run</button>`
-      : "";
-    const buttons =
-      `<div class="flex items-center gap-1">` +
-      `<button data-action="copy" class="text-gray-500 hover:text-gray-300 p-0.5 rounded transition-colors" title="Copy">${copySvg}</button>` +
-      runBtn +
-      `</div>`;
-    return (
-      `<div class="my-1.5 rounded-md overflow-hidden border border-gray-700/50" data-code="${encoded}">` +
-      `<div class="flex items-center justify-between px-2 py-1 bg-gray-900 border-b border-gray-700/50">${langLabel}${buttons}</div>` +
-      `<pre data-mode-chat-copy-zone="true" class="bg-gray-950 text-gray-100 p-2 overflow-x-auto text-[11px] leading-relaxed font-mono m-0"><code>${highlighted}</code></pre>` +
-      `</div>`
-    );
-  };
-
-  renderer.codespan = ({ text }: { text: string }) =>
-    `<code class="bg-gray-950 text-gray-200 px-1 py-0.5 rounded text-[11px] font-mono">${text}</code>`;
-
-  const m = new Marked({ renderer, async: false });
-  return m;
-})();
-
-function renderMarkdown(src: string): string {
+function getRecentCommands(): string[] {
   try {
-    const raw = markedInstance.parse(src) as string;
-    return DOMPurify.sanitize(raw, {
-      ADD_ATTR: ["data-action", "data-code"],
-    });
+    return JSON.parse(localStorage.getItem(RECENT_COMMANDS_KEY) ?? "[]");
   } catch {
-    return escapeHtml(src);
+    return [];
   }
+}
+
+function describeQueuedItem(item: PendingQueueItem): string {
+  if (item.content) return item.content;
+  if (item.attachments.length === 1) {
+    const attachment = item.attachments[0];
+    return `Attached ${resolveAttachmentName(attachment.name, attachment.mimeType)}`;
+  }
+  if (item.attachments.length > 1) {
+    return `Attached ${item.attachments.length} items`;
+  }
+  return "(empty message)";
+}
+
+function parseLeadingCommand(input: string): {
+  command: string;
+  remainder: string;
+} | null {
+  const trimmed = input.trim();
+  if (!trimmed.startsWith("/")) return null;
+  const [command, ...rest] = trimmed.split(/\s+/);
+  return {
+    command: command.toLowerCase(),
+    remainder: rest.join(" ").trim(),
+  };
+}
+
+function collectStructuredMentions(text: string): Array<{ type: string; identifier: string }> {
+  return parseMentions(text).segments
+    .filter((segment) => segment.type === "mention")
+    .map((segment) => ({
+      type: (segment as { type: "mention"; mention: MentionRef }).mention.type,
+      identifier: (segment as { type: "mention"; mention: MentionRef }).mention.id,
+    }));
+}
+
+function SlashCommandPopup({
+  filter,
+  onSelect,
+}: {
+  filter: string;
+  onSelect: (command: string) => void;
+}) {
+  const filtered = LOCAL_SLASH_COMMANDS.filter((entry) =>
+    entry.cmd.startsWith(filter.toLowerCase()),
+  );
+  if (filtered.length === 0) return null;
+
+  return (
+    <div className="mb-2 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
+      {filtered.map((entry) => (
+        <button
+          key={entry.cmd}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            onSelect(entry.cmd);
+          }}
+          className="flex w-full items-center gap-3 px-3 py-2 text-left text-xs transition-colors hover:bg-indigo-50 dark:hover:bg-white/5"
+        >
+          <span className="w-16 shrink-0 font-mono font-semibold text-indigo-600 dark:text-indigo-300">
+            {entry.cmd}
+          </span>
+          <span className="text-gray-500 dark:text-gray-400">{entry.desc}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function RecentCommandsBar({ onSelect }: { onSelect: (command: string) => void }) {
+  const recentCommands = useMemo(() => {
+    const recent = getRecentCommands();
+    return recent.length > 0
+      ? recent
+      : ["/ask", "/agent", "/plan", "/debug", "/clear", "/chat"];
+  }, []);
+
+  return (
+    <div className="mb-2 flex items-center gap-1.5 overflow-x-auto px-0.5 py-0.5 scrollbar-hide">
+      {recentCommands.slice(0, 8).map((command) => (
+        <button
+          key={command}
+          onClick={() => onSelect(command + " ")}
+          className="shrink-0 rounded-full border border-gray-200 bg-gray-50 px-2.5 py-0.5 text-[11px] text-gray-500 transition-colors hover:border-indigo-200 hover:bg-indigo-50 hover:text-indigo-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400 dark:hover:border-indigo-500/40 dark:hover:bg-indigo-500/10 dark:hover:text-indigo-300"
+        >
+          {command}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SmartPasteHint({
+  hint,
+  onAccept,
+  onDismiss,
+}: {
+  hint: { type: "url" | "code"; value: string };
+  onAccept: () => void;
+  onDismiss: () => void;
+}) {
+  const labels = {
+    url: { text: "URL detected", action: "Fetch this URL?" },
+    code: { text: "Code detected", action: "Wrap in code block?" },
+  } as const;
+  const label = labels[hint.type];
+
+  return (
+    <div className="mt-2 flex items-center gap-2 rounded-lg border border-indigo-100 bg-indigo-50 px-3 py-1.5 text-xs text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-200">
+      <span>{label.text}</span>
+      <span className="text-indigo-400 dark:text-indigo-300">-</span>
+      <button
+        onClick={onAccept}
+        className="font-medium text-indigo-600 transition-colors hover:text-indigo-800 dark:text-indigo-300 dark:hover:text-indigo-100"
+      >
+        {label.action}
+      </button>
+      <button
+        onClick={onDismiss}
+        className="ml-auto text-indigo-300 transition-colors hover:text-indigo-500 dark:text-indigo-400 dark:hover:text-indigo-200"
+      >
+        <X size={12} />
+      </button>
+    </div>
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -214,69 +419,120 @@ function renderMarkdown(src: string): string {
 
 export default function ModeChatSidebar({ mode, onClose, contextProvider }: ModeChatSidebarProps) {
   const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-
-  const [messages, setMessages] = useState<ChatMessage[]>(() =>
-    loadChatHistory(workspaceId, mode),
+  const initialSessionRef = useRef<StoredModeChatSession>(
+    loadChatSession(workspaceId, mode),
   );
+
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    initialSessionRef.current.messages,
+  );
+  const [chatMode, setChatMode] = useState<SidebarChatMode>(
+    initialSessionRef.current.chatMode,
+  );
+  const [threadId, setThreadId] = useState<string | null>(
+    initialSessionRef.current.threadId,
+  );
+  const [detectedMode, setDetectedMode] = useState<SidebarChatMode | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [userAttachments, setUserAttachments] = useState<ComposerAttachmentDraft[]>([]);
+  const [pendingQueue, setPendingQueue] = useState<PendingQueueItem[]>([]);
+  const [pendingOpenFullChat, setPendingOpenFullChat] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
+  const [activeChannelId, setActiveChannelId] = useState<string | null>(null);
+  const [isComposerFocused, setIsComposerFocused] = useState(false);
+  const [pasteHint, setPasteHint] = useState<
+    { type: "url" | "code"; value: string } | null
+  >(null);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionAnchor, setMentionAnchor] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const threadIdRef = useRef<string | undefined>(undefined);
+  const threadIdRef = useRef<string | null>(threadId);
+  const activeChannelIdRef = useRef<string | null>(activeChannelId);
+  const chatModeRef = useRef<SidebarChatMode>(chatMode);
+  const activeRequestModeRef = useRef<SidebarChatMode | null>(null);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  threadIdRef.current = threadId;
+  activeChannelIdRef.current = activeChannelId;
+  chatModeRef.current = chatMode;
+
+  const applyMode = useCallback((nextMode: SidebarChatMode) => {
+    setChatMode(nextMode);
+    setDetectedMode(null);
+  }, []);
 
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
-    if (messages.length === 0) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     saveTimerRef.current = setTimeout(() => {
-      saveChatHistory(workspaceId, mode, messages);
+      saveChatSession(workspaceId, mode, {
+        messages,
+        threadId,
+        chatMode,
+      });
       saveTimerRef.current = null;
     }, 500);
-    return () => { if (saveTimerRef.current) clearTimeout(saveTimerRef.current); };
-  }, [messages, workspaceId, mode]);
+    return () => {
+      if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    };
+  }, [messages, workspaceId, mode, threadId, chatMode]);
 
   // Flush any pending debounced save when the sidebar unmounts
   useEffect(() => {
     return () => {
+      abortRef.current?.abort();
       if (saveTimerRef.current) {
         clearTimeout(saveTimerRef.current);
         const wsId = useWorkspaceStore.getState().activeWorkspaceId;
-        if (wsId && messagesRef.current.length > 0) {
-          saveChatHistory(wsId, mode, messagesRef.current);
-        }
+        saveChatSession(wsId, mode, {
+          messages: messagesRef.current,
+          threadId: threadIdRef.current,
+          chatMode,
+        });
         saveTimerRef.current = null;
       }
     };
-  }, [mode]);
+  }, [chatMode, mode]);
 
   useEffect(() => {
-    setMessages(loadChatHistory(workspaceId, mode));
-    threadIdRef.current = undefined;
+    const session = loadChatSession(workspaceId, mode);
+    abortRef.current?.abort();
+    setMessages(session.messages);
+    setChatMode(session.chatMode);
+    setThreadId(session.threadId);
+    threadIdRef.current = session.threadId;
+    setDetectedMode(null);
+    setInput("");
     setStreaming(false);
+    setPendingQueue([]);
+    setPendingOpenFullChat(false);
     setUserAttachments([]);
+    setActiveChannelId(null);
+    activeChannelIdRef.current = null;
+    activeRequestModeRef.current = null;
+    setPasteHint(null);
+    setMentionQuery(null);
+    setMentionAnchor(null);
   }, [workspaceId, mode]);
 
   useEffect(() => {
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [messages]);
+  }, [messages, pendingQueue]);
 
-  const handleInputChange = useCallback(
-    (e: ChangeEvent<HTMLTextAreaElement>) => {
-      setInput(e.target.value);
-      const ta = e.target;
-      ta.style.height = "auto";
-      ta.style.height = `${Math.min(ta.scrollHeight, 96)}px`;
-    },
-    [],
-  );
+  const adjustTextarea = useCallback((textarea?: HTMLTextAreaElement | null) => {
+    if (!textarea) return;
+    textarea.style.height = "auto";
+    textarea.style.height = `${Math.min(textarea.scrollHeight, 120)}px`;
+  }, []);
 
   const appendAttachment = useCallback((attachment: ComposerAttachmentDraft) => {
     setUserAttachments((prev) => [...prev, attachment]);
@@ -293,11 +549,86 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     [],
   );
 
+  const checkMention = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const result = findMentionQuery(textarea.value, textarea.selectionStart);
+    if (result) {
+      setMentionQuery(result.query);
+      const rect = textarea.getBoundingClientRect();
+      setMentionAnchor({ top: rect.bottom, left: rect.left });
+      return;
+    }
+    setMentionQuery(null);
+    setMentionAnchor(null);
+  }, []);
+
+  const handleMentionSelect = useCallback((mention: {
+    type: string;
+    id: string;
+    name: string;
+  }) => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+    const mentionRef: MentionRef = {
+      name: mention.name,
+      type: mention.type as MentionRef["type"],
+      id: mention.id,
+    };
+    const { newText, newCursorPos } = insertMention(
+      textarea.value,
+      textarea.selectionStart,
+      mentionRef,
+    );
+    setInput(newText);
+    setMentionQuery(null);
+    setMentionAnchor(null);
+    requestAnimationFrame(() => {
+      adjustTextarea(textarea);
+      textarea.focus();
+      textarea.setSelectionRange(newCursorPos, newCursorPos);
+    });
+  }, [adjustTextarea]);
+
+  const dismissMention = useCallback(() => {
+    setMentionQuery(null);
+    setMentionAnchor(null);
+  }, []);
+
+  const handleInputChange = useCallback(
+    (e: ChangeEvent<HTMLTextAreaElement>) => {
+      setInput(e.target.value);
+      setPasteHint(null);
+      adjustTextarea(e.target);
+      requestAnimationFrame(checkMention);
+    },
+    [adjustTextarea, checkMention],
+  );
+
   const handlePaste = useCallback((e: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(e.clipboardData.files ?? []);
-    if (files.length === 0) return;
-    e.preventDefault();
-    setUserAttachments((prev) => [...prev, ...files.map(fileToAttachmentDraft)]);
+    if (files.length > 0) {
+      e.preventDefault();
+      setPasteHint(null);
+      setUserAttachments((prev) => [...prev, ...files.map(fileToAttachmentDraft)]);
+      return;
+    }
+
+    const text = e.clipboardData.getData("text/plain");
+    if (/^https?:\/\/\S+$/.test(text.trim())) {
+      setPasteHint({ type: "url", value: text.trim() });
+      return;
+    }
+
+    if (
+      text.includes("\n") &&
+      (text.includes("function") ||
+        text.includes("class") ||
+        text.includes("def ") ||
+        text.includes("import "))
+    ) {
+      setPasteHint({ type: "code", value: text });
+    }
   }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
@@ -339,51 +670,231 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     }
   }, []);
 
-  const handleMessageClick = useCallback(
-    async (e: React.MouseEvent<HTMLDivElement>) => {
-      const btn = (e.target as HTMLElement).closest("[data-action]") as HTMLElement | null;
-      if (!btn) return;
+  const persistThreadSnapshot = useCallback(async (options?: { forceCreate?: boolean }) => {
+    const snapshot = messagesRef.current;
+    const currentMode = chatModeRef.current;
+    const existingThreadId = threadIdRef.current;
+    const forceCreate = options?.forceCreate ?? false;
 
-      const action = btn.dataset.action;
-      const codeBlock = btn.closest("[data-code]") as HTMLElement | null;
-      const encoded = codeBlock?.dataset.code;
-      if (!encoded) return;
+    if (snapshot.length === 0) {
+      if (existingThreadId) {
+        try {
+          await api.updateChatThread("_scratch", existingThreadId, {
+            mode: currentMode,
+          });
+        } catch {
+          /* ignore */
+        }
+      }
+      if (!forceCreate) {
+        return existingThreadId;
+      }
+      const created = await api.createChatThread("_scratch", {
+        title: "New Chat",
+        mode: currentMode,
+      });
+      const nextThreadId =
+        typeof created.id === "string" && created.id.trim() ? created.id : null;
+      if (!nextThreadId) return existingThreadId;
+      setThreadId(nextThreadId);
+      threadIdRef.current = nextThreadId;
+      return nextThreadId;
+    }
 
-      let code: string;
+    const payload = {
+      messages: snapshot.map(toBackendMessage),
+      mode: currentMode,
+    };
+
+    if (existingThreadId) {
       try {
-        code = decodeURIComponent(atob(encoded));
+        await api.updateChatThread("_scratch", existingThreadId, payload);
+        return existingThreadId;
+      } catch (error) {
+        console.warn("Failed to sync mode chat thread, creating a fresh one:", error);
+      }
+    }
+
+    const firstUserMessage =
+      snapshot.find((message) => message.role === "user" && message.content.trim())?.content ??
+      "New Chat";
+    const created = await api.createChatThread("_scratch", {
+      title: deriveDraftThreadTitleFromMessage(firstUserMessage),
+      mode: currentMode,
+    });
+    const nextThreadId =
+      typeof created.id === "string" && created.id.trim() ? created.id : null;
+    if (!nextThreadId) return null;
+
+    await api.updateChatThread("_scratch", nextThreadId, payload);
+    setThreadId(nextThreadId);
+    threadIdRef.current = nextThreadId;
+    return nextThreadId;
+  }, []);
+
+  const completeOpenFullChat = useCallback(async () => {
+    let targetThreadId = threadIdRef.current;
+    try {
+      targetThreadId =
+        (await persistThreadSnapshot({ forceCreate: true })) ?? targetThreadId;
+    } catch (error) {
+      console.warn("Failed to prepare sidebar thread for full chat handoff:", error);
+    }
+
+    if (targetThreadId) {
+      useWorkspaceStore.getState().setActiveThread(targetThreadId);
+      useAppStore.getState().setActiveChatThread(targetThreadId, "_scratch");
+    } else {
+      useAppStore.getState().setActiveChatThread(null, "_scratch");
+    }
+    useAppStore.getState().setMode("chat");
+    onClose();
+  }, [onClose, persistThreadSnapshot]);
+
+  const openFullChat = useCallback(() => {
+    if (streaming || abortRef.current || pendingQueue.length > 0) {
+      setPendingOpenFullChat(true);
+      return;
+    }
+    void completeOpenFullChat();
+  }, [completeOpenFullChat, pendingQueue.length, streaming]);
+
+  const handleClear = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+      saveTimerRef.current = null;
+    }
+    setMessages([]);
+    messagesRef.current = [];
+    setUserAttachments([]);
+    setPendingQueue([]);
+    setPendingOpenFullChat(false);
+    setInput("");
+    setStreaming(false);
+    setThreadId(null);
+    threadIdRef.current = null;
+    setActiveChannelId(null);
+    activeChannelIdRef.current = null;
+    activeRequestModeRef.current = null;
+    setDetectedMode(null);
+    setPasteHint(null);
+    setMentionQuery(null);
+    setMentionAnchor(null);
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
+    if (workspaceId) {
+      try {
+        localStorage.removeItem(chatStorageKey(workspaceId, mode));
       } catch {
-        return;
+        /* ignore */
+      }
+    }
+  }, [workspaceId, mode]);
+
+  const handleCopyMessage = useCallback((message: ChatMessage) => {
+    const role = message.role.charAt(0).toUpperCase() + message.role.slice(1);
+    const markdown = `### ${role}\n\n${message.content}`;
+    navigator.clipboard.writeText(markdown).catch(() => {});
+  }, []);
+
+  const finishStream = useCallback(() => {
+    setStreaming(false);
+    setActiveChannelId(null);
+    activeChannelIdRef.current = null;
+    activeRequestModeRef.current = null;
+    abortRef.current = null;
+  }, []);
+
+  const processLocalCommand = useCallback(
+    (
+      rawText: string,
+      attachments: ComposerAttachmentDraft[],
+    ): { handled: boolean; messageText: string; modeOverride?: SidebarChatMode } => {
+      const parsed = parseLeadingCommand(rawText);
+      if (!parsed) return { handled: false, messageText: rawText };
+
+      const modeMap: Record<string, SidebarChatMode | undefined> = {
+        "/ask": "ask",
+        "/agent": "agent",
+        "/plan": "plan",
+        "/debug": "debug",
+        "/auto": "auto",
+      };
+
+      const nextMode = modeMap[parsed.command];
+      if (nextMode) {
+        trackCommand(parsed.command);
+        applyMode(nextMode);
+        if (!parsed.remainder) {
+          return { handled: true, messageText: "", modeOverride: nextMode };
+        }
+        return {
+          handled: false,
+          messageText: parsed.remainder,
+          modeOverride: nextMode,
+        };
       }
 
-      if (action === "copy") {
-        navigator.clipboard.writeText(code);
-        const prev = btn.innerHTML;
-        btn.textContent = "\u2713";
-        btn.classList.add("text-green-400");
-        setTimeout(() => {
-          btn.innerHTML = prev;
-          btn.classList.remove("text-green-400");
-        }, 1500);
-      } else if (action === "run") {
-        await handleRunInTerminal(code);
+      if (parsed.command === "/clear" && !parsed.remainder && attachments.length === 0) {
+        trackCommand(parsed.command);
+        handleClear();
+        return { handled: true, messageText: "" };
       }
+
+      if (parsed.command === "/chat" && !parsed.remainder && attachments.length === 0) {
+        trackCommand(parsed.command);
+        openFullChat();
+        return { handled: true, messageText: "" };
+      }
+
+      return { handled: false, messageText: rawText };
     },
-    [handleRunInTerminal],
+    [applyMode, handleClear, openFullChat],
   );
 
-  /* ------ Send message ------------------------------------------------ */
-
-  const doSend = useCallback(
-    async (text: string) => {
-      if (streaming) return;
+  const queueMessage = useCallback(
+    (
+      text: string,
+      attachments: ComposerAttachmentDraft[],
+      modeOverride?: SidebarChatMode,
+    ) => {
       const trimmed = text.trim();
-      const pendingAttachments = userAttachments;
-      if (!trimmed && pendingAttachments.length === 0) return;
-      const attachments = await normalizeAttachmentDrafts(pendingAttachments);
+      if (!trimmed && attachments.length === 0) return;
+      setPendingQueue((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          content: trimmed,
+          timestamp: Date.now(),
+          attachments: attachments.map(cloneAttachmentDraft),
+          mode: modeOverride ?? chatModeRef.current,
+          mentions: collectStructuredMentions(trimmed),
+        },
+      ]);
+    },
+    [],
+  );
 
+  const sendNow = useCallback(
+    async (
+      rawText: string,
+      attachmentDrafts: ComposerAttachmentDraft[],
+      modeOverride?: SidebarChatMode,
+    ) => {
+      const trimmed = rawText.trim();
+      if (!trimmed && attachmentDrafts.length === 0) return;
+      const effectiveMode = modeOverride ?? chatModeRef.current;
+
+      if (trimmed.startsWith("/")) {
+        const parsed = parseLeadingCommand(trimmed);
+        if (parsed) trackCommand(parsed.command);
+      }
+
+      const attachments = await normalizeAttachmentDrafts(attachmentDrafts);
       const ctx = contextProvider?.() ?? "";
       const fullMessage = ctx ? (trimmed ? `${ctx}\n\n${trimmed}` : ctx) : trimmed;
+      const structuredMentions = collectStructuredMentions(trimmed);
 
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
@@ -391,7 +902,10 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         content:
           trimmed ||
           (attachments.length === 1
-            ? `Attached ${attachments[0].name}`
+            ? `Attached ${resolveAttachmentName(
+                attachments[0].name,
+                attachments[0].mimeType,
+              )}`
             : `Attached ${attachments.length} items`),
         timestamp: Date.now(),
         attachments:
@@ -400,51 +914,87 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
                 path: attachment.path ?? attachment.source ?? attachment.name,
                 filename: attachment.name,
                 size: attachment.size,
+                mimeType: attachment.mimeType,
+                kind: attachment.kind,
+                caption: attachment.caption,
+                source: attachment.source,
               }))
             : undefined,
       };
 
+      const assistantId = crypto.randomUUID();
       const assistantMsg: ChatMessage = {
-        id: crypto.randomUUID(),
+        id: assistantId,
         role: "assistant",
         content: "",
         timestamp: Date.now(),
       };
 
       setMessages((prev) => [...prev, userMsg, assistantMsg]);
-      setInput("");
-      setUserAttachments([]);
       setStreaming(true);
-
-      if (textareaRef.current) textareaRef.current.style.height = "auto";
+      setDetectedMode(null);
 
       const controller = new AbortController();
       abortRef.current = controller;
+      activeRequestModeRef.current = effectiveMode;
 
       try {
-        const { threadId, response } = await startEditorChat({
+        const { threadId: nextThreadId, response } = await startEditorChat({
           message: fullMessage,
-          history: messagesRef.current.flatMap((message) =>
-            message.role === "user" || message.role === "assistant"
-              ? [{ role: message.role, content: message.content }]
-              : [],
+          history: sanitizeChatHistory(
+            messagesRef.current.flatMap((message) =>
+              message.role === "user" || message.role === "assistant"
+                ? [{ role: message.role, content: message.content }]
+                : [],
+            ),
           ),
           threadId: threadIdRef.current,
-          mode: "auto",
+          mode: effectiveMode,
           scope: `mode-chat:${mode}`,
           attachments,
+          mentions: structuredMentions,
+          signal: controller.signal,
           surfaceContext: {
             mode,
             workspace_id: workspaceId,
           },
         });
-        threadIdRef.current = threadId;
+        setThreadId(nextThreadId);
+        threadIdRef.current = nextThreadId;
+        const nextChatChannel =
+          typeof response.stream_channel_id === "string" &&
+          response.stream_channel_id.startsWith("chat-")
+            ? response.stream_channel_id
+            : null;
+        setActiveChannelId(nextChatChannel);
+        activeChannelIdRef.current = nextChatChannel;
+        if (
+          response.type === "run_started" &&
+          typeof response.run_id === "string"
+        ) {
+          const runId = response.run_id;
+          const runScope = response.scope ?? "full";
+          setMessages((prev) =>
+            prev.map((message) =>
+              message.id === assistantId
+                ? {
+                    ...message,
+                    runRef: {
+                      runId,
+                      scope: runScope,
+                      status: "running",
+                    },
+                  }
+                : message,
+            ),
+          );
+        }
 
         const ws = streamEditorChatResponse(response, {
           onQueued: (position) => {
             setMessages((prev) =>
               prev.map((message) =>
-                message.id === assistantMsg.id
+                message.id === assistantId
                   ? {
                       ...message,
                       content:
@@ -460,60 +1010,143 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             if (controller.signal.aborted) return;
             setMessages((prev) =>
               prev.map((message) =>
-                message.id === assistantMsg.id ? { ...message, content } : message,
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      content,
+                      progressStatus: undefined,
+                      progressFilePath: undefined,
+                    }
+                  : message,
               ),
             );
           },
           onToolCallStart: (toolCall) => {
             setMessages((prev) =>
-              prev.map((message) =>
-                message.id === assistantMsg.id
-                  ? {
-                      ...message,
-                      toolCalls: [
-                        ...(message.toolCalls ?? []),
-                        {
-                          id: toolCall.id,
-                          toolName: toolCall.toolName,
-                          argsPreview: toolCall.argsPreview,
-                          status: "running",
-                        },
-                      ],
-                    }
-                  : message,
-              ),
+              prev.map((message) => {
+                if (message.id !== assistantId) return message;
+                const nextToolCalls = [
+                  ...(message.toolCalls ?? []),
+                  {
+                    id: toolCall.id,
+                    toolName: toolCall.toolName,
+                    argsPreview: toolCall.argsPreview,
+                    status: "running" as const,
+                  },
+                ];
+                const progress = describeLatestToolProgress(nextToolCalls);
+                return {
+                  ...message,
+                  toolCalls: nextToolCalls,
+                  progressStatus: progress?.text,
+                  progressFilePath: progress?.filePath,
+                };
+              }),
             );
           },
           onToolCallResult: (toolCall) => {
             setMessages((prev) =>
+              prev.map((message) => {
+                if (message.id !== assistantId) return message;
+                const nextStatus =
+                  toolCall.status === "running"
+                    ? ("running" as const)
+                    : toolCall.status === "error"
+                      ? ("error" as const)
+                      : ("success" as const);
+                const nextToolCalls = (message.toolCalls ?? []).map((existing) =>
+                  existing.id === toolCall.id
+                    ? {
+                        ...existing,
+                        status: nextStatus,
+                        outputPreview: toolCall.outputPreview,
+                        durationMs: toolCall.durationMs,
+                      }
+                    : existing,
+                );
+                const progress = describeLatestToolProgress(nextToolCalls);
+                return {
+                  ...message,
+                  toolCalls: nextToolCalls,
+                  progressStatus: progress?.text,
+                  progressFilePath: progress?.filePath,
+                };
+              }),
+            );
+          },
+          onRunEvent: (runEvent) => {
+            setMessages((prev) =>
               prev.map((message) =>
-                message.id === assistantMsg.id
+                message.id === assistantId
                   ? {
                       ...message,
-                      toolCalls: (message.toolCalls ?? []).map((existing) =>
-                        existing.id === toolCall.id
-                          ? {
-                              ...existing,
-                              status:
-                                toolCall.status === "running" ||
-                                toolCall.status === "error" ||
-                                toolCall.status === "success"
-                                  ? toolCall.status
-                                  : "success",
-                              outputPreview: toolCall.outputPreview,
-                              durationMs: toolCall.durationMs,
-                            }
-                          : existing,
-                      ),
+                      runEvents: [...(message.runEvents ?? []), runEvent],
+                      runRef: (() => {
+                        const detail = runEvent.detail ?? {};
+                        const detailRunId =
+                          typeof detail.run_id === "string" ? detail.run_id : null;
+                        const detailScope =
+                          typeof detail.scope === "string" ? detail.scope : "full";
+                        const terminalStatus =
+                          runEvent.event_type === "run_completed"
+                            ? "completed"
+                            : runEvent.event_type === "run_failed"
+                              ? "failed"
+                              : runEvent.event_type === "run_cancelled"
+                                ? "cancelled"
+                                : null;
+                        if (message.runRef) {
+                          return terminalStatus
+                            ? { ...message.runRef, status: terminalStatus }
+                            : message.runRef;
+                        }
+                        if (!detailRunId) return message.runRef ?? null;
+                        const nextRunRef: ChatMessage["runRef"] = {
+                          runId: detailRunId,
+                          scope: detailScope,
+                          status: terminalStatus ?? "running",
+                        };
+                        return nextRunRef;
+                      })(),
                     }
                   : message,
               ),
             );
+            if (
+              runEvent.event_type === "run_completed" ||
+              runEvent.event_type === "run_failed" ||
+              runEvent.event_type === "run_cancelled"
+            ) {
+              finishStream();
+            }
+          },
+          onInjectedMessage: (injectedMessage) => {
+            const injectedUserMsg: ChatMessage = {
+              id: injectedMessage.id,
+              role: "user",
+              content: injectedMessage.content,
+              timestamp: Date.now(),
+            };
+            setMessages((prev) => {
+              const assistantIndex = prev.findIndex(
+                (message) => message.id === assistantId,
+              );
+              if (assistantIndex === -1) return [...prev, injectedUserMsg];
+              return [
+                ...prev.slice(0, assistantIndex),
+                injectedUserMsg,
+                ...prev.slice(assistantIndex),
+              ];
+            });
+          },
+          onChannelChange: (nextChannelId) => {
+            setActiveChannelId(nextChannelId);
+            activeChannelIdRef.current = nextChannelId;
           },
           onFileAttachment: (attachment) => {
             setMessages((prev) =>
               prev.map((message) =>
-                message.id === assistantMsg.id
+                message.id === assistantId
                   ? {
                       ...message,
                       attachments: (message.attachments ?? []).some(
@@ -533,37 +1166,91 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
               ),
             );
           },
-          onComplete: (content) => {
+          onComplete: (content, event) => {
             if (controller.signal.aborted) return;
             setMessages((prev) =>
               prev.map((message) =>
-                message.id === assistantMsg.id ? { ...message, content } : message,
+                message.id === assistantId
+                  ? {
+                      ...message,
+                      content,
+                      tokenUsage:
+                        "token_usage" in event
+                          ? safeTokenUsage(event.token_usage) ?? message.tokenUsage ?? null
+                          : message.tokenUsage ?? null,
+                      estimatedCost:
+                        "estimated_cost" in event &&
+                        typeof event.estimated_cost === "number"
+                          ? event.estimated_cost
+                          : message.estimatedCost ?? null,
+                      runRef:
+                        "run_id" in event && typeof event.run_id === "string"
+                          ? {
+                              runId: event.run_id,
+                              scope:
+                                "scope" in event && typeof event.scope === "string"
+                                  ? event.scope
+                                  : "full",
+                              status:
+                                "type" in event && event.type === "run_error"
+                                  ? "failed"
+                                  : "running",
+                            }
+                          : message.runRef ?? null,
+                      progressStatus: undefined,
+                      progressFilePath: undefined,
+                    }
+                  : message,
               ),
             );
-            setStreaming(false);
-            abortRef.current = null;
+            if (
+              chatMode === "auto" &&
+              "detected_mode" in event &&
+              typeof event.detected_mode === "string" &&
+              event.detected_mode !== "progress_ack" &&
+              event.detected_mode in MODE_CONFIG
+            ) {
+              setDetectedMode(event.detected_mode as SidebarChatMode);
+            }
+            const nextChannel =
+              "stream_channel_id" in event && typeof event.stream_channel_id === "string"
+                ? event.stream_channel_id.trim()
+                : "";
+            if (!nextChannel) {
+              finishStream();
+            }
           },
           onError: (message) => {
+            if (controller.signal.aborted) return;
             setMessages((prev) =>
               prev.map((entry) =>
-                entry.id === assistantMsg.id
-                  ? { ...entry, content: message || "Failed to connect to DAN server." }
+                entry.id === assistantId
+                  ? {
+                      ...entry,
+                      content: message || "Failed to connect to DAN server.",
+                      progressStatus: undefined,
+                      progressFilePath: undefined,
+                    }
                   : entry,
               ),
             );
-            setStreaming(false);
-            abortRef.current = null;
+            finishStream();
           },
           onCloseWithoutTerminalEvent: () => {
+            if (controller.signal.aborted) return;
             setMessages((prev) =>
               prev.map((entry) =>
-                entry.id === assistantMsg.id && !entry.content
-                  ? { ...entry, content: "Connection lost. Please try again." }
+                entry.id === assistantId && !entry.content
+                  ? {
+                      ...entry,
+                      content: "Connection lost. Please try again.",
+                      progressStatus: undefined,
+                      progressFilePath: undefined,
+                    }
                   : entry,
               ),
             );
-            setStreaming(false);
-            abortRef.current = null;
+            finishStream();
           },
         });
 
@@ -572,79 +1259,203 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             "abort",
             () => {
               ws.close();
-              abortRef.current = null;
+              finishStream();
             },
             { once: true },
           );
         }
       } catch {
         setMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMsg.id && !m.content
-              ? { ...m, content: "Failed to connect to DAN server." }
-              : m,
+          prev.map((entry) =>
+            entry.id === assistantId && !entry.content
+              ? { ...entry, content: "Failed to connect to DAN server." }
+              : entry,
           ),
         );
-        setStreaming(false);
-        abortRef.current = null;
+        finishStream();
       }
     },
-    [contextProvider, mode, streaming, userAttachments, workspaceId],
+    [contextProvider, finishStream, mode, workspaceId],
+  );
+
+  const submitComposer = useCallback(() => {
+    const processed = processLocalCommand(input, userAttachments);
+    if (processed.handled) {
+      if (input.trim().startsWith("/")) {
+        setInput("");
+        requestAnimationFrame(() => adjustTextarea(textareaRef.current));
+      }
+      return;
+    }
+    const nextText = processed.messageText;
+    const nextAttachments = userAttachments.map(cloneAttachmentDraft);
+    if (!nextText.trim() && nextAttachments.length === 0) return;
+
+    if (streaming) {
+      queueMessage(nextText, nextAttachments, processed.modeOverride);
+    } else {
+      void sendNow(nextText, nextAttachments, processed.modeOverride);
+    }
+
+    setInput("");
+    setUserAttachments([]);
+    setPasteHint(null);
+    dismissMention();
+    if (textareaRef.current) {
+      textareaRef.current.style.height = "auto";
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    }
+  }, [
+    dismissMention,
+    input,
+    adjustTextarea,
+    processLocalCommand,
+    queueMessage,
+    sendNow,
+    streaming,
+    userAttachments,
+  ]);
+
+  const handleInjectedSend = useCallback(
+    (text: string) => {
+      const processed = processLocalCommand(text, []);
+      if (processed.handled) return;
+      const nextText = processed.messageText;
+      if (!nextText.trim()) return;
+      if (streaming) {
+        queueMessage(nextText, [], processed.modeOverride);
+        return;
+      }
+      void sendNow(nextText, [], processed.modeOverride);
+    },
+    [processLocalCommand, queueMessage, sendNow, streaming],
   );
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (mentionQuery !== null) {
+        if (["ArrowDown", "ArrowUp", "Enter", "Escape"].includes(e.key)) return;
+      }
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
-        doSend(input);
+        submitComposer();
       }
     },
-    [doSend, input],
+    [submitComposer, mentionQuery],
   );
 
   useEffect(() => {
-    registerModeChatSender(mode, doSend);
+    registerModeChatSender(mode, handleInjectedSend);
     registerModeChatAttachmentReceiver(mode, appendAttachment);
     return () => {
       chatSenders.delete(mode);
       chatAttachmentReceivers.delete(mode);
     };
-  }, [appendAttachment, doSend, mode]);
+  }, [appendAttachment, handleInjectedSend, mode]);
 
-  const handleClear = useCallback(() => {
-    if (abortRef.current) abortRef.current.abort();
-    if (saveTimerRef.current) { clearTimeout(saveTimerRef.current); saveTimerRef.current = null; }
-    setMessages([]);
-    setUserAttachments([]);
-    threadIdRef.current = undefined;
-    setStreaming(false);
-    if (workspaceId) {
-      try { localStorage.removeItem(chatStorageKey(workspaceId, mode)); } catch { /* */ }
+  useEffect(() => {
+    if (streaming || pendingQueue.length === 0) return;
+    const [next] = pendingQueue;
+    setPendingQueue((prev) => prev.slice(1));
+    void sendNow(next.content, next.attachments, next.mode);
+  }, [pendingQueue, sendNow, streaming]);
+
+  useEffect(() => {
+    if (
+      !pendingOpenFullChat ||
+      streaming ||
+      abortRef.current ||
+      pendingQueue.length > 0
+    ) {
+      return;
     }
-  }, [workspaceId, mode]);
+    setPendingOpenFullChat(false);
+    void completeOpenFullChat();
+  }, [completeOpenFullChat, pendingOpenFullChat, pendingQueue.length, streaming]);
 
-  const formatTime = (ts: number) => {
-    const d = new Date(ts);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  };
+  const handleStop = useCallback(async () => {
+    const channelId = activeChannelIdRef.current;
+    if (!channelId) return;
+    try {
+      await api.stopChatStream(channelId);
+    } catch (error) {
+      console.warn("Failed to stop mode chat stream:", error);
+    }
+  }, []);
+
+  const canPushIntoCurrentTurn = useCallback(
+    (item: PendingQueueItem) =>
+      streaming &&
+      Boolean(activeChannelId) &&
+      item.attachments.length === 0 &&
+      item.mentions.length === 0 &&
+      item.mode === activeRequestModeRef.current,
+    [activeChannelId, streaming],
+  );
+
+  const modeSelector = (
+    <div className="shrink-0 border-b border-gray-200 bg-gray-50/80 px-3 py-1.5 dark:border-gray-800 dark:bg-gray-900/40">
+      <div className="flex flex-wrap items-center gap-1">
+        {(["auto", "agent", "ask", "plan", "debug"] as const).map((entry) => {
+          const config = MODE_CONFIG[entry];
+          const Icon = config.icon;
+          const active = chatMode === entry;
+          return (
+            <button
+              key={entry}
+              onClick={() => applyMode(entry)}
+              className={`flex items-center gap-1 rounded-md px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                active
+                  ? "border border-gray-200 bg-white text-gray-900 shadow-sm dark:border-gray-700 dark:bg-white/10 dark:text-gray-100"
+                  : "text-gray-500 hover:bg-white hover:text-gray-700 dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-gray-200"
+              }`}
+            >
+              <Icon size={11} />
+              {config.label}
+              {entry === "auto" && active && detectedMode && (
+                <span className="text-[9px] font-normal text-violet-600 dark:text-violet-300">
+                  -&gt; {MODE_CONFIG[detectedMode].label}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   return (
     <div
-      className={`h-full w-full flex flex-col bg-white text-gray-800 dark:bg-gray-900 dark:text-gray-300 ${
+      className={`flex h-full w-full flex-col bg-white text-gray-800 dark:bg-gray-900 dark:text-gray-300 ${
         isDragOver ? "ring-2 ring-blue-500/50 ring-inset" : ""
       }`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
-      <div className="flex items-center justify-between px-3 py-2 border-b border-gray-200 shrink-0 dark:border-gray-800">
-        <span className="text-[11px] font-semibold tracking-widest text-gray-500 uppercase dark:text-gray-400">
-          AI Chat
-        </span>
+      <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
+        <div className="min-w-0">
+          <span className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 dark:text-gray-400">
+            AI Chat
+          </span>
+          {pendingOpenFullChat ? (
+            <div className="truncate text-[10px] text-blue-500 dark:text-blue-400">
+              Opening full Chat after the active response queue finishes
+            </div>
+          ) : threadId ? (
+            <div className="truncate text-[10px] text-gray-400 dark:text-gray-500">
+              Scratch thread ready for full Chat handoff
+            </div>
+          ) : null}
+        </div>
         <div className="flex items-center gap-1">
           <button
-            onClick={() => { useAppStore.getState().setMode("chat"); onClose(); }}
-            title="Open full Chat mode (threads, history, slash commands)"
+            onClick={openFullChat}
+            title={
+              streaming || abortRef.current || pendingQueue.length > 0
+                ? "Open full Chat after the active response queue finishes"
+                : "Open full Chat mode"
+            }
             className="rounded p-1 text-gray-500 transition-colors hover:text-blue-600 dark:hover:text-blue-400"
           >
             <Maximize2 size={14} />
@@ -666,9 +1477,11 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         </div>
       </div>
 
-      <div ref={scrollRef} onClick={handleMessageClick} className="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-3">
-        {messages.length === 0 && (
-          <div className="flex h-full select-none flex-col items-center justify-center gap-2 text-xs text-gray-500 dark:text-gray-600">
+      {modeSelector}
+
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
+        {messages.length === 0 ? (
+          <div className="flex h-full select-none flex-col items-center justify-center gap-2 px-2 text-center text-xs text-gray-500 dark:text-gray-600">
             <Sparkles size={24} className="text-gray-400 dark:text-gray-700" />
             <span>
               {mode === "research"
@@ -676,87 +1489,145 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
                 : "Ask anything about your code"}
             </span>
             <button
-              onClick={() => { useAppStore.getState().setMode("chat"); onClose(); }}
+              onClick={openFullChat}
               className="mt-1 text-[10px] text-gray-500 transition-colors hover:text-blue-600 dark:hover:text-blue-400"
             >
-              Open full Chat for threads, / commands &amp; history
+              Open full Chat for history, branching, and thread controls
             </button>
             <span className="text-[10px] text-gray-400 dark:text-gray-600">
-              Drag files here or paste an image/file into the composer
+              Drag files here, paste files/images, use `@` mentions, or type `/` for commands
             </span>
+          </div>
+        ) : (
+          <div className="space-y-0.5">
+            {messages.map((message, index) => (
+              <ChatMessageBubble
+                key={message.id}
+                message={message}
+                isStreaming={
+                  streaming &&
+                  index === messages.length - 1 &&
+                  message.role === "assistant"
+                }
+                onCopyMarkdown={
+                  message.content ? () => handleCopyMessage(message) : undefined
+                }
+                allowRunCodeBlocks
+                onRunCodeBlock={handleRunInTerminal}
+              />
+            ))}
           </div>
         )}
-
-        {messages.map((msg) => (
-          <div
-            key={msg.id}
-            className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}
-          >
-            <div
-              className={
-                msg.role === "user"
-                  ? "max-w-[85%] rounded-lg bg-blue-600 px-3 py-2 text-[13px] leading-relaxed text-white"
-                  : "max-w-[85%] rounded-lg bg-gray-100 px-3 py-2 text-[13px] leading-relaxed text-gray-800 dark:bg-gray-800 dark:text-gray-200"
-              }
-            >
-              {msg.role === "user" ? (
-                <span className="whitespace-pre-wrap break-words">{msg.content}</span>
-              ) : msg.content ? (
-                <div
-                  data-mode-chat-copy-zone="true"
-                  className="break-words [&>p]:my-1 [&>ul]:my-1 [&>ol]:my-1 [&>p:first-child]:mt-0 [&>p:last-child]:mb-0"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(msg.content) }}
-                />
-              ) : streaming ? (
-                <span className="inline-flex items-center gap-1.5 text-gray-400">
-                  <Loader2 size={12} className="animate-spin" />
-                  Thinking…
-                </span>
-              ) : null}
-              {msg.attachments && msg.attachments.length > 0 && (
-                <div className="mt-2 space-y-1.5">
-                  {msg.attachments.map((attachment) => (
-                    <div
-                      key={`${msg.id}-${attachment.path}`}
-                      title={attachment.path || attachment.filename}
-                      className="rounded-md border border-black/10 bg-black/5 px-2 py-1.5 text-[11px] dark:border-white/10 dark:bg-white/5"
-                    >
-                      <div className="flex min-w-0 items-center gap-1.5">
-                        <FileText size={11} className="shrink-0" />
-                        <span className="truncate font-medium">{attachment.filename}</span>
-                      </div>
-                      {attachment.path && attachment.path !== attachment.filename && (
-                        <div className="mt-0.5 truncate text-[10px] text-gray-500 dark:text-gray-400">
-                          {attachment.path}
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-              {msg.toolCalls && msg.toolCalls.length > 0 && (
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {msg.toolCalls.map((toolCall) => (
-                    <span
-                      key={toolCall.id}
-                      className="rounded-full border border-black/10 bg-black/5 px-2 py-0.5 text-[10px] dark:border-white/10 dark:bg-white/5"
-                    >
-                      {toolCall.status === "running" ? "Running" : toolCall.status === "error" ? "Tool error" : "Tool"}
-                      {" "}
-                      {toolCall.toolName}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-            <span className="mt-0.5 px-1 text-[10px] text-gray-500 dark:text-gray-600">
-              {formatTime(msg.timestamp)}
-            </span>
-          </div>
-        ))}
       </div>
 
-      <div className="px-3 py-2 border-t border-gray-200 shrink-0 dark:border-gray-800">
+      {pendingQueue.length > 0 && (
+        <div className="max-h-36 shrink-0 overflow-y-auto border-t border-gray-200 bg-gray-50/60 px-3 py-2 dark:border-gray-800 dark:bg-gray-900/40">
+          <div className="mb-1 px-1 text-[10px] font-medium text-gray-500 dark:text-gray-400">
+            Queued messages ({pendingQueue.length})
+          </div>
+          <div className="space-y-1">
+            {pendingQueue.map((item, index) => (
+              <div
+                key={item.id}
+                className="group flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 dark:border-gray-700 dark:bg-gray-800"
+              >
+                <GripVertical size={12} className="shrink-0 text-gray-400" />
+                <span className="min-w-0 flex-1 truncate text-xs text-gray-700 dark:text-gray-200">
+                  {describeQueuedItem(item)}
+                </span>
+                {item.attachments.length > 0 && (
+                  <span className="shrink-0 rounded-full border border-indigo-200 bg-indigo-50 px-1.5 py-0.5 text-[10px] text-indigo-600 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-300">
+                    {item.attachments.length === 1
+                      ? "1 attachment"
+                      : `${item.attachments.length} attachments`}
+                  </span>
+                )}
+                {item.mode !== "auto" && (
+                  <span className="shrink-0 rounded-full border border-gray-200 bg-gray-50 px-1.5 py-0.5 text-[10px] text-gray-500 dark:border-gray-700 dark:bg-gray-900/60 dark:text-gray-300">
+                    {MODE_CONFIG[item.mode].label}
+                  </span>
+                )}
+                <div className="flex shrink-0 items-center gap-0.5">
+                  {index === 0 && canPushIntoCurrentTurn(item) && (
+                    <button
+                      onClick={() => {
+                        const channelId = activeChannelIdRef.current;
+                        if (!channelId) return;
+                        api
+                          .injectChatMessage(channelId, item.content, item.id)
+                          .then(() => {
+                            setPendingQueue((prev) =>
+                              prev.filter((entry) => entry.id !== item.id),
+                            );
+                          })
+                          .catch((error) => {
+                            console.warn(
+                              "Failed to inject queued mode-chat message:",
+                              error,
+                            );
+                          });
+                      }}
+                      className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-600 transition-colors hover:bg-indigo-100 hover:text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-300 dark:hover:bg-indigo-500/20"
+                      title="Inject into the current turn"
+                    >
+                      Push
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      setPendingQueue((prev) =>
+                        prev.filter((entry) => entry.id !== item.id),
+                      );
+                      setInput(item.content);
+                      setUserAttachments(item.attachments.map(cloneAttachmentDraft));
+                      applyMode(item.mode);
+                      requestAnimationFrame(() => {
+                        adjustTextarea(textareaRef.current);
+                        textareaRef.current?.focus();
+                      });
+                    }}
+                    className="rounded p-0.5 text-gray-500 transition-colors hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-300"
+                    title="Edit queued message"
+                  >
+                    <PencilLine size={11} />
+                  </button>
+                  {index > 0 && (
+                    <button
+                      onClick={() => {
+                        setPendingQueue((prev) => {
+                          const next = [...prev];
+                          [next[index - 1], next[index]] = [
+                            next[index],
+                            next[index - 1],
+                          ];
+                          return next;
+                        });
+                      }}
+                      className="rounded p-0.5 text-gray-500 transition-colors hover:text-indigo-600 dark:text-gray-400 dark:hover:text-indigo-300"
+                      title="Move up in queue"
+                    >
+                      <ArrowUp size={11} />
+                    </button>
+                  )}
+                  <button
+                    onClick={() =>
+                      setPendingQueue((prev) =>
+                        prev.filter((entry) => entry.id !== item.id),
+                      )
+                    }
+                    className="rounded p-0.5 text-gray-500 transition-colors hover:text-red-500 dark:text-gray-400"
+                    title="Remove queued message"
+                  >
+                    <X size={11} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="shrink-0 border-t border-gray-200 px-3 py-2 dark:border-gray-800">
         <input
           ref={fileInputRef}
           type="file"
@@ -764,6 +1635,19 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
           className="hidden"
           onChange={handleFileSelection}
         />
+
+        {isComposerFocused && !streaming && (
+          <RecentCommandsBar
+            onSelect={(command) => {
+              setInput(command);
+              requestAnimationFrame(() => {
+                adjustTextarea(textareaRef.current);
+                textareaRef.current?.focus();
+              });
+            }}
+          />
+        )}
+
         {userAttachments.length > 0 && (
           <div className="mb-2 flex flex-wrap gap-1.5">
             {userAttachments.map((attachment) => (
@@ -777,7 +1661,9 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
                 ) : (
                   <FileText size={11} className="shrink-0" />
                 )}
-                <span className="truncate max-w-[180px]">{attachment.name}</span>
+                <span className="max-w-[180px] truncate">
+                  {resolveAttachmentName(attachment.name, attachment.mimeType)}
+                </span>
                 <button
                   onClick={() =>
                     setUserAttachments((prev) =>
@@ -793,12 +1679,25 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             ))}
           </div>
         )}
-        <div className="flex items-end gap-2">
+
+        {input.startsWith("/") && input.length < 20 && (
+          <SlashCommandPopup
+            filter={input}
+            onSelect={(command) => {
+              setInput(command + " ");
+              requestAnimationFrame(() => {
+                adjustTextarea(textareaRef.current);
+                textareaRef.current?.focus();
+              });
+            }}
+          />
+        )}
+
+        <div className="flex items-end gap-2 rounded-xl border border-gray-300 bg-white px-3 py-2 shadow-sm focus-within:border-blue-500 dark:border-gray-700 dark:bg-gray-800 dark:focus-within:border-gray-600">
           <button
             onClick={() => fileInputRef.current?.click()}
-            disabled={streaming}
             title="Append files"
-            className="shrink-0 rounded-lg border border-gray-300 bg-white p-2 text-gray-600 transition-colors hover:border-blue-400 hover:text-blue-600 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-gray-600"
+            className="shrink-0 rounded-lg border border-gray-300 bg-white p-2 text-gray-600 transition-colors hover:border-blue-400 hover:text-blue-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:hover:border-gray-600"
           >
             <Paperclip size={16} />
           </button>
@@ -807,25 +1706,97 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             value={input}
             onChange={handleInputChange}
             onKeyDown={handleKeyDown}
+            onKeyUp={checkMention}
+            onClick={checkMention}
             onPaste={handlePaste}
-            placeholder="Ask anything…"
+            onFocus={() => setIsComposerFocused(true)}
+            onBlur={() => setIsComposerFocused(false)}
+            placeholder={
+              streaming
+                ? "Type to queue next message..."
+                : chatMode === "ask"
+                ? "Ask about this workspace..."
+                : chatMode === "plan"
+                ? "Describe what to plan..."
+                : chatMode === "debug"
+                ? "Describe the problem to diagnose..."
+                : chatMode === "auto"
+                ? "Message DAN... (@ to mention, / for commands)"
+                : "Ask DAN to work on this..."
+            }
             rows={1}
-            disabled={streaming}
-            className="flex-1 resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-[13px] text-gray-900 placeholder-gray-500 focus:border-blue-500 focus:outline-none disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-white dark:focus:border-gray-600"
-            style={{ maxHeight: 96 }}
+            className="min-h-[28px] max-h-[120px] flex-1 resize-none bg-transparent text-[13px] leading-snug text-gray-900 outline-none placeholder-gray-500 dark:text-white dark:placeholder:text-gray-500"
           />
-          <button
-            onClick={() => doSend(input)}
-            disabled={(!input.trim() && userAttachments.length === 0) || streaming}
-            className="shrink-0 rounded-lg bg-blue-600 p-2 text-white transition-colors hover:bg-blue-500 disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700"
-          >
-            {streaming ? (
-              <Loader2 size={16} className="animate-spin" />
-            ) : (
+          {mentionQuery !== null && (
+            <MentionAutocomplete
+              query={mentionQuery}
+              anchorRect={mentionAnchor}
+              onSelect={handleMentionSelect}
+              onDismiss={dismissMention}
+            />
+          )}
+          {streaming ? (
+            <div className="flex shrink-0 items-center gap-1">
+              {(input.trim() || userAttachments.length > 0) && (
+                <button
+                  onClick={submitComposer}
+                  className="rounded p-0.5 text-indigo-500 transition-colors hover:text-indigo-700 dark:hover:text-indigo-300"
+                  title="Queue message"
+                >
+                  <ArrowUp size={16} />
+                </button>
+              )}
+              {activeChannelId ? (
+                <button
+                  onClick={handleStop}
+                  className="rounded p-0.5 text-red-500 transition-colors hover:text-red-700"
+                  title="Stop generation"
+                >
+                  <Square size={16} />
+                </button>
+              ) : (
+                <Loader2 size={16} className="animate-spin text-gray-400" />
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={submitComposer}
+              disabled={!input.trim() && userAttachments.length === 0}
+              className="shrink-0 rounded-lg bg-blue-600 p-2 text-white transition-colors hover:bg-blue-500 disabled:bg-gray-300 disabled:text-gray-500 dark:disabled:bg-gray-700"
+            >
               <Send size={16} />
-            )}
-          </button>
+            </button>
+          )}
         </div>
+
+        <div className="mt-1.5 px-1 text-[10px] text-gray-400 dark:text-gray-500">
+          {streaming
+            ? "Enter to queue - Shift+Enter for newline"
+            : "Enter to send - Shift+Enter for newline"}
+        </div>
+
+        {pasteHint && (
+          <SmartPasteHint
+            hint={pasteHint}
+            onAccept={() => {
+              if (pasteHint.type === "url") {
+                setInput((prev) =>
+                  prev.replace(
+                    pasteHint.value,
+                    `Fetch and summarize: ${pasteHint.value}`,
+                  ),
+                );
+              } else {
+                setInput((prev) =>
+                  prev.replace(pasteHint.value, `\`\`\`\n${pasteHint.value}\n\`\`\``),
+                );
+              }
+              setPasteHint(null);
+              requestAnimationFrame(() => adjustTextarea(textareaRef.current));
+            }}
+            onDismiss={() => setPasteHint(null)}
+          />
+        )}
       </div>
     </div>
   );

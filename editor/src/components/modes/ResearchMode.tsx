@@ -77,6 +77,7 @@ import {
   furnaceCancelSession,
   furnaceDeleteSession,
   furnaceUpdateSessionTags,
+  furnaceGetRecipe,
 } from "../../lib/api";
 import { handleFurnaceSSEEvent } from "../../lib/researchEventRouter";
 import { parseFurnaceSources, splitSourceTextBlock } from "../../lib/furnaceSources";
@@ -2419,6 +2420,14 @@ function FurnaceSessionCard({
   const [tagEditorOpen, setTagEditorOpen] = useState(false);
   const [tagDraft, setTagDraft] = useState("");
   const [tagSaving, setTagSaving] = useState(false);
+  const [recipeExpanded, setRecipeExpanded] = useState(false);
+  const [recipeContent, setRecipeContent] = useState<{
+    pill: string;
+    full: string;
+    loaded: boolean;
+  }>({ pill: "", full: "", loaded: false });
+  const [recipeLoading, setRecipeLoading] = useState(false);
+  const [recipeShowFull, setRecipeShowFull] = useState(false);
   const sid = session.sessionId ?? session.id;
   const pct =
     session.targetPapers > 0
@@ -2657,6 +2666,36 @@ function FurnaceSessionCard({
     }
   }, [removeTrainingSession, resolveBackendSessionId, session.id, session.name, session.status]);
 
+  const handleToggleRecipe = useCallback(async () => {
+    if (recipeExpanded) {
+      setRecipeExpanded(false);
+      return;
+    }
+    setRecipeExpanded(true);
+    if (recipeContent.loaded) return;
+    setRecipeLoading(true);
+    try {
+      const backendSid = await resolveBackendSessionId();
+      if (!backendSid) {
+        setRecipeContent({ pill: "(Could not resolve session)", full: "", loaded: true });
+        return;
+      }
+      const res = await furnaceGetRecipe(backendSid);
+      const pill = res.recipe_md || "(No recipe generated yet)";
+      const full = res.recipe_full_md || "";
+      const skillSection = res.skill_md ? `\n\n---\n## Skill Profile\n${res.skill_md}` : "";
+      setRecipeContent({
+        pill: pill + skillSection,
+        full: full ? full + skillSection : "",
+        loaded: true,
+      });
+    } catch {
+      setRecipeContent({ pill: "(Failed to load recipe)", full: "", loaded: true });
+    } finally {
+      setRecipeLoading(false);
+    }
+  }, [recipeExpanded, recipeContent.loaded, resolveBackendSessionId]);
+
   return (
     <div className="p-3 bg-gray-800/50 border border-gray-700/50 rounded-lg">
       <div className="flex items-center gap-2 mb-2">
@@ -2803,15 +2842,24 @@ function FurnaceSessionCard({
         />
       </div>
       {session.statusMessage && (
-        <p className="mt-2 text-[10px] text-gray-400">
+        <p
+          className={`mt-2 text-[10px] ${
+            session.status === "running"
+              ? "text-orange-300/80"
+              : "text-gray-400"
+          } truncate`}
+        >
+          {session.status === "running" && (
+            <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse mr-1.5 align-middle" />
+          )}
           {session.statusMessage}
         </p>
       )}
       {session.recentEvents && session.recentEvents.length > 0 && (
-        <div className="mt-1.5 space-y-1">
-          {session.recentEvents.slice(0, 3).map((entry, idx) => (
+        <div className="mt-1.5 space-y-0.5">
+          {session.recentEvents.slice(0, 4).map((entry, idx) => (
             <div key={`${entry}-${idx}`} className="text-[10px] text-gray-500 truncate">
-              • {entry}
+              {entry}
             </div>
           ))}
         </div>
@@ -2860,6 +2908,25 @@ function FurnaceSessionCard({
       )}
       <div className="mt-2 flex items-center justify-between">
         <div className="flex gap-1.5">
+          {session.status === "completed" && (
+            <button
+              onClick={() => void handleToggleRecipe()}
+              disabled={recipeLoading}
+              className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[10px] ${
+                recipeExpanded
+                  ? "bg-orange-900/30 text-orange-300"
+                  : "text-orange-300 hover:bg-orange-500/10"
+              } disabled:opacity-50`}
+              title="View the generated recipe pill"
+            >
+              {recipeLoading ? (
+                <Loader2 size={11} className="animate-spin" />
+              ) : (
+                <BookOpen size={11} />
+              )}
+              {recipeExpanded ? "Hide Recipe" : "View Recipe"}
+            </button>
+          )}
           {session.status !== "completed" && (
             <button
               onClick={() => onContinue(session)}
@@ -2895,6 +2962,55 @@ function FurnaceSessionCard({
           {deleting ? "Deleting..." : "Delete"}
         </button>
       </div>
+      {recipeExpanded && (
+        <div className="mt-3 border-t border-gray-700/50 pt-3">
+          {recipeLoading ? (
+            <div className="flex items-center gap-2 text-[11px] text-gray-400">
+              <Loader2 size={12} className="animate-spin" /> Loading recipe…
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div
+                className="text-[11px] leading-relaxed text-gray-300 max-h-[400px] overflow-y-auto whitespace-pre-wrap font-mono bg-gray-900/50 rounded-md p-3"
+              >
+                {recipeShowFull && recipeContent.full
+                  ? recipeContent.full
+                  : recipeContent.pill}
+              </div>
+              <div className="flex gap-2">
+                {recipeContent.full && (
+                  <button
+                    onClick={() => setRecipeShowFull(!recipeShowFull)}
+                    className="text-[10px] text-gray-500 hover:text-gray-300"
+                  >
+                    {recipeShowFull ? "Show pill" : "Show full recipe"}
+                  </button>
+                )}
+                <button
+                  onClick={() => {
+                    const text = recipeShowFull && recipeContent.full
+                      ? recipeContent.full
+                      : recipeContent.pill;
+                    navigator.clipboard.writeText(text);
+                    window.dispatchEvent(
+                      new CustomEvent("dan:notification", {
+                        detail: {
+                          type: "info",
+                          title: "Copied",
+                          message: "Recipe copied to clipboard.",
+                        },
+                      }),
+                    );
+                  }}
+                  className="text-[10px] text-gray-500 hover:text-gray-300"
+                >
+                  Copy to clipboard
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

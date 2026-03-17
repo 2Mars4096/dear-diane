@@ -115,18 +115,18 @@ export function navigateToMention(
 export function mentionTypeColor(type: MentionType): string {
   switch (type) {
     case "node":
-      return "bg-blue-100 text-blue-700";
+      return "bg-blue-100 text-blue-700 dark:bg-blue-500/20 dark:text-blue-200";
     case "workflow":
-      return "bg-green-100 text-green-700";
+      return "bg-green-100 text-green-700 dark:bg-green-500/20 dark:text-green-200";
     case "subgraph":
-      return "bg-amber-100 text-amber-700";
+      return "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-200";
     case "file":
-      return "bg-purple-100 text-purple-700";
+      return "bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-200";
     case "code":
-      return "bg-cyan-100 text-cyan-700";
+      return "bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-200";
     case "docs":
-      return "bg-emerald-100 text-emerald-700";
+      return "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-200";
     case "chat":
-      return "bg-rose-100 text-rose-700";
+      return "bg-rose-100 text-rose-700 dark:bg-rose-500/20 dark:text-rose-200";
   }
 }

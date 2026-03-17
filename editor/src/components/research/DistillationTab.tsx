@@ -53,6 +53,7 @@ interface DistillationProgress {
   distilled: number;
   failures: number;
   estimatedRemaining: string;
+  liveDetail: string;
 }
 
 interface TermEntry {
@@ -109,6 +110,7 @@ const EMPTY_PROGRESS: DistillationProgress = {
   distilled: 0,
   failures: 0,
   estimatedRemaining: "",
+  liveDetail: "",
 };
 
 const EMPTY_OUTPUTS: DistillationOutputs = {
@@ -183,16 +185,45 @@ export default function DistillationTab() {
           const status = d.status as string;
           if (status === "ingested") next.ingested += 1;
           if (status === "skipped") next.failures += 1;
+          const idx = typeof d.source_index === "number" ? d.source_index : 0;
+          const total = typeof d.total_sources === "number" ? d.total_sources : 0;
+          if (status === "ingesting" && idx && total) {
+            next.liveDetail = `Reading source ${idx} of ${total}: ${String(d.source_id || "")}`;
+          }
         }
-        if (type === "phase_completed") {
+        if (type === "source_chunk") {
+          const sid = String(d.source_id || "");
+          const sp = typeof d.start_page === "number" ? d.start_page : 0;
+          const ep = typeof d.end_page === "number" ? d.end_page : 0;
+          const tp = typeof d.total_pages === "number" ? d.total_pages : 0;
+          next.liveDetail = `Reading ${sid}: pages ${sp}–${ep}${tp ? ` of ${tp}` : ""}`;
+        }
+        if (type === "phase_started") {
+          const phase = String(d.phase || "");
+          next.liveDetail = `Running ${phase} phase…`;
+        }
+        if (type === "phase_progress") {
+          const phase = String(d.phase || "");
+          const chars = typeof d.chars === "number" ? d.chars : 0;
+          const elapsed = typeof d.elapsed === "number" ? d.elapsed : 0;
+          next.liveDetail = `${phase}: generating… ${chars.toLocaleString()} chars (${elapsed}s)`;
+        }
+        if (type === "phase_completed" || type === "phase_skipped") {
           const phase = d.phase as string;
           if (phase === "read") next.read = next.ingested;
           if (phase === "extract" || phase === "normalize" || phase === "aggregate" || phase === "infer")
             next.extracted = Math.max(next.extracted, next.ingested);
           if (phase === "project") next.distilled = next.extracted || next.ingested;
+          next.liveDetail = type === "phase_skipped"
+            ? `${phase} phase skipped (cached)`
+            : `${phase} phase completed`;
         }
         if (type === "session_completed" && d.session_id) {
+          next.liveDetail = "Session completed";
           setExportSessionId(d.session_id as string);
+        }
+        if (type === "session_failed") {
+          next.liveDetail = `Failed${d.error ? `: ${String(d.error)}` : ""}`;
         }
         return next;
       });
@@ -685,9 +716,12 @@ function DistillationRunning({
               style={{ width: `${pct}%` }}
             />
           </div>
-          {progress.estimatedRemaining && (
-            <p className="text-[10px] text-gray-600 mt-1">
-              Est. remaining: {progress.estimatedRemaining}
+          {(progress.liveDetail || progress.estimatedRemaining) && (
+            <p className="text-[10px] text-gray-500 mt-1 truncate">
+              {progress.liveDetail && !paused && (
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-orange-400 animate-pulse mr-1 align-middle" />
+              )}
+              {progress.liveDetail || `Est. remaining: ${progress.estimatedRemaining}`}
             </p>
           )}
         </div>
