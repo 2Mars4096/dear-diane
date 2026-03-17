@@ -252,6 +252,9 @@ def _extract_chat_params(
     mentions = metadata.get("mentions")
     if not isinstance(mentions, list):
         mentions = None
+    ctx = getattr(session, "context", None)
+    project = getattr(ctx, "project", None) if ctx else None
+    memory_project_id = str(getattr(project, "project_id", "") or "").strip() or None
 
     required_action_hints: list[str] = []
     if route is not None:
@@ -313,6 +316,8 @@ def _extract_chat_params(
         "extra_system_instructions": attachment_prompt_context,
         "required_action_hints": required_action_hints,
         "stream_channel_id": stream_channel_id,
+        "memory_project_id": memory_project_id,
+        "include_memory_kernel_context": not bool(str(metadata.get("memory_context") or "").strip()),
     }
     if model_override:
         result["model_override"] = model_override
@@ -483,6 +488,7 @@ class SingleShotExecutor:
             session.id,
             _SR(
                 content=final_content,
+                metadata={"memory_recorded_by_chat_manager": True},
                 token_usage=token_usage,
                 duration_ms=(time.monotonic() - start) * 1000,
             ),
@@ -611,6 +617,7 @@ class MultiStepExecutor:
             session.id,
             _SR(
                 content=final_content,
+                metadata={"memory_recorded_by_chat_manager": True},
                 token_usage=token_usage,
                 duration_ms=(time.monotonic() - start) * 1000,
             ),

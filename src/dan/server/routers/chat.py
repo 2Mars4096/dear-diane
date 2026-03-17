@@ -847,9 +847,10 @@ async def get_chat_thread(workflow_id: str, thread_id: str):
 @router.post("/api/chats/{workflow_id}")
 async def create_chat_thread(workflow_id: str, body: dict[str, Any] | None = None):
     cs = get_chat_store()
-    title = (body or {}).get("title", "")
+    b = body or {}
+    title = b.get("title", "")
     thread = cs.create_thread(workflow_id, title=title)
-    mode = cs._normalize_mode((body or {}).get("mode"))
+    mode = cs._normalize_mode(b.get("mode"))
     if str(title or "").strip():
         meta = cs.get_thread_meta(workflow_id, thread.id)
         meta["title_source"] = "fallback"
@@ -857,6 +858,17 @@ async def create_chat_thread(workflow_id: str, body: dict[str, Any] | None = Non
         cs.set_thread_meta(workflow_id, thread.id, meta)
     if mode != "agent":
         cs.set_mode(workflow_id, thread.id, mode)
+
+    parent_thread_id = b.get("parent_thread_id")
+    if parent_thread_id:
+        cs.set_branch_lineage(
+            workflow_id,
+            thread.id,
+            parent_thread_id=parent_thread_id,
+            branch_point_message_id=b.get("branch_point_message_id", ""),
+            branch_type=b.get("branch_type", "explore"),
+        )
+
     data = thread.model_dump(mode="json")
     data["mode"] = mode
     return data

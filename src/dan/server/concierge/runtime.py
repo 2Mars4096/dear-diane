@@ -628,6 +628,16 @@ class Concierge:
                 handler(msg.text, self._pii_registry, session_key=msg.external_id),
             )
 
+        if descriptor.name == "/domains":
+            return await self._coerce_fast_command_result(
+                handler(
+                    msg.text,
+                    self.user_profile,
+                    memory_kernel=self.memory_kernel,
+                    behavior_store=self._behavior_store,
+                ),
+            )
+
         if descriptor.name == "/computer":
             if (
                 self._computer_config is None
@@ -1093,6 +1103,7 @@ class Concierge:
         content: str,
         *,
         metadata: dict[str, Any] | None = None,
+        write_conversation_memory: bool = True,
     ) -> None:
         self.project_store.append_turn(
             context.project.project_id,
@@ -1105,7 +1116,7 @@ class Concierge:
             ),
             msg.external_id,
         )
-        if self.conversation_memory is not None and content:
+        if self.conversation_memory is not None and content and write_conversation_memory:
             summary = f"{context.project.label}: {content[:160]}"
             self.conversation_memory.add_summary(
                 summary=summary,
@@ -1319,7 +1330,7 @@ class Concierge:
         if not self.memory_kernel:
             return ""
         try:
-            from dan.engine.memory_kernel import classify_task_type
+            from dan.engine.memory_kernel import MemoryType, classify_task_type
 
             scored = self.memory_kernel.retrieve_by_task(
                 message,
@@ -1330,10 +1341,19 @@ class Concierge:
             if not scored:
                 return ""
             lines = ["Relevant context from memory:"]
+            seen_contents: set[str] = set()
             for si in scored[:8]:
+                if si.item.memory_type == MemoryType.WORKING_STATE:
+                    continue
+                content = si.item.content[:200]
+                if not content or content in seen_contents:
+                    continue
+                seen_contents.add(content)
                 tag = si.item.memory_type.value.upper()
                 scope_hint = " (project)" if si.item.scope.value == "project" else ""
-                lines.append(f"- [{tag}{scope_hint}] {si.item.content[:200]}")
+                lines.append(f"- [{tag}{scope_hint}] {content}")
+            if len(lines) == 1:
+                return ""
             block = "\n".join(lines)
             return block[:max_chars].rstrip() + ("..." if len(block) > max_chars else "")
         except Exception:
@@ -1441,6 +1461,7 @@ class Concierge:
         goal_context: dict[str, Any] | None = None,
         project_id: str | None = None,
         domain: str | None = None,
+        include_episode: bool = True,
     ) -> None:
         if not self.memory_kernel:
             return
@@ -1452,12 +1473,14 @@ class Concierge:
             self._store_memory_candidates_sync(
                 message, response, goal_context, project_id,
                 domain=domain, domain_warnings=domain_warnings,
+                include_episode=include_episode,
             )
             return
         task = loop.create_task(
             self._store_memory_candidates_async(
                 message, response, goal_context, project_id,
                 domain=domain, domain_warnings=domain_warnings,
+                include_episode=include_episode,
             ),
         )
         self._bg_memory_tasks.add(task)
@@ -1471,8 +1494,10 @@ class Concierge:
         project_id: str | None = None,
         domain: str | None = None,
         domain_warnings: list[str] | None = None,
+        include_episode: bool = True,
     ) -> None:
-        self._store_episode_candidates(message, response, goal_context)
+        if include_episode:
+            self._store_episode_candidates(message, response, goal_context)
         self._try_extract_preferences(message, response, project_id=project_id)
         self._try_memory_extraction(message, response, goal_context, project_id=project_id, domain=domain)
         if domain_warnings:
@@ -1486,12 +1511,10 @@ class Concierge:
         project_id: str | None = None,
         domain: str | None = None,
         domain_warnings: list[str] | None = None,
+        include_episode: bool = True,
     ) -> None:
         from .fan_out import fan_out_dict
         tasks = {
-            "episode": lambda: asyncio.to_thread(
-                self._store_episode_candidates, message, response, goal_context,
-            ),
             "preferences": lambda: asyncio.to_thread(
                 self._try_extract_preferences, message, response, project_id=project_id,
             ),
@@ -1500,6 +1523,10 @@ class Concierge:
                 project_id=project_id, domain=domain,
             ),
         }
+        if include_episode:
+            tasks["episode"] = lambda: asyncio.to_thread(
+                self._store_episode_candidates, message, response, goal_context,
+            )
         if domain_warnings:
             warnings_copy = list(domain_warnings)
             tasks["domain_validation_log"] = lambda: asyncio.to_thread(
@@ -1529,7 +1556,9 @@ class Concierge:
             return
         try:
             from dan.engine.preference_extractor import PreferenceExtractor
-            extractor = PreferenceExtractor()
+            extractor = PreferenceExtractor(
+                behavior_store=getattr(self, "_behavior_store", None),
+            )
             messages = [
                 {"role": "user", "content": user_message},
                 {"role": "assistant", "content": assistant_message},
@@ -1581,6 +1610,7 @@ class Concierge:
                 tool_calls=tool_activity if isinstance(tool_activity, list) else None,
                 goal_context=goal_context,
             ))
+            self._remember_search_dirs_from_candidates(candidates)
             for candidate in candidates:
                 candidate_tags = list(candidate.tags or [])
                 candidate_metadata = dict(candidate.metadata or {})
@@ -1600,6 +1630,36 @@ class Concierge:
                     )
         except Exception:
             logger.debug("Memory extraction failed", exc_info=True)
+
+    def _remember_search_dirs_from_candidates(self, candidates: list[Any]) -> None:
+        if self.user_profile is None or not hasattr(self.user_profile, "merge_search_dirs"):
+            return
+        directories: list[str] = []
+        for candidate in candidates:
+            if getattr(candidate, "memory_type", None) != "fact":
+                continue
+            candidate_tags = list(getattr(candidate, "tags", None) or [])
+            candidate_metadata = dict(getattr(candidate, "metadata", None) or {})
+            if not (
+                candidate_metadata.get("is_directory")
+                or "search_dir" in candidate_tags
+            ):
+                continue
+            path_value = str(candidate_metadata.get("path", "") or "").strip()
+            if not path_value and ":" in str(getattr(candidate, "content", "")):
+                path_value = str(candidate.content).split(":", 1)[1].strip()
+            if path_value:
+                directories.append(path_value)
+        if not directories:
+            return
+        try:
+            changed = bool(self.user_profile.merge_search_dirs(directories))
+            if changed:
+                from dan.engine.user_profile import save_user_profile
+
+                save_user_profile(self.user_profile)
+        except Exception:
+            logger.debug("Failed to persist extracted search directories", exc_info=True)
 
     def _store_domain_validation_warnings(
         self, warnings: list[str], domain: str | None,

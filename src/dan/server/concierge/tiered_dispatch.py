@@ -64,9 +64,21 @@ class ContextGatherer:
         if isinstance(context, Exception) or context is None:
             context = concierge._resolve_context(msg)
 
+        project = getattr(context, "project", None) if context is not None else None
+        project_id = str(getattr(project, "project_id", "") or "").strip() or None
+
         memory = results.get("memory", "")
         if isinstance(memory, Exception):
             memory = ""
+        if project_id and any(n == "memory" for n in triage.context_needs):
+            try:
+                memory = await asyncio.to_thread(
+                    concierge._retrieve_memory_context,
+                    msg.text,
+                    project_id=project_id,
+                )
+            except Exception:
+                logger.debug("Project-scoped memory refresh failed", exc_info=True)
         if memory:
             msg.metadata["memory_context"] = memory
 
@@ -75,6 +87,16 @@ class ContextGatherer:
             msg.metadata["auto_read_content"] = auto_read
 
         domain_block = results.get("domain", "")
+        if project_id and domain_needs and hasattr(concierge, "_retrieve_domain_expertise"):
+            try:
+                domain_block = await asyncio.to_thread(
+                    concierge._retrieve_domain_expertise,
+                    msg.text,
+                    domain_needs[0],
+                    project_id,
+                )
+            except Exception:
+                logger.debug("Project-scoped domain refresh failed", exc_info=True)
         if isinstance(domain_block, str) and domain_block:
             msg.metadata["domain_expertise"] = domain_block
 
@@ -292,6 +314,10 @@ class TieredDispatcher:
                     session.msg.external_id if session.msg else "",
                 )
                 if result.content:
+                    result_metadata = getattr(result, "metadata", {}) or {}
+                    memory_already_recorded = bool(
+                        result_metadata.get("memory_recorded_by_chat_manager")
+                    )
                     assistant_metadata = {"session_tree": trace_data}
                     record_assistant = getattr(self._concierge, "_record_assistant_turn", None)
                     if callable(record_assistant) and session.msg is not None:
@@ -300,6 +326,7 @@ class TieredDispatcher:
                             session.msg,
                             result.content,
                             metadata=assistant_metadata,
+                            write_conversation_memory=not memory_already_recorded,
                         )
                     else:
                         self._concierge.project_store.append_turn(
@@ -320,6 +347,7 @@ class TieredDispatcher:
                             None,
                             project_id=context.project.project_id,
                             domain=getattr(context, "domain", None),
+                            include_episode=not memory_already_recorded,
                         )
 
             total_tokens: dict[str, int] = {}

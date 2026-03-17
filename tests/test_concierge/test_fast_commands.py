@@ -13,6 +13,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from dan.engine.correction_memory import CorrectionStore
+from dan.engine.memory_kernel import MemoryKernel
+from dan.engine.user_profile import UserProfile
 from dan.server.chat_manager import ChatCompleteEvent
 from dan.server.concierge.command_registry import CommandDescriptor, CommandRegistry
 from dan.server.concierge.dispatcher import _is_bypass_command
@@ -141,6 +143,24 @@ class TestFastCommandSkipsPrep:
         assert "compact" in user_a_events[0].content
         assert "auto per surface" in user_b_events[0].content
         assert "compact" in user_a_status[0].content
+
+    @pytest.mark.asyncio
+    async def test_domains_command_dispatches_and_updates_profile(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("DAN_PROFILE_PATH", str(tmp_path / "profile.json"))
+        profile = UserProfile()
+        memory_kernel = MemoryKernel(base_dir=str(tmp_path / "memory-kernel"))
+        c = _build_concierge(
+            tmp_path,
+            user_profile=profile,
+            memory_kernel=memory_kernel,
+        )
+
+        events = await _collect(c, _make_msg("/domains add scientific writing"))
+
+        assert len(events) == 1
+        assert "paper_rendering" in events[0].content
+        assert profile.common_domains == ["paper_rendering"]
+        assert memory_kernel.get("fact:domain:paper_rendering") is not None
 
 
 # ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable
 
 import pytest
@@ -31,7 +32,7 @@ from dan.server.concierge.tier_executors import (
     _extract_chat_params,
 )
 from dan.server.concierge.tiering import ConciergeTierResolver
-from dan.server.concierge.tiered_dispatch import TieredDispatcher
+from dan.server.concierge.tiered_dispatch import ContextGatherer, TieredDispatcher
 from dan.server.concierge.triage import TriageResult
 
 
@@ -921,6 +922,41 @@ def test_extract_chat_params_omits_model_override_when_empty() -> None:
     session = _FakeSession(triage=_FakeTriage())
     params = _extract_chat_params(session, "system prompt", model_override="")
     assert "model_override" not in params
+
+
+def test_extract_chat_params_carries_project_memory_hints() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(),
+        msg=_FakeMsg(metadata={"memory_context": "Relevant memory:\n- papers directory: /tmp/papers"}),
+    )
+    session.context = SimpleNamespace(project=SimpleNamespace(project_id="proj-123"))
+    params = _extract_chat_params(session, "system prompt", model_override=None)
+    assert params["memory_project_id"] == "proj-123"
+    assert params["include_memory_kernel_context"] is False
+
+
+@pytest.mark.asyncio
+async def test_context_gatherer_refreshes_memory_with_project_id() -> None:
+    gatherer = ContextGatherer()
+    msg = SurfaceMessage(surface="cli", external_id="cli-user", text="where are my papers?")
+    triage = SimpleNamespace(context_needs=["memory"])
+
+    class _FakeConcierge:
+        def _resolve_context(self, incoming: SurfaceMessage) -> Any:
+            return SimpleNamespace(project=SimpleNamespace(project_id="proj-1"))
+
+        def _retrieve_memory_context(
+            self,
+            message: str,
+            *,
+            project_id: str | None = None,
+            **_: Any,
+        ) -> str:
+            return "scoped memory" if project_id == "proj-1" else "unscoped memory"
+
+    context = await gatherer.gather(msg, triage, _FakeConcierge())
+    assert context.project.project_id == "proj-1"
+    assert msg.metadata["memory_context"] == "scoped memory"
 
 
 # ---------------------------------------------------------------------------
