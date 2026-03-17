@@ -18,6 +18,47 @@ _CANONICAL_DOMAIN_ALIASES = {
     "code generation": "code_generation",
     "workflow_building": "workflow_building",
     "workflow building": "workflow_building",
+    "supply_chain_management": "supply_chain_management",
+    "supply chain": "supply_chain_management",
+    "supply chain management": "supply_chain_management",
+    "supply chain logistics": "supply_chain_management",
+    "scm": "supply_chain_management",
+    "operations_management": "operations_management",
+    "operations management": "operations_management",
+    "ops management": "operations_management",
+    "om": "operations_management",
+    "operations_research": "operations_research",
+    "operations research": "operations_research",
+    "or": "operations_research",
+    "inventory_optimization": "inventory_optimization",
+    "inventory optimization": "inventory_optimization",
+    "inventory management": "inventory_optimization",
+    "marketing_analytics": "marketing_analytics",
+    "marketing analytics": "marketing_analytics",
+    "product_management": "product_management",
+    "product management": "product_management",
+    "financial_modeling": "financial_modeling",
+    "financial modeling": "financial_modeling",
+    "financial modelling": "financial_modeling",
+    "healthcare_informatics": "healthcare_informatics",
+    "healthcare informatics": "healthcare_informatics",
+    "health informatics": "healthcare_informatics",
+    "machine_learning": "machine_learning",
+    "machine learning": "machine_learning",
+    "ml": "machine_learning",
+    "natural_language_processing": "natural_language_processing",
+    "natural language processing": "natural_language_processing",
+    "nlp": "natural_language_processing",
+    "computer_vision": "computer_vision",
+    "computer vision": "computer_vision",
+    "cv": "computer_vision",
+    "reinforcement_learning": "reinforcement_learning",
+    "reinforcement learning": "reinforcement_learning",
+    "rl": "reinforcement_learning",
+    "causal_inference": "causal_inference",
+    "causal inference": "causal_inference",
+    "econometrics": "econometrics",
+    "econometric analysis": "econometrics",
 }
 
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
@@ -51,6 +92,22 @@ def normalize_domain_list(domains: Iterable[str] | None) -> list[str]:
         normalized.append(canonical)
         seen.add(canonical)
     return normalized
+
+
+def preserve_domain_labels(domains: Iterable[str] | None) -> list[str]:
+    """Preserve original labels while deduping by canonical domain id."""
+    if isinstance(domains, (str, bytes)):
+        domains = [str(domains)]
+    preserved: list[str] = []
+    seen: set[str] = set()
+    for domain in domains or []:
+        raw = str(domain or "").strip()
+        canonical = normalize_domain_name(raw)
+        if not raw or not canonical or canonical in seen:
+            continue
+        preserved.append(raw)
+        seen.add(canonical)
+    return preserved
 
 
 def normalize_domain_keyword_map(

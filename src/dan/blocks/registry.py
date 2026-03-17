@@ -117,10 +117,20 @@ class BlockRegistry:
                 )
 
     def _write_index(self, root: Path) -> None:
-        root.mkdir(parents=True, exist_ok=True)
-        index_path = root / _INDEX_FILENAME
-        entries = [b.model_dump(mode="json") for b in self._blocks.values()]
-        index_path.write_text(json.dumps(entries, indent=2, default=str), encoding="utf-8")
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            index_path = root / _INDEX_FILENAME
+            entries = [b.model_dump(mode="json") for b in self._blocks.values()]
+            index_path.write_text(
+                json.dumps(entries, indent=2, default=str),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            logger.warning(
+                "Failed to persist block registry index at %s; continuing with in-memory registry: %s",
+                root,
+                exc,
+            )
 
 
 def _version_tuple(v: str) -> tuple[int, ...]:

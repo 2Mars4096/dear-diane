@@ -119,16 +119,28 @@ class ProfileAdapter:
             ))
 
         for domain in (profile.common_domains or []):
-            canonical_domain = normalize_domain_name(domain) or domain
+            raw_domain = str(domain or "").strip()
+            canonical_domain = normalize_domain_name(raw_domain) or raw_domain
+            canonical_label = format_domain_label(canonical_domain)
+            source_label = raw_domain or canonical_label
+            metadata = {"domain": canonical_domain, "canonical_domain": canonical_domain}
+            content = f"User works in domain: {canonical_label}"
+            if source_label and source_label.casefold() != canonical_label.casefold():
+                metadata["source_domain_label"] = source_label
+                content = (
+                    f"User works in domain: {source_label} "
+                    f"(canonical: {canonical_label})"
+                )
             items.append(MemoryItem(
                 id=f"fact:domain:{canonical_domain}",
-                content=f"User works in domain: {format_domain_label(canonical_domain)}",
+                content=content,
                 memory_type=MemoryType.FACT,
                 scope=MemoryScope.USER,
                 lifecycle=MemoryLifecycle.DURABLE,
                 importance=0.6,
                 created_at=now,
                 tags=["domain", canonical_domain],
+                metadata=metadata,
             ))
 
         for d in (profile.search_dirs or []):

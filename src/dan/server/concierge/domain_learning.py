@@ -69,6 +69,66 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
         "workflow", "pipeline", "automate", "schedule", "node", "edge",
         "graph", "dag",
     ],
+    "supply_chain_management": [
+        "supply chain", "supply chain logistics", "logistics", "procurement",
+        "inventory optimization", "inventory management", "warehouse",
+        "fulfillment", "demand planning", "s&op",
+    ],
+    "operations_management": [
+        "operations management", "ops management", "process improvement",
+        "capacity planning", "throughput", "lean", "six sigma",
+        "production planning", "service operations",
+    ],
+    "operations_research": [
+        "operations research", "linear programming",
+        "integer programming", "stochastic optimization", "queueing",
+        "simulation", "scheduling problem",
+    ],
+    "inventory_optimization": [
+        "inventory optimization", "inventory policy", "safety stock",
+        "reorder point", "stockout", "multi echelon", "forecast accuracy",
+    ],
+    "marketing_analytics": [
+        "marketing analytics", "attribution", "customer segmentation",
+        "conversion funnel", "campaign performance", "ltv", "cac",
+    ],
+    "product_management": [
+        "product management", "product strategy", "roadmap", "feature prioritization",
+        "user story", "product requirement", "product launch",
+    ],
+    "financial_modeling": [
+        "financial modeling", "financial modelling", "discounted cash flow",
+        "dcf", "valuation model", "forecast model", "scenario analysis",
+    ],
+    "healthcare_informatics": [
+        "healthcare informatics", "health informatics", "ehr", "electronic health record",
+        "clinical workflow", "patient outcomes", "medical coding",
+    ],
+    "machine_learning": [
+        "machine learning", "ml", "feature engineering", "model training",
+        "hyperparameter tuning", "supervised learning", "unsupervised learning",
+    ],
+    "natural_language_processing": [
+        "natural language processing", "nlp", "language model",
+        "text classification", "named entity recognition", "tokenization",
+        "sentiment analysis",
+    ],
+    "computer_vision": [
+        "computer vision", "cv", "image classification", "object detection",
+        "segmentation", "vision transformer",
+    ],
+    "reinforcement_learning": [
+        "reinforcement learning", "rl", "policy gradient", "q learning",
+        "reward function", "agent training",
+    ],
+    "causal_inference": [
+        "causal inference", "treatment effect", "difference in differences",
+        "instrumental variables", "regression discontinuity",
+    ],
+    "econometrics": [
+        "econometrics", "panel regression", "fixed effects", "standard errors",
+        "identification strategy", "endogeneity",
+    ],
 }
 
 
@@ -178,12 +238,23 @@ def load_domain_template(domain: str) -> DomainTemplate | None:
 
 
 def save_domain_template(template: DomainTemplate) -> None:
-    """Save template to user dir, backing up the previous version."""
+    """Save template to user dir, backing up the previous version.
+
+    Best-effort: logs a warning and returns silently if ``~/.dan`` is
+    unwritable (e.g. containers, read-only home directories).
+    """
     raw_domain = str(template.domain or "").strip()
     canonical_domain = normalize_domain_name(template.domain) or template.domain
     if canonical_domain != template.domain:
         template = template.model_copy(update={"domain": canonical_domain})
-    _USER_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        _USER_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        logger.warning(
+            "Cannot create domain template directory %s — template save skipped",
+            _USER_TEMPLATE_DIR,
+        )
+        return
     path = _USER_TEMPLATE_DIR / f"{template.domain}.json"
     legacy_path = _USER_TEMPLATE_DIR / f"{raw_domain}.json" if raw_domain else path
 
@@ -197,10 +268,15 @@ def save_domain_template(template: DomainTemplate) -> None:
         except Exception:
             logger.debug("Failed to backup old template", exc_info=True)
 
-    path.write_text(
-        json.dumps(template.model_dump(mode="json"), indent=2, default=str),
-        encoding="utf-8",
-    )
+    try:
+        path.write_text(
+            json.dumps(template.model_dump(mode="json"), indent=2, default=str),
+            encoding="utf-8",
+        )
+    except OSError:
+        logger.warning(
+            "Cannot write domain template to %s — save skipped", path,
+        )
 
 
 _DEFAULT_CATEGORIES = [
