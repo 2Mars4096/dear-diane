@@ -642,6 +642,48 @@ def _looks_like_research_report_request(user_message: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Mode behavior hints
+# ---------------------------------------------------------------------------
+
+_MODE_HINTS = {
+    "agent": """\
+## Mode Behavior: Agent
+- Apply the self-management loop above after each action.
+- For tasks needing 3+ concrete actions, start with a brief numbered plan, then execute it.
+- Do not stop at diagnosis if you can still implement and validate the fix yourself.
+""",
+    "plan": """\
+## Mode Behavior: Plan
+- Produce an explicit plan before any execution.
+- Do not call tools, mutate workflows, or change files until the user approves.
+- Include key assumptions, trade-offs, and open questions only when they materially affect the plan.
+""",
+    "ask": """\
+## Mode Behavior: Ask
+- Answer directly and stay read-only.
+- Explain the current state, behavior, or options without making changes.
+- Do not modify files, workflows, or other state in this mode.
+""",
+    "debug": """\
+## Mode Behavior: Debug
+- Start from the observed failure and narrow the most likely root cause.
+- State the leading diagnostic hypothesis before proposing a fix.
+- Prefer the smallest fix that matches the evidence, then explain how to validate it.
+""",
+}
+
+
+def _resolve_mode_hints(mode: str | None) -> str:
+    mode_key = (mode or "agent").strip().lower()
+    mode_key = {
+        "auto": "agent",
+        "build": "agent",
+        "mutate": "agent",
+    }.get(mode_key, mode_key)
+    return _MODE_HINTS.get(mode_key, _MODE_HINTS["agent"])
+
+
+# ---------------------------------------------------------------------------
 # Unified system prompt
 # ---------------------------------------------------------------------------
 
@@ -666,8 +708,13 @@ This applies to all tools — web_fetch pages, file_read contents, list_director
 shell_command output, pdf_read text. Present clean, structured answers, not raw data.
 8. NEVER include image markdown (![alt](url)), navigation link blocks, or raw HTML in your response. \
 Summarize the information from web pages; do not reproduce their markup.
-9. Work autonomously by default. For implement/fix/refactor/build tasks, continue through investigation, execution, validation, and one self-review pass before stopping.
-10. Do not stop after the first successful step if there are still obvious in-scope next steps you can complete yourself.
+9. Work autonomously. After each action, silently assess:
+   (a) Did the last step succeed or fail?
+   (b) If it failed, what specifically went wrong? Do not retry the identical action without changing something.
+   (c) What is still needed to fully satisfy the user's request?
+   (d) Is the next step clear enough to execute immediately, or should I state a brief plan first?
+   Continue until the task is complete or you are genuinely blocked.
+10. For multi-step tasks (3+ actions), state a brief numbered plan before the first action. Update it if the plan changes. For single-step tasks, act directly.
 11. If the user's request is ambiguous and the next action is hard to reverse, ask focused clarifying questions before acting. Ask the minimum set together once.
 12. If the request is ambiguous but the next step is reversible, choose the safest reasonable interpretation, state it briefly, and proceed.
 13. When the user asks for a review, provide findings first. Do not patch, rewrite, or broaden scope unless the user also asks you to fix or implement.
@@ -683,6 +730,8 @@ Do not dump an entire long file in one tool call.
 21. If `list_directory` says a listing is partial/truncated, do NOT infer absence from the cutoff. Continue with `start_after` or narrow the listing with `glob_pattern` before concluding a file or directory is missing.
 
 {surface_hints}
+
+{mode_hints}
 
 {task_hints}
 

@@ -128,6 +128,7 @@ from dan.server.chat.prompts import (  # noqa: F401
     _RESEARCH_HINT_CLASSIFIER_SYSTEM_PROMPT,
     _classify_research_prompt_signal,
     SURFACE_HINTS,
+    _resolve_mode_hints,
     _resolve_surface_hints,
     _looks_like_research_report_request,
     UNIFIED_SYSTEM_PROMPT,
@@ -3131,13 +3132,16 @@ class ChatManager:
         model: str | None = None,
     ) -> list[dict[str, str]]:
         effective_model = model or self._chat_model
+        normalized_mode = normalize_chat_mode(mode)
+        if normalized_mode == "auto":
+            normalized_mode = "agent"
         context_sections: list[str] = []
         if prompt_context:
             context_sections.append(f"## Context\n{prompt_context}")
         surface_context_block = self._format_surface_context(surface_context)
         if surface_context_block:
             context_sections.append(surface_context_block)
-        if mode == "debug":
+        if normalized_mode == "debug":
             debug_details = (
                 debug_context
                 or "No recent run failures found. Ask the user to describe the issue or run the workflow."
@@ -3151,6 +3155,7 @@ class ChatManager:
         )
         workflow_block = f"## Current Workflow\n{graph_text}"
         surface_hints = _resolve_surface_hints(surface, effective_model)
+        mode_hints = _resolve_mode_hints(normalized_mode)
         research_hint_enabled = await self._should_inject_research_prompt_hint(
             user_message,
             workflow_id=workflow_id,
@@ -3175,6 +3180,7 @@ class ChatManager:
             current_date=preflight_context,
             capability_reference=generate_capability_reference(),
             surface_hints=surface_hints,
+            mode_hints=mode_hints,
             task_hints=task_hints,
             context_block=context_block,
             workflow_block=workflow_block,
