@@ -101,6 +101,10 @@ export interface TrainingSession {
   id: string;
   sessionId?: string;
   recipeId?: string;
+  parentSessionId?: string;
+  familySessionId?: string;
+  variantLabel?: string;
+  tags?: string[];
   name: string;
   topic: string;
   status: "idle" | "running" | "paused" | "completed" | "failed";
@@ -324,6 +328,12 @@ export const useResearchStore = create<ResearchState>((set, get) => ({
                 ...t,
                 sessionId: (backend.session_id as string) ?? t.sessionId,
                 recipeId: (backend.recipe_id as string) ?? t.recipeId,
+                parentSessionId: (backend.parent_session_id as string) ?? t.parentSessionId,
+                familySessionId: (backend.family_session_id as string) ?? t.familySessionId,
+                variantLabel: (backend.variant_label as string) ?? t.variantLabel,
+                tags: Array.isArray(backend.tags)
+                  ? (backend.tags as string[])
+                  : t.tags,
                 name: (backend.name as string) ?? t.name,
                 topic: (backend.topic as string) ?? t.topic,
                 status: (status as TrainingSession["status"]) ?? t.status,

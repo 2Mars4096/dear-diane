@@ -479,6 +479,8 @@ export default function CodeMode() {
   const zenModeFilePath = useCodeStore((s) => s.zenModeFilePath);
   const splitFilePath = useCodeStore((s) => s.splitFilePath);
   const [showChatSidebar, setShowChatSidebar] = useState(false);
+  const [sidebarPaneWidth, setSidebarPaneWidth] = useState(250);
+  const [chatPaneWidth, setChatPaneWidth] = useState(350);
   const [bottomTab, setBottomTab] = useState<BottomTab>("terminal");
   const [showCodebaseQA, setShowCodebaseQA] = useState(false);
   const [callHierarchy, setCallHierarchy] = useState<{
@@ -488,6 +490,10 @@ export default function CodeMode() {
   } | null>(null);
   const [mergeEditorState, setMergeEditorState] = useState<{ cwd: string; filePath: string } | null>(null);
   const [rebaseState, setRebaseState] = useState<{ cwd: string } | null>(null);
+  const sidebarPaneWidthRef = useRef(sidebarPaneWidth);
+  sidebarPaneWidthRef.current = sidebarPaneWidth;
+  const chatPaneWidthRef = useRef(chatPaneWidth);
+  chatPaneWidthRef.current = chatPaneWidth;
 
   useCodeShortcuts();
   useDebugEvents();
@@ -586,6 +592,22 @@ export default function CodeMode() {
       setActiveSidebarPanel(panel);
     }
   };
+
+  const handleRootSplitChange = useCallback((sizes: number[]) => {
+    if (!showSidebar || sizes.length < 2) return;
+    const nextWidth = Math.round(sizes[0] ?? 0);
+    if (!Number.isFinite(nextWidth) || nextWidth < 150 || nextWidth > 500) return;
+    if (Math.abs(nextWidth - sidebarPaneWidthRef.current) < 1) return;
+    setSidebarPaneWidth(nextWidth);
+  }, [showSidebar]);
+
+  const handleChatSplitChange = useCallback((sizes: number[]) => {
+    if (!showChatSidebar || sizes.length < 2) return;
+    const nextWidth = Math.round(sizes[sizes.length - 1] ?? 0);
+    if (!Number.isFinite(nextWidth) || nextWidth < 250 || nextWidth > 500) return;
+    if (Math.abs(nextWidth - chatPaneWidthRef.current) < 1) return;
+    setChatPaneWidth(nextWidth);
+  }, [showChatSidebar]);
 
   const sidebarContent = (() => {
     switch (activeSidebarPanel) {
@@ -717,10 +739,10 @@ export default function CodeMode() {
           </div>
         </div>
 
-        {/* Main area: sidebar + editor/terminal */}
-        <Allotment proportionalLayout={false}>
+        {/* Main area: sidebar + editor/terminal + chat */}
+        <Allotment proportionalLayout={false} onChange={handleRootSplitChange}>
           {showSidebar && (
-            <Allotment.Pane preferredSize={250} minSize={150} maxSize={500}>
+            <Allotment.Pane preferredSize={sidebarPaneWidth} minSize={150} maxSize={500}>
               <div className="h-full bg-white overflow-hidden dark:bg-gray-900">
                 {sidebarContent}
               </div>
@@ -728,105 +750,109 @@ export default function CodeMode() {
           )}
 
           <Allotment.Pane>
-            <div className="flex flex-col h-full">
-            <WorkspaceInfo />
-            <CoverageSummaryBar />
-            <div className="flex items-center justify-end gap-2 border-b border-gray-200 bg-gray-50 px-3 py-1.5 shrink-0 dark:border-[#3c3c3c] dark:bg-[#252526]">
-              <button
-                onClick={() => setShowChatSidebar((v) => !v)}
-                title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
-                className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
-                  showChatSidebar
-                    ? "border-blue-500/30 bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"
-                    : "border-transparent text-blue-500 hover:bg-blue-50 hover:text-blue-700 dark:text-blue-400 dark:hover:bg-white/5 dark:hover:text-blue-300"
-                }`}
-              >
-                <MessageSquare size={13} />
-                <span>AI Chat</span>
-                <span className="text-[10px] text-gray-500">⌘J</span>
-              </button>
-            </div>
-            <Allotment vertical proportionalLayout={false} className="flex-1 min-h-0">
+            <Allotment proportionalLayout={false} onChange={handleChatSplitChange}>
               <Allotment.Pane>
-                {mergeEditorState ? (
-                  <MergeEditor
-                    cwd={mergeEditorState.cwd}
-                    filePath={mergeEditorState.filePath}
-                    onClose={() => setMergeEditorState(null)}
-                    onResolved={() => {
-                      setMergeEditorState(null);
-                    }}
-                  />
-                ) : showKeybindings ? (
-                  <KeybindingsPanel />
-                ) : showSettings ? (
-                  <SettingsPanel />
-                ) : showDiff ? (
-                  <DiffView />
-                ) : splitFilePath ? (
-                  <Allotment>
+                <div className="flex flex-col h-full">
+                  <WorkspaceInfo />
+                  <CoverageSummaryBar />
+                  <div className="flex items-center justify-end gap-2 border-b border-gray-200 bg-gray-50 px-3 py-1.5 shrink-0 dark:border-[#3c3c3c] dark:bg-[#252526]">
+                    <button
+                      onClick={() => setShowChatSidebar((v) => !v)}
+                      title={showChatSidebar ? "Hide AI chat (⌘J)" : "Show AI chat (⌘J)"}
+                      className={`inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors ${
+                        showChatSidebar
+                          ? "border-blue-500/30 bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-300"
+                          : "border-transparent text-blue-500 hover:bg-blue-50 hover:text-blue-700 dark:text-blue-400 dark:hover:bg-white/5 dark:hover:text-blue-300"
+                      }`}
+                    >
+                      <MessageSquare size={13} />
+                      <span>AI Chat</span>
+                      <span className="text-[10px] text-gray-500">⌘J</span>
+                    </button>
+                  </div>
+                  <Allotment vertical proportionalLayout={false} className="flex-1 min-h-0">
                     <Allotment.Pane>
-                      <MonacoTabs />
+                      {mergeEditorState ? (
+                        <MergeEditor
+                          cwd={mergeEditorState.cwd}
+                          filePath={mergeEditorState.filePath}
+                          onClose={() => setMergeEditorState(null)}
+                          onResolved={() => {
+                            setMergeEditorState(null);
+                          }}
+                        />
+                      ) : showKeybindings ? (
+                        <KeybindingsPanel />
+                      ) : showSettings ? (
+                        <SettingsPanel />
+                      ) : showDiff ? (
+                        <DiffView />
+                      ) : splitFilePath ? (
+                        <Allotment>
+                          <Allotment.Pane>
+                            <MonacoTabs />
+                          </Allotment.Pane>
+                          <Allotment.Pane>
+                            <SplitEditor
+                              filePath={splitFilePath}
+                              onClose={() => useCodeStore.getState().setSplitFilePath(null)}
+                            />
+                          </Allotment.Pane>
+                        </Allotment>
+                      ) : (
+                        <MonacoTabs />
+                      )}
                     </Allotment.Pane>
-                    <Allotment.Pane>
-                      <SplitEditor
-                        filePath={splitFilePath}
-                        onClose={() => useCodeStore.getState().setSplitFilePath(null)}
-                      />
-                    </Allotment.Pane>
+
+                    {showTerminal && (
+                      <Allotment.Pane preferredSize={200} minSize={100}>
+                        <div className="h-full flex flex-col">
+                          <BottomPanelTabs activeTab={bottomTab} onTabChange={setBottomTab} />
+                          <div className="flex-1 min-h-0">
+                            {bottomTab === "terminal" && <TerminalPanel />}
+                            {bottomTab === "problems" && <ProblemsPanel />}
+                            {bottomTab === "output" && <OutputPanel />}
+                            {bottomTab === "debugConsole" && <DebugConsole />}
+                          </div>
+                        </div>
+                      </Allotment.Pane>
+                    )}
                   </Allotment>
-                ) : (
-                  <MonacoTabs />
-                )}
+                </div>
               </Allotment.Pane>
 
-              {showTerminal && (
-                <Allotment.Pane preferredSize={200} minSize={100}>
-                  <div className="h-full flex flex-col">
-                    <BottomPanelTabs activeTab={bottomTab} onTabChange={setBottomTab} />
-                    <div className="flex-1 min-h-0">
-                      {bottomTab === "terminal" && <TerminalPanel />}
-                      {bottomTab === "problems" && <ProblemsPanel />}
-                      {bottomTab === "output" && <OutputPanel />}
-                      {bottomTab === "debugConsole" && <DebugConsole />}
-                    </div>
-                  </div>
+              {showChatSidebar && (
+                <Allotment.Pane preferredSize={chatPaneWidth} minSize={250} maxSize={500}>
+                  <ModeChatSidebar
+                    mode="development"
+                    onClose={() => setShowChatSidebar(false)}
+                    contextProvider={() => {
+                      const state = useCodeStore.getState();
+                      const activeFile = state.openFiles.find((f) => f.path === state.activeFilePath);
+                      const lines: string[] = ["[Workspace Context]"];
+                      if (state.currentBranch) {
+                        lines.push(`Git branch: ${state.currentBranch}`);
+                      }
+                      if (activeFile) {
+                        const lineCount = activeFile.content.split("\n").length;
+                        lines.push(`Active file: ${activeFile.path} (${activeFile.language}, ${lineCount} lines)`);
+                      }
+                      if (state.openFiles.length > 0) {
+                        lines.push(`Open files: ${state.openFiles.map((f) => f.path.split("/").pop()).join(", ")}`);
+                      }
+                      if (state.pinnedRoots.length > 0) {
+                        lines.push(`Workspace roots: ${state.pinnedRoots.join(", ")}`);
+                      }
+                      if (activeFile) {
+                        lines.push("", "[Active File Content (first 200 lines)]", activeFile.content.split("\n").slice(0, 200).join("\n"));
+                      }
+                      return lines.join("\n");
+                    }}
+                  />
                 </Allotment.Pane>
               )}
             </Allotment>
-            </div>
           </Allotment.Pane>
-
-          {showChatSidebar && (
-            <Allotment.Pane preferredSize={350} minSize={250} maxSize={500}>
-              <ModeChatSidebar
-                mode="development"
-                onClose={() => setShowChatSidebar(false)}
-                contextProvider={() => {
-                  const state = useCodeStore.getState();
-                  const activeFile = state.openFiles.find((f) => f.path === state.activeFilePath);
-                  const lines: string[] = ["[Workspace Context]"];
-                  if (state.currentBranch) {
-                    lines.push(`Git branch: ${state.currentBranch}`);
-                  }
-                  if (activeFile) {
-                    const lineCount = activeFile.content.split("\n").length;
-                    lines.push(`Active file: ${activeFile.path} (${activeFile.language}, ${lineCount} lines)`);
-                  }
-                  if (state.openFiles.length > 0) {
-                    lines.push(`Open files: ${state.openFiles.map((f) => f.path.split("/").pop()).join(", ")}`);
-                  }
-                  if (state.pinnedRoots.length > 0) {
-                    lines.push(`Workspace roots: ${state.pinnedRoots.join(", ")}`);
-                  }
-                  if (activeFile) {
-                    lines.push("", "[Active File Content (first 200 lines)]", activeFile.content.split("\n").slice(0, 200).join("\n"));
-                  }
-                  return lines.join("\n");
-                }}
-              />
-            </Allotment.Pane>
-          )}
         </Allotment>
       </div>
 
