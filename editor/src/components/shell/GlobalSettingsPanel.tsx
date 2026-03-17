@@ -4,9 +4,11 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   BookOpenText,
   Check,
   Cpu,
+  MessageSquare,
   Palette,
   RefreshCw,
   Settings2,
@@ -23,8 +25,18 @@ import {
   useSettingsStore,
   type EditorSettings,
 } from "../../store/useSettingsStore";
+import {
+  useMessagingStore,
+  type MessagingConnectionState,
+  type MessagingProviderId,
+} from "../../store/useMessagingStore";
 
-type SectionId = "appearance" | "editor" | "research" | "runtime";
+export type SectionId =
+  | "appearance"
+  | "editor"
+  | "research"
+  | "runtime"
+  | "messaging";
 type RuntimeFieldKind = "text" | "toggle";
 
 const DEFAULT_RUNTIME_VALUES: RuntimeSettingsMap = {
@@ -46,6 +58,7 @@ const SECTIONS: Array<{
   { id: "appearance", label: "Appearance", icon: <Palette size={14} /> },
   { id: "editor", label: "Editor", icon: <Settings2 size={14} /> },
   { id: "research", label: "Research", icon: <BookOpenText size={14} /> },
+  { id: "messaging", label: "Messaging", icon: <MessageSquare size={14} /> },
   { id: "runtime", label: "Runtime", icon: <Cpu size={14} /> },
 ];
 
@@ -212,14 +225,16 @@ function TextInput({
   value,
   onChange,
   placeholder,
+  type = "text",
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
+  type?: string;
 }) {
   return (
     <input
-      type="text"
+      type={type}
       value={value}
       placeholder={placeholder}
       onChange={(e) => onChange(e.target.value)}
@@ -263,6 +278,39 @@ function SettingsBadge({
   return (
     <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${toneClass}`}>
       {children}
+    </span>
+  );
+}
+
+function formatMessagingState(state: MessagingConnectionState): string {
+  switch (state) {
+    case "connected":
+      return "Connected";
+    case "starting":
+      return "Starting";
+    case "pairing":
+      return "Pairing";
+    case "reconnecting":
+      return "Reconnecting";
+    case "error":
+      return "Needs attention";
+    default:
+      return "Disconnected";
+  }
+}
+
+function MessagingStateBadge({ state }: { state: MessagingConnectionState }) {
+  const toneClass =
+    state === "connected"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300"
+      : state === "error"
+        ? "border-red-200 bg-red-50 text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300"
+        : state === "pairing" || state === "starting" || state === "reconnecting"
+          ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300"
+          : "border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300";
+  return (
+    <span className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium ${toneClass}`}>
+      {formatMessagingState(state)}
     </span>
   );
 }
@@ -317,13 +365,54 @@ function SectionTitle({
 
 export default function GlobalSettingsPanel({
   onClose,
+  initialSection = "appearance",
+  initialMessagingProvider = null,
 }: {
   onClose: () => void;
+  initialSection?: SectionId;
+  initialMessagingProvider?: MessagingProviderId | null;
 }) {
   const settings = useSettingsStore();
   const update = settings.updateSetting;
+  const messagingProviders = useMessagingStore((state) => state.providers);
+  const messagingRefreshing = useMessagingStore((state) => state.refreshing);
+  const messagingRefreshError = useMessagingStore(
+    (state) => state.lastRefreshError,
+  );
+  const initializeMessaging = useMessagingStore((state) => state.initialize);
+  const refreshMessagingStatus = useMessagingStore(
+    (state) => state.refreshStatus,
+  );
+  const refreshMessagingConfig = useMessagingStore(
+    (state) => state.refreshConfig,
+  );
+  const connectMessagingProvider = useMessagingStore(
+    (state) => state.connectProvider,
+  );
+  const disconnectMessagingProvider = useMessagingStore(
+    (state) => state.disconnectProvider,
+  );
+  const reconnectMessagingProvider = useMessagingStore(
+    (state) => state.reconnectProvider,
+  );
+  const resetMessagingProvider = useMessagingStore((state) => state.resetProvider);
+  const setMessagingAutoStart = useMessagingStore(
+    (state) => state.setAutoStart,
+  );
+  const setMessagingDraftField = useMessagingStore(
+    (state) => state.setDraftField,
+  );
+  const clearMessagingError = useMessagingStore(
+    (state) => state.clearProviderError,
+  );
 
-  const [activeSection, setActiveSection] = useState<SectionId>("appearance");
+  const [activeSection, setActiveSection] = useState<SectionId>(initialSection);
+  const [messagingAdvancedOpen, setMessagingAdvancedOpen] = useState<
+    Record<MessagingProviderId, boolean>
+  >({
+    telegram: initialMessagingProvider === "telegram",
+    whatsapp: initialMessagingProvider === "whatsapp",
+  });
   const [pdfRootsText, setPdfRootsText] = useState(() =>
     settings.researchPdfRoots.join("\n"),
   );
@@ -361,6 +450,24 @@ export default function GlobalSettingsPanel({
   useEffect(() => {
     setNoteRootsText(settings.researchNoteRoots.join("\n"));
   }, [settings.researchNoteRoots]);
+
+  useEffect(() => {
+    setActiveSection(initialSection);
+  }, [initialSection]);
+
+  useEffect(() => {
+    if (!initialMessagingProvider) {
+      return;
+    }
+    setMessagingAdvancedOpen((current) => ({
+      ...current,
+      [initialMessagingProvider]: true,
+    }));
+  }, [initialMessagingProvider]);
+
+  useEffect(() => {
+    void initializeMessaging();
+  }, [initializeMessaging]);
 
   useEffect(() => {
     let cancelled = false;
@@ -552,6 +659,462 @@ export default function GlobalSettingsPanel({
     </div>
   );
 
+  const renderMessaging = () => {
+    const renderProviderCard = (
+      providerId: MessagingProviderId,
+      title: string,
+      description: string,
+    ) => {
+      const provider = messagingProviders[providerId];
+      const isRunning =
+        provider.running || provider.connectionState === "connected";
+      const hasReconnectContext =
+        provider.enabled ||
+        Boolean(
+          provider.configSummary?.configured ||
+            provider.adapterId ||
+            provider.botToken.trim() ||
+            (providerId === "whatsapp" &&
+              (provider.paired || provider.configSummary?.paired)),
+        );
+      const actionMode = isRunning
+        ? "stop"
+        : hasReconnectContext
+          ? "reconnect"
+          : "connect";
+      const actionLabel =
+        actionMode === "stop"
+          ? "Stop"
+          : actionMode === "reconnect"
+            ? "Reconnect"
+            : providerId === "whatsapp"
+              ? "Pair"
+              : "Connect";
+      const connectDisabled =
+        Boolean(provider.pendingAction) ||
+        (!isRunning &&
+          providerId === "telegram" &&
+          !provider.botToken.trim() &&
+          !provider.configSummary?.configured);
+      const backendNote =
+        providerId === "telegram"
+          ? provider.configEndpointAvailable === false
+            ? "This backend does not expose masked config persistence yet, so bot tokens stay in memory for the current desktop session only."
+            : "Masked Telegram config is persisted on the backend, so reconnecting usually does not require re-entering the bot token."
+          : provider.eventsEndpointAvailable === false
+            ? "This backend does not expose live adapter events yet, so in-app QR pairing remains blocked for now."
+            : "WhatsApp Web pairing is driven by live adapter events. If a linked-device session already exists, reconnect usually resumes without showing a fresh QR.";
+      const dependencyInstalled =
+        provider.configSummary?.dependency_installed === true
+          ? true
+          : provider.configSummary?.dependency_installed === false
+            ? false
+            : null;
+      const installHint =
+        typeof provider.configSummary?.install_hint === "string" &&
+        provider.configSummary.install_hint.trim()
+          ? provider.configSummary.install_hint.trim()
+          : providerId === "telegram"
+            ? "pip install 'dan[messaging]'"
+            : "pip install 'dan[whatsapp-web]'";
+      const dependencyCopy =
+        dependencyInstalled === true
+          ? "Installed in the backend environment."
+          : dependencyInstalled === false
+            ? `Not installed yet. Run \`${installHint}\` in the backend environment.`
+            : providerId === "telegram"
+              ? `Requires \`python-telegram-bot\`. Install with \`${installHint}\`.`
+              : `Requires \`neonize\`. Install with \`${installHint}\`.`;
+      const dependencyCardClass =
+        dependencyInstalled === false
+          ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300"
+          : dependencyInstalled === true
+            ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900/40 dark:bg-emerald-900/20 dark:text-emerald-300"
+            : "border-gray-200 bg-white text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300";
+      const botUsername =
+        typeof provider.configSummary?.bot_username === "string" &&
+        provider.configSummary.bot_username.trim()
+          ? provider.configSummary.bot_username.trim()
+          : null;
+      const advancedOpen = messagingAdvancedOpen[providerId];
+      const isHighlighted =
+        activeSection === "messaging" && initialMessagingProvider === providerId;
+
+      return (
+        <div
+          key={providerId}
+          className={`rounded-xl border bg-white p-4 shadow-sm dark:bg-gray-900 ${
+            isHighlighted
+              ? "border-blue-400 ring-1 ring-blue-400/40 dark:border-blue-500"
+              : "border-gray-200 dark:border-gray-800"
+          }`}
+        >
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h4 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                  {title}
+                </h4>
+                <MessagingStateBadge state={provider.connectionState} />
+                {provider.pendingAction && (
+                  <SettingsBadge tone="live">Working</SettingsBadge>
+                )}
+              </div>
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                {description}
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={connectDisabled}
+              onClick={() => {
+                clearMessagingError(providerId);
+                if (actionMode === "stop") {
+                  void disconnectMessagingProvider(providerId).catch(() => {});
+                } else if (actionMode === "reconnect") {
+                  void reconnectMessagingProvider(providerId).catch(() => {});
+                } else {
+                  void connectMessagingProvider(providerId).catch(() => {});
+                }
+              }}
+              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-60"
+              title={
+                connectDisabled
+                  ? "Enter a Telegram bot token first."
+                  : undefined
+              }
+            >
+              {provider.pendingAction ? (
+                <RefreshCw size={13} className="animate-spin" />
+              ) : null}
+              {actionLabel}
+            </button>
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3">
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Configuration
+              </p>
+              <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100">
+                {providerId === "telegram"
+                  ? provider.configSummary?.masked_token
+                    ? String(provider.configSummary.masked_token)
+                    : provider.configSummary?.configured
+                      ? "Configured on backend"
+                      : provider.botToken.trim()
+                        ? "Ready from this session"
+                        : "Not configured"
+                  : provider.paired || provider.configSummary?.paired
+                    ? "Paired"
+                    : provider.running
+                      ? "Connected"
+                      : "Not paired"}
+              </p>
+            </div>
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Detail
+              </p>
+              <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100">
+                {providerId === "telegram"
+                  ? `${provider.sessionCount} session${provider.sessionCount === 1 ? "" : "s"}`
+                  : provider.paired === true
+                    ? "Paired"
+                    : provider.connectionState === "pairing"
+                      ? "Waiting for QR / link"
+                      : provider.running
+                        ? "Connected"
+                        : "Pairing state unavailable"}
+              </p>
+            </div>
+            <div className="rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+              <p className="text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-gray-400">
+                Uptime
+              </p>
+              <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100">
+                {provider.running && provider.uptimeSeconds != null
+                  ? `${Math.round(provider.uptimeSeconds)}s`
+                  : "—"}
+              </p>
+            </div>
+          </div>
+
+          {providerId === "telegram" && (
+            <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+              <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                Bot token
+              </p>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Used only to start the adapter from the desktop UI.{" "}
+                {provider.configEndpointAvailable === false
+                  ? "Until the backend config route exists, the token is kept in memory for the current app session only."
+                  : "When saved successfully, the backend stores only a masked summary back to the UI so reconnects do not require re-entering it."}
+              </p>
+              <div className="mt-3">
+                <TextInput
+                  type="password"
+                  value={provider.botToken}
+                  placeholder="123456789:AA..."
+                  onChange={(value) =>
+                    setMessagingDraftField(providerId, "botToken", value)
+                  }
+                />
+              </div>
+            </div>
+          )}
+
+          {providerId === "telegram" && (
+            <div className="mt-4 rounded-lg border border-gray-200 bg-white p-3 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300">
+              <details>
+                <summary className="cursor-pointer select-none font-medium text-gray-900 dark:text-gray-100">
+                  How to get a Telegram bot token
+                </summary>
+                <div className="mt-3 space-y-1.5">
+                  <p>1. Open Telegram and message `@BotFather`.</p>
+                  <p>2. Send `/newbot` and choose a name and username.</p>
+                  <p>3. Copy the token BotFather gives you and paste it above.</p>
+                  <p>
+                    4. If you want replies in groups, run `/setprivacy` in
+                    `@BotFather` and disable privacy mode for your bot.
+                  </p>
+                </div>
+              </details>
+              {botUsername && (
+                <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-300">
+                  Verified as `@{botUsername}`. After connecting, send `/start`
+                  to the bot to confirm the link.
+                </div>
+              )}
+            </div>
+          )}
+
+          {providerId === "whatsapp" &&
+            (provider.connectionState === "pairing" ||
+              provider.qrSvgDataUri ||
+              provider.qrData) && (
+              <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                  <div className="flex h-44 w-44 shrink-0 items-center justify-center rounded-lg border border-gray-200 bg-white p-3 dark:border-gray-700 dark:bg-gray-900">
+                    {provider.qrSvgDataUri ? (
+                      <img
+                        src={provider.qrSvgDataUri}
+                        alt="WhatsApp Web QR code"
+                        className="h-full w-full"
+                      />
+                    ) : (
+                      <div className="text-center text-xs text-gray-500 dark:text-gray-400">
+                        Waiting for a QR code...
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                      Link WhatsApp on your phone
+                    </p>
+                    <div className="mt-2 space-y-1 text-xs text-gray-600 dark:text-gray-300">
+                      <p>1. Open WhatsApp on your phone.</p>
+                      <p>2. Go to Linked Devices.</p>
+                      <p>3. Tap Link a Device and scan this QR.</p>
+                    </div>
+                    {!provider.qrSvgDataUri && provider.qrData && (
+                      <p className="mt-3 break-all rounded-md border border-dashed border-gray-300 bg-white px-2 py-1 font-mono text-[10px] text-gray-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-400">
+                        {provider.qrData}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+          <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+            <div className="flex items-start justify-between gap-4">
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  Auto-start on launch
+                </p>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  Best-effort reconnect after the desktop app starts. This works
+                  best when backend-side config has already been saved.
+                </p>
+              </div>
+              <Toggle
+                checked={provider.autoStart}
+                onChange={(value) => setMessagingAutoStart(providerId, value)}
+              />
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <button
+              type="button"
+              onClick={() =>
+                setMessagingAdvancedOpen((current) => ({
+                  ...current,
+                  [providerId]: !current[providerId],
+                }))
+              }
+              className="rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+            >
+              {advancedOpen ? "Hide advanced" : "Show advanced"}
+            </button>
+          </div>
+
+          {advancedOpen && (
+            <>
+              <div className="mt-4 rounded-lg border border-gray-200 bg-gray-50 p-3 dark:border-gray-800 dark:bg-gray-950">
+                <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                  {providerId === "telegram" ? "Allowed chat IDs" : "Allowed JIDs"}
+                </p>
+                <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                  {providerId === "telegram"
+                    ? "Optional. Leave empty to let the bot answer any chat it can see."
+                    : "Optional allowlist. Leave empty to allow any linked WhatsApp JID."}
+                </p>
+                <div className="mt-3">
+                  <TextArea
+                    value={
+                      providerId === "telegram"
+                        ? provider.allowedChatIdsText
+                        : provider.allowedJidsText
+                    }
+                    placeholder={
+                      providerId === "telegram"
+                        ? "123456789\n987654321"
+                        : "15551234567@s.whatsapp.net"
+                    }
+                    onChange={(value) =>
+                      setMessagingDraftField(
+                        providerId,
+                        providerId === "telegram"
+                          ? "allowedChatIdsText"
+                          : "allowedJidsText",
+                        value,
+                      )
+                    }
+                  />
+                </div>
+              </div>
+
+              <div
+                className={`mt-4 rounded-lg border px-3 py-2 text-xs ${dependencyCardClass}`}
+              >
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  Dependency
+                </p>
+                <p className="mt-1">{dependencyCopy}</p>
+              </div>
+
+              <div className="mt-3 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600 dark:border-gray-800 dark:bg-gray-900 dark:text-gray-300">
+                <p className="font-medium text-gray-900 dark:text-gray-100">
+                  Backend support
+                </p>
+                <p className="mt-1">{backendNote}</p>
+              </div>
+
+              {providerId === "whatsapp" && (
+                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-3 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
+                  <p className="font-medium">Reset pairing</p>
+                  <p className="mt-1">
+                    Stop WhatsApp Web and delete the saved linked-device session
+                    so the next connect generates a fresh QR code.
+                  </p>
+                  <button
+                    type="button"
+                    disabled={Boolean(provider.pendingAction)}
+                    onClick={() => {
+                      clearMessagingError(providerId);
+                      void resetMessagingProvider(providerId).catch(() => {});
+                    }}
+                    className="mt-3 rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    Reset pairing
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+
+          {provider.lastError && (
+            <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-medium">Connection issue</p>
+                  <p className="mt-0.5 break-words">{provider.lastError}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => clearMessagingError(providerId)}
+                  className="rounded p-1 text-red-500 transition-colors hover:bg-red-100 hover:text-red-700 dark:hover:bg-red-900/30"
+                  title="Dismiss"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {provider.statusNote && (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-900/40 dark:bg-amber-900/20 dark:text-amber-300">
+              {provider.statusNote}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    return (
+      <div className="space-y-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <SectionTitle
+            title="Messaging"
+            subtitle="Global remote-control surfaces for the whole desktop app. Save Telegram bot access once, pair WhatsApp Web in-app, and reconnect either provider without leaving the desktop shell."
+          />
+          <button
+            type="button"
+            onClick={() => {
+              void refreshMessagingStatus();
+              void refreshMessagingConfig();
+            }}
+            className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-100 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+          >
+            <RefreshCw
+              size={13}
+              className={messagingRefreshing ? "animate-spin" : undefined}
+            />
+            Refresh from server
+          </button>
+        </div>
+
+        <div className="rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:border-blue-900/40 dark:bg-blue-900/20 dark:text-blue-300">
+          Telegram tokens are masked before they come back to the UI. WhatsApp
+          Web now uses the same desktop control plane, including saved
+          allowlists, richer connection state, and live QR pairing events.
+        </div>
+
+        {messagingRefreshError && (
+          <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/40 dark:bg-red-900/20 dark:text-red-300">
+            Failed to refresh adapter status: {messagingRefreshError}
+          </div>
+        )}
+
+        <div className="space-y-4">
+          {renderProviderCard(
+            "telegram",
+            "Telegram",
+            "Connect a Telegram bot. Requires a bot token from @BotFather.",
+          )}
+          {renderProviderCard(
+            "whatsapp",
+            "WhatsApp Web",
+            "Link your personal WhatsApp by scanning a QR code. No Business API needed.",
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const renderRuntime = () => (
     <div className="space-y-2">
       <SectionTitle
@@ -673,7 +1236,9 @@ export default function GlobalSettingsPanel({
         ? renderEditor()
         : activeSection === "research"
           ? renderResearch()
-          : renderRuntime();
+          : activeSection === "messaging"
+            ? renderMessaging()
+            : renderRuntime();
 
   return (
     <div className="fixed inset-0 z-[100] flex">

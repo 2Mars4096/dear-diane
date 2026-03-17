@@ -7,7 +7,9 @@
 import { useEffect, useRef, useState, lazy, Suspense } from "react";
 import ModeBar, { useModeShortcuts } from "./ModeBar";
 import WorkspaceTabs, { useWorkspaceShortcuts } from "./WorkspaceTabs";
-import GlobalSettingsPanel from "./GlobalSettingsPanel";
+import GlobalSettingsPanel, {
+  type SectionId as GlobalSettingsSectionId,
+} from "./GlobalSettingsPanel";
 import GlobalCommandPalette from "./GlobalCommandPalette";
 import ErrorBoundary from "./ErrorBoundary";
 import UpdateNotification from "./UpdateNotification";
@@ -17,6 +19,10 @@ import { useTitleAndFavicon } from "../../hooks/useTitleAndFavicon";
 import { useEventRouter } from "../../hooks/useEventRouter";
 import { useWorkspaceSession } from "../../hooks/useWorkspaceSession";
 import { useAppStore } from "../../store/useAppStore";
+import {
+  useMessagingStore,
+  type MessagingProviderId,
+} from "../../store/useMessagingStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import ToastContainer from "../ToastContainer";
 import {
@@ -130,6 +136,10 @@ export default function AppShell() {
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const globalPaletteVisible = useAppStore((s) => s.globalPaletteVisible);
   const [showGlobalSettings, setShowGlobalSettings] = useState(false);
+  const [settingsInitialSection, setSettingsInitialSection] =
+    useState<GlobalSettingsSectionId>("appearance");
+  const [settingsInitialMessagingProvider, setSettingsInitialMessagingProvider] =
+    useState<MessagingProviderId | null>(null);
   const workspaceRenderKey = activeWorkspaceId ?? "no-workspace";
 
   useModeShortcuts();
@@ -139,6 +149,13 @@ export default function AppShell() {
   useWorkspaceSession();
   useTitleAndFavicon();
   useEventRouter();
+
+  useEffect(() => {
+    void useMessagingStore.getState().initialize();
+    return () => {
+      useMessagingStore.getState().teardown();
+    };
+  }, []);
 
   useEffect(() => {
     const cleanup = initGlobalShortcuts();
@@ -152,7 +169,11 @@ export default function AppShell() {
     registerGlobalShortcut({
       id: "global.settings",
       keys: "cmd+,",
-      action: () => setShowGlobalSettings(true),
+      action: () => {
+        setSettingsInitialSection("appearance");
+        setSettingsInitialMessagingProvider(null);
+        setShowGlobalSettings(true);
+      },
       description: "Open Settings",
     });
     registerGlobalShortcut({
@@ -168,7 +189,17 @@ export default function AppShell() {
       description: "Toggle AI Chat Sidebar",
     });
 
-    const onOpenSettings = () => setShowGlobalSettings(true);
+    const onOpenSettings = (event: Event) => {
+      const detail = (
+        event as CustomEvent<{
+          section?: GlobalSettingsSectionId;
+          messagingProvider?: MessagingProviderId;
+        }>
+      ).detail;
+      setSettingsInitialSection(detail?.section ?? "appearance");
+      setSettingsInitialMessagingProvider(detail?.messagingProvider ?? null);
+      setShowGlobalSettings(true);
+    };
     window.addEventListener("app:openSettings", onOpenSettings);
     window.addEventListener("app:openKeybindings", onOpenSettings);
 
@@ -251,7 +282,11 @@ export default function AppShell() {
 
       <ToastContainer />
       {showGlobalSettings && (
-        <GlobalSettingsPanel onClose={() => setShowGlobalSettings(false)} />
+        <GlobalSettingsPanel
+          initialSection={settingsInitialSection}
+          initialMessagingProvider={settingsInitialMessagingProvider}
+          onClose={() => setShowGlobalSettings(false)}
+        />
       )}
       {globalPaletteVisible && <GlobalCommandPalette />}
     </div>

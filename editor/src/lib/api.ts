@@ -714,13 +714,67 @@ export const setRuntimeSetting = (
 
 // -- Adapters (21-4) ---------------------------------------------------------
 
+export type AdapterConnectionState =
+  | "disconnected"
+  | "starting"
+  | "pairing"
+  | "connected"
+  | "reconnecting"
+  | "error";
+
 export interface AdapterInfo {
   type: string;
   running: boolean;
   session_count: number;
   adapter_id: string;
   uptime_seconds?: number;
+  connection_state?: AdapterConnectionState | string | null;
+  last_error?: string | null;
+  paired?: boolean | null;
+  configured?: boolean | null;
+  [key: string]: unknown;
 }
+
+export interface AdapterStartResponse {
+  status: string;
+  adapter_id: string;
+  type: string;
+}
+
+export interface AdapterConfigSummary {
+  type?: string;
+  configured?: boolean;
+  masked_token?: string | null;
+  bot_username?: string | null;
+  allowed_chat_ids?: number[];
+  allowed_chat_count?: number;
+  allowed_jids?: string[];
+  allowed_jid_count?: number;
+  paired?: boolean | null;
+  dependency_module?: string | null;
+  dependency_package?: string | null;
+  dependency_installed?: boolean | null;
+  install_hint?: string | null;
+  session_db_exists?: boolean;
+  db_path?: string | null;
+  connection_state?: AdapterConnectionState | string | null;
+  last_error?: string | null;
+  [key: string]: unknown;
+}
+
+export const startAdapter = (
+  type: string,
+  config: Record<string, unknown> = {},
+  workflowPath = "",
+) =>
+  request<AdapterStartResponse>("/adapters/start", {
+    method: "POST",
+    body: JSON.stringify({
+      type,
+      workflow_path: workflowPath,
+      config,
+    }),
+  });
 
 export const getAdapterStatus = () =>
   request<AdapterInfo[]>("/adapters/status");
@@ -730,6 +784,47 @@ export const stopAdapter = (adapterId: string) =>
     method: "POST",
     body: JSON.stringify({ adapter_id: adapterId }),
   });
+
+export const getAdapterConfig = (type: string) =>
+  request<AdapterConfigSummary>(`/adapters/config/${encodeURIComponent(type)}`);
+
+export const saveAdapterConfig = (
+  type: string,
+  config: Record<string, unknown>,
+) =>
+  request<AdapterConfigSummary>(`/adapters/config/${encodeURIComponent(type)}`, {
+    method: "POST",
+    body: JSON.stringify(config),
+  });
+
+export const resetAdapterConfig = (type: string) =>
+  request<AdapterConfigSummary>(
+    `/adapters/config/${encodeURIComponent(type)}/reset`,
+    {
+      method: "POST",
+    },
+  );
+
+export function connectAdapterEvents(
+  adapterId: string,
+  onEvent: (event: Record<string, unknown>) => void,
+  onClose?: () => void,
+): EventSource {
+  const url = `${BASE}/adapters/${encodeURIComponent(adapterId)}/events`;
+  const es = new EventSource(url);
+  es.onmessage = (e) => {
+    try {
+      onEvent(JSON.parse(e.data));
+    } catch {
+      /* ignore malformed event payloads */
+    }
+  };
+  es.onerror = () => {
+    es.close();
+    onClose?.();
+  };
+  return es;
+}
 
 // -- Furnace ----------------------------------------------------------------
 

@@ -43,6 +43,11 @@ import {
 } from "lucide-react";
 import { useGraphStore } from "../store/useGraphStore";
 import { useAppStore } from "../store/useAppStore";
+import {
+  useMessagingStore,
+  type MessagingProviderId,
+} from "../store/useMessagingStore";
+import { useSettingsStore } from "../store/useSettingsStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
 import type { ChatMessage, ChatStreamEvent, ToolCallInfo } from "../types/chat";
 import type { ChatThreadSummary } from "../lib/api";
@@ -102,6 +107,10 @@ import {
   resolveAttachmentName,
   sanitizeChatHistory,
 } from "../lib/editorChat";
+import {
+  buildMessagingSettingsEventDetail,
+  shouldOfferMessagingOnboarding,
+} from "../lib/messagingOnboarding";
 import { createThreadPersistenceCoordinator } from "../lib/threadPersistenceCoordinator";
 import { describeLatestToolProgress } from "../lib/toolCallPresentation";
 import {
@@ -3202,7 +3211,7 @@ export default function ChatPanel({
               />
             )}
 
-            {staleRevision && (
+            {staleRevision && graphId && graphId !== "_scratch" && (
               <div className="flex items-center gap-2 mb-3 px-2 py-2 bg-amber-50 border border-amber-200 rounded-xl text-sm text-amber-700">
                 <span className="flex-1">Graph changed since your last message — context may be stale.</span>
                 <button onClick={() => { setStaleRevision(false); retryLast(); }} className="flex items-center gap-1 text-amber-600 hover:text-amber-800 text-xs font-medium flex-shrink-0"><RotateCcw size={12} /> Retry with current</button>
@@ -4369,6 +4378,13 @@ function ThreadRow({
 function EmptyState({ onSelect, mode, isEmptyGraph, fullScreen }: { onSelect: (text: string) => void; mode: ChatMode; isEmptyGraph?: boolean; fullScreen?: boolean }) {
   const cfg = MODE_CONFIG[mode];
   const Icon = cfg.icon;
+  const messagingInitialized = useMessagingStore((state) => state.initialized);
+  const messagingProviders = useMessagingStore((state) => state.providers);
+  const messagingOnboardingOffered = useSettingsStore(
+    (state) => state.messagingOnboardingOffered,
+  );
+  const updateSetting = useSettingsStore((state) => state.updateSetting);
+  const [messagingPromptVisible, setMessagingPromptVisible] = useState(false);
 
   const promptsMap: Record<ChatMode, string[]> = {
     agent: isEmptyGraph ? BUILD_PROMPTS : EXAMPLE_PROMPTS,
@@ -4376,6 +4392,49 @@ function EmptyState({ onSelect, mode, isEmptyGraph, fullScreen }: { onSelect: (t
     plan: PLAN_PROMPTS,
     debug: DEBUG_PROMPTS,
     auto: isEmptyGraph ? BUILD_PROMPTS : EXAMPLE_PROMPTS,
+  };
+  const hasMessagingConfigured = useMemo(
+    () =>
+      Object.values(messagingProviders).some(
+        (provider) =>
+          provider.running ||
+          provider.enabled ||
+          provider.configSummary?.configured ||
+          provider.paired ||
+          provider.configSummary?.paired,
+      ),
+    [messagingProviders],
+  );
+  const shouldOfferMessagingPrompt = shouldOfferMessagingOnboarding({
+    fullScreen: Boolean(fullScreen),
+    messagingInitialized,
+    messagingOnboardingOffered,
+    providers: messagingProviders,
+  });
+
+  useEffect(() => {
+    if (!shouldOfferMessagingPrompt) {
+      return;
+    }
+    setMessagingPromptVisible(true);
+    updateSetting("messagingOnboardingOffered", true);
+  }, [shouldOfferMessagingPrompt, updateSetting]);
+
+  const showMessagingPrompt =
+    fullScreen &&
+    messagingInitialized &&
+    messagingPromptVisible &&
+    !hasMessagingConfigured;
+  const dismissMessagingPrompt = () => {
+    setMessagingPromptVisible(false);
+  };
+  const openMessagingSetup = (providerId?: MessagingProviderId) => {
+    setMessagingPromptVisible(false);
+    window.dispatchEvent(
+      new CustomEvent("app:openSettings", {
+        detail: buildMessagingSettingsEventDetail(providerId),
+      }),
+    );
   };
 
   if (fullScreen) {
@@ -4400,6 +4459,53 @@ function EmptyState({ onSelect, mode, isEmptyGraph, fullScreen }: { onSelect: (t
             </button>
           ))}
         </div>
+        {showMessagingPrompt && (
+          <div className="mt-6 w-full max-w-lg rounded-2xl border border-indigo-500/20 bg-indigo-500/10 p-4 text-left shadow-sm">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-gray-100">
+                  Connect Telegram or WhatsApp while you set up the desktop
+                  shell
+                </p>
+                <p className="mt-1 text-xs text-gray-400">
+                  This step is optional and only appears once. You can always
+                  reopen it from Settings later.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={dismissMessagingPrompt}
+                className="rounded p-1 text-gray-400 transition-colors hover:bg-white/10 hover:text-gray-200"
+                title="Dismiss"
+              >
+                <X size={14} />
+              </button>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => openMessagingSetup("telegram")}
+                className="rounded-lg bg-indigo-500 px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-indigo-400"
+              >
+                Connect Telegram
+              </button>
+              <button
+                type="button"
+                onClick={() => openMessagingSetup("whatsapp")}
+                className="rounded-lg bg-white/10 px-3 py-2 text-xs font-medium text-gray-100 transition-colors hover:bg-white/15"
+              >
+                Connect WhatsApp
+              </button>
+              <button
+                type="button"
+                onClick={dismissMessagingPrompt}
+                className="rounded-lg border border-white/10 px-3 py-2 text-xs font-medium text-gray-300 transition-colors hover:bg-white/5"
+              >
+                Skip for now
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     );
   }

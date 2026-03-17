@@ -49,6 +49,7 @@ export interface EditorSettings {
   iconTheme: string;
   researchPdfRoots: string[];
   researchNoteRoots: string[];
+  messagingOnboardingOffered: boolean;
 }
 
 interface SettingsState extends EditorSettings {
@@ -98,6 +99,7 @@ const DEFAULT_SETTINGS: EditorSettings = {
   iconTheme: "default",
   researchPdfRoots: [],
   researchNoteRoots: [],
+  messagingOnboardingOffered: false,
 };
 
 export const useSettingsStore = create<SettingsState>()(

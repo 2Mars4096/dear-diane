@@ -1,11 +1,15 @@
 import { useState, useRef, useCallback, useEffect } from "react";
 import ConfirmDialog from "./shell/ConfirmDialog";
 import { useGraphStore } from "../store/useGraphStore";
+import {
+  useMessagingStore,
+  type MessagingProviderId,
+} from "../store/useMessagingStore";
 import Spinner from "./Spinner";
 import RunInputsDialog from "./RunInputsDialog";
 import TabBar from "./TabBar";
 import * as api from "../lib/api";
-import type { PublishStatus, AdapterInfo } from "../lib/api";
+import type { PublishStatus } from "../lib/api";
 
 // ---------------------------------------------------------------------------
 // ExportPreviewModal — shows markdown file list or Python code with actions
@@ -183,6 +187,10 @@ export default function EditorToolbar() {
   const setTokenHeatmapEnabled = useGraphStore((s) => s.setTokenHeatmapEnabled);
   const showEdgeTokenLabels = useGraphStore((s) => s.showEdgeTokenLabels);
   const setShowEdgeTokenLabels = useGraphStore((s) => s.setShowEdgeTokenLabels);
+  const messagingProviders = useMessagingStore((s) => s.providers);
+  const disconnectMessagingProvider = useMessagingStore(
+    (s) => s.disconnectProvider,
+  );
 
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
@@ -205,7 +213,6 @@ export default function EditorToolbar() {
   const publishDropdownRef = useRef<HTMLDivElement>(null);
 
   // -- 21-4: Adapter state
-  const [adapters, setAdapters] = useState<AdapterInfo[]>([]);
   const [showAdapterPanel, setShowAdapterPanel] = useState(false);
   const adapterPanelRef = useRef<HTMLDivElement>(null);
 
@@ -251,18 +258,6 @@ export default function EditorToolbar() {
       .then(setPublishStatus)
       .catch(() => setPublishStatus(null));
   }, [graphId]);
-
-  // Poll adapter status every 10 seconds
-  useEffect(() => {
-    const poll = () => {
-      api.getAdapterStatus()
-        .then((res) => setAdapters(Array.isArray(res) ? res : []))
-        .catch(() => {});
-    };
-    poll();
-    const interval = setInterval(poll, 10_000);
-    return () => clearInterval(interval);
-  }, []);
 
   const handleCreate = () => {
     const name = newName.trim();
@@ -351,19 +346,45 @@ export default function EditorToolbar() {
     setShowPublishDropdown(false);
   }, [graphId, addToast]);
 
-  const handleStopAdapter = useCallback(async (adapterId: string) => {
+  const handleStopAdapter = useCallback(async (providerId: MessagingProviderId) => {
     try {
-      await api.stopAdapter(adapterId);
-      setAdapters((prev) => prev.map((a) =>
-        a.adapter_id === adapterId ? { ...a, running: false } : a,
-      ));
+      await disconnectMessagingProvider(providerId);
       addToast({ type: "info", message: "Adapter stopped" });
     } catch (err: unknown) {
       addToast({ type: "error", message: `Stop failed: ${(err as Error).message}` });
     }
-  }, [addToast]);
+  }, [addToast, disconnectMessagingProvider]);
 
-  const activeAdapters = adapters.filter((a) => a.running);
+  const adapterEntries = [
+    {
+      providerId: "telegram" as const,
+      label: "Telegram",
+      icon: "✈",
+      provider: messagingProviders.telegram,
+    },
+    {
+      providerId: "whatsapp" as const,
+      label: "WhatsApp Web",
+      icon: "💬",
+      provider: messagingProviders.whatsapp,
+    },
+  ].filter(
+    ({ provider }) =>
+      provider.running ||
+      provider.enabled ||
+      provider.configSummary?.configured ||
+      provider.paired ||
+      provider.configSummary?.paired ||
+      Boolean(provider.lastError),
+  );
+
+  const activeAdapters = adapterEntries.filter(
+    ({ provider }) =>
+      provider.running ||
+      ["connected", "starting", "pairing", "reconnecting"].includes(
+        provider.connectionState,
+      ),
+  );
 
   return (
     <div className="flex flex-col bg-white border-b border-gray-200 shrink-0">
@@ -709,35 +730,48 @@ export default function EditorToolbar() {
             <div className="px-3 pb-1.5 text-[10px] font-semibold text-gray-400 uppercase">
               Messaging Adapters
             </div>
-            {adapters.length === 0 && (
+            {adapterEntries.length === 0 && (
               <div className="px-3 py-2 text-[11px] text-gray-400">No adapters configured</div>
             )}
-            {adapters.map((adapter) => {
-              const ADAPTER_ICONS: Record<string, string> = { email: "✉", telegram: "✈", whatsapp: "💬" };
-              const statusLabel = adapter.running ? "running" : "stopped";
+            {adapterEntries.map(({ providerId, label, icon, provider }) => {
+              const statusLabel =
+                provider.running || provider.connectionState === "connected"
+                  ? "running"
+                  : provider.connectionState === "disconnected" &&
+                      (provider.configSummary?.configured || provider.configSummary?.paired)
+                    ? "configured"
+                    : provider.connectionState || "stopped";
               const statusColors: Record<string, string> = {
                 running: "bg-green-100 text-green-700",
+                configured: "bg-blue-100 text-blue-700",
+                pairing: "bg-amber-100 text-amber-700",
+                reconnecting: "bg-amber-100 text-amber-700",
+                starting: "bg-amber-100 text-amber-700",
                 stopped: "bg-gray-100 text-gray-500",
+                disconnected: "bg-gray-100 text-gray-500",
                 error: "bg-red-100 text-red-700",
               };
               return (
                 <div
-                  key={adapter.adapter_id}
+                  key={providerId}
                   className="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-50"
                 >
-                  <span className="text-sm shrink-0">{ADAPTER_ICONS[adapter.type] ?? "🔌"}</span>
+                  <span className="text-sm shrink-0">{icon}</span>
                   <div className="flex-1 min-w-0">
-                    <div className="text-[11px] font-medium text-gray-700 capitalize">{adapter.type}</div>
+                    <div className="text-[11px] font-medium text-gray-700 capitalize">
+                      {label}
+                    </div>
                     <div className="text-[10px] text-gray-400">
-                      {adapter.session_count} session{adapter.session_count !== 1 ? "s" : ""}
+                      {provider.sessionCount} session
+                      {provider.sessionCount !== 1 ? "s" : ""}
                     </div>
                   </div>
                   <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${statusColors[statusLabel] ?? "bg-gray-100 text-gray-500"}`}>
                     {statusLabel}
                   </span>
-                  {adapter.running && (
+                  {(provider.running || provider.enabled) && (
                     <button
-                      onClick={() => handleStopAdapter(adapter.adapter_id)}
+                      onClick={() => handleStopAdapter(providerId)}
                       className="text-[10px] text-red-500 hover:text-red-700 font-medium px-1"
                     >
                       Stop
