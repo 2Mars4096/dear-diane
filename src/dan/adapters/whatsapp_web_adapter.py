@@ -20,6 +20,7 @@ Session data is stored in ``~/.dan/whatsapp-web/`` so you only pair once.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import mimetypes
 import os
@@ -84,12 +85,84 @@ class WhatsAppWebAdapter:
         self._recent_outbound: dict[str, list[tuple[float, str]]] = {}
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._connect_task: asyncio.Task | None = None
+        self._on_event: Callable[[dict[str, Any]], Any] | None = None
+        self._connection_state = "disconnected"
+        self._last_error: str | None = None
+        self._paired: bool | None = None
+        self._last_qr_data: str | None = None
 
     def set_message_callback(self, callback: Callable[[str, str], Any] | None) -> None:
         self._on_new_message = callback
 
+    def set_event_callback(
+        self, callback: Callable[[dict[str, Any]], Any] | None,
+    ) -> None:
+        self._on_event = callback
+
+    def get_connection_snapshot(self) -> dict[str, Any]:
+        snapshot: dict[str, Any] = {
+            "connection_state": self._connection_state,
+            "last_error": self._last_error,
+            "paired": self._paired,
+        }
+        if self._last_qr_data:
+            snapshot["qr_data"] = self._last_qr_data
+        return snapshot
+
     async def _sleep(self, seconds: float) -> None:
         await asyncio.sleep(seconds)
+
+    def _set_connection_snapshot(
+        self,
+        state: str,
+        *,
+        last_error: str | None | object = ...,
+        paired: bool | None | object = ...,
+        qr_data: str | None | object = ...,
+    ) -> None:
+        self._connection_state = state
+        if last_error is not ...:
+            self._last_error = last_error if isinstance(last_error, str) else None
+        if paired is not ...:
+            self._paired = paired if isinstance(paired, bool) else None
+        if qr_data is not ...:
+            self._last_qr_data = qr_data if isinstance(qr_data, str) and qr_data else None
+
+    def _emit_event(self, payload: dict[str, Any]) -> None:
+        if self._on_event is None:
+            return
+
+        event_payload = {
+            "type": str(payload.get("type") or "status"),
+            **payload,
+        }
+
+        def _dispatch() -> None:
+            callback = self._on_event
+            if callback is None:
+                return
+            try:
+                result = callback(event_payload)
+                if inspect.isawaitable(result):
+                    asyncio.create_task(result)
+            except Exception:
+                logger.exception("WhatsApp Web event callback failed")
+
+        loop = self._event_loop
+        if loop is not None and not loop.is_closed():
+            loop.call_soon_threadsafe(_dispatch)
+            return
+        _dispatch()
+
+    @staticmethod
+    def _normalize_pair_status(event: Any) -> str:
+        raw_status = getattr(event, "Status", None)
+        if raw_status in (2, "2", "SUCCESS", "success"):
+            return "paired"
+        if raw_status in (1, "1", "ERROR", "error"):
+            return "failed"
+        normalized = str(raw_status or "").strip().lower()
+        return normalized or "unknown"
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -108,16 +181,85 @@ class WhatsAppWebAdapter:
             _DEFAULT_DB_DIR.mkdir(parents=True, exist_ok=True)
             db_path = str(_DEFAULT_DB_DIR / "session.sqlite3")
 
+        self._event_loop = asyncio.get_running_loop()
+        self._running = True
+        self._set_connection_snapshot("starting", last_error=None, qr_data=None)
+        self._emit_event({
+            "type": "status",
+            "connection_state": "starting",
+            "paired": self._paired,
+        })
+
         self._client = NewClient(db_path)
+
+        def on_qr(_client: Any, data_qr: bytes) -> None:
+            qr_data = data_qr.decode("utf-8", errors="ignore").strip()
+            self._set_connection_snapshot(
+                "pairing",
+                last_error=None,
+                paired=False,
+                qr_data=qr_data or None,
+            )
+            self._emit_event({
+                "type": "qr",
+                "qr_data": qr_data,
+            })
+
+        self._client.qr(on_qr)
 
         @self._client.event(ConnectedEv)
         def on_connected(_client: Any, _event: Any) -> None:
             logger.info("WhatsApp Web adapter connected")
+            self._set_connection_snapshot(
+                "connected",
+                last_error=None,
+                paired=True,
+                qr_data=None,
+            )
+            self._emit_event({
+                "type": "pair_status",
+                "status": "connected",
+            })
             print("\n  WhatsApp Web connected! You can now send messages.\n", file=sys.stderr)
 
         @self._client.event(PairStatusEv)
         def on_pair_status(_client: Any, event: Any) -> None:
             logger.info("Pair status: %s", event)
+            status = self._normalize_pair_status(event)
+            error_text = str(getattr(event, "Error", "") or "").strip() or None
+            payload: dict[str, Any] = {
+                "type": "pair_status",
+                "status": status,
+            }
+            if getattr(event, "BusinessName", ""):
+                payload["business_name"] = getattr(event, "BusinessName")
+            if getattr(event, "ID", ""):
+                payload["id"] = getattr(event, "ID")
+            if getattr(event, "Platform", ""):
+                payload["platform"] = getattr(event, "Platform")
+            if error_text:
+                payload["message"] = error_text
+
+            if status == "paired":
+                self._set_connection_snapshot(
+                    "connected",
+                    last_error=None,
+                    paired=True,
+                    qr_data=None,
+                )
+            elif status == "failed":
+                self._set_connection_snapshot(
+                    "error",
+                    last_error=error_text or "WhatsApp pairing failed.",
+                    paired=False,
+                )
+            else:
+                self._set_connection_snapshot(
+                    "pairing",
+                    last_error=None,
+                    paired=False,
+                )
+            self._emit_event(payload)
 
         @self._client.event(MessageEv)
         def on_message(_client: Any, event: Any) -> None:
@@ -127,8 +269,6 @@ class WhatsAppWebAdapter:
                 self._handle_incoming(event), self._event_loop,
             )
 
-        self._event_loop = asyncio.get_running_loop()
-        self._running = True
         self._connect_task = asyncio.create_task(self._connect_with_retry())
         logger.info("WhatsApp Web adapter starting (db: %s)", db_path)
         print(
@@ -154,15 +294,37 @@ class WhatsAppWebAdapter:
                     return
                 consecutive_failures = 0
                 logger.info("WhatsApp connection ended, will reconnect")
+                self._set_connection_snapshot(
+                    "reconnecting",
+                    last_error=None,
+                    paired=self._paired,
+                )
+                self._emit_event({
+                    "type": "status",
+                    "connection_state": "reconnecting",
+                    "paired": self._paired,
+                })
             except Exception as exc:
                 if not self._running:
                     return
                 consecutive_failures += 1
+                error_text = str(exc).strip() or exc.__class__.__name__
                 logger.warning(
                     "WhatsApp connection failed (attempt %d): %s",
                     consecutive_failures,
                     exc,
                 )
+                next_state = "error" if consecutive_failures >= max_retries else "reconnecting"
+                self._set_connection_snapshot(
+                    next_state,
+                    last_error=error_text,
+                    paired=self._paired,
+                )
+                self._emit_event({
+                    "type": "error",
+                    "connection_state": next_state,
+                    "message": error_text,
+                })
                 if consecutive_failures >= max_retries:
                     logger.error(
                         "WhatsApp reconnection failed after %d consecutive attempts",
@@ -190,6 +352,16 @@ class WhatsAppWebAdapter:
         for fut in self._pending.values():
             if not fut.done():
                 fut.cancel()
+        self._set_connection_snapshot(
+            "disconnected",
+            last_error=None,
+            paired=self._paired,
+            qr_data=None,
+        )
+        self._emit_event({
+            "type": "pair_status",
+            "status": "disconnected",
+        })
         logger.info("WhatsApp Web adapter stopped")
 
     # -- send ---------------------------------------------------------------

@@ -19,6 +19,7 @@ def default_config_path() -> Path:
 
 class TelegramBotConfig(BaseModel):
     token: str = ""
+    username: str = ""
     personality: str = ""
     projects: list[str] = Field(default_factory=list)
     default: bool = False
