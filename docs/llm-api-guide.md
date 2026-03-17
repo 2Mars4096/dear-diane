@@ -984,7 +984,7 @@ Each tool module follows the same pattern — export `TOOL_METADATA` dict with k
 
 ### Workspace Sandboxing
 
-File tools (`file_read`, `file_write`, `list_directory`, `file_move`, `file_copy`, `file_delete`) enforce `DAN_WORKSPACE_ROOT` boundary — paths outside the workspace are rejected. Defaults to the current working directory.
+File tools (`file_read`, `file_write`, `list_directory`, `file_move`, `file_copy`, `file_delete`) enforce `DAN_WORKSPACE_ROOT` for relative paths. Relative paths that escape the workspace are rejected. Explicit absolute paths (including `~/...`) are treated as trusted paths and may operate outside the workspace root. Defaults to the current working directory. If you are exposing DAN to untrusted LLM callers, restrict requests to relative paths or add an approval/policy layer before allowing absolute paths.
 
 ### Graceful Degradation
 

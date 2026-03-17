@@ -117,7 +117,7 @@
   - [x] Grounded web-search follow-up — numbered results, parallel top-result fetches, surfaced fetch failures, and stricter `search_web` completion gating
   - [x] Frontend stream-recovery follow-up — retry now reuses saved attachment metadata, premature clean closes surface explicit disconnect errors, and interrupted detached/tool-only turns persist a visible fallback instead of blank assistant bubbles
   - [x] OpenAI-compatible Kimi temperature follow-up — `OpenAIProvider` now coerces `kimi-*` requests to `temperature=1` so Moonshot/Kimi stops rejecting chat/triage/synthesis calls with `invalid temperature`
-  - [x] [12-2-multi-mode-chat](plans/12-2-multi-mode-chat.md) — B. Ask / Agent / Plan / Debug chat modes with mode-specific prompts and tool availability *(tasks 1–6 done; per-thread mode persistence, keyboard shortcuts, debug-fix tag, auto-mode detection deferred)*
+  - [x] [12-2-multi-mode-chat](plans/12-2-multi-mode-chat.md) — B. Ask / Agent / Plan / Debug chat modes with mode-specific prompts and tool availability *(tasks 1–6 done; follow-up tuning now adds the shared self-management loop plus stricter Ask/Agent/Plan/Debug behavior hints; per-thread mode persistence, keyboard shortcuts, debug-fix tag, auto-mode detection deferred)*
   - [x] [12-3-rich-context-mentions](plans/12-3-rich-context-mentions.md) — C. @Files, @Code, @Docs, @Past Chats + server-side resolution + context budget *(tasks 1–5,7 done; @Web [task 6] and autocomplete UX polish [task 8] deferred)*
   - [x] [12-4-tool-display-execution](plans/12-4-tool-display-execution.md) — D. Inline tool call rendering, run output streaming *(tasks 1-4 done; approval gates [task 5] and sandbox display [task 6] deferred)*
   - [x] [12-5-conversation-lifecycle](plans/12-5-conversation-lifecycle.md) — E. Stop generation, checkpoints (basic), export, search, pin threads *(message queue [task 2], thread branching [task 7], restore checkpoints deferred)*
@@ -476,12 +476,12 @@
 > write safety, Furnace lifecycle correctness, startup/config robustness, domain learning
 > fidelity, and provider/tool/doc alignment.
 
-- [ ] [38-review-hardening](plans/38-review-hardening.md) — umbrella plan for code review and module audit follow-ups
-  - [ ] [38-1-furnace-write-safety](plans/38-1-furnace-write-safety.md) — P1: sanitize `source_id` path traversal, artifact containment, source ID collisions
-  - [ ] [38-2-furnace-lifecycle](plans/38-2-furnace-lifecycle.md) — P2: session state machine, cancel semantics, duplicate start/resume prevention, multi-subscriber SSE
-  - [ ] [38-3-startup-config-hardening](plans/38-3-startup-config-hardening.md) — P1/P2: lazy `~/.dan` writes, safe-mode startup, dynamic telemetry DB path
-  - [ ] [38-4-domain-learning-fidelity](plans/38-4-domain-learning-fidelity.md) — P2: broader keyword seeds, abbreviation aliases, original label preservation
-  - [ ] [38-5-provider-tool-doc-alignment](plans/38-5-provider-tool-doc-alignment.md) — P2/P3: Google provider test realignment, clipboard errors, README safety contract
+- [x] [38-review-hardening](plans/38-review-hardening.md) — umbrella plan for code review and module audit follow-ups
+  - [x] [38-1-furnace-write-safety](plans/38-1-furnace-write-safety.md) — P1: sanitize `source_id` path traversal, artifact containment, source ID collisions
+  - [x] [38-2-furnace-lifecycle](plans/38-2-furnace-lifecycle.md) — P2: session state machine, cancel semantics, duplicate start/resume prevention, multi-subscriber SSE
+  - [x] [38-3-startup-config-hardening](plans/38-3-startup-config-hardening.md) — P1/P2: lazy `~/.dan` writes, safe-mode startup, dynamic telemetry DB path
+  - [x] [38-4-domain-learning-fidelity](plans/38-4-domain-learning-fidelity.md) — P2: broader keyword seeds, abbreviation aliases, original label preservation
+  - [x] [38-5-provider-tool-doc-alignment](plans/38-5-provider-tool-doc-alignment.md) — P2/P3: Google provider test realignment, clipboard errors, README safety contract
 
 ## Backlog (unphased)
 
@@ -673,7 +673,7 @@
     - [x] [1-6-research-workbench-refinement](UI-plans/1-6-research-workbench-refinement.md) — configurable PDF/note roots, function-first surfaces (`Desk`, `Library`, `Plan`, `Training`), progressive disclosure, workspace naming
     - [x] [1-7-research-simplification](UI-plans/1-7-research-simplification.md) — replaced bottom dock with terminal, added Furnace center-desk tab, fixed Scratch naming
   - [x] **Phase 5: Code Mode Production Patch**
-    - [x] [1-8-code-mode-patch](UI-plans/1-8-code-mode-patch.md) — All 13 tasks plus both follow-up review-hardening passes are complete: multi-file review now stores immutable per-message snapshots, workspace-symbol IPC preserves distinct locations, code-mode `surface_context` is wired end-to-end with a server-side budget, onboarding/tour mounts are live, multi-root `Apply & Test` avoids the wrong suite, and `/retry` plus `/build` serialize on the real project without bogus bypass state.
+    - [x] [1-8-code-mode-patch](UI-plans/1-8-code-mode-patch.md) — All 13 tasks plus both follow-up review-hardening passes are complete, and live smoke follow-up fixed the remaining compact-sidebar stop wedge: multi-file review now stores immutable per-message snapshots, workspace-symbol IPC preserves distinct locations, code-mode `surface_context` is wired end-to-end with a server-side budget, onboarding/tour mounts are live, multi-root `Apply & Test` avoids the wrong suite, `/retry` plus `/build` serialize on the real project without bogus bypass state, and missing-stream stop responses no longer leave Code Mode stuck in a perpetual active turn.
   - [x] **Phase 5.5: Shell Chrome Purge & Per-Mode Chat**
     - [x] [1-9-shell-chrome-purge](UI-plans/1-9-shell-chrome-purge.md) — delete Breadcrumb/SidebarHost/PersistentChatBar, shared ModeChatSidebar with persistent history, Workflow + Furnace in CodeMode activity bar, Research right-drawer discoverability
   - [ ] **Phase 5.6: Messaging Onboarding & Controls**

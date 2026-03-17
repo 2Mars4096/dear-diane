@@ -1,6 +1,6 @@
 # 38: Review Hardening
 
-**Status:** not-started
+**Status:** completed
 **Goal:** Address all actionable findings from the 2026-03-17 code review and module audit, prioritized by risk.
 
 ## Motivation
@@ -31,19 +31,21 @@ All sub-plans are independent and can run in any order. Recommended priority: 38
 
 ## Success Criteria
 
-- [ ] No Furnace artifact writes outside the session directory regardless of `source_id` content
-- [ ] Server starts cleanly when `~/.dan` is not writable (features degrade, server doesn't crash)
-- [ ] Furnace cancel actually stops the running worker; duplicate starts are prevented
-- [ ] Domain learning captures common real-world domains and abbreviations
-- [ ] Google provider regression tests pass against current API surface
-- [ ] README safety claims match actual file-tool behavior
-- [ ] All existing tests continue to pass
+- [x] No Furnace artifact writes outside the session directory regardless of `source_id` content
+- [x] Server starts cleanly when `~/.dan` is not writable (features degrade, server doesn't crash)
+- [x] Furnace cancel actually stops the running worker; duplicate starts are prevented
+- [x] Domain learning captures common real-world domains and abbreviations
+- [x] Google provider regression tests pass against current API surface
+- [x] README safety claims match actual file-tool behavior
+- [x] All existing tests continue to pass
 
 ## Decisions
 
-- (filled in during execution)
+- Execute the five sub-plans in parallel tracks, but converge them on shared regression coverage before updating tracking docs.
+- Prefer router-local runtime state for live Furnace workers/cancellation and keep on-disk session JSON serializable and resumable.
 
 ## Notes
 
 - Review documents live in `docs/reviews/`.
 - The 85 cascading test errors in the full suite collapse to a single root cause (home-directory writes); fixing 38-3 should eliminate them.
+- Implemented across Furnace, startup/telemetry, domain-learning, docs, and regression suites on 2026-03-17.

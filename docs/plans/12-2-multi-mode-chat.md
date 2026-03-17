@@ -22,6 +22,7 @@
   - [x] 1-4. Ask mode: disable tool calling entirely; return text-only LLM response
   - [x] 1-5. Plan mode is strictly two-step: (A) natural-language plan proposal first (no tools), (B) after user approval, frontend sends with mode=agent for mutation generation
   - [x] 1-6. Debug mode: inject recent run logs (last failed run for the active workflow) into context automatically via `build_debug_context()`
+  - [x] 1-7. Tighten the shared prompt loop and mode-specific behavior hints so Agent validates prior steps, Plan waits for approval, Ask stays read-only, and Debug states a diagnostic hypothesis before fixing
 - [x] 2. Frontend mode selector
   - [x] 2-1. Replace current build/mutate toggle with segmented control (Agent | Ask | Plan | Debug) in chat header
   - [ ] 2-2. Mode persists per-thread (store in thread metadata) → deferred to follow-up
@@ -60,6 +61,7 @@
 - Plan mode uses a two-step frontend flow: plan mode sends text-only, approval sends with `mode: "agent"` to enable tool calling. No special backend plan-detection needed.
 - Ask and Plan modes route through `send_message` (text-only), while Agent and Debug route through `send_message_with_tools`.
 - `openBuildWithAI` now sets `chatMode: "agent"` + increments `chatFocusTrigger` instead of using a separate "build" mode.
+- The shared unified prompt now owns the generic self-management loop, while `_build_messages()` injects a short mode-behavior block for Ask / Agent / Plan / Debug so execution constraints stay explicit without duplicating the full system prompt.
 - Per-thread mode persistence (2-2) and keyboard shortcuts (2-4) deferred to follow-up.
 - Debug diff tag (6-4) and "Fix this" shortcut (6-5) deferred to follow-up.
 
