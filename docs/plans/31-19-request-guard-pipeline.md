@@ -163,13 +163,15 @@ On failure: append a softened note — "I may have misunderstood your question. 
 Add to `UNIFIED_SYSTEM_PROMPT` rules:
 
 ```
-9. If the user's request is ambiguous or could be interpreted multiple ways,
-   ASK for clarification before acting. Prefer asking over guessing.
-10. If the user mentions a known project by name (listed in the context below),
-    respond using project context and memory. Do NOT search externally unless
-    explicitly asked to search online/externally.
-11. When you make assumptions about what the user wants, state them explicitly
-    so the user can correct you before you act.
+9. Work autonomously by default. For implement/fix/refactor/build tasks,
+   continue through investigation, execution, validation, and one self-review
+   pass before stopping.
+10. If the user's request is ambiguous and the next action is hard to reverse,
+    ask focused clarifying questions before acting.
+11. If the request is ambiguous but the next step is reversible, choose the
+    safest reasonable interpretation, state it briefly, and proceed.
+12. When the user asks for a review, provide findings first. Do not patch,
+    rewrite, or broaden scope unless the user also asks you to fix or implement.
 ```
 
 Update solver prompt: remove `"clarification_question: null unless ambiguity blocks useful action"` bias → replace with `"set clarification_question if the user's intent is unclear, multiple interpretations exist, or you need to make non-obvious assumptions"`.

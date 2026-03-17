@@ -1,7 +1,7 @@
 # 37-4: Runtime Regression Tests
 
 **Parent:** [37-engine-runtime-parallelism](37-engine-runtime-parallelism.md)
-**Status:** not-started
+**Status:** in-progress
 **Goal:** Backfill engine-level test coverage for the scheduler, concurrency control, and checkpoint/resume. Currently zero tests exist for these code paths.
 
 ## Context
@@ -16,30 +16,30 @@ This plan creates a dedicated test module `tests/test_engine/test_scheduler_para
 ## Tasks
 
 ### 1. Dispatch ordering invariant tests
-- [ ] 1-1. **Linear chain correctness** — 5-node chain A→B→C→D→E. Assert execution order is sequential (each node starts only after predecessor completes).
-- [ ] 1-2. **Diamond graph** — A→{B,C}→D. Assert B and C run concurrently, D starts only after both B and C complete.
-- [ ] 1-3. **Heterogeneous latency** — A→{B(slow),C(fast)}→D; A→{E(fast)}→F. With eager dispatch, F should start before B completes. With level-sync, F waits for B.
-- [ ] 1-4. **Wide fan-out** — A→{B1..B10}→C. Assert all B nodes run concurrently (up to semaphore limit). C starts after all B nodes complete.
-- [ ] 1-5. **Cycle/while-loop** — A→Gate(while)→Body→Gate. Assert body re-executes on continue, stops on done, respects `max_iterations`.
-- [ ] 1-6. **Feature flag toggle** — same graph produces identical results with `DAN_EAGER_DISPATCH=0` and `DAN_EAGER_DISPATCH=1`.
+- [x] 1-1. **Linear chain correctness** — 5-node chain A→B→C→D→E. Assert execution order is sequential (each node starts only after predecessor completes).
+- [x] 1-2. **Diamond graph** — A→{B,C}→D. Assert B and C run concurrently, D starts only after both B and C complete.
+- [x] 1-3. **Heterogeneous latency** — A→{B(slow),C(fast)}→D; A→{E(fast)}→F. With eager dispatch, F should start before B completes. With level-sync, F waits for B.
+- [x] 1-4. **Wide fan-out** — A→{B1..B10}→C. Assert all B nodes run concurrently (up to semaphore limit). C starts after all B nodes complete.
+- [x] 1-5. **Cycle/while-loop** — A→Gate(while)→Body→Gate. Assert body re-executes on continue, stops on done, respects `max_iterations`.
+- [x] 1-6. **Feature flag toggle** — same graph produces identical results with `DAN_EAGER_DISPATCH=0` and `DAN_EAGER_DISPATCH=1`.
 
 ### 2. Concurrency invariant tests
-- [ ] 2-1. **Global semaphore cap** — 10 parallel nodes, `max_concurrency=3`. Assert at most 3 nodes are executing simultaneously (use a shared counter + assertion inside mock executor).
-- [ ] 2-2. **Nested subgraph shares semaphore** — parent has 3 parallel branches, each running a 3-node subgraph. With `max_concurrency=5`, assert global in-flight count never exceeds 5.
-- [ ] 2-3. **LLM semaphore vs node semaphore** — if split semaphores are implemented, assert LLM calls are bounded by `DAN_MAX_CONCURRENT_LLM` while node execution is not blocked.
-- [ ] 2-4. **ForEach + global semaphore composition** — ForEach with 8 items, `parallelism=4`, global `max_concurrency=3`. Assert at most 3 items execute concurrently (global wins).
-- [ ] 2-5. **No deadlock under nesting** — ParallelSubagents spawns ForEach spawns LLM nodes. Run to completion without hanging (timeout test, 30 s).
-- [ ] 2-6. **Busy-poll elimination** — verify `_run_children_parallel` does not call `asyncio.sleep(0.01)` in the new implementation (or verify event latency is < 5 ms).
+- [x] 2-1. **Global semaphore cap** — 10 parallel nodes, `max_concurrency=3`. Assert at most 3 nodes are executing simultaneously (use a shared counter + assertion inside mock executor).
+- [x] 2-2. **Nested subgraph shares semaphore** — parent has 3 parallel branches, each running a 3-node subgraph. With `max_concurrency=5`, assert global in-flight count never exceeds 5.
+- [x] 2-3. **LLM semaphore vs node semaphore** — if split semaphores are implemented, assert LLM calls are bounded by `DAN_MAX_CONCURRENT_LLM` while node execution is not blocked.
+- [x] 2-4. **ForEach + global semaphore composition** — ForEach with 8 items, `parallelism=4`, global `max_concurrency=3`. Assert at most 3 items execute concurrently (global wins).
+- [x] 2-5. **No deadlock under nesting** — ParallelSubagents spawns ForEach spawns LLM nodes. Run to completion without hanging (timeout test, 30 s).
+- [x] 2-6. **Busy-poll elimination** — verify `_run_children_parallel` does not call `asyncio.sleep(0.01)` in the new implementation (or verify event latency is < 5 ms).
 
 ### 3. Checkpoint / resume tests
-- [ ] 3-1. **Crash-resume equivalence** — run a 10-node graph, kill after node 5 completes, resume from checkpoint, assert final result matches a clean run.
-- [ ] 3-2. **Checkpoint data completeness** — after checkpoint, load it and verify all expected fields are present (`completed_node_ids`, `node_outputs`, `pending_node_ids`).
-- [ ] 3-3. **Resume re-dispatches in-progress nodes** — checkpoint taken while node X is in-flight. On resume, X is re-dispatched from scratch.
-- [ ] 3-4. **Memory flush before checkpoint** — node writes memory key `foo`. Checkpoint is taken. Resume and verify `foo` is in memory store.
-- [ ] 3-5. **Checkpoint backward compatibility** — load a checkpoint from the level-sync scheduler (no `pending_node_ids`), resume with eager dispatch. Assert success.
-- [ ] 3-6. **Cycle region checkpoint** — checkpoint mid-iteration of a while-loop. Resume and verify the loop completes correctly from the right iteration.
+- [x] 3-1. **Crash-resume equivalence** — run a 10-node graph, kill after node 5 completes, resume from checkpoint, assert final result matches a clean run.
+- [x] 3-2. **Checkpoint data completeness** — after checkpoint, load it and verify all expected fields are present (`completed_node_ids`, `node_outputs`, `pending_node_ids`).
+- [x] 3-3. **Resume re-dispatches in-progress nodes** — checkpoint taken while node X is in-flight. On resume, X is re-dispatched from scratch.
+- [x] 3-4. **Memory flush before checkpoint** — node writes memory key `foo`. Checkpoint is taken. Resume and verify `foo` is in memory store.
+- [x] 3-5. **Checkpoint backward compatibility** — load a checkpoint from the level-sync scheduler (no `pending_node_ids`), resume with eager dispatch. Assert success.
+- [x] 3-6. **Cycle region checkpoint** — checkpoint mid-iteration of a while-loop. Resume and verify the loop completes correctly from the right iteration.
 - [ ] 3-7. **Subgraph progress on crash** — parallel subagents with 3 branches. Branch 1 completes, crash, resume. If 37-3 task 6-1 enables subgraph checkpoints: assert branch 1 is not re-run. If subgraph checkpoints remain skipped: assert all 3 branches re-run (document this as expected behavior, not a failure).
-- [ ] 3-8. **Skipped-node successor dispatch** — graph with a conditional branch (ControlEdge). One branch is skipped. Assert downstream nodes that depend on the skipped branch's successors still dispatch correctly (skipped nodes decrement successors).
+- [x] 3-8. **Skipped-node successor dispatch** — graph with a conditional branch (ControlEdge). One branch is skipped. Assert downstream nodes that depend on the skipped branch's successors still dispatch correctly (skipped nodes decrement successors).
 
 ### 4. Performance benchmark tests
 - [ ] 4-1. **Latency benchmark** — 3-level diamond graph with heterogeneous node latencies (mock sleep). Measure wall-clock time with eager vs level-sync. Assert eager is ≥20% faster.
@@ -48,14 +48,17 @@ This plan creates a dedicated test module `tests/test_engine/test_scheduler_para
 - [ ] 4-4. **Memory usage** — run a 100-node graph and verify peak memory stays within 2x of a 10-node graph (no per-node memory leak).
 
 ### 5. Test infrastructure
-- [ ] 5-1. Create `tests/test_engine/test_scheduler_parallelism.py`.
-- [ ] 5-2. Create test fixtures: `MockExecutor` that records call times and supports configurable sleep, `MockCheckpointStore` that captures checkpoint data, `simple_graph_builder` helper that creates test graphs without the full builder DSL.
-- [ ] 5-3. Use `pytest.mark.asyncio` and generous timing margins (≥2x expected) to avoid flakiness, matching the pattern in `test_parallelism_integration.py`.
+- [x] 5-1. Create `tests/test_engine/test_scheduler_parallelism.py`.
+- [x] 5-2. Create test fixtures: `MockExecutor` that records call times and supports configurable sleep, `MockCheckpointStore` that captures checkpoint data, `simple_graph_builder` helper that creates test graphs without the full builder DSL.
+- [x] 5-3. Use `pytest.mark.asyncio` and generous timing margins (≥2x expected) to avoid flakiness, matching the pattern in `test_parallelism_integration.py`.
 - [ ] 5-4. Performance benchmarks should be `pytest.mark.benchmark` or at minimum `pytest.mark.slow` so they don't run in the fast CI path.
 
 ## Decisions
 
-- (filled in during execution)
+- The initial suite now covers deterministic ordering invariants (linear chain, diamond, wide fan-out, sorted tie-breaking, and eager context-edge safety), nested LLM and node semaphore sharing, checkpoint payloads, resume behavior, and skipped-node progression.
+- Loop execution now has explicit coverage for eager cycle re-iteration, outer-cycle branch advancement, checkpoint-boundary resume, and mid-iteration resume on the same while graph family.
+- Node-semaphore coverage now spans legacy mode, eager CPU-bound throttling, nested `ParallelSubagents` -> `ForEach` sharing, vote fan-out composition, and fail-fast subgraph depth guarding.
+- Performance/benchmark coverage is still pending; the first pass prioritizes correctness and non-flaky scheduler regressions.
 
 ## Notes
 
@@ -65,3 +68,4 @@ This plan creates a dedicated test module `tests/test_engine/test_scheduler_para
 - Consider reusing the `fan_out` test patterns from `test_parallelism_integration.py` (timing-based concurrency assertions with generous margins).
 - Test 3-7 has a dependency on 37-3 task 6-1 (subgraph checkpoint decision). Write the test to handle both outcomes (checkpoints enabled vs skipped) so it doesn't break regardless of the decision.
 - Test graphs need to include `ControlEdge` scenarios (conditional branching) and `ContextEdge` scenarios (shared context reads/writes) in addition to `DataEdge` dependency chains, since the eager dispatch must correctly handle all three edge types.
+- Implemented so far: 33 targeted engine tests plus an explicit concierge regression proving `_run_children_parallel()` no longer falls back to the old `asyncio.sleep(0.01)` busy-poll loop.

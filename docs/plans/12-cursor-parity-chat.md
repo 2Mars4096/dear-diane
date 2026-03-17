@@ -45,6 +45,7 @@ Phase 7 (plan 10) delivered a functional chat panel with NL→graph mutations, `
 | [12-5](12-5-conversation-lifecycle.md) | Conversation Lifecycle | Stop generation, message queue, checkpoints, export, search, thread branching | `ChatPanel.tsx`, `chat_store.py`, `app.py`, new endpoints |
 | [12-6](12-6-chat-quality-harness.md) | Chat Quality Harness | Eval framework, regression tests, provider compatibility, latency benchmarks | new `tests/chat/`, `chat_manager.py`, CI config |
 | [12-7](12-7-chat-branching-tree.md) | Chat Branching & Tree View | Non-destructive edit/regenerate branching, lineage metadata, tree navigation for multi-path exploration | `ChatPanel.tsx`, `ChatMessage.tsx`, `chat_store.py`, thread/history UI |
+| [12-8](12-8-mode-chat-sidebar-parity.md) | Mode Chat Sidebar Parity | Bring the shared Research/Development sidebar much closer to full chat for modes, mentions, stream lifecycle, rich rendering, and handoff | `ModeChatSidebar.tsx`, `ChatMessage.tsx`, `editorChat.ts`, sidebar mode shells |
 
 ## Dependencies / Sequencing
 
@@ -59,7 +60,7 @@ Phase 7 (plan 10) delivered a functional chat panel with NL→graph mutations, `
 12-6 (quality harness — can start after 12-1, runs alongside everything)
 ```
 
-12-1 is the foundation — fixes must land before new features. 12-2 and 12-3 can proceed in parallel after 12-1. 12-4 depends on both modes and context. 12-5 is mostly independent UI/backend work. 12-7 extends 12-5 by treating branching as a first-class exploration model rather than a hidden thread operation. 12-6 is cross-cutting and should start early to measure progress.
+12-1 is the foundation — fixes must land before new features. 12-2 and 12-3 can proceed in parallel after 12-1. 12-4 depends on both modes and context. 12-5 is mostly independent UI/backend work. 12-7 extends 12-5 by treating branching as a first-class exploration model rather than a hidden thread operation. 12-8 is a downstream UX-parity pass that reuses the shared primitives from 12-2 through 12-5 inside the compact Research/Development sidebar without turning it into a second full thread manager. 12-6 is cross-cutting and should start early to measure progress.
 
 ## Shared Decisions
 

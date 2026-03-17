@@ -942,6 +942,8 @@ DAN ships 32 batteries-included tools, auto-registered during server startup. Ea
 
 `pdf_read` parameters: `path` (required), optional `mode`, `start_page`, `end_page`, `vision_model`, and `vision_prompt`. In `mode="vision"`, the tool reports `pages_requested`, `pages_returned`, `truncated`, and `warning` so callers can tell when a long PDF was capped to the first 25 pages.
 
+`list_directory` parameters: `path` (required), optional `glob_pattern`, `recursive`, `limit`, and `start_after`. Results are sorted by relative path and report page metadata: `count` (entries returned in this page), `total_count` (entries matching the current filter/cursor), `remaining_count`, `truncated`, and `next_start_after`. When `truncated=true`, callers should continue with `start_after=next_start_after` or narrow the listing with `glob_pattern` instead of inferring that later entries are absent.
+
 ### Using Tools in Workflows
 
 ```python
