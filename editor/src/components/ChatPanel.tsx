@@ -1165,11 +1165,10 @@ export default function ChatPanel({
       initialRunRef?: { runId: string; scope: string; status: string } | null,
       options?: { reconnectCount?: number },
     ) => {
-      const proto = location.protocol === "https:" ? "wss:" : "ws:";
       const connectRunStream = (streamChannelId: string, reconnectCount = 0) => {
         activeRunChannelIdRef.current = streamChannelId;
         const runWs = new WebSocket(
-          `${proto}//${location.host}/api/chat/${streamChannelId}/events`,
+          api.buildApiWebSocketUrl(`/api/chat/${streamChannelId}/events`),
         );
         wsRef.current = runWs;
         setActiveChannelId(null); // run streams are observational, not stoppable via chat stop route
@@ -1656,7 +1655,6 @@ export default function ChatPanel({
           }
         }
 
-        const proto = location.protocol === "https:" ? "wss:" : "ws:";
         const seenStreamChannels = new Set<string>();
 
         const connectToChatStream = (
@@ -1675,7 +1673,7 @@ export default function ChatPanel({
           setActiveChannelId(channelId);
 
           const ws = new WebSocket(
-            `${proto}//${location.host}/api/chat/${channelId}/events`,
+            api.buildApiWebSocketUrl(`/api/chat/${channelId}/events`),
           );
           wsRef.current = ws;
           let wsClosedIntentionally = false;

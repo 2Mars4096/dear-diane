@@ -17,6 +17,7 @@ import { Marked, Renderer } from "marked";
 import hljs from "../../lib/hljs";
 import { useCodeStore } from "../../store/useCodeStore";
 import { useAppStore } from "../../store/useAppStore";
+import { buildApiWebSocketUrl } from "../../lib/api";
 import { nativeFs, nativeTerminal } from "../../lib/electronBridge";
 
 /* ------------------------------------------------------------------ */
@@ -575,9 +576,8 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
         const channelId: string | undefined = data.stream_channel_id;
 
         if (channelId) {
-          const proto = location.protocol === "https:" ? "wss:" : "ws:";
           const ws = new WebSocket(
-            `${proto}//${location.host}/api/chat/${channelId}/events`,
+            buildApiWebSocketUrl(`/api/chat/${channelId}/events`),
           );
 
           ws.onmessage = (e) => {

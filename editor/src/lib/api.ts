@@ -10,6 +10,21 @@ import type {
 
 const BASE = "/api";
 
+function resolveApiWebSocketBase(): string {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  if (import.meta.env.DEV) {
+    // In Vite dev, the HMR page can hold a separate websocket open already.
+    // Route chat/run streams straight to the backend instead of the proxy.
+    return `${protocol}//${location.hostname}:8000`;
+  }
+  return `${protocol}//${location.host}`;
+}
+
+export function buildApiWebSocketUrl(path: string): string {
+  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
+  return `${resolveApiWebSocketBase()}${normalizedPath}`;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...init?.headers },
@@ -457,15 +472,19 @@ export function connectChatStream(
   onClose?: (event: CloseEvent) => void,
   onError?: (event: Event) => void,
 ): WebSocket {
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/api/chat/${channelId}/events`);
+  const ws = new WebSocket(buildApiWebSocketUrl(`/api/chat/${channelId}/events`));
   ws.onmessage = (e) => {
     try {
-      onEvent(JSON.parse(e.data));
+      const event = JSON.parse(e.data) as Record<string, unknown>;
+      onEvent(event);
     } catch { /* ignore parse errors */ }
   };
-  ws.onclose = (event) => onClose?.(event);
-  ws.onerror = (event) => onError?.(event);
+  ws.onclose = (event) => {
+    onClose?.(event);
+  };
+  ws.onerror = (event) => {
+    onError?.(event);
+  };
   return ws;
 }
 
@@ -498,8 +517,7 @@ export function connectRunEvents(
   onEvent: (event: Record<string, unknown>) => void,
   onClose?: () => void,
 ): WebSocket {
-  const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/api/runs/${runId}/events`);
+  const ws = new WebSocket(buildApiWebSocketUrl(`/api/runs/${runId}/events`));
   ws.onmessage = (e) => {
     try {
       onEvent(JSON.parse(e.data));

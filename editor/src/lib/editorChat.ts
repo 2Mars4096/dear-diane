@@ -538,11 +538,29 @@ export function streamEditorChatResponse(
       reconnectCount,
     };
     currentState = state;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearIdleTimer = () => {
+      if (idleTimer !== null) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    };
+    const scheduleIdleReconnect = () => {
+      clearIdleTimer();
+      if (state.terminalEventSeen || state.suppressClose) return;
+      idleTimer = setTimeout(() => {
+        if (currentState !== state || state.terminalEventSeen || state.suppressClose) return;
+        state.hadTransportError = true;
+        closeConnection(state);
+      }, 12_000);
+    };
+    scheduleIdleReconnect();
 
     const ws = connectChatStream(
       channelId,
       (rawEvent) => {
         if (currentState !== state && !state.pendingClose) return;
+        scheduleIdleReconnect();
 
         const event = rawEvent as unknown as ChatStreamEvent;
 
@@ -674,6 +692,7 @@ export function streamEditorChatResponse(
         }
       },
       (closeEvent) => {
+        clearIdleTimer();
         const closeCode = closeEvent?.code ?? 1005;
         if (state.suppressClose) return;
         if (
@@ -702,6 +721,7 @@ export function streamEditorChatResponse(
         }
       },
       () => {
+        clearIdleTimer();
         state.hadTransportError = true;
         closeConnection(state);
       },
