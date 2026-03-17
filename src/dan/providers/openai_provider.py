@@ -61,6 +61,20 @@ class OpenAIProvider:
         return system + non_system
 
     @staticmethod
+    def _normalize_temperature(model: str, temperature: float | None) -> float | None:
+        """Normalize provider-specific temperature constraints for compatible backends.
+
+        Some Kimi models exposed via OpenAI-compatible endpoints reject any
+        temperature other than ``1``. Coerce those requests here so higher-level
+        chat/runtime code can keep its provider-agnostic defaults.
+        """
+        if temperature is None:
+            return None
+        if str(model or "").strip().lower().startswith("kimi-"):
+            return 1.0
+        return temperature
+
+    @staticmethod
     def _dump_model_object(obj: Any) -> dict[str, Any]:
         if isinstance(obj, dict):
             return dict(obj)
@@ -108,12 +122,14 @@ class OpenAIProvider:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> CompletionResult:
+        effective_temperature = self._normalize_temperature(model, temperature)
         call_kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
             **kwargs,
         }
+        if effective_temperature is not None:
+            call_kwargs["temperature"] = effective_temperature
         if max_tokens is not None:
             call_kwargs["max_tokens"] = max_tokens
         if self._timeout_seconds is not None:
@@ -153,14 +169,16 @@ class OpenAIProvider:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
+        effective_temperature = self._normalize_temperature(model, temperature)
         call_kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
-            "temperature": temperature,
             "stream": True,
             "stream_options": {"include_usage": True},
             **kwargs,
         }
+        if effective_temperature is not None:
+            call_kwargs["temperature"] = effective_temperature
         if max_tokens is not None:
             call_kwargs["max_tokens"] = max_tokens
         if self._timeout_seconds is not None:

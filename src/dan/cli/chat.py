@@ -566,9 +566,13 @@ async def _run_repl(
 
     if profile is not None:
         try:
+            from dan.engine.behavior_store import BehaviorStore
             from dan.engine.preference_extractor import PreferenceExtractor
+            from dan.server.concierge.domain_learning import register_seed_domains
 
-            preference_extractor = PreferenceExtractor()
+            behavior_store = BehaviorStore()
+            register_seed_domains(behavior_store)
+            preference_extractor = PreferenceExtractor(behavior_store=behavior_store)
         except Exception:
             logger.debug("PreferenceExtractor unavailable in chat CLI", exc_info=True)
 
