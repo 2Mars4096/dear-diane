@@ -16,6 +16,7 @@ import {
 } from "../editorChat";
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.mocked(connectChatStream).mockReset();
 });
 
@@ -125,7 +126,7 @@ describe("editorChat attachment helpers", () => {
       if (channelId === "chat-1") {
         return {
           close: () => {
-            onClose?.();
+            onClose?.({ code: 1000 } as CloseEvent);
           },
         } as unknown as WebSocket;
       }
@@ -136,7 +137,7 @@ describe("editorChat attachment helpers", () => {
         });
         return {
           close: () => {
-            onClose?.();
+            onClose?.({ code: 1000 } as CloseEvent);
           },
         } as unknown as WebSocket;
       }
@@ -174,7 +175,7 @@ describe("editorChat attachment helpers", () => {
     vi.mocked(connectChatStream).mockImplementation((_channelId, _onEvent, onClose) => {
       return {
         close: () => {
-          onClose?.();
+          onClose?.({ code: 1000 } as CloseEvent);
         },
       } as unknown as WebSocket;
     });
@@ -205,7 +206,7 @@ describe("editorChat attachment helpers", () => {
   });
 
   it("treats terminal run events as clean closes", () => {
-    let closeCallback: (() => void) | undefined;
+    let closeCallback: ((event: CloseEvent) => void) | undefined;
     vi.mocked(connectChatStream).mockImplementation((_channelId, onEvent, onClose) => {
       closeCallback = onClose;
       onEvent({
@@ -237,12 +238,107 @@ describe("editorChat attachment helpers", () => {
       },
     );
 
-    closeCallback?.();
+    closeCallback?.({ code: 1000 } as CloseEvent);
 
     expect(onRunEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         event_type: "run_completed",
       }),
+    );
+    expect(onCloseWithoutTerminalEvent).not.toHaveBeenCalled();
+  });
+
+  it("reconnects after a premature clean close before the terminal event arrives", async () => {
+    vi.useFakeTimers();
+    const onComplete = vi.fn();
+    let firstOnClose: ((event: CloseEvent) => void) | undefined;
+
+    vi.mocked(connectChatStream).mockImplementation((channelId, onEvent, onClose) => {
+      if (channelId !== "chat-reconnect") {
+        throw new Error(`Unexpected channel ${channelId}`);
+      }
+      if (!firstOnClose) {
+        firstOnClose = onClose;
+        return {
+          close: vi.fn(),
+        } as unknown as WebSocket;
+      }
+      onEvent({
+        type: "chat_complete",
+        content: "Recovered after reconnect",
+      });
+      return {
+        close: vi.fn(),
+      } as unknown as WebSocket;
+    });
+
+    streamEditorChatResponse(
+      {
+        message_id: "msg-reconnect",
+        stream_channel_id: "chat-reconnect",
+      },
+      {
+        onComplete,
+      },
+    );
+
+    firstOnClose?.({ code: 1000 } as CloseEvent);
+    await vi.runAllTimersAsync();
+
+    expect(vi.mocked(connectChatStream)).toHaveBeenCalledTimes(2);
+    expect(onComplete).toHaveBeenCalledWith(
+      "Recovered after reconnect",
+      expect.objectContaining({ type: "chat_complete" }),
+    );
+  });
+
+  it("retries after websocket transport errors instead of hanging forever", async () => {
+    vi.useFakeTimers();
+    const onComplete = vi.fn();
+    const onCloseWithoutTerminalEvent = vi.fn();
+    let firstOnError: ((event: Event) => void) | undefined;
+
+    vi.mocked(connectChatStream).mockImplementation(
+      (channelId, onEvent, onClose, onError) => {
+        if (channelId !== "chat-error") {
+          throw new Error(`Unexpected channel ${channelId}`);
+        }
+        if (!firstOnError) {
+          firstOnError = onError;
+          return {
+            close: vi.fn(() => {
+              onClose?.({ code: 1006 } as CloseEvent);
+            }),
+          } as unknown as WebSocket;
+        }
+        onEvent({
+          type: "chat_complete",
+          content: "Recovered after transport error",
+        });
+        return {
+          close: vi.fn(),
+        } as unknown as WebSocket;
+      },
+    );
+
+    streamEditorChatResponse(
+      {
+        message_id: "msg-error",
+        stream_channel_id: "chat-error",
+      },
+      {
+        onComplete,
+        onCloseWithoutTerminalEvent,
+      },
+    );
+
+    firstOnError?.({} as Event);
+    await vi.runAllTimersAsync();
+
+    expect(vi.mocked(connectChatStream)).toHaveBeenCalledTimes(2);
+    expect(onComplete).toHaveBeenCalledWith(
+      "Recovered after transport error",
+      expect.objectContaining({ type: "chat_complete" }),
     );
     expect(onCloseWithoutTerminalEvent).not.toHaveBeenCalled();
   });

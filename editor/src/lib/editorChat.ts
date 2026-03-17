@@ -1,6 +1,7 @@
 import type { ChatStreamEvent, RunEventPayload } from "../types/chat";
 import type { ChatMessageResponse } from "./api";
 import { connectChatStream } from "./api";
+import { getStreamReconnectDelayMs, shouldReconnectStream } from "./chatStreamLifecycle";
 import { isElectron, nativeFs } from "./electronBridge";
 
 export type EditorChatMode =
@@ -513,6 +514,8 @@ export function streamEditorChatResponse(
     suppressClose: boolean;
     pendingClose: boolean;
     terminalEventSeen: boolean;
+    hadTransportError: boolean;
+    reconnectCount: number;
   };
 
   let currentState: StreamConnectionState | null = null;
@@ -525,12 +528,14 @@ export function streamEditorChatResponse(
     state.pendingClose = true;
   };
 
-  const connectToChannel = (channelId: string) => {
+  const connectToChannel = (channelId: string, reconnectCount = 0) => {
     const state: StreamConnectionState = {
       channelId,
       suppressClose: false,
       pendingClose: false,
       terminalEventSeen: false,
+      hadTransportError: false,
+      reconnectCount,
     };
     currentState = state;
 
@@ -668,11 +673,37 @@ export function streamEditorChatResponse(
           closeConnection(state);
         }
       },
-      () => {
+      (closeEvent) => {
+        const closeCode = closeEvent?.code ?? 1005;
         if (state.suppressClose) return;
+        if (
+          shouldReconnectStream({
+            closedIntentionally: false,
+            activeChannelId:
+              currentState === state
+                ? state.channelId
+                : currentState?.channelId ?? null,
+            channelId: state.channelId,
+            reconnectCount: state.reconnectCount,
+            closeCode,
+            hadTransportError: state.hadTransportError,
+            hadTerminalEvent: state.terminalEventSeen,
+          })
+        ) {
+          setTimeout(() => {
+            if (currentState === state) {
+              connectToChannel(state.channelId, state.reconnectCount + 1);
+            }
+          }, getStreamReconnectDelayMs(state.reconnectCount));
+          return;
+        }
         if (!state.terminalEventSeen) {
           handlers.onCloseWithoutTerminalEvent?.();
         }
+      },
+      () => {
+        state.hadTransportError = true;
+        closeConnection(state);
       },
     );
 
