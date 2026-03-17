@@ -162,30 +162,36 @@ function startBackend(): Promise<void> {
     proc.stdout?.on("data", (d: Buffer) => {
       const text = d.toString();
       console.log("[backend]", text.trimEnd());
+      mainWindow?.webContents.send("backend:log", { text, stream: "stdout" });
       if (!started && text.includes("Uvicorn running")) {
         started = true;
         resolve();
+        sendBackendStatus();
       }
     });
 
     proc.stderr?.on("data", (d: Buffer) => {
       const text = d.toString();
       console.error("[backend]", text.trimEnd());
+      mainWindow?.webContents.send("backend:log", { text, stream: "stderr" });
       if (!started && text.includes("Uvicorn running")) {
         started = true;
         resolve();
+        sendBackendStatus();
       }
     });
 
     proc.on("error", (err) => {
       console.error("Failed to start backend:", err.message);
       if (!started) reject(err);
+      sendBackendStatus();
     });
 
     proc.on("exit", (code) => {
       console.log("Backend exited with code", code);
       backendProcess = null;
       if (!started) reject(new Error(`Backend exited with code ${code}`));
+      sendBackendStatus();
     });
 
     setTimeout(() => {
@@ -1279,6 +1285,48 @@ extensionHost.on("exit", (code) => {
 
 extensionHost.on("error", (err) => {
   mainWindow?.webContents.send("extensionHost:event", { event: "hostError", data: { message: String(err) } });
+});
+
+// --- IPC Handlers: Backend process management ---
+
+function getBackendStatus(): string {
+  if (!backendProcess) return backendOwnedByUs ? "stopped" : "unknown";
+  return "running";
+}
+
+function sendBackendStatus() {
+  mainWindow?.webContents.send("backend:statusChange", {
+    status: getBackendStatus(),
+    ownedByUs: backendOwnedByUs,
+  });
+}
+
+ipcMain.handle("backend:getStatus", async () => {
+  return { status: getBackendStatus(), ownedByUs: backendOwnedByUs };
+});
+
+ipcMain.handle("backend:restart", async () => {
+  if (backendProcess && backendOwnedByUs) {
+    backendProcess.kill();
+    backendProcess = null;
+  }
+  try {
+    await startBackend();
+    sendBackendStatus();
+    return { status: "running" };
+  } catch (err: any) {
+    sendBackendStatus();
+    return { status: "error", error: err.message };
+  }
+});
+
+ipcMain.handle("backend:stop", async () => {
+  if (backendProcess && backendOwnedByUs) {
+    backendProcess.kill();
+    backendProcess = null;
+    sendBackendStatus();
+  }
+  return { status: "stopped" };
 });
 
 // --- IPC Handlers: DAN Skills ---

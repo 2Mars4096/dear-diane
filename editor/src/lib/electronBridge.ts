@@ -80,6 +80,7 @@ interface ElectronAPI {
     definition: (params: { filePath: string; line: number; character: number }) => Promise<any>;
     references: (params: { filePath: string; line: number; character: number }) => Promise<any>;
     documentSymbol: (params: { filePath: string }) => Promise<any>;
+    workspaceSymbol: (params: { query: string }) => Promise<any>;
     formatting: (params: { filePath: string; tabSize: number; insertSpaces: boolean }) => Promise<any>;
     codeAction: (params: { filePath: string; range: any; diagnostics: any[] }) => Promise<any>;
     rename: (params: { filePath: string; line: number; character: number; newName: string }) => Promise<any>;
@@ -167,6 +168,13 @@ interface ElectronAPI {
     stop: (serverId: string) => Promise<{ status: string }>;
     status: () => Promise<Array<{ id: string; status: string; enabled: boolean }>>;
     toggleEnabled: (serverId: string) => Promise<boolean>;
+  };
+  backend: {
+    restart: () => Promise<{ status: string; error?: string }>;
+    stop: () => Promise<{ status: string }>;
+    getStatus: () => Promise<{ status: string; ownedByUs: boolean }>;
+    onLog: (callback: (data: { text: string; stream: string }) => void) => () => void;
+    onStatusChange: (callback: (data: { status: string; ownedByUs: boolean }) => void) => () => void;
   };
   updater: {
     check: () => Promise<UpdateInfo | null>;
@@ -579,6 +587,10 @@ export const nativeLsp = {
     if (window.electronAPI) return window.electronAPI.lsp.documentSymbol(params);
     return null;
   },
+  async workspaceSymbol(params: { query: string }): Promise<any> {
+    if (window.electronAPI) return window.electronAPI.lsp.workspaceSymbol(params);
+    return null;
+  },
   async formatting(params: { filePath: string; tabSize: number; insertSpaces: boolean }): Promise<any> {
     if (window.electronAPI) return window.electronAPI.lsp.formatting(params);
     return null;
@@ -894,6 +906,29 @@ export const nativeUpdater = {
   },
   onError(cb: (msg: string) => void): () => void {
     if (window.electronAPI?.updater) return window.electronAPI.updater.onError(cb);
+    return () => {};
+  },
+};
+
+export const nativeBackend = {
+  async restart(): Promise<{ status: string }> {
+    if (window.electronAPI?.backend) return window.electronAPI.backend.restart();
+    return { status: "not-available" };
+  },
+  async stop(): Promise<{ status: string }> {
+    if (window.electronAPI?.backend) return window.electronAPI.backend.stop();
+    return { status: "not-available" };
+  },
+  async getStatus(): Promise<{ status: string; ownedByUs: boolean }> {
+    if (window.electronAPI?.backend) return window.electronAPI.backend.getStatus();
+    return { status: "unknown", ownedByUs: false };
+  },
+  onLog(callback: (data: { text: string; stream: string }) => void): () => void {
+    if (window.electronAPI?.backend) return window.electronAPI.backend.onLog(callback);
+    return () => {};
+  },
+  onStatusChange(callback: (data: { status: string; ownedByUs: boolean }) => void): () => void {
+    if (window.electronAPI?.backend) return window.electronAPI.backend.onStatusChange(callback);
     return () => {};
   },
 };

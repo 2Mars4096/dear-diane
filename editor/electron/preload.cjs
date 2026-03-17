@@ -211,6 +211,22 @@ contextBridge.exposeInMainWorld("electronAPI", {
     toggleEnabled: (serverId) => ipcRenderer.invoke("mcp:toggleEnabled", serverId),
   },
 
+  backend: {
+    restart: () => ipcRenderer.invoke("backend:restart"),
+    stop: () => ipcRenderer.invoke("backend:stop"),
+    getStatus: () => ipcRenderer.invoke("backend:getStatus"),
+    onLog: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on("backend:log", handler);
+      return () => ipcRenderer.removeListener("backend:log", handler);
+    },
+    onStatusChange: (callback) => {
+      const handler = (_event, data) => callback(data);
+      ipcRenderer.on("backend:statusChange", handler);
+      return () => ipcRenderer.removeListener("backend:statusChange", handler);
+    },
+  },
+
   updater: {
     check: () => ipcRenderer.invoke("updater:check"),
     download: () => ipcRenderer.invoke("updater:download"),

@@ -1,13 +1,34 @@
+/**
+ * LSP Manager — manages language server lifecycle for the editor.
+ *
+ * HOW TO ADD A CUSTOM LANGUAGE SERVER:
+ * 1. Add a ServerConfig entry to SERVER_CONFIGS with command, args, languages, and fileExtensions.
+ * 2. Add detection logic to detectAndStart():
+ *    - Check for project marker files (e.g. Cargo.toml for Rust).
+ *    - For system binaries (not npm-installed), use commandExists() and log an install hint if missing.
+ * 3. For npm-based servers, use "npx --no-install <server> --stdio" as the command pattern.
+ */
+
 import { LspClient } from "./lspClient";
 import { type BrowserWindow } from "electron";
 import path from "node:path";
 import fs from "node:fs";
+import { execSync } from "node:child_process";
 
 interface ServerConfig {
   command: string;
   args: string[];
   languages: string[];
   fileExtensions: string[];
+}
+
+function commandExists(cmd: string): boolean {
+  try {
+    execSync("which " + cmd, { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 const SERVER_CONFIGS: Record<string, ServerConfig> = {
@@ -41,6 +62,24 @@ const SERVER_CONFIGS: Record<string, ServerConfig> = {
     languages: ["html"],
     fileExtensions: [".html", ".htm"],
   },
+  go: {
+    command: "gopls",
+    args: ["serve"],
+    languages: ["go"],
+    fileExtensions: [".go"],
+  },
+  rust: {
+    command: "rust-analyzer",
+    args: [],
+    languages: ["rust"],
+    fileExtensions: [".rs"],
+  },
+  cpp: {
+    command: "clangd",
+    args: ["--background-index"],
+    languages: ["c", "cpp"],
+    fileExtensions: [".c", ".cpp", ".cc", ".h", ".hpp", ".hh"],
+  },
 };
 
 export class LspManager {
@@ -57,6 +96,7 @@ export class LspManager {
 
     const promises: Promise<void>[] = [];
 
+    // TypeScript / JavaScript
     if (
       fs.existsSync(path.join(rootPath, "package.json")) ||
       fs.existsSync(path.join(rootPath, "tsconfig.json")) ||
@@ -65,6 +105,7 @@ export class LspManager {
       promises.push(this.startServer("typescript", rootUri));
     }
 
+    // Python
     if (
       fs.existsSync(path.join(rootPath, "pyproject.toml")) ||
       fs.existsSync(path.join(rootPath, "requirements.txt")) ||
@@ -74,7 +115,45 @@ export class LspManager {
       promises.push(this.startServer("python", rootUri));
     }
 
+    // Go
+    if (
+      fs.existsSync(path.join(rootPath, "go.mod")) ||
+      fs.existsSync(path.join(rootPath, "go.sum"))
+    ) {
+      if (commandExists("gopls")) {
+        promises.push(this.startServer("go", rootUri));
+      } else {
+        console.log("Go project detected but gopls not found. Install: go install golang.org/x/tools/gopls@latest");
+      }
+    }
+
+    // Rust
+    if (fs.existsSync(path.join(rootPath, "Cargo.toml"))) {
+      if (commandExists("rust-analyzer")) {
+        promises.push(this.startServer("rust", rootUri));
+      } else {
+        console.log("Rust project detected but rust-analyzer not found. Install: rustup component add rust-analyzer");
+      }
+    }
+
+    // C / C++
+    const hasCMake = fs.existsSync(path.join(rootPath, "CMakeLists.txt"));
+    const hasCompileCommands = fs.existsSync(path.join(rootPath, "compile_commands.json"));
+    const hasMakefileWithSources =
+      fs.existsSync(path.join(rootPath, "Makefile")) &&
+      fs.readdirSync(rootPath).some((f) => /\.(c|cpp|cc)$/.test(f));
+    if (hasCMake || hasCompileCommands || hasMakefileWithSources) {
+      if (commandExists("clangd")) {
+        promises.push(this.startServer("cpp", rootUri));
+      } else {
+        console.log("C/C++ project detected but clangd not found. Install: brew install llvm (macOS) or apt install clangd (Linux)");
+      }
+    }
+
+    // Lightweight servers — always start
     promises.push(this.startServer("json", rootUri));
+    promises.push(this.startServer("css", rootUri));
+    promises.push(this.startServer("html", rootUri));
 
     await Promise.allSettled(promises);
   }
@@ -143,6 +222,10 @@ export class LspManager {
       if (config?.languages.includes(languageId) && client.isRunning()) return client;
     }
     return undefined;
+  }
+
+  getAllClients(): LspClient[] {
+    return Array.from(this.clients.values()).filter((c) => c.isRunning());
   }
 
   async shutdownAll() {
