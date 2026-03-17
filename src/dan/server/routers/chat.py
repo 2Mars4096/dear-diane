@@ -495,6 +495,8 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                 if attachment_prompt_context:
                     extra_kwargs["prompt_context"] = attachment_prompt_context
                     extra_kwargs["extra_system_instructions"] = attachment_prompt_context
+                if surface_context:
+                    extra_kwargs["surface_context"] = surface_context
                 event_stream = send(
                     workflow_id=req.workflow_id,
                     message=req.message,

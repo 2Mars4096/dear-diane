@@ -10,6 +10,31 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_USER_TURN_METADATA_KEYS = frozenset({
+    "workflow_id",
+    "thread_id",
+    "client_graph_revision",
+    "mode",
+    "requested_mode",
+    "debug_context",
+    "mentions",
+    "selected_path",
+    "attachment_prompt_context",
+    "surface_context",
+    "allow_mutation_tool",
+})
+
+
+def _sanitize_user_turn_metadata(msg: SurfaceMessage | None) -> dict[str, Any]:
+    if msg is None or not isinstance(getattr(msg, "metadata", None), dict):
+        return {}
+    metadata = getattr(msg, "metadata", {}) or {}
+    return {
+        key: metadata[key]
+        for key in _USER_TURN_METADATA_KEYS
+        if key in metadata
+    }
+
 
 class ContextGatherer:
     """Fetch only the context that triage says is needed, replacing speculative parallel prep."""
@@ -310,7 +335,12 @@ class TieredDispatcher:
                 self._concierge.project_store.append_turn(
                     context.project.project_id,
                     context.task.task_id,
-                    TaskTurn(role="user", content=session.msg.text if session.msg else "", intent=intent_str),
+                    TaskTurn(
+                        role="user",
+                        content=session.msg.text if session.msg else "",
+                        intent=intent_str,
+                        metadata=_sanitize_user_turn_metadata(session.msg),
+                    ),
                     session.msg.external_id if session.msg else "",
                 )
                 if result.content:

@@ -329,6 +329,49 @@ class TestStatusCancelBypass:
         assert not _is_bypass_command(_msg("hello"))
         assert not _is_bypass_command(_msg("build me a workflow"))
         assert not _is_bypass_command(_msg("run the pipeline"))
+        assert not _is_bypass_command(_msg("/build add a node"))
+        assert not _is_bypass_command(_msg("/retry"))
+
+    @pytest.mark.asyncio
+    async def test_bypass_command_skips_context_resolution(self):
+        concierge = FakeConcierge()
+        dispatcher = ConcurrentDispatcher(concierge, max_concurrent_projects=5)
+        resolver_called = False
+
+        def _boom(_msg: SurfaceMessage) -> Any:
+            nonlocal resolver_called
+            resolver_called = True
+            raise AssertionError("bypass commands should not resolve context")
+
+        concierge._resolve_context = _boom
+
+        events = []
+        async for event in dispatcher.dispatch(_msg("/status")):
+            events.append(event)
+
+        assert not resolver_called
+        assert any(isinstance(event, ChatCompleteEvent) for event in events)
+
+    @pytest.mark.asyncio
+    async def test_retry_queues_behind_active_project(self):
+        concierge = FakeConcierge(delay=0.5)
+        dispatcher = ConcurrentDispatcher(concierge, max_concurrent_projects=5)
+
+        results = {"work": [], "retry": []}
+
+        async def run_work():
+            async for event in dispatcher.dispatch(_msg("do work")):
+                results["work"].append(event)
+
+        async def run_retry():
+            await asyncio.sleep(0.05)
+            async for event in dispatcher.dispatch(_msg("/retry")):
+                results["retry"].append(event)
+
+        await asyncio.gather(run_work(), run_retry())
+
+        assert any(isinstance(event, ChatQueuedEvent) for event in results["retry"])
+        assert [msg.text for msg in concierge.process_calls] == ["do work", "/retry"]
 
     @pytest.mark.asyncio
     async def test_status_bypasses_active_project(self):

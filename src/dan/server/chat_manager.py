@@ -741,6 +741,7 @@ class ChatManager:
         debug_context: str = "",
         prompt_context: str = "",
         mentions: list[Any] | None = None,
+        surface_context: dict[str, Any] | None = None,
         surface: str | None = None,
         extra_system_instructions: str = "",
         memory_project_id: str | None = None,
@@ -774,6 +775,7 @@ class ChatManager:
                 summary, message, history, mode=mode, debug_context=debug_context,
                 prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
+                surface_context=surface_context,
                 surface=surface,
                 extra_system_instructions=extra_system_instructions,
                 memory_project_id=memory_project_id,
@@ -884,6 +886,7 @@ class ChatManager:
         debug_context: str = "",
         prompt_context: str = "",
         mentions: list[Any] | None = None,
+        surface_context: dict[str, Any] | None = None,
         max_tool_turns: int = 24,
         allow_mutation_tool: bool = True,
         surface: str | None = None,
@@ -1179,6 +1182,7 @@ class ChatManager:
                 summary, message, history, mode=mode, debug_context=debug_context,
                 prompt_context=prompt_context,
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
+                surface_context=surface_context,
                 surface=surface,
                 extra_system_instructions=extra_system_instructions,
                 memory_project_id=memory_project_id,
@@ -1885,6 +1889,7 @@ class ChatManager:
                                 history,
                                 mode=mode,
                                 prompt_context=prompt_context,
+                                surface_context=surface_context,
                                 surface=surface,
                                 memory_project_id=memory_project_id,
                                 include_memory_kernel_context=include_memory_kernel_context,
@@ -2965,6 +2970,143 @@ class ChatManager:
                         pass
         return _try_parse_mutation_json(result.text or "")
 
+    @staticmethod
+    def _format_surface_context(surface_context: dict[str, Any] | None) -> str:
+        if not isinstance(surface_context, dict) or not surface_context:
+            return ""
+
+        sections: list[str] = []
+        remaining_budget = 10_000
+
+        def _truncate_text(value: str, limit: int) -> str:
+            text = value.strip()
+            if len(text) <= limit:
+                return text
+            marker = "\n...[truncated]"
+            if limit <= len(marker):
+                return marker[:limit]
+            cutoff = max(limit - len(marker), 0)
+            trimmed = text[:cutoff].rstrip()
+            return f"{trimmed}{marker}" if trimmed else marker[:limit]
+
+        def _append_section(value: str) -> None:
+            nonlocal remaining_budget
+            if remaining_budget <= 0:
+                return
+            text = value.strip()
+            if not text:
+                return
+            if len(text) > remaining_budget:
+                text = _truncate_text(text, remaining_budget)
+            if not text:
+                return
+            sections.append(text)
+            remaining_budget -= len(text) + 2
+
+        summary_parts: list[str] = []
+        mode = str(surface_context.get("mode") or "").strip()
+        workspace_id = str(surface_context.get("workspace_id") or "").strip()
+        workspace_root = str(surface_context.get("workspace_root") or "").strip()
+        if mode:
+            summary_parts.append(f"mode={mode}")
+        if workspace_id:
+            summary_parts.append(f"workspace_id={workspace_id}")
+        if workspace_root:
+            summary_parts.append(f"workspace_root={workspace_root}")
+        if summary_parts:
+            _append_section("Summary: " + ", ".join(summary_parts))
+
+        project = surface_context.get("project")
+        if isinstance(project, dict) and project:
+            project_bits: list[str] = []
+            if project.get("name"):
+                project_bits.append(f"name={project['name']}")
+            if project.get("type"):
+                project_bits.append(f"type={project['type']}")
+            frameworks = project.get("frameworks")
+            if isinstance(frameworks, list) and frameworks:
+                project_bits.append(
+                    "frameworks=" + ", ".join(str(item) for item in frameworks[:8]),
+                )
+            if project.get("package_manager"):
+                project_bits.append(f"package_manager={project['package_manager']}")
+            if project_bits:
+                _append_section("Project: " + "; ".join(project_bits))
+
+        active_file = surface_context.get("active_file")
+        if isinstance(active_file, dict) and active_file:
+            header = str(active_file.get("path") or "").strip()
+            language = str(active_file.get("language") or "").strip()
+            if language:
+                header = f"{header} ({language})" if header else language
+            content = _truncate_text(str(active_file.get("content") or ""), 4000)
+            if header and content:
+                _append_section(f"Active file: {header}\n{content}")
+            elif header:
+                _append_section(f"Active file: {header}")
+
+        selection_text = _truncate_text(
+            str(surface_context.get("selection_text") or ""),
+            1000,
+        )
+        if selection_text:
+            _append_section(f"Editor selection:\n{selection_text}")
+
+        open_files = surface_context.get("open_files")
+        if isinstance(open_files, list) and open_files:
+            _append_section(
+                "Open files: " + ", ".join(str(item) for item in open_files[:20]),
+            )
+
+        import_neighbors = surface_context.get("import_neighbors")
+        if isinstance(import_neighbors, list) and import_neighbors:
+            _append_section(
+                "Import neighbors: "
+                + ", ".join(str(item) for item in import_neighbors[:20]),
+            )
+
+        mentioned_files = surface_context.get("mentioned_files")
+        if isinstance(mentioned_files, list) and mentioned_files:
+            for file_ctx in mentioned_files[:6]:
+                if not isinstance(file_ctx, dict):
+                    continue
+                path = str(file_ctx.get("path") or "").strip() or "<unknown>"
+                content = _truncate_text(str(file_ctx.get("content") or ""), 1500)
+                lines = file_ctx.get("lines")
+                header = f"Mentioned file: {path}"
+                if isinstance(lines, int) and lines > 0:
+                    header += f" ({lines} lines)"
+                _append_section(f"{header}\n{content}" if content else header)
+
+        mentioned_symbols = surface_context.get("mentioned_symbols")
+        if isinstance(mentioned_symbols, list) and mentioned_symbols:
+            _append_section(
+                "Mentioned symbols: "
+                + ", ".join(str(item) for item in mentioned_symbols[:20]),
+            )
+
+        mentioned_folders = surface_context.get("mentioned_folders")
+        if isinstance(mentioned_folders, list) and mentioned_folders:
+            for folder_ctx in mentioned_folders[:6]:
+                if not isinstance(folder_ctx, dict):
+                    continue
+                path = str(folder_ctx.get("path") or "").strip() or "<unknown>"
+                entries = folder_ctx.get("entries")
+                if isinstance(entries, list) and entries:
+                    _append_section(
+                        f"Mentioned folder: {path}\n"
+                        + _truncate_text(
+                            "\n".join(str(entry) for entry in entries[:40]),
+                            1200,
+                        ),
+                    )
+                else:
+                    _append_section(f"Mentioned folder: {path}")
+
+        if not sections:
+            return ""
+        return "## Surface context\n" + "\n\n".join(sections)
+
     # ------------------------------------------------------------------
     # Message building
     # ------------------------------------------------------------------
@@ -2978,6 +3120,7 @@ class ChatManager:
         debug_context: str = "",
         prompt_context: str = "",
         mentions: list[Any] | None = None,
+        surface_context: dict[str, Any] | None = None,
         workflow_id: str = "",
         graph_dict: dict[str, Any] | None = None,
         surface: str = "server",
@@ -2991,6 +3134,9 @@ class ChatManager:
         context_sections: list[str] = []
         if prompt_context:
             context_sections.append(f"## Context\n{prompt_context}")
+        surface_context_block = self._format_surface_context(surface_context)
+        if surface_context_block:
+            context_sections.append(surface_context_block)
         if mode == "debug":
             debug_details = (
                 debug_context

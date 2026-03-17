@@ -638,16 +638,31 @@ class Concierge:
                 return self._complete_event(
                     content="No active task — nothing to retry.",
                 )
-            last_user_text: str | None = None
+            last_user_turn = None
             for turn in reversed(task.turns):
-                if turn.role == "user":
-                    last_user_text = turn.content
+                if turn.role == "user" and turn.content.strip():
+                    last_user_turn = turn
                     break
-            if not last_user_text:
+            if last_user_turn is None:
                 return self._complete_event(
                     content="No prior user message found to retry.",
                 )
-            msg.text = last_user_text
+            replay_metadata = {
+                **msg.metadata,
+                **(last_user_turn.metadata if isinstance(last_user_turn.metadata, dict) else {}),
+            }
+            for key in (
+                "cancel_event",
+                "stream_channel_id",
+                "resolved_project_id",
+                "resolved_task_id",
+                "resolved_domain",
+            ):
+                if key in msg.metadata:
+                    replay_metadata[key] = msg.metadata[key]
+            replay_metadata["retried_via_command"] = True
+            msg.text = last_user_turn.content
+            msg.metadata = replay_metadata
             return None
 
         handler = registry.resolve_handler(descriptor.name)

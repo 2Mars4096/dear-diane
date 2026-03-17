@@ -252,6 +252,9 @@ def _extract_chat_params(
     mentions = metadata.get("mentions")
     if not isinstance(mentions, list):
         mentions = None
+    surface_context = metadata.get("surface_context")
+    if not isinstance(surface_context, dict):
+        surface_context = None
     ctx = getattr(session, "context", None)
     project = getattr(ctx, "project", None) if ctx else None
     memory_project_id = str(getattr(project, "project_id", "") or "").strip() or None
@@ -311,6 +314,7 @@ def _extract_chat_params(
         "debug_context": debug_context,
         "prompt_context": prompt_context,
         "mentions": mentions,
+        "surface_context": surface_context,
         "allow_mutation_tool": allow_mutation_tool,
         "surface": surface,
         "extra_system_instructions": attachment_prompt_context,

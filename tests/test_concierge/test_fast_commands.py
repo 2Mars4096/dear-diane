@@ -320,8 +320,27 @@ class TestRetryCommand:
         project = c.project_store.create_project("test", "test-surface")
         task = c.project_store.add_task(project.project_id, "task", "test-surface")
         c.project_store.append_turn(
-            project.project_id, task.task_id,
-            TaskTurn(role="user", content="What is 2+2?", intent="ask"),
+            project.project_id,
+            task.task_id,
+            TaskTurn(
+                role="user",
+                content="What is 2+2?",
+                intent="ask",
+                metadata={
+                    "mode": "build",
+                    "mentions": [{"type": "file", "identifier": "notes.txt"}],
+                    "selected_path": "/tmp/input.txt",
+                    "surface_context": {
+                        "mode": "development",
+                        "workspace_id": "ws-1",
+                        "active_file": {
+                            "path": "src/math.py",
+                            "content": "answer = 4",
+                            "language": "python",
+                        },
+                    },
+                },
+            ),
             "test-surface",
         )
         c.project_store.append_turn(
@@ -330,11 +349,12 @@ class TestRetryCommand:
             "test-surface",
         )
 
-        captured: dict[str, str] = {}
+        captured: dict[str, Any] = {}
         original_dispatch = c._tiered_dispatcher.dispatch
 
         async def _capture_dispatch(msg: SurfaceMessage):
             captured["text"] = msg.text
+            captured["metadata"] = dict(msg.metadata)
             async for event in original_dispatch(msg):
                 yield event
 
@@ -342,4 +362,10 @@ class TestRetryCommand:
 
         events = await _collect(c, _make_msg("/retry"))
         assert captured.get("text") == "What is 2+2?"
+        assert captured["metadata"]["mode"] == "build"
+        assert captured["metadata"]["mentions"] == [
+            {"type": "file", "identifier": "notes.txt"},
+        ]
+        assert captured["metadata"]["selected_path"] == "/tmp/input.txt"
+        assert captured["metadata"]["surface_context"]["active_file"]["path"] == "src/math.py"
         assert len(events) >= 1

@@ -25,9 +25,18 @@ _BYPASS_EXACT = frozenset({
 })
 
 
+def _is_fallthrough_fast_command(text: str) -> bool:
+    return any(
+        text == command or text.startswith(command + " ")
+        for command in ("/build", "/workflow", "/retry")
+    )
+
+
 def _is_bypass_command(msg: SurfaceMessage) -> bool:
     """Status and cancel commands bypass queueing entirely (29-5 §10-4)."""
     text = msg.text.strip().lower()
+    if _is_fallthrough_fast_command(text):
+        return False
     if get_default_registry().is_fast_command(text):
         return True
     if any(text.startswith(p) for p in _BYPASS_PREFIXES):
@@ -86,13 +95,16 @@ class ConcurrentDispatcher:
         4. Resources exhausted (max concurrent reached) -> queue with position info.
         """
         self._reap_stale_buses()
-        context = self._concierge._resolve_context(msg)
-        project_id = context.project.project_id
 
         if _is_bypass_command(msg):
-            async for event in self._process_immediately(msg, project_id):
+            async for event in self._process_immediately(
+                msg, f"bypass:{uuid.uuid4().hex[:12]}",
+            ):
                 yield event
             return
+
+        context = self._concierge._resolve_context(msg)
+        project_id = context.project.project_id
 
         if project_id in self._active_tasks and not self._active_tasks[project_id].done():
             async for event in self._enqueue_for_project(msg, project_id, context):

@@ -9,6 +9,7 @@ import pytest
 
 from dan.server.capability_registry import CapabilityContext
 from dan.server.chat_manager import (
+    ChatManager,
     ChatCompleteEvent,
     ChatInterruptedEvent,
     ChatToolCallResultEvent,
@@ -355,6 +356,15 @@ async def test_tier1_forwards_request_metadata_and_action_hints(tmp_path: Path) 
                     "mode": "build",
                     "debug_context": "debug details",
                     "mentions": mentions,
+                    "surface_context": {
+                        "mode": "development",
+                        "workspace_id": "ws-1",
+                        "active_file": {
+                            "path": "src/report.md",
+                            "content": "Draft outline",
+                            "language": "markdown",
+                        },
+                    },
                     "cancel_event": cancel_event,
                 },
             )
@@ -372,6 +382,7 @@ async def test_tier1_forwards_request_metadata_and_action_hints(tmp_path: Path) 
     assert call["mode"] == "build"
     assert call["debug_context"] == "debug details"
     assert call["mentions"] == mentions
+    assert call["surface_context"]["active_file"]["path"] == "src/report.md"
     assert call["required_action_hints"] == ["read_file", "write_file"]
     assert call["allow_mutation_tool"] is False
     assert call["cancel_event"] is cancel_event
@@ -1173,3 +1184,23 @@ def test_resolve_triage_model_explicit_override_wins(tmp_path: Path) -> None:
     concierge._triage_model = "explicit-model"
 
     assert concierge._resolve_triage_model() == "explicit-model"
+
+
+def test_format_surface_context_truncates_large_payloads() -> None:
+    block = ChatManager._format_surface_context({
+        "mode": "development",
+        "workspace_id": "ws-1",
+        "active_file": {
+            "path": "src/big.ts",
+            "language": "typescript",
+            "content": "A" * 20_000,
+        },
+        "selection_text": "B" * 5_000,
+        "mentioned_files": [
+            {"path": "src/huge.ts", "content": "C" * 8_000, "lines": 500},
+        ],
+    })
+
+    assert block.startswith("## Surface context\n")
+    assert len(block) <= 10_000 + len("## Surface context\n")
+    assert "truncated" in block.lower()
