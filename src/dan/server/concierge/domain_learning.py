@@ -19,6 +19,10 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from dan.engine.domain_taxonomy import (
+    normalize_domain_keyword_map,
+    normalize_domain_name,
+)
 from dan.engine.learning_tiers import is_feature_enabled
 from dan.engine.memory_kernel import (
     MemoryItem,
@@ -68,9 +72,20 @@ _DOMAIN_KEYWORDS: dict[str, list[str]] = {
 }
 
 
+def get_domain_keyword_map(behavior_store: Any = None) -> dict[str, list[str]]:
+    """Return the shared domain keyword map, honoring BehaviorStore overrides."""
+    if behavior_store is not None:
+        stored = normalize_domain_keyword_map(
+            behavior_store.get("domains/keyword_maps")
+        )
+        if stored:
+            return stored
+    return normalize_domain_keyword_map(_DOMAIN_KEYWORDS)
+
+
 def register_seed_domains(store: BehaviorStore) -> None:
     """Register domain keyword maps as seed defaults."""
-    store.register_seed("domains/keyword_maps", dict(_DOMAIN_KEYWORDS))
+    store.register_seed("domains/keyword_maps", get_domain_keyword_map())
 
 
 def detect_domain(
@@ -83,13 +98,9 @@ def detect_domain(
     if project is not None:
         proj_domain = getattr(project, "domain", None)
         if proj_domain:
-            return proj_domain
+            return normalize_domain_name(str(proj_domain)) or str(proj_domain)
 
-    kw_map = _DOMAIN_KEYWORDS
-    if behavior_store is not None:
-        stored = behavior_store.get("domains/keyword_maps")
-        if isinstance(stored, dict):
-            kw_map = stored
+    kw_map = get_domain_keyword_map(behavior_store)
 
     msg_lower = message.lower()
     scores: dict[str, int] = {}
@@ -127,19 +138,39 @@ class DomainTemplate(BaseModel):
 
 def load_domain_template(domain: str) -> DomainTemplate | None:
     """Load template from user dir, falling back to package seed templates."""
-    user_path = _USER_TEMPLATE_DIR / f"{domain}.json"
-    if user_path.exists():
+    canonical_domain = normalize_domain_name(domain) or domain
+    raw_domain = str(domain or "").strip()
+    user_paths = [_USER_TEMPLATE_DIR / f"{canonical_domain}.json"]
+    if raw_domain and raw_domain != canonical_domain:
+        user_paths.append(_USER_TEMPLATE_DIR / f"{raw_domain}.json")
+    for user_path in user_paths:
+        if not user_path.exists():
+            continue
         try:
             data = json.loads(user_path.read_text(encoding="utf-8"))
-            return DomainTemplate.model_validate(data)
+            template = DomainTemplate.model_validate(data)
+            if normalize_domain_name(template.domain) != template.domain:
+                return template.model_copy(
+                    update={"domain": normalize_domain_name(template.domain) or template.domain}
+                )
+            return template
         except Exception:
             logger.debug("Failed to load user template %s", user_path, exc_info=True)
 
-    seed_path = _SEED_TEMPLATE_DIR / f"{domain}.json"
-    if seed_path.exists():
+    seed_paths = [_SEED_TEMPLATE_DIR / f"{canonical_domain}.json"]
+    if raw_domain and raw_domain != canonical_domain:
+        seed_paths.append(_SEED_TEMPLATE_DIR / f"{raw_domain}.json")
+    for seed_path in seed_paths:
+        if not seed_path.exists():
+            continue
         try:
             data = json.loads(seed_path.read_text(encoding="utf-8"))
-            return DomainTemplate.model_validate(data)
+            template = DomainTemplate.model_validate(data)
+            if normalize_domain_name(template.domain) != template.domain:
+                return template.model_copy(
+                    update={"domain": normalize_domain_name(template.domain) or template.domain}
+                )
+            return template
         except Exception:
             logger.debug("Failed to load seed template %s", seed_path, exc_info=True)
 
@@ -148,15 +179,21 @@ def load_domain_template(domain: str) -> DomainTemplate | None:
 
 def save_domain_template(template: DomainTemplate) -> None:
     """Save template to user dir, backing up the previous version."""
+    raw_domain = str(template.domain or "").strip()
+    canonical_domain = normalize_domain_name(template.domain) or template.domain
+    if canonical_domain != template.domain:
+        template = template.model_copy(update={"domain": canonical_domain})
     _USER_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
     path = _USER_TEMPLATE_DIR / f"{template.domain}.json"
+    legacy_path = _USER_TEMPLATE_DIR / f"{raw_domain}.json" if raw_domain else path
 
-    if path.exists():
+    existing_path = path if path.exists() else legacy_path
+    if existing_path.exists():
         try:
-            old_data = json.loads(path.read_text(encoding="utf-8"))
+            old_data = json.loads(existing_path.read_text(encoding="utf-8"))
             old_version = old_data.get("version", 1)
             backup = _USER_TEMPLATE_DIR / f"{template.domain}.v{old_version}.json"
-            path.rename(backup)
+            existing_path.rename(backup)
         except Exception:
             logger.debug("Failed to backup old template", exc_info=True)
 
@@ -173,7 +210,7 @@ _DEFAULT_CATEGORIES = [
 
 def create_generic_template(domain: str) -> DomainTemplate:
     return DomainTemplate(
-        domain=domain,
+        domain=normalize_domain_name(domain) or domain,
         categories=list(_DEFAULT_CATEGORIES),
         extraction_prompts={},
         checklist=[],
@@ -181,10 +218,11 @@ def create_generic_template(domain: str) -> DomainTemplate:
 
 
 def get_or_create_template(domain: str) -> DomainTemplate:
-    existing = load_domain_template(domain)
+    canonical_domain = normalize_domain_name(domain) or domain
+    existing = load_domain_template(canonical_domain)
     if existing is not None:
         return existing
-    return create_generic_template(domain)
+    return create_generic_template(canonical_domain)
 
 
 # ---------------------------------------------------------------------------
@@ -248,11 +286,12 @@ class DomainReflector:
         if self._llm is None:
             return []
 
-        template = get_or_create_template(domain)
-        prompt = self._build_reflection_prompt(domain, turns, template)
+        canonical_domain = normalize_domain_name(domain) or domain
+        template = get_or_create_template(canonical_domain)
+        prompt = self._build_reflection_prompt(canonical_domain, turns, template)
         try:
             response = self._llm.complete(prompt, max_tokens=1000)
-            return self._parse_reflection_response(response, domain)
+            return self._parse_reflection_response(response, canonical_domain)
         except Exception:
             logger.debug("Domain reflection failed", exc_info=True)
             return []
@@ -821,16 +860,19 @@ def apply_new_domain(
     behavior_store: Any,
 ) -> None:
     """Register a newly discovered domain — additions only, never removes existing."""
-    kw_map = behavior_store.get("domains/keyword_maps", {})
-    if not isinstance(kw_map, dict):
-        kw_map = {}
-    kw_map[domain_name] = keywords
+    canonical_domain = normalize_domain_name(domain_name) or domain_name
+    kw_map = get_domain_keyword_map(behavior_store)
+    kw_map[canonical_domain] = [
+        str(keyword or "").strip().lower()
+        for keyword in keywords
+        if str(keyword or "").strip()
+    ]
     behavior_store.set(
         "domains/keyword_maps",
         kw_map,
-        reason=f"auto-discovered domain '{domain_name}'",
+        reason=f"auto-discovered domain '{canonical_domain}'",
     )
-    template = create_generic_template(domain_name)
+    template = create_generic_template(canonical_domain)
     save_domain_template(template)
 
 
@@ -846,11 +888,7 @@ def propose_domain_discoveries(
     if not clusters:
         return []
 
-    existing_domains: set[str] = set(_DOMAIN_KEYWORDS.keys())
-    if behavior_store is not None:
-        stored = behavior_store.get("domains/keyword_maps")
-        if isinstance(stored, dict):
-            existing_domains.update(stored.keys())
+    existing_domains = set(get_domain_keyword_map(behavior_store).keys())
 
     proposals: list[dict] = []
     for cluster in clusters:
@@ -926,11 +964,8 @@ def propose_keyword_expansion(
     if not task_succeeded:
         return None
 
-    kw_map = dict(_DOMAIN_KEYWORDS)
-    if behavior_store is not None:
-        stored = behavior_store.get("domains/keyword_maps")
-        if isinstance(stored, dict):
-            kw_map = stored
+    kw_map = get_domain_keyword_map(behavior_store)
+    domain = normalize_domain_name(domain) or domain
 
     current_keywords = kw_map.get(domain, [])
     if not current_keywords:

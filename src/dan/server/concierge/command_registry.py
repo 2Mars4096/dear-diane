@@ -586,6 +586,41 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         handler="dan.server.concierge.progress_ux.handle_progress_command",
     ))
 
+    registry.register(CommandDescriptor(
+        name="/domains",
+        aliases=["/domain"],
+        kind="chat",
+        surfaces=["all"],
+        args_schema="<list|known|add|remove|clear> [domain or comma-separated domains]",
+        help_text="Inspect and edit saved canonical domain preferences",
+        group="learning",
+        handler="dan.server.concierge.domain_preferences.handle_domains_command",
+        subcommands={
+            "list": SubcommandDescriptor(
+                name="list",
+                help_text="Show saved profile domains and a known-domain preview",
+            ),
+            "known": SubcommandDescriptor(
+                name="known",
+                help_text="List all known canonical domains from the live taxonomy",
+            ),
+            "add": SubcommandDescriptor(
+                name="add",
+                args_schema="<domain or comma-separated domains>",
+                help_text="Add one or more saved common domains",
+            ),
+            "remove": SubcommandDescriptor(
+                name="remove",
+                args_schema="<domain or comma-separated domains>",
+                help_text="Remove one or more saved common domains",
+            ),
+            "clear": SubcommandDescriptor(
+                name="clear",
+                help_text="Clear all saved common domains",
+            ),
+        },
+    ))
+
     # Goal tracking
     registry.register(CommandDescriptor(
         name="/goal",

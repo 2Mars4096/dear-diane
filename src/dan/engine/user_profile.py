@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,11 +10,52 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from dan.engine.domain_taxonomy import normalize_domain_list
+
 logger = logging.getLogger(__name__)
 
 # Use same DAN_DIR as cli/__init__.py
 DAN_DIR = Path.home() / ".dan"
 DEFAULT_PROFILE_PATH = DAN_DIR / "profile.json"
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _normalize_search_dir(path: str) -> str:
+    raw = str(path or "").strip()
+    if not raw:
+        return ""
+    return str(Path(raw).expanduser())
+
+
+def _normalize_common_domains(profile: "UserProfile") -> bool:
+    normalized = normalize_domain_list(profile.common_domains)
+    if normalized == list(profile.common_domains):
+        return False
+    profile.common_domains = normalized
+    profile.updated_at = datetime.now(timezone.utc)
+    return True
+
+
+def resolve_profile_path(path: Path | None = None) -> Path:
+    """Resolve the profile path, honoring DAN_PROFILE_PATH when set."""
+    if path is not None:
+        return Path(path).expanduser()
+    env_path = str(os.environ.get("DAN_PROFILE_PATH", "") or "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    return DEFAULT_PROFILE_PATH
 
 
 class RecentWorkflow(BaseModel):
@@ -28,7 +70,7 @@ class UserProfile(BaseModel):
     # e.g. {"drafting": "claude-sonnet-4-6", "review": "gpt-4o", "coding": "claude-sonnet-4-6"}
     preferred_output_format: str = ""  # "markdown", "json", "latex", or empty
     common_domains: list[str] = Field(default_factory=list)
-    # e.g. ["supply chain", "equity research"]
+    # e.g. ["paper_rendering", "equity_research"]
     model_overrides: dict[str, str] = Field(default_factory=dict)
     # per-workflow model preferences: {"workflow_id": "model_name"}
     action_policy_overrides: dict[str, str] = Field(default_factory=dict)
@@ -58,26 +100,61 @@ class UserProfile(BaseModel):
         output_format: str | None = None,
     ) -> None:
         """Merge extracted preferences into profile without overwriting existing."""
+        _normalize_common_domains(self)
         if models:
             for k, v in models.items():
                 if k not in self.preferred_models:
                     self.preferred_models[k] = v
         if domains:
+            normalized_domains = normalize_domain_list(domains)
             existing = set(self.common_domains)
-            for d in domains:
+            for d in normalized_domains:
                 if d not in existing:
                     self.common_domains.append(d)
+                    existing.add(d)
         if output_format and not self.preferred_output_format:
             self.preferred_output_format = output_format
         self.updated_at = datetime.now(timezone.utc)
 
+    def merge_search_dirs(
+        self,
+        dirs: list[str] | None = None,
+        *,
+        max_entries: int = 20,
+    ) -> bool:
+        """Merge frequently used directories into the profile without duplicates."""
+        if not dirs:
+            return False
+        existing = [_normalize_search_dir(d) for d in self.search_dirs]
+        existing = [d for d in existing if d]
+        seen = set(existing)
+        changed = False
+        for entry in dirs:
+            normalized = _normalize_search_dir(entry)
+            if not normalized or normalized in seen:
+                continue
+            existing.append(normalized)
+            seen.add(normalized)
+            changed = True
+        if not changed:
+            return False
+        self.search_dirs = existing[-max_entries:]
+        self.updated_at = datetime.now(timezone.utc)
+        return True
+
 
 def load_user_profile(path: Path | None = None) -> UserProfile:
     """Load profile from disk, or return fresh default."""
-    p = path or DEFAULT_PROFILE_PATH
+    p = resolve_profile_path(path)
     if p.exists():
         try:
-            return UserProfile.model_validate_json(p.read_text(encoding="utf-8"))
+            profile = UserProfile.model_validate_json(p.read_text(encoding="utf-8"))
+            if _normalize_common_domains(profile):
+                try:
+                    save_user_profile(profile, p)
+                except Exception:
+                    logger.debug("Failed to persist normalized profile domains", exc_info=True)
+            return profile
         except Exception:
             logger.warning("Failed to load profile from %s, using defaults", p)
     return UserProfile()
@@ -85,11 +162,9 @@ def load_user_profile(path: Path | None = None) -> UserProfile:
 
 def save_user_profile(profile: UserProfile, path: Path | None = None) -> None:
     """Persist profile to disk (atomic write)."""
-    p = path or DEFAULT_PROFILE_PATH
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
-    tmp.write_text(profile.model_dump_json(indent=2), encoding="utf-8")
-    tmp.replace(p)
+    p = resolve_profile_path(path)
+    _normalize_common_domains(profile)
+    _atomic_write_text(p, profile.model_dump_json(indent=2))
 
 
 def format_recent_workflows(profile: UserProfile) -> str:
