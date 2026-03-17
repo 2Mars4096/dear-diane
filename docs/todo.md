@@ -470,6 +470,19 @@
   - [ ] [37-3-checkpoint-resume-safety](plans/37-3-checkpoint-resume-safety.md) — C. Batched/background checkpoints plus cycle-boundary, mid-iteration, and idempotent-memory resume landed; subgraph-checkpoint decision remains
   - [ ] [37-4-runtime-regression-tests](plans/37-4-runtime-regression-tests.md) — D. 33 engine scheduler tests landed plus concierge busy-poll proof; subgraph crash behavior and benchmarks remain
 
+## Phase 27 — Review Hardening
+
+> Address all actionable findings from the 2026-03-17 code review and module audit: Furnace
+> write safety, Furnace lifecycle correctness, startup/config robustness, domain learning
+> fidelity, and provider/tool/doc alignment.
+
+- [ ] [38-review-hardening](plans/38-review-hardening.md) — umbrella plan for code review and module audit follow-ups
+  - [ ] [38-1-furnace-write-safety](plans/38-1-furnace-write-safety.md) — P1: sanitize `source_id` path traversal, artifact containment, source ID collisions
+  - [ ] [38-2-furnace-lifecycle](plans/38-2-furnace-lifecycle.md) — P2: session state machine, cancel semantics, duplicate start/resume prevention, multi-subscriber SSE
+  - [ ] [38-3-startup-config-hardening](plans/38-3-startup-config-hardening.md) — P1/P2: lazy `~/.dan` writes, safe-mode startup, dynamic telemetry DB path
+  - [ ] [38-4-domain-learning-fidelity](plans/38-4-domain-learning-fidelity.md) — P2: broader keyword seeds, abbreviation aliases, original label preservation
+  - [ ] [38-5-provider-tool-doc-alignment](plans/38-5-provider-tool-doc-alignment.md) — P2/P3: Google provider test realignment, clipboard errors, README safety contract
+
 ## Backlog (unphased)
 
 ### strengthen workflow to make it more powerful and easier to use
@@ -570,6 +583,10 @@
 - [x] **ToolExecutor integration test** (7-3 task 9-4) — end-to-end built-in tool via ToolExecutor
 - [x] ~~**Cross-workflow error migration notes**~~ (17-1 task 6-3) — added to `docs/bugs.md`: collection naming, global vs workflow scope, cross-environment migration, principle dedup
 
+### Provider compatibility
+- [x] **Model behavior profiles** — `ModelBehaviorProfile` + `get_model_behavior()` for per-model tool_choice/replay quirks; Kimi `supports_required_tool_choice=False`; raw assistant replay; fallback tool-disable note
+- [x] **Anthropic/Google raw_assistant_message** — `AnthropicProvider` and `GoogleProvider` now populate `CompletionResult.raw_assistant_message` plus `provider_metadata`, preserving native block/part snapshots in provider-safe assistant replay payloads
+
 ### Existing backlog items
 - [ ] **User system** — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments. (Low priority — revisit when cloud/SaaS deployment becomes a goal.)
 - [ ] **Manager vs worker node distinction** — manager nodes orchestrate and may spawn new nodes; worker nodes only execute and do not hire new nodes. Bottom-layer nodes are workers. Enables token/node budget caps.
@@ -655,10 +672,12 @@
   - [x] **Phase 4: Research Workbench Refinement**
     - [x] [1-6-research-workbench-refinement](UI-plans/1-6-research-workbench-refinement.md) — configurable PDF/note roots, function-first surfaces (`Desk`, `Library`, `Plan`, `Training`), progressive disclosure, workspace naming
     - [x] [1-7-research-simplification](UI-plans/1-7-research-simplification.md) — replaced bottom dock with terminal, added Furnace center-desk tab, fixed Scratch naming
-  - [ ] **Phase 5: Code Mode Production Patch**
-    - [ ] [1-8-code-mode-patch](UI-plans/1-8-code-mode-patch.md) — fix TypeScript build (~70 errors), single-launch (Electron spawns backend), first-run onboarding, wire LSP to OutlineView/SymbolSearch/PeekDefinition, @ references in chat, multi-file agent edit flow, fix `/cost`+`/retry`, debug QoL. In progress: shared editor AI routing, restored inline completion backend compatibility, per-mode chat attachment flow, and `persistent-chat:send` replay
+  - [x] **Phase 5: Code Mode Production Patch**
+    - [x] [1-8-code-mode-patch](UI-plans/1-8-code-mode-patch.md) — All 13 tasks completed: TypeScript build fixed, single-launch with status indicator, first-run onboarding (welcome screen + project detection + feature tour), LSP wired to OutlineView/SymbolSearch/PeekDefinition, Go/Rust/C++ language servers, @ references in chat, multi-file agent edit flow, project-aware AI context, `/cost`+`/retry` commands, debug QoL (auto-config + hover eval + conditional breakpoints), editor reliability fixes. Remaining minor: 7-4 (docs) and 8-6 (backend mention expansion).
   - [x] **Phase 5.5: Shell Chrome Purge & Per-Mode Chat**
     - [x] [1-9-shell-chrome-purge](UI-plans/1-9-shell-chrome-purge.md) — delete Breadcrumb/SidebarHost/PersistentChatBar, shared ModeChatSidebar with persistent history, Workflow + Furnace in CodeMode activity bar, Research right-drawer discoverability
+  - [ ] **Phase 5.6: Messaging Onboarding & Controls**
+    - [ ] [1-10-messaging-onboarding-and-controls](UI-plans/1-10-messaging-onboarding-and-controls.md) — Telegram + WhatsApp desktop controls in Settings, shell-wide messaging status button, provider-aware first-run onboarding, dependency-aware setup guidance, WhatsApp reset pairing, and shared toolbar/store state. Only broader UI coverage + manual smoke remain.
   - [ ] Phase 6: Analytics + Operations modes → (not yet planned)
   - [ ] Phase 7: Polish + Custom modes + auto-detection → (not yet planned)
 

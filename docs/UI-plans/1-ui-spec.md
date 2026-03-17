@@ -244,6 +244,10 @@ Fix blocking infrastructure (build errors, single-launch, onboarding), upgrade L
 Kill redundant shell chrome, give every mode its own persistent chat sidebar, add Workflow + Furnace access to Development mode.
 - [1-9-shell-chrome-purge](1-9-shell-chrome-purge.md) — delete Breadcrumb, SidebarHost, PersistentChatBar; shared ModeChatSidebar with persistent per-workspace history; Workflow + Furnace activity bar items in CodeMode; Research right-drawer discoverability
 
+### Phase 5.6: Messaging Onboarding & Controls
+Add app-global Telegram/WhatsApp controls to the shell, with first-run affordances and in-app WhatsApp QR pairing.
+- [1-10-messaging-onboarding-and-controls](1-10-messaging-onboarding-and-controls.md) — settings-based messaging controls, shell status button, provider-aware first-run onboarding, Telegram token/helper flow, WhatsApp Web QR pairing/reset, and dependency-aware setup guidance *(implementation is largely landed; broader UI coverage + manual smoke remain)*
+
 ### Phase 6: Analytics + Operations
 Data science workspace + workflow management.
 - Analytics mode (data tables, code cells, charts, experiment tracker)

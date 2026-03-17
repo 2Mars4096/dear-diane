@@ -108,6 +108,7 @@ The editor is a full-featured workflow builder inspired by LangFlow, Flowise, an
 - **Live execution** — pulse/glow animations on active nodes, particle flow on edges, duration badges, streaming LLM output, iteration counters
 - **Human-in-the-loop** — popup dialog during execution for workflows that require user input
 - **Rich logging** — expandable per-node log sections with LLM thinking, tool calls, code output; filtering and click-to-select
+- **Desktop messaging controls** — top-shell Settings can connect Telegram or WhatsApp Web as app-global remote-control surfaces, with provider-aware first-run onboarding, Telegram token/helper setup plus bot username hints, in-app WhatsApp QR pairing and reset, dependency guidance, auto-start toggles, and a shell status button visible from every mode
 - **Workflow reuse** — wrap saved workflows as reusable composite nodes via palette or context menu
 - **Run inputs** — auto-detects `{variable}` placeholders and shows an input dialog before execution
 - **Validation** — port-aware connection validation, backend validation API, inline error badges with toast summaries
