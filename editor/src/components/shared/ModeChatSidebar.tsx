@@ -55,11 +55,20 @@ import {
   type MentionRef,
 } from "../../lib/mentionParser";
 import {
+  fromBackendMessage,
   safeTokenUsage,
   toBackendMessage,
 } from "../../lib/chatMessagePersistence";
+import {
+  applyAssistantRunEvent,
+  applyAssistantToolCallResult,
+  applyAssistantToolCallStart,
+  insertInjectedUserBeforeAssistant,
+  shouldStopSidebarThreadSnapshotPolling,
+  upsertAssistantMessage,
+} from "./modeChatSidebarState";
 import { deriveDraftThreadTitleFromMessage } from "../../lib/chatThreadTitle";
-import { describeLatestToolProgress, extractFileWritePaths } from "../../lib/toolCallPresentation";
+import { extractFileWritePaths } from "../../lib/toolCallPresentation";
 import { buildSurfaceContext } from "../../lib/contextBudget";
 import { extractImportPaths } from "../../lib/importResolver";
 import {
@@ -1256,50 +1265,38 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
           const runId = response.run_id;
           const runScope = response.scope ?? "full";
           setMessages((prev) =>
-            prev.map((message) =>
-              message.id === assistantId
-                ? {
-                    ...message,
-                    runRef: {
-                      runId,
-                      scope: runScope,
-                      status: "running",
-                    },
-                  }
-                : message,
-            ),
+            upsertAssistantMessage(prev, assistantId, (message) => ({
+              ...message,
+              runRef: {
+                runId,
+                scope: runScope,
+                status: "running",
+              },
+            })),
           );
         }
 
         const ws = streamEditorChatResponse(response, {
           onQueued: (position) => {
             setMessages((prev) =>
-              prev.map((message) =>
-                message.id === assistantId
-                  ? {
-                      ...message,
-                      content:
-                        position > 1
-                          ? `Queued behind ${position} earlier messages...`
-                          : "Queued behind an earlier message...",
-                    }
-                  : message,
-              ),
+              upsertAssistantMessage(prev, assistantId, (message) => ({
+                ...message,
+                content:
+                  position > 1
+                    ? `Queued behind ${position} earlier messages...`
+                    : "Queued behind an earlier message...",
+              })),
             );
           },
           onProgress: (content) => {
             if (controller.signal.aborted) return;
             setMessages((prev) =>
-              prev.map((message) =>
-                message.id === assistantId
-                  ? {
-                      ...message,
-                      content,
-                      progressStatus: undefined,
-                      progressFilePath: undefined,
-                    }
-                  : message,
-              ),
+              upsertAssistantMessage(prev, assistantId, (message) => ({
+                ...message,
+                content,
+                progressStatus: undefined,
+                progressFilePath: undefined,
+              })),
             );
           },
           onToolCallStart: (toolCall) => {
@@ -1313,97 +1310,14 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
                 void capturePreWriteSnapshot(p);
               }
             }
-            setMessages((prev) =>
-              prev.map((message) => {
-                if (message.id !== assistantId) return message;
-                const nextToolCalls = [
-                  ...(message.toolCalls ?? []),
-                  {
-                    id: toolCall.id,
-                    toolName: toolCall.toolName,
-                    argsPreview: toolCall.argsPreview,
-                    status: "running" as const,
-                  },
-                ];
-                const progress = describeLatestToolProgress(nextToolCalls);
-                return {
-                  ...message,
-                  toolCalls: nextToolCalls,
-                  progressStatus: progress?.text,
-                  progressFilePath: progress?.filePath,
-                };
-              }),
-            );
+            setMessages((prev) => applyAssistantToolCallStart(prev, assistantId, toolCall));
           },
           onToolCallResult: (toolCall) => {
             void persistReviewableEdits(assistantId, toolCall);
-            setMessages((prev) =>
-              prev.map((message) => {
-                if (message.id !== assistantId) return message;
-                const nextStatus =
-                  toolCall.status === "running"
-                    ? ("running" as const)
-                    : toolCall.status === "error"
-                      ? ("error" as const)
-                      : ("success" as const);
-                const nextToolCalls = (message.toolCalls ?? []).map((existing) =>
-                  existing.id === toolCall.id
-                    ? {
-                        ...existing,
-                        status: nextStatus,
-                        outputPreview: toolCall.outputPreview,
-                        durationMs: toolCall.durationMs,
-                      }
-                    : existing,
-                );
-                const progress = describeLatestToolProgress(nextToolCalls);
-                return {
-                  ...message,
-                  toolCalls: nextToolCalls,
-                  progressStatus: progress?.text,
-                  progressFilePath: progress?.filePath,
-                };
-              }),
-            );
+            setMessages((prev) => applyAssistantToolCallResult(prev, assistantId, toolCall));
           },
           onRunEvent: (runEvent) => {
-            setMessages((prev) =>
-              prev.map((message) =>
-                message.id === assistantId
-                  ? {
-                      ...message,
-                      runEvents: [...(message.runEvents ?? []), runEvent],
-                      runRef: (() => {
-                        const detail = runEvent.detail ?? {};
-                        const detailRunId =
-                          typeof detail.run_id === "string" ? detail.run_id : null;
-                        const detailScope =
-                          typeof detail.scope === "string" ? detail.scope : "full";
-                        const terminalStatus =
-                          runEvent.event_type === "run_completed"
-                            ? "completed"
-                            : runEvent.event_type === "run_failed"
-                              ? "failed"
-                              : runEvent.event_type === "run_cancelled"
-                                ? "cancelled"
-                                : null;
-                        if (message.runRef) {
-                          return terminalStatus
-                            ? { ...message.runRef, status: terminalStatus }
-                            : message.runRef;
-                        }
-                        if (!detailRunId) return message.runRef ?? null;
-                        const nextRunRef: ChatMessage["runRef"] = {
-                          runId: detailRunId,
-                          scope: detailScope,
-                          status: terminalStatus ?? "running",
-                        };
-                        return nextRunRef;
-                      })(),
-                    }
-                  : message,
-              ),
-            );
+            setMessages((prev) => applyAssistantRunEvent(prev, assistantId, runEvent));
             if (
               runEvent.event_type === "run_completed" ||
               runEvent.event_type === "run_failed" ||
@@ -1419,17 +1333,14 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
               content: injectedMessage.content,
               timestamp: Date.now(),
             };
-            setMessages((prev) => {
-              const assistantIndex = prev.findIndex(
-                (message) => message.id === assistantId,
-              );
-              if (assistantIndex === -1) return [...prev, injectedUserMsg];
-              return [
-                ...prev.slice(0, assistantIndex),
+            setMessages((prev) =>
+              insertInjectedUserBeforeAssistant(
+                prev,
+                assistantId,
                 injectedUserMsg,
-                ...prev.slice(assistantIndex),
-              ];
-            });
+                Date.now(),
+              ),
+            );
           },
           onChannelChange: (nextChannelId) => {
             setActiveChannelId(nextChannelId);
@@ -1461,39 +1372,35 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
           onComplete: (content, event) => {
             if (controller.signal.aborted) return;
             setMessages((prev) =>
-              prev.map((message) =>
-                message.id === assistantId
-                  ? {
-                      ...message,
-                      content,
-                      tokenUsage:
-                        "token_usage" in event
-                          ? safeTokenUsage(event.token_usage) ?? message.tokenUsage ?? null
-                          : message.tokenUsage ?? null,
-                      estimatedCost:
-                        "estimated_cost" in event &&
-                        typeof event.estimated_cost === "number"
-                          ? event.estimated_cost
-                          : message.estimatedCost ?? null,
-                      runRef:
-                        "run_id" in event && typeof event.run_id === "string"
-                          ? {
-                              runId: event.run_id,
-                              scope:
-                                "scope" in event && typeof event.scope === "string"
-                                  ? event.scope
-                                  : "full",
-                              status:
-                                "type" in event && event.type === "run_error"
-                                  ? "failed"
-                                  : "running",
-                            }
-                          : message.runRef ?? null,
-                      progressStatus: undefined,
-                      progressFilePath: undefined,
-                    }
-                  : message,
-              ),
+              upsertAssistantMessage(prev, assistantId, (message) => ({
+                ...message,
+                content,
+                tokenUsage:
+                  "token_usage" in event
+                    ? safeTokenUsage(event.token_usage) ?? message.tokenUsage ?? null
+                    : message.tokenUsage ?? null,
+                estimatedCost:
+                  "estimated_cost" in event &&
+                  typeof event.estimated_cost === "number"
+                    ? event.estimated_cost
+                    : message.estimatedCost ?? null,
+                runRef:
+                  "run_id" in event && typeof event.run_id === "string"
+                    ? {
+                        runId: event.run_id,
+                        scope:
+                          "scope" in event && typeof event.scope === "string"
+                            ? event.scope
+                            : "full",
+                        status:
+                          "type" in event && event.type === "run_error"
+                            ? "failed"
+                            : "running",
+                      }
+                    : message.runRef ?? null,
+                progressStatus: undefined,
+                progressFilePath: undefined,
+              })),
             );
             if (
               chatMode === "auto" &&
@@ -1515,31 +1422,27 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
           onError: (message) => {
             if (controller.signal.aborted) return;
             setMessages((prev) =>
-              prev.map((entry) =>
-                entry.id === assistantId
-                  ? {
-                      ...entry,
-                      content: message || "Failed to connect to DAN server.",
-                      progressStatus: undefined,
-                      progressFilePath: undefined,
-                    }
-                  : entry,
-              ),
+              upsertAssistantMessage(prev, assistantId, (entry) => ({
+                ...entry,
+                content: message || "Failed to connect to DAN server.",
+                progressStatus: undefined,
+                progressFilePath: undefined,
+              })),
             );
             finishStream();
           },
           onCloseWithoutTerminalEvent: () => {
             if (controller.signal.aborted) return;
             setMessages((prev) =>
-              prev.map((entry) =>
-                entry.id === assistantId && !entry.content
-                  ? {
+              upsertAssistantMessage(prev, assistantId, (entry) =>
+                entry.content
+                  ? entry
+                  : {
                       ...entry,
                       content: "Connection lost. Please try again.",
                       progressStatus: undefined,
                       progressFilePath: undefined,
-                    }
-                  : entry,
+                    },
               ),
             );
             finishStream();
@@ -1556,18 +1459,55 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             { once: true },
           );
         }
+
+        if (nextChatChannel) {
+          void (async () => {
+            for (let attempt = 0; attempt < 12; attempt += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 5000));
+              if (controller.signal.aborted) return;
+              if (activeChannelIdRef.current !== nextChatChannel) return;
+              try {
+                const data = await api.getChatThread("_scratch", nextThreadId);
+                const backendMsgs = Array.isArray(data.messages)
+                  ? (data.messages as Record<string, unknown>[])
+                  : [];
+                const normalized = backendMsgs.map(fromBackendMessage);
+                const lastMessage = normalized.at(-1);
+                if (lastMessage?.role === "assistant" && lastMessage.content.trim()) {
+                  setMessages(normalized);
+                  finishStream();
+                  return;
+                }
+              } catch (error) {
+                if (shouldStopSidebarThreadSnapshotPolling(error)) {
+                  // Sidebar-only turns are not always persisted as server chat threads.
+                  // Stop polling once the backend confirms this thread doesn't exist.
+                  return;
+                }
+                // Keep polling; the live websocket may still succeed.
+              }
+            }
+          })();
+        }
       } catch {
         setMessages((prev) =>
-          prev.map((entry) =>
-            entry.id === assistantId && !entry.content
-              ? { ...entry, content: "Failed to connect to DAN server." }
-              : entry,
+          upsertAssistantMessage(prev, assistantId, (entry) =>
+            entry.content
+              ? entry
+              : { ...entry, content: "Failed to connect to DAN server." },
           ),
         );
         finishStream();
       }
     },
-    [capturePreWriteSnapshot, contextProvider, finishStream, mode, persistReviewableEdits, workspaceId],
+    [
+      capturePreWriteSnapshot,
+      contextProvider,
+      finishStream,
+      mode,
+      persistReviewableEdits,
+      workspaceId,
+    ],
   );
 
   const submitComposer = useCallback(() => {

@@ -219,7 +219,7 @@ describe("editorChat attachment helpers", () => {
       });
       return {
         close: () => {
-          onClose?.();
+          onClose?.({ code: 1000 } as CloseEvent);
         },
       } as unknown as WebSocket;
     });
@@ -341,5 +341,49 @@ describe("editorChat attachment helpers", () => {
       expect.objectContaining({ type: "chat_complete" }),
     );
     expect(onCloseWithoutTerminalEvent).not.toHaveBeenCalled();
+  });
+
+  it("reconnects if a chat websocket stays idle too long", async () => {
+    vi.useFakeTimers();
+    const onComplete = vi.fn();
+
+    vi.mocked(connectChatStream).mockImplementation((channelId, onEvent, onClose) => {
+      if (channelId !== "chat-idle") {
+        throw new Error(`Unexpected channel ${channelId}`);
+      }
+      if (vi.mocked(connectChatStream).mock.calls.length === 1) {
+        return {
+          close: vi.fn(() => {
+            onClose?.({ code: 1006 } as CloseEvent);
+          }),
+        } as unknown as WebSocket;
+      }
+      onEvent({
+        type: "chat_complete",
+        content: "Recovered after idle reconnect",
+      });
+      return {
+        close: vi.fn(),
+      } as unknown as WebSocket;
+    });
+
+    streamEditorChatResponse(
+      {
+        message_id: "msg-idle",
+        stream_channel_id: "chat-idle",
+      },
+      {
+        onComplete,
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(12_000);
+    await vi.runAllTimersAsync();
+
+    expect(vi.mocked(connectChatStream)).toHaveBeenCalledTimes(2);
+    expect(onComplete).toHaveBeenCalledWith(
+      "Recovered after idle reconnect",
+      expect.objectContaining({ type: "chat_complete" }),
+    );
   });
 });
