@@ -13,9 +13,29 @@ import time
 from pathlib import Path
 from typing import Any
 
-from dan.engine.recipe.models import BatchCheckpoint, FurnaceSession, PaperStatus
+from dan.engine.recipe.models import (
+    BatchCheckpoint,
+    FurnaceSession,
+    PaperStatus,
+    SessionState,
+)
 
 logger = logging.getLogger(__name__)
+
+_ALLOWED_STATUS_TRANSITIONS: dict[SessionState, set[SessionState]] = {
+    SessionState.QUEUED: {SessionState.ACTIVE, SessionState.PAUSED, SessionState.CANCELLING},
+    SessionState.ACTIVE: {
+        SessionState.PAUSED,
+        SessionState.CANCELLING,
+        SessionState.COMPLETED,
+        SessionState.FAILED,
+    },
+    SessionState.PAUSED: {SessionState.QUEUED, SessionState.ACTIVE, SessionState.CANCELLING},
+    SessionState.CANCELLING: {SessionState.CANCELLED, SessionState.FAILED},
+    SessionState.CANCELLED: {SessionState.QUEUED, SessionState.ACTIVE},
+    SessionState.COMPLETED: set(),
+    SessionState.FAILED: {SessionState.QUEUED, SessionState.ACTIVE, SessionState.CANCELLING},
+}
 
 
 class FurnaceSessionStore:
@@ -28,16 +48,21 @@ class FurnaceSessionStore:
     def __init__(self, base_dir: str | Path | None = None) -> None:
         # Default to ~/.dan/furnace/sessions/
         self._base_dir = Path(base_dir or os.path.expanduser("~/.dan/furnace/sessions"))
+
+    def _ensure_base_dir(self) -> None:
         self._base_dir.mkdir(parents=True, exist_ok=True)
 
     def save(self, session: FurnaceSession) -> None:
         """Persist session state to disk."""
+        self._ensure_base_dir()
         path = self._base_dir / f"{session.session_id}.json"
         session.updated_at = time.time()
         path.write_text(session.model_dump_json(indent=2), encoding="utf-8")
 
     def load(self, session_id: str) -> FurnaceSession | None:
         """Load session by ID. Returns None if not found."""
+        if not self._base_dir.exists():
+            return None
         path = self._base_dir / f"{session_id}.json"
         if not path.exists():
             return None
@@ -51,6 +76,8 @@ class FurnaceSessionStore:
     ) -> list[FurnaceSession]:
         """List all sessions, optionally filtered by corpus_id, recipe_id, or status."""
         sessions: list[FurnaceSession] = []
+        if not self._base_dir.exists():
+            return sessions
         for p in self._base_dir.glob("*.json"):
             try:
                 s = FurnaceSession.model_validate_json(p.read_text(encoding="utf-8"))
@@ -68,6 +95,8 @@ class FurnaceSessionStore:
 
     def delete(self, session_id: str) -> bool:
         """Delete session file. Returns True if deleted."""
+        if not self._base_dir.exists():
+            return False
         path = self._base_dir / f"{session_id}.json"
         if path.exists():
             path.unlink()
@@ -101,7 +130,7 @@ class FurnaceSessionStore:
             description=description,
             variant_label=variant_label,
             tags=list(tags or []),
-            status="paused",
+            status=SessionState.PAUSED,
             paper_queue=queue,
             metadata=session_metadata,
         )
@@ -110,6 +139,8 @@ class FurnaceSessionStore:
 
     def find_by_name(self, name: str) -> FurnaceSession | None:
         """Find first session matching *name* (case-insensitive substring)."""
+        if not self._base_dir.exists():
+            return None
         needle = name.lower()
         for p in self._base_dir.glob("*.json"):
             try:
@@ -164,6 +195,45 @@ class FurnaceSessionStore:
         self.save(session)
         return session
 
+    @staticmethod
+    def _normalize_status(status: SessionState | str) -> SessionState:
+        return status if isinstance(status, SessionState) else SessionState(status)
+
+    def set_status(
+        self,
+        session_id: str,
+        status: SessionState | str,
+        *,
+        allowed_from: set[SessionState | str] | None = None,
+    ) -> FurnaceSession | None:
+        """Transition a session to a new status, optionally enforcing allowed sources."""
+        session = self.load(session_id)
+        if session is None:
+            return None
+        next_status = self._normalize_status(status)
+        current = self._normalize_status(session.status)
+        if current == next_status:
+            return session
+
+        if allowed_from is None:
+            allowed = _ALLOWED_STATUS_TRANSITIONS.get(current, set())
+            if next_status not in allowed:
+                raise ValueError(
+                    f"Invalid furnace session transition: {current.value} -> {next_status.value}",
+                )
+        else:
+            normalized_allowed = {
+                self._normalize_status(candidate) for candidate in allowed_from
+            }
+            if current not in normalized_allowed:
+                raise ValueError(
+                    f"Invalid furnace session transition: {current.value} -> {next_status.value}",
+                )
+
+        session.status = next_status
+        self.save(session)
+        return session
+
     def set_tags(
         self,
         session_id: str,
@@ -179,22 +249,33 @@ class FurnaceSessionStore:
 
     def resume_session(self, session_id: str) -> FurnaceSession | None:
         """Resume a paused/failed session. Marks status active, keeps existing progress."""
-        session = self.load(session_id)
-        if session is None:
-            return None
-        if session.status in ("paused", "failed"):
-            session.status = "active"
-            self.save(session)
-        return session
+        try:
+            return self.set_status(
+                session_id,
+                SessionState.ACTIVE,
+                allowed_from={
+                    SessionState.PAUSED,
+                    SessionState.FAILED,
+                    SessionState.CANCELLED,
+                },
+            )
+        except ValueError:
+            return self.load(session_id)
 
     def pause_session(self, session_id: str) -> bool:
         """Pause an active session."""
-        session = self.load(session_id)
-        if session is None:
+        try:
+            return self.set_status(
+                session_id,
+                SessionState.PAUSED,
+                allowed_from={
+                    SessionState.ACTIVE,
+                    SessionState.QUEUED,
+                    SessionState.CANCELLING,
+                },
+            ) is not None
+        except ValueError:
             return False
-        session.status = "paused"
-        self.save(session)
-        return True
 
     def get_resume_point(self, session_id: str) -> dict[str, Any] | None:
         """Get the resume point for a session: current phase, next pending papers."""

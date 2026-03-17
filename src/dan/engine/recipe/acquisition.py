@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
@@ -26,6 +27,15 @@ if TYPE_CHECKING:
     from dan.engine.recipe.corpus import CorpusWriter
 
 logger = logging.getLogger(__name__)
+
+
+def _path_safe_paper_id(paper_id: str) -> str:
+    raw = str(paper_id or "").strip().replace("\\", "/")
+    if "/" in raw:
+        raw = raw.split("/")[-1]
+    raw = raw.replace("..", " ")
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", raw).strip("._-")
+    return cleaned or "paper"
 
 
 def load_library_config() -> ResearchLibraryConfig:
@@ -47,17 +57,18 @@ def resolve_paper_paths(
 
     pdf_path = None
     note_path = None
+    safe_paper_id = _path_safe_paper_id(paper_id)
 
     for root in config.pdf_roots:
         expanded = os.path.expanduser(root)
-        candidate = os.path.join(expanded, f"{paper_id}.pdf")
+        candidate = os.path.join(expanded, f"{safe_paper_id}.pdf")
         if os.path.exists(candidate):
             pdf_path = candidate
             break
 
     for root in config.note_roots:
         expanded = os.path.expanduser(root)
-        candidate = os.path.join(expanded, paper_id, "index.md")
+        candidate = os.path.join(expanded, safe_paper_id, "index.md")
         if os.path.exists(candidate):
             note_path = candidate
             break
@@ -214,7 +225,7 @@ def generate_paper_note(
         return None
 
     note_root = os.path.expanduser(config.note_roots[0])
-    note_dir = os.path.join(note_root, paper_id)
+    note_dir = os.path.join(note_root, _path_safe_paper_id(paper_id))
     note_path = os.path.join(note_dir, "index.md")
 
     os.makedirs(note_dir, exist_ok=True)

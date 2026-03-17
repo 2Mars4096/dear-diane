@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 import uuid
 from enum import Enum
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -28,6 +28,18 @@ class FurnacePhase(str, Enum):
     AGGREGATE = "aggregate"
     INFER = "infer"
     PROJECT = "project"
+
+
+class SessionState(str, Enum):
+    """Lifecycle state for a furnace session."""
+
+    QUEUED = "queued"
+    ACTIVE = "active"
+    PAUSED = "paused"
+    CANCELLING = "cancelling"
+    CANCELLED = "cancelled"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class PaperStatus(str, Enum):
@@ -157,7 +169,7 @@ class FurnaceSession(BaseModel):
     description: str = ""
     variant_label: str = ""
     tags: list[str] = Field(default_factory=list)
-    status: Literal["active", "paused", "completed", "failed"] = "active"
+    status: SessionState = SessionState.ACTIVE
     current_phase: FurnacePhase = FurnacePhase.NORMALIZE
     current_batch_index: int = 0
     paper_queue: dict[str, PaperStatus] = Field(default_factory=dict)

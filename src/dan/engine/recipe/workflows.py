@@ -12,6 +12,15 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def _path_safe_paper_id(paper_id: str) -> str:
+    raw = str(paper_id or "").strip().replace("\\", "/")
+    if "/" in raw:
+        raw = raw.split("/")[-1]
+    raw = raw.replace("..", " ")
+    cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "-", raw).strip("._-")
+    return cleaned or "paper"
+
+
 def _chunk_by_sections(text: str, max_tokens: int = 30000) -> list[str]:
     """Split text by section headers; sub-split at paragraphs if chunk exceeds max_tokens."""
     approx_chars_per_token = 4
@@ -71,14 +80,23 @@ def build_paper_acquisition_workflow(
         logger.warning("dan.builder not available; cannot build acquisition workflow")
         return None
 
+    safe_paper_id = _path_safe_paper_id(paper_id)
     wf = workflow(
-        f"acquire_{paper_id}",
+        f"acquire_{safe_paper_id}",
         description=f"Acquire, read, summarize, and note paper: {paper_id}",
         tags=["recipe", "acquisition", "paper"],
     )
 
-    dest_pdf = f"{pdf_root}/{paper_id}.pdf" if pdf_root else f"~/.dan/papers/{paper_id}.pdf"
-    dest_note = f"{note_root}/{paper_id}/index.md" if note_root else f"~/.dan/notes/{paper_id}/index.md"
+    dest_pdf = (
+        f"{pdf_root}/{safe_paper_id}.pdf"
+        if pdf_root
+        else f"~/.dan/papers/{safe_paper_id}.pdf"
+    )
+    dest_note = (
+        f"{note_root}/{safe_paper_id}/index.md"
+        if note_root
+        else f"~/.dan/notes/{safe_paper_id}/index.md"
+    )
 
     # Step 1: Download PDF (if URL provided) — uses selector on current page
     download = None

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -21,6 +22,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from dan.engine.recipe.models import SessionState
 from dan.server.routers.dependencies import (
     get_furnace_session_store,
     is_furnace_enabled,
@@ -56,7 +58,13 @@ READ_CHUNK_TIMEOUT_SECONDS = float(
 RECIPE_PILL_MAX_CHARS = int(os.environ.get("DAN_FURNACE_RECIPE_PILL_MAX_CHARS", "8000"))
 
 _session_locks: dict[str, asyncio.Lock] = {}
-_session_progress: dict[str, asyncio.Queue[dict[str, Any]]] = {}
+_session_progress: dict[str, set[asyncio.Queue[dict[str, Any]]]] = {}
+_session_tasks: dict[str, asyncio.Task[None]] = {}
+_session_cancel_events: dict[str, asyncio.Event] = {}
+
+
+class FurnaceCancelled(RuntimeError):
+    """Raised when a running furnace session is cancelled."""
 
 
 def _get_lock(session_id: str) -> asyncio.Lock:
@@ -74,12 +82,85 @@ def _publish_progress(session_id: str, event: dict[str, Any]) -> None:
     """Push a progress event to any listening SSE clients."""
     event.setdefault("session_id", session_id)
     event.setdefault("timestamp", time.time())
-    queue = _session_progress.get(session_id)
-    if queue is not None:
+    queues = list(_session_progress.get(session_id, set()))
+    for queue in queues:
         try:
             queue.put_nowait(event)
         except asyncio.QueueFull:
             logger.warning("Progress queue full for session %s", session_id)
+
+
+def _get_active_task(session_id: str) -> asyncio.Task[None] | None:
+    task = _session_tasks.get(session_id)
+    if task is not None and task.done():
+        _session_tasks.pop(session_id, None)
+        task = None
+    return task
+
+
+def _register_session_task(session_id: str, task: asyncio.Task[None]) -> None:
+    _session_tasks[session_id] = task
+
+    def _cleanup(done: asyncio.Task[None]) -> None:
+        if _session_tasks.get(session_id) is done:
+            _session_tasks.pop(session_id, None)
+        _session_cancel_events.pop(session_id, None)
+
+    task.add_done_callback(_cleanup)
+
+
+def _artifact_dir(session_id: str, *, create: bool = False) -> Path:
+    path = (ARTIFACTS_ROOT / session_id).expanduser()
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _artifact_path(artifact_dir: Path, filename: str) -> Path:
+    root = artifact_dir.resolve(strict=False)
+    candidate = (artifact_dir / filename).resolve(strict=False)
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Unsafe furnace artifact path derived from source id: {filename}",
+        ) from exc
+    return candidate
+
+
+def _artifact_source_path(
+    session_id: str,
+    source_id: str,
+    suffix: str,
+    *,
+    create_dir: bool = False,
+) -> Path:
+    artifact_dir = _artifact_dir(session_id, create=create_dir)
+    return _artifact_path(artifact_dir, f"{source_id}{suffix}")
+
+
+def _stable_id_suffix(seed: str, *, length: int = 8) -> str:
+    return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:length]
+
+
+def _sanitize_source_id(value: str, *, fallback: str = "source") -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    if "/" in text:
+        text = text.split("/")[-1]
+    text = text.replace("..", " ")
+    text = re.sub(r"[^a-zA-Z0-9._-]+", "-", text).strip("._-")
+    text = re.sub(r"-{2,}", "-", text)
+    return (text or fallback)[:80]
+
+
+def _pdf_path_to_source_id(pdf_path: str) -> str:
+    expanded = os.path.expanduser(pdf_path)
+    try:
+        resolved = str(Path(expanded).resolve(strict=False))
+    except Exception:
+        resolved = expanded
+    stem = _sanitize_source_id(Path(expanded).stem, fallback="paper")
+    return f"{stem}-{_stable_id_suffix(resolved)}"
 
 
 # ---------------------------------------------------------------------------
@@ -200,13 +281,16 @@ def _detect_source_type_from_url(url: str) -> str:
 def _url_to_source_id(url: str) -> str:
     """Derive a source ID from a URL."""
     from urllib.parse import urlparse
+
     parsed = urlparse(url)
+    host = _sanitize_source_id(parsed.netloc.split("@")[-1].split(":")[0], fallback="url")
     path_parts = [p for p in parsed.path.strip("/").split("/") if p]
     if path_parts:
-        stem = path_parts[-1].split(".")[0][:40]
-        if stem:
-            return stem
-    return f"url-{int(time.time())}"
+        stem = _sanitize_source_id(path_parts[-1].split(".")[0], fallback=host)
+    else:
+        stem = host
+    normalized_url = parsed._replace(fragment="").geturl().rstrip("/")
+    return f"{host}-{stem}-{_stable_id_suffix(normalized_url or url)}"[:80]
 
 
 def _split_pasted_entries(value: str) -> list[str]:
@@ -264,10 +348,164 @@ def _dedupe_keep_order(values: list[str]) -> list[str]:
     return out
 
 
+def _unique_source_id(candidate: str, *, existing: set[str], seed: str) -> str:
+    if candidate not in existing:
+        existing.add(candidate)
+        return candidate
+
+    hashed = f"{candidate}-{_stable_id_suffix(seed)}"[:80].rstrip("-")
+    if hashed not in existing:
+        existing.add(hashed)
+        return hashed
+
+    counter = 2
+    while True:
+        renamed = f"{candidate}-{counter}"[:80].rstrip("-")
+        if renamed not in existing:
+            existing.add(renamed)
+            return renamed
+        counter += 1
+
+
 def _slug_fragment(value: str, fallback: str) -> str:
     """Build a filesystem/API-friendly slug fragment."""
     text = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")
     return (text or fallback)[:30]
+
+
+def _get_cancel_event(session_id: str) -> asyncio.Event:
+    event = _session_cancel_events.get(session_id)
+    if event is None:
+        event = asyncio.Event()
+        _session_cancel_events[session_id] = event
+    return event
+
+
+async def _raise_if_cancelled(session_id: str, store: Any, cancel_event: asyncio.Event | None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise FurnaceCancelled(f"Session {session_id} was cancelled")
+    session = store.load(session_id)
+    if session is None:
+        raise FurnaceCancelled(f"Session {session_id} no longer exists")
+    if session.status in {SessionState.CANCELLING, SessionState.CANCELLED}:
+        raise FurnaceCancelled(f"Session {session_id} was cancelled")
+
+
+def _safe_set_status(
+    store: Any,
+    session_id: str,
+    status: SessionState,
+    *,
+    allowed_from: set[SessionState] | None = None,
+) -> Any | None:
+    try:
+        return store.set_status(session_id, status, allowed_from=allowed_from)
+    except ValueError:
+        logger.debug("Skipping invalid furnace status transition for %s -> %s", session_id, status.value)
+        return store.load(session_id)
+
+
+def _reconcile_stale_session_state(store: Any, session: Any | None) -> Any | None:
+    """Repair persisted worker states that survived process restart without a live task."""
+    if session is None:
+        return None
+    if _get_active_task(session.session_id) is not None:
+        return session
+
+    next_status: SessionState | None = None
+    if session.status in {SessionState.ACTIVE, SessionState.QUEUED}:
+        next_status = SessionState.PAUSED
+    elif session.status == SessionState.CANCELLING:
+        next_status = (
+            SessionState.CANCELLED
+            if bool((session.metadata or {}).get("cancelled"))
+            else SessionState.PAUSED
+        )
+
+    if next_status is None:
+        return session
+
+    logger.warning(
+        "Recovering stale furnace session %s from %s -> %s (no live worker task)",
+        session.session_id,
+        session.status.value,
+        next_status.value,
+    )
+    repaired = store.set_status(
+        session.session_id,
+        next_status,
+        allowed_from={session.status},
+    )
+    return repaired or store.load(session.session_id)
+
+
+def _schedule_session_worker(
+    session_id: str,
+    *,
+    store: Any,
+    app: Any,
+    announce_event: str,
+) -> None:
+    cancel_event = asyncio.Event()
+    _session_cancel_events[session_id] = cancel_event
+    lock = _get_lock(session_id)
+
+    async def _run() -> None:
+        async with lock:
+            try:
+                session = store.load(session_id)
+                if session is None:
+                    return
+                if cancel_event.is_set() or session.status == SessionState.CANCELLING:
+                    raise FurnaceCancelled(f"Session {session_id} was cancelled")
+                if session.status not in {SessionState.QUEUED, SessionState.ACTIVE}:
+                    return
+
+                _safe_set_status(
+                    store,
+                    session_id,
+                    SessionState.ACTIVE,
+                    allowed_from={SessionState.QUEUED, SessionState.ACTIVE},
+                )
+                _publish_progress(session_id, {"type": announce_event, "session_id": session_id})
+
+                await _execute_furnace_pipeline(
+                    session_id,
+                    store,
+                    app,
+                    cancel_event=cancel_event,
+                )
+            except FurnaceCancelled:
+                cancelled = _safe_set_status(
+                    store,
+                    session_id,
+                    SessionState.CANCELLED,
+                    allowed_from={SessionState.CANCELLING, SessionState.QUEUED, SessionState.ACTIVE},
+                )
+                if cancelled is not None:
+                    cancelled.metadata["cancelled"] = True
+                    store.save(cancelled)
+                _publish_progress(session_id, {"type": "session_cancelled"})
+            except Exception as exc:
+                logger.exception("Furnace pipeline failed for session %s", session_id)
+                failed = _safe_set_status(
+                    store,
+                    session_id,
+                    SessionState.FAILED,
+                    allowed_from={
+                        SessionState.QUEUED,
+                        SessionState.ACTIVE,
+                        SessionState.CANCELLING,
+                        SessionState.PAUSED,
+                    },
+                )
+                if failed is not None:
+                    failed.metadata["last_error"] = str(exc)
+                    store.save(failed)
+                _publish_progress(session_id, {"type": "session_failed", "error": str(exc)})
+
+    task = asyncio.create_task(_run())
+    _register_session_task(session_id, task)
 
 
 # ---------------------------------------------------------------------------
@@ -388,8 +626,7 @@ async def create_session(body: CreateSessionRequest):
         metadata=session_metadata,
     )
 
-    artifact_dir = ARTIFACTS_ROOT / session.session_id
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_dir = _artifact_dir(session.session_id, create=True)
 
     return {
         "session": session.model_dump(),
@@ -407,16 +644,22 @@ async def add_sources(session_id: str, body: AddSourcesRequest):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     all_ids: list[str] = []
-    pdf_paths: dict[str, str] = session.metadata.get("pdf_paths", {})
-    urls: dict[str, str] = session.metadata.get("urls", {})
-    source_types: dict[str, str] = session.metadata.get("source_types", {})
+    existing_ids = set(session.paper_queue.keys())
+    renamed_ids: dict[str, str] = {}
+    pdf_paths: dict[str, str] = dict(session.metadata.get("pdf_paths", {}))
+    urls: dict[str, str] = dict(session.metadata.get("urls", {}))
+    source_types: dict[str, str] = dict(session.metadata.get("source_types", {}))
 
     parsed_source_ids: list[str] = []
     for raw in body.source_ids:
         parsed_source_ids.extend(_split_pasted_entries(raw))
     for sid in _dedupe_keep_order(parsed_source_ids):
-        all_ids.append(sid)
-        source_types[sid] = _detect_source_type(sid)
+        canonical = _sanitize_source_id(sid, fallback="source")
+        unique_id = _unique_source_id(canonical, existing=existing_ids, seed=f"source:{sid}")
+        all_ids.append(unique_id)
+        source_types[unique_id] = _detect_source_type(unique_id)
+        if unique_id != sid:
+            renamed_ids[sid] = unique_id
 
     parsed_pdf_paths: list[str] = []
     for raw in body.pdf_paths:
@@ -425,10 +668,16 @@ async def add_sources(session_id: str, body: AddSourcesRequest):
         expanded = os.path.expanduser(pdf_path)
         if not os.path.isabs(expanded):
             raise HTTPException(status_code=400, detail=f"PDF path must be absolute or use ~/: {pdf_path}")
-        paper_id = Path(expanded).stem
+        paper_id = _unique_source_id(
+            _pdf_path_to_source_id(expanded),
+            existing=existing_ids,
+            seed=f"pdf:{Path(expanded).resolve(strict=False)}",
+        )
         all_ids.append(paper_id)
         pdf_paths[paper_id] = expanded
         source_types[paper_id] = "paper"
+        if paper_id != pdf_path:
+            renamed_ids[pdf_path] = paper_id
 
     parsed_urls: list[str] = []
     for raw in body.urls:
@@ -436,10 +685,15 @@ async def add_sources(session_id: str, body: AddSourcesRequest):
     for url in _dedupe_keep_order(parsed_urls):
         if not url.lower().startswith(("http://", "https://")):
             continue
-        source_id = _url_to_source_id(url)
+        source_id = _unique_source_id(
+            _url_to_source_id(url),
+            existing=existing_ids,
+            seed=f"url:{url}",
+        )
         all_ids.append(source_id)
         urls[source_id] = url
         source_types[source_id] = _detect_source_type_from_url(url)
+        renamed_ids[url] = source_id
 
     if not all_ids:
         raise HTTPException(status_code=400, detail="No sources provided")
@@ -453,7 +707,13 @@ async def add_sources(session_id: str, body: AddSourcesRequest):
     updated.metadata["source_types"] = source_types
     store.save(updated)
 
-    return {"session_id": session_id, "added": len(all_ids), "total_sources": len(updated.paper_queue)}
+    return {
+        "session_id": session_id,
+        "added": len(all_ids),
+        "total_sources": len(updated.paper_queue),
+        "source_ids": all_ids,
+        "renamed_ids": renamed_ids,
+    }
 
 
 @router.post("/api/furnace/sessions/{session_id}/start")
@@ -461,42 +721,37 @@ async def start_session(session_id: str, request: Request):
     """Trigger the furnace distillation pipeline for a session."""
     _require_furnace()
     store = get_furnace_session_store()
-
-    lock = _get_lock(session_id)
-    if lock.locked():
+    if _get_active_task(session_id) is not None:
         return {"session_id": session_id, "status": "already_running"}
 
-    session = store.load(session_id)
+    session = _reconcile_stale_session_state(store, store.load(session_id))
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    if session.status == "active":
+    if session.status in {SessionState.ACTIVE, SessionState.QUEUED, SessionState.CANCELLING}:
         return {"session_id": session_id, "status": "already_running"}
 
-    if session.status == "completed":
+    if session.status == SessionState.COMPLETED:
         raise HTTPException(status_code=409, detail="Session is already completed; create a new session or variant")
 
-    async def _run_furnace() -> None:
-        async with lock:
-            s = store.load(session_id)
-            if s is None:
-                return
-            s.status = "active"
-            store.save(s)
-            _publish_progress(session_id, {"type": "session_started", "session_id": session_id})
+    queued = _safe_set_status(
+        store,
+        session_id,
+        SessionState.QUEUED,
+        allowed_from={SessionState.PAUSED, SessionState.FAILED, SessionState.CANCELLED},
+    )
+    if queued is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    queued.metadata.pop("cancelled", None)
+    queued.metadata.pop("last_error", None)
+    store.save(queued)
 
-            try:
-                await _execute_furnace_pipeline(session_id, store, request.app)
-            except Exception as exc:
-                logger.exception("Furnace pipeline failed for session %s", session_id)
-                s = store.load(session_id)
-                if s is not None:
-                    s.status = "failed"
-                    s.metadata["last_error"] = str(exc)
-                    store.save(s)
-                _publish_progress(session_id, {"type": "session_failed", "error": str(exc)})
-
-    asyncio.create_task(_run_furnace())
+    _schedule_session_worker(
+        session_id,
+        store=store,
+        app=request.app,
+        announce_event="session_started",
+    )
     return {"session_id": session_id, "status": "starting"}
 
 
@@ -517,27 +772,34 @@ async def resume_session(session_id: str, request: Request):
     """Resume a paused/failed session."""
     _require_furnace()
     store = get_furnace_session_store()
-    session = store.resume_session(session_id)
+    if _get_active_task(session_id) is not None:
+        return {"session_id": session_id, "status": "already_running"}
+
+    session = _reconcile_stale_session_state(store, store.load(session_id))
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    lock = _get_lock(session_id)
+    if session.status not in {SessionState.PAUSED, SessionState.FAILED, SessionState.CANCELLED}:
+        raise HTTPException(status_code=409, detail=f"Session is not resumable from status '{session.status.value}'")
 
-    async def _resume() -> None:
-        async with lock:
-            _publish_progress(session_id, {"type": "session_resumed"})
-            try:
-                await _execute_furnace_pipeline(session_id, store, request.app)
-            except Exception as exc:
-                logger.exception("Furnace resume failed for session %s", session_id)
-                s = store.load(session_id)
-                if s is not None:
-                    s.status = "failed"
-                    s.metadata["last_error"] = str(exc)
-                    store.save(s)
-                _publish_progress(session_id, {"type": "session_failed", "error": str(exc)})
+    queued = _safe_set_status(
+        store,
+        session_id,
+        SessionState.QUEUED,
+        allowed_from={SessionState.PAUSED, SessionState.FAILED, SessionState.CANCELLED},
+    )
+    if queued is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    queued.metadata.pop("cancelled", None)
+    queued.metadata.pop("last_error", None)
+    store.save(queued)
 
-    asyncio.create_task(_resume())
+    _schedule_session_worker(
+        session_id,
+        store=store,
+        app=request.app,
+        announce_event="session_resumed",
+    )
     return {"session_id": session_id, "status": "resuming"}
 
 
@@ -546,14 +808,47 @@ async def cancel_session(session_id: str):
     """Cancel / fail a session."""
     _require_furnace()
     store = get_furnace_session_store()
-    session = store.load(session_id)
+    session = _reconcile_stale_session_state(store, store.load(session_id))
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
-    session.status = "failed"
-    session.metadata["cancelled"] = True
-    store.save(session)
-    _publish_progress(session_id, {"type": "session_cancelled"})
-    return {"session_id": session_id, "status": "failed"}
+    if session.status == SessionState.COMPLETED:
+        raise HTTPException(status_code=409, detail="Session is already completed")
+
+    active_task = _get_active_task(session_id)
+    if active_task is None:
+        cancelled = _safe_set_status(
+            store,
+            session_id,
+            SessionState.CANCELLED,
+            allowed_from={
+                SessionState.ACTIVE,
+                SessionState.QUEUED,
+                SessionState.PAUSED,
+                SessionState.FAILED,
+                SessionState.CANCELLING,
+                SessionState.CANCELLED,
+            },
+        )
+        if cancelled is None:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        cancelled.metadata["cancelled"] = True
+        store.save(cancelled)
+        _publish_progress(session_id, {"type": "session_cancelled"})
+        return {"session_id": session_id, "status": SessionState.CANCELLED.value}
+
+    cancelling = _safe_set_status(
+        store,
+        session_id,
+        SessionState.CANCELLING,
+        allowed_from={SessionState.QUEUED, SessionState.ACTIVE, SessionState.CANCELLING},
+    )
+    if cancelling is None:
+        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+    cancelling.metadata["cancelled"] = True
+    store.save(cancelling)
+    _get_cancel_event(session_id).set()
+    _publish_progress(session_id, {"type": "session_cancelling"})
+    return {"session_id": session_id, "status": SessionState.CANCELLING.value}
 
 
 @router.delete("/api/furnace/sessions/{session_id}")
@@ -561,11 +856,15 @@ async def delete_session(session_id: str, delete_artifacts: bool = True):
     """Delete a furnace session and optionally its persisted artifacts."""
     _require_furnace()
     store = get_furnace_session_store()
-    session = store.load(session_id)
+    session = _reconcile_stale_session_state(store, store.load(session_id))
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    if session.status == "active":
+    if _get_active_task(session_id) is not None or session.status in {
+        SessionState.ACTIVE,
+        SessionState.QUEUED,
+        SessionState.CANCELLING,
+    }:
         raise HTTPException(
             status_code=409,
             detail="Session is currently active. Pause/cancel it before deleting.",
@@ -575,13 +874,15 @@ async def delete_session(session_id: str, delete_artifacts: bool = True):
     if not deleted:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
-    queue = _session_progress.pop(session_id, None)
-    if queue is not None:
+    queues = _session_progress.pop(session_id, set())
+    for queue in list(queues):
         try:
             queue.put_nowait({"type": "session_deleted", "session_id": session_id})
         except asyncio.QueueFull:
             pass
     _session_locks.pop(session_id, None)
+    _session_tasks.pop(session_id, None)
+    _session_cancel_events.pop(session_id, None)
 
     artifact_dir = ARTIFACTS_ROOT / session_id
     artifacts_deleted = False
@@ -606,6 +907,7 @@ async def list_sessions(
     _require_furnace()
     store = get_furnace_session_store()
     sessions = store.list_sessions(corpus_id=corpus_id, recipe_id=recipe_id, status=status)
+    sessions = [_reconcile_stale_session_state(store, session) for session in sessions]
     return {"sessions": [_session_to_summary(s) for s in sessions]}
 
 
@@ -614,7 +916,7 @@ async def get_session(session_id: str):
     """Get full session detail including progress and source queue."""
     _require_furnace()
     store = get_furnace_session_store()
-    session = store.load(session_id)
+    session = _reconcile_stale_session_state(store, store.load(session_id))
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
     return {"session": session.model_dump()}
@@ -625,7 +927,7 @@ async def get_recipe(session_id: str):
     """Return compiled recipe.md and skill.md artifacts for a session."""
     _require_furnace()
     store = get_furnace_session_store()
-    session = store.load(session_id)
+    session = _reconcile_stale_session_state(store, store.load(session_id))
     if session is None:
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
@@ -753,7 +1055,8 @@ async def session_events(session_id: str, request: Request):
         raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
 
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=200)
-    _session_progress[session_id] = queue
+    subscribers = _session_progress.setdefault(session_id, set())
+    subscribers.add(queue)
 
     async def event_generator():
         try:
@@ -767,7 +1070,11 @@ async def session_events(session_id: str, request: Request):
                 except asyncio.TimeoutError:
                     yield f"data: {json.dumps({'type': 'keepalive'})}\n\n"
         finally:
-            _session_progress.pop(session_id, None)
+            subscribers = _session_progress.get(session_id)
+            if subscribers is not None:
+                subscribers.discard(queue)
+                if not subscribers:
+                    _session_progress.pop(session_id, None)
 
     return StreamingResponse(
         event_generator(),
@@ -789,6 +1096,8 @@ async def _execute_furnace_pipeline(
     session_id: str,
     store: Any,
     app: Any,
+    *,
+    cancel_event: asyncio.Event | None = None,
 ) -> None:
     """Run the full furnace pipeline: read → normalize → extract → aggregate → infer → project.
 
@@ -809,8 +1118,16 @@ async def _execute_furnace_pipeline(
             "type": "session_warning",
             "message": "No sources in queue. Add sources before starting.",
         })
-        session.status = "paused"
-        store.save(session)
+        _safe_set_status(
+            store,
+            session_id,
+            SessionState.PAUSED,
+            allowed_from={
+                SessionState.ACTIVE,
+                SessionState.QUEUED,
+                SessionState.CANCELLING,
+            },
+        )
         return
 
     # --- Phase: Read / Ingest ---
@@ -822,6 +1139,7 @@ async def _execute_furnace_pipeline(
     })
 
     for source_idx, source_id in enumerate(pending):
+        await _raise_if_cancelled(session_id, store, cancel_event)
         _publish_progress(session_id, {
             "type": "source_status",
             "source_id": source_id,
@@ -834,16 +1152,31 @@ async def _execute_furnace_pipeline(
             # Source readers apply their own bounded timeouts (per-request or per-chunk).
             # Avoid wrapping the whole source read in one global timeout window, which can
             # incorrectly fail long PDFs even when chunked progress is healthy.
-            read_result = await _read_source(source_id, session, app)
+            read_result = await _read_source(
+                source_id,
+                session,
+                app,
+                cancel_event=cancel_event,
+            )
             text = read_result.get("text", "") if isinstance(read_result, dict) else str(read_result or "")
             if text:
-                artifact_dir = ARTIFACTS_ROOT / session_id
-                artifact_dir.mkdir(parents=True, exist_ok=True)
-                (artifact_dir / f"{source_id}.txt").write_text(text, encoding="utf-8")
+                text_path = _artifact_source_path(
+                    session_id,
+                    source_id,
+                    ".txt",
+                    create_dir=True,
+                )
+                text_path.write_text(text, encoding="utf-8")
                 if isinstance(read_result, dict):
                     chunk_summaries = read_result.get("chunk_summaries") or []
                     if chunk_summaries:
-                        (artifact_dir / f"{source_id}.chunks.json").write_text(
+                        chunk_path = _artifact_source_path(
+                            session_id,
+                            source_id,
+                            ".chunks.json",
+                            create_dir=True,
+                        )
+                        chunk_path.write_text(
                             json.dumps(chunk_summaries, ensure_ascii=False, indent=2),
                             encoding="utf-8",
                         )
@@ -861,6 +1194,8 @@ async def _execute_furnace_pipeline(
                     "status": "skipped",
                     "reason": "No text extracted",
                 })
+        except FurnaceCancelled:
+            raise
         except Exception as exc:
             logger.warning("Failed to read source %s: %s", source_id, exc)
             store.update_paper_status(session_id, source_id, PaperStatus.SKIPPED)
@@ -872,8 +1207,9 @@ async def _execute_furnace_pipeline(
             })
 
         session = store.load(session_id)
-        if session is None or session.status == "paused":
+        if session is None or session.status == SessionState.PAUSED:
             return
+        await _raise_if_cancelled(session_id, store, cancel_event)
 
     _publish_progress(session_id, {"type": "phase_completed", "phase": "read"})
 
@@ -882,17 +1218,21 @@ async def _execute_furnace_pipeline(
     if session is None:
         return
 
-    artifact_dir = ARTIFACTS_ROOT / session_id
+    artifact_dir = _artifact_dir(session_id)
     all_texts: list[str] = []
     for sid in session.papers_by_status(PaperStatus.INGESTED) + session.papers_by_status(PaperStatus.EXTRACTED):
-        txt_path = artifact_dir / f"{sid}.txt"
+        txt_path = _artifact_source_path(session_id, sid, ".txt")
         if txt_path.exists():
             all_texts.append(f"=== Source: {sid} ===\n{txt_path.read_text(encoding='utf-8')}")
 
     if not all_texts:
         _publish_progress(session_id, {"type": "session_warning", "message": "No text to distill."})
-        session.status = "paused"
-        store.save(session)
+        _safe_set_status(
+            store,
+            session_id,
+            SessionState.PAUSED,
+            allowed_from={SessionState.ACTIVE, SessionState.CANCELLING},
+        )
         return
 
     combined_input = "\n\n".join(all_texts)
@@ -908,8 +1248,9 @@ async def _execute_furnace_pipeline(
 
     phase_output = combined_input
     for phase in phases:
+        await _raise_if_cancelled(session_id, store, cancel_event)
         session = store.load(session_id)
-        if session is None or session.status == "paused":
+        if session is None or session.status == SessionState.PAUSED:
             return
 
         if session.total_cost_usd >= session.budget_limit_usd:
@@ -918,11 +1259,15 @@ async def _execute_furnace_pipeline(
                 "total_cost": session.total_cost_usd,
                 "limit": session.budget_limit_usd,
             })
-            session.status = "paused"
-            store.save(session)
+            _safe_set_status(
+                store,
+                session_id,
+                SessionState.PAUSED,
+                allowed_from={SessionState.ACTIVE, SessionState.CANCELLING},
+            )
             return
 
-        cached_artifact = artifact_dir / f"phase_{phase.value}.json"
+        cached_artifact = _artifact_path(artifact_dir, f"phase_{phase.value}.json")
         if cached_artifact.exists():
             try:
                 cached = json.loads(cached_artifact.read_text(encoding="utf-8"))
@@ -958,10 +1303,11 @@ async def _execute_furnace_pipeline(
                     session,
                     app,
                     session_id=session_id,
+                    cancel_event=cancel_event,
                 ),
                 timeout=this_timeout,
             )
-            (artifact_dir / f"phase_{phase.value}.json").write_text(
+            _artifact_path(artifact_dir, f"phase_{phase.value}.json").write_text(
                 json.dumps({"output": phase_output[:50000]}, ensure_ascii=False),
                 encoding="utf-8",
             )
@@ -985,6 +1331,8 @@ async def _execute_furnace_pipeline(
                 },
             )
             raise RuntimeError(timeout_msg) from exc
+        except FurnaceCancelled:
+            raise
         except Exception as exc:
             logger.exception("Phase %s failed for session %s", phase.value, session_id)
             _publish_progress(session_id, {
@@ -1006,6 +1354,7 @@ async def _execute_furnace_pipeline(
     recipe_full_md = _strip_markdown_fence(phase_output)
     recipe_md = recipe_full_md
     if len(recipe_full_md) > RECIPE_PILL_MAX_CHARS:
+        await _raise_if_cancelled(session_id, store, cancel_event)
         try:
             _publish_progress(session_id, {
                 "type": "phase_started",
@@ -1016,6 +1365,7 @@ async def _execute_furnace_pipeline(
                 app=app,
                 max_chars=RECIPE_PILL_MAX_CHARS,
                 session_id=session_id,
+                cancel_event=cancel_event,
             )
             _publish_progress(session_id, {
                 "type": "phase_completed",
@@ -1037,8 +1387,8 @@ async def _execute_furnace_pipeline(
             )
             recipe_md = recipe_full_md[:RECIPE_PILL_MAX_CHARS].strip()
 
-    (artifact_dir / "recipe.md").write_text(recipe_md, encoding="utf-8")
-    (artifact_dir / "recipe_full.md").write_text(recipe_full_md, encoding="utf-8")
+    _artifact_path(artifact_dir, "recipe.md").write_text(recipe_md, encoding="utf-8")
+    _artifact_path(artifact_dir, "recipe_full.md").write_text(recipe_full_md, encoding="utf-8")
 
     try:
         from dan.engine.recipe.recipe_compiler import RecipeCompiler
@@ -1057,15 +1407,19 @@ async def _execute_furnace_pipeline(
                     session.corpus_id, session.recipe_id, reader, ledger
                 )
                 skill_md = compiler.compile_skill_md()
-                (artifact_dir / "skill.md").write_text(skill_md, encoding="utf-8")
+                _artifact_path(artifact_dir, "skill.md").write_text(skill_md, encoding="utf-8")
     except Exception:
         logger.debug("Skill compilation skipped", exc_info=True)
 
     # --- Mark completed ---
     session = store.load(session_id)
     if session is not None:
-        session.status = "completed"
-        store.save(session)
+        _safe_set_status(
+            store,
+            session_id,
+            SessionState.COMPLETED,
+            allowed_from={SessionState.ACTIVE},
+        )
     _publish_progress(session_id, {
         "type": "session_completed",
         "session_id": session_id,
@@ -1073,7 +1427,13 @@ async def _execute_furnace_pipeline(
     })
 
 
-async def _read_source(source_id: str, session: Any, app: Any) -> dict[str, Any] | None:
+async def _read_source(
+    source_id: str,
+    session: Any,
+    app: Any,
+    *,
+    cancel_event: asyncio.Event | None = None,
+) -> dict[str, Any] | None:
     """Read a single source (PDF, URL, etc.) and return its text content."""
     metadata = session.metadata or {}
     pdf_paths = metadata.get("pdf_paths", {})
@@ -1084,6 +1444,7 @@ async def _read_source(source_id: str, session: Any, app: Any) -> dict[str, Any]
             pdf_paths[source_id],
             source_id=source_id,
             session_id=getattr(session, "session_id", ""),
+            cancel_event=cancel_event,
         )
 
     if source_id in urls:
@@ -1099,6 +1460,7 @@ async def _read_source(source_id: str, session: Any, app: Any) -> dict[str, Any]
             paths["pdf_path"],
             source_id=source_id,
             session_id=getattr(session, "session_id", ""),
+            cancel_event=cancel_event,
         )
 
     return None
@@ -1113,7 +1475,11 @@ def _extractive_chunk_summary(chunk_text: str, *, max_len: int = 500) -> str:
 
 
 async def _read_pdf_source(
-    pdf_path: str, *, source_id: str = "", session_id: str = ""
+    pdf_path: str,
+    *,
+    source_id: str = "",
+    session_id: str = "",
+    cancel_event: asyncio.Event | None = None,
 ) -> dict[str, Any] | None:
     """Read a PDF file in page chunks and return aggregated text + chunk summaries."""
     try:
@@ -1143,6 +1509,8 @@ async def _read_pdf_source(
     chunk_summaries: list[dict[str, Any]] = []
 
     for start in range(0, total_pages, max(1, READ_CHUNK_PAGES)):
+        if cancel_event is not None and cancel_event.is_set():
+            raise FurnaceCancelled(f"Session {session_id or source_id} was cancelled")
         end = min(total_pages, start + max(1, READ_CHUNK_PAGES))
         try:
             if READ_CHUNK_TIMEOUT_SECONDS > 0:
@@ -1222,6 +1590,7 @@ async def _run_furnace_phase(
     session: Any,
     app: Any,
     session_id: str = "",
+    cancel_event: asyncio.Event | None = None,
 ) -> str:
     """Run a single furnace phase via streaming LLM call with live progress."""
     from dan.engine.recipe.models import FurnacePhase
@@ -1279,7 +1648,12 @@ async def _run_furnace_phase(
     try:
         if session_id:
             result = await _llm_call_streaming(
-                system_prompt, user_prompt, app, session_id, phase.value
+                system_prompt,
+                user_prompt,
+                app,
+                session_id,
+                phase.value,
+                cancel_event=cancel_event,
             )
         else:
             result = await _llm_call(system_prompt, user_prompt, app)
@@ -1300,7 +1674,11 @@ def _strip_markdown_fence(text: str) -> str:
 
 
 async def _compress_recipe_to_pill(
-    recipe_text: str, app: Any, max_chars: int, session_id: str = ""
+    recipe_text: str,
+    app: Any,
+    max_chars: int,
+    session_id: str = "",
+    cancel_event: asyncio.Event | None = None,
 ) -> str:
     """Compress long recipe output into a concise, execution-ready pill."""
     target_words = max(250, min(900, max_chars // 9))
@@ -1324,7 +1702,12 @@ async def _compress_recipe_to_pill(
     )
     if session_id:
         compressed = await _llm_call_streaming(
-            system_prompt, user_prompt, app, session_id, "compress"
+            system_prompt,
+            user_prompt,
+            app,
+            session_id,
+            "compress",
+            cancel_event=cancel_event,
         )
     else:
         compressed = await _llm_call(system_prompt, user_prompt, app)
@@ -1370,6 +1753,7 @@ async def _llm_call_streaming(
     app: Any,
     session_id: str,
     phase_label: str,
+    cancel_event: asyncio.Event | None = None,
 ) -> str:
     """Streaming LLM call that publishes periodic phase_progress SSE events."""
     provider, model = _resolve_provider(app)
@@ -1387,6 +1771,8 @@ async def _llm_call_streaming(
         async for chunk in provider.stream(
             messages=messages, model=model, temperature=0.3
         ):
+            if cancel_event is not None and cancel_event.is_set():
+                raise FurnaceCancelled(f"Session {session_id} was cancelled")
             accumulated = chunk.accumulated
             now = time.monotonic()
             elapsed = now - t0
