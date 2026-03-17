@@ -99,6 +99,8 @@ const SECTION_ORDER: MentionSection[] = [
   "workflow",
   "subgraph",
   "file",
+  "symbol",
+  "folder",
   "code",
   "docs",
   "chat",
@@ -109,6 +111,8 @@ const SECTION_LABELS: Record<MentionSection, string> = {
   workflow: "Workflows",
   subgraph: "Sub-graphs",
   file: "Files",
+  symbol: "Symbols",
+  folder: "Folders",
   code: "Code",
   docs: "Docs",
   chat: "Past Chats",
@@ -238,6 +242,10 @@ function SectionIcon({
       return <Layers size={14} className="text-amber-500 flex-shrink-0" />;
     case "file":
       return <FileText size={14} className="text-purple-500 flex-shrink-0" />;
+    case "symbol":
+      return <Code size={14} className="text-cyan-500 flex-shrink-0" />;
+    case "folder":
+      return <FolderOpen size={14} className="text-orange-500 flex-shrink-0" />;
     case "code":
       return <Code size={14} className="text-cyan-500 flex-shrink-0" />;
     case "docs":

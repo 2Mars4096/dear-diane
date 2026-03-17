@@ -629,7 +629,7 @@ function CallStackSection() {
 
   const handleFrameClick = async (frame: (typeof callStack)[0]) => {
     setActiveFrameId(frame.id);
-    setPausedLocation(frame.source?.path ?? null, frame.line);
+    setPausedLocation(frame.source?.path ?? null, frame.line ?? null);
 
     try {
       const scopesResult = await nativeDebug.scopes(frame.id);
@@ -689,12 +689,96 @@ function CallStackSection() {
 /*  Breakpoints section                                               */
 /* ------------------------------------------------------------------ */
 
+function BreakpointConditionEditor({
+  filePath,
+  line,
+  currentCondition,
+  currentLogMessage,
+  editField,
+  onClose,
+}: {
+  filePath: string;
+  line: number;
+  currentCondition?: string;
+  currentLogMessage?: string;
+  editField: "condition" | "logMessage";
+  onClose: () => void;
+}) {
+  const setBreakpointCondition = useDebugStore((s) => s.setBreakpointCondition);
+  const setBreakpointLogMessage = useDebugStore((s) => s.setBreakpointLogMessage);
+  const [value, setValue] = useState(
+    editField === "condition" ? (currentCondition ?? "") : (currentLogMessage ?? ""),
+  );
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  const handleSubmit = () => {
+    if (editField === "condition") {
+      setBreakpointCondition(filePath, line, value);
+    } else {
+      setBreakpointLogMessage(filePath, line, value);
+    }
+    onClose();
+  };
+
+  return (
+    <div className="flex items-center gap-1 px-2 py-1 bg-[#2a2a2a] border border-[#007acc] rounded mx-1 my-0.5">
+      <span className="text-[10px] text-gray-500 shrink-0 uppercase">
+        {editField === "condition" ? "if" : "log"}
+      </span>
+      <input
+        ref={inputRef}
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") handleSubmit();
+          if (e.key === "Escape") onClose();
+        }}
+        onBlur={handleSubmit}
+        placeholder={
+          editField === "condition"
+            ? "Expression (e.g. x > 5)"
+            : "Log message (e.g. value is {x})"
+        }
+        className="flex-1 bg-transparent text-[11px] text-gray-200 outline-none placeholder-gray-600 font-mono min-w-0"
+      />
+    </div>
+  );
+}
+
 function BreakpointsSection() {
   const breakpoints = useDebugStore((s) => s.breakpoints);
   const removeBreakpoint = useDebugStore((s) => s.removeBreakpoint);
   const allBps = Object.entries(breakpoints).flatMap(([filePath, bps]) =>
     bps.map((bp) => ({ filePath, ...bp })),
   );
+
+  const [ctxMenu, setCtxMenu] = useState<{
+    x: number;
+    y: number;
+    filePath: string;
+    line: number;
+  } | null>(null);
+  const [editingBp, setEditingBp] = useState<{
+    filePath: string;
+    line: number;
+    field: "condition" | "logMessage";
+  } | null>(null);
+  const ctxRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!ctxMenu) return;
+    const handler = (e: MouseEvent) => {
+      if (ctxRef.current && !ctxRef.current.contains(e.target as Node)) {
+        setCtxMenu(null);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [ctxMenu]);
 
   const handleClick = (filePath: string, line: number) => {
     const { openFiles, setActiveFile } = useCodeStore.getState();
@@ -714,38 +798,95 @@ function BreakpointsSection() {
       ) : (
         allBps.map((bp) => {
           const fileName = bp.filePath.split("/").pop();
+          const isEditing =
+            editingBp?.filePath === bp.filePath && editingBp?.line === bp.line;
           return (
-            <div
-              key={`${bp.filePath}:${bp.line}`}
-              className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] hover:bg-white/5 cursor-pointer group"
-              onClick={() => handleClick(bp.filePath, bp.line)}
-            >
-              <span
-                className={`w-2 h-2 rounded-full shrink-0 ${
-                  bp.logMessage
-                    ? "bg-blue-400"
-                    : bp.condition
-                      ? "bg-yellow-400"
-                      : "bg-red-500"
-                }`}
-              />
-              <span className="text-gray-300 truncate">{fileName}</span>
-              <span className="text-gray-500">:{bp.line}</span>
-              {bp.condition && (
-                <span className="text-yellow-500 text-[10px] truncate">({bp.condition})</span>
-              )}
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeBreakpoint(bp.filePath, bp.line);
+            <div key={`${bp.filePath}:${bp.line}`}>
+              <div
+                className="flex items-center gap-1.5 px-2 py-0.5 text-[11px] hover:bg-white/5 cursor-pointer group"
+                onClick={() => handleClick(bp.filePath, bp.line)}
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setCtxMenu({ x: e.clientX, y: e.clientY, filePath: bp.filePath, line: bp.line });
                 }}
-                className="ml-auto opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400"
               >
-                <X size={12} />
-              </button>
+                <span
+                  className={`w-2 h-2 rounded-full shrink-0 ${
+                    bp.logMessage
+                      ? "bg-blue-400"
+                      : bp.condition
+                        ? "bg-yellow-400"
+                        : "bg-red-500"
+                  }`}
+                />
+                <span className="text-gray-300 truncate">{fileName}</span>
+                <span className="text-gray-500">:{bp.line}</span>
+                {bp.condition && (
+                  <span className="text-yellow-500 text-[10px] truncate">({bp.condition})</span>
+                )}
+                {bp.logMessage && (
+                  <span className="text-blue-400 text-[10px] truncate">[{bp.logMessage}]</span>
+                )}
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    removeBreakpoint(bp.filePath, bp.line);
+                  }}
+                  className="ml-auto opacity-0 group-hover:opacity-100 text-gray-500 hover:text-red-400"
+                >
+                  <X size={12} />
+                </button>
+              </div>
+              {isEditing && (
+                <BreakpointConditionEditor
+                  filePath={bp.filePath}
+                  line={bp.line}
+                  currentCondition={bp.condition}
+                  currentLogMessage={bp.logMessage}
+                  editField={editingBp.field}
+                  onClose={() => setEditingBp(null)}
+                />
+              )}
             </div>
           );
         })
+      )}
+
+      {ctxMenu && (
+        <div
+          ref={ctxRef}
+          className="fixed z-50 min-w-40 rounded-md border border-[#3c3c3c] bg-[#252526] py-1 shadow-lg text-xs text-gray-300"
+          style={{ left: ctxMenu.x, top: ctxMenu.y }}
+        >
+          <button
+            className="block w-full px-3 py-1.5 text-left hover:bg-[#094771] hover:text-white"
+            onClick={() => {
+              setEditingBp({ filePath: ctxMenu.filePath, line: ctxMenu.line, field: "condition" });
+              setCtxMenu(null);
+            }}
+          >
+            Edit Condition
+          </button>
+          <button
+            className="block w-full px-3 py-1.5 text-left hover:bg-[#094771] hover:text-white"
+            onClick={() => {
+              setEditingBp({ filePath: ctxMenu.filePath, line: ctxMenu.line, field: "logMessage" });
+              setCtxMenu(null);
+            }}
+          >
+            Edit Log Message
+          </button>
+          <div className="my-1 border-t border-[#3c3c3c]" />
+          <button
+            className="block w-full px-3 py-1.5 text-left hover:bg-[#094771] hover:text-white text-red-400"
+            onClick={() => {
+              removeBreakpoint(ctxMenu.filePath, ctxMenu.line);
+              setCtxMenu(null);
+            }}
+          >
+            Remove Breakpoint
+          </button>
+        </div>
       )}
     </Section>
   );

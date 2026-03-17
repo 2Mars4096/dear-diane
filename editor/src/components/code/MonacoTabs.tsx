@@ -17,9 +17,10 @@ import {
   Zap,
 } from "lucide-react";
 import { useCodeStore, type OpenFile } from "../../store/useCodeStore";
+import { useDebugStore } from "../../store/useDebugStore";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { resolveMonacoTheme } from "../../lib/appearanceTheme";
-import { nativeFs } from "../../lib/electronBridge";
+import { nativeFs, nativeDebug } from "../../lib/electronBridge";
 import { useGitBlame } from "../../hooks/useGitBlame";
 import { getLargeFileConfig } from "../../lib/largeFileMode";
 import { useMergeConflictDecorations } from "../../hooks/useMergeConflicts";
@@ -38,7 +39,7 @@ import {
   stripFences,
 } from "../../lib/aiCodeActions";
 import Breadcrumbs from "./Breadcrumbs";
-import PeekDefinition, { findDefinitions, type PeekDef } from "./PeekDefinition";
+import PeekDefinition, { findDefinitions, findDefinitionsLsp, type PeekDef } from "./PeekDefinition";
 import {
   registerSnippetProviders,
   registerColorProvider,
@@ -447,6 +448,18 @@ export default function MonacoTabs() {
   } | null>(null);
   const [aiActionLoading, setAiActionLoading] = useState<string | null>(null);
 
+  // Gutter breakpoint context menu
+  const [gutterCtx, setGutterCtx] = useState<{
+    x: number;
+    y: number;
+    line: number;
+  } | null>(null);
+  const [condBpInput, setCondBpInput] = useState<{
+    line: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
   const openFile = useCodeStore((s) => s.openFile);
 
   const activeFile = openFiles.find((f) => f.path === activeFilePath) ?? null;
@@ -609,13 +622,24 @@ export default function MonacoTabs() {
       id: "peek-definition",
       label: "Peek Definition",
       keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.F12],
-      run: (ed) => {
+      run: async (ed) => {
         const pos = ed.getPosition();
         if (!pos) return;
         const word = ed.getModel()?.getWordAtPosition(pos);
         if (!word) return;
         const state = useCodeStore.getState();
-        const defs = findDefinitions(word.word, state.activeFilePath ?? "", state.openFiles);
+
+        let defs = await findDefinitionsLsp(
+          state.activeFilePath ?? "",
+          pos.lineNumber - 1,
+          pos.column - 1,
+          state.openFiles,
+        );
+
+        if (defs.length === 0) {
+          defs = findDefinitions(word.word, state.activeFilePath ?? "", state.openFiles);
+        }
+
         if (defs.length > 0) {
           const coords = ed.getScrolledVisiblePosition(pos);
           const domNode = ed.getDomNode();
@@ -638,18 +662,74 @@ export default function MonacoTabs() {
     registerLinkedEditingProvider(monaco);
     registerEmmetProvider(monaco);
 
+    const debugHoverDisposable = monaco.languages.registerHoverProvider("*", {
+      async provideHover(model: monacoEditor.ITextModel, position: { lineNumber: number; column: number }) {
+        const debugState = useDebugStore.getState();
+        if (debugState.status !== "paused" || debugState.activeFrameId === null) return null;
+
+        const word = model.getWordAtPosition(position);
+        if (!word) return null;
+
+        try {
+          const result = await nativeDebug.evaluate(word.word, debugState.activeFrameId);
+          if (!result?.result) return null;
+
+          const typeStr = result.type ? ` : ${result.type}` : "";
+          return {
+            range: new monaco.Range(
+              position.lineNumber,
+              word.startColumn,
+              position.lineNumber,
+              word.endColumn,
+            ),
+            contents: [
+              { value: `**${word.word}**${typeStr}` },
+              { value: `\`\`\`\n${result.result}\n\`\`\`` },
+            ],
+          };
+        } catch {
+          return null;
+        }
+      },
+    });
+
+    editor.onMouseDown((e) => {
+      const target = e.target;
+      if (
+        target.type === monaco.editor.MouseTargetType.GUTTER_LINE_NUMBERS ||
+        target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN
+      ) {
+        const line = target.position?.lineNumber;
+        if (!line) return;
+
+        if (e.event.rightButton) {
+          e.event.preventDefault();
+          e.event.stopPropagation();
+          setGutterCtx({ x: e.event.posx, y: e.event.posy, line });
+          return;
+        }
+
+        const afp = useCodeStore.getState().activeFilePath;
+        if (afp) {
+          useDebugStore.getState().toggleBreakpoint(afp, line);
+          const bps = useDebugStore.getState().breakpoints[afp] ?? [];
+          nativeDebug.setBreakpoints(afp, bps).catch(() => {});
+        }
+      }
+    });
+
     editor.onContextMenu((e) => {
       e.event.preventDefault();
       e.event.stopPropagation();
       setEditorCtxMenu({ x: e.event.posx, y: e.event.posy });
     });
 
-    // Register inline completion provider
     const completionDisposable = registerInlineCompletion();
     const statusDisposable = onCompletionStatusChange(setCompletionStatus);
 
     return () => {
       completionDisposable.dispose();
+      debugHoverDisposable.dispose();
       statusDisposable();
     };
   }, []);
@@ -1049,14 +1129,19 @@ export default function MonacoTabs() {
         <PeekDefinition
           definitions={peekDefs}
           onClose={() => { setPeekDefs(null); setPeekPosition(null); }}
-          onOpenFile={(uri, line) => {
-            const content = openFiles.find(f => f.path === uri)?.content;
-            if (content !== undefined) {
+          onOpenFile={async (uri, line) => {
+            const existing = openFiles.find(f => f.path === uri);
+            if (existing) {
               setActiveFile(uri);
-              setTimeout(() => {
-                window.dispatchEvent(new CustomEvent("editor:goToLine", { detail: { lineNumber: line, column: 1 } }));
-              }, 100);
+            } else {
+              const content = await nativeFs.readFile(uri);
+              if (content !== null) {
+                useCodeStore.getState().openFile(uri, content);
+              }
             }
+            setTimeout(() => {
+              window.dispatchEvent(new CustomEvent("editor:goToLine", { detail: { lineNumber: line, column: 1 } }));
+            }, 100);
           }}
           style={{ position: "fixed", top: peekPosition.top, left: peekPosition.left }}
         />
@@ -1127,6 +1212,186 @@ export default function MonacoTabs() {
           </div>
         </div>
       )}
+
+      {/* Gutter right-click context menu for breakpoints */}
+      {gutterCtx && (
+        <GutterBreakpointMenu
+          x={gutterCtx.x}
+          y={gutterCtx.y}
+          line={gutterCtx.line}
+          onClose={() => setGutterCtx(null)}
+          onAddConditional={(line, x, y) => {
+            setCondBpInput({ line, x, y });
+            setGutterCtx(null);
+          }}
+        />
+      )}
+
+      {/* Conditional breakpoint inline input */}
+      {condBpInput && (
+        <ConditionalBreakpointInput
+          line={condBpInput.line}
+          x={condBpInput.x}
+          y={condBpInput.y}
+          onClose={() => setCondBpInput(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Gutter breakpoint context menu                                    */
+/* ------------------------------------------------------------------ */
+
+function GutterBreakpointMenu({
+  x,
+  y,
+  line,
+  onClose,
+  onAddConditional,
+}: {
+  x: number;
+  y: number;
+  line: number;
+  onClose: () => void;
+  onAddConditional: (line: number, x: number, y: number) => void;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const afp = useCodeStore((s) => s.activeFilePath);
+  const breakpoints = useDebugStore((s) => s.breakpoints);
+  const hasBp = afp ? (breakpoints[afp] ?? []).some((b) => b.line === line) : false;
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose();
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [onClose]);
+
+  return (
+    <div
+      ref={menuRef}
+      className="fixed z-50 min-w-48 rounded-md border border-[#3c3c3c] bg-[#252526] py-1 shadow-lg text-xs text-gray-300"
+      style={{ left: x, top: y }}
+    >
+      {hasBp ? (
+        <>
+          <button
+            className="block w-full px-3 py-1.5 text-left hover:bg-[#094771] hover:text-white"
+            onClick={() => {
+              if (afp) {
+                useDebugStore.getState().removeBreakpoint(afp, line);
+                const bps = useDebugStore.getState().breakpoints[afp] ?? [];
+                nativeDebug.setBreakpoints(afp, bps).catch(() => {});
+              }
+              onClose();
+            }}
+          >
+            Remove Breakpoint
+          </button>
+          <button
+            className="block w-full px-3 py-1.5 text-left hover:bg-[#094771] hover:text-white"
+            onClick={() => onAddConditional(line, x, y)}
+          >
+            Edit Condition...
+          </button>
+        </>
+      ) : (
+        <>
+          <button
+            className="block w-full px-3 py-1.5 text-left hover:bg-[#094771] hover:text-white"
+            onClick={() => {
+              if (afp) {
+                useDebugStore.getState().toggleBreakpoint(afp, line);
+                const bps = useDebugStore.getState().breakpoints[afp] ?? [];
+                nativeDebug.setBreakpoints(afp, bps).catch(() => {});
+              }
+              onClose();
+            }}
+          >
+            Add Breakpoint
+          </button>
+          <button
+            className="block w-full px-3 py-1.5 text-left hover:bg-[#094771] hover:text-white"
+            onClick={() => onAddConditional(line, x, y)}
+          >
+            Add Conditional Breakpoint...
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Conditional breakpoint input popup                                */
+/* ------------------------------------------------------------------ */
+
+function ConditionalBreakpointInput({
+  line,
+  x,
+  y,
+  onClose,
+}: {
+  line: number;
+  x: number;
+  y: number;
+  onClose: () => void;
+}) {
+  const [condition, setCondition] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
+  const afp = useCodeStore((s) => s.activeFilePath);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [onClose]);
+
+  const handleSubmit = () => {
+    if (!afp) return;
+    const store = useDebugStore.getState();
+    const existing = (store.breakpoints[afp] ?? []).find((b) => b.line === line);
+    if (!existing) {
+      store.toggleBreakpoint(afp, line);
+    }
+    store.setBreakpointCondition(afp, line, condition.trim());
+    const bps = useDebugStore.getState().breakpoints[afp] ?? [];
+    nativeDebug.setBreakpoints(afp, bps).catch(() => {});
+    onClose();
+  };
+
+  return (
+    <div
+      className="fixed z-50 flex items-center gap-1 rounded-md border border-[#007acc] bg-[#1e1e1e] px-2 py-1.5 shadow-xl"
+      style={{
+        left: Math.min(x, window.innerWidth - 320),
+        top: y + 4,
+        minWidth: 280,
+      }}
+    >
+      <span className="text-[10px] text-yellow-500 shrink-0 font-medium uppercase">
+        Condition
+      </span>
+      <input
+        ref={inputRef}
+        value={condition}
+        onChange={(e) => setCondition(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") handleSubmit();
+          if (e.key === "Escape") onClose();
+        }}
+        placeholder="Break when expression is true"
+        className="flex-1 bg-transparent text-[12px] text-gray-200 outline-none placeholder-gray-600 font-mono"
+      />
     </div>
   );
 }

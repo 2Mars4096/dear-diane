@@ -313,6 +313,29 @@ function extractFilePath(toolCall: ToolCallInfo): string | null {
   return extractStringArg(toolCall, "path", "file_path", "directory", "dir");
 }
 
+const FILE_WRITE_TOOLS = new Set(["write_file", "edit_file"]);
+
+export function extractFileWritePaths(
+  toolCalls: Array<{ toolName: string; argsPreview: string }>,
+): string[] {
+  const paths: string[] = [];
+  const seen = new Set<string>();
+  for (const tc of toolCalls) {
+    if (!FILE_WRITE_TOOLS.has(tc.toolName)) continue;
+    const parsed = parseArgsPreview(tc.argsPreview);
+    const filePath =
+      (typeof parsed?.path === "string" ? parsed.path : null) ??
+      extractJsonStringField(tc.argsPreview, "path") ??
+      (typeof parsed?.file_path === "string" ? parsed.file_path : null) ??
+      extractJsonStringField(tc.argsPreview, "file_path");
+    if (filePath && !seen.has(filePath)) {
+      seen.add(filePath);
+      paths.push(filePath);
+    }
+  }
+  return paths;
+}
+
 export function describeLatestToolProgress(toolCalls: ToolCallInfo[]): ToolProgressInfo | null {
   const latest =
     [...toolCalls].reverse().find((toolCall) => toolCall.status === "running") ??

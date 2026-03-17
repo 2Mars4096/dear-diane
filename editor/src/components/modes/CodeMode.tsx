@@ -2,7 +2,7 @@
  * Code mode: VS Code-like IDE workspace with resizable panels.
  * Layout: ActivityBar | Sidebar | (EditorTabs / TerminalPanel) | StatusBar
  */
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { Allotment } from "allotment";
 import {
   Files,
@@ -55,6 +55,9 @@ import InteractiveRebase from "../code/InteractiveRebase";
 import MergeEditor from "../code/MergeEditor";
 import ExtensionsPanel from "../code/ExtensionsPanel";
 import CallHierarchy from "../code/CallHierarchy";
+import MultiFileEdit from "../code/MultiFileEdit";
+import type { FileEdit } from "../code/MultiFileEdit";
+import { detectProjectType } from "../../lib/workspaceIntelligence";
 import {
   CoverageSummaryBar,
 } from "../code/CoverageOverlay";
@@ -478,6 +481,8 @@ export default function CodeMode() {
   const markFileSaved = useCodeStore((s) => s.markFileSaved);
   const zenModeFilePath = useCodeStore((s) => s.zenModeFilePath);
   const splitFilePath = useCodeStore((s) => s.splitFilePath);
+  const showMultiFileReview = useCodeStore((s) => s.showMultiFileReview);
+  const multiFileEdits = useCodeStore((s) => s.multiFileEdits);
   const [showChatSidebar, setShowChatSidebar] = useState(false);
   const [sidebarPaneWidth, setSidebarPaneWidth] = useState(250);
   const [chatPaneWidth, setChatPaneWidth] = useState(350);
@@ -608,6 +613,63 @@ export default function CodeMode() {
     if (Math.abs(nextWidth - chatPaneWidthRef.current) < 1) return;
     setChatPaneWidth(nextWidth);
   }, [showChatSidebar]);
+
+  const multiFileEditProps = useMemo((): {
+    edits: FileEdit[];
+    onAccept: (filePath: string) => void;
+    onReject: (filePath: string) => void;
+    onAcceptAll: () => void;
+    onClose: () => void;
+  } | null => {
+    if (!showMultiFileReview || multiFileEdits.length === 0) return null;
+    const store = useCodeStore.getState();
+    return {
+      edits: multiFileEdits.map((e) => ({
+        filePath: e.filePath,
+        original: e.originalContent,
+        modified: e.modifiedContent,
+        accepted: e.accepted === true,
+      })),
+      onAccept: (filePath: string) => {
+        const idx = multiFileEdits.findIndex((e) => e.filePath === filePath);
+        if (idx >= 0) store.acceptMultiFileEdit(idx);
+      },
+      onReject: (filePath: string) => {
+        const idx = multiFileEdits.findIndex((e) => e.filePath === filePath);
+        if (idx >= 0) store.rejectMultiFileEdit(idx);
+      },
+      onAcceptAll: () => {
+        store.acceptAllMultiFileEdits();
+      },
+      onClose: () => store.closeMultiFileReview(),
+    };
+  }, [showMultiFileReview, multiFileEdits]);
+
+  const handleApplyAllAndTest = useCallback(async () => {
+    const store = useCodeStore.getState();
+    store.acceptAllMultiFileEdits();
+    store.closeMultiFileReview();
+    const root = store.pinnedRoots[0];
+    if (!root) return;
+    const detection = await detectProjectType(root);
+    let testCmd: string | null = null;
+    if (detection.type === "node") {
+      testCmd = `${detection.packageManager ?? "npm"} test`;
+    } else if (detection.type === "python") {
+      testCmd = "pytest";
+    } else if (detection.type === "rust") {
+      testCmd = "cargo test";
+    } else if (detection.type === "go") {
+      testCmd = "go test ./...";
+    }
+    if (testCmd) {
+      window.dispatchEvent(
+        new CustomEvent("chat:shellCommand", {
+          detail: { command: testCmd, cwd: root },
+        }),
+      );
+    }
+  }, []);
 
   const sidebarContent = (() => {
     switch (activeSidebarPanel) {
@@ -780,6 +842,11 @@ export default function CodeMode() {
                           onResolved={() => {
                             setMergeEditorState(null);
                           }}
+                        />
+                      ) : showMultiFileReview && multiFileEditProps ? (
+                        <MultiFileEdit
+                          {...multiFileEditProps}
+                          onApplyAllAndTest={handleApplyAllAndTest}
                         />
                       ) : showKeybindings ? (
                         <KeybindingsPanel />

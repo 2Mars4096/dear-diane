@@ -12,7 +12,7 @@ import {
 } from "../lib/mentionParser";
 import { shouldShowAssistantLoadingPlaceholder } from "../lib/chatStreamLifecycle";
 import { useGraphStore } from "../store/useGraphStore";
-import { groupToolCallsForDisplay } from "../lib/toolCallPresentation";
+import { groupToolCallsForDisplay, extractFileWritePaths } from "../lib/toolCallPresentation";
 import ToolCallCard from "./ToolCallCard";
 import RunOutputBlock from "./RunOutputBlock";
 import { nativeShell } from "../lib/electronBridge";
@@ -236,7 +236,7 @@ function renderMarkdown(
 
   // 1. Extract mentions before marked processes them
   text = text.replace(
-    /@\[([^\]]+)\]\((node|workflow|subgraph|file|code|docs|chat):([^)]+)\)/g,
+    /@\[([^\]]+)\]\((node|workflow|subgraph|file|symbol|folder|code|docs|chat):([^)]+)\)/g,
     (_, name, type, id) => _ph(renderMentionHtml(name, type, id)),
   );
 
@@ -562,6 +562,7 @@ interface ChatMessageProps {
   isStreaming?: boolean;
   allowRunCodeBlocks?: boolean;
   onRunCodeBlock?: (code: string) => void;
+  onReviewMultiFileEdits?: (filePaths: string[]) => void;
 }
 
 function ToolCallGroup({
@@ -657,6 +658,7 @@ export default function ChatMessageBubble({
   isStreaming,
   allowRunCodeBlocks,
   onRunCodeBlock,
+  onReviewMultiFileEdits,
 }: ChatMessageProps) {
   const isUser = message.role === "user";
   const store = useGraphStore();
@@ -811,6 +813,20 @@ export default function ChatMessageBubble({
             onPreviewMutation={onPreviewMutation ? () => onPreviewMutation(message) : undefined}
           />
         )}
+
+        {onReviewMultiFileEdits && message.toolCalls && (() => {
+          const writePaths = extractFileWritePaths(message.toolCalls);
+          if (writePaths.length < 2) return null;
+          return (
+            <button
+              onClick={() => onReviewMultiFileEdits(writePaths)}
+              className="mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 transition-colors dark:bg-purple-500/10 dark:text-purple-300 dark:border-purple-500/30 dark:hover:bg-purple-500/20"
+            >
+              <Pencil size={12} />
+              Review {writePaths.length} Changed Files
+            </button>
+          );
+        })()}
 
         {message.attachments && message.attachments.length > 0 && (
           <div className="mt-2 space-y-1.5">

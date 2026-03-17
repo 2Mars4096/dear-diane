@@ -12,6 +12,8 @@ import {
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import NotificationCenter from "./NotificationCenter";
+import MessagingStatusButton from "./MessagingStatusButton";
+import BackendStatusIndicator from "./BackendStatusIndicator";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   MessageSquare,
@@ -64,6 +66,8 @@ export default function ModeBar() {
 
       {/* Right-side actions */}
       <div className="flex items-center gap-1">
+        <BackendStatusIndicator />
+        <MessagingStatusButton />
         <button
           onClick={() => window.dispatchEvent(new CustomEvent("app:openSettings"))}
           className="app-no-drag inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-200 dark:text-gray-300 dark:hover:text-white dark:hover:bg-white/10 transition-colors"

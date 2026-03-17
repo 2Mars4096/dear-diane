@@ -8,6 +8,13 @@ export interface OpenFile {
   originalContent: string;
 }
 
+export interface MultiFileEditEntry {
+  filePath: string;
+  originalContent: string;
+  modifiedContent: string;
+  accepted: boolean | null;
+}
+
 export interface FileTreeEntry {
   name: string;
   path: string;
@@ -67,6 +74,14 @@ interface CodeState {
 
   diffFile: { original: string; modified: string; originalPath: string; modifiedPath: string } | null;
   showDiff: boolean;
+
+  multiFileEdits: MultiFileEditEntry[];
+  showMultiFileReview: boolean;
+  openMultiFileReview: (edits: MultiFileEditEntry[]) => void;
+  closeMultiFileReview: () => void;
+  acceptMultiFileEdit: (index: number) => void;
+  rejectMultiFileEdit: (index: number) => void;
+  acceptAllMultiFileEdits: () => void;
 
   showSettings: boolean;
   setShowSettings: (v: boolean) => void;
@@ -174,6 +189,31 @@ export const useCodeStore = create<CodeState>((set, get) => ({
 
   diffFile: null,
   showDiff: false,
+
+  multiFileEdits: [],
+  showMultiFileReview: false,
+  openMultiFileReview: (edits) =>
+    set({ multiFileEdits: edits, showMultiFileReview: true }),
+  closeMultiFileReview: () =>
+    set({ multiFileEdits: [], showMultiFileReview: false }),
+  acceptMultiFileEdit: (index) =>
+    set((s) => ({
+      multiFileEdits: s.multiFileEdits.map((e, i) =>
+        i === index ? { ...e, accepted: true } : e,
+      ),
+    })),
+  rejectMultiFileEdit: (index) =>
+    set((s) => ({
+      multiFileEdits: s.multiFileEdits.map((e, i) =>
+        i === index ? { ...e, accepted: false } : e,
+      ),
+    })),
+  acceptAllMultiFileEdits: () =>
+    set((s) => ({
+      multiFileEdits: s.multiFileEdits.map((e) =>
+        e.accepted === null ? { ...e, accepted: true } : e,
+      ),
+    })),
 
   zenModeFilePath: null,
   setZenModeFilePath: (path) => set({ zenModeFilePath: path }),

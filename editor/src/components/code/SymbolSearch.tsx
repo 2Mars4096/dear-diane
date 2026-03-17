@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Hash } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
-import { nativeFs } from "../../lib/electronBridge";
+import { nativeFs, nativeLsp, isElectron } from "../../lib/electronBridge";
 
 /* ------------------------------------------------------------------ */
 /*  Symbol types & extraction                                          */
@@ -71,6 +71,36 @@ function extractSymbols(content: string, filePath: string): SymbolInfo[] {
   }
 
   return symbols;
+}
+
+/* ------------------------------------------------------------------ */
+/*  LSP workspace symbol conversion                                    */
+/* ------------------------------------------------------------------ */
+
+const LSP_KIND_TO_SYMBOL: Record<number, SymbolInfo["kind"]> = {
+  5: "class",
+  6: "method",
+  7: "variable",
+  8: "variable",
+  9: "method",
+  10: "enum",
+  11: "interface",
+  12: "function",
+  13: "variable",
+  14: "const",
+  23: "class",
+};
+
+function convertLspWorkspaceSymbol(lspSym: any): SymbolInfo {
+  const uri: string = lspSym.location?.uri ?? "";
+  const filePath = uri.startsWith("file://") ? uri.slice(7) : uri;
+  return {
+    name: lspSym.name,
+    kind: LSP_KIND_TO_SYMBOL[lspSym.kind] ?? "variable",
+    filePath,
+    line: (lspSym.location?.range?.start?.line ?? 0) + 1,
+    containerName: lspSym.containerName,
+  };
 }
 
 /* ------------------------------------------------------------------ */
@@ -227,13 +257,50 @@ export default function SymbolSearch({ onClose }: { onClose: () => void }) {
     requestAnimationFrame(() => inputRef.current?.focus());
   }, []);
 
-  const allSymbols = useMemo(() => {
+  const regexSymbols = useMemo(() => {
     const symbols: SymbolInfo[] = [];
     for (const file of openFiles) {
       symbols.push(...extractSymbols(file.content, file.path));
     }
     return symbols;
   }, [openFiles]);
+
+  const [lspSymbols, setLspSymbols] = useState<SymbolInfo[]>([]);
+
+  useEffect(() => {
+    const raw = query.replace(/^#\s*/, "").trim();
+    if (!raw || !isElectron()) {
+      setLspSymbols([]);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const result = await nativeLsp.workspaceSymbol({ query: raw });
+        if (result && Array.isArray(result)) {
+          setLspSymbols(result.map(convertLspWorkspaceSymbol));
+        } else {
+          setLspSymbols([]);
+        }
+      } catch {
+        setLspSymbols([]);
+      }
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  const allSymbols = useMemo(() => {
+    if (lspSymbols.length === 0) return regexSymbols;
+    const seen = new Set(regexSymbols.map((s) => `${s.filePath}:${s.line}:${s.name}`));
+    const merged = [...regexSymbols];
+    for (const sym of lspSymbols) {
+      const key = `${sym.filePath}:${sym.line}:${sym.name}`;
+      if (!seen.has(key)) {
+        merged.push(sym);
+        seen.add(key);
+      }
+    }
+    return merged;
+  }, [regexSymbols, lspSymbols]);
 
   const results = useMemo((): FuzzyResult[] => {
     const raw = query.replace(/^#\s*/, "");
@@ -336,7 +403,7 @@ export default function SymbolSearch({ onClose }: { onClose: () => void }) {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Type to search symbols in open files…"
+            placeholder="Type to search symbols across workspace…"
             className="w-full bg-transparent text-white text-sm px-0 py-3 outline-none placeholder:text-gray-600"
             autoComplete="off"
             spellCheck={false}
@@ -350,7 +417,7 @@ export default function SymbolSearch({ onClose }: { onClose: () => void }) {
         <div ref={listRef} className="max-h-[50vh] overflow-y-auto">
           {results.length === 0 && (
             <div className="px-4 py-6 text-center text-sm text-gray-500">
-              {query ? "No matching symbols" : "No symbols found in open files"}
+              {query ? "No matching symbols" : "No symbols found"}
             </div>
           )}
 

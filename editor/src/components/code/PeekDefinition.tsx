@@ -4,6 +4,7 @@ import { X, ChevronLeft, ChevronRight } from "lucide-react";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 import { detectLanguageFromPath } from "../../lib/snippets";
+import { nativeLsp, nativeFs, isElectron } from "../../lib/electronBridge";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -230,4 +231,73 @@ export function findDefinitions(
   }
 
   return defs;
+}
+
+// ---------------------------------------------------------------------------
+// LSP-based definition lookup (falls back to regex via caller)
+// ---------------------------------------------------------------------------
+
+export async function findDefinitionsLsp(
+  filePath: string,
+  line: number,
+  character: number,
+  openFiles: OpenFileData[],
+): Promise<PeekDef[]> {
+  if (!isElectron()) return [];
+
+  try {
+    const result = await nativeLsp.definition({ filePath, line, character });
+    if (!result) return [];
+
+    const locations: Array<{
+      uri: string;
+      range: { start: { line: number; character: number }; end: { line: number; character: number } };
+    }> = [];
+
+    if (Array.isArray(result)) {
+      for (const item of result) {
+        if (item.targetUri) {
+          locations.push({ uri: item.targetUri, range: item.targetRange ?? item.targetSelectionRange });
+        } else if (item.uri) {
+          locations.push(item);
+        }
+      }
+    } else if (result.uri) {
+      locations.push(result);
+    }
+
+    if (locations.length === 0) return [];
+
+    const defs: PeekDef[] = [];
+    for (const loc of locations) {
+      const uri = loc.uri.startsWith("file://") ? loc.uri.slice(7) : loc.uri;
+      const startLine = (loc.range?.start?.line ?? 0) + 1;
+      const endLine = (loc.range?.end?.line ?? 0) + 1;
+
+      let content: string | null = null;
+      const openFile = openFiles.find((f) => f.path === uri);
+      if (openFile) {
+        content = openFile.content;
+      } else {
+        content = await nativeFs.readFile(uri);
+      }
+
+      if (!content) continue;
+
+      const lines = content.split("\n");
+      const previewStart = Math.max(0, startLine - 3);
+      const previewEnd = Math.min(lines.length - 1, startLine + 19);
+      const preview = lines.slice(previewStart, previewEnd + 1).join("\n");
+
+      defs.push({
+        uri,
+        range: { startLineNumber: startLine, endLineNumber: endLine },
+        preview,
+      });
+    }
+
+    return defs;
+  } catch {
+    return [];
+  }
 }

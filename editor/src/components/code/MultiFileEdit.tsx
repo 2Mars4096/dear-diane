@@ -37,6 +37,7 @@ interface MultiFileEditProps {
   onReject: (filePath: string) => void;
   onAcceptAll: () => void;
   onClose: () => void;
+  onApplyAllAndTest?: () => void;
 }
 
 export default function MultiFileEdit({
@@ -45,6 +46,7 @@ export default function MultiFileEdit({
   onReject,
   onAcceptAll,
   onClose,
+  onApplyAllAndTest,
 }: MultiFileEditProps) {
   const [activeFile, setActiveFile] = useState(edits[0]?.filePath ?? "");
   const theme = useSettingsStore((s) => resolveMonacoTheme(s.theme));
@@ -80,6 +82,15 @@ export default function MultiFileEdit({
           </span>
         </span>
         <div className="flex gap-1.5">
+          {onApplyAllAndTest && (
+            <button
+              onClick={onApplyAllAndTest}
+              disabled={pendingCount === 0}
+              className="px-2 py-0.5 text-[10px] bg-blue-800/30 text-blue-400 rounded hover:bg-blue-800/50 disabled:opacity-40 transition-colors"
+            >
+              Apply &amp; Test
+            </button>
+          )}
           <button
             onClick={onAcceptAll}
             disabled={pendingCount === 0}

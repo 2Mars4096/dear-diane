@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   FunctionSquare,
   Box,
@@ -13,6 +13,7 @@ import {
   Filter,
 } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
+import { nativeLsp, isElectron } from "../../lib/electronBridge";
 
 // ---------------------------------------------------------------------------
 // Document symbol types
@@ -56,7 +57,52 @@ const SYMBOL_ICONS: Record<SymbolKind, { icon: typeof FunctionSquare; color: str
 };
 
 // ---------------------------------------------------------------------------
-// Regex-based symbol extraction (until LSP is wired)
+// LSP symbol conversion
+// ---------------------------------------------------------------------------
+
+const LSP_SYMBOL_KIND_MAP: Record<number, SymbolKind> = {
+  2: "module",
+  3: "module",
+  4: "module",
+  5: "class",
+  6: "method",
+  7: "property",
+  8: "property",
+  9: "method",
+  10: "enum",
+  11: "interface",
+  12: "function",
+  13: "variable",
+  14: "constant",
+  23: "class",
+};
+
+function lspKindToSymbolKind(kind: number): SymbolKind {
+  return LSP_SYMBOL_KIND_MAP[kind] ?? "variable";
+}
+
+function convertLspSymbol(lspSym: any): DocumentSymbol {
+  const range = lspSym.range ?? lspSym.location?.range;
+  return {
+    name: lspSym.name,
+    kind: lspKindToSymbolKind(lspSym.kind),
+    detail: lspSym.detail,
+    range: {
+      startLineNumber: (range?.start?.line ?? 0) + 1,
+      endLineNumber: (range?.end?.line ?? 0) + 1,
+    },
+    children: Array.isArray(lspSym.children)
+      ? lspSym.children.map(convertLspSymbol)
+      : [],
+  };
+}
+
+function convertLspSymbols(results: any[]): DocumentSymbol[] {
+  return results.map(convertLspSymbol);
+}
+
+// ---------------------------------------------------------------------------
+// Regex-based symbol extraction (fallback when LSP unavailable)
 // ---------------------------------------------------------------------------
 
 export function extractSymbols(
@@ -268,10 +314,33 @@ export default function OutlineView() {
 
   const activeFile = openFiles.find((f) => f.path === activeFilePath);
 
+  const [lspSymbols, setLspSymbols] = useState<DocumentSymbol[] | null>(null);
+
+  useEffect(() => {
+    if (!activeFile || !isElectron()) {
+      setLspSymbols(null);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      try {
+        const result = await nativeLsp.documentSymbol({ filePath: activeFile.path });
+        if (result && Array.isArray(result) && result.length > 0) {
+          setLspSymbols(convertLspSymbols(result));
+        } else {
+          setLspSymbols(null);
+        }
+      } catch {
+        setLspSymbols(null);
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [activeFile?.path, activeFile?.content]);
+
   const symbols = useMemo(() => {
+    if (lspSymbols) return lspSymbols;
     if (!activeFile) return [];
     return extractSymbols(activeFile.content, activeFile.language);
-  }, [activeFile?.content, activeFile?.language]);
+  }, [lspSymbols, activeFile?.content, activeFile?.language]);
 
   const filtered = useMemo(() => {
     if (!filter) return symbols;

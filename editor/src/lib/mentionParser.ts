@@ -3,6 +3,8 @@ export type MentionType =
   | "workflow"
   | "subgraph"
   | "file"
+  | "symbol"
+  | "folder"
   | "code"
   | "docs"
   | "chat";
@@ -17,7 +19,7 @@ export type MentionSegment =
   | { type: "text"; content: string }
   | { type: "mention"; mention: MentionRef };
 
-const MENTION_RE = /@\[([^\]]+)\]\((node|workflow|subgraph|file|code|docs|chat):([^)]+)\)/g;
+const MENTION_RE = /@\[([^\]]+)\]\((node|workflow|subgraph|file|symbol|folder|code|docs|chat):([^)]+)\)/g;
 
 export function serializeMention(mention: MentionRef): string {
   return `@[${mention.name}](${mention.type}:${mention.id})`;
@@ -122,6 +124,10 @@ export function mentionTypeColor(type: MentionType): string {
       return "bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-200";
     case "file":
       return "bg-purple-100 text-purple-700 dark:bg-purple-500/20 dark:text-purple-200";
+    case "symbol":
+      return "bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-200";
+    case "folder":
+      return "bg-orange-100 text-orange-700 dark:bg-orange-500/20 dark:text-orange-200";
     case "code":
       return "bg-cyan-100 text-cyan-700 dark:bg-cyan-500/20 dark:text-cyan-200";
     case "docs":

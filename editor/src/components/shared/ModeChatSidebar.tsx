@@ -31,7 +31,7 @@ import {
 } from "lucide-react";
 import { useAppStore, type AppMode } from "../../store/useAppStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
-import { nativeTerminal } from "../../lib/electronBridge";
+import { nativeTerminal, nativeFs } from "../../lib/electronBridge";
 import { useCodeStore } from "../../store/useCodeStore";
 import type { ChatMessage } from "../../types/chat";
 import * as api from "../../lib/api";
@@ -59,7 +59,7 @@ import {
   toBackendMessage,
 } from "../../lib/chatMessagePersistence";
 import { deriveDraftThreadTitleFromMessage } from "../../lib/chatThreadTitle";
-import { describeLatestToolProgress } from "../../lib/toolCallPresentation";
+import { describeLatestToolProgress, extractFileWritePaths } from "../../lib/toolCallPresentation";
 
 /* ------------------------------------------------------------------ */
 /*  Chat sender registry (per-mode)                                    */
@@ -322,6 +322,82 @@ function collectStructuredMentions(text: string): Array<{ type: string; identifi
     }));
 }
 
+interface MentionContext {
+  mentioned_files: Array<{ path: string; content: string; lines: number }>;
+  mentioned_symbols: string[];
+  mentioned_folders: Array<{ path: string; entries: string[] }>;
+  context_summary: string;
+}
+
+async function expandMentionContext(
+  mentions: Array<{ type: string; identifier: string }>,
+): Promise<MentionContext> {
+  const ctx: MentionContext = {
+    mentioned_files: [],
+    mentioned_symbols: [],
+    mentioned_folders: [],
+    context_summary: "",
+  };
+
+  const fileMentions = mentions.filter((m) => m.type === "file");
+  const symbolMentions = mentions.filter((m) => m.type === "symbol");
+  const folderMentions = mentions.filter((m) => m.type === "folder");
+
+  const fileResults = await Promise.allSettled(
+    fileMentions.map(async (m) => {
+      const content = await nativeFs.readFile(m.identifier);
+      if (content != null) {
+        const lines = content.split("\n").length;
+        return { path: m.identifier, content, lines };
+      }
+      return null;
+    }),
+  );
+  for (const r of fileResults) {
+    if (r.status === "fulfilled" && r.value) ctx.mentioned_files.push(r.value);
+  }
+
+  for (const m of symbolMentions) {
+    ctx.mentioned_symbols.push(m.identifier);
+  }
+
+  const folderResults = await Promise.allSettled(
+    folderMentions.map(async (m) => {
+      const entries = await nativeFs.readDir(m.identifier);
+      if (entries) {
+        return {
+          path: m.identifier,
+          entries: entries.map((e: { name: string; isDirectory: boolean }) => `${e.name}${e.isDirectory ? "/" : ""}`),
+        };
+      }
+      return null;
+    }),
+  );
+  for (const r of folderResults) {
+    if (r.status === "fulfilled" && r.value) ctx.mentioned_folders.push(r.value);
+  }
+
+  const parts: string[] = [];
+  if (ctx.mentioned_files.length > 0) {
+    const fileList = ctx.mentioned_files
+      .map((f) => `${f.path} (${f.lines} lines)`)
+      .join(", ");
+    parts.push(`Files: ${fileList}`);
+  }
+  if (ctx.mentioned_symbols.length > 0) {
+    parts.push(`Symbols: ${ctx.mentioned_symbols.join(", ")}`);
+  }
+  if (ctx.mentioned_folders.length > 0) {
+    const folderList = ctx.mentioned_folders
+      .map((f) => `${f.path} (${f.entries.length} items)`)
+      .join(", ");
+    parts.push(`Folders: ${folderList}`);
+  }
+  ctx.context_summary = parts.length > 0 ? `[Context: ${parts.join("; ")}]` : "";
+
+  return ctx;
+}
+
 function SlashCommandPopup({
   filter,
   onSelect,
@@ -459,6 +535,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
   const chatModeRef = useRef<SidebarChatMode>(chatMode);
   const activeRequestModeRef = useRef<SidebarChatMode | null>(null);
   const messagesRef = useRef(messages);
+  const fileSnapshotsRef = useRef<Map<string, string>>(new Map());
   messagesRef.current = messages;
   threadIdRef.current = threadId;
   activeChannelIdRef.current = activeChannelId;
@@ -667,6 +744,25 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       addTerminal(id, `\u26A1 ${shortCmd}`);
       setActiveTerminal(id);
       setTimeout(() => nativeTerminal.write(id, command + "\n"), 300);
+    }
+  }, []);
+
+  const handleReviewMultiFileEdits = useCallback(async (filePaths: string[]) => {
+    const entries = await Promise.all(
+      filePaths.map(async (filePath) => {
+        const originalContent = fileSnapshotsRef.current.get(filePath) ?? "";
+        const modifiedContent = (await nativeFs.readFile(filePath)) ?? "";
+        return {
+          filePath,
+          originalContent,
+          modifiedContent,
+          accepted: null as boolean | null,
+        };
+      }),
+    );
+    const changed = entries.filter((e) => e.originalContent !== e.modifiedContent);
+    if (changed.length > 0) {
+      useCodeStore.getState().openMultiFileReview(changed);
     }
   }, []);
 
@@ -893,8 +989,24 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
 
       const attachments = await normalizeAttachmentDrafts(attachmentDrafts);
       const ctx = contextProvider?.() ?? "";
-      const fullMessage = ctx ? (trimmed ? `${ctx}\n\n${trimmed}` : ctx) : trimmed;
       const structuredMentions = collectStructuredMentions(trimmed);
+
+      const codeMentions = structuredMentions.filter(
+        (m) => m.type === "file" || m.type === "symbol" || m.type === "folder",
+      );
+      let mentionCtx: MentionContext | null = null;
+      if (codeMentions.length > 0) {
+        mentionCtx = await expandMentionContext(codeMentions);
+      }
+
+      const contextParts = [ctx];
+      if (mentionCtx?.context_summary) contextParts.push(mentionCtx.context_summary);
+      const combinedCtx = contextParts.filter(Boolean).join("\n");
+      const fullMessage = combinedCtx
+        ? trimmed
+          ? `${combinedCtx}\n\n${trimmed}`
+          : combinedCtx
+        : trimmed;
 
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
@@ -957,6 +1069,17 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
           surfaceContext: {
             mode,
             workspace_id: workspaceId,
+            ...(mentionCtx
+              ? {
+                  mentioned_files: mentionCtx.mentioned_files.map((f) => ({
+                    path: f.path,
+                    lines: f.lines,
+                    content: f.content,
+                  })),
+                  mentioned_symbols: mentionCtx.mentioned_symbols,
+                  mentioned_folders: mentionCtx.mentioned_folders,
+                }
+              : {}),
           },
         });
         setThreadId(nextThreadId);
@@ -1022,6 +1145,18 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             );
           },
           onToolCallStart: (toolCall) => {
+            if (toolCall.toolName === "write_file" || toolCall.toolName === "edit_file") {
+              const paths = extractFileWritePaths([toolCall]);
+              for (const p of paths) {
+                if (!fileSnapshotsRef.current.has(p)) {
+                  nativeFs.readFile(p).then((content) => {
+                    if (content !== null && !fileSnapshotsRef.current.has(p)) {
+                      fileSnapshotsRef.current.set(p, content);
+                    }
+                  });
+                }
+              }
+            }
             setMessages((prev) =>
               prev.map((message) => {
                 if (message.id !== assistantId) return message;
@@ -1514,6 +1649,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
                 }
                 allowRunCodeBlocks
                 onRunCodeBlock={handleRunInTerminal}
+                onReviewMultiFileEdits={handleReviewMultiFileEdits}
               />
             ))}
           </div>
