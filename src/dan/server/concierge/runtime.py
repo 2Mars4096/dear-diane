@@ -1643,6 +1643,7 @@ class Concierge:
         if os.environ.get("DAN_PREFERENCE_EXTRACTION", "1").strip() != "1":
             return
         try:
+            from dan.engine.domain_taxonomy import format_domain_label
             from dan.engine.preference_extractor import PreferenceExtractor
             extractor = PreferenceExtractor(
                 behavior_store=getattr(self, "_behavior_store", None),
@@ -1666,8 +1667,15 @@ class Concierge:
                         )
                 elif isinstance(value, list):
                     for entry in value:
+                        content_value = (
+                            format_domain_label(entry)
+                            if key == "domains"
+                            else str(entry)
+                        )
                         self.memory_kernel.store_preference(
-                            content=f"{key}: {entry}", tags=[key], project_id=project_id,
+                            content=f"{key}: {content_value}",
+                            tags=[key],
+                            project_id=project_id,
                         )
                 elif isinstance(value, str) and value:
                     self.memory_kernel.store_preference(

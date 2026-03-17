@@ -22,6 +22,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
+export function isApiStatusError(error: unknown, status: number): boolean {
+  return error instanceof Error && error.message.startsWith(`${status}:`);
+}
+
 export interface ServerHealth {
   status: string;
   pid: number;
@@ -450,7 +454,8 @@ export const saveChatCheckpoint = (
 export function connectChatStream(
   channelId: string,
   onEvent: (event: Record<string, unknown>) => void,
-  onClose?: () => void,
+  onClose?: (event: CloseEvent) => void,
+  onError?: (event: Event) => void,
 ): WebSocket {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
   const ws = new WebSocket(`${proto}//${location.host}/api/chat/${channelId}/events`);
@@ -459,7 +464,8 @@ export function connectChatStream(
       onEvent(JSON.parse(e.data));
     } catch { /* ignore parse errors */ }
   };
-  ws.onclose = () => onClose?.();
+  ws.onclose = (event) => onClose?.(event);
+  ws.onerror = (event) => onError?.(event);
   return ws;
 }
 

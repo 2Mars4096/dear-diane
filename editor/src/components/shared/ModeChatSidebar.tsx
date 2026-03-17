@@ -1671,9 +1671,17 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     try {
       await api.stopChatStream(channelId);
     } catch (error) {
+      if (api.isApiStatusError(error, 404)) {
+        if (abortRef.current) {
+          abortRef.current.abort();
+        } else {
+          finishStream();
+        }
+        return;
+      }
       console.warn("Failed to stop mode chat stream:", error);
     }
-  }, []);
+  }, [finishStream]);
 
   const canPushIntoCurrentTurn = useCallback(
     (item: PendingQueueItem) =>
