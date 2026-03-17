@@ -1,6 +1,15 @@
 # Changelog
 
 ## 2026-03-17
+- [docs] **Documented the deferred `WritingPane` math-rendering follow-up in backlog.** Added an unphased `docs/todo.md` item to evaluate a `WritingPane`-only MathJax-style preview upgrade for richer research authoring while explicitly keeping chat surfaces on KaTeX for now; no implementation started.
+
+## 2026-03-17
+- [test] **Compact Code Mode sidebar recovery now has a mounted component-boundary regression test.** Added a `happy-dom` render test for `ModeChatSidebar` that sends through the registered mode-chat bridge, verifies streamed tool-call UI wiring, and proves the thread snapshot fallback stops polling after the first confirmed `404`, alongside the earlier pure reducer tests. Validation: `cd editor && npx vitest run src/components/shared/__tests__/ModeChatSidebar.test.ts src/components/shared/__tests__/modeChatSidebarState.test.ts src/lib/__tests__/editorChat.test.ts`; `cd editor && npm run build`.
+
+## 2026-03-17
+- [fix] **Scheduled-task result delivery is now wired through the notification/event stack end-to-end.** `schedule_result_ready` events now carry normalized event-bus fields (`surface_id`, `timestamp`, structured `data`) while preserving legacy payload keys, `NotificationManager` now subscribes to scheduled-result events, default notification channel config includes `schedule_result_ready`, and macOS/terminal/webhook notifiers now format scheduled-result messages cleanly. Added/updated regressions in scheduler delivery + visibility feedback tests.
+
+## 2026-03-17
 - [test] **Compact Code Mode sidebar regression coverage now locks the review follow-up in place.** Extracted the patched assistant-row recovery and missing-thread polling-stop transitions into `modeChatSidebarState.ts`, wired `ModeChatSidebar` through those pure helpers, and added focused Vitest coverage for tool-call start/result recovery, run-event recovery, injected-user assistant-slot preservation, and confirmed-`404` polling stop behavior. Validation: `cd editor && npx vitest run src/components/shared/__tests__/modeChatSidebarState.test.ts src/lib/__tests__/editorChat.test.ts`; `cd editor && npm run build`.
 
 ## 2026-03-17

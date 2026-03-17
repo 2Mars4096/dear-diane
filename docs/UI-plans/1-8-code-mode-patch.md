@@ -171,6 +171,7 @@ These are important but large enough to warrant their own plans:
 - Dev websocket routing: editor chat/run sockets now bypass the Vite dev proxy and connect directly to backend port `8000`, which fixes the compact sidebar hanging on silent live turns even when the backend stream channel itself is healthy
 - Review follow-up: compact sidebar tool/run progress now uses the assistant-message upsert path consistently, and thread snapshot fallback stops after a confirmed `404` instead of polling a sidebar-only thread ID for a full minute
 - Regression coverage: `ModeChatSidebar` follow-up state transitions now live in a pure helper with focused tests for missing-assistant tool/run recovery, injected-user assistant-slot preservation, and confirmed-`404` snapshot-poll stop behavior
+- Component render coverage: a mounted `ModeChatSidebar` test now drives the real mode-chat send bridge in `happy-dom`, verifies streamed tool-call UI wiring, and proves confirmed-`404` thread polling stops at the component boundary too
 
 ## Notes
 
@@ -184,3 +185,4 @@ These are important but large enough to warrant their own plans:
 - 2026-03-17: Final live retry follow-up isolated a Vite-dev websocket path issue rather than a backend `/retry` failure. A plain browser probe could replay the same `chat-*` channel immediately, so editor chat/run sockets now connect straight to `127.0.0.1:8000` in dev; live Development-mode smoke tests then completed both `Respond with only OK.` and `/retry` without hanging.
 - 2026-03-17: Review follow-up found that some compact-sidebar tool/run handlers still bypassed `upsertAssistantMessage`, so progress-only turns could still lose the assistant row, and the thread snapshot fallback kept polling guaranteed-missing sidebar thread ids with repeated `404`s. Both are now fixed.
 - 2026-03-17: Added focused Vitest coverage for the compact-sidebar review follow-up by extracting the patched assistant-row/polling transitions into `modeChatSidebarState.ts`, then validating those reducers plus the related `editorChat` stream tests and a fresh editor build.
+- 2026-03-17: Added a mounted `ModeChatSidebar` regression in `happy-dom` after finding that `jsdom`'s latest package chain was incompatible with the repo's current Node/Vitest combination. The component test drives `sendToModeChat()`, verifies streamed tool-call rendering, and confirms the first `404` stops fallback polling.
