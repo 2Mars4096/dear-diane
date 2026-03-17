@@ -13,6 +13,7 @@ import logging
 import time
 from typing import Any
 
+from dan.engine.domain_taxonomy import format_domain_label, normalize_domain_name
 from dan.engine.memory_kernel import (
     MemoryItem,
     MemoryType,
@@ -118,15 +119,16 @@ class ProfileAdapter:
             ))
 
         for domain in (profile.common_domains or []):
+            canonical_domain = normalize_domain_name(domain) or domain
             items.append(MemoryItem(
-                id=f"fact:domain:{domain.replace(' ', '_')}",
-                content=f"User works in domain: {domain}",
+                id=f"fact:domain:{canonical_domain}",
+                content=f"User works in domain: {format_domain_label(canonical_domain)}",
                 memory_type=MemoryType.FACT,
                 scope=MemoryScope.USER,
                 lifecycle=MemoryLifecycle.DURABLE,
                 importance=0.6,
                 created_at=now,
-                tags=["domain", domain],
+                tags=["domain", canonical_domain],
             ))
 
         for d in (profile.search_dirs or []):

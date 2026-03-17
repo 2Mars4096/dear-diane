@@ -10,6 +10,7 @@ Part of Phase 19 (plan 29-1).
 
 from __future__ import annotations
 
+import asyncio
 import enum
 import json
 import logging
@@ -363,21 +364,92 @@ class DualWriteAdapter:
 
     def _do_write(self, item: MemoryItem) -> None:
         if item.memory_type == MemoryType.EPISODE and self._conversation_memory:
-            self._conversation_memory.add(item.content)
-        elif item.memory_type == MemoryType.PREFERENCE and self._user_profile:
-            if hasattr(self._user_profile, "set"):
-                self._user_profile.set(f"pref_{item.id}", item.content)
-        elif item.memory_type == MemoryType.FACT and self._user_profile:
-            if hasattr(self._user_profile, "set"):
-                self._user_profile.set(f"fact_{item.id}", item.content)
-        elif item.memory_type == MemoryType.WORKFLOW_ASSET and self._experience_store:
-            wf_id = item.metadata.get("workflow_id", item.id)
-            if hasattr(self._experience_store, "record"):
-                self._experience_store.record(
-                    workflow_id=wf_id,
-                    name=item.content[:80],
-                    summary=item.content[:200],
+            if hasattr(self._conversation_memory, "add_summary"):
+                self._conversation_memory.add_summary(
+                    summary=item.content,
+                    workflow_id=str(item.metadata.get("workflow_id", "") or ""),
+                    topic_tags=list(item.tags or []),
                 )
+            elif hasattr(self._conversation_memory, "add"):
+                self._conversation_memory.add(item.content)
+        elif item.memory_type == MemoryType.PREFERENCE and self._user_profile:
+            self._write_preference_to_profile(item)
+        elif item.memory_type == MemoryType.FACT and self._user_profile:
+            self._write_fact_to_profile(item)
+        elif item.memory_type == MemoryType.WORKFLOW_ASSET and self._experience_store:
+            self._write_workflow_asset(item)
+
+    def _save_profile_if_needed(self, changed: bool) -> None:
+        if not changed:
+            return
+        from dan.engine.user_profile import save_user_profile
+
+        save_user_profile(self._user_profile)
+
+    def _write_preference_to_profile(self, item: MemoryItem) -> None:
+        text = item.content.strip()
+        changed = False
+        if hasattr(self._user_profile, "merge_preferences"):
+            if text.startswith("models:") and "->" in text:
+                model_payload = text.split(":", 1)[1].strip()
+                task_type, model_name = [part.strip() for part in model_payload.split("->", 1)]
+                before = dict(getattr(self._user_profile, "preferred_models", {}) or {})
+                self._user_profile.merge_preferences(models={task_type: model_name})
+                changed = before != dict(getattr(self._user_profile, "preferred_models", {}) or {})
+            elif text.startswith("domains:"):
+                domain = text.split(":", 1)[1].strip()
+                before = list(getattr(self._user_profile, "common_domains", []) or [])
+                self._user_profile.merge_preferences(domains=[domain])
+                changed = before != list(getattr(self._user_profile, "common_domains", []) or [])
+            elif text.startswith("output_format:"):
+                output_format = text.split(":", 1)[1].strip()
+                before = str(getattr(self._user_profile, "preferred_output_format", "") or "")
+                self._user_profile.merge_preferences(output_format=output_format)
+                changed = before != str(getattr(self._user_profile, "preferred_output_format", "") or "")
+        self._save_profile_if_needed(changed)
+        if hasattr(self._user_profile, "set"):
+            self._user_profile.set(f"pref_{item.id}", item.content)
+
+    def _write_fact_to_profile(self, item: MemoryItem) -> None:
+        changed = False
+        if hasattr(self._user_profile, "merge_search_dirs"):
+            path_value = str(item.metadata.get("path", "") or "").strip()
+            if not path_value and ":" in item.content:
+                path_value = item.content.split(":", 1)[1].strip()
+            if path_value and (
+                item.metadata.get("is_directory") or "search_dir" in (item.tags or [])
+            ):
+                changed = bool(self._user_profile.merge_search_dirs([path_value]))
+        self._save_profile_if_needed(changed)
+        if hasattr(self._user_profile, "set"):
+            self._user_profile.set(f"fact_{item.id}", item.content)
+
+    def _write_workflow_asset(self, item: MemoryItem) -> None:
+        wf_id = str(item.metadata.get("workflow_id") or item.id)
+        if hasattr(self._experience_store, "record"):
+            self._experience_store.record(
+                workflow_id=wf_id,
+                name=item.content[:80],
+                summary=item.content[:200],
+            )
+            return
+        if hasattr(self._experience_store, "save_experience"):
+            from dan.engine.experience import WorkflowExperience
+
+            experience = WorkflowExperience(
+                workflow_id=wf_id,
+                name=item.content[:80],
+                description=item.content[:200],
+                tags=list(item.tags or []),
+            )
+            result = self._experience_store.save_experience(experience)
+            if asyncio.iscoroutine(result):
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    asyncio.run(result)
+                else:
+                    loop.create_task(result)
 
 
 class MemoryKernel:
@@ -458,10 +530,16 @@ class MemoryKernel:
     def _save_index(self) -> None:
         with self._write_lock:
             path = self._index_path()
-            tmp = path.with_suffix(".tmp")
             data = [item.model_dump(mode="json") for item in self._index.values()]
-            tmp.write_text(json.dumps(data, indent=2, default=str))
-            tmp.replace(path)
+            tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+            try:
+                tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+                os.replace(tmp, path)
+            finally:
+                try:
+                    tmp.unlink()
+                except FileNotFoundError:
+                    pass
 
     # -- CRUD ---------------------------------------------------------------
 

@@ -25,6 +25,8 @@ from typing import Any, AsyncIterator, Callable
 
 from pydantic import BaseModel, Field
 
+from dan.engine.domain_taxonomy import format_domain_label
+
 try:
     import tiktoken
     _tiktoken_available = True
@@ -449,7 +451,8 @@ class ChatManager:
                 getattr(profile, "preferred_output_format", "") or "",
             ).strip()
             common_domains = getattr(profile, "common_domains", []) or []
-            if preferred_models or preferred_output or common_domains:
+            search_dirs = getattr(profile, "search_dirs", []) or []
+            if preferred_models or preferred_output or common_domains or search_dirs:
                 lines.append("User preference hints:")
                 if preferred_models:
                     items = [
@@ -460,7 +463,10 @@ class ChatManager:
                 if preferred_output:
                     lines.append(f"- Preferred output format: {preferred_output}")
                 if common_domains:
-                    lines.append(f"- Common domains: {', '.join(common_domains[:4])}")
+                    labels = [format_domain_label(domain) for domain in common_domains[:4]]
+                    lines.append(f"- Common domains: {', '.join(labels)}")
+                if search_dirs:
+                    lines.append(f"- Frequent directories: {', '.join(search_dirs[:3])}")
 
         if not lines:
             return ""
@@ -490,13 +496,34 @@ class ChatManager:
         except Exception:
             return ""
 
-    def _compose_recent_context_message(self) -> str:
+    def _compose_recent_context_message(self, user_message: str = "") -> str:
         """Build non-authoritative historical context as assistant message."""
         memory = self._conversation_memory
         if memory is None:
             return ""
         try:
-            context_block = memory.format_context_block(n=3)
+            context_block = ""
+            if hasattr(memory, "search_by_keywords"):
+                stopwords = {
+                    "about", "after", "before", "could", "from", "have", "keep", "need",
+                    "please", "show", "that", "their", "there", "these", "this", "what",
+                    "where", "which", "with", "would", "your",
+                }
+                keywords = [
+                    token.lower()
+                    for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", user_message or "")
+                    if token.lower() not in stopwords
+                ]
+                if keywords:
+                    relevant = memory.search_by_keywords(keywords[:6], limit=3)
+                    if relevant:
+                        lines = ["Recent conversation context:"]
+                        for entry in relevant[:3]:
+                            suffix = f" (workflow: {entry.workflow_id})" if entry.workflow_id else ""
+                            lines.append(f"- {entry.summary}{suffix}")
+                        context_block = "\n".join(lines)
+            if not context_block:
+                context_block = memory.format_context_block(n=3)
         except Exception:
             return ""
         if not context_block:
@@ -517,7 +544,12 @@ class ChatManager:
             f"{quoted}"
         )
 
-    def _compose_memory_kernel_context(self, user_message: str) -> str:
+    def _compose_memory_kernel_context(
+        self,
+        user_message: str,
+        *,
+        project_id: str | None = None,
+    ) -> str:
         """Build context block from unified memory kernel (29-1).
 
         Uses task-type-specific retrieval policy. Falls back gracefully
@@ -527,16 +559,30 @@ class ChatManager:
         if kernel is None:
             return ""
         try:
-            from dan.engine.memory_kernel import classify_task_type
+            from dan.engine.memory_kernel import MemoryType, classify_task_type
             task_type = classify_task_type(user_message)
-            scored_items = kernel.retrieve_by_task(user_message, task_type=task_type, limit=10)
+            scored_items = kernel.retrieve_by_task(
+                user_message,
+                task_type=task_type,
+                limit=10,
+                project_id=project_id,
+            )
             if not scored_items:
                 return ""
 
             lines = ["Relevant context from memory:"]
+            seen_contents: set[str] = set()
             for si in scored_items[:8]:
+                if si.item.memory_type == MemoryType.WORKING_STATE:
+                    continue
+                content = si.item.content[:200]
+                if not content or content in seen_contents:
+                    continue
+                seen_contents.add(content)
                 tag = si.item.memory_type.value.upper()
-                lines.append(f"- [{tag}] {si.item.content[:200]}")
+                lines.append(f"- [{tag}] {content}")
+            if len(lines) == 1:
+                return ""
 
             block = "\n".join(lines)
             if len(block) > 800:
@@ -627,6 +673,8 @@ class ChatManager:
         mentions: list[Any] | None = None,
         surface: str | None = None,
         extra_system_instructions: str = "",
+        memory_project_id: str | None = None,
+        include_memory_kernel_context: bool = True,
         model_override: str | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream a text-only LLM response (no function calling)."""
@@ -658,6 +706,8 @@ class ChatManager:
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
                 surface=surface,
                 extra_system_instructions=extra_system_instructions,
+                memory_project_id=memory_project_id,
+                include_memory_kernel_context=include_memory_kernel_context,
                 tools_available=False,
                 model=effective_model,
             )
@@ -772,6 +822,8 @@ class ChatManager:
         extra_system_instructions: str = "",
         required_action_hints: list[str] | None = None,
         stream_channel_id: str | None = None,
+        memory_project_id: str | None = None,
+        include_memory_kernel_context: bool = True,
         model_override: str | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Process a user message using LLM function calling for graph mutations.
@@ -1060,6 +1112,8 @@ class ChatManager:
                 mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
                 surface=surface,
                 extra_system_instructions=extra_system_instructions,
+                memory_project_id=memory_project_id,
+                include_memory_kernel_context=include_memory_kernel_context,
                 model=effective_model,
             )
             provider = self._resolve_provider(
@@ -1749,6 +1803,8 @@ class ChatManager:
                                 mode=mode,
                                 prompt_context=prompt_context,
                                 surface=surface,
+                                memory_project_id=memory_project_id,
+                                include_memory_kernel_context=include_memory_kernel_context,
                                 model=effective_model,
                             )
                             replan_messages.append({
@@ -2831,6 +2887,8 @@ class ChatManager:
         graph_dict: dict[str, Any] | None = None,
         surface: str = "server",
         extra_system_instructions: str = "",
+        memory_project_id: str | None = None,
+        include_memory_kernel_context: bool = True,
         tools_available: bool = True,
         model: str | None = None,
     ) -> list[dict[str, str]]:
@@ -2888,7 +2946,12 @@ class ChatManager:
         mcp_block = self._compose_mcp_tools_block()
         if mcp_block:
             system_sections.append(f"## Connected MCP servers\n{mcp_block}")
-        memory_context = self._compose_memory_kernel_context(user_message)
+        memory_context = ""
+        if include_memory_kernel_context:
+            memory_context = self._compose_memory_kernel_context(
+                user_message,
+                project_id=memory_project_id,
+            )
         if memory_context:
             system_sections.append(memory_context)
         if extra_system_instructions:
@@ -2898,7 +2961,7 @@ class ChatManager:
             for section in system_sections
             if section and section.strip()
         )
-        recent_context_message = self._compose_recent_context_message()
+        recent_context_message = self._compose_recent_context_message(user_message)
         history_with_context = history
         if recent_context_message:
             history_with_context = [

@@ -336,6 +336,39 @@ class ChatStore:
         self.set_thread_meta(workflow_id, thread_id, meta)
         return True
 
+    # ------------------------------------------------------------------
+    # Branch lineage
+    # ------------------------------------------------------------------
+
+    _VALID_BRANCH_TYPES = {"edit", "regenerate", "explore"}
+
+    def set_branch_lineage(
+        self,
+        workflow_id: str,
+        thread_id: str,
+        *,
+        parent_thread_id: str,
+        branch_point_message_id: str = "",
+        branch_type: str = "explore",
+    ) -> None:
+        if branch_type not in self._VALID_BRANCH_TYPES:
+            branch_type = "explore"
+        meta = self.get_thread_meta(workflow_id, thread_id)
+        meta["parent_thread_id"] = parent_thread_id
+        meta["branch_point_message_id"] = branch_point_message_id
+        meta["branch_type"] = branch_type
+        self.set_thread_meta(workflow_id, thread_id, meta)
+
+    def get_branch_lineage(
+        self, workflow_id: str, thread_id: str
+    ) -> dict[str, str | None]:
+        meta = self.get_thread_meta(workflow_id, thread_id)
+        return {
+            "parent_thread_id": meta.get("parent_thread_id"),
+            "branch_point_message_id": meta.get("branch_point_message_id"),
+            "branch_type": meta.get("branch_type"),
+        }
+
     def list_threads(self, workflow_id: str) -> list[dict[str, Any]]:
         """List thread summaries sorted by updated_at descending (most recent first)."""
         chats_dir = self.base_dir / "chats" / workflow_id
@@ -359,6 +392,9 @@ class ChatStore:
                     "updated_at": thread.updated_at.isoformat(),
                     "pinned": meta.get("pinned", False),
                     "mode": self._normalize_mode(meta.get("mode")),
+                    "parent_thread_id": meta.get("parent_thread_id"),
+                    "branch_point_message_id": meta.get("branch_point_message_id"),
+                    "branch_type": meta.get("branch_type"),
                 })
             except (ValueError, OSError):
                 continue

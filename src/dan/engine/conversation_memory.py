@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +14,19 @@ logger = logging.getLogger(__name__)
 
 DAN_DIR = Path.home() / ".dan"
 DEFAULT_MEMORY_DIR = DAN_DIR / "conversation_memory"
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+    try:
+        tmp.write_text(content, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
 
 
 class ConversationSummary(BaseModel):
@@ -48,9 +62,7 @@ class ConversationMemoryStore:
 
     def _save_index(self) -> None:
         data = [e.model_dump() for e in self._entries]
-        tmp = self._index_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp.replace(self._index_path)
+        _atomic_write_text(self._index_path, json.dumps(data, indent=2))
 
     def add_summary(
         self,

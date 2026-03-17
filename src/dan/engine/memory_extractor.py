@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+from pathlib import PurePosixPath
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ _FACT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     # would otherwise swallow file paths like "~/data/trades.csv".
     (
         re.compile(
-            r"(?:file|path|pdf|paper|document)\s+(?:is\s+)?(?:at\s+|in\s+)"
+            r"(?:file|path|pdf|paper|document|note)s?\s+(?:is\s+)?(?:at\s+|in\s+|under\s+)"
             r"((?:~/|/|\./).+?)(?:\s|,|$)",
             re.IGNORECASE,
         ),
@@ -133,6 +134,19 @@ _LLM_DISABLE_VALUES = {"", "0", "false", "no", "off"}
 _LLM_ENABLE_DEFAULT_VALUES = {"1", "true", "yes", "on"}
 
 
+def _normalize_path_text(value: str) -> str:
+    return str(value or "").strip().strip("\"'").lstrip("(").rstrip(".,;)")
+
+
+def _looks_like_directory_path(path: str) -> bool:
+    normalized = _normalize_path_text(path)
+    if not normalized:
+        return False
+    if normalized.endswith("/"):
+        return True
+    return "." not in PurePosixPath(normalized.rstrip("/")).name
+
+
 # ---------------------------------------------------------------------------
 # Extractor
 # ---------------------------------------------------------------------------
@@ -185,25 +199,21 @@ class MemoryExtractor:
         ``DAN_MEMORY_EXTRACTION_LLM`` accepts either an enable flag (``1``/``true``)
         or a concrete model name. When enabled with a flag, ``model`` is used.
         """
+        heuristic = self.extract(
+            user_message,
+            assistant_message,
+            tool_calls=tool_calls,
+            goal_context=goal_context,
+        )
         resolved_model = self.resolve_llm_model(default_model=model)
         if resolved_model is None:
-            return self.extract(
-                user_message,
-                assistant_message,
-                tool_calls=tool_calls,
-                goal_context=goal_context,
-            )
+            return heuristic
 
         try:
             from openai import AsyncOpenAI
         except ImportError:
             logger.debug("openai package not installed; falling back to heuristic extraction")
-            return self.extract(
-                user_message,
-                assistant_message,
-                tool_calls=tool_calls,
-                goal_context=goal_context,
-            )
+            return heuristic
 
         api_key = (
             api_key
@@ -218,12 +228,7 @@ class MemoryExtractor:
 
         if not api_key:
             logger.debug("No API key for LLM extraction; falling back to heuristic")
-            return self.extract(
-                user_message,
-                assistant_message,
-                tool_calls=tool_calls,
-                goal_context=goal_context,
-            )
+            return heuristic
 
         try:
             client = AsyncOpenAI(api_key=api_key, base_url=base_url)
@@ -246,15 +251,10 @@ class MemoryExtractor:
             )
 
             raw = (response.choices[0].message.content or "").strip()
-            return self._parse_llm_response(raw)
+            return self._merge_candidates(heuristic, self._parse_llm_response(raw))
         except Exception:
             logger.debug("LLM extraction failed; falling back to heuristic", exc_info=True)
-            return self.extract(
-                user_message,
-                assistant_message,
-                tool_calls=tool_calls,
-                goal_context=goal_context,
-            )
+            return heuristic
 
     @staticmethod
     def resolve_llm_model(default_model: str = "gpt-4o-mini") -> str | None:
@@ -304,17 +304,106 @@ class MemoryExtractor:
             ))
         return results
 
+    @staticmethod
+    def _merge_candidates(
+        primary: list[ExtractedMemory],
+        secondary: list[ExtractedMemory],
+    ) -> list[ExtractedMemory]:
+        merged: list[ExtractedMemory] = []
+        seen: dict[tuple[str, str], ExtractedMemory] = {}
+        for item in [*primary, *secondary]:
+            key = (item.memory_type, item.content.strip().lower())
+            existing = seen.get(key)
+            if existing is None:
+                seen[key] = item
+                merged.append(item)
+                continue
+            existing.tags = sorted(set(existing.tags + item.tags))
+            if item.metadata:
+                existing.metadata.update(item.metadata)
+        return merged
+
     # -- Fact extraction ----------------------------------------------------
+
+    @staticmethod
+    def _infer_path_role(text: str, start: int, end: int) -> str:
+        prefix = text[max(0, start - 80): start].lower()
+        suffix = text[end: min(len(text), end + 24)].lower()
+        local = f"{prefix} {suffix}"
+        if re.search(r"\bnotes?\b[^.\n]{0,20}$", prefix):
+            return "notes"
+        if re.search(r"\bpapers?\b[^.\n]{0,20}$", prefix):
+            return "papers"
+        if re.search(r"\brules?\b[^.\n]{0,20}$", prefix):
+            return "rules"
+        if re.search(r"\bskills?\b[^.\n]{0,20}$", prefix):
+            return "skills"
+        if "note" in local:
+            return "notes"
+        if "paper" in local:
+            return "papers"
+        if "rule" in local:
+            return "rules"
+        if "skill" in local:
+            return "skills"
+        return ""
+
+    def _build_path_fact(
+        self,
+        path: str,
+        *,
+        role: str = "",
+        source_pattern: str,
+    ) -> ExtractedMemory | None:
+        normalized = _normalize_path_text(path)
+        if not normalized:
+            return None
+        tags = ["file_location"]
+        metadata: dict[str, Any] = {"source_pattern": source_pattern, "path": normalized}
+        if _looks_like_directory_path(normalized):
+            tags.append("search_dir")
+            metadata["is_directory"] = True
+            if role:
+                tags.append(f"{role}_directory")
+                content = f"{role} directory: {normalized}"
+            else:
+                content = f"directory path: {normalized}"
+        else:
+            if role:
+                tags.append(f"{role}_path")
+                content = f"{role} path: {normalized}"
+            else:
+                content = f"file path: {normalized}"
+        return ExtractedMemory(
+            memory_type="fact",
+            content=content,
+            tags=tags,
+            metadata=metadata,
+        )
 
     def _extract_facts(self, user_message: str) -> list[ExtractedMemory]:
         if not user_message or not user_message.strip():
             return []
         facts: list[ExtractedMemory] = []
         seen_contents: set[str] = set()
+        seen_paths: set[str] = set()
         for pattern, tag in _FACT_PATTERNS:
             m = pattern.search(user_message)
             if m:
                 content = m.group(1).strip().rstrip(".,;")
+                if tag == "file_location":
+                    normalized_path = _normalize_path_text(content)
+                    if normalized_path and normalized_path not in seen_paths:
+                        fact = self._build_path_fact(
+                            normalized_path,
+                            role=self._infer_path_role(user_message, m.start(1), m.end(1)),
+                            source_pattern=tag,
+                        )
+                        if fact is not None and fact.content not in seen_contents:
+                            seen_paths.add(normalized_path)
+                            seen_contents.add(fact.content)
+                            facts.append(fact)
+                    continue
                 if content and content not in seen_contents:
                     seen_contents.add(content)
                     facts.append(
@@ -326,21 +415,19 @@ class MemoryExtractor:
                         )
                     )
         for m in _STANDALONE_PATH_RE.finditer(user_message):
-            path = m.group(1).strip()
-            if path and path not in seen_contents:
-                already_captured = any(
-                    path in f.content for f in facts if "file_location" in f.tags
-                )
-                if not already_captured:
-                    seen_contents.add(path)
-                    facts.append(
-                        ExtractedMemory(
-                            memory_type="fact",
-                            content=f"file path: {path}",
-                            tags=["file_location"],
-                            metadata={"source_pattern": "standalone_path"},
-                        )
-                    )
+            path = _normalize_path_text(m.group(1))
+            if not path or path in seen_paths:
+                continue
+            fact = self._build_path_fact(
+                path,
+                role=self._infer_path_role(user_message, m.start(1), m.end(1)),
+                source_pattern="standalone_path",
+            )
+            if fact is None or fact.content in seen_contents:
+                continue
+            seen_paths.add(path)
+            seen_contents.add(fact.content)
+            facts.append(fact)
         return facts
 
     # -- Preference extraction ----------------------------------------------
