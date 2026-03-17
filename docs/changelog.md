@@ -1,6 +1,15 @@
 # Changelog
 
 ## 2026-03-17
+- [test] **Compact Code Mode sidebar regression coverage now locks the review follow-up in place.** Extracted the patched assistant-row recovery and missing-thread polling-stop transitions into `modeChatSidebarState.ts`, wired `ModeChatSidebar` through those pure helpers, and added focused Vitest coverage for tool-call start/result recovery, run-event recovery, injected-user assistant-slot preservation, and confirmed-`404` polling stop behavior. Validation: `cd editor && npx vitest run src/components/shared/__tests__/modeChatSidebarState.test.ts src/lib/__tests__/editorChat.test.ts`; `cd editor && npm run build`.
+
+## 2026-03-17
+- [fix] **Code Mode review follow-up restored missing tool/run progress bubbles and stopped noisy sidebar thread polling.** `ModeChatSidebar` now upserts the assistant row for tool-call starts/results and run events instead of silently dropping those updates when the placeholder message is missing, injected user messages preserve the assistant slot, and the thread-snapshot fallback now stops retrying after a confirmed `404` because sidebar-only turns are not always persisted as server chat threads. Validation: targeted live Development-mode smoke recheck plus `cd editor && npm run build`.
+
+## 2026-03-17
+- [fix] **Code Mode live retry hangs now bypass the Vite websocket proxy in dev.** Editor chat/run websocket clients now connect straight to the backend on port `8000` during Vite development instead of routing through the HMR page proxy, which fixes the compact Code Mode sidebar getting stuck on silent `/retry` and normal ask turns even though the backend channel itself was healthy. Validation: live browser smoke test in Development mode (`Respond with only OK.` then `/retry`), plus a direct browser websocket probe against the same returned channel.
+
+## 2026-03-17
 - [fix] **Review follow-up: hardened screenshot handler and domain template save against unwritable home.** `handle_screenshot` in `capabilities/shell.py` now catches `OSError` from `~/.dan/screenshots` directory creation and returns a structured `CapabilityResult` failure instead of propagating a raw exception. `save_domain_template` in `domain_learning.py` now treats both `mkdir` and `write_text` as best-effort, logging a warning and returning silently when the template directory is unwritable. These match the startup-hardening pattern from plan 38-3. Validation: `pytest tests/test_tools/test_builtin_tools.py -k "screenshot or clipboard"`; `pytest tests/test_engine/test_domain_taxonomy.py tests/test_engine/test_preference_extractor.py`.
 
 ## 2026-03-17
