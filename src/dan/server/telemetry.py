@@ -26,8 +26,24 @@ logger = logging.getLogger(__name__)
 # Environment knobs
 # ---------------------------------------------------------------------------
 
-_TELEMETRY_DB = os.environ.get("DAN_TELEMETRY_DB", "")
-_RETENTION_DAYS = int(os.environ.get("DAN_TELEMETRY_RETENTION_DAYS", "90"))
+
+def _env_retention_days() -> int:
+    raw = str(os.environ.get("DAN_TELEMETRY_RETENTION_DAYS", "90") or "").strip()
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        logger.warning(
+            "Invalid DAN_TELEMETRY_RETENTION_DAYS=%r; falling back to 90 days",
+            raw,
+        )
+        return 90
+
+
+def _default_telemetry_db_path() -> str:
+    configured = str(os.environ.get("DAN_TELEMETRY_DB", "") or "").strip()
+    if configured:
+        return configured
+    return str(Path.home() / ".dan" / "telemetry.db")
 
 EventType = Literal[
     "chat_turn",
@@ -272,7 +288,7 @@ class InMemoryTelemetryStore(TelemetryStore):
         return len(events)
 
     async def prune(self, older_than_days: int | None = None) -> int:
-        days = older_than_days if older_than_days is not None else _RETENTION_DAYS
+        days = older_than_days if older_than_days is not None else _env_retention_days()
         cutoff = datetime.now(timezone.utc) - timedelta(days=days)
         before = len(self._events)
         self._events = [e for e in self._events if e.timestamp >= cutoff]
@@ -393,7 +409,7 @@ class SQLiteTelemetryStore(TelemetryStore):
 
     def __init__(self, db_path: str | Path | None = None) -> None:
         if db_path is None:
-            db_path = _TELEMETRY_DB or str(Path.home() / ".dan" / "telemetry.db")
+            db_path = _default_telemetry_db_path()
         self._db_path = Path(db_path)
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
@@ -567,7 +583,7 @@ class SQLiteTelemetryStore(TelemetryStore):
         return await asyncio.to_thread(self._export_csv_sync, filters, path)
 
     async def prune(self, older_than_days: int | None = None) -> int:
-        days = older_than_days if older_than_days is not None else _RETENTION_DAYS
+        days = older_than_days if older_than_days is not None else _env_retention_days()
         return await asyncio.to_thread(self._prune_sync, days)
 
     async def close(self) -> None:

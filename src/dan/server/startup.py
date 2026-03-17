@@ -338,7 +338,13 @@ async def init_stores(state: AppState) -> None:
 
     workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
     state.block_registry = BlockRegistry(workspace=Path(workspace_root))
-    state.block_registry.scan()
+    try:
+        state.block_registry.scan()
+    except OSError as exc:
+        logger.warning(
+            "Block registry scan degraded during startup; continuing with partial in-memory registry: %s",
+            exc,
+        )
 
     state.furnace_enabled = os.environ.get(
         "DAN_FURNACE_API_ENABLED", "1"
@@ -346,11 +352,19 @@ async def init_stores(state: AppState) -> None:
     if state.furnace_enabled:
         from dan.engine.recipe.session_store import FurnaceSessionStore
 
-        furnace_dir = os.environ.get("DAN_FURNACE_DIR")
-        state.furnace_session_store = FurnaceSessionStore(
-            base_dir=furnace_dir or None
-        )
-        logger.info("Furnace API enabled (sessions dir: %s)", state.furnace_session_store._base_dir)
+        try:
+            furnace_dir = os.environ.get("DAN_FURNACE_DIR")
+            state.furnace_session_store = FurnaceSessionStore(
+                base_dir=furnace_dir or None
+            )
+            logger.info("Furnace API enabled (sessions dir: %s)", state.furnace_session_store._base_dir)
+        except OSError as exc:
+            state.furnace_enabled = False
+            state.furnace_session_store = None
+            logger.warning(
+                "Furnace startup degraded; disabling Furnace API for this process: %s",
+                exc,
+            )
 
 
 async def init_engine(state: AppState) -> None:
