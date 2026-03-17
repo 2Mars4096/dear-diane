@@ -157,6 +157,16 @@ These are important but large enough to warrant their own plans:
 - DebugPanel: null-coalesced `frame.line` to prevent `undefined` in `setPausedLocation`
 - ProjectDetectionToast: fixed hook ordering and stale closure for `handleDismiss`
 - Backend IPC: added missing handlers in main.ts, bridge in preload.cjs, typed interface in electronBridge.ts
+- Multi-file review: now detects backend `file_write` tool calls, preserves tri-state review state, and accept/reject applies real filesystem writes or deletes rejected newly created files
+- Workspace symbols: completed missing Electron IPC chain (`preload.cjs` -> `main.ts` -> `lspClient.ts`) so symbol autocomplete/search can use LSP results
+- Surface context: `ModeChatSidebar` now builds project-aware context (active file, open files, import neighbors, project detection, code mentions), tier executors/router forward it, and `ChatManager` injects it into prompts
+- Onboarding mount: `ProjectDetectionToast` and `FeatureTour` are now mounted in `CodeMode`, with working `data-tour="mode-bar"` and `data-tour="bottom-panel"` anchors
+- `/retry` + bypass: user turns now persist replay-safe metadata, `/retry` restores it, and dispatcher bypass commands no longer create bogus projects/tasks before processing
+- Historical multi-file review: review buttons now open immutable per-message snapshots instead of reconstructing from transient sidebar state, so delayed review clicks cannot misclassify existing files as newly created or delete the wrong path
+- Multi-root `Apply & Test`: test execution now resolves a common pinned root from the reviewed files and skips the shell handoff instead of running the wrong suite when edits span roots
+- Workspace-symbol dedupe: aggregate IPC results now keep symbols from distinct source ranges even when name/container/URI match
+- Surface-context prompt budget: `ChatManager` now truncates oversized active-file, selection, mentioned-file, and folder payloads server-side to cap prompt growth
+- Dispatcher serialization: `/build` and `/retry` are excluded from synthetic bypass IDs so they queue and reserve the real project lock like other long-running turns
 
 ## Notes
 
@@ -164,3 +174,5 @@ These are important but large enough to warrant their own plans:
 - 2026-03-16: Per-mode chat sidebars and full Chat now turn appended file chips into explicit prompt context.
 - 2026-03-16: Follow-up hardening for attachments.
 - 2026-03-17: All 13 tasks completed and reviewed. Prior session changes (Tasks 4-7, 9, 11, 13) were lost from disk and re-implemented. Remaining minor items (7-4 docs, 8-6 backend mentions) also completed. Full review found and fixed 6 bugs + 1 missing infrastructure gap. Final state: build 0 errors, 849 tests pass.
+- 2026-03-17: Residual-risk patch landed after the final review. Targeted concierge regressions pass, editor build passes, and the remaining end-to-end gaps (multi-file review, workspace symbols, surface context, onboarding mount, `/retry` semantics, dispatcher bypass) are closed.
+- 2026-03-17: Second review hardening landed after the residual-risk patch. Historical multi-file review snapshots are now persisted per message, `/build` and `/retry` serialize on the real project ID, server-side `surface_context` is budgeted, multi-root `Apply & Test` avoids false-positive test runs, and focused validation passes (`75 passed, 1 skipped`, editor build, `ChatMessage` unit test).
