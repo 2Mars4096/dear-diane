@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildMessagingSummary,
   hasConfiguredMessagingProviders,
+  mergePersistedMessagingProviders,
   normalizeMessagingProvider,
   summarizeMessagingStatus,
   type MessagingProviderState,
@@ -106,5 +107,39 @@ describe("useMessagingStore helpers", () => {
         whatsapp: makeProvider(),
       }),
     ).toBe(true);
+
+    expect(
+      hasConfiguredMessagingProviders({
+        telegram: makeProvider({ enabled: true }),
+        whatsapp: makeProvider(),
+      }),
+    ).toBe(false);
+  });
+
+  it("restores only persisted enablement flags from storage", () => {
+    const merged = mergePersistedMessagingProviders(
+      {
+        telegram: {
+          enabled: true,
+          autoStart: true,
+          allowedChatIdsText: "111\n222",
+        },
+        whatsapp: {
+          enabled: true,
+          autoStart: false,
+          allowedJidsText: "stale@s.whatsapp.net",
+        },
+      },
+      {
+        telegram: makeProvider(),
+        whatsapp: makeProvider(),
+      },
+    );
+
+    expect(merged.telegram.enabled).toBe(true);
+    expect(merged.telegram.autoStart).toBe(true);
+    expect(merged.telegram.allowedChatIdsText).toBe("");
+    expect(merged.whatsapp.enabled).toBe(true);
+    expect(merged.whatsapp.allowedJidsText).toBe("");
   });
 });

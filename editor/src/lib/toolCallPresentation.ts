@@ -188,6 +188,7 @@ function extractToolTarget(toolCall: ToolCallInfo): string | null {
   switch (toolCall.toolName) {
     case "file_read":
     case "read_file":
+    case "file_write":
     case "write_file":
     case "edit_file":
     case "list_directory": {
@@ -304,7 +305,7 @@ export interface ToolProgressInfo {
 
 function extractFilePath(toolCall: ToolCallInfo): string | null {
   const fileTools = new Set([
-    "file_read", "read_file", "write_file", "edit_file", "list_directory",
+    "file_read", "read_file", "file_write", "write_file", "edit_file", "list_directory",
   ]);
   if (!fileTools.has(toolCall.toolName)) {
     const fallback = extractStringArg(toolCall, "path", "file_path");
@@ -313,7 +314,7 @@ function extractFilePath(toolCall: ToolCallInfo): string | null {
   return extractStringArg(toolCall, "path", "file_path", "directory", "dir");
 }
 
-const FILE_WRITE_TOOLS = new Set(["write_file", "edit_file"]);
+const FILE_WRITE_TOOLS = new Set(["file_write", "write_file", "edit_file"]);
 
 export function extractFileWritePaths(
   toolCalls: Array<{ toolName: string; argsPreview: string }>,

@@ -33,7 +33,7 @@ import { useAppStore, type AppMode } from "../../store/useAppStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { nativeTerminal, nativeFs } from "../../lib/electronBridge";
 import { useCodeStore } from "../../store/useCodeStore";
-import type { ChatMessage } from "../../types/chat";
+import type { ChatMessage, ReviewableFileEdit } from "../../types/chat";
 import * as api from "../../lib/api";
 import {
   type ComposerAttachmentDraft,
@@ -60,6 +60,12 @@ import {
 } from "../../lib/chatMessagePersistence";
 import { deriveDraftThreadTitleFromMessage } from "../../lib/chatThreadTitle";
 import { describeLatestToolProgress, extractFileWritePaths } from "../../lib/toolCallPresentation";
+import { buildSurfaceContext } from "../../lib/contextBudget";
+import { extractImportPaths } from "../../lib/importResolver";
+import {
+  detectProjectType,
+  type ProjectDetection,
+} from "../../lib/workspaceIntelligence";
 
 /* ------------------------------------------------------------------ */
 /*  Chat sender registry (per-mode)                                    */
@@ -150,6 +156,25 @@ export interface ModeChatSidebarProps {
 }
 
 type SidebarChatMode = Exclude<EditorChatMode, "conversation">;
+
+const PROJECT_DETECTION_TTL_MS = 60_000;
+const projectDetectionCache = new Map<
+  string,
+  { detectedAt: number; detection: ProjectDetection }
+>();
+
+async function getCachedProjectDetection(rootPath: string): Promise<ProjectDetection> {
+  const cached = projectDetectionCache.get(rootPath);
+  if (cached && Date.now() - cached.detectedAt < PROJECT_DETECTION_TTL_MS) {
+    return cached.detection;
+  }
+  const detection = await detectProjectType(rootPath);
+  projectDetectionCache.set(rootPath, {
+    detectedAt: Date.now(),
+    detection,
+  });
+  return detection;
+}
 
 interface PendingQueueItem {
   id: string;
@@ -535,7 +560,8 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
   const chatModeRef = useRef<SidebarChatMode>(chatMode);
   const activeRequestModeRef = useRef<SidebarChatMode | null>(null);
   const messagesRef = useRef(messages);
-  const fileSnapshotsRef = useRef<Map<string, string>>(new Map());
+  const fileSnapshotsRef = useRef<Map<string, string | null>>(new Map());
+  const fileSnapshotLoadsRef = useRef<Map<string, Promise<void>>>(new Map());
   messagesRef.current = messages;
   threadIdRef.current = threadId;
   activeChannelIdRef.current = activeChannelId;
@@ -747,24 +773,110 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     }
   }, []);
 
-  const handleReviewMultiFileEdits = useCallback(async (filePaths: string[]) => {
-    const entries = await Promise.all(
+  const capturePreWriteSnapshot = useCallback(async (filePath: string) => {
+    if (!filePath || fileSnapshotsRef.current.has(filePath)) return;
+    const pending = fileSnapshotLoadsRef.current.get(filePath);
+    if (pending) {
+      await pending;
+      return;
+    }
+
+    const load = (async () => {
+      const openFile = useCodeStore
+        .getState()
+        .openFiles.find((entry) => entry.path === filePath);
+      if (openFile) {
+        fileSnapshotsRef.current.set(filePath, openFile.content);
+        return;
+      }
+
+      const exists = await nativeFs.exists(filePath);
+      if (!exists) {
+        if (!fileSnapshotsRef.current.has(filePath)) {
+          fileSnapshotsRef.current.set(filePath, null);
+        }
+        return;
+      }
+
+      const content = await nativeFs.readFile(filePath);
+      if (!fileSnapshotsRef.current.has(filePath)) {
+        fileSnapshotsRef.current.set(filePath, content ?? null);
+      }
+    })();
+
+    fileSnapshotLoadsRef.current.set(filePath, load);
+    try {
+      await load;
+    } finally {
+      fileSnapshotLoadsRef.current.delete(filePath);
+    }
+  }, []);
+
+  const handleReviewMultiFileEdits = useCallback((edits: ReviewableFileEdit[]) => {
+    if (edits.length === 0) return;
+    useCodeStore.getState().openMultiFileReview(
+      edits.map((edit) => ({
+        filePath: edit.filePath,
+        originalContent: edit.originalContent,
+        modifiedContent: edit.modifiedContent,
+        createdByThisTurn: edit.createdByThisTurn,
+        accepted: null,
+      })),
+    );
+  }, []);
+
+  const persistReviewableEdits = useCallback(async (
+    assistantMessageId: string,
+    toolCall: { toolName: string; argsPreview: string; status: string },
+  ) => {
+    if (
+      toolCall.status !== "success"
+      || (
+        toolCall.toolName !== "file_write"
+        && toolCall.toolName !== "write_file"
+        && toolCall.toolName !== "edit_file"
+      )
+    ) {
+      return;
+    }
+
+    const filePaths = extractFileWritePaths([toolCall]);
+    if (filePaths.length === 0) return;
+
+    const edits = await Promise.all(
       filePaths.map(async (filePath) => {
-        const originalContent = fileSnapshotsRef.current.get(filePath) ?? "";
-        const modifiedContent = (await nativeFs.readFile(filePath)) ?? "";
+        await capturePreWriteSnapshot(filePath);
+        const originalContent = fileSnapshotsRef.current.has(filePath)
+          ? (fileSnapshotsRef.current.get(filePath) ?? null)
+          : null;
+        const modifiedContent = await nativeFs.readFile(filePath);
+        if (modifiedContent === null) return null;
         return {
           filePath,
           originalContent,
           modifiedContent,
-          accepted: null as boolean | null,
+          createdByThisTurn: originalContent === null,
+        } satisfies ReviewableFileEdit;
+      }),
+    );
+
+    const nextEdits = edits.filter((edit): edit is ReviewableFileEdit => edit !== null);
+    if (nextEdits.length === 0) return;
+
+    setMessages((prev) =>
+      prev.map((message) => {
+        if (message.id !== assistantMessageId) return message;
+        const merged = new Map(
+          (message.reviewableFileEdits ?? []).map((edit) => [edit.filePath, edit]),
+        );
+        nextEdits.forEach((edit) => merged.set(edit.filePath, edit));
+        return {
+          ...message,
+          reviewableFileEdits: Array.from(merged.values()),
         };
       }),
     );
-    const changed = entries.filter((e) => e.originalContent !== e.modifiedContent);
-    if (changed.length > 0) {
-      useCodeStore.getState().openMultiFileReview(changed);
-    }
-  }, []);
+  }, [capturePreWriteSnapshot]);
 
   const persistThreadSnapshot = useCallback(async (options?: { forceCreate?: boolean }) => {
     const snapshot = messagesRef.current;
@@ -869,6 +981,8 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     setPendingOpenFullChat(false);
     setInput("");
     setStreaming(false);
+    fileSnapshotsRef.current.clear();
+    fileSnapshotLoadsRef.current.clear();
     setThreadId(null);
     threadIdRef.current = null;
     setActiveChannelId(null);
@@ -987,9 +1101,14 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         if (parsed) trackCommand(parsed.command);
       }
 
+      fileSnapshotsRef.current.clear();
+      fileSnapshotLoadsRef.current.clear();
       const attachments = await normalizeAttachmentDrafts(attachmentDrafts);
       const ctx = contextProvider?.() ?? "";
       const structuredMentions = collectStructuredMentions(trimmed);
+      const backendMentions = structuredMentions.filter(
+        (m) => m.type !== "file" && m.type !== "symbol" && m.type !== "folder",
+      );
 
       const codeMentions = structuredMentions.filter(
         (m) => m.type === "file" || m.type === "symbol" || m.type === "folder",
@@ -1007,6 +1126,59 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
           ? `${combinedCtx}\n\n${trimmed}`
           : combinedCtx
         : trimmed;
+      let surfaceContext: Record<string, unknown> = {
+        mode,
+        workspace_id: workspaceId ?? "_scratch",
+      };
+      if (mode === "development") {
+        const codeState = useCodeStore.getState();
+        const activeFile = codeState.openFiles.find(
+          (file) => file.path === codeState.activeFilePath,
+        );
+        const root = codeState.pinnedRoots[0];
+        const detection = root ? await getCachedProjectDetection(root) : null;
+        surfaceContext = {
+          ...buildSurfaceContext({
+          activeFilePath: activeFile?.path ?? null,
+          activeFileContent: activeFile?.content ?? null,
+          activeFileLanguage: activeFile?.language ?? null,
+          selectionText: null,
+          openFilePaths: codeState.openFiles.map((file) => file.path),
+          importNeighbors:
+            activeFile != null
+              ? extractImportPaths(activeFile.content, activeFile.path)
+              : [],
+          project: detection
+            ? {
+                type: detection.type,
+                name: detection.name,
+                frameworks: detection.frameworks,
+                package_manager: detection.packageManager,
+              }
+            : null,
+          mode,
+          workspace_id: workspaceId ?? "_scratch",
+          }),
+        };
+        if (root) {
+          surfaceContext = {
+            ...surfaceContext,
+            workspace_root: root,
+          };
+        }
+      }
+      if (mentionCtx) {
+        surfaceContext = {
+          ...surfaceContext,
+          mentioned_files: mentionCtx.mentioned_files.map((f) => ({
+            path: f.path,
+            lines: f.lines,
+            content: f.content,
+          })),
+          mentioned_symbols: mentionCtx.mentioned_symbols,
+          mentioned_folders: mentionCtx.mentioned_folders,
+        };
+      }
 
       const userMsg: ChatMessage = {
         id: crypto.randomUUID(),
@@ -1064,23 +1236,9 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
           mode: effectiveMode,
           scope: `mode-chat:${mode}`,
           attachments,
-          mentions: structuredMentions,
+          mentions: backendMentions.length > 0 ? backendMentions : undefined,
           signal: controller.signal,
-          surfaceContext: {
-            mode,
-            workspace_id: workspaceId,
-            ...(mentionCtx
-              ? {
-                  mentioned_files: mentionCtx.mentioned_files.map((f) => ({
-                    path: f.path,
-                    lines: f.lines,
-                    content: f.content,
-                  })),
-                  mentioned_symbols: mentionCtx.mentioned_symbols,
-                  mentioned_folders: mentionCtx.mentioned_folders,
-                }
-              : {}),
-          },
+          surfaceContext,
         });
         setThreadId(nextThreadId);
         threadIdRef.current = nextThreadId;
@@ -1145,16 +1303,14 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             );
           },
           onToolCallStart: (toolCall) => {
-            if (toolCall.toolName === "write_file" || toolCall.toolName === "edit_file") {
+            if (
+              toolCall.toolName === "file_write"
+              || toolCall.toolName === "write_file"
+              || toolCall.toolName === "edit_file"
+            ) {
               const paths = extractFileWritePaths([toolCall]);
               for (const p of paths) {
-                if (!fileSnapshotsRef.current.has(p)) {
-                  nativeFs.readFile(p).then((content) => {
-                    if (content !== null && !fileSnapshotsRef.current.has(p)) {
-                      fileSnapshotsRef.current.set(p, content);
-                    }
-                  });
-                }
+                void capturePreWriteSnapshot(p);
               }
             }
             setMessages((prev) =>
@@ -1180,6 +1336,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             );
           },
           onToolCallResult: (toolCall) => {
+            void persistReviewableEdits(assistantId, toolCall);
             setMessages((prev) =>
               prev.map((message) => {
                 if (message.id !== assistantId) return message;
@@ -1410,7 +1567,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         finishStream();
       }
     },
-    [contextProvider, finishStream, mode, workspaceId],
+    [capturePreWriteSnapshot, contextProvider, finishStream, mode, persistReviewableEdits, workspaceId],
   );
 
   const submitComposer = useCallback(() => {

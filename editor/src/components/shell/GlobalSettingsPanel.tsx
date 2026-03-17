@@ -669,11 +669,10 @@ export default function GlobalSettingsPanel({
       const isRunning =
         provider.running || provider.connectionState === "connected";
       const hasReconnectContext =
-        provider.enabled ||
         Boolean(
-          provider.configSummary?.configured ||
+          provider.running ||
+            provider.configSummary?.configured ||
             provider.adapterId ||
-            provider.botToken.trim() ||
             (providerId === "whatsapp" &&
               (provider.paired || provider.configSummary?.paired)),
         );

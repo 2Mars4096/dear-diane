@@ -24,7 +24,7 @@ import {
   Play,
   Plus,
 } from "lucide-react";
-import { useCodeStore } from "../../store/useCodeStore";
+import { useCodeStore, type MultiFileEditEntry } from "../../store/useCodeStore";
 import { useAppStore } from "../../store/useAppStore";
 import FileExplorer from "../code/FileExplorer";
 import SearchPanel from "../code/SearchPanel";
@@ -57,7 +57,12 @@ import ExtensionsPanel from "../code/ExtensionsPanel";
 import CallHierarchy from "../code/CallHierarchy";
 import MultiFileEdit from "../code/MultiFileEdit";
 import type { FileEdit } from "../code/MultiFileEdit";
-import { detectProjectType } from "../../lib/workspaceIntelligence";
+import ProjectDetectionToast from "../code/ProjectDetectionToast";
+import FeatureTour from "../code/FeatureTour";
+import {
+  detectProjectType,
+  type ProjectDetection,
+} from "../../lib/workspaceIntelligence";
 import {
   CoverageSummaryBar,
 } from "../code/CoverageOverlay";
@@ -433,7 +438,10 @@ function BottomPanelTabs({
   ];
 
   return (
-    <div className="flex items-center border-b border-gray-200 bg-gray-50 shrink-0 dark:border-[#3c3c3c] dark:bg-[#252526]">
+    <div
+      data-tour="bottom-panel"
+      className="flex items-center border-b border-gray-200 bg-gray-50 shrink-0 dark:border-[#3c3c3c] dark:bg-[#252526]"
+    >
       {tabs.map((t) => (
         <button
           key={t.id}
@@ -493,12 +501,23 @@ export default function CodeMode() {
     line: number;
     character: number;
   } | null>(null);
+  const [projectDetectionToast, setProjectDetectionToast] =
+    useState<ProjectDetection | null>(null);
+  const [showFeatureTour, setShowFeatureTour] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return localStorage.getItem("dan-hasSeenFeatureTour") !== "1";
+    } catch {
+      return true;
+    }
+  });
   const [mergeEditorState, setMergeEditorState] = useState<{ cwd: string; filePath: string } | null>(null);
   const [rebaseState, setRebaseState] = useState<{ cwd: string } | null>(null);
   const sidebarPaneWidthRef = useRef(sidebarPaneWidth);
   sidebarPaneWidthRef.current = sidebarPaneWidth;
   const chatPaneWidthRef = useRef(chatPaneWidth);
   chatPaneWidthRef.current = chatPaneWidth;
+  const lastDetectedRootRef = useRef<string | null>(null);
 
   useCodeShortcuts();
   useDebugEvents();
@@ -582,6 +601,35 @@ export default function CodeMode() {
     if (activeFilePath_ws) trackFileAccess(activeFilePath_ws);
   }, [activeFilePath_ws, trackFileAccess]);
 
+  const handleFeatureTourComplete = useCallback(() => {
+    setShowFeatureTour(false);
+    try {
+      localStorage.setItem("dan-hasSeenFeatureTour", "1");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    const root = pinnedRoots[0];
+    if (!root || root === lastDetectedRootRef.current) return;
+    lastDetectedRootRef.current = root;
+    let cancelled = false;
+    void detectProjectType(root).then((detection) => {
+      if (cancelled) return;
+      if (
+        detection.type !== "unknown"
+        || detection.frameworks.length > 0
+        || Boolean(detection.packageManager)
+      ) {
+        setProjectDetectionToast(detection);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [pinnedRoots]);
+
   useEffect(() => {
     const root = pinnedRoots[0];
     if (!root) return;
@@ -614,6 +662,75 @@ export default function CodeMode() {
     setChatPaneWidth(nextWidth);
   }, [showChatSidebar]);
 
+  const findContainingPinnedRoot = useCallback((filePath: string): string | null => {
+    const matches = pinnedRoots
+      .filter((root) => filePath === root || filePath.startsWith(root + "/"))
+      .sort((a, b) => b.length - a.length);
+    return matches[0] ?? null;
+  }, [pinnedRoots]);
+
+  const getCommonPinnedRoot = useCallback((filePaths: string[]): string | null => {
+    let commonRoot: string | null = null;
+    for (const filePath of filePaths) {
+      const root = findContainingPinnedRoot(filePath);
+      if (!root) return null;
+      if (commonRoot === null) {
+        commonRoot = root;
+        continue;
+      }
+      if (commonRoot !== root) return null;
+    }
+    return commonRoot;
+  }, [findContainingPinnedRoot]);
+
+  const applyReviewedEdit = useCallback(
+    async (entry: MultiFileEditEntry, accept: boolean): Promise<boolean> => {
+      const store = useCodeStore.getState();
+      if (!accept && entry.createdByThisTurn) {
+        const exists = await nativeFs.exists(entry.filePath);
+        if (exists) {
+          await nativeFs.delete(entry.filePath);
+        }
+        store.closeFile(entry.filePath);
+        return true;
+      }
+
+      const nextContent = accept ? entry.modifiedContent : entry.originalContent;
+      if (nextContent === null) return false;
+
+      const ok = await nativeFs.writeFile(entry.filePath, nextContent);
+      if (!ok) return false;
+
+      if (store.openFiles.some((file) => file.path === entry.filePath)) {
+        if (accept) {
+          store.reloadFileContent(entry.filePath, nextContent);
+        } else {
+          store.revertFile(entry.filePath, nextContent);
+        }
+      }
+
+      window.dispatchEvent(
+        new CustomEvent("lsp:fileSaved", {
+          detail: { filePath: entry.filePath, text: nextContent },
+        }),
+      );
+      return true;
+    },
+    [],
+  );
+
+  const acceptPendingMultiFileEdits = useCallback(async () => {
+    const store = useCodeStore.getState();
+    const edits = store.multiFileEdits;
+    for (let index = 0; index < edits.length; index += 1) {
+      const entry = edits[index];
+      if (!entry || entry.accepted !== null) continue;
+      if (await applyReviewedEdit(entry, true)) {
+        store.acceptMultiFileEdit(index);
+      }
+    }
+  }, [applyReviewedEdit]);
+
   const multiFileEditProps = useMemo((): {
     edits: FileEdit[];
     onAccept: (filePath: string) => void;
@@ -626,30 +743,45 @@ export default function CodeMode() {
     return {
       edits: multiFileEdits.map((e) => ({
         filePath: e.filePath,
-        original: e.originalContent,
+        original: e.originalContent ?? "",
         modified: e.modifiedContent,
-        accepted: e.accepted === true,
+        accepted: e.accepted,
       })),
       onAccept: (filePath: string) => {
         const idx = multiFileEdits.findIndex((e) => e.filePath === filePath);
-        if (idx >= 0) store.acceptMultiFileEdit(idx);
+        const entry = idx >= 0 ? multiFileEdits[idx] : null;
+        if (!entry) return;
+        void (async () => {
+          if (await applyReviewedEdit(entry, true)) {
+            store.acceptMultiFileEdit(idx);
+          }
+        })();
       },
       onReject: (filePath: string) => {
         const idx = multiFileEdits.findIndex((e) => e.filePath === filePath);
-        if (idx >= 0) store.rejectMultiFileEdit(idx);
+        const entry = idx >= 0 ? multiFileEdits[idx] : null;
+        if (!entry) return;
+        void (async () => {
+          if (await applyReviewedEdit(entry, false)) {
+            store.rejectMultiFileEdit(idx);
+          }
+        })();
       },
       onAcceptAll: () => {
-        store.acceptAllMultiFileEdits();
+        void acceptPendingMultiFileEdits();
       },
       onClose: () => store.closeMultiFileReview(),
     };
-  }, [showMultiFileReview, multiFileEdits]);
+  }, [acceptPendingMultiFileEdits, applyReviewedEdit, multiFileEdits, showMultiFileReview]);
 
   const handleApplyAllAndTest = useCallback(async () => {
     const store = useCodeStore.getState();
-    store.acceptAllMultiFileEdits();
+    const reviewRoot = getCommonPinnedRoot(
+      store.multiFileEdits.map((edit) => edit.filePath),
+    );
+    await acceptPendingMultiFileEdits();
     store.closeMultiFileReview();
-    const root = store.pinnedRoots[0];
+    const root = reviewRoot;
     if (!root) return;
     const detection = await detectProjectType(root);
     let testCmd: string | null = null;
@@ -669,7 +801,7 @@ export default function CodeMode() {
         }),
       );
     }
-  }, []);
+  }, [acceptPendingMultiFileEdits, getCommonPinnedRoot]);
 
   const sidebarContent = (() => {
     switch (activeSidebarPanel) {
@@ -924,6 +1056,21 @@ export default function CodeMode() {
       </div>
 
       <StatusBar />
+
+      {projectDetectionToast && (
+        <ProjectDetectionToast
+          detection={projectDetectionToast}
+          onConfigure={() => {
+            setShowSidebar(true);
+            setActiveSidebarPanel("extensions");
+          }}
+          onDismiss={() => setProjectDetectionToast(null)}
+        />
+      )}
+
+      {showFeatureTour && (
+        <FeatureTour onComplete={handleFeatureTourComplete} />
+      )}
 
       {quickOpenVisible && (
         <QuickOpen onClose={() => setQuickOpenVisible(false)} />

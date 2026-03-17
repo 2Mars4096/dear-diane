@@ -12,7 +12,7 @@ export interface FileEdit {
   filePath: string;
   original: string;
   modified: string;
-  accepted: boolean;
+  accepted: boolean | null;
 }
 
 const EXT_LANG: Record<string, string> = {
@@ -56,17 +56,21 @@ export default function MultiFileEdit({
     [edits, activeFile],
   );
 
-  const pendingCount = edits.filter((e) => !e.accepted).length;
+  const pendingCount = edits.filter((e) => e.accepted === null).length;
 
   const handleAcceptCurrent = useCallback(() => {
     onAccept(activeFile);
-    const nextPending = edits.find((e) => e.filePath !== activeFile && !e.accepted);
+    const nextPending = edits.find(
+      (e) => e.filePath !== activeFile && e.accepted === null,
+    );
     if (nextPending) setActiveFile(nextPending.filePath);
   }, [activeFile, edits, onAccept]);
 
   const handleRejectCurrent = useCallback(() => {
     onReject(activeFile);
-    const nextPending = edits.find((e) => e.filePath !== activeFile && !e.accepted);
+    const nextPending = edits.find(
+      (e) => e.filePath !== activeFile && e.accepted === null,
+    );
     if (nextPending) setActiveFile(nextPending.filePath);
   }, [activeFile, edits, onReject]);
 
@@ -117,12 +121,15 @@ export default function MultiFileEdit({
               activeFile === edit.filePath
                 ? "border-blue-500 text-gray-200 bg-[#1e1e1e]"
                 : "border-transparent text-gray-500 hover:text-gray-400"
-            } ${edit.accepted ? "opacity-50" : ""}`}
+            } ${edit.accepted !== null ? "opacity-60" : ""}`}
           >
             <ChevronRight size={10} className="text-gray-600" />
             {basename(edit.filePath)}
-            {edit.accepted && (
+            {edit.accepted === true && (
               <Check size={10} className="text-green-500" />
+            )}
+            {edit.accepted === false && (
+              <X size={10} className="text-red-500" />
             )}
           </button>
         ))}
@@ -156,27 +163,40 @@ export default function MultiFileEdit({
       </div>
 
       {/* Per-file accept/reject */}
-      {activeEdit && !activeEdit.accepted && (
+      {activeEdit && (
         <div className="flex items-center justify-between px-3 py-1.5 border-t border-gray-800 bg-[#252526] shrink-0">
           <span className="text-[10px] text-gray-500 truncate max-w-[50%]">
             {activeFile}
           </span>
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleAcceptCurrent}
-              className="px-3 py-1 text-xs bg-green-700/30 text-green-400 rounded hover:bg-green-700/50 transition-colors flex items-center gap-1"
+          {activeEdit.accepted === null ? (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleAcceptCurrent}
+                className="px-3 py-1 text-xs bg-green-700/30 text-green-400 rounded hover:bg-green-700/50 transition-colors flex items-center gap-1"
+              >
+                <Check size={12} />
+                Accept
+              </button>
+              <button
+                onClick={handleRejectCurrent}
+                className="px-3 py-1 text-xs bg-red-700/30 text-red-400 rounded hover:bg-red-700/50 transition-colors flex items-center gap-1"
+              >
+                <X size={12} />
+                Reject
+              </button>
+            </div>
+          ) : (
+            <span
+              className={`inline-flex items-center gap-1 rounded px-2 py-1 text-[11px] font-medium ${
+                activeEdit.accepted
+                  ? "bg-green-700/20 text-green-400"
+                  : "bg-red-700/20 text-red-400"
+              }`}
             >
-              <Check size={12} />
-              Accept
-            </button>
-            <button
-              onClick={handleRejectCurrent}
-              className="px-3 py-1 text-xs bg-red-700/30 text-red-400 rounded hover:bg-red-700/50 transition-colors flex items-center gap-1"
-            >
-              <X size={12} />
-              Reject
-            </button>
-          </div>
+              {activeEdit.accepted ? <Check size={12} /> : <X size={12} />}
+              {activeEdit.accepted ? "Accepted" : "Rejected"}
+            </span>
+          )}
         </div>
       )}
     </div>

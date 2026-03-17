@@ -44,6 +44,7 @@ import {
 import { useGraphStore } from "../store/useGraphStore";
 import { useAppStore } from "../store/useAppStore";
 import {
+  hasConfiguredMessagingProviders,
   useMessagingStore,
   type MessagingProviderId,
 } from "../store/useMessagingStore";
@@ -4379,6 +4380,9 @@ function EmptyState({ onSelect, mode, isEmptyGraph, fullScreen }: { onSelect: (t
   const cfg = MODE_CONFIG[mode];
   const Icon = cfg.icon;
   const messagingInitialized = useMessagingStore((state) => state.initialized);
+  const messagingRefreshError = useMessagingStore(
+    (state) => state.lastRefreshError,
+  );
   const messagingProviders = useMessagingStore((state) => state.providers);
   const messagingOnboardingOffered = useSettingsStore(
     (state) => state.messagingOnboardingOffered,
@@ -4394,21 +4398,14 @@ function EmptyState({ onSelect, mode, isEmptyGraph, fullScreen }: { onSelect: (t
     auto: isEmptyGraph ? BUILD_PROMPTS : EXAMPLE_PROMPTS,
   };
   const hasMessagingConfigured = useMemo(
-    () =>
-      Object.values(messagingProviders).some(
-        (provider) =>
-          provider.running ||
-          provider.enabled ||
-          provider.configSummary?.configured ||
-          provider.paired ||
-          provider.configSummary?.paired,
-      ),
+    () => hasConfiguredMessagingProviders(messagingProviders),
     [messagingProviders],
   );
   const shouldOfferMessagingPrompt = shouldOfferMessagingOnboarding({
     fullScreen: Boolean(fullScreen),
     messagingInitialized,
     messagingOnboardingOffered,
+    lastRefreshError: messagingRefreshError,
     providers: messagingProviders,
   });
 

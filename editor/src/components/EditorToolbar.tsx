@@ -371,7 +371,6 @@ export default function EditorToolbar() {
   ].filter(
     ({ provider }) =>
       provider.running ||
-      provider.enabled ||
       provider.configSummary?.configured ||
       provider.paired ||
       provider.configSummary?.paired ||

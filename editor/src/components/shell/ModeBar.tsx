@@ -33,7 +33,10 @@ export default function ModeBar() {
   const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
 
   return (
-    <div className={`flex items-center gap-1 bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-3 h-10 flex-shrink-0 app-drag-region ${isElectron && isMac ? "pl-20" : ""}`}>
+    <div
+      data-tour="mode-bar"
+      className={`flex items-center gap-1 bg-gray-100 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-800 px-3 h-10 flex-shrink-0 app-drag-region ${isElectron && isMac ? "pl-20" : ""}`}
+    >
       <span className="text-gray-900 dark:text-white font-bold text-sm mr-3 tracking-wide select-none">DAN</span>
       <div className="flex items-center gap-0.5">
         {MODE_CONFIGS.map((mode) => {

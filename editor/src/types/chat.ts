@@ -17,6 +17,13 @@ export interface ChatAttachment {
   source?: string;
 }
 
+export interface ReviewableFileEdit {
+  filePath: string;
+  originalContent: string | null;
+  modifiedContent: string;
+  createdByThisTurn: boolean;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant" | "system";
@@ -37,6 +44,7 @@ export interface ChatMessage {
   } | null;
   mentions?: Array<{ name: string; type: string; id: string }>;
   toolCalls?: ToolCallInfo[];
+  reviewableFileEdits?: ReviewableFileEdit[];
   runEvents?: RunEventPayload[];
   attachments?: ChatAttachment[];
   progressStatus?: string;

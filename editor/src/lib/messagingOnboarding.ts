@@ -1,5 +1,6 @@
 import {
   hasConfiguredMessagingProviders,
+  hasResolvedMessagingConfig,
   type MessagingProviderId,
   type MessagingProviderState,
 } from "../store/useMessagingStore";
@@ -21,11 +22,14 @@ export function shouldOfferMessagingOnboarding(params: {
   fullScreen: boolean;
   messagingInitialized: boolean;
   messagingOnboardingOffered: boolean;
+  lastRefreshError?: string | null;
   providers: Record<MessagingProviderId, MessagingProviderState>;
 }): boolean {
   return (
     params.fullScreen &&
     params.messagingInitialized &&
+    hasResolvedMessagingConfig(params.providers) &&
+    !params.lastRefreshError &&
     !params.messagingOnboardingOffered &&
     !hasConfiguredMessagingProviders(params.providers)
   );

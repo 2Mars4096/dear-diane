@@ -10,8 +10,9 @@ export interface OpenFile {
 
 export interface MultiFileEditEntry {
   filePath: string;
-  originalContent: string;
+  originalContent: string | null;
   modifiedContent: string;
+  createdByThisTurn: boolean;
   accepted: boolean | null;
 }
 

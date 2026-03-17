@@ -47,7 +47,10 @@ const CONNECTION_STATE_PRIORITY: Record<MessagingConnectionState, number> = {
 
 let pollTimer: number | null = null;
 let bootPromise: Promise<void> | null = null;
-const eventSources = new Map<MessagingProviderId, EventSource>();
+const eventSources = new Map<
+  MessagingProviderId,
+  { adapterId: string; source: EventSource }
+>();
 
 export interface MessagingProviderState {
   enabled: boolean;
@@ -101,6 +104,45 @@ interface MessagingState {
     value: string,
   ) => void;
   clearProviderError: (providerId: MessagingProviderId) => void;
+}
+
+export function mergePersistedMessagingProviders(
+  persisted: Partial<Record<MessagingProviderId, Partial<MessagingProviderState>>> | undefined,
+  current: Record<MessagingProviderId, MessagingProviderState>,
+): Record<MessagingProviderId, MessagingProviderState> {
+  return {
+    telegram: {
+      ...current.telegram,
+      enabled:
+        typeof persisted?.telegram?.enabled === "boolean"
+          ? persisted.telegram.enabled
+          : current.telegram.enabled,
+      autoStart:
+        typeof persisted?.telegram?.autoStart === "boolean"
+          ? persisted.telegram.autoStart
+          : current.telegram.autoStart,
+    },
+    whatsapp: {
+      ...current.whatsapp,
+      enabled:
+        typeof persisted?.whatsapp?.enabled === "boolean"
+          ? persisted.whatsapp.enabled
+          : current.whatsapp.enabled,
+      autoStart:
+        typeof persisted?.whatsapp?.autoStart === "boolean"
+          ? persisted.whatsapp.autoStart
+          : current.whatsapp.autoStart,
+    },
+  };
+}
+
+export function hasResolvedMessagingConfig(
+  providers: Record<MessagingProviderId, MessagingProviderState>,
+): boolean {
+  return PROVIDER_IDS.every((providerId) => {
+    const provider = providers[providerId];
+    return provider.configSummary != null || provider.configEndpointAvailable === false;
+  });
 }
 
 function createProviderState(): MessagingProviderState {
@@ -354,7 +396,6 @@ export function hasConfiguredMessagingProviders(
   return Object.values(providers).some(
     (provider) =>
       provider.running ||
-      provider.enabled ||
       provider.configSummary?.configured ||
       provider.paired ||
       provider.configSummary?.paired,
@@ -427,22 +468,16 @@ function mergeConfigSummaryIntoProvider(
     configEndpointAvailable: true,
   };
 
-  if (providerId === "telegram" && !current.allowedChatIdsText.trim()) {
-    const ids = Array.isArray(summary.allowed_chat_ids)
+  if (providerId === "telegram") {
+    next.allowedChatIdsText = Array.isArray(summary.allowed_chat_ids)
       ? summary.allowed_chat_ids.map((value) => String(value)).join("\n")
       : "";
-    if (ids) {
-      next.allowedChatIdsText = ids;
-    }
   }
 
-  if (providerId === "whatsapp" && !current.allowedJidsText.trim()) {
-    const jids = Array.isArray(summary.allowed_jids)
+  if (providerId === "whatsapp") {
+    next.allowedJidsText = Array.isArray(summary.allowed_jids)
       ? summary.allowed_jids.join("\n")
       : "";
-    if (jids) {
-      next.allowedJidsText = jids;
-    }
   }
 
   if (typeof summary.paired === "boolean") {
@@ -466,7 +501,7 @@ function mergeConfigSummaryIntoProvider(
 function closeProviderEvents(providerId: MessagingProviderId) {
   const existing = eventSources.get(providerId);
   if (existing) {
-    existing.close();
+    existing.source.close();
     eventSources.delete(providerId);
   }
 }
@@ -568,7 +603,10 @@ function attachProviderEvents(
       });
     },
     () => {
-      eventSources.delete(providerId);
+      const currentEntry = eventSources.get(providerId);
+      if (currentEntry?.adapterId === adapterId) {
+        eventSources.delete(providerId);
+      }
       if (sawEvent) return;
       applyUpdate((state) => {
         const provider = state.providers[providerId];
@@ -589,7 +627,7 @@ function attachProviderEvents(
       });
     },
   );
-  eventSources.set(providerId, source);
+  eventSources.set(providerId, { adapterId, source });
 }
 
 const initialProviders: Record<MessagingProviderId, MessagingProviderState> = {
@@ -614,10 +652,6 @@ export const useMessagingStore = create<MessagingState>()(
           }, POLL_INTERVAL_MS);
         }
 
-        if (!get().initialized) {
-          set({ initialized: true });
-        }
-
         bootPromise = (async () => {
           await get().refreshConfig();
           await get().refreshStatus({ silent: true });
@@ -640,6 +674,7 @@ export const useMessagingStore = create<MessagingState>()(
               // Individual connect errors are already pushed into provider state.
             }
           }
+          set({ initialized: true });
         })().finally(() => {
           bootPromise = null;
         });
@@ -664,12 +699,20 @@ export const useMessagingStore = create<MessagingState>()(
         }
 
         try {
+          const previousWhatsapp = get().providers.whatsapp;
           const statuses = await getAdapterStatus();
+          const summaries = {
+            telegram: summarizeMessagingStatus("telegram", statuses),
+            whatsapp: summarizeMessagingStatus("whatsapp", statuses),
+          } satisfies Record<
+            MessagingProviderId,
+            ReturnType<typeof summarizeMessagingStatus>
+          >;
           set((state) => {
             const nextProviders = { ...state.providers };
             for (const providerId of PROVIDER_IDS) {
               const current = state.providers[providerId];
-              const summary = summarizeMessagingStatus(providerId, statuses);
+              const summary = summaries[providerId];
               nextProviders[providerId] = {
                 ...current,
                 ...summary,
@@ -694,6 +737,23 @@ export const useMessagingStore = create<MessagingState>()(
               lastRefreshError: null,
             };
           });
+
+          const whatsappSummary = summaries.whatsapp;
+          const currentEventEntry = eventSources.get("whatsapp");
+          const whatsappPendingConnect =
+            previousWhatsapp.pendingAction === "connect" ||
+            previousWhatsapp.pendingAction === "reconnect";
+          if (
+            whatsappSummary.running &&
+            whatsappSummary.adapterId &&
+            currentEventEntry?.adapterId !== whatsappSummary.adapterId
+          ) {
+            attachProviderEvents("whatsapp", whatsappSummary.adapterId, (updater) => {
+              set(updater);
+            });
+          } else if (!whatsappSummary.running && !whatsappPendingConnect) {
+            closeProviderEvents("whatsapp");
+          }
         } catch (error) {
           set({
             refreshing: false,
@@ -1060,12 +1120,10 @@ export const useMessagingStore = create<MessagingState>()(
           telegram: {
             enabled: state.providers.telegram.enabled,
             autoStart: state.providers.telegram.autoStart,
-            allowedChatIdsText: state.providers.telegram.allowedChatIdsText,
           },
           whatsapp: {
             enabled: state.providers.whatsapp.enabled,
             autoStart: state.providers.whatsapp.autoStart,
-            allowedJidsText: state.providers.whatsapp.allowedJidsText,
           },
         },
       }),
@@ -1077,16 +1135,10 @@ export const useMessagingStore = create<MessagingState>()(
           >;
         return {
           ...currentState,
-          providers: {
-            telegram: {
-              ...currentState.providers.telegram,
-              ...(persisted.telegram ?? {}),
-            },
-            whatsapp: {
-              ...currentState.providers.whatsapp,
-              ...(persisted.whatsapp ?? {}),
-            },
-          },
+          providers: mergePersistedMessagingProviders(
+            persisted,
+            currentState.providers,
+          ),
         };
       },
     },

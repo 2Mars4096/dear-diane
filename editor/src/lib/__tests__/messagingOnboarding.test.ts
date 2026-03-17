@@ -57,7 +57,7 @@ describe("messagingOnboarding helpers", () => {
           whatsapp: makeProvider(),
         },
       }),
-    ).toBe(true);
+    ).toBe(false);
 
     expect(
       shouldOfferMessagingOnboarding({
@@ -65,7 +65,32 @@ describe("messagingOnboarding helpers", () => {
         messagingInitialized: true,
         messagingOnboardingOffered: false,
         providers: {
-          telegram: makeProvider({ configSummary: { configured: true } }),
+          telegram: makeProvider({ configSummary: { configured: false } }),
+          whatsapp: makeProvider(),
+        },
+      }),
+    ).toBe(false);
+
+    expect(
+      shouldOfferMessagingOnboarding({
+        fullScreen: true,
+        messagingInitialized: true,
+        messagingOnboardingOffered: false,
+        providers: {
+          telegram: makeProvider({ configSummary: { configured: false } }),
+          whatsapp: makeProvider({ configEndpointAvailable: false }),
+        },
+      }),
+    ).toBe(true);
+
+    expect(
+      shouldOfferMessagingOnboarding({
+        fullScreen: true,
+        messagingInitialized: true,
+        messagingOnboardingOffered: false,
+        lastRefreshError: "backend unavailable",
+        providers: {
+          telegram: makeProvider({ configSummary: { configured: false } }),
           whatsapp: makeProvider(),
         },
       }),

@@ -4,7 +4,7 @@ import katex from "katex";
 import "katex/dist/katex.min.css";
 import { Marked, Renderer } from "marked";
 import hljs from "../lib/hljs";
-import type { ChatMessage } from "../types/chat";
+import type { ChatMessage, ReviewableFileEdit } from "../types/chat";
 import {
   mentionTypeColor,
   navigateToMention,
@@ -12,7 +12,7 @@ import {
 } from "../lib/mentionParser";
 import { shouldShowAssistantLoadingPlaceholder } from "../lib/chatStreamLifecycle";
 import { useGraphStore } from "../store/useGraphStore";
-import { groupToolCallsForDisplay, extractFileWritePaths } from "../lib/toolCallPresentation";
+import { groupToolCallsForDisplay } from "../lib/toolCallPresentation";
 import ToolCallCard from "./ToolCallCard";
 import RunOutputBlock from "./RunOutputBlock";
 import { nativeShell } from "../lib/electronBridge";
@@ -562,7 +562,7 @@ interface ChatMessageProps {
   isStreaming?: boolean;
   allowRunCodeBlocks?: boolean;
   onRunCodeBlock?: (code: string) => void;
-  onReviewMultiFileEdits?: (filePaths: string[]) => void;
+  onReviewMultiFileEdits?: (edits: ReviewableFileEdit[]) => void;
 }
 
 function ToolCallGroup({
@@ -814,16 +814,16 @@ export default function ChatMessageBubble({
           />
         )}
 
-        {onReviewMultiFileEdits && message.toolCalls && (() => {
-          const writePaths = extractFileWritePaths(message.toolCalls);
-          if (writePaths.length < 2) return null;
+        {onReviewMultiFileEdits && message.reviewableFileEdits && (() => {
+          const reviewableEdits = message.reviewableFileEdits;
+          if (reviewableEdits.length < 2) return null;
           return (
             <button
-              onClick={() => onReviewMultiFileEdits(writePaths)}
+              onClick={() => onReviewMultiFileEdits(reviewableEdits)}
               className="mt-1.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 transition-colors dark:bg-purple-500/10 dark:text-purple-300 dark:border-purple-500/30 dark:hover:bg-purple-500/20"
             >
               <Pencil size={12} />
-              Review {writePaths.length} Changed Files
+              Review {reviewableEdits.length} Changed Files
             </button>
           );
         })()}
