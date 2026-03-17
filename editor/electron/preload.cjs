@@ -92,6 +92,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     definition: (params) => ipcRenderer.invoke("lsp:definition", params),
     references: (params) => ipcRenderer.invoke("lsp:references", params),
     documentSymbol: (params) => ipcRenderer.invoke("lsp:documentSymbol", params),
+    workspaceSymbol: (params) => ipcRenderer.invoke("lsp:workspaceSymbol", params),
     formatting: (params) => ipcRenderer.invoke("lsp:formatting", params),
     codeAction: (params) => ipcRenderer.invoke("lsp:codeAction", params),
     rename: (params) => ipcRenderer.invoke("lsp:rename", params),

@@ -889,6 +889,39 @@ ipcMain.handle("lsp:documentSymbol", async (_, { filePath }: { filePath: string 
   try { return await client.documentSymbol(`file://${filePath}`); } catch { return null; }
 });
 
+ipcMain.handle("lsp:workspaceSymbol", async (_, { query }: { query: string }) => {
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const clients = lspManager.getAllClients();
+  if (clients.length === 0) return [];
+
+  const settled = await Promise.allSettled(
+    clients.map((client) => client.workspaceSymbol(trimmed)),
+  );
+  const results: any[] = [];
+  const seen = new Set<string>();
+
+  for (const entry of settled) {
+    if (entry.status !== "fulfilled" || !Array.isArray(entry.value)) continue;
+    for (const symbol of entry.value) {
+      const key = [
+        symbol?.name ?? "",
+        symbol?.kind ?? "",
+        symbol?.containerName ?? "",
+        symbol?.location?.uri ?? "",
+        symbol?.location?.range?.start?.line ?? "",
+        symbol?.location?.range?.start?.character ?? "",
+      ].join("|");
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push(symbol);
+      }
+    }
+  }
+
+  return results;
+});
+
 ipcMain.handle("lsp:formatting", async (_, { filePath, tabSize, insertSpaces }: { filePath: string; tabSize: number; insertSpaces: boolean }) => {
   const client = lspManager.getClientForFile(filePath);
   if (!client) return null;

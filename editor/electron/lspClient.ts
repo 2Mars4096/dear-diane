@@ -260,6 +260,10 @@ export class LspClient extends EventEmitter {
     });
   }
 
+  async workspaceSymbol(query: string) {
+    return this.request("workspace/symbol", { query });
+  }
+
   async formatting(uri: string, tabSize: number, insertSpaces: boolean) {
     return this.request("textDocument/formatting", {
       textDocument: { uri },
