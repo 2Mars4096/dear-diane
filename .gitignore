@@ -103,6 +103,7 @@ pnpm-debug.log*
 !/tests/test_concierge/**
 /tests/test_concierge/__pycache__/
 /tests/test_concierge/**/*.pyc
+tests/test_concierge/.DS_Store
 !/tests/test_providers/
 /tests/test_providers/*
 !/tests/test_providers/test_tier_normalization.py
@@ -112,6 +113,7 @@ pnpm-debug.log*
 !/tests/eval/
 !/tests/eval/**
 tests/eval/__pycache__/
+tests/eval/.DS_Store
 !/tests/test_eval_runner.py
 tests/__pycache__/
 tests/.DS_Store
