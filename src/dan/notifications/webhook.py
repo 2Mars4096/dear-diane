@@ -29,7 +29,14 @@ class WebhookNotifier:
         payload = {
             "event_type": event_type,
             "run_id": event.get("run_id", ""),
-            "workflow_name": event.get("workflow_name") or event.get("workflow_id", ""),
+            "workflow_name": (
+                event.get("workflow_name")
+                or event.get("workflow_id")
+                or event.get("schedule_name")
+                or ""
+            ),
+            "schedule_id": event.get("schedule_id", ""),
+            "schedule_name": event.get("schedule_name", ""),
             "status": data.get("status", event_type),
             "message": self._build_message(event),
             "timestamp": event.get("timestamp", time.time()),
@@ -55,6 +62,12 @@ class WebhookNotifier:
             return f"Run failed: {error or 'unknown'}"
         if event_type == "human_input_needed":
             return f"Input needed: {data.get('prompt', '')}"
+        if event_type == "schedule_result_ready":
+            schedule_name = event.get("schedule_name") or "Scheduled task"
+            result = str(event.get("result") or data.get("result") or "").strip()
+            if result:
+                return f"{schedule_name}: {result[:300]}"
+            return f"{schedule_name} result is ready"
         return event_type
 
     async def _post(self, payload: dict[str, Any], retries: int = 1) -> None:

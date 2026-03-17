@@ -1270,6 +1270,10 @@ class TestDeliverResult:
         assert captured[0]["schedule_name"] == "content-test"
         assert captured[0]["result"] == "the result"
         assert captured[0]["surface"] == "cli"
+        assert "timestamp" in captured[0]
+        assert captured[0]["surface_id"] is None
+        assert captured[0]["data"]["status"] == "ready"
+        assert captured[0]["data"]["fallback"] is False
 
     @pytest.mark.asyncio
     async def test_no_event_bus(self):
@@ -1308,6 +1312,8 @@ class TestDeliverResult:
         assert len(events) == 1
         assert events[0]["fallback"] is True
         assert events[0]["surface"] == "notification"
+        assert events[0]["data"]["fallback"] is True
+        assert events[0]["data"]["status"] == "error"
 
     @pytest.mark.asyncio
     async def test_no_fallback_when_broadcast_succeeds(self):
@@ -1359,6 +1365,8 @@ class TestApplyFallbackPolicy:
         assert captured[0]["surface"] == "notification"
         assert captured[0]["fallback"] is True
         assert "boom" in captured[0]["result"]
+        assert captured[0]["data"]["status"] == "error"
+        assert captured[0]["data"]["fallback"] is True
 
     @pytest.mark.asyncio
     async def test_private_surface(self):
@@ -1381,6 +1389,7 @@ class TestApplyFallbackPolicy:
         assert len(captured) == 1
         assert captured[0]["surface"] == "private"
         assert captured[0]["user_id"] == "user-42"
+        assert captured[0]["data"]["status"] == "error"
 
 
 # =========================================================================

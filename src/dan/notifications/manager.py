@@ -10,7 +10,9 @@ from dan.notifications.config import NotificationConfig
 
 logger = logging.getLogger(__name__)
 
-NOTIFICATION_EVENTS = frozenset({"run_completed", "run_failed", "human_input_needed"})
+NOTIFICATION_EVENTS = frozenset(
+    {"run_completed", "run_failed", "human_input_needed", "schedule_result_ready"}
+)
 
 
 class NotificationManager:

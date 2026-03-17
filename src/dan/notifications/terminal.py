@@ -6,7 +6,9 @@ import os
 import sys
 from typing import Any
 
-BELL_EVENTS = frozenset({"run_completed", "run_failed", "human_input_needed"})
+BELL_EVENTS = frozenset(
+    {"run_completed", "run_failed", "human_input_needed", "schedule_result_ready"}
+)
 
 
 def should_ring_bell() -> bool:

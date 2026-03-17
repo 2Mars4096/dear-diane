@@ -867,16 +867,25 @@ async def deliver_result(
     Emits a ``schedule_result_ready`` event that adapters (Telegram, CLI, etc.)
     can subscribe to.
     """
+    now_ts = datetime.now(timezone.utc).timestamp()
+    result_text = result[:2000] if result else ""
     event = {
         "event_type": "schedule_result_ready",
         "schedule_id": entry.id,
         "schedule_name": entry.name,
         "surface": entry.delivery_target.surface,
+        "surface_id": entry.delivery_target.conversation_key,
         "conversation_key": entry.delivery_target.conversation_key,
         "user_id": entry.delivery_target.user_id,
         "project_id": entry.delivery_target.project_id,
         "thread_key": entry.delivery_target.thread_key,
-        "result": result[:2000] if result else "",
+        "result": result_text,
+        "timestamp": now_ts,
+        "data": {
+            "status": "ready",
+            "result": result_text,
+            "fallback": False,
+        },
     }
     if event_bus is not None:
         try:
@@ -912,6 +921,7 @@ async def apply_fallback_policy(
     - ``drop``: discard silently (log only).
     """
     policy = entry.delivery_target.fallback_policy
+    now_ts = datetime.now(timezone.utc).timestamp()
 
     if policy == "drop":
         logger.info(
@@ -922,13 +932,26 @@ async def apply_fallback_policy(
         return
 
     if policy == "store_and_notify":
+        result_text = f"[fallback] Schedule '{entry.name}' failed: {error_message[:500]}"
         event = {
             "event_type": "schedule_result_ready",
             "schedule_id": entry.id,
             "schedule_name": entry.name,
             "surface": "notification",
-            "result": f"[fallback] Schedule '{entry.name}' failed: {error_message[:500]}",
+            "surface_id": entry.delivery_target.conversation_key,
+            "conversation_key": entry.delivery_target.conversation_key,
+            "user_id": entry.delivery_target.user_id,
+            "project_id": entry.delivery_target.project_id,
+            "thread_key": entry.delivery_target.thread_key,
+            "result": result_text,
             "fallback": True,
+            "timestamp": now_ts,
+            "data": {
+                "status": "error",
+                "result": result_text,
+                "error": error_message[:500],
+                "fallback": True,
+            },
         }
         if event_bus is not None:
             try:
@@ -943,14 +966,26 @@ async def apply_fallback_policy(
         return
 
     if policy == "private_surface":
+        result_text = f"[private fallback] Schedule '{entry.name}' failed: {error_message[:500]}"
         event = {
             "event_type": "schedule_result_ready",
             "schedule_id": entry.id,
             "schedule_name": entry.name,
             "surface": "private",
+            "surface_id": entry.delivery_target.conversation_key,
+            "conversation_key": entry.delivery_target.conversation_key,
             "user_id": entry.delivery_target.user_id,
-            "result": f"[private fallback] Schedule '{entry.name}' failed: {error_message[:500]}",
+            "project_id": entry.delivery_target.project_id,
+            "thread_key": entry.delivery_target.thread_key,
+            "result": result_text,
             "fallback": True,
+            "timestamp": now_ts,
+            "data": {
+                "status": "error",
+                "result": result_text,
+                "error": error_message[:500],
+                "fallback": True,
+            },
         }
         if event_bus is not None:
             try:

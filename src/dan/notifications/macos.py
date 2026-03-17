@@ -15,6 +15,7 @@ EVENT_TITLES = {
     "run_completed": "DAN: Run Completed",
     "run_failed": "DAN: Run Failed",
     "human_input_needed": "DAN: Input Needed",
+    "schedule_result_ready": "DAN: Scheduled Task",
 }
 
 
@@ -45,6 +46,16 @@ class MacOSNotifier:
         elif event_type == "human_input_needed":
             prompt = event.get("data", {}).get("prompt", "Input required")
             return f"Workflow '{workflow}': {prompt}"
+        elif event_type == "schedule_result_ready":
+            schedule_name = event.get("schedule_name") or "Scheduled task"
+            result = str(
+                event.get("result")
+                or event.get("data", {}).get("result")
+                or ""
+            ).strip()
+            if result:
+                return f"{schedule_name}: {result[:180]}"
+            return f"{schedule_name} finished"
         return f"Event: {event_type}"
 
     async def _send(self, title: str, body: str) -> None:

@@ -138,6 +138,9 @@ class TestRunNotification:
 
     @pytest.mark.asyncio
     async def test_notification_event_types_exist(self) -> None:
+        from dan.notifications.config import ChannelConfig
+        from dan.notifications.manager import NOTIFICATION_EVENTS
+
         event = ChatCompleteEvent(
             message_id="x",
             content="done",
@@ -150,6 +153,8 @@ class TestRunNotification:
 
         err = ChatErrorEvent(error="test error")
         assert err.type == "chat_error"
+        assert "schedule_result_ready" in NOTIFICATION_EVENTS
+        assert "schedule_result_ready" in ChannelConfig().event_types
 
 
 # ===========================================================================

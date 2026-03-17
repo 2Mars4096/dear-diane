@@ -18,7 +18,12 @@ class ChannelConfig(BaseModel):
 
     enabled: bool = False
     event_types: list[str] = Field(
-        default_factory=lambda: ["run_completed", "run_failed", "human_input_needed"]
+        default_factory=lambda: [
+            "run_completed",
+            "run_failed",
+            "human_input_needed",
+            "schedule_result_ready",
+        ]
     )
 
 
