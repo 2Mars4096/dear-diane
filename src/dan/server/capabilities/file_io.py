@@ -331,30 +331,89 @@ async def handle_list_directory(args: dict[str, Any], ctx: CapabilityContext) ->
         )
     glob_pattern = args.get("glob_pattern", "")
     recursive = args.get("recursive", False)
+    limit = args.get("limit", 200)
+    start_after = str(args.get("start_after") or "").strip() or None
     try:
-        if glob_pattern:
-            iterator = resolved.rglob(glob_pattern) if recursive else resolved.glob(glob_pattern)
-        else:
-            iterator = resolved.rglob("*") if recursive else resolved.iterdir()
+        from dan.tools.list_directory import list_directory as _tool_list_directory
+
+        result = await _tool_list_directory(
+            path=str(resolved),
+            glob_pattern=glob_pattern or None,
+            recursive=bool(recursive),
+            limit=limit,
+            start_after=start_after,
+        )
         import datetime as _dt
-        entries = []
-        for p in sorted(iterator):
-            kind = "dir" if p.is_dir() else "file"
+
+        rendered_entries = []
+        for entry in result.get("entries", []):
+            entry_path = entry.get("path")
+            absolute_entry = (
+                _resolve_user_path(entry_path)
+                if isinstance(entry_path, str) and entry_path
+                else resolved
+            )
+            kind = "dir" if entry.get("type") == "directory" else "file"
             try:
-                st = p.stat()
-                size = st.st_size if p.is_file() else 0
+                st = absolute_entry.stat()
+                size = st.st_size if absolute_entry.is_file() else 0
                 mtime = _dt.datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M")
             except OSError:
                 size = 0
                 mtime = "            "
-            rel = p.relative_to(resolved) if p.is_relative_to(resolved) else p.name
-            entries.append(f"  {kind}  {size:>8}  {mtime}  {rel}")
-            if len(entries) >= 200:
-                entries.append(f"  ... (truncated at 200 entries)")
-                break
+            rel = str(entry_path or absolute_entry.name)
+            rendered_entries.append(f"  {kind}  {size:>8}  {mtime}  {rel}")
+
+        notes: list[str] = []
+        if glob_pattern:
+            notes.append(f"Filter: glob_pattern={glob_pattern}")
+        if recursive:
+            notes.append("Mode: recursive")
+        if start_after:
+            notes.append(f'Continuation cursor: start_after="{start_after}"')
+        if result.get("truncated"):
+            count = result.get("count", 0)
+            total_count = result.get("total_count", count)
+            remaining_count = result.get("remaining_count", 0)
+            next_start_after = result.get("next_start_after")
+            notes.append(
+                "NOTE: This listing is partial. "
+                f"Showing {count} of {total_count} matching entries, sorted by relative path. "
+                "Do NOT infer absence from this cutoff."
+            )
+            if next_start_after:
+                notes.append(
+                    f'Continue with start_after="{next_start_after}" '
+                    "or narrow with glob_pattern before concluding something is missing."
+                )
+            if remaining_count:
+                notes.append(f"{remaining_count} more matching entries remain after this page.")
+        elif start_after and not rendered_entries:
+            notes.append("No additional entries remain after the requested continuation cursor.")
+
+        if rendered_entries:
+            body = "\n".join(rendered_entries)
+        elif glob_pattern:
+            body = f"{resolved}/ (no matches for glob_pattern)"
+        else:
+            body = f"{resolved}/ (empty)"
+
+        message_parts = [f"{resolved}/"]
+        if notes:
+            message_parts.append("\n".join(notes))
+        if rendered_entries:
+            message_parts.append(body)
+        else:
+            message_parts[-1] = body if not notes else message_parts[-1] + "\n" + body
+
         return CapabilityResult(
             success=True,
-            message=f"{resolved}/\n" + "\n".join(entries) if entries else f"{resolved}/ (empty)",
+            message="\n\n".join(part for part in message_parts if part.strip()),
+            data=result,
+            output_preview=_truncate(
+                f"Listed {resolved} ({result.get('count', 0)}/{result.get('total_count', result.get('count', 0))} entries)"
+                + (" [partial]" if result.get("truncated") else "")
+            ),
         )
     except Exception as exc:
         return _failure_result(

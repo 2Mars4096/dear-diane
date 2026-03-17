@@ -32,7 +32,23 @@ router = APIRouter()
 ARTIFACTS_ROOT = Path(
     os.environ.get("DAN_FURNACE_ARTIFACTS_DIR", "~/.dan/furnace/artifacts")
 ).expanduser()
-PHASE_TIMEOUT_SECONDS = float(os.environ.get("DAN_FURNACE_PHASE_TIMEOUT_SECONDS", "120"))
+PHASE_TIMEOUT_SECONDS = float(os.environ.get("DAN_FURNACE_PHASE_TIMEOUT_SECONDS", "300"))
+
+_PHASE_TIMEOUT_MULTIPLIERS: dict[str, float] = {
+    "normalize": 0.5,
+    "extract": 0.8,
+    "aggregate": 1.0,
+    "infer": 1.5,
+    "project": 1.5,
+}
+
+
+def _phase_timeout(phase_value: str) -> float:
+    """Per-phase timeout: later/heavier phases get more headroom."""
+    base = PHASE_TIMEOUT_SECONDS
+    multiplier = _PHASE_TIMEOUT_MULTIPLIERS.get(phase_value, 1.0)
+    return max(base * multiplier, 60.0)
+
 READ_CHUNK_PAGES = int(os.environ.get("DAN_FURNACE_READ_CHUNK_PAGES", "20"))
 READ_CHUNK_TIMEOUT_SECONDS = float(
     os.environ.get("DAN_FURNACE_READ_CHUNK_TIMEOUT_SECONDS", "0")
@@ -56,6 +72,7 @@ def _require_furnace() -> None:
 
 def _publish_progress(session_id: str, event: dict[str, Any]) -> None:
     """Push a progress event to any listening SSE clients."""
+    event.setdefault("session_id", session_id)
     event.setdefault("timestamp", time.time())
     queue = _session_progress.get(session_id)
     if queue is not None:
@@ -614,12 +631,14 @@ async def get_recipe(session_id: str):
 
     artifact_dir = ARTIFACTS_ROOT / session_id
     recipe_path = artifact_dir / "recipe.md"
+    recipe_full_path = artifact_dir / "recipe_full.md"
     skill_path = artifact_dir / "skill.md"
 
     recipe_md = recipe_path.read_text(encoding="utf-8") if recipe_path.exists() else None
+    recipe_full_md = recipe_full_path.read_text(encoding="utf-8") if recipe_full_path.exists() else None
     skill_md = skill_path.read_text(encoding="utf-8") if skill_path.exists() else None
 
-    if recipe_md is None and skill_md is None:
+    if recipe_md is None and recipe_full_md is None and skill_md is None:
         raise HTTPException(
             status_code=404,
             detail="No compiled artifacts yet. Run the session first.",
@@ -628,6 +647,7 @@ async def get_recipe(session_id: str):
     return {
         "session_id": session_id,
         "recipe_md": recipe_md,
+        "recipe_full_md": recipe_full_md,
         "skill_md": skill_md,
         "artifact_dir": str(artifact_dir),
     }
@@ -794,13 +814,20 @@ async def _execute_furnace_pipeline(
         return
 
     # --- Phase: Read / Ingest ---
-    _publish_progress(session_id, {"type": "phase_started", "phase": "read"})
+    total_sources = len(pending)
+    _publish_progress(session_id, {
+        "type": "phase_started",
+        "phase": "read",
+        "total_sources": total_sources,
+    })
 
-    for source_id in pending:
+    for source_idx, source_id in enumerate(pending):
         _publish_progress(session_id, {
             "type": "source_status",
             "source_id": source_id,
             "status": "ingesting",
+            "source_index": source_idx + 1,
+            "total_sources": total_sources,
         })
 
         try:
@@ -895,6 +922,26 @@ async def _execute_furnace_pipeline(
             store.save(session)
             return
 
+        cached_artifact = artifact_dir / f"phase_{phase.value}.json"
+        if cached_artifact.exists():
+            try:
+                cached = json.loads(cached_artifact.read_text(encoding="utf-8"))
+                cached_output = cached.get("output", "")
+                if cached_output:
+                    logger.info(
+                        "Skipping phase %s for session %s (cached artifact found)",
+                        phase.value,
+                        session_id,
+                    )
+                    phase_output = cached_output
+                    _publish_progress(session_id, {
+                        "type": "phase_skipped",
+                        "phase": phase.value,
+                    })
+                    continue
+            except (json.JSONDecodeError, KeyError):
+                pass
+
         session.current_phase = phase
         store.save(session)
         _publish_progress(session_id, {
@@ -902,6 +949,7 @@ async def _execute_furnace_pipeline(
             "phase": phase.value,
         })
 
+        this_timeout = _phase_timeout(phase.value)
         try:
             phase_output = await asyncio.wait_for(
                 _run_furnace_phase(
@@ -909,8 +957,9 @@ async def _execute_furnace_pipeline(
                     phase_output,
                     session,
                     app,
+                    session_id=session_id,
                 ),
-                timeout=PHASE_TIMEOUT_SECONDS,
+                timeout=this_timeout,
             )
             (artifact_dir / f"phase_{phase.value}.json").write_text(
                 json.dumps({"output": phase_output[:50000]}, ensure_ascii=False),
@@ -921,10 +970,10 @@ async def _execute_furnace_pipeline(
                 "Phase %s timed out for session %s after %.1fs",
                 phase.value,
                 session_id,
-                PHASE_TIMEOUT_SECONDS,
+                this_timeout,
             )
             timeout_msg = (
-                f"Phase {phase.value} timed out after {PHASE_TIMEOUT_SECONDS:.0f}s. "
+                f"Phase {phase.value} timed out after {this_timeout:.0f}s. "
                 "Check model provider latency/availability and retry."
             )
             _publish_progress(
@@ -958,11 +1007,20 @@ async def _execute_furnace_pipeline(
     recipe_md = recipe_full_md
     if len(recipe_full_md) > RECIPE_PILL_MAX_CHARS:
         try:
+            _publish_progress(session_id, {
+                "type": "phase_started",
+                "phase": "compress",
+            })
             recipe_md = await _compress_recipe_to_pill(
                 recipe_full_md,
                 app=app,
                 max_chars=RECIPE_PILL_MAX_CHARS,
+                session_id=session_id,
             )
+            _publish_progress(session_id, {
+                "type": "phase_completed",
+                "phase": "compress",
+            })
             _publish_progress(
                 session_id,
                 {
@@ -1134,7 +1192,8 @@ async def _read_pdf_source(
                     "source_id": source_id,
                     "start_page": start + 1,
                     "end_page": end,
-                    "summary": chunk_summaries[-1]["summary"],
+                    "total_pages": total_pages,
+                    "summary": chunk_summaries[-1]["summary"][:120],
                 },
             )
 
@@ -1162,8 +1221,9 @@ async def _run_furnace_phase(
     input_text: str,
     session: Any,
     app: Any,
+    session_id: str = "",
 ) -> str:
-    """Run a single furnace phase via LLM."""
+    """Run a single furnace phase via streaming LLM call with live progress."""
     from dan.engine.recipe.models import FurnacePhase
 
     prompts = {
@@ -1217,7 +1277,12 @@ async def _run_furnace_phase(
     user_prompt = f"Process the following for the {phase.value} phase:\n\n{input_text[:100000]}"
 
     try:
-        result = await _llm_call(system_prompt, user_prompt, app)
+        if session_id:
+            result = await _llm_call_streaming(
+                system_prompt, user_prompt, app, session_id, phase.value
+            )
+        else:
+            result = await _llm_call(system_prompt, user_prompt, app)
         return result
     except Exception as exc:
         logger.exception("LLM call failed for phase %s", phase.value)
@@ -1234,7 +1299,9 @@ def _strip_markdown_fence(text: str) -> str:
     return content
 
 
-async def _compress_recipe_to_pill(recipe_text: str, app: Any, max_chars: int) -> str:
+async def _compress_recipe_to_pill(
+    recipe_text: str, app: Any, max_chars: int, session_id: str = ""
+) -> str:
     """Compress long recipe output into a concise, execution-ready pill."""
     target_words = max(250, min(900, max_chars // 9))
     system_prompt = (
@@ -1255,36 +1322,37 @@ async def _compress_recipe_to_pill(recipe_text: str, app: Any, max_chars: int) -
         f"Condense this recipe into <= {target_words} words. "
         f"Preserve only the strongest field signals.\n\n{recipe_text[:120000]}"
     )
-    compressed = await _llm_call(system_prompt, user_prompt, app)
+    if session_id:
+        compressed = await _llm_call_streaming(
+            system_prompt, user_prompt, app, session_id, "compress"
+        )
+    else:
+        compressed = await _llm_call(system_prompt, user_prompt, app)
     cleaned = _strip_markdown_fence(compressed)
     return cleaned[:max_chars].strip()
 
 
-async def _llm_call(system_prompt: str, user_prompt: str, app: Any) -> str:
-    """Make an LLM call using the server's provider registry."""
+_PROGRESS_INTERVAL_SECONDS = 3.0
+
+
+def _resolve_provider(app: Any) -> tuple[Any, str]:
+    """Resolve the LLM provider + model from app state or fallback registry."""
+    model = os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
     try:
         chat_manager = app.state.dan.chat_manager
         if chat_manager is not None:
-            provider = chat_manager._providers.resolve(
-                os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
-            )
-            model = os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
-            result = await provider.complete(
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                model=model,
-                temperature=0.3,
-            )
-            return result.text
+            return chat_manager._providers.resolve(model), model
     except Exception:
-        logger.debug("Chat provider LLM call failed, falling back", exc_info=True)
+        logger.debug("Chat provider resolution failed, falling back", exc_info=True)
 
     from dan.server.startup import _build_chat_provider_registry
     registry = _build_chat_provider_registry()
-    model = os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
-    provider = registry.resolve(model)
+    return registry.resolve(model), model
+
+
+async def _llm_call(system_prompt: str, user_prompt: str, app: Any) -> str:
+    """Make an LLM call using the server's provider registry (non-streaming)."""
+    provider, model = _resolve_provider(app)
     result = await provider.complete(
         messages=[
             {"role": "system", "content": system_prompt},
@@ -1294,6 +1362,63 @@ async def _llm_call(system_prompt: str, user_prompt: str, app: Any) -> str:
         temperature=0.3,
     )
     return result.text
+
+
+async def _llm_call_streaming(
+    system_prompt: str,
+    user_prompt: str,
+    app: Any,
+    session_id: str,
+    phase_label: str,
+) -> str:
+    """Streaming LLM call that publishes periodic phase_progress SSE events."""
+    provider, model = _resolve_provider(app)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+    t0 = time.monotonic()
+    last_progress_at = 0.0
+    accumulated = ""
+    tokens_so_far = 0
+
+    try:
+        async for chunk in provider.stream(
+            messages=messages, model=model, temperature=0.3
+        ):
+            accumulated = chunk.accumulated
+            now = time.monotonic()
+            elapsed = now - t0
+
+            if chunk.done:
+                if chunk.usage:
+                    tokens_so_far = chunk.usage.get("completion_tokens", 0)
+                _publish_progress(session_id, {
+                    "type": "phase_progress",
+                    "phase": phase_label,
+                    "chars": len(accumulated),
+                    "tokens": tokens_so_far,
+                    "elapsed": round(elapsed, 1),
+                    "done": True,
+                })
+                break
+
+            if (now - last_progress_at) >= _PROGRESS_INTERVAL_SECONDS:
+                last_progress_at = now
+                _publish_progress(session_id, {
+                    "type": "phase_progress",
+                    "phase": phase_label,
+                    "chars": len(accumulated),
+                    "tokens": tokens_so_far,
+                    "elapsed": round(elapsed, 1),
+                    "done": False,
+                })
+    except Exception:
+        logger.exception("Streaming LLM call failed for phase %s", phase_label)
+        raise
+
+    return accumulated
 
 
 def _get_memory_store_safe(app: Any) -> Any:

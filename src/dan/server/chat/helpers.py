@@ -422,7 +422,13 @@ def _clean_tool_result(tool_name: str, content: str, limit: int = 4000) -> str:
     return content.strip()[:limit]
 
 
-def _summarize_tool_result(tool_name: str, args: dict[str, Any], message: str, success: bool) -> str:
+def _summarize_tool_result(
+    tool_name: str,
+    args: dict[str, Any],
+    message: str,
+    success: bool,
+    result_data: Any | None = None,
+) -> str:
     """Return a short one-line summary of a tool result for fallback display.
 
     Used instead of raw tool output in ``combined_text_parts`` so that
@@ -448,6 +454,26 @@ def _summarize_tool_result(tool_name: str, args: dict[str, Any], message: str, s
         if isinstance(path, str):
             path = path.rsplit("/", 1)[-1][:40]
         return f"Wrote {path}{status}"
+    if tool_name == "list_directory":
+        path = args.get("path") or ""
+        if isinstance(path, str):
+            path = path.rstrip("/") or path
+            path = path.rsplit("/", 1)[-1][:40] or path[:40]
+        if isinstance(result_data, dict):
+            count = result_data.get("count")
+            total_count = result_data.get("total_count")
+            truncated = bool(result_data.get("truncated"))
+            next_start_after = result_data.get("next_start_after")
+            if isinstance(count, int) and isinstance(total_count, int):
+                if truncated and next_start_after:
+                    return (
+                        f"Listed {path} ({count}/{total_count} entries shown; continue after "
+                        f"{next_start_after}){status}"
+                    )
+                if truncated:
+                    return f"Listed {path} ({count}/{total_count} entries shown){status}"
+                return f"Listed {path} ({count} entries){status}"
+        return f"Listed {path}{status}"
     if tool_name == "shell":
         cmd = (args.get("command") or "")[:40]
         return f"Ran command: {cmd}{status}"

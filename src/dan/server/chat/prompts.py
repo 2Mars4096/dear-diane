@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+import re
+from typing import Any, Literal
 
 from dan.server.graph_mutator import (
     _default_node_config,
@@ -489,19 +490,71 @@ Do NOT write the entire document in a single file_write call — it will time ou
 This is analogous to file_read with start_line/end_line: produce and consume content in bounded chunks.
 """
 
-_RESEARCH_PROMPT_PHRASES = (
+_RESEARCH_REPORT_STRONG_PHRASES = (
     "literature review",
     "literature survey",
     "research report",
-    "deep dive",
-    "deep-dive",
-    "equity analysis",
-    "equity research",
     "investment memo",
     "stock pitch",
-    "company analysis",
-    "industry analysis",
+    "equity research",
+    "research note",
 )
+
+_RESEARCH_REPORT_DELIVERABLE_CUES = (
+    "report",
+    "memo",
+    "brief",
+    "review",
+    "survey",
+    "write-up",
+    "writeup",
+)
+
+_RESEARCH_REPORT_EVIDENCE_CUES = (
+    "cite",
+    "citation",
+    "citations",
+    "source",
+    "sources",
+    "reference",
+    "references",
+    "papers",
+    "recent",
+    "latest",
+    "evidence",
+)
+
+_RESEARCH_REPORT_FORMAT_CUES = (
+    ".md",
+    ".tex",
+    "markdown",
+    "latex",
+    "outline",
+    "sections",
+    "bibliography",
+)
+
+_RESEARCH_REPORT_SYNTHESIS_CUES = (
+    "analysis",
+    "analyze",
+    "compare",
+    "comparison",
+    "deep dive",
+    "deep-dive",
+    "company",
+    "industry",
+    "market",
+)
+
+_RESEARCH_HINT_CLASSIFIER_SYSTEM_PROMPT = """\
+You decide whether DAN should enable its special research/report behavior.
+
+Return ONLY `YES` or `NO`.
+
+Return `YES` only when the user's request is for a substantial researched synthesis or structured written deliverable that likely benefits from multi-source gathering, citations/sources, outline-first planning, or incremental long-form writing.
+
+Return `NO` for ordinary Q&A, simple summaries, short explanations, or generic analysis requests that do not clearly need that heavier research/report workflow.
+"""
 
 SURFACE_HINTS = {
     "whatsapp": _WHATSAPP_SURFACE_HINTS,
@@ -548,19 +601,44 @@ def _resolve_surface_hints(surface: str | None, model_name: str) -> str:
     return hints
 
 
+def _contains_prompt_signal(message: str, cue: str) -> bool:
+    if not cue:
+        return False
+    if re.fullmatch(r"[a-z0-9_]+", cue):
+        return re.search(rf"\b{re.escape(cue)}\b", message) is not None
+    return cue in message
+
+
+def _count_prompt_signals(message: str, cues: tuple[str, ...]) -> int:
+    return sum(1 for cue in cues if _contains_prompt_signal(message, cue))
+
+
+def _classify_research_prompt_signal(
+    user_message: str,
+) -> Literal["yes", "no", "maybe"]:
+    msg = (user_message or "").lower()
+    if any(_contains_prompt_signal(msg, phrase) for phrase in _RESEARCH_REPORT_STRONG_PHRASES):
+        return "yes"
+
+    has_deliverable = _count_prompt_signals(msg, _RESEARCH_REPORT_DELIVERABLE_CUES) > 0
+    has_evidence = _count_prompt_signals(msg, _RESEARCH_REPORT_EVIDENCE_CUES) > 0
+    has_format = _count_prompt_signals(msg, _RESEARCH_REPORT_FORMAT_CUES) > 0
+    has_synthesis = _count_prompt_signals(msg, _RESEARCH_REPORT_SYNTHESIS_CUES) > 0
+
+    if has_deliverable and (has_evidence or has_format):
+        return "yes"
+    if has_evidence and has_format and has_synthesis:
+        return "yes"
+
+    if (has_deliverable and has_synthesis) or (has_evidence and has_synthesis):
+        return "maybe"
+    if has_deliverable or (has_evidence and has_format):
+        return "maybe"
+    return "no"
+
+
 def _looks_like_research_report_request(user_message: str) -> bool:
-    msg = user_message.lower()
-    if any(phrase in msg for phrase in _RESEARCH_PROMPT_PHRASES):
-        return True
-    has_report_shape = any(
-        token in msg
-        for token in ("report", "review", "analysis", "analyze", "research", "compare")
-    )
-    has_source_expectation = any(
-        token in msg
-        for token in ("cite", "citation", "citations", "sources", "recent", "latest", "papers")
-    )
-    return has_report_shape and has_source_expectation
+    return _classify_research_prompt_signal(user_message) == "yes"
 
 
 # ---------------------------------------------------------------------------
@@ -588,19 +666,21 @@ This applies to all tools — web_fetch pages, file_read contents, list_director
 shell_command output, pdf_read text. Present clean, structured answers, not raw data.
 8. NEVER include image markdown (![alt](url)), navigation link blocks, or raw HTML in your response. \
 Summarize the information from web pages; do not reproduce their markup.
-9. If the user's request is ambiguous or could be interpreted multiple ways, \
-ASK for clarification before acting. Prefer asking over guessing.
-10. If the user mentions a known project by name (listed in the context below), \
-respond using project context and memory. Do NOT search externally unless \
-explicitly asked to search online/externally.
-11. When you make assumptions about what the user wants, state them explicitly \
-so the user can correct you before you act.
-12. For long files or documents, design the structure first and write incrementally. \
+9. Work autonomously by default. For implement/fix/refactor/build tasks, continue through investigation, execution, validation, and one self-review pass before stopping.
+10. Do not stop after the first successful step if there are still obvious in-scope next steps you can complete yourself.
+11. If the user's request is ambiguous and the next action is hard to reverse, ask focused clarifying questions before acting. Ask the minimum set together once.
+12. If the request is ambiguous but the next step is reversible, choose the safest reasonable interpretation, state it briefly, and proceed.
+13. When the user asks for a review, provide findings first. Do not patch, rewrite, or broaden scope unless the user also asks you to fix or implement.
+14. Keep progress updates brief and action-oriented. Do not narrate internal deliberation or speculative reasoning.
+15. If the user mentions a known project by name (listed in the context below), respond using project context and memory. Do NOT search externally unless explicitly asked to search online/externally.
+16. When assumptions materially affect the result, state them briefly so the user can correct you.
+17. For long files or documents, design the structure first and write incrementally. \
 Use file_write in bounded chunks: first call mode='overwrite', later calls mode='append'. \
 Do not dump an entire long file in one tool call.
-13. For live/current claims, answer ONLY from retrieved tool evidence. If a fact is not in the tool results, say you could not verify it.
-14. Prefer fetched page content over search snippets. If you only have snippets, say the answer is tentative or fetch more before concluding.
-15. When web search results are numbered, cite them inline as [1], [2] and include markdown links to the source URLs when helpful.
+18. For live/current claims, answer ONLY from retrieved tool evidence. If a fact is not in the tool results, say you could not verify it.
+19. Prefer fetched page content over search snippets. If you only have snippets, say the answer is tentative or fetch more before concluding.
+20. When web search results are numbered, cite them inline as [1], [2] and include markdown links to the source URLs when helpful.
+21. If `list_directory` says a listing is partial/truncated, do NOT infer absence from the cutoff. Continue with `start_after` or narrow the listing with `glob_pattern` before concluding a file or directory is missing.
 
 {surface_hints}
 

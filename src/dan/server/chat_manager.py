@@ -125,7 +125,8 @@ from dan.server.chat.prompts import (  # noqa: F401
     invalidate_capability_cache,
     _WHATSAPP_SURFACE_HINTS,
     _RESEARCH_REPORT_PROMPT_HINT,
-    _RESEARCH_PROMPT_PHRASES,
+    _RESEARCH_HINT_CLASSIFIER_SYSTEM_PROMPT,
+    _classify_research_prompt_signal,
     SURFACE_HINTS,
     _resolve_surface_hints,
     _looks_like_research_report_request,
@@ -219,6 +220,25 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 pii_session_var: ContextVar["Any"] = ContextVar("pii_session", default=None)
+
+
+def _sanitize_history_messages(history: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Keep only non-empty user/assistant turns for provider-facing history."""
+    sanitized: list[dict[str, str]] = []
+    for message in history:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "").strip()
+        if role not in {"user", "assistant"}:
+            continue
+        raw_content = message.get("content")
+        if raw_content is None:
+            continue
+        content = raw_content if isinstance(raw_content, str) else str(raw_content)
+        if not content.strip():
+            continue
+        sanitized.append({"role": role, "content": content})
+    return sanitized
 
 
 class ChatManager:
@@ -1465,7 +1485,8 @@ class ChatManager:
                         partial = result.text or ""
                         if partial:
                             combined_text_parts.append(partial)
-                        messages.append({"role": "assistant", "content": partial})
+                        if partial.strip():
+                            messages.append({"role": "assistant", "content": partial})
                         messages.append({"role": "user", "content": "Continue from where you left off. Keep using file_write to save your output."})
                         messages = _compact_context(messages, effective_model)
                         try:
@@ -1537,7 +1558,8 @@ class ChatManager:
                             partial = result.text or ""
                             if partial:
                                 combined_text_parts.append(partial)
-                            messages.append({"role": "assistant", "content": partial})
+                            if partial.strip():
+                                messages.append({"role": "assistant", "content": partial})
                             messages.append({
                                 "role": "user",
                                 "content": _tool_retry_prompt_for_missing_actions(missing_action_hints),
@@ -1711,8 +1733,12 @@ class ChatManager:
                                 _MUTATION_AUTO_RETRY_MAX,
                                 error_summary,
                             )
-                            retry_messages = messages + [
-                                {"role": "assistant", "content": retry_assistant},
+                            retry_messages = list(messages)
+                            if retry_assistant.strip():
+                                retry_messages.append(
+                                    {"role": "assistant", "content": retry_assistant}
+                                )
+                            retry_messages.append(
                                 {
                                     "role": "user",
                                     "content": (
@@ -1721,7 +1747,7 @@ class ChatManager:
                                         "that fixes these issues."
                                     ),
                                 },
-                            ]
+                            )
                             try:
                                 retry_result: CompletionResult | None = None
                                 async for step in _iter_guarded_complete(
@@ -2181,7 +2207,13 @@ class ChatManager:
                         ] if cap_name in ("pdf_read", "file_read") and isinstance(cap_args, dict) else [],
                     })
                     combined_text_parts.append(
-                        _summarize_tool_result(cap_name, cap_args if isinstance(cap_args, dict) else {}, cap_result.message, cap_result.success)
+                        _summarize_tool_result(
+                            cap_name,
+                            cap_args if isinstance(cap_args, dict) else {},
+                            cap_result.message,
+                            cap_result.success,
+                            cap_result.data,
+                        )
                     )
                     if cap_result.stream_channel_id:
                         last_stream_channel_id = cap_result.stream_channel_id
@@ -2191,11 +2223,16 @@ class ChatManager:
                         "content": _clean_tool_result(cap_name, cap_result.message),
                     })
 
-                messages.append({
+                assistant_tool_message: dict[str, Any] = {
                     "role": "assistant",
-                    "content": result.text or "",
                     "tool_calls": raw_tool_calls,
-                })
+                }
+                assistant_text = result.text or ""
+                if assistant_text.strip():
+                    assistant_tool_message["content"] = assistant_text
+                else:
+                    assistant_tool_message["content"] = None
+                messages.append(assistant_tool_message)
                 messages.extend(tool_result_messages)
                 if any(
                     pending["status"] == "success"
@@ -2910,9 +2947,14 @@ class ChatManager:
         )
         workflow_block = f"## Current Workflow\n{graph_text}"
         surface_hints = _resolve_surface_hints(surface, effective_model)
+        research_hint_enabled = await self._should_inject_research_prompt_hint(
+            user_message,
+            workflow_id=workflow_id,
+            model=effective_model,
+        )
         task_hints = (
             _RESEARCH_REPORT_PROMPT_HINT
-            if _looks_like_research_report_request(user_message)
+            if research_hint_enabled
             else ""
         )
 
@@ -2962,11 +3004,11 @@ class ChatManager:
             if section and section.strip()
         )
         recent_context_message = self._compose_recent_context_message(user_message)
-        history_with_context = history
+        history_with_context = _sanitize_history_messages(history)
         if recent_context_message:
             history_with_context = [
                 {"role": "assistant", "content": recent_context_message},
-                *history,
+                *history_with_context,
             ]
 
         context_window = _get_context_window(effective_model)
@@ -3001,6 +3043,50 @@ class ChatManager:
 
         return messages
 
+    async def _should_inject_research_prompt_hint(
+        self,
+        user_message: str,
+        *,
+        workflow_id: str = "",
+        model: str | None = None,
+    ) -> bool:
+        heuristic = _classify_research_prompt_signal(user_message)
+        if heuristic == "yes":
+            return True
+        if heuristic == "no":
+            return False
+
+        effective_model = model or self._chat_model
+        pii_key = workflow_id or f"research-hint:{hashlib.sha256(user_message.encode('utf-8')).hexdigest()[:12]}"
+        try:
+            provider = self._resolve_provider(
+                pii_session_key=pii_key,
+                model=effective_model,
+            )
+            result = await asyncio.wait_for(
+                provider.complete(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": _RESEARCH_HINT_CLASSIFIER_SYSTEM_PROMPT,
+                        },
+                        {"role": "user", "content": user_message},
+                    ],
+                    model=effective_model,
+                    temperature=0.0,
+                    max_tokens=3,
+                ),
+                timeout=min(_LLM_CALL_TIMEOUT_SECONDS, 8.0),
+            )
+            answer = (result.text or "").strip().lower()
+            return answer.startswith("yes")
+        except Exception:
+            logger.debug(
+                "Research prompt classifier fallback failed; defaulting to no hint",
+                exc_info=True,
+            )
+            return False
+
     # ------------------------------------------------------------------
     # Multi-turn clarification
     # ------------------------------------------------------------------
@@ -3026,7 +3112,7 @@ class ChatManager:
         messages: list[dict[str, str]] = [
             {"role": "system", "content": clarify_prompt},
         ]
-        messages.extend(history)
+        messages.extend(_sanitize_history_messages(history))
         messages.append({"role": "user", "content": message})
 
         try:

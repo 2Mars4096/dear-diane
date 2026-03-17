@@ -331,13 +331,27 @@ GET_CONFIG_CAPABILITY_SCHEMA = build_tool_schema(
 
 LIST_DIRECTORY_CAPABILITY_SCHEMA = build_tool_schema(
     name="list_directory",
-    description="List files and directories at a given path. Accepts absolute paths (~/Dropbox/...) or workspace-relative. Supports glob filtering and recursive traversal.",
+    description=(
+        "List files and directories at a given path. Accepts absolute paths "
+        "(~/Dropbox/...) or workspace-relative. Supports glob filtering, recursive "
+        "traversal, page size limits, and continuation via `start_after`. Results "
+        "are sorted by relative path; if a page is truncated, do not infer absence "
+        "from the cutoff — continue with `start_after` or narrow the filter."
+    ),
     parameters={
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Directory path (absolute or relative)."},
             "glob_pattern": {"type": "string", "description": "Optional glob filter (e.g. '*.pdf')."},
             "recursive": {"type": "boolean", "description": "Recurse into subdirectories."},
+            "limit": {
+                "type": "integer",
+                "description": "Maximum entries to return in this page (default 200, max 1000).",
+            },
+            "start_after": {
+                "type": "string",
+                "description": "Return only entries whose relative path sorts after this value.",
+            },
         },
         "required": ["path"],
     },

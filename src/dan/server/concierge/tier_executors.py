@@ -863,22 +863,20 @@ class MultiStepExecutor:
     async def _run_children_parallel(
         self, children: list[Any], session: Any, manager: Any
     ) -> AsyncIterator[ChatStreamEvent]:
-        queues: dict[str, asyncio.Queue[ChatStreamEvent | None]] = {
-            child.id: asyncio.Queue() for child in children
-        }
+        output_queue: asyncio.Queue[tuple[str, ChatStreamEvent | None]] = asyncio.Queue()
 
         async def run_one(child: Any) -> None:
             try:
                 progress_event = self._child_progress_event(session, child)
                 if progress_event is not None:
-                    await queues[child.id].put(progress_event)
+                    await output_queue.put((child.id, progress_event))
                 async for event in self._run_child(child, manager):
-                    await queues[child.id].put(event)
+                    await output_queue.put((child.id, event))
             except Exception as exc:
                 logger.warning("Child session %s failed: %s", child.id, exc)
                 manager.update_state(child.id, "failed")
             finally:
-                await queues[child.id].put(None)
+                await output_queue.put((child.id, None))
 
         tasks = [asyncio.create_task(run_one(child)) for child in children]
         try:
@@ -887,19 +885,16 @@ class MultiStepExecutor:
                 if _cancel_requested(session):
                     yield _interrupted_event()
                     return
-                for child_id in list(active):
-                    try:
-                        event = queues[child_id].get_nowait()
-                        if event is None:
-                            active.discard(child_id)
-                        else:
-                            yield event
-                            if isinstance(event, ChatInterruptedEvent):
-                                return
-                    except asyncio.QueueEmpty:
-                        pass
-                if active:
-                    await asyncio.sleep(0.01)
+                try:
+                    child_id, event = await asyncio.wait_for(output_queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    continue
+                if event is None:
+                    active.discard(child_id)
+                    continue
+                yield event
+                if isinstance(event, ChatInterruptedEvent):
+                    return
         finally:
             for task in tasks:
                 if not task.done():

@@ -137,12 +137,26 @@ class ChatMessageRequest(BaseModel):
         self.thread_id = thread_id
 
         allowed_history_roles = {"user", "assistant"}
-        filtered = [
-            m for m in self.history
-            if m.get("role") in allowed_history_roles
-        ]
+        filtered: list[dict[str, str]] = []
         stripped_system = sum(1 for m in self.history if m.get("role") == "system")
-        stripped_invalid = len(self.history) - len(filtered) - stripped_system
+        stripped_invalid = 0
+        stripped_empty = 0
+        for message in self.history:
+            role = message.get("role")
+            if role == "system":
+                continue
+            if role not in allowed_history_roles:
+                stripped_invalid += 1
+                continue
+            raw_content = message.get("content")
+            if raw_content is None:
+                stripped_empty += 1
+                continue
+            content = raw_content if isinstance(raw_content, str) else str(raw_content)
+            if not content.strip():
+                stripped_empty += 1
+                continue
+            filtered.append({"role": role, "content": content})
         if stripped_system or stripped_invalid:
             _log = logging.getLogger(__name__)
             if stripped_system:
@@ -157,6 +171,19 @@ class ChatMessageRequest(BaseModel):
                     "history only accepts 'user' and 'assistant' roles",
                     stripped_invalid,
                 )
+            if stripped_empty:
+                _log.warning(
+                    "Stripped %d empty user/assistant message(s) from chat history — "
+                    "history turns must have non-empty content",
+                    stripped_empty,
+                )
+            self.history = filtered
+        elif stripped_empty:
+            logging.getLogger(__name__).warning(
+                "Stripped %d empty user/assistant message(s) from chat history — "
+                "history turns must have non-empty content",
+                stripped_empty,
+            )
             self.history = filtered
 
         return self
