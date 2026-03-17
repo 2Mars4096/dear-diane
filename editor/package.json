@@ -130,6 +130,7 @@
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "happy-dom": "^20.8.4",
     "pyright": "^1.1.408",
     "tailwindcss": "^4.2.1",
     "typescript": "~5.9.3",
