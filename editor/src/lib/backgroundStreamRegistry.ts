@@ -1,5 +1,7 @@
-import type { ChatMessage, ChatStreamEvent, ToolCallInfo } from "../types/chat";
+import type { ChatMessage, ChatStreamEvent } from "../types/chat";
 import { safeTokenUsage, toBackendMessage } from "./chatMessagePersistence";
+import { formatInterruptedAssistantContent } from "./chatInterrupted";
+import { upsertToolCallResult, upsertToolCallStart } from "./toolCallState";
 import * as api from "./api";
 
 interface BackgroundStream {
@@ -107,15 +109,11 @@ function handleEvent(stream: BackgroundStream, evt: ChatStreamEvent) {
       m.id === aid
         ? {
             ...m,
-            toolCalls: [
-              ...(m.toolCalls || []),
-              {
-                id: evt.tool_call_id!,
-                toolName: evt.tool_name!,
-                argsPreview: evt.args_preview ?? "",
-                status: "running" as const,
-              },
-            ],
+            toolCalls: upsertToolCallStart(m.toolCalls, {
+              id: evt.tool_call_id!,
+              toolName: evt.tool_name!,
+              argsPreview: evt.args_preview ?? "",
+            }),
           }
         : m,
     );
@@ -124,16 +122,14 @@ function handleEvent(stream: BackgroundStream, evt: ChatStreamEvent) {
       m.id === aid
         ? {
             ...m,
-            toolCalls: (m.toolCalls || []).map((tc: ToolCallInfo) =>
-              tc.id === evt.tool_call_id
-                ? {
-                    ...tc,
-                    status: (evt.status as "success" | "error") ?? "success",
-                    outputPreview: evt.output_preview,
-                    durationMs: evt.duration_ms,
-                  }
-                : tc,
-            ),
+            toolCalls: upsertToolCallResult(m.toolCalls, {
+              id: evt.tool_call_id!,
+              toolName: evt.tool_name!,
+              argsPreview: evt.args_preview,
+              status: evt.status,
+              outputPreview: evt.output_preview,
+              durationMs: evt.duration_ms,
+            }),
           }
         : m,
     );
@@ -167,7 +163,7 @@ function handleEvent(stream: BackgroundStream, evt: ChatStreamEvent) {
     if (evt.type === "chat_interrupted") {
       stream.messages = stream.messages.map((m) =>
         m.id === aid
-          ? { ...m, content: (evt.content || m.content) + "\n\n*[generation stopped]*" }
+          ? { ...m, content: formatInterruptedAssistantContent(m, evt.content) }
           : m,
       );
     } else {

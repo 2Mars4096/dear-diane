@@ -1,5 +1,6 @@
 import * as api from "../../lib/api";
 import { describeLatestToolProgress } from "../../lib/toolCallPresentation";
+import { upsertToolCallResult, upsertToolCallStart } from "../../lib/toolCallState";
 import type { ChatMessage, RunEventPayload, ToolCallInfo } from "../../types/chat";
 
 function createAssistantMessage(
@@ -35,15 +36,7 @@ export function applyAssistantToolCallStart(
   toolCall: Pick<ToolCallInfo, "id" | "toolName" | "argsPreview">,
 ): ChatMessage[] {
   return upsertAssistantMessage(prev, assistantId, (message) => {
-    const nextToolCalls = [
-      ...(message.toolCalls ?? []),
-      {
-        id: toolCall.id,
-        toolName: toolCall.toolName,
-        argsPreview: toolCall.argsPreview,
-        status: "running" as const,
-      },
-    ];
+    const nextToolCalls = upsertToolCallStart(message.toolCalls, toolCall);
     const progress = describeLatestToolProgress(nextToolCalls);
     return {
       ...message,
@@ -67,38 +60,7 @@ export function applyAssistantToolCallResult(
   },
 ): ChatMessage[] {
   return upsertAssistantMessage(prev, assistantId, (message) => {
-    const existingToolCalls = message.toolCalls ?? [];
-    const seenToolCall = existingToolCalls.some(
-      (existing) => existing.id === toolCall.id,
-    );
-    const nextStatus: ToolCallInfo["status"] =
-      toolCall.status === "running"
-        ? "running"
-        : toolCall.status === "error"
-          ? "error"
-          : "success";
-    const nextToolCalls = seenToolCall
-      ? existingToolCalls.map((existing) =>
-          existing.id === toolCall.id
-            ? {
-                ...existing,
-                status: nextStatus,
-                outputPreview: toolCall.outputPreview,
-                durationMs: toolCall.durationMs,
-              }
-            : existing,
-        )
-      : [
-          ...existingToolCalls,
-          {
-            id: toolCall.id,
-            toolName: toolCall.toolName,
-            argsPreview: toolCall.argsPreview,
-            status: nextStatus,
-            outputPreview: toolCall.outputPreview,
-            durationMs: toolCall.durationMs,
-          },
-        ];
+    const nextToolCalls = upsertToolCallResult(message.toolCalls, toolCall);
     const progress = describeLatestToolProgress(nextToolCalls);
     return {
       ...message,

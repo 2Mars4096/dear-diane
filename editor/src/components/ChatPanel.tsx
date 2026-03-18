@@ -50,7 +50,7 @@ import {
 } from "../store/useMessagingStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 import { useWorkspaceStore } from "../store/useWorkspaceStore";
-import type { ChatMessage, ChatStreamEvent, ToolCallInfo } from "../types/chat";
+import type { ChatMessage, ChatStreamEvent } from "../types/chat";
 import type { ChatThreadSummary } from "../lib/api";
 import * as api from "../lib/api";
 import type { ApplyMutationResult } from "../lib/api";
@@ -98,6 +98,10 @@ import {
   type ChatThreadSiblingInfo,
 } from "../lib/chatBranching";
 import {
+  chooseInitialChatThreadId,
+  saveActiveThreadSelection,
+} from "../lib/chatThreadRestore";
+import {
   buildAttachmentContext,
   chatAttachmentToComposerDraft,
   cloneAttachmentDraft,
@@ -108,6 +112,7 @@ import {
   resolveAttachmentName,
   sanitizeChatHistory,
 } from "../lib/editorChat";
+import { upsertToolCallResult, upsertToolCallStart } from "../lib/toolCallState";
 import {
   buildMessagingSettingsEventDetail,
   shouldOfferMessagingOnboarding,
@@ -127,6 +132,7 @@ import {
   isAssistantBubbleStreaming,
   shouldReconnectStream,
 } from "../lib/chatStreamLifecycle";
+import { formatInterruptedAssistantContent } from "../lib/chatInterrupted";
 import { deriveGraphRevisionSource, getClientGraphRevision } from "../lib/chatGraphRevision";
 
 const DEFAULT_WIDTH = 380;
@@ -414,7 +420,7 @@ function describeQueuedItem(item: PendingQueueItem): string {
 
 export default function ChatPanel({
   fullScreen = false,
-  workspaceId: _workspaceId,
+  workspaceId,
   onThreadOpen,
   onThreadTitleUpdate,
 }: ChatPanelProps) {
@@ -446,10 +452,8 @@ export default function ChatPanel({
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   useEffect(() => {
     if (!activeThreadId) return;
-    try {
-      localStorage.setItem(`dan_active_thread_${graphId ?? ""}`, activeThreadId);
-    } catch {}
-  }, [activeThreadId, graphId]);
+    saveActiveThreadSelection(graphId, activeThreadId, workspaceId);
+  }, [activeThreadId, graphId, workspaceId]);
   const [showThreadList, setShowThreadList] = useState(!fullScreen);
   const [loadingThreads, setLoadingThreads] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -940,21 +944,20 @@ export default function ChatPanel({
       const sorted = await fetchThreads(graphId);
       if (cancelled) return;
       if (sorted.length > 0 && !activeThreadIdRef.current) {
-        let targetId = sorted[0].id;
-        const wsActiveThread = useWorkspaceStore.getState().getActiveWorkspace()?.activeThreadId;
-        const appThread = useAppStore.getState().activeChatThreadId;
-        const appWf = useAppStore.getState().activeChatWorkflowId;
-        if (wsActiveThread && sorted.some((t) => t.id === wsActiveThread)) {
-          targetId = wsActiveThread;
-        } else if (appThread && appWf === graphId && sorted.some((t) => t.id === appThread)) {
-          targetId = appThread;
-        } else {
-          try {
-            const saved = localStorage.getItem(`dan_active_thread_${graphId}`);
-            if (saved && sorted.some((t) => t.id === saved)) targetId = saved;
-          } catch {}
+        const targetId = chooseInitialChatThreadId({
+          threads: sorted,
+          workflowId: graphId,
+          workspaceId,
+          workspaceActiveThreadId:
+            useWorkspaceStore.getState().workspaces.find(
+              (workspace) => workspace.id === workspaceId,
+            )?.activeThreadId ?? null,
+          appThreadId: useAppStore.getState().activeChatThreadId,
+          appWorkflowId: useAppStore.getState().activeChatWorkflowId,
+        });
+        if (targetId) {
+          await loadThread(graphId, targetId);
         }
-        await loadThread(graphId, targetId);
       } else if (sorted.length === 0) {
         setShowThreadList(true);
         requestAnimationFrame(() => textareaRef.current?.focus());
@@ -963,8 +966,7 @@ export default function ChatPanel({
     return () => {
       cancelled = true;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatOpen, graphId]);
+  }, [chatOpen, graphId, loadThread, fetchThreads, workspaceId]);
 
   useEffect(() => {
     if (!showThreadList || !graphId) return;
@@ -1860,7 +1862,7 @@ export default function ChatPanel({
                   m.id === assistantId
                     ? {
                         ...m,
-                        content: (evt.content || m.content) + "\n\n*[generation stopped]*",
+                        content: formatInterruptedAssistantContent(m, evt.content),
                         tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
                       }
                     : m,
@@ -1883,15 +1885,11 @@ export default function ChatPanel({
                 const updated = prev.map((m) =>
                   m.id === assistantId
                     ? (() => {
-                        const nextToolCalls = [
-                          ...(m.toolCalls || []),
-                          {
-                            id: evt.tool_call_id!,
-                            toolName: evt.tool_name!,
-                            argsPreview: evt.args_preview ?? "",
-                            status: "running" as const,
-                          },
-                        ];
+                        const nextToolCalls = upsertToolCallStart(m.toolCalls, {
+                          id: evt.tool_call_id!,
+                          toolName: evt.tool_name!,
+                          argsPreview: evt.args_preview ?? "",
+                        });
                         const prog = describeLatestToolProgress(nextToolCalls);
                         return {
                           ...m,
@@ -1914,16 +1912,14 @@ export default function ChatPanel({
                 const updated = prev.map((m) =>
                   m.id === assistantId
                     ? (() => {
-                        const nextToolCalls = (m.toolCalls || []).map((tc: ToolCallInfo) =>
-                          tc.id === evt.tool_call_id
-                            ? {
-                                ...tc,
-                                status: (evt.status as "success" | "error") ?? "success",
-                                outputPreview: evt.output_preview,
-                                durationMs: evt.duration_ms,
-                              }
-                            : tc,
-                        );
+                        const nextToolCalls = upsertToolCallResult(m.toolCalls, {
+                          id: evt.tool_call_id!,
+                          toolName: evt.tool_name!,
+                          argsPreview: evt.args_preview,
+                          status: evt.status,
+                          outputPreview: evt.output_preview,
+                          durationMs: evt.duration_ms,
+                        });
                         const prog = describeLatestToolProgress(nextToolCalls);
                         return {
                           ...m,
@@ -2465,7 +2461,16 @@ export default function ChatPanel({
   // Sync active thread to AppStore for cross-mode access
   useEffect(() => {
     useAppStore.getState().setActiveChatThread(activeThreadId, graphId);
-  }, [activeThreadId, graphId]);
+    if (workspaceId && activeThreadId) {
+      const workspaceState = useWorkspaceStore.getState();
+      const currentWorkspace = workspaceState.workspaces.find(
+        (workspace) => workspace.id === workspaceId,
+      );
+      if (currentWorkspace?.activeThreadId !== activeThreadId) {
+        workspaceState.updateWorkspace(workspaceId, { activeThreadId });
+      }
+    }
+  }, [activeThreadId, graphId, workspaceId]);
 
   useEffect(() => {
     if (!fullScreen) return;
