@@ -1,0 +1,62 @@
+name: research_analyze_summarize
+description: A 3-step chain workflow that researches a topic, analyzes findings, and summarizes results
+nodes:
+  - id: research
+    type: llm_operator
+    config:
+      model: kimi-k2.5
+      system_prompt: You are a research assistant. Your task is to gather comprehensive information about the given topic. Search for facts, data, recent developments, and key concepts. Be thorough and objective.
+      prompt_template: "Research the following topic thoroughly and provide detailed findings:\n\nTopic: {{input.topic}}\n\nProvide a comprehensive research report including:\n1. Key facts and definitions\n2. Recent developments or news\n3. Important data points\n4. Different perspectives on the topic"
+    outputs:
+      - research_findings
+
+  - id: analyze
+    type: llm_operator
+    config:
+      model: kimi-k2.5
+      system_prompt: You are an analytical expert. Your task is to analyze research findings critically, identify patterns, assess credibility, and draw meaningful insights.
+      prompt_template: "Analyze the following research findings:\n\n{{research.research_findings}}\n\nProvide an analysis that includes:\n1. Key patterns and trends\n2. Strengths and limitations of the information\n3. Connections between different findings\n4. Critical insights and implications"
+    inputs:
+      - research.research_findings
+    outputs:
+      - analysis
+
+  - id: summarize
+    type: llm_operator
+    config:
+      model: kimi-k2.5
+      system_prompt: You are a summarization expert. Create clear, concise summaries that capture the essential points from complex information.
+      prompt_template: "Based on the research and analysis below, create a concise summary:\n\nResearch Findings:\n{{research.research_findings}}\n\nAnalysis:\n{{analyze.analysis}}\n\nProvide a summary that includes:\n1. Main takeaways (2-3 key points)\n2. Conclusion or recommendation\n3. Keep it concise and actionable"
+    inputs:
+      - research.research_findings
+      - analyze.analysis
+    outputs:
+      - summary
+
+edges:
+  - from: research
+    to: analyze
+  - from: analyze
+    to: summarize
+
+input_schema:
+  type: object
+  properties:
+    topic:
+      type: string
+      description: The topic to research
+  required:
+    - topic
+
+output_schema:
+  type: object
+  properties:
+    research_findings:
+      type: string
+      description: Detailed research findings
+    analysis:
+      type: string
+      description: Critical analysis of findings
+    summary:
+      type: string
+      description: Concise summary with key takeaways

@@ -1,0 +1,186 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "process_5_items_in_parallel_using_fan_ou",
+    "description": "",
+    "created_at": null,
+    "updated_at": "2026-03-18T21:23:25Z",
+    "tags": []
+  },
+  "nodes": [
+    {
+      "id": "parallel_process",
+      "name": "parallel_process",
+      "description": "",
+      "input_ports": [],
+      "output_ports": [
+        {
+          "name": "results",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "for_each",
+      "body_graph": "parallel_process_body",
+      "parallelism": 5,
+      "merge_strategy": "append",
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "compaction_rule": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "timeout_seconds": null,
+        "stagnation_threshold": null
+      },
+      "projections": [],
+      "boundary_contract": null
+    },
+    {
+      "id": "merge_results",
+      "name": "merge_results",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "llm_operator",
+      "model": "",
+      "prompt_template": "Combine all processed items from parallel execution into a single merged result",
+      "system_prompt": "",
+      "temperature": 0.7,
+      "max_tokens": null,
+      "output_json_schema": null,
+      "model_policy": null,
+      "tools": [],
+      "max_tool_rounds": 10,
+      "target_input_tokens": null,
+      "summarize_inputs": null,
+      "jit_tool_loading": false,
+      "agent_context_tools": false,
+      "prune_fields": [],
+      "input_format": "json",
+      "semantic_cache": false,
+      "history_policy": null,
+      "task_tier": null
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_parallel_process__merge_results_0",
+      "source_node_id": "parallel_process",
+      "source_port": "results",
+      "target_node_id": "merge_results",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data",
+      "spread": false
+    }
+  ],
+  "sub_graphs": {
+    "parallel_process_body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "parallel_process_body",
+        "description": "",
+        "created_at": null,
+        "updated_at": null,
+        "tags": []
+      },
+      "nodes": [
+        {
+          "id": "parallel_process_proc",
+          "name": "parallel_process_proc",
+          "description": "",
+          "input_ports": [],
+          "output_ports": [],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "tags": [],
+          "retry_policy": null,
+          "read_set": [],
+          "write_set": [],
+          "memoize": false,
+          "cache_ttl": null,
+          "node_type": "llm_operator",
+          "model": "",
+          "prompt_template": "Process each item in the input list in parallel across 5 concurrent workers",
+          "system_prompt": "",
+          "temperature": 0.7,
+          "max_tokens": null,
+          "output_json_schema": null,
+          "model_policy": null,
+          "tools": [],
+          "max_tool_rounds": 10,
+          "target_input_tokens": null,
+          "summarize_inputs": null,
+          "jit_tool_loading": false,
+          "agent_context_tools": false,
+          "prune_fields": [],
+          "input_format": "json",
+          "semantic_cache": false,
+          "history_policy": null,
+          "task_tier": null
+        }
+      ],
+      "edges": [],
+      "sub_graphs": {},
+      "entry_points": [
+        "parallel_process_proc"
+      ],
+      "exit_points": [
+        "parallel_process_proc"
+      ],
+      "shared_context": [],
+      "artifact_refs": [],
+      "hyperedges": []
+    }
+  },
+  "entry_points": [
+    "parallel_process"
+  ],
+  "exit_points": [
+    "merge_results"
+  ],
+  "shared_context": [],
+  "artifact_refs": [],
+  "hyperedges": []
+}

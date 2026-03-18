@@ -1,0 +1,8 @@
+{
+  "name": "simple_research_chain",
+  "version": "1.0.0",
+  "description": "A 3-step chain: research a topic, analyze findings, write a summary",
+  "author": "DAN",
+  "entry": "workflow.json",
+  "type": "workflow"
+}

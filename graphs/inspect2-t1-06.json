@@ -1,0 +1,279 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "create_a_data_ingestion_pipeline_read_pd",
+    "description": "",
+    "created_at": null,
+    "updated_at": "2026-03-18T21:24:07Z",
+    "tags": []
+  },
+  "nodes": [
+    {
+      "id": "list_pdfs",
+      "name": "list_pdfs",
+      "description": "",
+      "input_ports": [],
+      "output_ports": [
+        {
+          "name": "result",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "tool_operator",
+      "tool_id": "list_directory",
+      "tool_config": {}
+    },
+    {
+      "id": "read_pdfs",
+      "name": "read_pdfs",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "results",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "for_each",
+      "body_graph": "read_pdfs_body",
+      "parallelism": 10,
+      "merge_strategy": "append",
+      "external_input_schema": null,
+      "external_output_schema": null,
+      "control_state_schema": {},
+      "local_state": {
+        "json_schema": {},
+        "description": ""
+      },
+      "compaction_rule": null,
+      "failure_policy": {
+        "max_iterations": null,
+        "timeout_seconds": null,
+        "stagnation_threshold": null
+      },
+      "projections": [],
+      "boundary_contract": null
+    },
+    {
+      "id": "extract_chunks",
+      "name": "extract_chunks",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "json_schema": {},
+          "description": ""
+        }
+      ],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "llm_operator",
+      "model": "",
+      "prompt_template": "Extract and chunk text content from PDFs into searchable segments",
+      "system_prompt": "",
+      "temperature": 0.7,
+      "max_tokens": null,
+      "output_json_schema": null,
+      "model_policy": null,
+      "tools": [],
+      "max_tool_rounds": 10,
+      "target_input_tokens": null,
+      "summarize_inputs": null,
+      "jit_tool_loading": false,
+      "agent_context_tools": false,
+      "prune_fields": [],
+      "input_format": "json",
+      "semantic_cache": false,
+      "history_policy": null,
+      "task_tier": null
+    },
+    {
+      "id": "build_index",
+      "name": "build_index",
+      "description": "",
+      "input_ports": [
+        {
+          "name": "input",
+          "json_schema": {},
+          "required": true,
+          "description": ""
+        }
+      ],
+      "output_ports": [],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "code_operator",
+      "code": "result = {\"status\": \"placeholder\", \"task\": \"Create a searchable index from the text chunks with embeddings or inverted index\"}",
+      "language": "python",
+      "sandbox_config": {}
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge_list_pdfs__read_pdfs_0",
+      "source_node_id": "list_pdfs",
+      "source_port": "result",
+      "target_node_id": "read_pdfs",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data",
+      "spread": false
+    },
+    {
+      "id": "edge_read_pdfs__extract_chunks_1",
+      "source_node_id": "read_pdfs",
+      "source_port": "results",
+      "target_node_id": "extract_chunks",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data",
+      "spread": false
+    },
+    {
+      "id": "edge_extract_chunks__build_index_2",
+      "source_node_id": "extract_chunks",
+      "source_port": "text",
+      "target_node_id": "build_index",
+      "target_port": "input",
+      "ui": {},
+      "metadata": {},
+      "edge_type": "data",
+      "spread": false
+    }
+  ],
+  "sub_graphs": {
+    "read_pdfs_body": {
+      "version": "dan_graph_v1",
+      "metadata": {
+        "name": "read_pdfs_body",
+        "description": "",
+        "created_at": null,
+        "updated_at": null,
+        "tags": []
+      },
+      "nodes": [
+        {
+          "id": "read_pdfs_proc",
+          "name": "read_pdfs_proc",
+          "description": "",
+          "input_ports": [],
+          "output_ports": [],
+          "position": {
+            "x": 0.0,
+            "y": 0.0
+          },
+          "ui": {},
+          "metadata": {},
+          "tags": [],
+          "retry_policy": null,
+          "read_set": [],
+          "write_set": [],
+          "memoize": false,
+          "cache_ttl": null,
+          "node_type": "llm_operator",
+          "model": "",
+          "prompt_template": "Read each PDF file in parallel to extract raw content",
+          "system_prompt": "",
+          "temperature": 0.7,
+          "max_tokens": null,
+          "output_json_schema": null,
+          "model_policy": null,
+          "tools": [],
+          "max_tool_rounds": 10,
+          "target_input_tokens": null,
+          "summarize_inputs": null,
+          "jit_tool_loading": false,
+          "agent_context_tools": false,
+          "prune_fields": [],
+          "input_format": "json",
+          "semantic_cache": false,
+          "history_policy": null,
+          "task_tier": null
+        }
+      ],
+      "edges": [],
+      "sub_graphs": {},
+      "entry_points": [
+        "read_pdfs_proc"
+      ],
+      "exit_points": [
+        "read_pdfs_proc"
+      ],
+      "shared_context": [],
+      "artifact_refs": [],
+      "hyperedges": []
+    }
+  },
+  "entry_points": [
+    "list_pdfs"
+  ],
+  "exit_points": [
+    "build_index"
+  ],
+  "shared_context": [],
+  "artifact_refs": [],
+  "hyperedges": []
+}

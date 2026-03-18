@@ -1,0 +1,61 @@
+{
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "summarize_input_text_using_a_single_llm_",
+    "description": "",
+    "created_at": null,
+    "updated_at": "2026-03-18T21:22:32Z",
+    "tags": []
+  },
+  "nodes": [
+    {
+      "id": "summarize_text",
+      "name": "summarize_text",
+      "description": "",
+      "input_ports": [],
+      "output_ports": [],
+      "position": {
+        "x": 0.0,
+        "y": 0.0
+      },
+      "ui": {},
+      "metadata": {},
+      "tags": [],
+      "retry_policy": null,
+      "read_set": [],
+      "write_set": [],
+      "memoize": false,
+      "cache_ttl": null,
+      "node_type": "llm_operator",
+      "model": "",
+      "prompt_template": "Use an LLM to generate a concise summary of the provided text",
+      "system_prompt": "",
+      "temperature": 0.7,
+      "max_tokens": null,
+      "output_json_schema": null,
+      "model_policy": null,
+      "tools": [],
+      "max_tool_rounds": 10,
+      "target_input_tokens": null,
+      "summarize_inputs": null,
+      "jit_tool_loading": false,
+      "agent_context_tools": false,
+      "prune_fields": [],
+      "input_format": "json",
+      "semantic_cache": false,
+      "history_policy": null,
+      "task_tier": null
+    }
+  ],
+  "edges": [],
+  "sub_graphs": {},
+  "entry_points": [
+    "summarize_text"
+  ],
+  "exit_points": [
+    "summarize_text"
+  ],
+  "shared_context": [],
+  "artifact_refs": [],
+  "hyperedges": []
+}

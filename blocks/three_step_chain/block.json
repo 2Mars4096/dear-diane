@@ -1,0 +1,43 @@
+{
+  "name": "three_step_chain",
+  "version": "1.0.0",
+  "description": "A 3-step chain workflow: Research → Analyze → Summarize",
+  "author": "DAN",
+  "tags": ["workflow", "chain", "research", "analysis", "summarization"],
+  "entry": "workflow.yaml",
+  "schema": {
+    "inputs": {
+      "topic": {
+        "type": "string",
+        "description": "The topic to research and summarize",
+        "required": true
+      },
+      "research_depth": {
+        "type": "string",
+        "description": "Depth of research",
+        "enum": ["brief", "standard", "comprehensive"],
+        "default": "standard"
+      },
+      "output_format": {
+        "type": "string",
+        "description": "Format for the summary",
+        "enum": ["bullet", "paragraph", "structured"],
+        "default": "structured"
+      }
+    },
+    "outputs": {
+      "research_findings": {
+        "type": "string",
+        "description": "Raw research findings"
+      },
+      "analysis": {
+        "type": "string",
+        "description": "Critical analysis"
+      },
+      "summary": {
+        "type": "string",
+        "description": "Final concise summary"
+      }
+    }
+  }
+}
