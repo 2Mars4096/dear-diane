@@ -31,6 +31,7 @@ __all__ = [
     "RemoveEdge",
     "RemoveHyperedge",
     "RemoveNode",
+    "ReplaceBodyGraph",
     "ReplaceSubgraph",
     "SetNodePosition",
     "TOOL_PORT_MANIFESTS",
@@ -102,6 +103,14 @@ class ReplaceSubgraph(BaseModel):
     new_edges: list[dict[str, Any]]
 
 
+class ReplaceBodyGraph(BaseModel):
+    op: Literal["replace_body_graph"] = "replace_body_graph"
+    node_id: str
+    operations: list["BodyGraphOperation"] = Field(default_factory=list)
+    entry_ids: list[str] | None = None
+    exit_ids: list[str] | None = None
+
+
 class ExpandPattern(BaseModel):
     op: Literal["expand_pattern"] = "expand_pattern"
     pattern: str
@@ -131,6 +140,25 @@ class EditHyperedge(BaseModel):
     updates: dict[str, Any]
 
 
+BodyGraphOperation = Annotated[
+    Union[
+        AddNode,
+        RemoveNode,
+        EditNode,
+        AddEdge,
+        RemoveEdge,
+        EditEdge,
+        SetNodePosition,
+        ExpandPattern,
+        ApplySkill,
+        AddHyperedge,
+        RemoveHyperedge,
+        EditHyperedge,
+    ],
+    Field(discriminator="op"),
+]
+
+
 GraphOperation = Annotated[
     Union[
         AddNode,
@@ -141,6 +169,7 @@ GraphOperation = Annotated[
         EditEdge,
         SetNodePosition,
         ReplaceSubgraph,
+        ReplaceBodyGraph,
         ExpandPattern,
         ApplySkill,
         AddHyperedge,
@@ -191,6 +220,7 @@ _OP_SORT_ORDER: dict[str, int] = {
     "add_node": 0,
     "set_position": 1,
     "edit_node": 2,
+    "replace_body_graph": 2,
     "apply_skill": 2,
     "add_hyperedge": 2,
     "edit_hyperedge": 2,
@@ -558,20 +588,28 @@ def _recompute_entry_exit_points(graph: dict[str, Any]) -> None:
 def _ensure_subgraph(graph: dict[str, Any], parent_id: str, body_nodes: list[dict], body_edges: list[dict], entry_ids: list[str], exit_ids: list[str]) -> str:
     """Create a sub-graph entry in graph['sub_graphs'] for a control-flow node.
     Returns the sub_graph key."""
-    key = f"{parent_id}__body"
+    parent_node = _find_node(graph, parent_id)
+    key = str((parent_node or {}).get("body_graph") or f"{parent_id}__body")
     sub = {
+        "version": "dan_graph_v1",
         "metadata": {"name": f"{parent_id} body", "description": "", "version": "1"},
-        "nodes": body_nodes,
-        "edges": body_edges,
+        "nodes": copy.deepcopy(body_nodes),
+        "edges": copy.deepcopy(body_edges),
         "sub_graphs": {},
         "entry_points": entry_ids,
         "exit_points": exit_ids,
     }
     graph.setdefault("sub_graphs", {})[key] = sub
-    parent_node = _find_node(graph, parent_id)
     if parent_node is not None:
         parent_node["body_graph"] = key
     return key
+
+
+def _node_uses_body_graph(node_type: str) -> bool:
+    try:
+        return "body_graph" in _default_node_config(node_type)
+    except KeyError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -665,6 +703,7 @@ def _pattern_fan_out(params: dict[str, Any]) -> list[dict[str, Any]]:
     """Source -> ForEach with body LLM -> downstream collector."""
     source_name = params.get("source_name", "Source")
     body_name = params.get("body_name", "Processor")
+    body_id = _slugify(body_name)
     return [
         {
             "op": "add_node",
@@ -679,17 +718,32 @@ def _pattern_fan_out(params: dict[str, Any]) -> list[dict[str, Any]]:
             "config": {"parallelism": params.get("parallelism", 1)},
         },
         {
-            "op": "add_node",
-            "node_type": "llm_operator",
-            "name": body_name,
-            "config": {"prompt_template": params.get("body_prompt", "")},
-        },
-        {
             "op": "add_edge",
             "source_id": _slugify(source_name),
             "source_port": "text",
             "target_id": "fan-out",
             "target_port": "items",
+        },
+        {
+            "op": "replace_body_graph",
+            "node_id": "fan-out",
+            "operations": [
+                {
+                    "op": "add_node",
+                    "id": body_id,
+                    "node_type": "llm_operator",
+                    "name": body_name,
+                    "config": {
+                        "prompt_template": params.get("body_prompt", "{item}"),
+                        "input_ports": [
+                            {"name": "item", "schema": {}, "required": False}
+                        ],
+                        "output_ports": [{"name": "text", "schema": {}}],
+                    },
+                },
+            ],
+            "entry_ids": [body_id],
+            "exit_ids": [body_id],
         },
     ]
 
@@ -1049,6 +1103,8 @@ class GraphMutator:
                 return self._op_set_position(graph, op)
             if isinstance(op, ReplaceSubgraph):
                 return self._op_replace_subgraph(graph, op)
+            if isinstance(op, ReplaceBodyGraph):
+                return self._op_replace_body_graph(graph, op, diagnostics)
             if isinstance(op, ExpandPattern):
                 return self._op_expand_pattern(graph, op, diagnostics)
             if isinstance(op, ApplySkill):
@@ -1093,6 +1149,8 @@ class GraphMutator:
         node.update(config)
 
         graph.setdefault("nodes", []).append(node)
+        if _node_uses_body_graph(op.node_type):
+            _ensure_subgraph(graph, node_id, [], [], [], [])
         logger.debug("Added node %s (%s)", node_id, op.node_type)
         return None
 
@@ -1291,6 +1349,59 @@ class GraphMutator:
 
         return None
 
+    def _op_replace_body_graph(
+        self,
+        graph: dict[str, Any],
+        op: ReplaceBodyGraph,
+        diagnostics: list[str] | None = None,
+    ) -> str | None:
+        node = _find_node(graph, op.node_id)
+        if node is None:
+            return f"Node '{op.node_id}' not found"
+        node_type = str(node.get("node_type") or "")
+        if not _node_uses_body_graph(node_type):
+            return (
+                f"Node '{op.node_id}' ({node_type}) does not support body sub-graphs"
+            )
+
+        body_graph = {
+            "version": "dan_graph_v1",
+            "metadata": {"name": f"{op.node_id} body", "description": "", "version": "1"},
+            "nodes": [],
+            "edges": [],
+            "sub_graphs": {},
+            "entry_points": [],
+            "exit_points": [],
+        }
+        sorted_ops = self._sort_operations(op.operations)
+        for _original_index, body_op in sorted_ops:
+            err = self._apply_op(body_graph, body_op, diagnostics)
+            if err:
+                return f"Body graph for '{op.node_id}': {err}"
+
+        entry_ids = list(op.entry_ids) if op.entry_ids is not None else []
+        exit_ids = list(op.exit_ids) if op.exit_ids is not None else []
+        if not entry_ids or not exit_ids:
+            _refresh_entry_exit(body_graph)
+            if not entry_ids:
+                entry_ids = list(body_graph.get("entry_points", []))
+            if not exit_ids:
+                exit_ids = list(body_graph.get("exit_points", []))
+
+        _ensure_subgraph(
+            graph,
+            op.node_id,
+            body_graph.get("nodes", []),
+            body_graph.get("edges", []),
+            entry_ids,
+            exit_ids,
+        )
+        body_key = str(node.get("body_graph") or f"{op.node_id}__body")
+        graph.setdefault("sub_graphs", {})[body_key]["sub_graphs"] = copy.deepcopy(
+            body_graph.get("sub_graphs", {}),
+        )
+        return None
+
     def _op_apply_skill(self, graph: dict[str, Any], op: ApplySkill) -> str | None:
         from dan.server.skill_library import SKILL_LIBRARY
         if op.skill not in SKILL_LIBRARY:
@@ -1395,6 +1506,7 @@ class GraphMutator:
             "add_edge": AddEdge,
             "remove_edge": RemoveEdge,
             "edit_edge": EditEdge,
+            "replace_body_graph": ReplaceBodyGraph,
             "set_position": SetNodePosition,
             "apply_skill": ApplySkill,
         }

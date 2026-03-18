@@ -3456,7 +3456,10 @@ class ChatManager:
                 "## Workflow mutation tool\n"
                 "`plan_graph_mutations` is the workflow-building/editing tool for the current workflow. "
                 "Use it to create a workflow from scratch, add/remove/rewire/configure nodes and edges, "
-                "or replace obsolete workflow structure. Do not claim you need primitive `create_node`, "
+                "or replace obsolete workflow structure. For control-flow nodes like `for_each` or "
+                "`composite`, add the node first and then use `replace_body_graph` to define its body "
+                "sub-graph. `for_each` uses top-level ports `items` and `results`; `item` belongs inside "
+                "the body sub-graph entry nodes. Do not claim you need primitive `create_node`, "
                 "`add_edge`, or similar workflow-edit tools."
             )
         system_content = "\n\n".join(

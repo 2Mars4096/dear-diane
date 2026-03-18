@@ -190,6 +190,50 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
         "required": ["op", "skill"],
     }
 
+    replace_body_graph_schema = {
+        "type": "object",
+        "properties": {
+            "op": {"type": "string", "const": "replace_body_graph"},
+            "node_id": {
+                "type": "string",
+                "description": (
+                    "ID of a control-flow node whose body sub-graph should be replaced "
+                    "(for_each, while_loop, composite, goal_loop)."
+                ),
+            },
+            "operations": {
+                "type": "array",
+                "description": (
+                    "Operations to apply inside the body sub-graph. Use add_node/add_edge "
+                    "here just like the top-level graph."
+                ),
+                "items": {
+                    "oneOf": [
+                        add_node_schema,
+                        remove_node_schema,
+                        edit_node_schema,
+                        add_edge_schema,
+                        remove_edge_schema,
+                        set_position_schema,
+                        expand_pattern_schema,
+                        apply_skill_schema,
+                    ],
+                },
+            },
+            "entry_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional explicit entry node IDs for the body sub-graph.",
+            },
+            "exit_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional explicit exit node IDs for the body sub-graph.",
+            },
+        },
+        "required": ["op", "node_id", "operations"],
+    }
+
     return {
         "type": "function",
         "function": {
@@ -197,7 +241,8 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
             "description": (
                 "Plan a sequence of graph operations for the current workflow. "
                 "Use this to build an empty workflow from scratch, add/remove/rewire/configure "
-                "nodes or edges, or replace obsolete workflow structure. "
+                    "nodes or edges, replace obsolete workflow structure, or define the body graph "
+                    "for control-flow nodes such as for_each. "
                 "This is DAN's workflow-building/editing interface; do not wait for primitive "
                 "create_node/add_edge tools."
             ),
@@ -222,6 +267,7 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
                                 add_edge_schema,
                                 remove_edge_schema,
                                 set_position_schema,
+                                replace_body_graph_schema,
                                 expand_pattern_schema,
                                 apply_skill_schema,
                             ],
@@ -254,6 +300,19 @@ def _build_node_type_reference() -> str:
                 f" config={{{', '.join(cfg_keys)}}}\n"
                 f"- gate (while mode): in=[{', '.join(in_names)}] out=[{', '.join(out_w_names)}]"
                 f" config={{{', '.join(cfg_keys)}}}"
+            )
+        elif nt == "for_each":
+            line = (
+                f"- {nt}: in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
+                f" config={{{', '.join(cfg_keys)}}}"
+                " note=use replace_body_graph to define the body sub-graph; top-level for_each "
+                "ports are items/results, while body entry nodes usually consume item/index."
+            )
+        elif nt == "composite":
+            line = (
+                f"- {nt}: in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
+                f" config={{{', '.join(cfg_keys)}}}"
+                " note=use replace_body_graph to define the composite body when building from chat."
             )
         else:
             line = f"- {nt}: in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
@@ -289,6 +348,9 @@ Add an LLM node:
 
 Wire two nodes:
 {{"op": "add_edge", "source_id": "writer", "source_port": "text", "target_id": "reviewer", "target_port": "input"}}
+
+Define a for_each body sub-graph:
+{{"op": "replace_body_graph", "node_id": "process_items", "operations": [{{"op": "add_node", "id": "summarize_item", "node_type": "llm_operator", "name": "Summarize Item", "config": {{"prompt_template": "Summarize {{item}}", "input_ports": [{{"name": "item", "schema": {{}}, "required": false}}], "output_ports": [{{"name": "text", "schema": {{}}}}]}}}}], "entry_ids": ["summarize_item"], "exit_ids": ["summarize_item"]}}
 
 Create a while-loop gate (output ports: continue, done):
 {{"op": "add_node", "node_type": "gate", "name": "Review Gate", "config": {{"gate_mode": "while", "condition": "needs_revision == True", "max_iterations": 5}}}}
@@ -365,6 +427,8 @@ Apply when user mentions a specific journal.
 - Produce a complete runnable workflow.
 - Prefer expand_pattern for known shapes; add_node/add_edge for custom.
 - strict=true on edges. Exact port names only.
+- For control-flow nodes like for_each and composite, add the node first and then use replace_body_graph to define the nested body graph.
+- `for_each` uses top-level ports `items` and `results`; `item` is a body-subgraph input, not a top-level for_each output port.
 - Paper workflows: include full pipeline through LaTeX compile + package.
 - Ambiguous intent → sensible defaults (intro, methods, results, discussion).
 """
