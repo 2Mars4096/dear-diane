@@ -1,7 +1,7 @@
 # 37: Engine Runtime Parallelism
 
-**Status:** completed
-**Goal:** Replace the level-sync barrier in the graph scheduler with eager/ready-queue dispatch, unify concurrency budgeting across nested subgraphs, harden checkpoint/resume semantics for the new model, and backfill engine-level regression tests that currently don't exist.
+**Status:** in-progress
+**Goal:** Replace the level-sync barrier in the graph scheduler with eager/ready-queue dispatch, unify concurrency budgeting across nested subgraphs, harden checkpoint/resume semantics for the new model, backfill engine-level regression tests, and extend that substrate into long-running/tail-workflow runtime robustness.
 
 ## Motivation
 
@@ -23,12 +23,15 @@ Plan 29-5 (concierge parallelism) explicitly scoped engine work out. Plan 32 (wo
 
 ## Approach
 
-Four sub-plans, ordered by impact and dependency:
+Seven sub-plans, ordered by dependency:
 
 1. **Ready-queue dispatch** — the single biggest latency win. Replace level-sync with eager dispatch where nodes fire as soon as all inbound edges are satisfied.
 2. **Concurrency budgeting** — unify the semaphore across nested subgraphs and move it to LLM-call granularity so slots aren't wasted on I/O waits.
 3. **Checkpoint/resume safety** — adapt checkpointing to work with non-level-aligned completion order and ensure resume produces equivalent results.
-4. **Runtime regression tests** — backfill engine-level tests covering dispatch ordering, concurrency caps, checkpoint/resume, and performance benchmarks. Currently zero test coverage for these paths.
+4. **Runtime regression tests** — backfill engine-level tests covering dispatch ordering, concurrency caps, checkpoint/resume, and performance benchmarks.
+5. **Long-running workflow robustness** — add per-run execution profiles, hard duration/cost ceilings, partial-result semantics, tighter checkpoint cadence, and structured progress/ETA data for multi-hour workflows.
+6. **Bounded runtime self-healing** — add execution-local repair paths, repair lineage, and safe pending-node overlays without opening the door to structural/redesign autonomy during normal runs.
+7. **Validated dynamic topology & child workflow composition** — add engine-owned, schema-validated child workflow spawning/composition with lineage, budget inheritance, and checkpoint-safe execution overlays.
 
 ## Existing Infrastructure
 
@@ -58,6 +61,9 @@ Four sub-plans, ordered by impact and dependency:
 | [37-2](37-2-concurrency-budgeting.md) | Concurrency Budgeting | Propagate parent semaphore into subgraphs, move semaphore to LLM-call granularity, fix busy-poll | ~2 days | 37-1 |
 | [37-3](37-3-checkpoint-resume-safety.md) | Checkpoint & Resume Safety | Adapt checkpoint triggers, memory flushes, and resume logic for non-level-aligned execution | ~2 days | 37-1 |
 | [37-4](37-4-runtime-regression-tests.md) | Runtime Regression Tests | Engine-level test suite: dispatch ordering, concurrency invariants, checkpoint/resume, performance benchmarks | ~2 days | 37-1, 37-2, 37-3 |
+| [37-5](37-5-long-running-workflow-robustness.md) | Long-Running Workflow Robustness | Per-run execution profiles, hard duration/cost ceilings, partial results, stronger checkpoint cadence, structured progress | ~2-3 days | 37-3, 37-4 |
+| [37-6](37-6-runtime-self-healing-and-adaptation.md) | Bounded Runtime Self-Healing & Pending-Node Adaptation | Runtime failure classification, bounded repair matrix, repair lineage, pending-node overlays | ~3 days | 37-3, 37-4 |
+| [37-7](37-7-dynamic-topology-and-workflow-composition.md) | Validated Dynamic Topology & Child Workflow Composition | Constrained runtime expansion, child workflow operator, typed handoff, lineage, resume-safe execution overlays | ~3-4 days | 37-5, 37-6 |
 
 ## Dependencies / Sequencing
 
@@ -66,10 +72,15 @@ Four sub-plans, ordered by impact and dependency:
   ├→ 37-2 (Concurrency Budgeting) ← needs new dispatch loop
   ├→ 37-3 (Checkpoint/Resume Safety) ← needs new dispatch loop
   └→ 37-4 (Runtime Regression Tests) ← needs all three above
+       ├→ 37-5 (Long-Running Workflow Robustness) ← needs stable checkpoint/resume + test harness
+       ├→ 37-6 (Runtime Self-Healing & Adaptation) ← needs stable checkpoint/resume + test harness
+       └→ 37-7 (Dynamic Topology & Workflow Composition) ← after 37-5 and 37-6
 ```
 
 37-2 and 37-3 can run in parallel after 37-1 completes.
 37-4 waits for all three (tests verify the combined behavior).
+37-5 and 37-6 can proceed in parallel once 37-3/37-4 have stabilized the runtime substrate.
+37-7 should start only after the long-running durability and bounded runtime-repair semantics are explicit.
 
 ## Success Criteria
 
@@ -80,6 +91,9 @@ Four sub-plans, ordered by impact and dependency:
 - [ ] ≥40 engine-level tests covering dispatch, concurrency, checkpoint/resume
 - [ ] No regressions in existing test suite (810+ concierge tests, 92+ quality suite)
 - [ ] `plan_scheduler.py` ready-queue pattern reused or aligned with engine scheduler
+- [ ] Per-run long-running workflow profiles can stop safely on duration/cost ceilings and return resumable partial results
+- [ ] Runtime self-healing remains bounded, observable, and checkpoint-safe without auto-escalating into structural/redesign autonomy
+- [ ] Dynamic child workflow composition stays schema-validated, budget-aware, and deterministic across checkpoint/resume
 
 ## Decisions
 
@@ -87,6 +101,7 @@ Four sub-plans, ordered by impact and dependency:
 - The legacy `max_concurrency` node semaphore is preserved only when eager dispatch is off. Under eager dispatch, `DAN_MAX_CONCURRENT_LLM` / `llm_max_concurrency` governs shared LLM-call concurrency instead.
 - CPU-bound throttling no longer lives in `_guarded_execute_node()`; it now routes through `ExecutionContext.node_slot()` so eager mode can keep a separate node semaphore without reintroducing whole-node LLM stalls.
 - Subgraph checkpoints stay disabled in this phase; a checkpoint can record only the still-running parent control-flow node, so resume restarts child subgraphs from their entry boundary instead of attempting partial nested restore.
+- The original parallelism tranche (37-1 through 37-4) is the substrate. 37-5 through 37-7 extend that same runtime path into long-tail workflow robustness rather than reopening workflow generation or concierge-planning scope.
 
 ## Notes
 
@@ -95,3 +110,4 @@ Four sub-plans, ordered by impact and dependency:
 - Feature flag rollout is critical. The level-sync scheduler is battle-tested; the eager scheduler needs time to prove equivalence before becoming default.
 - This plan does not touch concierge parallelism (29-5) or workflow generation (32). It is strictly engine execution path.
 - Implemented so far: eager dispatch for acyclic graphs/subgraphs plus cycle-aware outer/inner loop execution, shared LLM semaphore propagation into nested subgraphs, re-entrant node-slot throttling for CPU-bound work, timeout/depth guards for nested subgraphs, batched/background checkpoint saves with compatibility fields, deferral of memory writes from still-running owner scopes, resumed loop re-entry from checkpointed gate/body state, and a 42-test engine regression suite (`tests/test_engine/test_scheduler_parallelism.py` with 39 tests = 35 default-path + 4 slow benchmarks, plus `tests/test_engine/test_plan_scheduler_execution.py` with 3 plan-scheduler alignment tests) plus concierge busy-poll proof.
+- 37-5 through 37-7 intentionally stay bounded: no arbitrary runtime graph mutation, no hidden persistence of execution-local overlays back into saved workflows, and no engine-owned free-form redesign loop during ordinary runs.

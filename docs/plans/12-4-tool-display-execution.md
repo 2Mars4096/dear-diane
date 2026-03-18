@@ -69,3 +69,4 @@
 - The sandbox display (task 6) leverages the existing `SandboxRunner` from Phase 6 (plan 9-2). This sub-plan adds the chat rendering, not the execution.
 - Mutation plans remain the primary tool for graph editing. Other tools (inspect, search, run) are additive.
 - Tool call serialization (`toolCalls`, `runEvents`) is added to `toBackendMessage`/`fromBackendMessage` for thread persistence.
+- 2026-03-18 follow-up: capability-tool turns no longer stream raw planning text into assistant content, `editor/src/lib/toolCallState.ts` now centralizes start/result upserts so full chat, compact sidebars, and detached background streams still render tool pills when events arrive out of order, and interrupted tool-only turns now keep the assistant body textless so the fallback note + grouped tool pill render instead of dumping backend tool-summary lines into the bubble.

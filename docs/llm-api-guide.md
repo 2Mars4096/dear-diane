@@ -1754,6 +1754,7 @@ Injects domain-specific prompt prefixes into targeted nodes:
 6. Client applies the mutation, switches to `mode="mutate"` for follow-up edits
 
 Use `strict=true` in `add_edge` operations when building from intent to fail fast on port typos.
+The backend now tolerates two common harmless mutation drifts during dry-run: `remove_node` on an already-missing id is treated as an idempotent no-op, and if a source node exposes exactly one output port the mutator may normalize a guessed source port onto that sole declared port (for example `for_each.item -> results` or `code_operator.output -> result`). Still prefer canonical port names in generated plans.
 
 ### 12g. IntentCompiler — Direct Graph Construction
 
