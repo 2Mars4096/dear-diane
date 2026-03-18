@@ -1036,7 +1036,7 @@ class GraphMutator:
             if isinstance(op, AddNode):
                 return self._op_add_node(graph, op)
             if isinstance(op, RemoveNode):
-                return self._op_remove_node(graph, op)
+                return self._op_remove_node(graph, op, diagnostics)
             if isinstance(op, EditNode):
                 return self._op_edit_node(graph, op)
             if isinstance(op, AddEdge):
@@ -1096,9 +1096,18 @@ class GraphMutator:
         logger.debug("Added node %s (%s)", node_id, op.node_type)
         return None
 
-    def _op_remove_node(self, graph: dict[str, Any], op: RemoveNode) -> str | None:
+    def _op_remove_node(
+        self,
+        graph: dict[str, Any],
+        op: RemoveNode,
+        diagnostics: list[str] | None = None,
+    ) -> str | None:
         if _find_node(graph, op.node_id) is None:
-            return f"Node '{op.node_id}' not found"
+            msg = f"Skipped remove_node for missing node '{op.node_id}'"
+            if diagnostics is not None:
+                diagnostics.append(msg)
+            logger.debug(msg)
+            return None
 
         graph["nodes"] = [n for n in graph["nodes"] if n["id"] != op.node_id]
         _remove_edges_for_node(graph, op.node_id)
@@ -1135,8 +1144,9 @@ class GraphMutator:
         target_node = _find_node(graph, op.target_id)
 
         source_ports = [p["name"] for p in source_node.get("output_ports", [])]
-        if op.source_port not in source_ports:
-            if source_node.get("node_type") == "input" and op.source_port == "input":
+        resolved_source_port = op.source_port
+        if resolved_source_port not in source_ports:
+            if source_node.get("node_type") == "input" and resolved_source_port == "input":
                 # Backward-compat: older graphs may have input variables as
                 # output ports but no aggregate "input" output.
                 source_node.setdefault("output_ports", []).append(
@@ -1154,10 +1164,34 @@ class GraphMutator:
                     op.source_id,
                 )
             else:
-                return (
-                    f"Source node '{op.source_id}' has no output port '{op.source_port}' "
-                    f"(available: {source_ports})"
-                )
+                alias_map = {
+                    "for_each": {"item": "results"},
+                    "parallel_subagents": {"item": "results"},
+                    "orchestrator": {"item": "results"},
+                }
+                node_type = str(source_node.get("node_type") or "")
+                aliased_port = alias_map.get(node_type, {}).get(resolved_source_port)
+                if aliased_port is None and len(source_ports) == 1:
+                    aliased_port = source_ports[0]
+                if aliased_port and aliased_port in source_ports:
+                    if diagnostics is not None:
+                        diagnostics.append(
+                            f"Normalized source port '{resolved_source_port}' to '{aliased_port}' "
+                            f"for {node_type} node '{op.source_id}'."
+                        )
+                    logger.debug(
+                        "Normalized source port '%s' to '%s' for %s node '%s'",
+                        resolved_source_port,
+                        aliased_port,
+                        node_type,
+                        op.source_id,
+                    )
+                    resolved_source_port = aliased_port
+                else:
+                    return (
+                        f"Source node '{op.source_id}' has no output port '{op.source_port}' "
+                        f"(available: {source_ports})"
+                    )
 
         target_ports = [p["name"] for p in target_node.get("input_ports", [])]
         if op.target_port not in target_ports:
@@ -1178,7 +1212,7 @@ class GraphMutator:
                 diagnostics.append(msg)
             logger.debug("Auto-created input port '%s' on node '%s'", op.target_port, op.target_id)
 
-        edge_id = f"{op.source_id}.{op.source_port}->{op.target_id}.{op.target_port}"
+        edge_id = f"{op.source_id}.{resolved_source_port}->{op.target_id}.{op.target_port}"
 
         for e in graph.get("edges", []):
             if e.get("id") == edge_id:
@@ -1188,7 +1222,7 @@ class GraphMutator:
             "id": edge_id,
             "edge_type": op.edge_type,
             "source_node_id": op.source_id,
-            "source_port": op.source_port,
+            "source_port": resolved_source_port,
             "target_node_id": op.target_id,
             "target_port": op.target_port,
             "ui": {},
