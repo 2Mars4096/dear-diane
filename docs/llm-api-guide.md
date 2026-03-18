@@ -1755,6 +1755,7 @@ Injects domain-specific prompt prefixes into targeted nodes:
 
 Use `strict=true` in `add_edge` operations when building from intent to fail fast on port typos.
 The backend now tolerates two common harmless mutation drifts during dry-run: `remove_node` on an already-missing id is treated as an idempotent no-op, and if a source node exposes exactly one output port the mutator may normalize a guessed source port onto that sole declared port (for example `for_each.item -> results` or `code_operator.output -> result`). Still prefer canonical port names in generated plans.
+When building control-flow nodes such as `for_each` or `composite` from chat, add the node first and then use `replace_body_graph` to define its nested body graph. `GraphMutator` now auto-scaffolds the empty `body_graph` entry for those nodes, but the actual body must still be populated explicitly. For `for_each`, remember that `items` / `results` are the top-level node ports; `item` is typically an input port on the body sub-graph's entry node.
 
 ### 12g. IntentCompiler — Direct Graph Construction
 

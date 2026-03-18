@@ -109,6 +109,7 @@
 
 ## Notes
 
+- Exhausted repair budget should behave like a circuit open: no further retries for that node until explicit user action or resume. This aligns with the chat-dispatch review's recommendation for circuit-breaker semantics on persistent failures.
 - Code repair needs the strictest boundary: only repair runtime-generated or explicitly repairable code payloads. Static user-authored code should produce lineage plus failure, not silent autonomous edits.
 - Checkpoint equivalence is the main correctness risk: resume must restore repair budgets, failure signatures, and overlays exactly enough that a resumed run behaves like a non-crashed run with the same bounded repair history.
 - This slice is about runtime recovery, not topology evolution.
