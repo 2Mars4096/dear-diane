@@ -387,7 +387,7 @@
   - [x] [31-29-memory-wiring-hardening](plans/31-29-memory-wiring-hardening.md) — Z. Fix project-scoped memory refresh, structured remembered directories, path-sensitive preference extraction, and legacy memory persistence races.
   - [x] [31-30-domain-taxonomy-unification](plans/31-30-domain-taxonomy-unification.md) — AA. Remove `PreferenceExtractor`'s stale private domain taxonomy, normalize legacy stored domain ids, and reuse the shared BehaviorStore-backed domain map with safe fallback slugs.
   - [x] [31-31-domain-preference-controls](plans/31-31-domain-preference-controls.md) — AB. Add `/domains` to inspect/edit saved canonical domains and keep profile-backed domain memory in sync after manual edits.
-  - [ ] [31-32-messaging-lifecycle-and-feedback](plans/31-32-messaging-lifecycle-and-feedback.md) — AC. Backend-owned adapter autostart & reconnect, status honesty / heartbeat, unified progress & queue visibility driven by concierge phases, Telegram operator UX polish
+  - [x] [31-32-messaging-lifecycle-and-feedback](plans/31-32-messaging-lifecycle-and-feedback.md) — AC. Backend-owned adapter autostart & reconnect, status honesty / heartbeat, unified progress & queue visibility driven by concierge phases, Telegram operator UX polish
 
 ## Phase 22 — Workflow Generation Optimization
 > Improve the NL→workflow pipeline end-to-end so generated workflows are more powerful, less
@@ -507,11 +507,11 @@
 - [x] ~~**Optimize workflow generation quality**~~ → promoted to [Phase 22](#phase-22--workflow-generation-optimization) (Plan 32)
 
 ### Messaging reliability, autonomy, and packaging
-- [ ] **Backend-owned messaging autostart & reconnect** → promoted to [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 0
-- [ ] **Messaging status honesty / offline semantics** → promoted to [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 1
-- [ ] **Messaging progress + queue visibility unification** → promoted to [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 2
-- [ ] **Telegram operator UX polish** → promoted to [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 3
-- [ ] **Unified autonomy policy control** — add a user-facing autonomy level (`careful` / `balanced` / `aggressive`, or similar) that governs clarification thresholds, approval behavior, and forward-progress defaults across desktop chat and messaging surfaces. *(deferred — separate plan after 31-32 stabilizes messaging lifecycle)*
+- [x] **Backend-owned messaging autostart & reconnect** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 0
+- [x] **Messaging status honesty / offline semantics** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 1
+- [x] **Messaging progress + queue visibility unification** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 2
+- [x] **Telegram operator UX polish** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 3
+- [ ] [31-33-autonomy-and-prompt-modules](plans/31-33-autonomy-and-prompt-modules.md) — user-facing `careful/balanced/aggressive` autonomy knob + `PromptModuleResolver` refactor + JIT task-specific detail loading for chat
 - [ ] **Self-contained desktop packaging** — bundle the DAN backend/runtime with the Electron app/DMG so the desktop app does not depend on a separately managed Python environment or external `dan-serve` process. *(deferred — orthogonal to messaging reliability)*
 - [ ] **Formal RL-style learning loop (deferred)** — once messaging/runtime stability is boringly reliable, evaluate a more explicit reward/feedback loop on top of existing experience/principle learning rather than layering RL onto an unstable control plane. *(deferred — premature until messaging is boringly reliable)*
 
@@ -612,6 +612,7 @@
 
 ### Existing backlog items
 - [ ] **User system** — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments. (Low priority — revisit when cloud/SaaS deployment becomes a goal.)
+- [ ] **Hosted web-search gateway + fair-use model** — if DAN should feel ready-to-use for mainstream users (like Cursor/Claude/hosted copilots), add a DAN-managed search/fetch gateway so users are not forced to bring Tavily/Brave keys just to use live web grounding. Scope: server-owned provider credentials, auth + per-user quotas, caching/abuse controls, graceful quota UX, cost controls, and a hybrid fallback where self-hosted/power users can still bring their own keys.
 - [ ] **Manager vs worker node distinction** — manager nodes orchestrate and may spawn new nodes; worker nodes only execute and do not hire new nodes. Bottom-layer nodes are workers. Enables token/node budget caps.
 - [x] ~~Optimize token usage~~ → promoted to [Phase 10](#phase-10--token-optimization) (Plan 18)
 - [x] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics

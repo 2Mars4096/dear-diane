@@ -99,6 +99,7 @@ pnpm-debug.log*
 !/tests/test_domain_learning.py
 !/tests/test_chat_manager_codegen_resilience.py
 !/tests/test_model_override.py
+!/tests/test_post_tool_followup_recovery.py
 !/tests/test_concierge/
 !/tests/test_concierge/**
 /tests/test_concierge/__pycache__/
