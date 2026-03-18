@@ -43,6 +43,7 @@ For each failure mode, categorize by root cause:
 | `codegen_failed` | Codegen reached, code extracted, but sandbox execution failed | codegen prompt, builder API, sandbox |
 | `wrong_tool_id` | Tool node has incorrect `tool_id` (e.g. `web_search` for a CSV-reading task) — 33-10 C | `_TOOL_KEYWORD_MAP`, intent extraction |
 | `condition_polarity` | Review-loop condition is backwards (stop-when-satisfied vs continue-while) — 33-10 A | intent_compiler.py, codegen prompt |
+| `build_tools_missing` | Mutation tool gated off despite workflow-build intent; LLM says "I don't have the tools" — Cycle 4 | tier_executors.py, triage.py, helpers.py |
 
 > **Note:** The unified telemetry store (31-20) records exact tokens, cost, duration, model, retry count, and parent-child event correlation for every LLM call. This eliminates the "observability gap" failure category from earlier drafts. If a metric still can't be measured, file a bug against the telemetry emission sites rather than treating it as a test-harness concern.
 
@@ -152,12 +153,80 @@ Write up:
 - [ ] 14. Produce summary for next fix cycle
 - [ ] 15. Update docs: bugs.md, todo.md, changelog.md
 
+### Cycle 4: Build-capability gating fix (2026-03-17)
+
+**Problem:** In agent mode, the chat assistant reports "I don't have the tools to build or modify workflows" and only exposes catalog/run tools (`list_graphs`, `fork_workflow`, `start_run`, `get_run_status`). The `plan_graph_mutations` tool and the codegen fast path are both gated behind `allow_mutation_tool`, which is only set when the triage produces a `workflow_edit` action hint. Three code-level mismatches cause this:
+
+1. **`allow_mutation_tool` is too narrowly gated.** `_extract_chat_params()` in `tier_executors.py` only sets it when `"workflow_edit" in required_action_hints`. But `_determine_stage()` considers the turn a `workflow_build` more broadly (`mode == "build"` OR `route_target == "workflow"`). A turn can be routed as a workflow build but still lack the mutation tool.
+2. **`_ACTION_HINT_TOOL_MAP` has no `workflow_edit` entry.** `_tool_choice_for_action_hints()` in `chat/helpers.py` cannot force the model toward `plan_graph_mutations` because the hint is not mapped to any tool. So even when the hint is present, `tool_choice` stays `"auto"` and the model can answer in prose instead of calling the mutation tool.
+3. **Triage heuristic fallback is too narrow for build/retry phrasing.** `_WORKFLOW_EDIT_RE` in `triage.py` requires both a workflow-entity word AND an edit verb. Phrases like "can you learn from previous failures and retry to build?" have no workflow-entity word, so the fallback never produces `workflow_edit`.
+4. **Stale empty-graph prompt.** `EMPTY_GRAPH_SUMMARY_PLACEHOLDER` still says "Create from scratch using plan_graph_mutations" but the runtime now prefers the codegen path for empty graphs.
+
+- [x] 16. **Fix `allow_mutation_tool` gating in `tier_executors.py`**
+  - [x] 16-1. In `_extract_chat_params()`, after the existing `allow_mutation_tool` inference from `required_action_hints`, add a second gate: if `mode == "build"` or `route_target == "workflow"`, force `allow_mutation_tool = True`. This aligns mutation-tool availability with the same predicate `_determine_stage()` uses.
+  - [x] 16-2. Preserve the explicit metadata override: if the caller set `metadata["allow_mutation_tool"]` to a bool, that still takes precedence.
+  - [x] 16-3. Add test in `test_tiered_dispatch.py`: a session with `mode="agent"` and `route_target="workflow"` (but no `workflow_edit` hint) should still produce `allow_mutation_tool=True`.
+  - [x] 16-4. Add test: a session with `mode="build"` and no route/hints should produce `allow_mutation_tool=True`.
+
+- [x] 17. **Add `workflow_edit` to `_ACTION_HINT_TOOL_MAP` in `chat/helpers.py`**
+  - [x] 17-1. Add `"workflow_edit": frozenset({"plan_graph_mutations"})` to `_ACTION_HINT_TOOL_MAP`. This makes `_tool_choice_for_action_hints()` return `"required"` (or exact choice) when `workflow_edit` is unsatisfied, forcing the model to call the mutation tool instead of answering in prose.
+  - [x] 17-2. Verified: existing mutation-handling code in `chat_manager.py` processes `plan_graph_mutations` calls specially (applies mutations and breaks out of the tool loop), so double-calling is not a risk. No code change needed.
+  - [x] 17-3. Added tests in `test_tiered_dispatch.py`: `_missing_action_hints(["workflow_edit"], set())` returns `["workflow_edit"]`; `_missing_action_hints(["workflow_edit"], {"plan_graph_mutations"})` returns `[]`.
+
+- [x] 18. **Broaden triage heuristic fallback for build/retry phrasing in `triage.py`**
+  - [x] 18-1. Added `build|rebuild|retry|regenerate|redo` to `_WORKFLOW_EDIT_RE`. Added a separate `_WORKFLOW_BUILD_VERB_RE` (rebuild|retry|regenerate|redo|try again) and bridging condition: when the project has linked workflows and a build/retry verb is present, `workflow_context_like` is set True. This is more conservative than adding generic "build" to `_WORKFLOW_ENTITY_RE` (avoids false positives like "build a grocery list").
+  - [x] 18-2. (merged into 18-1)
+  - [x] 18-3. Added test in `test_triage.py`: `_infer_fallback_action_hints("can you learn from previous failures and retry to build?", context)` returns `["workflow_edit"]` when the context has a linked workflow.
+  - [x] 18-4. Added test: `_infer_fallback_action_hints("rebuild the daily equity watchlist workflow", context)` returns `["workflow_edit"]`. Also added negative test: "build a grocery list" with no linked workflows does NOT produce `workflow_edit`.
+  - [x] 18-5. **Review fix:** Added `try\s+again` to `_WORKFLOW_EDIT_RE`. Without this, the bridging condition (18-1) sets `workflow_context_like = True` for "try again" but the guard at line 888 fails because `_WORKFLOW_EDIT_RE` has no multi-word `try\s+again` alternative. Added test in `test_triage.py`.
+  - [x] 18-6. **Review fix:** Successful embedding/LLM triage results now pass through workflow-edit post-processing. Without this, short agent-mode follow-ups like "can you retry and fix this?" could still be parsed as generic `ask/general` or `agent/general` turns, bypass the fallback heuristic entirely, and end as prose-only repair promises instead of `workflow_edit` routes. Added regression tests covering both LLM-parsed and embedding-primary misroutes.
+
+- [x] 19. **Update stale empty-graph prompt in `chat/prompts.py`**
+  - [x] 19-1. Changed `EMPTY_GRAPH_SUMMARY_PLACEHOLDER` to `"Workflow is empty (0 nodes, 0 edges). Build from scratch."` — removed `plan_graph_mutations` reference.
+  - [x] 19-2. Softened `BUILD_FROM_INTENT_PROMPT` rule from `"Produce a complete runnable workflow in one plan_graph_mutations call."` to `"Produce a complete runnable workflow."`
+- [x] 20. **Add direct simple-build chat regression coverage**
+  - [x] 20-1. Added `tests/test_chat_manager_build_path.py` covering `ChatManager.send_message_with_tools()` in `agent` mode on an empty graph. The test stubs `_generate_workflow_from_intent()` to return a tiny valid `input -> llm_operator` workflow and asserts `ChatGraphCreatedEvent`, the standard completion copy, and persisted graph state.
+  - [x] 20-2. Ran `python -m pytest tests/test_chat_manager_build_path.py tests/test_model_override.py -q` (12 passed).
+- [x] 21. **Preserve explicit build-mode overrides through the live concierge executor seam**
+  - [x] 21-1. Added `_request_mode()` in `tier_executors.py` so explicit `requested_mode="build"` / `"mutate"` survives the router’s normalized `mode="agent"` alias when determining the stage and extracting chat params.
+  - [x] 21-2. Added regressions in `tests/test_concierge/test_tiered_dispatch.py` for both `_determine_stage()` and `_extract_chat_params()` when `requested_mode="build"` is present.
+  - [x] 21-3. Live-smoke-tested the real `/api/chat/message` path on a temporary server: `/build` created a workflow, `/api/graphs/{id}/validate` returned no errors, `/run` completed successfully, and `/schedule add "/run" every 6h` plus `/schedule remove` both worked.
+- [x] 22. **Wire live dispatcher resource budgets and soften Telegram overload copy**
+  - [x] 22-1. Updated `build_concierge()` in `runtime.py` to instantiate `ResourceTracker(ResourceBudget.from_env())` and pass it into `ConcurrentDispatcher`, then updated `dispatcher.py` so live chat tasks consume both the run/project slot and the LLM slot. This makes the existing `DAN_MAX_CONCURRENT_RUNS` / `DAN_MAX_CONCURRENT_LLM` knobs actually constrain live queueing.
+  - [x] 22-2. Added `_format_telegram_stream_error()` in `telegram_fleet.py` so upstream 429 / overload errors render as a temporary-overload message instead of raw backend/provider text.
+  - [x] 22-3. Added regressions in `tests/test_concierge/test_resources.py` and `tests/test_adapters/test_telegram.py`, then ran `python -m pytest tests/test_chat_manager_build_path.py tests/test_concierge/test_tiered_dispatch.py tests/test_concierge/test_resources.py tests/test_concierge/test_scheduler.py tests/test_adapters/test_telegram.py -q` (`270` passed).
+
+### Cycle 5: Workflow retry routing guardrails (2026-03-18)
+
+**Problem:** Generic retry language like `"try again"` or `"retry"` over-routes into workflow editing whenever the project has any linked workflow, even when the user's message has no workflow-specific intent. The bridging condition in `_infer_fallback_action_hints()` (lines 940-943) treated `_WORKFLOW_BUILD_VERB_RE` + `linked_workflow_ids` as sufficient evidence. This was identified in the 2026-03-18 review (`docs/reviews/2026-03-18-workflow-generation-review.md`).
+
+- [x] 23. **Add `_has_recent_workflow_activity()` guard to bridging condition in `triage.py`**
+  - [x] 23-1. Added `_has_recent_workflow_activity()` that scans the last 4 task turns for workflow-related evidence: `workflow_edit`/`workflow_build`/`build`/`mutate` intents, `route_target="workflow"` metadata, `allow_mutation_tool` metadata, or assistant messages mentioning workflow/graph/build/node.
+  - [x] 23-2. Updated the bridging condition so `_WORKFLOW_BUILD_VERB_RE` + linked workflow only sets `workflow_context_like = True` when `_has_recent_workflow_activity()` returns True.
+  - [x] 23-3. Updated existing test `test_fallback_infers_workflow_edit_for_try_again_with_linked_workflow` → renamed to `test_fallback_no_workflow_edit_for_try_again_without_workflow_activity` (asserts `workflow_edit` NOT in hints).
+  - [x] 23-4. Added `test_fallback_infers_workflow_edit_for_try_again_with_workflow_activity` (with recent turns → `workflow_edit` IS in hints).
+  - [x] 23-5. Added `test_fallback_no_workflow_edit_for_plain_retry_without_workflow_activity`.
+  - [x] 23-6. Updated `test_fallback_infers_workflow_edit_for_retry_build_with_linked_workflow` and both async triage upgrade tests to include `_workflow_activity_turns()`.
+  - [x] 23-7. Verified: `rebuild the ... workflow` still works without activity turns (uses `_WORKFLOW_ENTITY_RE` path, not the bridging path).
+  - [x] 23-8. 21 triage tests pass, 872 concierge tests pass (13 skipped), 0 regressions.
+
 ## Files
 
 | File | Action |
 |------|--------|
 | `tests/eval/results/` | Read — baseline JSONL logs |
 | Various source files | Fix — depending on failure modes |
+| `src/dan/server/concierge/tier_executors.py` | Fix — widen `allow_mutation_tool` gate (task 16) |
+| `src/dan/server/chat/helpers.py` | Fix — add `workflow_edit` to `_ACTION_HINT_TOOL_MAP` (task 17) |
+| `src/dan/server/concierge/triage.py` | Fix — broaden heuristic fallback regexes (task 18) |
+| `src/dan/server/chat/prompts.py` | Fix — update stale empty-graph and build-intent prompt text (task 19) |
+| `src/dan/server/concierge/runtime.py` | Fix — wire live dispatcher resource tracker (task 22) |
+| `src/dan/adapters/telegram_fleet.py` | Fix — friendly overload messaging on Telegram (task 22) |
+| `tests/test_concierge/test_tiered_dispatch.py` | Test — tasks 16-3, 16-4 |
+| `tests/test_concierge/test_resources.py` | Test — task 22 |
+| `tests/test_concierge/test_triage.py` | Test — tasks 18-3, 18-4 |
+| `tests/test_chat_manager_build_path.py` | Test — task 20 |
+| `tests/test_adapters/test_telegram.py` | Test — task 22 |
 | `docs/bugs.md` | Update — root causes and failed approaches |
 | `docs/changelog.md` | Update — fixes applied |
 | `docs/todo.md` | Update — remaining generation quality work |
