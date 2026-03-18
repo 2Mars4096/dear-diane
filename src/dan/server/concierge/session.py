@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
+from .autonomy import AutonomyResolution
+
 if TYPE_CHECKING:
     from dan.server.concierge.models import SurfaceMessage
 
@@ -94,6 +96,7 @@ class Session(BaseModel):
     msg: Any | None = None
     context: Any | None = None
     triage: Any | None = None
+    autonomy_resolution: AutonomyResolution | None = None
 
     children: list[str] = Field(default_factory=list)
     child_execution: Literal["parallel", "serial"] = "parallel"
@@ -128,6 +131,7 @@ class SessionManager:
         msg: SurfaceMessage,
         triage: Any,
         tier: SessionTier | int,
+        autonomy_resolution: AutonomyResolution | None = None,
     ) -> Session:
         if isinstance(tier, int):
             tier = SessionTier(tier)
@@ -144,6 +148,7 @@ class SessionManager:
             task=msg.text,
             msg=msg,
             triage=triage,
+            autonomy_resolution=autonomy_resolution,
             max_depth=max_depth,
             max_children=max_children,
             max_total_sessions=max_total,
@@ -160,6 +165,7 @@ class SessionManager:
         task: str,
         tier: SessionTier | int,
         task_context: dict[str, Any] | None = None,
+        autonomy_resolution: AutonomyResolution | None = None,
     ) -> Session:
         if isinstance(tier, int):
             tier = SessionTier(tier)
@@ -185,6 +191,7 @@ class SessionManager:
             depth=parent.depth + 1,
             task=task,
             task_context=task_context or {},
+            autonomy_resolution=autonomy_resolution or parent.autonomy_resolution,
             max_depth=root.max_depth,
             max_children=root.max_children,
             max_total_sessions=root.max_total_sessions,

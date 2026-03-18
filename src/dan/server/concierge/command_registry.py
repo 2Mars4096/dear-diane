@@ -587,6 +587,16 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
     ))
 
     registry.register(CommandDescriptor(
+        name="/autonomy",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="[auto|careful|balanced|aggressive] [--project]",
+        help_text="Show or change autonomy level for this session or project",
+        group="session",
+        handler="dan.server.concierge.runtime.Concierge.handle_autonomy_command",
+    ))
+
+    registry.register(CommandDescriptor(
         name="/domains",
         aliases=["/domain"],
         kind="chat",

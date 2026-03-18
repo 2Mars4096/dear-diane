@@ -68,6 +68,7 @@ class Project(BaseModel):
     linked_meta_session_ids: list[str] = Field(default_factory=list)
     summary: str = ""
     domain: str | None = None
+    autonomy_preference: str = "auto"
     tasks: list[Task] = Field(default_factory=list)
     current_task_id: str | None = None
     pending_action: PendingAction | None = None
@@ -103,6 +104,8 @@ class ConciergeState(BaseModel):
 
     active_goals: list[ConciergeGoal] = Field(default_factory=list)
     pending_clarifications: list[dict[str, Any]] = Field(default_factory=list)
+    autonomy_preference: str | None = None
+    last_autonomy_level: str | None = None
     last_interaction_at: float = Field(default_factory=time.time)
 
 

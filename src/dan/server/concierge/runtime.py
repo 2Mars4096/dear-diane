@@ -17,6 +17,11 @@ if TYPE_CHECKING:
 
 from dan.server.chat_manager import ChatCompleteEvent, ChatStreamEvent
 
+from .autonomy import (
+    AutonomyPreference,
+    normalize_autonomy_preference,
+    normalize_legacy_autonomy_level,
+)
 from .command_registry import CommandDescriptor, CommandRegistry, get_default_registry
 from .identity import format_bare_prefix, format_prefix
 from .models import (
@@ -185,6 +190,10 @@ class Concierge:
         self.auto_summarize_turn_threshold: int = 10
         self._bg_memory_tasks: set[asyncio.Task[None]] = set()
         self._interaction_counter: int = 0
+        self._default_autonomy_preference = normalize_legacy_autonomy_level(
+            autonomy_level or os.environ.get("DAN_CONCIERGE_AUTONOMY", "auto"),
+        )
+        self._volatile_concierge_states: dict[str, ConciergeState] = {}
         self._pending_preference_surface: dict[str, list[Any]] = {}
         self._progress_sessions: dict[str, Any] = {}
 
@@ -502,6 +511,12 @@ class Concierge:
                 model = getattr(self, "_telem_model", None)
             if intent is None:
                 intent = getattr(self, "_telem_intent", None)
+            autonomy_metadata = {}
+            msg_metadata = getattr(msg, "metadata", {}) or {}
+            if isinstance(msg_metadata, dict):
+                autonomy_resolution = msg_metadata.get("autonomy_resolution")
+                if isinstance(autonomy_resolution, dict) and autonomy_resolution:
+                    autonomy_metadata["autonomy_resolution"] = autonomy_resolution
             ev = TelemetryEvent(
                 id=turn_event_id,
                 event_type="fast_command" if is_fast_command else "chat_turn",
@@ -517,6 +532,7 @@ class Concierge:
                 estimated_cost=cost,
                 duration_ms=duration_ms,
                 success=success,
+                metadata=autonomy_metadata,
             )
             await self._telemetry_store.record(ev)
         except Exception:
@@ -660,6 +676,9 @@ class Concierge:
             ):
                 if key in msg.metadata:
                     replay_metadata[key] = msg.metadata[key]
+            replay_metadata.pop("autonomy_preference", None)
+            replay_metadata.pop("autonomy_resolution", None)
+            replay_metadata.pop("turn_autonomy_preference", None)
             replay_metadata["retried_via_command"] = True
             msg.text = last_user_turn.content
             msg.metadata = replay_metadata
@@ -1132,53 +1151,82 @@ class Concierge:
 
     async def _process_inner(self, msg: SurfaceMessage) -> AsyncIterator[ChatStreamEvent]:
         self._current_surface_id = msg.external_id
-        self._concierge_state = self._load_concierge_state(msg.external_id)
+        state_scope_id = self._concierge_state_scope_key(msg.surface, msg.external_id)
+        self._concierge_state = self._load_concierge_state(
+            state_scope_id,
+            legacy_scope_ids=[msg.external_id],
+        )
         self._concierge_state.last_interaction_at = time.time()
         self._telem_model = getattr(self.chat_manager, "_chat_model", None)
+        try:
+            fast_event = await self._try_fast_command(msg)
+            if fast_event is not None:
+                yield fast_event
+                return
 
-        fast_event = await self._try_fast_command(msg)
-        if fast_event is not None:
-            self._save_concierge_state(msg.external_id, self._concierge_state)
-            yield fast_event
-            return
+            self._ensure_progress_session(msg)
 
-        self._ensure_progress_session(msg)
-
-        async for event in self._tiered_dispatcher.dispatch(msg):
-            yield event
+            async for event in self._tiered_dispatcher.dispatch(msg):
+                yield event
+        finally:
+            self._save_concierge_state(state_scope_id, self._concierge_state)
 
     # ------------------------------------------------------------------
     # State persistence
     # ------------------------------------------------------------------
 
-    def _load_concierge_state(self, surface_id: str) -> ConciergeState:
+    @staticmethod
+    def _concierge_state_scope_key(surface: str | None, external_id: str | None) -> str:
+        surface_text = str(surface or "").strip()
+        external_text = str(external_id or "").strip()
+        if surface_text and external_text:
+            return f"{surface_text}::{external_text}"
+        return external_text or surface_text
+
+    def _load_concierge_state(
+        self,
+        scope_id: str,
+        *,
+        legacy_scope_ids: list[str] | None = None,
+    ) -> ConciergeState:
+        candidate_ids = [scope_id]
+        for legacy_id in legacy_scope_ids or []:
+            legacy_text = str(legacy_id or "").strip()
+            if legacy_text and legacy_text not in candidate_ids:
+                candidate_ids.append(legacy_text)
         if not self.memory_kernel:
+            for candidate_id in candidate_ids:
+                state = self._volatile_concierge_states.get(candidate_id)
+                if state is not None:
+                    return state.model_copy(deep=True)
             return ConciergeState()
         from dan.engine.memory_kernel import MemoryItem, MemoryScope, MemoryType
 
-        item_id = _CONCIERGE_STATE_PREFIX + surface_id
-        item = self.memory_kernel.get(item_id)
-        if item is None:
-            return ConciergeState()
-        try:
-            data = json.loads(item.content)
-            return ConciergeState.model_validate(data)
-        except Exception:
-            logger.debug("Failed to parse concierge state for %s", surface_id, exc_info=True)
-            return ConciergeState()
+        for candidate_id in candidate_ids:
+            item_id = _CONCIERGE_STATE_PREFIX + candidate_id
+            item = self.memory_kernel.get(item_id)
+            if item is None:
+                continue
+            try:
+                data = json.loads(item.content)
+                return ConciergeState.model_validate(data)
+            except Exception:
+                logger.debug("Failed to parse concierge state for %s", candidate_id, exc_info=True)
+        return ConciergeState()
 
-    def _save_concierge_state(self, surface_id: str, state: ConciergeState) -> None:
+    def _save_concierge_state(self, scope_id: str, state: ConciergeState) -> None:
         if not self.memory_kernel:
+            self._volatile_concierge_states[scope_id] = state.model_copy(deep=True)
             return
         from dan.engine.memory_kernel import MemoryItem, MemoryScope, MemoryType
 
-        item_id = _CONCIERGE_STATE_PREFIX + surface_id
+        item_id = _CONCIERGE_STATE_PREFIX + scope_id
         item = MemoryItem(
             id=item_id,
             content=state.model_dump_json(),
             memory_type=MemoryType.WORKING_STATE,
             scope=MemoryScope.USER,
-            metadata={"surface_id": surface_id},
+            metadata={"surface_id": scope_id},
         )
         self.memory_kernel.store(item)
 
@@ -1949,6 +1997,92 @@ class Concierge:
     # ------------------------------------------------------------------
 
     # ------------------------------------------------------------------
+    # /autonomy command
+    # ------------------------------------------------------------------
+
+    def handle_autonomy_command(self, msg: SurfaceMessage) -> str:
+        """Handle ``/autonomy`` — inspect or change session/project autonomy."""
+        text = msg.text.strip()
+        tokens = text.split()
+        args = tokens[1:] if len(tokens) > 1 else []
+        project_scope = False
+        requested: str | None = None
+
+        for arg in args:
+            if arg == "--project":
+                project_scope = True
+                continue
+            if requested is None:
+                requested = normalize_autonomy_preference(arg, default="")
+        state = self._concierge_state
+        if requested == "":
+            return "Usage: `/autonomy [auto|careful|balanced|aggressive] [--project]`"
+        if requested and requested not in {
+            AutonomyPreference.AUTO.value,
+            AutonomyPreference.CAREFUL.value,
+            AutonomyPreference.BALANCED.value,
+            AutonomyPreference.AGGRESSIVE.value,
+        }:
+            requested = None
+
+        msg_metadata = getattr(msg, "metadata", None)
+        resolved_project_id = None
+        if isinstance(msg_metadata, dict):
+            resolved_project_id = str(msg_metadata.get("resolved_project_id") or "").strip() or None
+        active_projects = self.project_store.list_active(msg.external_id)
+        project = None
+        if resolved_project_id:
+            project = self.project_store.get_project(resolved_project_id, msg.external_id)
+        elif len(active_projects) == 1:
+            project = active_projects[0]
+        project_pref = normalize_autonomy_preference(
+            getattr(project, "autonomy_preference", None),
+            default=AutonomyPreference.AUTO.value,
+        )
+        session_pref = normalize_autonomy_preference(
+            getattr(state, "autonomy_preference", None),
+            default=AutonomyPreference.AUTO.value,
+        )
+        state_scope_id = self._concierge_state_scope_key(msg.surface, msg.external_id)
+
+        if requested is None:
+            lines = [
+                f"Session autonomy preference: `{session_pref}`",
+                f"Project autonomy preference: `{project_pref}`",
+                f"Default autonomy preference: `{self._default_autonomy_preference}`",
+            ]
+            last_effective = normalize_autonomy_preference(
+                getattr(state, "last_autonomy_level", None),
+                default="",
+            )
+            if last_effective:
+                lines.append(f"Last effective autonomy: `{last_effective}`")
+            return "\n".join(lines)
+
+        if project_scope:
+            if project is None:
+                if len(active_projects) > 1:
+                    return (
+                        "Multiple active projects are open on this surface. "
+                        "Use `/autonomy --project` from within a project-scoped turn."
+                    )
+                return "No active project found for `--project` autonomy update."
+            project.autonomy_preference = requested
+            self.project_store.save_project(project)
+            if not state.autonomy_preference and requested != AutonomyPreference.AUTO.value:
+                state.last_autonomy_level = requested
+            self._save_concierge_state(state_scope_id, state)
+            return f"Project autonomy preference set to `{requested}`."
+
+        state.autonomy_preference = requested
+        if requested == AutonomyPreference.AUTO.value:
+            state.last_autonomy_level = None
+        else:
+            state.last_autonomy_level = requested
+        self._save_concierge_state(state_scope_id, state)
+        return f"Session autonomy preference set to `{requested}`."
+
+    # ------------------------------------------------------------------
     # /goal command
     # ------------------------------------------------------------------
 
@@ -1961,6 +2095,7 @@ class Concierge:
         subcommand = args[1].strip() if len(args) > 1 else ""
 
         state = self._concierge_state
+        state_scope_id = self._concierge_state_scope_key(msg.surface, msg.external_id)
 
         if not subcommand or subcommand == "list":
             if not state.active_goals:
@@ -1973,12 +2108,12 @@ class Concierge:
         if subcommand == "clear":
             count = len(state.active_goals)
             state.active_goals.clear()
-            self._save_concierge_state(msg.external_id, state)
+            self._save_concierge_state(state_scope_id, state)
             return f"Cleared {count} goal(s)."
 
         goal = ConciergeGoal(description=subcommand)
         state.active_goals.append(goal)
-        self._save_concierge_state(msg.external_id, state)
+        self._save_concierge_state(state_scope_id, state)
 
         logger.warning(
             "GoalLoopExecutor not wired — goal stored but not executed "

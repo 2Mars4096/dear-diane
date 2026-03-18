@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from .autonomy import autonomy_cost_confirm_threshold
 from .models import IntentCategory
 
 
@@ -90,6 +91,7 @@ def resolve_policy(
     surface: str,
     estimated_cost: float = 0.0,
     cost_confirm_threshold: float = 1.0,
+    autonomy_resolution: Any | None = None,
 ) -> tuple[ActionPolicy, ExecutionPolicy]:
     action = DEFAULT_HANDLER_POLICIES[intent]
     execution = DEFAULT_EXECUTION_POLICIES[intent]
@@ -114,6 +116,11 @@ def resolve_policy(
             cost_confirm_threshold = float(env_threshold)
         except ValueError:
             pass
+    autonomy_level = getattr(autonomy_resolution, "effective_level", None)
+    cost_confirm_threshold = autonomy_cost_confirm_threshold(
+        cost_confirm_threshold,
+        autonomy_level,
+    )
 
     if estimated_cost > cost_confirm_threshold:
         action = ActionPolicy.CONFIRM
