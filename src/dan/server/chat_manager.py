@@ -101,6 +101,7 @@ from dan.server.chat.helpers import (  # noqa: F401
     _classify_llm_error_kind,
     _build_tool_followup_recovery_prompt,
     _build_tool_followup_error_intro,
+    _post_tool_followup_retry_delay_seconds,
     _clean_tool_result,
     _summarize_tool_result,
     _extract_cited_sources,
@@ -180,6 +181,7 @@ except ValueError:
     _MUTATION_AUTO_RETRY_MAX = 2
 _MAX_CONTEXT_RATIO = float(os.environ.get("DAN_CHAT_MAX_CONTEXT_RATIO", "0.8"))
 _LLM_CALL_TIMEOUT_SECONDS = float(os.environ.get("DAN_LLM_CALL_TIMEOUT", "120"))
+_POST_TOOL_FOLLOWUP_MAX_RETRIES = 2
 
 __all__ = [
     "NodeSummary",
@@ -2353,6 +2355,8 @@ class ChatManager:
                     tool_results=successful_tool_results,
                 )
 
+                followup_tools: list[dict[str, Any]] = []
+                followup_tool_choice: str | dict[str, Any] = "auto"
                 try:
                     followup_tools, followup_tool_choice = _tool_request_config(
                         force_file_write_now=force_file_write_next_turn,
@@ -2424,13 +2428,7 @@ class ChatManager:
                     )
                 except Exception as exc:
                     failure_kind = _classify_llm_error_kind(exc)
-                    is_timeout = failure_kind == "timeout"
-                    _is_transient_followup = failure_kind in {
-                        "timeout",
-                        "rate_limit",
-                        "server_error",
-                        "connection",
-                    }
+                    _is_transient_followup = _is_transient_llm_error(exc)
                     missing_action_hints = followup_missing_action_hints
                     failure_label = {
                         "timeout": "timed out",
@@ -2446,43 +2444,79 @@ class ChatManager:
                         force_file_write_next_turn,
                     )
 
-                    # --- Retry once on transient errors before synthesis ---
-                    if _is_transient_followup:
-                        _backoff = 3
-                        logger.info(
-                            "Retrying follow-up call after transient error (backoff %ds)",
-                            _backoff,
-                        )
-                        await asyncio.sleep(_backoff)
-                        try:
-                            retry_result: CompletionResult | None = None
-                            async for step in _iter_guarded_complete(
-                                request_kwargs={
-                                    "messages": messages,
-                                    "model": effective_model,
-                                    "temperature": 0.7,
-                                    "max_tokens": completion_max_tokens,
-                                    "tools": followup_tools,
-                                    "tool_choice": followup_tool_choice,
-                                },
-                                interrupted_content=lambda: "\n\n".join(combined_text_parts)
-                                if combined_text_parts
-                                else "",
-                                emit_progress_ack=True,
-                            ):
-                                if isinstance(step, CompletionResult):
-                                    retry_result = step
-                                else:
-                                    yield step
-                                    if isinstance(step, ChatInterruptedEvent):
-                                        return
-                            if retry_result is not None:
+                    followup_exc = exc
+
+                    # --- Retry transient post-tool follow-up failures before synthesis ---
+                    if _is_transient_followup and _POST_TOOL_FOLLOWUP_MAX_RETRIES > 0:
+                        recovered = False
+                        for retry_index in range(1, _POST_TOOL_FOLLOWUP_MAX_RETRIES + 1):
+                            retry_delay = _post_tool_followup_retry_delay_seconds(
+                                followup_exc,
+                                retry_index,
+                            )
+                            logger.info(
+                                "Retrying follow-up call %d/%d after transient error (backoff %.1fs)",
+                                retry_index,
+                                _POST_TOOL_FOLLOWUP_MAX_RETRIES,
+                                retry_delay,
+                            )
+                            await asyncio.sleep(retry_delay)
+                            try:
+                                retry_result: CompletionResult | None = None
+                                retry_step_labels: list[str] = []
+                                async for step in _iter_guarded_complete(
+                                    request_kwargs={
+                                        "messages": messages,
+                                        "model": effective_model,
+                                        "temperature": 0.7,
+                                        "max_tokens": completion_max_tokens,
+                                        "tools": followup_tools,
+                                        "tool_choice": followup_tool_choice,
+                                    },
+                                    interrupted_content=lambda: "\n\n".join(combined_text_parts)
+                                    if combined_text_parts
+                                    else "",
+                                    emit_progress_ack=True,
+                                ):
+                                    if isinstance(step, CompletionResult):
+                                        retry_result = step
+                                    else:
+                                        retry_step_labels.append(_stream_step_label(step))
+                                        yield step
+                                        if isinstance(step, ChatInterruptedEvent):
+                                            return
+                                if retry_result is None:
+                                    followup_exc = RuntimeError(
+                                        "Tool-loop follow-up retry produced no result"
+                                    )
+                                    logger.warning(
+                                        "Follow-up retry %d/%d exited without CompletionResult after steps=%s",
+                                        retry_index,
+                                        _POST_TOOL_FOLLOWUP_MAX_RETRIES,
+                                        retry_step_labels or ["none"],
+                                    )
+                                    continue
                                 result = retry_result
                                 usage_totals = _merge_usage_totals(usage_totals, result.usage)
-                                logger.info("Follow-up retry succeeded at turn %d", _turn)
-                                continue  # back to top of tool loop
-                        except Exception as retry_exc:
-                            logger.info("Follow-up retry also failed: %s", retry_exc)
+                                logger.info(
+                                    "Follow-up retry %d/%d succeeded at turn %d",
+                                    retry_index,
+                                    _POST_TOOL_FOLLOWUP_MAX_RETRIES,
+                                    _turn,
+                                )
+                                recovered = True
+                                break
+                            except Exception as retry_exc:
+                                followup_exc = retry_exc
+                                logger.info(
+                                    "Follow-up retry %d/%d failed: %s",
+                                    retry_index,
+                                    _POST_TOOL_FOLLOWUP_MAX_RETRIES,
+                                    retry_exc,
+                                )
+                        if recovered:
+                            continue
+                        exc = followup_exc
 
                     # --- Synthesis: try no-tools call to salvage a response ---
                     synthesis_ok = False
@@ -2506,9 +2540,9 @@ class ChatManager:
                         if synthesis_result and (synthesis_result.text or "").strip():
                             result = synthesis_result
                             synthesis_ok = True
-                            logger.info("Mid-loop timeout recovery synthesis succeeded")
+                            logger.info("Post-tool recovery synthesis succeeded")
                     except Exception as synth_exc:
-                        logger.debug("Mid-loop timeout recovery synthesis failed: %s", synth_exc)
+                        logger.debug("Post-tool recovery synthesis failed: %s", synth_exc)
 
                     # Fallback: try synthesis with DAN_LLM_MODEL if different
                     if not synthesis_ok and effective_model != self._chat_model:
@@ -2532,7 +2566,7 @@ class ChatManager:
                                 result = synthesis_result
                                 synthesis_ok = True
                                 logger.info(
-                                    "Mid-loop timeout recovery synthesis succeeded with fallback model %s",
+                                    "Post-tool recovery synthesis succeeded with fallback model %s",
                                     self._chat_model,
                                 )
                         except Exception as fb_exc:

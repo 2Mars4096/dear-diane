@@ -76,7 +76,7 @@ class ChatMessageRequest(BaseModel):
     thread_id: str | None = None
     history: list[dict[str, str]] = []
     client_graph_revision: str | None = None
-    mode: Literal["ask", "agent", "plan", "debug", "auto", "mutate", "build", "conversation"] = "agent"
+    mode: Literal["ask", "agent", "plan", "debug", "auto", "mutate", "build", "conversation"] = "auto"
     mentions: list[ChatMentionRef] = []
     surface: str | None = None
     surface_type: str | None = None

@@ -5,6 +5,8 @@ import asyncio
 import re as _re
 from typing import Any
 
+import httpx
+
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
 from dan.server.capabilities._helpers import (
     _FILE_READ_MAX,
@@ -15,6 +17,70 @@ from dan.server.capabilities._helpers import (
 
 _MAX_AUTO_FETCH_RESULTS = 2
 _FETCH_EXCERPT_MAX = 1800
+
+
+def _trim_note(text: str, limit: int = 180) -> str:
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _summarize_web_exception(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        status = exc.response.status_code if exc.response is not None else None
+        reason = exc.response.reason_phrase if exc.response is not None else ""
+        summary = f"HTTP {status}" if status is not None else "HTTP error"
+        if reason:
+            summary += f" {reason}"
+        return summary
+    return _trim_note(str(exc) or type(exc).__name__)
+
+
+def _format_provider_failures(failures: list[dict[str, Any]] | None) -> str:
+    if not failures:
+        return ""
+
+    rendered: list[str] = []
+    for failure in failures[:2]:
+        provider = str(failure.get("provider", "") or "").strip()
+        summary = str(
+            failure.get("summary", "")
+            or failure.get("message", "")
+            or failure.get("error", "")
+            or ""
+        ).strip()
+        summary = _trim_note(summary, limit=90)
+        if provider and summary:
+            rendered.append(f"{provider}: {summary}")
+        elif provider:
+            rendered.append(provider)
+        elif summary:
+            rendered.append(summary)
+
+    note = "; ".join(rendered)
+    remaining = len(failures) - len(rendered)
+    if remaining > 0:
+        note += f"; +{remaining} more"
+    return note
+
+
+def _format_fetch_header(result: dict[str, Any], *, requested_url: str) -> str:
+    resolved_url = str(result.get("url", "") or "").strip() or requested_url
+    parts: list[str] = []
+    status_code = result.get("status_code")
+    if isinstance(status_code, int) and status_code > 0:
+        parts.append(f"HTTP {status_code}")
+    content_type = str(result.get("content_type", "") or "").split(";", 1)[0].strip()
+    if content_type:
+        parts.append(content_type)
+    if result.get("cache_hit"):
+        parts.append("cache hit")
+
+    header = f"Fetched {resolved_url}" if resolved_url else "Fetched content"
+    if parts:
+        header += f" ({'; '.join(parts)})"
+    return header
 
 
 def _format_search_result(index: int, item: dict[str, Any]) -> str:
@@ -56,9 +122,10 @@ async def _fetch_grounding_excerpt(index: int, url: str) -> dict[str, Any]:
             "url": url,
             "success": True,
             "content": content,
+            "cache_hit": bool(fetched.get("cache_hit")),
         }
     except Exception as exc:
-        error = str(exc).strip() or type(exc).__name__
+        error = _summarize_web_exception(exc)
         return {
             "index": index,
             "url": url,
@@ -77,12 +144,23 @@ async def handle_web_search(
     num = min(10, max(1, args.get("num_results") or 3))
     fetch_content = bool(args.get("fetch_content", False))
     try:
-        from dan.tools.web_search import web_search
+        from dan.tools.web_search import WebSearchProvidersExhaustedError, web_search
         result = await web_search(query=query, num_results=num)
     except ImportError:
         return _failure_result(
             "Web search is not available. Set DAN_TAVILY_API_KEY or DAN_BRAVE_API_KEY, or install duckduckgo-search.",
             error_type="provider_unavailable",
+        )
+    except WebSearchProvidersExhaustedError as exc:
+        fallback_note = _format_provider_failures(exc.provider_failures)
+        message = "Web search failed."
+        if fallback_note:
+            message = f"Web search failed after fallback attempts: {fallback_note}"
+        return _failure_result(
+            message,
+            error_type=exc.error_type,
+            retryable=exc.retryable,
+            data={"query": query, "provider_failures": exc.provider_failures},
         )
     except Exception as exc:
         error_type, retryable = _classify_network_exception(exc)
@@ -97,15 +175,25 @@ async def handle_web_search(
         return CapabilityResult(success=True, message="No web results found for that query.")
 
     provider = str(result.get("provider", "") or "").strip()
+    provider_failures = result.get("provider_failures") or []
     result_payload = dict(result)
     result_payload["query"] = query
     result_payload["fetch_content_requested"] = fetch_content
     result_payload["grounded_result_count"] = 0
     result_payload["fetched_results"] = []
 
-    lines = [f'Web search results for "{query}"']
+    header_parts: list[str] = []
     if provider:
-        lines[0] += f" (provider: {provider})"
+        header_parts.append(f"provider: {provider}")
+    if result.get("cache_hit"):
+        header_parts.append("cache hit")
+
+    lines = [f'Web search results for "{query}"']
+    if header_parts:
+        lines[0] += f" ({'; '.join(header_parts)})"
+    fallback_note = _format_provider_failures(provider_failures)
+    if fallback_note:
+        lines.append(f"Fallbacks: {fallback_note}")
     lines.append("Results are numbered for citation; snippets may be incomplete without fetched page content.")
     lines.append("")
 
@@ -189,7 +277,25 @@ async def handle_web_fetch(args: dict[str, Any], ctx: CapabilityContext) -> Capa
 
         if len(content) > _FILE_READ_MAX:
             content = content[:_FILE_READ_MAX] + "\n\n[truncated]"
-        return CapabilityResult(success=True, message=content, data=result)
+        header = _format_fetch_header(result, requested_url=url)
+        message = header if not content else f"{header}\n\n{content}"
+        return CapabilityResult(success=True, message=message, data=result)
+    except httpx.HTTPStatusError as exc:
+        status_code = exc.response.status_code if exc.response is not None else 0
+        content_type = exc.response.headers.get("content-type", "") if exc.response is not None else ""
+        requested = str(exc.request.url) if exc.request is not None else url
+        retryable = status_code == 429 or status_code >= 500
+        error_type = "provider_error" if retryable or status_code >= 500 else "http_error"
+        return _failure_result(
+            f"Failed to fetch URL (HTTP {status_code}) from {requested}",
+            error_type=error_type,
+            retryable=retryable,
+            data={
+                "url": requested,
+                "status_code": status_code,
+                "content_type": content_type,
+            },
+        )
     except Exception as exc:
         error_type, retryable = _classify_network_exception(exc)
         return _failure_result(

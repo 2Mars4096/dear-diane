@@ -6,6 +6,8 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from dan.server.capability_registry import CapabilityResult
@@ -310,6 +312,124 @@ def _write_file_escalation_prompt(*, missing_target: bool) -> str:
     return " ".join(parts)
 
 
+def _llm_error_status_code(exc: Exception) -> int | None:
+    """Best-effort HTTP status extraction from provider exceptions."""
+    for candidate in (
+        getattr(exc, "status_code", None),
+        getattr(getattr(exc, "response", None), "status_code", None),
+    ):
+        try:
+            status = int(candidate)
+        except (TypeError, ValueError):
+            continue
+        if status > 0:
+            return status
+    return None
+
+
+def _parse_retry_after_seconds(
+    value: Any,
+    *,
+    now: datetime | None = None,
+) -> float | None:
+    """Parse a retry-after hint expressed as seconds or an HTTP date."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        delay = float(value)
+        return max(delay, 0.0)
+
+    raw_value = str(value).strip()
+    if not raw_value:
+        return None
+    try:
+        delay = float(raw_value)
+        return max(delay, 0.0)
+    except ValueError:
+        pass
+
+    try:
+        retry_at = parsedate_to_datetime(raw_value)
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if retry_at.tzinfo is None:
+        retry_at = retry_at.replace(tzinfo=timezone.utc)
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+    return max((retry_at - current_time).total_seconds(), 0.0)
+
+
+def _header_value(headers: Any, name: str) -> Any | None:
+    if headers is None:
+        return None
+    getter = getattr(headers, "get", None)
+    if callable(getter):
+        value = getter(name)
+        if value is None:
+            value = getter(name.lower())
+        if value is not None:
+            return value
+    items = getattr(headers, "items", None)
+    if callable(items):
+        for key, value in items():
+            if str(key).lower() == name.lower():
+                return value
+    return None
+
+
+def _extract_retry_after_seconds(
+    exc: Exception,
+    *,
+    now: datetime | None = None,
+) -> float | None:
+    """Best-effort retry-after extraction from provider exception metadata."""
+    for attr_name in ("retry_after", "retry_after_seconds", "retryAfter"):
+        parsed = _parse_retry_after_seconds(getattr(exc, attr_name, None), now=now)
+        if parsed is not None:
+            return parsed
+
+    response = getattr(exc, "response", None)
+    for headers in (
+        getattr(exc, "headers", None),
+        getattr(response, "headers", None),
+    ):
+        retry_after = _parse_retry_after_seconds(
+            _header_value(headers, "Retry-After"),
+            now=now,
+        )
+        if retry_after is not None:
+            return retry_after
+
+        retry_after_ms = _parse_retry_after_seconds(
+            _header_value(headers, "Retry-After-Ms"),
+            now=now,
+        )
+        if retry_after_ms is not None:
+            return max(retry_after_ms / 1000.0, 0.0)
+
+    return None
+
+
+def _post_tool_followup_retry_delay_seconds(
+    exc: Exception,
+    retry_index: int,
+    *,
+    base_delay_seconds: float = 2.0,
+    max_delay_seconds: float = 8.0,
+    now: datetime | None = None,
+) -> float:
+    """Return the bounded delay before a post-tool follow-up retry."""
+    retry_after = _extract_retry_after_seconds(exc, now=now)
+    if retry_after is not None:
+        return min(max(retry_after, 0.0), max_delay_seconds)
+
+    safe_retry_index = max(retry_index, 1)
+    safe_base_delay = max(base_delay_seconds, 0.0)
+    safe_max_delay = max(max_delay_seconds, safe_base_delay)
+    return min(safe_base_delay * (2 ** (safe_retry_index - 1)), safe_max_delay)
+
+
 def _is_transient_llm_error(exc: Exception) -> bool:
     """True if the exception is a transient LLM API error worth retrying."""
     kind = _classify_llm_error_kind(exc)
@@ -328,6 +448,13 @@ def _classify_llm_error_kind(exc: Exception) -> str:
     msg = str(exc).lower()
     if any(marker in msg for marker in _TOOL_HISTORY_COMPAT_MARKERS):
         return "tool_history_incompatible"
+    status_code = _llm_error_status_code(exc)
+    if status_code in {408, 504}:
+        return "timeout"
+    if status_code == 429:
+        return "rate_limit"
+    if status_code is not None and status_code >= 500:
+        return "server_error"
     if isinstance(exc, (asyncio.TimeoutError, TimeoutError)) or "timeout" in msg or "timed out" in msg:
         return "timeout"
     if "429" in msg or "rate" in msg or "rate limit" in msg:
@@ -343,23 +470,39 @@ def _build_tool_followup_recovery_prompt(exc: Exception) -> str:
     """Prompt for no-tools synthesis after a post-tool follow-up failure."""
     kind = _classify_llm_error_kind(exc)
     if kind == "timeout":
-        reason = "The previous follow-up model call timed out after the tools finished."
+        reason = (
+            "The previous attempt to generate the final answer from the completed "
+            "tool results timed out."
+        )
     elif kind == "tool_history_incompatible":
         reason = (
-            "The previous follow-up model call failed because the provider "
+            "The previous attempt to generate the final answer from the completed "
+            "tool results failed because the provider "
             "rejected the tool-call transcript metadata."
         )
     elif kind == "rate_limit":
-        reason = "The previous follow-up model call hit a rate or quota limit."
+        reason = (
+            "The previous attempt to generate the final answer from the completed "
+            "tool results hit a rate or quota limit."
+        )
     elif kind == "connection":
-        reason = "The previous follow-up model call failed because of a connection problem."
+        reason = (
+            "The previous attempt to generate the final answer from the completed "
+            "tool results failed because of a connection problem."
+        )
     elif kind == "server_error":
-        reason = "The previous follow-up model call failed because the provider returned a server error."
+        reason = (
+            "The previous attempt to generate the final answer from the completed "
+            "tool results failed because the provider returned a server error."
+        )
     else:
-        reason = f"The previous follow-up model call failed with {type(exc).__name__}."
+        reason = (
+            "The previous attempt to generate the final answer from the completed "
+            f"tool results failed with {type(exc).__name__}."
+        )
     return (
-        f"{reason} Using ONLY the tool results already in this conversation, "
-        "provide the best answer you can. Do not call any tools."
+        f"{reason} Using ONLY the completed tool results already in this conversation, "
+        "write the final answer for the user. Do not call any tools or ask to rerun them."
     )
 
 
@@ -367,16 +510,16 @@ def _build_tool_followup_error_intro(exc: Exception) -> str:
     """User-facing summary for a post-tool follow-up failure."""
     kind = _classify_llm_error_kind(exc)
     if kind == "timeout":
-        return "The language model took too long to respond after using tools."
+        return "The model timed out while generating the final answer from completed tool results."
     if kind == "tool_history_incompatible":
-        return "The provider rejected the tool-call transcript while generating the follow-up response."
+        return "The provider rejected the tool-call transcript while generating the final answer from completed tool results."
     if kind == "rate_limit":
-        return "The provider hit a rate or quota limit after using tools."
+        return "The provider hit a rate or quota limit while generating the final answer from completed tool results."
     if kind == "connection":
-        return "A connection issue interrupted the post-tool response."
+        return "A connection issue interrupted final answer generation after the tool results were ready."
     if kind == "server_error":
-        return "The provider returned a server error after using tools."
-    return "I encountered an error generating a response after using tools."
+        return "The provider returned a server error while generating the final answer from completed tool results."
+    return "I hit an error while generating the final answer from completed tool results."
 
 
 # ---------------------------------------------------------------------------
