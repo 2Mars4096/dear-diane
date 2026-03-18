@@ -4,6 +4,7 @@ from collections.abc import Iterator
 
 import pytest
 
+from dan.server.concierge.autonomy import AutonomyResolution
 from dan.server.concierge.models import SurfaceMessage
 from dan.server.concierge.session import (
     SessionManager,
@@ -54,6 +55,28 @@ def test_create_child_rejects_children_for_single_tier_parent() -> None:
 
     with pytest.raises(ValueError, match="cannot have children"):
         manager.create_child(root.id, "child task", SessionTier.SINGLE)
+
+
+def test_autonomy_resolution_propagates_from_root_to_child() -> None:
+    manager = SessionManager()
+    autonomy = AutonomyResolution(
+        preferred_level="auto",
+        effective_level="aggressive",
+        source="inferred",
+        reason="clear low-risk directive",
+    )
+    root = manager.create_root(
+        _make_msg(),
+        triage=None,
+        tier=SessionTier.MULTI,
+        autonomy_resolution=autonomy,
+    )
+    child = manager.create_child(root.id, "child task", SessionTier.SINGLE)
+
+    assert root.autonomy_resolution is not None
+    assert child.autonomy_resolution is not None
+    assert root.autonomy_resolution.effective_level == "aggressive"
+    assert child.autonomy_resolution.effective_level == "aggressive"
 
 
 def test_can_spawn_child_enforces_depth_children_and_total_limits() -> None:

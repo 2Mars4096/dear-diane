@@ -24,8 +24,13 @@ from dan.server.concierge.runtime import Concierge
 from dan.server.telemetry import InMemoryTelemetryStore, TelemetryEvent
 
 
-def _make_msg(text: str, external_id: str = "test-surface") -> SurfaceMessage:
-    return SurfaceMessage(surface="cli", external_id=external_id, text=text)
+def _make_msg(
+    text: str,
+    external_id: str = "test-surface",
+    *,
+    surface: str = "cli",
+) -> SurfaceMessage:
+    return SurfaceMessage(surface=surface, external_id=external_id, text=text)
 
 
 def registry_test_handler(text: str) -> str:
@@ -144,6 +149,76 @@ class TestFastCommandSkipsPrep:
         assert "compact" in user_a_events[0].content
         assert "auto per surface" in user_b_events[0].content
         assert "compact" in user_a_status[0].content
+
+    @pytest.mark.asyncio
+    async def test_autonomy_command_sets_session_override(self, tmp_path):
+        c = _build_concierge(tmp_path)
+
+        events = await _collect(c, _make_msg("/autonomy aggressive", external_id="user-a"))
+        status = await _collect(c, _make_msg("/autonomy", external_id="user-a"))
+
+        assert "aggressive" in events[0].content
+        assert "Session autonomy preference: `aggressive`" in status[0].content
+
+    @pytest.mark.asyncio
+    async def test_autonomy_session_override_isolated_by_surface(self, tmp_path):
+        c = _build_concierge(tmp_path)
+
+        await _collect(c, _make_msg("/autonomy aggressive", external_id="shared-user", surface="cli"))
+        other_surface_status = await _collect(
+            c,
+            _make_msg("/autonomy", external_id="shared-user", surface="telegram:test"),
+        )
+        original_surface_status = await _collect(
+            c,
+            _make_msg("/autonomy", external_id="shared-user", surface="cli"),
+        )
+
+        assert "Session autonomy preference: `auto`" in other_surface_status[0].content
+        assert "Session autonomy preference: `aggressive`" in original_surface_status[0].content
+
+    @pytest.mark.asyncio
+    async def test_autonomy_session_override_isolated_by_external_id(self, tmp_path):
+        c = _build_concierge(tmp_path)
+
+        await _collect(c, _make_msg("/autonomy aggressive", external_id="user-a"))
+        other_user_status = await _collect(c, _make_msg("/autonomy", external_id="user-b"))
+        original_user_status = await _collect(c, _make_msg("/autonomy", external_id="user-a"))
+
+        assert "Session autonomy preference: `auto`" in other_user_status[0].content
+        assert "Session autonomy preference: `aggressive`" in original_user_status[0].content
+
+    @pytest.mark.asyncio
+    async def test_autonomy_command_sets_project_override(self, tmp_path):
+        c = _build_concierge(tmp_path)
+        project = c.project_store.create_project("demo", "user-a")
+
+        await _collect(c, _make_msg("/autonomy careful --project", external_id="user-a"))
+
+        stored = c.project_store.get_project(project.project_id, "user-a")
+        assert stored is not None
+        assert stored.autonomy_preference == "careful"
+
+    @pytest.mark.asyncio
+    async def test_autonomy_auto_clears_last_effective_marker(self, tmp_path):
+        c = _build_concierge(tmp_path)
+
+        await _collect(c, _make_msg("/autonomy aggressive", external_id="user-a"))
+        await _collect(c, _make_msg("/autonomy auto", external_id="user-a"))
+        status = await _collect(c, _make_msg("/autonomy", external_id="user-a"))
+
+        assert "Session autonomy preference: `auto`" in status[0].content
+        assert "Last effective autonomy" not in status[0].content
+
+    @pytest.mark.asyncio
+    async def test_autonomy_project_update_refuses_ambiguous_multi_project_surface(self, tmp_path):
+        c = _build_concierge(tmp_path)
+        _ = c.project_store.create_project("demo-a", "user-a")
+        _ = c.project_store.create_project("demo-b", "user-a")
+
+        events = await _collect(c, _make_msg("/autonomy careful --project", external_id="user-a"))
+
+        assert "Multiple active projects" in events[0].content
 
     @pytest.mark.asyncio
     async def test_domains_command_dispatches_and_updates_profile(self, tmp_path, monkeypatch):
@@ -369,3 +444,38 @@ class TestRetryCommand:
         assert captured["metadata"]["selected_path"] == "/tmp/input.txt"
         assert captured["metadata"]["surface_context"]["active_file"]["path"] == "src/math.py"
         assert len(events) >= 1
+
+    @pytest.mark.asyncio
+    async def test_retry_drops_stale_autonomy_metadata(self, tmp_path):
+        c = _build_concierge(tmp_path)
+        project = c.project_store.create_project("test", "test-surface")
+        task = c.project_store.add_task(project.project_id, "task", "test-surface")
+        c.project_store.append_turn(
+            project.project_id,
+            task.task_id,
+            TaskTurn(
+                role="user",
+                content="Do the task",
+                intent="agent",
+                metadata={
+                    "autonomy_preference": "careful",
+                    "autonomy_resolution": {"effective_level": "careful"},
+                },
+            ),
+            "test-surface",
+        )
+
+        captured: dict[str, Any] = {}
+        original_dispatch = c._tiered_dispatcher.dispatch
+
+        async def _capture_dispatch(msg: SurfaceMessage):
+            captured["metadata"] = dict(msg.metadata)
+            async for event in original_dispatch(msg):
+                yield event
+
+        c._tiered_dispatcher.dispatch = _capture_dispatch
+
+        _ = await _collect(c, _make_msg("/retry"))
+
+        assert "autonomy_preference" not in captured["metadata"]
+        assert "autonomy_resolution" not in captured["metadata"]

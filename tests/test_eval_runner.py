@@ -6,6 +6,8 @@ from tests.eval import PromptFixture
 from tests.eval.runner import (
     EvalRunner,
     _any_event_needs_clarification,
+    _build_graph_summary,
+    _check_expectations,
     _auto_clarification_reply,
     _determine_status,
     _needs_clarification_reply,
@@ -105,3 +107,72 @@ def test_determine_status_routing_blocked_when_confirm_in_events():
     )
     assert status == "failed"
     assert failure_mode == "routing_blocked"
+
+
+def test_build_graph_summary_counts_nested_control_flow_nodes() -> None:
+    graph_data = {
+        "nodes": [
+            {"id": "loop", "node_type": "while_loop"},
+        ],
+        "edges": [],
+        "sub_graphs": {
+            "loop_body": {
+                "nodes": [
+                    {"id": "writer", "node_type": "llm_operator"},
+                    {"id": "reviewer", "node_type": "llm_operator"},
+                ],
+                "edges": [
+                    {"source_node_id": "writer", "target_node_id": "reviewer"},
+                ],
+            },
+        },
+    }
+
+    summary = _build_graph_summary(graph_data)
+
+    assert summary.node_count == 3
+    assert "llm" in summary.node_types
+    assert "gate" in summary.node_types
+    assert summary.edge_count == 1
+    assert summary.has_review_loop is True
+    assert summary.review_loop_count == 1
+
+
+def test_build_graph_summary_reads_top_level_gate_mode() -> None:
+    graph_data = {
+        "nodes": [
+            {"id": "gate", "node_type": "gate", "gate_mode": "if_else"},
+            {"id": "then", "node_type": "llm_operator"},
+            {"id": "else", "node_type": "llm_operator"},
+        ],
+        "edges": [
+            {"source_node_id": "gate", "target_node_id": "then"},
+            {"source_node_id": "gate", "target_node_id": "else"},
+        ],
+    }
+
+    summary = _build_graph_summary(graph_data)
+
+    assert summary.has_conditional is True
+
+
+def test_check_expectations_allows_single_node_chain_fixture() -> None:
+    fixture = PromptFixture(
+        id="t1-single",
+        tier="T1",
+        prompt="Summarize text",
+        expected={
+            "node_types": ["llm"],
+            "min_nodes": 1,
+            "max_nodes": 2,
+            "topology": ["chain"],
+        },
+    )
+    summary = _build_graph_summary(
+        {
+            "nodes": [{"id": "summarize", "node_type": "llm_operator"}],
+            "edges": [],
+        }
+    )
+
+    assert _check_expectations(fixture, summary) == []

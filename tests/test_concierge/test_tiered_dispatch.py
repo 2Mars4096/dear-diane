@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable
 
 import pytest
 
+from dan.server.concierge.autonomy import AutonomyResolution
 from dan.server.capability_registry import CapabilityContext
 from dan.server.chat_manager import (
     ChatManager,
@@ -24,7 +26,7 @@ from dan.server.concierge.models import (
 )
 from dan.server.concierge.project_store import ProjectStore
 from dan.server.concierge.runtime import Concierge
-from dan.server.concierge.session import SessionManager, SessionState
+from dan.server.concierge.session import SessionManager, SessionResult, SessionState, SessionTier
 from dan.server.chat.helpers import (
     _missing_action_hints,
     _tool_retry_prompt_for_missing_actions,
@@ -33,12 +35,15 @@ from dan.server.concierge.tier_executors import (
     InstantExecutor,
     MultiStepExecutor,
     SingleShotExecutor,
+    _build_prompt,
     _determine_stage,
     _extract_chat_params,
+    _find_synthesis_gap_reason,
 )
 from dan.server.concierge.tiering import ConciergeTierResolver
 from dan.server.concierge.tiered_dispatch import ContextGatherer, TieredDispatcher
 from dan.server.concierge.triage import TriageResult
+from dan.server.telemetry import InMemoryTelemetryStore
 
 
 # ---------------------------------------------------------------------------
@@ -56,6 +61,33 @@ class MockChatManager:
         self._providers = None
         self._chat_model = "test-model"
 
+    async def _yield_configured_response(
+        self,
+        user_text: str,
+        *,
+        fallback_key: str,
+    ) -> AsyncIterator[Any]:
+        response = self._responses.get(user_text)
+        if response is None:
+            response = self._responses.get(fallback_key)
+        if response is None:
+            yield ChatCompleteEvent(
+                message_id="no-response",
+                content=f"No response configured for: {user_text}",
+                graph_revision="",
+            )
+            return
+        if callable(response):
+            async for event in response():
+                yield event
+            return
+        if isinstance(response, str):
+            yield ChatCompleteEvent(
+                message_id="mock-complete",
+                content=response,
+                graph_revision="",
+            )
+
     async def send_message_with_tools(
         self,
         workflow_id: str = "",
@@ -66,34 +98,49 @@ class MockChatManager:
         user_text = message
         self.call_log.append(user_text)
         self.calls.append({
+            "call_type": "tool_loop",
             "workflow_id": workflow_id,
             "message": message,
             "history": list(history or []),
             **kwargs,
         })
+        async for event in self._yield_configured_response(
+            user_text,
+            fallback_key="__send_message_with_tools__",
+        ):
+            yield event
 
-        response = self._responses.get(user_text)
-        if response is None:
-            yield ChatCompleteEvent(
-                message_id="no-response",
-                content=f"No response configured for: {user_text}",
-                graph_revision="",
-            )
-            return
-
-        if callable(response):
-            async for event in response():
-                yield event
-        elif isinstance(response, str):
-            yield ChatCompleteEvent(
-                message_id="mock-complete",
-                content=response,
-                graph_revision="",
-            )
+    async def send_message(
+        self,
+        workflow_id: str = "",
+        message: str = "",
+        history: list[dict[str, str]] | None = None,
+        **kwargs: Any,
+    ) -> AsyncIterator[Any]:
+        user_text = message
+        self.call_log.append(user_text)
+        self.calls.append({
+            "call_type": "text_only",
+            "workflow_id": workflow_id,
+            "message": message,
+            "history": list(history or []),
+            **kwargs,
+        })
+        async for event in self._yield_configured_response(
+            user_text,
+            fallback_key="__send_message__",
+        ):
+            yield event
 
 
 class DummyContextGatherer:
-    async def gather(self, msg: SurfaceMessage, triage: Any, concierge: Concierge) -> Any:
+    async def gather(
+        self,
+        msg: SurfaceMessage,
+        triage: Any,
+        concierge: Concierge,
+        autonomy_resolution: Any | None = None,
+    ) -> Any:
         return concierge._resolve_context(msg)
 
 
@@ -188,13 +235,14 @@ def _interruptible_stream(cancel_event: asyncio.Event) -> Callable[[], AsyncIter
 # ---------------------------------------------------------------------------
 
 
-def _make_concierge(tmp_path: Path) -> Concierge:
+def _make_concierge(tmp_path: Path, *, telemetry_store: Any | None = None) -> Concierge:
     project_store = ProjectStore(base_dir=tmp_path / "projects")
     chat_manager = MockChatManager()
     concierge = Concierge(
         project_store=project_store,
         chat_manager=chat_manager,
         capability_context=CapabilityContext(workflow_id="_scratch"),
+        telemetry_store=telemetry_store,
     )
     concierge._REASSURANCE_INITIAL_DELAY = 0
     concierge._REASSURANCE_REPEAT_INTERVAL = 0
@@ -431,6 +479,61 @@ async def test_tier1_enables_mutation_tool_only_for_workflow_edits(tmp_path: Pat
     assert concierge.chat_manager.call_log == ["Add a review node"]
     assert concierge.chat_manager.calls[-1]["allow_mutation_tool"] is True
     assert concierge.chat_manager.calls[-1]["required_action_hints"] == ["workflow_edit"]
+
+
+@pytest.mark.asyncio
+async def test_tier2_build_override_skips_decomposition_and_calls_builder_directly(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Build the workflow",
+            deliverable="Create the workflow",
+            subtasks=["research", "analyze", "summarize"],
+            execution_order="serial",
+            route=RouteDecision(
+                mode=RouteMode.AGENT,
+                target="general",
+                action_hints=[],
+            ),
+        )
+
+    dispatcher = _install_dispatcher(concierge, triage_fn=triage_fn)
+    prompt = "Build a simple 3-step chain: research, analyze, summarize"
+    concierge.chat_manager._responses[prompt] = _complete_stream("Workflow created.")
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text=prompt,
+                metadata={
+                    "workflow_id": "wf-123",
+                    "mode": "agent",
+                    "requested_mode": "build",
+                },
+            )
+        )
+    ]
+
+    assert any(getattr(event, "type", "") == "chat_complete" for event in events)
+    assert concierge.chat_manager.call_log == [prompt]
+    call = concierge.chat_manager.calls[-1]
+    assert call["workflow_id"] == "wf-123"
+    assert call["mode"] == "build"
+    assert call["allow_mutation_tool"] is True
+
+    root = dispatcher._session_manager.get_root("cli-user")
+    assert root is not None
+    assert root.children == []
+    assert root.result is not None
+    assert root.result.content == "Workflow created."
 
 
 @pytest.mark.asyncio
@@ -818,6 +921,7 @@ class _FakeSession:
         self,
         triage: Any = None,
         msg: Any = None,
+        autonomy_resolution: Any | None = None,
     ) -> None:
         self.triage = triage
         self.msg = msg or _FakeMsg()
@@ -826,6 +930,7 @@ class _FakeSession:
         self.context = None
         self.task = "test task"
         self.tier = 1
+        self.autonomy_resolution = autonomy_resolution
 
 
 def test_determine_stage_default_conversation() -> None:
@@ -958,6 +1063,380 @@ def test_extract_chat_params_carries_project_memory_hints() -> None:
     assert params["include_memory_kernel_context"] is False
 
 
+def test_extract_chat_params_adjusts_max_tool_turns_for_careful() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(),
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="careful",
+            effective_level="careful",
+            source="explicit",
+            reason="session preference",
+        ),
+    )
+    params = _extract_chat_params(session, "system prompt", model_override=None)
+    assert params["max_tool_turns"] == 12
+
+
+def test_extract_chat_params_adjusts_max_tool_turns_for_aggressive() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(),
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="aggressive",
+            effective_level="aggressive",
+            source="explicit",
+            reason="session preference",
+        ),
+    )
+    params = _extract_chat_params(session, "system prompt", model_override=None)
+    assert params["max_tool_turns"] == 36
+
+
+def test_build_prompt_includes_aggressive_recent_turn_context() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(),
+        msg=_FakeMsg(metadata={
+            "autonomy_recent_turns": ["user: first", "assistant: second"],
+            "autonomy_task_snapshot": "Project summary: finish hardening",
+            "autonomy_repo_snapshot": "Modified files: src/app.py",
+            "auto_read_content": {
+                "/tmp/example.py": "def example():\n    return True\n",
+            },
+        }),
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="auto",
+            effective_level="aggressive",
+            source="inferred",
+            reason="clear low-risk directive",
+        ),
+    )
+
+    prompt = _build_prompt(session)
+    assert "Recent task turns:" in prompt
+    assert "user: first" in prompt
+    assert "Task snapshot:" in prompt
+    assert "Project summary: finish hardening" in prompt
+    assert "Repo snapshot:" in prompt
+    assert "Modified files: src/app.py" in prompt
+    assert "Relevant file content:" in prompt
+
+
+def test_should_decompose_aggressive_single_subtask() -> None:
+    executor = MultiStepExecutor(concierge=SimpleNamespace(), dispatcher=None)
+    session = SimpleNamespace(
+        tier=2,
+        triage=SimpleNamespace(subtasks=["only step"]),
+        task_context={},
+        max_depth=4,
+        depth=0,
+        id="sess-1",
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="aggressive",
+            effective_level="aggressive",
+            source="explicit",
+            reason="session preference",
+        ),
+    )
+    manager = SimpleNamespace(can_spawn_child=lambda session_id: True)
+
+    assert executor._should_decompose(session, manager) is True
+
+
+def test_find_synthesis_gap_reason_reviews_original_goal_terms() -> None:
+    manager = SessionManager()
+    session = manager.create_root(
+        SurfaceMessage(
+            surface="cli",
+            external_id="goal-gap-user",
+            text="Update docs and run regression tests for autonomy",
+        ),
+        triage=TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Update docs and run regression tests for autonomy",
+            deliverable="Docs update plus verified regression tests",
+            subtasks=["Update docs", "Write release summary"],
+            execution_order="serial",
+        ),
+        tier=SessionTier.MULTI,
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="aggressive",
+            effective_level="aggressive",
+            source="explicit",
+            reason="session preference",
+        ),
+    )
+    manager.update_state(session.id, SessionState.RUNNING)
+
+    docs_child = manager.create_child(session.id, "Update docs", SessionTier.SINGLE)
+    notes_child = manager.create_child(session.id, "Write release summary", SessionTier.SINGLE)
+    for child, content in (
+        (docs_child, "Updated docs and command help."),
+        (notes_child, "Wrote release notes for the docs refresh."),
+    ):
+        manager.update_state(child.id, SessionState.RUNNING)
+        manager.set_result(child.id, SessionResult(content=content))
+        manager.update_state(child.id, SessionState.COMPLETED)
+
+    child_results = {
+        docs_child.id: manager.get(docs_child.id).result,
+        notes_child.id: manager.get(notes_child.id).result,
+    }
+    gap_reason = _find_synthesis_gap_reason(session, child_results, manager)
+
+    assert gap_reason is not None
+    assert "original goal" in gap_reason
+    assert "keyword coverage" in gap_reason
+
+
+def test_synthesize_careful_surfaces_uncertainties_from_followup_markers() -> None:
+    manager = SessionManager()
+    session = manager.create_root(
+        SurfaceMessage(surface="cli", external_id="careful-user", text="Ship the patch carefully"),
+        triage=TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Ship the patch carefully",
+            deliverable="Patched code with validation",
+            subtasks=["Patch code", "Validate changes"],
+            execution_order="serial",
+        ),
+        tier=SessionTier.MULTI,
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="careful",
+            effective_level="careful",
+            source="explicit",
+            reason="session preference",
+        ),
+    )
+    manager.update_state(session.id, SessionState.RUNNING)
+
+    patch_child = manager.create_child(session.id, "Patch code", SessionTier.SINGLE)
+    validate_child = manager.create_child(session.id, "Validate changes", SessionTier.SINGLE)
+    for child, content in (
+        (patch_child, "Patched the executor review flow."),
+        (
+            validate_child,
+            "Validation note:\n- [ ] rerun the full integration suite when CI is available",
+        ),
+    ):
+        manager.update_state(child.id, SessionState.RUNNING)
+        manager.set_result(child.id, SessionResult(content=content))
+        manager.update_state(child.id, SessionState.COMPLETED)
+
+    child_results = {
+        patch_child.id: manager.get(patch_child.id).result,
+        validate_child.id: manager.get(validate_child.id).result,
+    }
+    synthesized = MultiStepExecutor._synthesize(session, child_results, manager)
+
+    assert "## Uncertainties" in synthesized
+    assert "pending checklist items" in synthesized
+
+
+def test_synthesize_balanced_preserves_plain_concatenation() -> None:
+    manager = SessionManager()
+    session = manager.create_root(
+        SurfaceMessage(surface="cli", external_id="balanced-user", text="Summarize the work"),
+        triage=TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Summarize the work",
+            deliverable="Plain combined report",
+            subtasks=["Part one", "Part two"],
+            execution_order="serial",
+        ),
+        tier=SessionTier.MULTI,
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="balanced",
+            effective_level="balanced",
+            source="explicit",
+            reason="session preference",
+        ),
+    )
+    manager.update_state(session.id, SessionState.RUNNING)
+
+    first_child = manager.create_child(session.id, "Part one", SessionTier.SINGLE)
+    second_child = manager.create_child(session.id, "Part two", SessionTier.SINGLE)
+    for child, content in (
+        (first_child, "Completed the first part."),
+        (second_child, "Next steps:\n- [ ] optional follow-up"),
+    ):
+        manager.update_state(child.id, SessionState.RUNNING)
+        manager.set_result(child.id, SessionResult(content=content))
+        manager.update_state(child.id, SessionState.COMPLETED)
+
+    child_results = {
+        first_child.id: manager.get(first_child.id).result,
+        second_child.id: manager.get(second_child.id).result,
+    }
+    synthesized = MultiStepExecutor._synthesize(session, child_results, manager)
+
+    assert "## Part one" in synthesized
+    assert "## Part two" in synthesized
+    assert "## Uncertainties" not in synthesized
+
+
+@pytest.mark.asyncio
+async def test_aggressive_synthesis_spawns_single_remediation_child_for_goal_gap(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    executor = MultiStepExecutor(concierge, dispatcher=None)
+    executor._child_progress_event = lambda session, child: None
+    concierge.chat_manager._responses["__send_message__"] = (
+        '{"decision":"remediate","reason":"Regression tests are still missing from the combined result."}'
+    )
+
+    manager = SessionManager()
+    session = manager.create_root(
+        SurfaceMessage(
+            surface="cli",
+            external_id="aggressive-user",
+            text="Update docs and run regression tests for autonomy",
+        ),
+        triage=TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Update docs and run regression tests for autonomy",
+            deliverable="Docs update plus verified regression tests",
+            subtasks=["Update docs", "Write release summary"],
+            execution_order="serial",
+        ),
+        tier=SessionTier.MULTI,
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="aggressive",
+            effective_level="aggressive",
+            source="explicit",
+            reason="session preference",
+        ),
+    )
+    session.context = SimpleNamespace(project=SimpleNamespace(project_id="proj-review"))
+    session.child_execution = "serial"
+    manager.update_state(session.id, SessionState.RUNNING)
+
+    async def fake_run_child(child: Any, current_manager: Any) -> AsyncIterator[Any]:
+        current_manager.update_state(child.id, SessionState.RUNNING)
+        if child.task == "Update docs":
+            current_manager.set_result(child.id, SessionResult(content="Updated the docs and command help."))
+        elif child.task == "Write release summary":
+            current_manager.set_result(child.id, SessionResult(content="Wrote release notes for the docs refresh."))
+        else:
+            assert child.task.startswith("Review the child results against the original goal")
+            assert "original goal" in child.task_context.get("remediation_reason", "")
+            current_manager.set_result(
+                child.id,
+                SessionResult(content="Ran the missing regression tests and confirmed the autonomy docs update."),
+            )
+        current_manager.update_state(child.id, SessionState.COMPLETED)
+        yield ChatCompleteEvent(
+            message_id=f"{child.id}-done",
+            content=current_manager.get(child.id).result.content,
+            graph_revision="",
+        )
+
+    executor._run_child = fake_run_child
+
+    events = [
+        event
+        async for event in executor._decompose_and_execute(session, manager, start=0.0)
+    ]
+
+    remediation_children = [
+        child
+        for child in manager.children_of(session.id)
+        if child.task.startswith("Review the child results against the original goal")
+    ]
+    review_calls = [
+        call for call in concierge.chat_manager.calls
+        if call.get("call_type") == "text_only"
+    ]
+    assert len(remediation_children) == 1
+    assert len(review_calls) == 1
+    assert review_calls[0]["memory_project_id"] == "proj-review"
+    assert review_calls[0]["record_summary"] is False
+    assert isinstance(events[-1], ChatCompleteEvent)
+    assert "Ran the missing regression tests" in events[-1].content
+    assert manager.get(session.id).result is not None
+    assert "## Review the child results against the original goal" in manager.get(session.id).result.content
+
+
+@pytest.mark.asyncio
+async def test_aggressive_synthesis_skips_remediation_when_llm_review_accepts(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    executor = MultiStepExecutor(concierge, dispatcher=None)
+    executor._child_progress_event = lambda session, child: None
+    concierge.chat_manager._responses["__send_message__"] = (
+        '{"decision":"accept","reason":"The child outputs satisfy the requested work despite the wording mismatch."}'
+    )
+
+    manager = SessionManager()
+    session = manager.create_root(
+        SurfaceMessage(
+            surface="cli",
+            external_id="aggressive-accept-user",
+            text="Update docs and run regression tests for autonomy",
+        ),
+        triage=TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Update docs and run regression tests for autonomy",
+            deliverable="Docs update plus verified regression tests",
+            subtasks=["Update docs", "Write release summary"],
+            execution_order="serial",
+        ),
+        tier=SessionTier.MULTI,
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="aggressive",
+            effective_level="aggressive",
+            source="explicit",
+            reason="session preference",
+        ),
+    )
+    session.context = SimpleNamespace(project=SimpleNamespace(project_id="proj-accept"))
+    session.child_execution = "serial"
+    manager.update_state(session.id, SessionState.RUNNING)
+
+    async def fake_run_child(child: Any, current_manager: Any) -> AsyncIterator[Any]:
+        current_manager.update_state(child.id, SessionState.RUNNING)
+        if child.task.startswith("Review the child results against the original goal"):
+            pytest.fail("LLM accepted the result, but remediation child still spawned")
+        if child.task == "Update docs":
+            current_manager.set_result(child.id, SessionResult(content="Updated the docs and command help."))
+        else:
+            current_manager.set_result(child.id, SessionResult(content="Wrote release notes for the docs refresh."))
+        current_manager.update_state(child.id, SessionState.COMPLETED)
+        yield ChatCompleteEvent(
+            message_id=f"{child.id}-done",
+            content=current_manager.get(child.id).result.content,
+            graph_revision="",
+        )
+
+    executor._run_child = fake_run_child
+
+    events = [
+        event
+        async for event in executor._decompose_and_execute(session, manager, start=0.0)
+    ]
+
+    remediation_children = [
+        child
+        for child in manager.children_of(session.id)
+        if child.task.startswith("Review the child results against the original goal")
+    ]
+    review_calls = [
+        call for call in concierge.chat_manager.calls
+        if call.get("call_type") == "text_only"
+    ]
+    assert len(remediation_children) == 0
+    assert len(review_calls) == 1
+    assert review_calls[0]["memory_project_id"] == "proj-accept"
+    assert isinstance(events[-1], ChatCompleteEvent)
+    assert "## Update docs" in events[-1].content
+    assert "## Write release summary" in events[-1].content
+
+
 @pytest.mark.asyncio
 async def test_context_gatherer_refreshes_memory_with_project_id() -> None:
     gatherer = ContextGatherer()
@@ -980,6 +1459,278 @@ async def test_context_gatherer_refreshes_memory_with_project_id() -> None:
     context = await gatherer.gather(msg, triage, _FakeConcierge())
     assert context.project.project_id == "proj-1"
     assert msg.metadata["memory_context"] == "scoped memory"
+
+
+@pytest.mark.asyncio
+async def test_context_gatherer_aggressive_adds_recent_turns() -> None:
+    gatherer = ContextGatherer()
+    msg = SurfaceMessage(surface="cli", external_id="cli-user", text="keep going")
+    triage = SimpleNamespace(context_needs=[])
+
+    class _FakeConcierge:
+        def _resolve_context(self, incoming: SurfaceMessage) -> Any:
+            return SimpleNamespace(
+                project=SimpleNamespace(project_id="proj-1"),
+                task=SimpleNamespace(
+                    turns=[
+                        SimpleNamespace(role="user", content="first step"),
+                        SimpleNamespace(role="assistant", content="done first step"),
+                    ],
+                ),
+            )
+
+    await gatherer.gather(
+        msg,
+        triage,
+        _FakeConcierge(),
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="auto",
+            effective_level="aggressive",
+            source="inferred",
+            reason="clear low-risk directive",
+        ),
+    )
+    assert msg.metadata["autonomy_recent_turns"]
+
+
+@pytest.mark.asyncio
+async def test_context_gatherer_aggressive_adds_related_files_and_task_snapshot(
+    tmp_path: Path,
+) -> None:
+    gatherer = ContextGatherer()
+    subprocess.run(
+        ["git", "init"],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    related_file = tmp_path / "src" / "feature.py"
+    related_file.parent.mkdir(parents=True, exist_ok=True)
+    related_file.write_text("def feature_flag() -> bool:\n    return True\n", encoding="utf-8")
+    artifact_file = tmp_path / "notes" / "next-step.md"
+    artifact_file.parent.mkdir(parents=True, exist_ok=True)
+    artifact_file.write_text("- [ ] add regression coverage\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "."],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "init",
+        ],
+        cwd=tmp_path,
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    related_file.write_text(
+        "def feature_flag() -> bool:\n    return True\n\n\ndef needs_followup() -> bool:\n    return False\n",
+        encoding="utf-8",
+    )
+    msg = SurfaceMessage(
+        surface="cli",
+        external_id="cli-user",
+        text="keep going",
+        metadata={
+            "surface_context": {
+                "workspace_root": str(tmp_path),
+                "mentioned_files": [{"path": str(related_file)}],
+                "import_neighbors": ["notes/next-step.md"],
+            },
+        },
+    )
+    triage = SimpleNamespace(context_needs=[])
+
+    class _FakeConcierge:
+        def _resolve_context(self, incoming: SurfaceMessage) -> Any:
+            return SimpleNamespace(
+                project=SimpleNamespace(project_id="proj-1", summary="Finish the autonomy hardening pass."),
+                task=SimpleNamespace(
+                    turns=[],
+                    pending_steps=["add regression coverage", "write summary"],
+                    current_blocker="Need one more prompt regression.",
+                    artifacts={"notes": str(artifact_file)},
+                ),
+            )
+
+    await gatherer.gather(
+        msg,
+        triage,
+        _FakeConcierge(),
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="auto",
+            effective_level="aggressive",
+            source="inferred",
+            reason="clear low-risk directive",
+        ),
+    )
+
+    assert str(related_file.resolve()) in msg.metadata["auto_read_content"]
+    assert "Project summary: Finish the autonomy hardening pass." in msg.metadata["autonomy_task_snapshot"]
+    assert "Pending steps: add regression coverage; write summary" in msg.metadata["autonomy_task_snapshot"]
+    assert "Current blocker: Need one more prompt regression." in msg.metadata["autonomy_task_snapshot"]
+    assert str(artifact_file) in msg.metadata["autonomy_task_snapshot"]
+    assert "Modified files: src/feature.py" in msg.metadata["autonomy_repo_snapshot"]
+
+
+@pytest.mark.asyncio
+async def test_context_gatherer_careful_skips_aggressive_extra_context(
+    tmp_path: Path,
+) -> None:
+    gatherer = ContextGatherer()
+    related_file = tmp_path / "src" / "feature.py"
+    related_file.parent.mkdir(parents=True, exist_ok=True)
+    related_file.write_text("def feature_flag() -> bool:\n    return True\n", encoding="utf-8")
+    msg = SurfaceMessage(
+        surface="cli",
+        external_id="cli-user",
+        text="keep going",
+        metadata={
+            "surface_context": {
+                "workspace_root": str(tmp_path),
+                "mentioned_files": [{"path": str(related_file)}],
+            },
+        },
+    )
+    triage = SimpleNamespace(context_needs=[])
+
+    class _FakeConcierge:
+        def _resolve_context(self, incoming: SurfaceMessage) -> Any:
+            return SimpleNamespace(
+                project=SimpleNamespace(project_id="proj-1", summary="Finish the autonomy hardening pass."),
+                task=SimpleNamespace(
+                    turns=[],
+                    pending_steps=["add regression coverage"],
+                    current_blocker="Need one more prompt regression.",
+                    artifacts={},
+                ),
+            )
+
+    await gatherer.gather(
+        msg,
+        triage,
+        _FakeConcierge(),
+        autonomy_resolution=AutonomyResolution(
+            preferred_level="auto",
+            effective_level="careful",
+            source="inferred",
+            reason="risky or irreversible wording",
+        ),
+    )
+
+    assert "auto_read_content" not in msg.metadata
+    assert "autonomy_task_snapshot" not in msg.metadata
+    assert "autonomy_repo_snapshot" not in msg.metadata
+
+
+@pytest.mark.asyncio
+async def test_auto_inference_announces_only_on_effective_level_change(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="agent",
+            goal="Handle the request",
+            deliverable="Handle the request",
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Please implement and test this patch."] = "Applied the patch."
+    concierge.chat_manager._responses["Delete the generated file and post the results."] = "Deleted the file."
+    concierge.chat_manager._responses["Delete the backup file and post the results."] = "Deleted the backup."
+
+    first_events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="auto-user",
+                text="Please implement and test this patch.",
+            )
+        )
+    ]
+    second_events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="auto-user",
+                text="Delete the generated file and post the results.",
+            )
+        )
+    ]
+    third_events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="auto-user",
+                text="Delete the backup file and post the results.",
+            )
+        )
+    ]
+
+    first_final = next(event for event in reversed(first_events) if isinstance(event, ChatCompleteEvent))
+    second_final = next(event for event in reversed(second_events) if isinstance(event, ChatCompleteEvent))
+    third_final = next(event for event in reversed(third_events) if isinstance(event, ChatCompleteEvent))
+
+    assert "Autonomy: switched to" not in first_final.content
+    assert "Autonomy: switched to `careful`" in second_final.content
+    assert second_final.content.count("Autonomy: switched to") == 1
+    assert "Autonomy: switched to" not in third_final.content
+
+
+@pytest.mark.asyncio
+async def test_telemetry_events_include_autonomy_resolution_metadata(
+    tmp_path: Path,
+) -> None:
+    telemetry_store = InMemoryTelemetryStore()
+    concierge = _make_concierge(tmp_path, telemetry_store=telemetry_store)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="agent",
+            goal="Handle the request",
+            deliverable="Handle the request",
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Please implement and test this patch."] = "Applied the patch."
+
+    _ = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="telemetry-user",
+                text="Please implement and test this patch.",
+            )
+        )
+    ]
+
+    telemetry_events = await telemetry_store.query()
+    session_complete = [event for event in telemetry_events if event.event_type == "session_complete"]
+    dispatch_complete = [event for event in telemetry_events if event.event_type == "tiered_dispatch_complete"]
+
+    assert session_complete
+    assert dispatch_complete
+    assert session_complete[-1].metadata["autonomy_resolution"]["effective_level"] == "aggressive"
+    assert dispatch_complete[-1].metadata["autonomy_resolution"]["effective_level"] == "aggressive"
 
 
 # ---------------------------------------------------------------------------

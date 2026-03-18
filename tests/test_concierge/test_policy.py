@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from dan.server.concierge.autonomy import AutonomyResolution
 from dan.server.concierge.models import IntentCategory
 from dan.server.concierge.policy import (
     ActionPolicy,
@@ -48,6 +49,7 @@ class TestResolvePolicyCostEstimation:
         estimated_cost: float = 0.0,
         cost_confirm_threshold: float = 1.0,
         action_hints: list[str] | None = None,
+        autonomy_resolution: AutonomyResolution | None = None,
     ) -> tuple[ActionPolicy, ExecutionPolicy]:
         return resolve_policy(
             intent=intent,
@@ -58,6 +60,7 @@ class TestResolvePolicyCostEstimation:
             surface=surface,
             estimated_cost=estimated_cost,
             cost_confirm_threshold=cost_confirm_threshold,
+            autonomy_resolution=autonomy_resolution,
         )
 
     def test_auto_estimates_plan_with_long_horizon_above_threshold(self):
@@ -92,4 +95,32 @@ class TestResolvePolicyCostEstimation:
 
     def test_zero_cost_intent_on_web_stays_auto(self):
         action, _ = self._resolve(IntentCategory.ASK, "hello there")
+        assert action == ActionPolicy.AUTO
+
+    def test_careful_autonomy_lowers_confirm_threshold(self):
+        action, _ = self._resolve(
+            IntentCategory.ASK,
+            "hello there",
+            estimated_cost=0.4,
+            autonomy_resolution=AutonomyResolution(
+                preferred_level="careful",
+                effective_level="careful",
+                source="explicit",
+                reason="session preference",
+            ),
+        )
+        assert action == ActionPolicy.CONFIRM
+
+    def test_aggressive_autonomy_can_raise_confirm_threshold_for_non_hard_safety(self):
+        action, _ = self._resolve(
+            IntentCategory.ASK,
+            "hello there",
+            estimated_cost=1.5,
+            autonomy_resolution=AutonomyResolution(
+                preferred_level="aggressive",
+                effective_level="aggressive",
+                source="explicit",
+                reason="session preference",
+            ),
+        )
         assert action == ActionPolicy.AUTO

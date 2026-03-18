@@ -156,6 +156,23 @@ async def _fake_build_messages(self, *args: Any, **kwargs: Any) -> list[dict[str
     return [{"role": "user", "content": "hello"}]
 
 
+async def _fake_build_messages_with_prompt_detail(
+    self,
+    *args: Any,
+    **kwargs: Any,
+) -> list[dict[str, str]]:
+    tools_available = kwargs.get("tools_available", True)
+    system_content = (
+        "You may call load_prompt_detail with detail_id=`prompt:research_specializer:full`."
+        if tools_available
+        else "Tools are unavailable."
+    )
+    return [
+        {"role": "system", "content": system_content},
+        {"role": "user", "content": "hello"},
+    ]
+
+
 def test_post_tool_followup_retry_delay_parses_retry_after_http_date() -> None:
     now = datetime(2026, 3, 18, 12, 0, 0, tzinfo=timezone.utc)
     retry_at = format_datetime(now + timedelta(seconds=6))
@@ -284,3 +301,38 @@ async def test_send_message_with_tools_surfaces_updated_followup_rate_limit_erro
         "The provider hit a rate or quota limit while generating the final answer from completed tool results."
     )
     assert "stub capability" in complete_events[-1].content
+
+
+@pytest.mark.asyncio
+async def test_tool_fallback_rebuilds_messages_without_prompt_detail_tool_hint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+    provider = _SequenceProvider([RuntimeError("tool-calling unavailable")])
+    mgr = _make_manager(provider, tool_call_log=tool_call_log)
+
+    captured_messages: list[dict[str, str]] = []
+
+    async def _fake_stream_with_json_fallback(self, provider, messages, *args, **kwargs):
+        captured_messages.extend(messages)
+        yield ChatCompleteEvent(
+            message_id="fallback",
+            content="fallback response",
+            graph_revision="",
+        )
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages_with_prompt_detail)
+    monkeypatch.setattr(ChatManager, "_stream_with_json_fallback", _fake_stream_with_json_fallback)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Use the tool, then answer.",
+            history=[],
+        )
+    )
+
+    assert any(isinstance(event, ChatCompleteEvent) for event in events)
+    system_messages = [m for m in captured_messages if m.get("role") == "system"]
+    assert system_messages
+    assert "load_prompt_detail" not in system_messages[0]["content"]

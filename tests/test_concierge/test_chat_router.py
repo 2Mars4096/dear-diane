@@ -1,0 +1,94 @@
+from __future__ import annotations
+
+import asyncio
+from typing import Any, AsyncIterator
+
+import pytest
+
+from dan.server.chat_manager import ChatCompleteEvent
+import dan.server.routers.chat as chat_router
+
+
+class _FakeGraphStore:
+    def __init__(self) -> None:
+        self._graphs = {
+            "wf-1": {"nodes": [], "edges": []},
+        }
+
+    def get_graph(self, workflow_id: str) -> dict[str, Any] | None:
+        graph = self._graphs.get(workflow_id)
+        return dict(graph) if graph is not None else None
+
+    def save_graph(self, workflow_id: str, graph: dict[str, Any]) -> None:
+        self._graphs[workflow_id] = dict(graph)
+
+
+class _FakeChatManager:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def register_stream(self, _channel_id: str) -> asyncio.Event:
+        return asyncio.Event()
+
+    def unregister_stream(self, _channel_id: str) -> None:
+        return None
+
+    async def send_message_with_tools(self, **kwargs: Any) -> AsyncIterator[ChatCompleteEvent]:
+        self.calls.append(kwargs)
+        yield ChatCompleteEvent(
+            message_id="router-complete",
+            content="Built directly.",
+            token_usage={},
+            context_window=0,
+            graph_revision="",
+            detected_mode=kwargs.get("mode"),
+        )
+
+    async def send_message(self, **kwargs: Any) -> AsyncIterator[ChatCompleteEvent]:
+        self.calls.append(kwargs)
+        yield ChatCompleteEvent(
+            message_id="router-complete",
+            content="Built directly.",
+            token_usage={},
+            context_window=0,
+            graph_revision="",
+            detected_mode=kwargs.get("mode"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_chat_message_non_concierge_preserves_build_mode_and_surface_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _FakeChatManager()
+    graph_store = _FakeGraphStore()
+    chat_router._chat_streams.clear()
+
+    monkeypatch.setattr(chat_router, "get_chat_manager", lambda: manager)
+    monkeypatch.setattr(chat_router, "get_graph_store", lambda: graph_store)
+    monkeypatch.setattr(chat_router, "get_concierge", lambda: None)
+    monkeypatch.setattr(chat_router, "get_dispatcher", lambda: None)
+
+    req = chat_router.ChatMessageRequest(
+        workflow_id="wf-1",
+        message="Build a simple chain",
+        mode="build",
+        surface_context={"workspace_root": "/tmp/demo"},
+    )
+
+    response = await chat_router.chat_message(req, concierge=False)
+    channel_id = response["stream_channel_id"]
+
+    queue = chat_router._chat_streams[channel_id][0]
+    events: list[dict[str, Any]] = []
+    while True:
+        item = await asyncio.wait_for(queue.get(), timeout=1.0)
+        if item is None:
+            break
+        events.append(item)
+
+    assert manager.calls
+    assert manager.calls[0]["mode"] == "build"
+    assert manager.calls[0]["surface_context"] == {"workspace_root": "/tmp/demo"}
+    assert [event["type"] for event in events] == ["chat_complete"]
+    assert events[0]["content"] == "Built directly."
