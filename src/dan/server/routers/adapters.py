@@ -40,6 +40,10 @@ _adapter_status_snapshots: dict[str, dict[str, Any]] = {}
 _adapter_event_subscribers: dict[str, set[asyncio.Queue[dict[str, Any] | None]]] = {}
 _adapter_event_snapshots: dict[str, dict[str, dict[str, Any]]] = {}
 
+_heartbeat_task: asyncio.Task[Any] | None = None
+_heartbeat_interval: int = int(os.environ.get("DAN_ADAPTER_HEARTBEAT_SECONDS", "60"))
+_last_phase_message_times: dict[str, float] = {}
+
 _TELEGRAM_DESKTOP_BOT_KEY = "desktop-ui"
 _DEFAULT_WHATSAPP_WEB_DIR = Path.home() / ".dan" / "whatsapp-web"
 _DEFAULT_WHATSAPP_WEB_DB_PATH = _DEFAULT_WHATSAPP_WEB_DIR / "session.sqlite3"
@@ -244,12 +248,17 @@ def _load_telegram_desktop_state() -> dict[str, Any]:
 
     bot = fleet.bots.get(_TELEGRAM_DESKTOP_BOT_KEY)
     if bot is None:
-        return {"bot_token": "", "bot_username": "", "allowed_chat_ids": [], "auto_start": False}
+        return {
+            "bot_token": "", "bot_username": "", "allowed_chat_ids": [],
+            "auto_start": False, "commands": [], "mini_app_url": None,
+        }
     return {
         "bot_token": str(bot.token or "").strip(),
         "bot_username": str(getattr(bot, "username", "") or "").strip(),
         "allowed_chat_ids": _coerce_int_list(bot.allowed_users),
         "auto_start": bool(getattr(bot, "auto_start", False)),
+        "commands": list(getattr(bot, "commands", None) or []),
+        "mini_app_url": str(getattr(bot, "mini_app_url", "") or "").strip() or None,
     }
 
 
@@ -259,6 +268,8 @@ def _save_telegram_desktop_state(
     bot_username: str | None = None,
     allowed_chat_ids: list[int] | None = None,
     auto_start: bool | None = None,
+    commands: list[dict[str, str]] | None = None,
+    mini_app_url: str | None = ...,  # type: ignore[assignment]
 ) -> dict[str, Any]:
     from dan.adapters.telegram_config import (
         TelegramBotConfig,
@@ -279,7 +290,10 @@ def _save_telegram_desktop_state(
     next_allowed = allowed_chat_ids if allowed_chat_ids is not None else existing_allowed
 
     if current is None and not next_token and not next_allowed and not next_username:
-        return {"bot_token": "", "bot_username": "", "allowed_chat_ids": []}
+        return {
+            "bot_token": "", "bot_username": "", "allowed_chat_ids": [],
+            "commands": [], "mini_app_url": None,
+        }
 
     bot_config = current or TelegramBotConfig(default=False)
     bot_config.token = next_token
@@ -288,6 +302,10 @@ def _save_telegram_desktop_state(
     bot_config.default = False
     if auto_start is not None:
         bot_config.auto_start = auto_start
+    if commands is not None:
+        bot_config.commands = commands
+    if mini_app_url is not ...:
+        bot_config.mini_app_url = str(mini_app_url or "").strip()
     fleet.bots[_TELEGRAM_DESKTOP_BOT_KEY] = bot_config
     save_fleet_config(fleet)
 
@@ -300,6 +318,8 @@ def _save_telegram_desktop_state(
         "bot_username": next_username,
         "allowed_chat_ids": next_allowed,
         "auto_start": bool(bot_config.auto_start),
+        "commands": list(bot_config.commands),
+        "mini_app_url": str(bot_config.mini_app_url or "").strip() or None,
     }
 
 
@@ -308,6 +328,7 @@ def _load_whatsapp_web_settings() -> dict[str, Any]:
         return {
             "allowed_jids": [],
             "db_path": str(_DEFAULT_WHATSAPP_WEB_DB_PATH),
+            "auto_start": False,
         }
     try:
         raw = json.loads(_DEFAULT_WHATSAPP_WEB_CONFIG_PATH.read_text())
@@ -316,16 +337,19 @@ def _load_whatsapp_web_settings() -> dict[str, Any]:
         return {
             "allowed_jids": [],
             "db_path": str(_DEFAULT_WHATSAPP_WEB_DB_PATH),
+            "auto_start": False,
         }
     if not isinstance(raw, dict):
         return {
             "allowed_jids": [],
             "db_path": str(_DEFAULT_WHATSAPP_WEB_DB_PATH),
+            "auto_start": False,
         }
     return {
         "allowed_jids": _coerce_str_list(raw.get("allowed_jids")),
         "db_path": str(raw.get("db_path") or "").strip()
         or str(_DEFAULT_WHATSAPP_WEB_DB_PATH),
+        "auto_start": bool(raw.get("auto_start", False)),
     }
 
 
@@ -333,12 +357,15 @@ def _save_whatsapp_web_settings(
     *,
     allowed_jids: list[str] | None = None,
     db_path: str | None = None,
+    auto_start: bool | None = None,
 ) -> dict[str, Any]:
     current = _load_whatsapp_web_settings()
     if allowed_jids is not None:
         current["allowed_jids"] = _coerce_str_list(allowed_jids)
     if db_path is not None:
         current["db_path"] = str(db_path or "").strip() or current["db_path"]
+    if auto_start is not None:
+        current["auto_start"] = auto_start
     _atomic_write_json(_DEFAULT_WHATSAPP_WEB_CONFIG_PATH, current)
     return current
 
@@ -463,6 +490,34 @@ def _publish_adapter_event(adapter_id: str, event: dict[str, Any]) -> None:
         queue.put_nowait(payload)
 
 
+async def _adapter_heartbeat_loop() -> None:
+    while True:
+        await asyncio.sleep(_heartbeat_interval)
+        for adapter_id, (adapter, _task) in list(_active_adapters.items()):
+            if not hasattr(adapter, "get_connection_snapshot"):
+                continue
+            try:
+                snapshot = await adapter.get_connection_snapshot()
+                _merge_adapter_snapshot(adapter_id, snapshot)
+            except Exception:
+                logger.debug("Heartbeat snapshot failed for %s", adapter_id, exc_info=True)
+
+
+def _ensure_heartbeat_running() -> None:
+    global _heartbeat_task
+    if _heartbeat_task is None or _heartbeat_task.done():
+        _heartbeat_task = asyncio.create_task(
+            _adapter_heartbeat_loop(), name="adapter-heartbeat",
+        )
+
+
+def _cancel_heartbeat() -> None:
+    global _heartbeat_task
+    if _heartbeat_task is not None and not _heartbeat_task.done():
+        _heartbeat_task.cancel()
+    _heartbeat_task = None
+
+
 def _build_adapter_status_payload(
     adapter_id: str,
     adapter: Any,
@@ -542,6 +597,9 @@ def _build_telegram_config_summary() -> dict[str, Any]:
         "bot_username": state["bot_username"] or None,
         "allowed_chat_ids": state["allowed_chat_ids"],
         "allowed_chat_count": len(state["allowed_chat_ids"]),
+        "auto_start": state.get("auto_start", False),
+        "commands": state.get("commands", []),
+        "mini_app_url": state.get("mini_app_url"),
         "connection_state": live.get("connection_state"),
         "last_error": live.get("last_error"),
         **dependency,
@@ -565,6 +623,7 @@ def _build_whatsapp_web_config_summary() -> dict[str, Any]:
         "configured": bool(settings["allowed_jids"] or session_db.exists()),
         "allowed_jids": settings["allowed_jids"],
         "allowed_jid_count": len(settings["allowed_jids"]),
+        "auto_start": settings.get("auto_start", False),
         "paired": paired,
         "connection_state": live.get("connection_state") or "disconnected",
         "last_error": live.get("last_error"),
@@ -673,6 +732,14 @@ async def _run_adapter_concierge(
             evt_type == "chat_complete"
             and getattr(event, "detected_mode", None) == "progress_ack"
         ):
+            phase_label = getattr(event, "phase_label", None) or ""
+            if not phase_label:
+                return
+            now = time.monotonic()
+            if now - _last_phase_message_times.get(external_id, 0) < 15.0:
+                return
+            _last_phase_message_times[external_id] = now
+            await _send_adapter_text(adapter, external_id, phase_label)
             return
         if evt_type in {"chat_complete", "chat_mutation", "chat_interrupted"}:
             content = getattr(event, "content", "")
@@ -691,15 +758,7 @@ async def _run_adapter_concierge(
             return
         if evt_type == "chat_queued" and _dispatcher is not None:
             queue_position = max(int(getattr(event, "queue_position", 0) or 0), 1)
-            if queue_position == 1:
-                queued_text = (
-                    "Queued behind an earlier message — I'll reply here when it's done."
-                )
-            else:
-                queued_text = (
-                    f"Queued behind {queue_position} earlier messages — "
-                    "I'll reply here when it's done."
-                )
+            queued_text = f"Queued (position {queue_position}) — I'll reply when ready."
             await _send_adapter_text(adapter, external_id, queued_text)
 
             queued_channel = str(getattr(event, "stream_channel_id", "") or "").strip()
@@ -814,6 +873,10 @@ async def _stop_active_adapter(adapter_id: str, *, missing_ok: bool = False) -> 
     _adapter_surface_types.pop(adapter_id, None)
     _adapter_status_snapshots.pop(adapter_id, None)
     _close_adapter_event_streams(adapter_id)
+
+    if not _active_adapters:
+        _cancel_heartbeat()
+
     return True
 
 
@@ -832,8 +895,21 @@ async def start_adapter(req: AdapterStartRequest):
         MessagingAdapter, MessagingHumanRenderer, AdapterSessionStore,
     )
 
-    adapter_id = str(uuid.uuid4())[:12]
     adapter_type = req.type.lower()
+
+    existing = _adapter_ids_for_surface(adapter_type)
+    running_ids = [
+        aid for aid in existing
+        if aid in _active_adapters
+        and _adapter_is_running(_active_adapters[aid][0], _active_adapters[aid][1])
+    ]
+    if running_ids:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Adapter type '{adapter_type}' is already running (id={running_ids[0]})",
+        )
+
+    adapter_id = str(uuid.uuid4())[:12]
     config_data = {**req.config, "workflow_path": req.workflow_path}
     if adapter_type == "telegram":
         config_data = _prepare_telegram_start_config(config_data)
@@ -931,6 +1007,8 @@ async def start_adapter(req: AdapterStartRequest):
     _adapter_renderers[adapter_id] = (renderer, graph)
     _adapter_surface_types[adapter_id] = adapter_type
 
+    _ensure_heartbeat_running()
+
     return {
         "status": "started",
         "adapter_id": adapter_id,
@@ -979,23 +1057,46 @@ async def save_adapter_config(adapter_type: str, body: dict[str, Any]):
 
         token = str(body.get("bot_token") or "").strip()
         allowed_chat_ids = _coerce_int_list(body.get("allowed_chat_ids"))
+        auto_start_val = body.get("auto_start")
         info: dict[str, Any] | None = None
         if token:
             info = await asyncio.to_thread(verify_bot_token, token)
             if info is None:
                 raise HTTPException(status_code=400, detail="Invalid Telegram bot token.")
+
+        commands_val = body.get("commands")
+        commands: list[dict[str, str]] | None = None
+        if commands_val is not None:
+            commands = [
+                {"command": str(c.get("command", "")), "description": str(c.get("description", ""))}
+                for c in commands_val
+                if isinstance(c, dict) and c.get("command")
+            ]
+
+        mini_app_url_sentinel: str | None | type[...] = ...
+        if "mini_app_url" in body:
+            raw_url = body.get("mini_app_url")
+            mini_app_url_sentinel = str(raw_url).strip() if raw_url else None
+
         state = _save_telegram_desktop_state(
             bot_token=token or None,
             bot_username=str(info.get("username") or "").strip() if info else None,
             allowed_chat_ids=allowed_chat_ids if "allowed_chat_ids" in body else None,
+            auto_start=bool(auto_start_val) if auto_start_val is not None else None,
+            commands=commands,
+            mini_app_url=mini_app_url_sentinel,  # type: ignore[arg-type]
         )
         summary = _build_telegram_config_summary()
         summary["bot_username"] = state["bot_username"] or None
         summary["allowed_chat_ids"] = state["allowed_chat_ids"]
         summary["allowed_chat_count"] = len(state["allowed_chat_ids"])
+        summary["auto_start"] = state.get("auto_start", False)
+        summary["commands"] = state.get("commands", [])
+        summary["mini_app_url"] = state.get("mini_app_url")
         return summary
 
     if normalized == "whatsapp-web":
+        wa_auto_start = body.get("auto_start")
         settings = _save_whatsapp_web_settings(
             allowed_jids=_coerce_str_list(body.get("allowed_jids"))
             if "allowed_jids" in body
@@ -1003,11 +1104,13 @@ async def save_adapter_config(adapter_type: str, body: dict[str, Any]):
             db_path=str(body.get("db_path") or "").strip() or None
             if "db_path" in body
             else None,
+            auto_start=bool(wa_auto_start) if wa_auto_start is not None else None,
         )
         summary = _build_whatsapp_web_config_summary()
         summary["allowed_jids"] = settings["allowed_jids"]
         summary["allowed_jid_count"] = len(settings["allowed_jids"])
         summary["db_path"] = settings["db_path"]
+        summary["auto_start"] = settings.get("auto_start", False)
         return summary
 
     raise HTTPException(status_code=404, detail=f"Adapter config '{adapter_type}' not found")
@@ -1026,6 +1129,38 @@ async def reset_adapter_config(adapter_type: str):
     db_path = Path(settings["db_path"])
     _remove_sqlite_artifacts(db_path)
     return _build_whatsapp_web_config_summary()
+
+
+@router.post("/api/adapters/{adapter_id}/apply-commands")
+async def apply_commands(adapter_id: str, body: dict[str, Any]):
+    entry = _active_adapters.get(adapter_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Adapter '{adapter_id}' not found")
+    adapter, _task = entry
+    surface = _adapter_surface_types.get(adapter_id, "")
+    if surface != "telegram":
+        raise HTTPException(status_code=400, detail="apply-commands is only supported for Telegram adapters")
+
+    raw_commands = body.get("commands", [])
+    command_pairs: list[tuple[str, str]] = [
+        (str(c.get("command", "")), str(c.get("description", "")))
+        for c in raw_commands
+        if isinstance(c, dict) and c.get("command")
+    ]
+    await adapter.register_custom_commands(command_pairs)
+    return {"status": "applied"}
+
+
+@router.post("/api/adapters/{adapter_id}/apply-menu")
+async def apply_menu(adapter_id: str, body: dict[str, Any]):
+    entry = _active_adapters.get(adapter_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Adapter '{adapter_id}' not found")
+    adapter, _task = entry
+
+    url = str(body.get("url") or body.get("mini_app_url") or "").strip() or None
+    await adapter.set_menu_button(url)
+    return {"status": "applied"}
 
 
 @router.get("/api/adapters/{adapter_id}/events")

@@ -25,6 +25,8 @@ class TelegramBotConfig(BaseModel):
     default: bool = False
     allowed_users: list[int | str] = Field(default_factory=list)
     auto_start: bool = False
+    commands: list[dict[str, str]] = Field(default_factory=list)
+    mini_app_url: str = ""
 
 
 class TelegramGroupConfig(BaseModel):

@@ -342,14 +342,11 @@ class BotFleet:
         *,
         hint_count: int,
     ) -> str:
-        earlier = max(int(queue_position or 0), 1)
-        prefix = "Working on it" if hint_count == 0 else "Still working"
-        if earlier == 1:
-            label = "queued behind an earlier request"
-        else:
-            label = f"queued behind {earlier} earlier requests"
+        pos = max(int(queue_position or 0), 1)
+        if hint_count == 0:
+            return f"Queued (position {pos}) — I'll reply when ready."
         return (
-            f"{prefix} — {label} "
+            f"Queued (position {pos}) — I'll reply when ready. "
             f"({self._format_elapsed_seconds(elapsed_seconds)})"
         )
 
@@ -889,7 +886,8 @@ class BotFleet:
                     "chat_interrupted",
                 ):
                     if event.get("detected_mode") == "progress_ack":
-                        text = (event.get("content", "") or "").strip()
+                        phase_label = (event.get("phase_label") or "").strip()
+                        text = phase_label or (event.get("content", "") or "").strip()
                         if text:
                             current_msg_id = await bot.adapter.send_or_edit(
                                 ctx.chat_id,

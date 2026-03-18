@@ -64,6 +64,7 @@ class TelegramAdapterConfig(AdapterConfig):
     bot_name: str = ""
     personality: str = ""
     projects: list[str] = Field(default_factory=list)
+    project_description: str = ""
 
 
 class TelegramAdapter:
@@ -82,6 +83,9 @@ class TelegramAdapter:
         self._on_topic_created: Callable[[int, int, str], Any] | None = None
         self._callback_with_context: bool = False
         self._running = False
+        self._connection_state: str = "disconnected"
+        self._last_error: str | None = None
+        self._seen_chat_ids: set[int] = set()
         self._session_map: dict[str, str] = {}
         self._chat_map: dict[str, tuple[int, int | None]] = {}
         self._poll_futures: dict[str, asyncio.Future[list[int]]] = {}
@@ -107,6 +111,24 @@ class TelegramAdapter:
     ) -> None:
         self._on_topic_created = callback
 
+    async def get_connection_snapshot(self) -> dict[str, Any]:
+        if self._application is None or not self._running:
+            return {"connection_state": "disconnected"}
+        try:
+            await self._application.bot.get_me()
+            return {
+                "connection_state": getattr(self, "_connection_state", "connected"),
+                "bot_username": self.bot_username,
+                "last_error": getattr(self, "_last_error", None),
+                "session_count": len(getattr(self, "_seen_chat_ids", set())),
+            }
+        except Exception as exc:
+            return {
+                "connection_state": "error",
+                "last_error": str(exc),
+                "bot_username": self.bot_username,
+            }
+
     # -- lifecycle ----------------------------------------------------------
 
     async def start(self) -> None:
@@ -120,13 +142,20 @@ class TelegramAdapter:
                 filters,
             )
         except ImportError as exc:
+            self._connection_state = "error"
+            self._last_error = "python-telegram-bot not installed"
             raise RuntimeError(
                 "python-telegram-bot is required. "
                 "Install with: pip install 'dan[messaging]'"
             ) from exc
 
+        self._connection_state = "starting"
+        self._last_error = None
+
         token = self._resolve_token()
         if not token:
+            self._connection_state = "error"
+            self._last_error = "No bot token provided"
             raise ValueError(
                 "No bot token provided. Set --bot-token or DAN_TELEGRAM_BOT_TOKEN."
             )
@@ -171,13 +200,39 @@ class TelegramAdapter:
             await app.bot.set_webhook(self.config.webhook_url)
         await app.start()
         if not self.config.webhook_url:
-            await app.updater.start_polling()
+            await self._start_polling_with_retry(app)
 
         self._running = True
+        self._connection_state = "connected"
+        self._last_error = None
         logger.info("Telegram adapter started (@%s)", self.bot_username)
+
+    async def _start_polling_with_retry(self, app: Any) -> None:
+        max_attempts = 5
+        base_delay = 2.0
+        cap = 60.0
+
+        for attempt in range(max_attempts):
+            try:
+                await app.updater.start_polling()
+                return
+            except Exception as exc:
+                if attempt == max_attempts - 1:
+                    self._connection_state = "error"
+                    self._last_error = str(exc).strip() or exc.__class__.__name__
+                    raise
+                self._connection_state = "reconnecting"
+                self._last_error = str(exc).strip() or exc.__class__.__name__
+                delay = min(base_delay * (2 ** attempt), cap)
+                logger.warning(
+                    "Telegram polling attempt %d/%d failed (%s), retrying in %.0fs",
+                    attempt + 1, max_attempts, exc, delay,
+                )
+                await asyncio.sleep(delay)
 
     async def stop(self) -> None:
         self._running = False
+        self._connection_state = "disconnected"
         if self._application is not None:
             if self._application.updater and self._application.updater.running:
                 await self._application.updater.stop()
@@ -610,16 +665,23 @@ class TelegramAdapter:
     # -- mini app -----------------------------------------------------------
 
     async def set_menu_button(
-        self, web_app_url: str, text: str = "Open Editor",
+        self, web_app_url: str | None = None, text: str = "Open Editor",
     ) -> None:
         try:
-            from telegram import MenuButtonWebApp, WebAppInfo
+            if web_app_url:
+                from telegram import MenuButtonWebApp, WebAppInfo
 
-            await self._application.bot.set_chat_menu_button(
-                menu_button=MenuButtonWebApp(
-                    text=text, web_app=WebAppInfo(url=web_app_url),
-                ),
-            )
+                await self._application.bot.set_chat_menu_button(
+                    menu_button=MenuButtonWebApp(
+                        text=text, web_app=WebAppInfo(url=web_app_url),
+                    ),
+                )
+            else:
+                from telegram import MenuButtonDefault
+
+                await self._application.bot.set_chat_menu_button(
+                    menu_button=MenuButtonDefault(),
+                )
         except Exception as exc:
             logger.debug("Failed to set menu button: %s", exc)
 
@@ -641,7 +703,10 @@ class TelegramAdapter:
     async def _cmd_start(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update.effective_chat.id):
             return
-        await update.message.reply_text(self.config.welcome_message)
+        text = self.config.welcome_message
+        if self.config.project_description:
+            text += f"\n\nWhat this bot does: {self.config.project_description}"
+        await update.message.reply_text(text)
 
     async def _cmd_status(self, update: Any, context: Any) -> None:
         if not self._is_allowed(update.effective_chat.id):
@@ -686,6 +751,8 @@ class TelegramAdapter:
                 "/status — Check task status\n"
                 "/cancel — Cancel current task\n"
             )
+        if self.config.project_description:
+            help_text = f"What this bot does: {self.config.project_description}\n\n{help_text}"
         await update.message.reply_text(f"{help_text}\n\nOr just type naturally!")
 
     async def _on_command_message(self, update: Any, context: Any) -> None:
@@ -768,6 +835,7 @@ class TelegramAdapter:
         if not self._is_allowed(update.effective_chat.id):
             return
         chat_id = update.effective_chat.id
+        self._seen_chat_ids.add(chat_id)
         msg = update.message
         text = msg.text or ""
         ctx = self._build_context(msg)
@@ -786,6 +854,7 @@ class TelegramAdapter:
         if not self._is_allowed(update.effective_chat.id):
             return
         chat_id = update.effective_chat.id
+        self._seen_chat_ids.add(chat_id)
         msg = update.message
 
         if msg.sticker:

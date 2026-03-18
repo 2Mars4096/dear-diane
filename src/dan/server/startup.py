@@ -979,8 +979,108 @@ async def init_background(state: AppState, app: FastAPI) -> None:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Adapter auto-start
+# ---------------------------------------------------------------------------
+
+_ADAPTERS_STATE_PATH = Path.home() / ".dan" / "adapters-state.json"
+_TELEGRAM_CONFIG_PATH = Path.home() / ".dan" / "telegram" / "config.json"
+_WHATSAPP_WEB_CONFIG_PATH = Path.home() / ".dan" / "whatsapp-web" / "config.json"
+_WHATSAPP_WEB_DB_PATH = Path.home() / ".dan" / "whatsapp-web" / "session.sqlite3"
+
+
+async def init_adapters(app: FastAPI) -> None:
+    """Restore adapters that have auto_start=True in their config."""
+    adapters_to_start: list[tuple[str, dict[str, Any]]] = []
+
+    previously_running: set[str] = set()
+    try:
+        if _ADAPTERS_STATE_PATH.exists():
+            entries = json.loads(_ADAPTERS_STATE_PATH.read_text())
+            for entry in entries:
+                if isinstance(entry, dict):
+                    previously_running.add(str(entry.get("type", "")))
+    except Exception:
+        logger.debug("Failed to read adapters state file", exc_info=True)
+
+    try:
+        if _TELEGRAM_CONFIG_PATH.exists():
+            raw = json.loads(_TELEGRAM_CONFIG_PATH.read_text())
+            bots = raw.get("bots", {})
+            desktop_bot = bots.get("desktop-ui", {})
+            token = str(desktop_bot.get("token", "")).strip()
+            auto_start = bool(desktop_bot.get("auto_start", False))
+            should_start = auto_start or "telegram" in previously_running
+            if should_start and token:
+                adapters_to_start.append(("telegram", {"bot_token": token}))
+    except Exception:
+        logger.warning("Failed to read Telegram config for autostart", exc_info=True)
+
+    try:
+        if _WHATSAPP_WEB_CONFIG_PATH.exists():
+            raw = json.loads(_WHATSAPP_WEB_CONFIG_PATH.read_text())
+            auto_start = bool(raw.get("auto_start", False))
+            db_path = str(raw.get("db_path", "")).strip() or str(_WHATSAPP_WEB_DB_PATH)
+            should_start = auto_start or "whatsapp-web" in previously_running
+            if should_start and Path(db_path).exists():
+                adapters_to_start.append(("whatsapp-web", {"db_path": db_path}))
+    except Exception:
+        logger.warning("Failed to read WhatsApp Web config for autostart", exc_info=True)
+
+    if not adapters_to_start:
+        return
+
+    async def _start_adapter_safe(adapter_type: str, config: dict[str, Any]) -> None:
+        try:
+            from dan.server.routers.adapters import (
+                AdapterStartRequest,
+                start_adapter,
+            )
+
+            req = AdapterStartRequest(type=adapter_type, config=config)
+            result = await start_adapter(req)
+            logger.info(
+                "Auto-started %s adapter (id=%s)",
+                adapter_type, result.get("adapter_id"),
+            )
+        except Exception:
+            logger.warning("Failed to auto-start %s adapter", adapter_type, exc_info=True)
+
+    for i, (adapter_type, config) in enumerate(adapters_to_start):
+        if i > 0:
+            await asyncio.sleep(2)
+        asyncio.create_task(
+            _start_adapter_safe(adapter_type, config),
+            name=f"autostart-{adapter_type}",
+        )
+
+
+def _persist_adapter_state() -> None:
+    """Write active adapter types to disk so init_adapters can restore them."""
+    try:
+        from dan.server.routers.adapters import (
+            _active_adapters,
+            _adapter_surface_types,
+        )
+
+        entries = []
+        for aid, (adapter, task) in _active_adapters.items():
+            if task.done():
+                continue
+            surface = _adapter_surface_types.get(aid, "unknown")
+            entries.append({"adapter_id": aid, "type": surface})
+
+        _ADAPTERS_STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _ADAPTERS_STATE_PATH.write_text(json.dumps(entries, indent=2))
+        logger.info("Persisted %d adapter(s) state to %s", len(entries), _ADAPTERS_STATE_PATH)
+    except Exception:
+        logger.debug("Failed to persist adapter state", exc_info=True)
+
+
 async def shutdown(state: AppState) -> None:
     """Cleanly tear down all background tasks and integrations."""
+    _persist_adapter_state()
+
     if state.task_scheduler is not None:
         try:
             await state.task_scheduler.stop()
@@ -1080,6 +1180,8 @@ async def lifespan(app: FastAPI):
     app.state.mcp_bridge = state.mcp_bridge
 
     _mirror_state_to_globals(state)  # final pass to catch anything set by integrations/background
+
+    await init_adapters(app)
 
     yield
 

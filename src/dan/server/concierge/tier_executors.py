@@ -70,6 +70,7 @@ def _progress_event(task_label: str) -> ChatCompleteEvent:
         context_window=0,
         graph_revision="",
         detected_mode="progress_ack",
+        phase_label=task_label[:100] if task_label else None,
     )
 
 

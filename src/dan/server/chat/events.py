@@ -55,6 +55,7 @@ class ChatCompleteEvent(BaseModel):
     graph_revision: str
     revision_mismatch: bool = False
     detected_mode: str | None = None
+    phase_label: str | None = None
     stream_channel_id: str | None = None
 
 

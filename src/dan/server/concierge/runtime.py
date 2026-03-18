@@ -915,6 +915,7 @@ class Concierge:
             context_window=0,
             graph_revision="",
             detected_mode="progress_ack",
+            phase_label=label,
         )
 
     def _create_progress_renderer(self, surface: str, msg: Any) -> Any | None:
@@ -1010,6 +1011,7 @@ class Concierge:
                         self._is_messaging_surface(msg)
                         and isinstance(event, ChatCompleteEvent)
                         and getattr(event, "detected_mode", None) == "progress_ack"
+                        and not getattr(event, "phase_label", None)
                     ):
                         continue
                     yield event
