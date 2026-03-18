@@ -944,10 +944,11 @@ class BotFleet:
             else:
                 full = streamed_full
         elif error_message:
+            friendly_error = _format_telegram_stream_error(error_message)
             full = (
-                f"{streamed_full}\n\nI hit an error: {error_message}".strip()
+                f"{streamed_full}\n\n{friendly_error}".strip()
                 if streamed_full
-                else f"I hit an error: {error_message}"
+                else friendly_error
             )
         else:
             full = streamed_full
@@ -1561,6 +1562,28 @@ def _format_for_telegram(text: str) -> str:
     if label:
         return f"[{label}]\n{remaining}"
     return remaining
+
+
+def _format_telegram_stream_error(error_message: str) -> str:
+    """Collapse raw backend/provider failures into Telegram-friendly copy."""
+    message = str(error_message or "").strip()
+    lower = message.lower()
+    overload_markers = (
+        "429",
+        "rate limit",
+        "quota",
+        "upstream_error",
+        "overload",
+        "overloaded",
+        "saturated",
+        "请稍后再试",
+        "负载已饱和",
+    )
+    if any(marker in lower for marker in overload_markers):
+        return "The model provider is temporarily overloaded. Please try again in a moment."
+    if not message:
+        return "I hit an error while processing your message. Please try again."
+    return f"I hit an error: {message}"
 
 
 def _strip_prefix_and_html(text: str) -> str:

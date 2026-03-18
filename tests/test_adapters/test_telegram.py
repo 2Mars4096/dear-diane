@@ -273,3 +273,26 @@ class TestFormatForTelegram:
         from dan.adapters.telegram_fleet import _strip_prefix_and_html
         result = _strip_prefix_and_html("[DAN - MyProj] answer")
         assert result.startswith("[MyProj]\n")
+
+
+class TestTelegramStreamErrorFormatting:
+    def test_rate_limit_errors_are_friendly(self):
+        from dan.adapters.telegram_fleet import _format_telegram_stream_error
+
+        result = _format_telegram_stream_error(
+            "Error code: 429 - {'error': {'message': '当前分组上游负载已饱和，请稍后再试'}}"
+        )
+        assert "temporarily overloaded" in result
+        assert "429" not in result
+
+    def test_generic_errors_preserve_message(self):
+        from dan.adapters.telegram_fleet import _format_telegram_stream_error
+
+        result = _format_telegram_stream_error("something unexpected happened")
+        assert result == "I hit an error: something unexpected happened"
+
+    def test_blank_errors_use_fallback_copy(self):
+        from dan.adapters.telegram_fleet import _format_telegram_stream_error
+
+        result = _format_telegram_stream_error("")
+        assert "Please try again" in result
