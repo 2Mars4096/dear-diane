@@ -732,6 +732,36 @@ def _flatten_edges(edges_raw: object) -> list[dict]:
     return []
 
 
+def _iter_graph_dicts(graph_data: object):
+    if not isinstance(graph_data, dict):
+        return
+    yield graph_data
+    sub_graphs = graph_data.get("sub_graphs", {})
+    if not isinstance(sub_graphs, dict):
+        return
+    for sub_graph in sub_graphs.values():
+        if isinstance(sub_graph, dict):
+            yield from _iter_graph_dicts(sub_graph)
+
+
+def _flatten_graph_nodes(graph_data: dict) -> list[dict]:
+    nodes: list[dict] = []
+    for graph in _iter_graph_dicts(graph_data):
+        nodes.extend(
+            node
+            for node in graph.get("nodes", [])
+            if isinstance(node, dict)
+        )
+    return nodes
+
+
+def _flatten_graph_edges(graph_data: dict) -> list[dict]:
+    edges: list[dict] = []
+    for graph in _iter_graph_dicts(graph_data):
+        edges.extend(_flatten_edges(graph.get("edges", [])))
+    return edges
+
+
 def _node_type_labels(node: dict) -> set[str]:
     raw = node.get("node_type") or node.get("type") or "unknown"
     labels = {raw}
@@ -756,6 +786,9 @@ def _node_type_labels(node: dict) -> set[str]:
 
 
 def _gate_mode(node: dict) -> str:
+    direct = str(node.get("gate_mode", "")).lower()
+    if direct:
+        return direct
     config = node.get("config", {})
     if isinstance(config, dict):
         return str(config.get("gate_mode", "")).lower()
@@ -763,8 +796,8 @@ def _gate_mode(node: dict) -> str:
 
 
 def _build_graph_summary(graph_data: dict) -> GraphSummary:
-    nodes = graph_data.get("nodes", [])
-    edges = _flatten_edges(graph_data.get("edges", []))
+    nodes = _flatten_graph_nodes(graph_data)
+    edges = _flatten_graph_edges(graph_data)
     raw_node_types = {
         (node.get("node_type") or node.get("type"))
         for node in nodes
@@ -894,7 +927,12 @@ def _check_expectations(
         elif topo == "fan_out" and not graph_summary.has_fan_out:
             errors.append(f"expected topology '{topo}' not satisfied")
         elif topo == "chain" and (
-            graph_summary.node_count < 2 or graph_summary.edge_count < 1
+            not (
+                graph_summary.node_count == 1
+                and graph_summary.edge_count == 0
+                and (expected.get("min_nodes") or 0) <= 1
+            )
+            and (graph_summary.node_count < 2 or graph_summary.edge_count < 1)
         ):
             errors.append(f"expected topology '{topo}' not satisfied")
         elif topo == "tools" and "tool" not in node_types:
