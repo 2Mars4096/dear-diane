@@ -756,7 +756,7 @@ export default function ChatPanel({
         setThreadTitle(title);
         setShowThreadList(false);
         setError(null);
-        const storedMode = (data.mode as ChatMode) || "agent";
+        const storedMode = (data.mode as ChatMode) || "auto";
         useGraphStore.getState().setChatMode(storedMode);
         if (isStreamingInBackground(threadId)) {
           setIsStreaming(true);
@@ -789,7 +789,7 @@ export default function ChatPanel({
         if (activeThreadIdRef.current === threadId) {
           setMessages(backendMsgs.map(fromBackendMessage));
           setThreadTitle(getDisplayThreadTitle((data.title as string) || "", ""));
-          const storedMode = (data.mode as ChatMode) || "agent";
+          const storedMode = (data.mode as ChatMode) || "auto";
           useGraphStore.getState().setChatMode(storedMode);
         }
         setThreads((prev) =>
@@ -942,8 +942,12 @@ export default function ChatPanel({
       if (sorted.length > 0 && !activeThreadIdRef.current) {
         let targetId = sorted[0].id;
         const wsActiveThread = useWorkspaceStore.getState().getActiveWorkspace()?.activeThreadId;
+        const appThread = useAppStore.getState().activeChatThreadId;
+        const appWf = useAppStore.getState().activeChatWorkflowId;
         if (wsActiveThread && sorted.some((t) => t.id === wsActiveThread)) {
           targetId = wsActiveThread;
+        } else if (appThread && appWf === graphId && sorted.some((t) => t.id === appThread)) {
+          targetId = appThread;
         } else {
           try {
             const saved = localStorage.getItem(`dan_active_thread_${graphId}`);
@@ -3619,6 +3623,7 @@ export default function ChatPanel({
             threads={threads}
             activeThreadId={activeThreadId}
             loading={loadingThreads}
+            treeMode
             onNewChat={handleNewChat}
             onSelectThread={handleSelectThread}
             onDeleteThread={handleDeleteThread}
@@ -3782,6 +3787,25 @@ function ThreadListView({
   const [collapsedTreeIds, setCollapsedTreeIds] = useState<Set<string>>(
     () => new Set(),
   );
+  const branchStructureKey = useMemo(
+    () =>
+      threads
+        .map((thread) => `${thread.id}:${thread.parent_thread_id ?? ""}`)
+        .sort()
+        .join("|"),
+    [threads],
+  );
+  const lastCollapsedStructureKeyRef = useRef("");
+
+  useEffect(() => {
+    if (!treeMode) return;
+    if (lastCollapsedStructureKeyRef.current === branchStructureKey) return;
+    lastCollapsedStructureKeyRef.current = branchStructureKey;
+    const withChildren = branchTree.rootIds.filter(
+      (id) => (branchTree.childrenByParentId[id] ?? []).length > 0,
+    );
+    setCollapsedTreeIds(new Set(withChildren));
+  }, [treeMode, branchStructureKey, branchTree]);
 
   const toggleTreeNode = useCallback((threadId: string) => {
     setCollapsedTreeIds((prev) => {

@@ -27,6 +27,7 @@ import {
 } from "../../store/useSettingsStore";
 import {
   useMessagingStore,
+  getSessionLabel,
   type MessagingConnectionState,
   type MessagingProviderId,
 } from "../../store/useMessagingStore";
@@ -817,13 +818,13 @@ export default function GlobalSettingsPanel({
               </p>
               <p className="mt-1 text-sm font-medium text-gray-900 dark:text-gray-100">
                 {providerId === "telegram"
-                  ? `${provider.sessionCount} session${provider.sessionCount === 1 ? "" : "s"}`
+                  ? getSessionLabel(providerId, provider)
                   : provider.paired === true
-                    ? "Paired"
+                    ? getSessionLabel(providerId, provider)
                     : provider.connectionState === "pairing"
                       ? "Waiting for QR / link"
                       : provider.running
-                        ? "Connected"
+                        ? getSessionLabel(providerId, provider)
                         : "Pairing state unavailable"}
               </p>
             </div>

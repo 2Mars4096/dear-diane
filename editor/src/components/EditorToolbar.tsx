@@ -3,6 +3,7 @@ import ConfirmDialog from "./shell/ConfirmDialog";
 import { useGraphStore } from "../store/useGraphStore";
 import {
   useMessagingStore,
+  getSessionLabel,
   type MessagingProviderId,
 } from "../store/useMessagingStore";
 import Spinner from "./Spinner";
@@ -761,8 +762,7 @@ export default function EditorToolbar() {
                       {label}
                     </div>
                     <div className="text-[10px] text-gray-400">
-                      {provider.sessionCount} session
-                      {provider.sessionCount !== 1 ? "s" : ""}
+                      {getSessionLabel(providerId, provider)}
                     </div>
                   </div>
                   <span className={`px-1.5 py-0.5 rounded text-[9px] font-medium ${statusColors[statusLabel] ?? "bg-gray-100 text-gray-500"}`}>

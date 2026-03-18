@@ -470,7 +470,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
   loopGroups: [],
 
   // -- 10-9 / 12-2: Chat modes
-  chatMode: "agent" as const,
+  chatMode: "auto" as const,
   chatFocusTrigger: 0,
   chatPrefill: null as string | null,
   logFocusCounter: 0,
@@ -1951,7 +1951,7 @@ export const useGraphStore = create<GraphState>((set, get) => {
       selectedNodeIds: new Set<string>(),
       layerStack: [],
       loopGroups: [],
-      chatMode: "agent" as const,
+      chatMode: "auto" as const,
       chatFocusTrigger: 0,
     }));
 

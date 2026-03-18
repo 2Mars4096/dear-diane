@@ -325,7 +325,7 @@ export const sendChatMessage = (
   history: Array<{ role: string; content: string }> = [],
   threadId?: string | null,
   clientGraphRevision?: string | null,
-  mode: "ask" | "agent" | "plan" | "debug" | "auto" = "agent",
+  mode: "ask" | "agent" | "plan" | "debug" | "auto" = "auto",
 ) =>
   request<ChatMessageResponse>("/chat/message", {
     method: "POST",

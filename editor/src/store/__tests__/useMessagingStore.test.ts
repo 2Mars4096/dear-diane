@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildMessagingSummary,
+  getSessionLabel,
   hasConfiguredMessagingProviders,
   mergePersistedMessagingProviders,
   normalizeMessagingProvider,
@@ -114,6 +115,34 @@ describe("useMessagingStore helpers", () => {
         whatsapp: makeProvider(),
       }),
     ).toBe(false);
+  });
+
+  it("getSessionLabel returns context-sensitive copy for telegram", () => {
+    expect(
+      getSessionLabel("telegram", makeProvider({ running: true, sessionCount: 0 })),
+    ).toBe("Listening (no messages yet)");
+
+    expect(
+      getSessionLabel("telegram", makeProvider({ running: true, sessionCount: 3 })),
+    ).toBe("3 sessions");
+
+    expect(
+      getSessionLabel("telegram", makeProvider({ running: true, sessionCount: 1 })),
+    ).toBe("1 session");
+
+    expect(
+      getSessionLabel("telegram", makeProvider({ running: false, sessionCount: 0 })),
+    ).toBe("0 sessions");
+  });
+
+  it("getSessionLabel returns context-sensitive copy for whatsapp", () => {
+    expect(
+      getSessionLabel("whatsapp", makeProvider({ running: true, sessionCount: 0 })),
+    ).toBe("Linked (idle)");
+
+    expect(
+      getSessionLabel("whatsapp", makeProvider({ running: true, sessionCount: 2 })),
+    ).toBe("2 sessions");
   });
 
   it("restores only persisted enablement flags from storage", () => {

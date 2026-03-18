@@ -19,7 +19,8 @@ export type MessagingConnectionState =
   | "pairing"
   | "connected"
   | "reconnecting"
-  | "error";
+  | "error"
+  | "unknown";
 
 type PendingAction =
   | "connect"
@@ -38,6 +39,7 @@ const POLL_INTERVAL_MS = 10_000;
 
 const CONNECTION_STATE_PRIORITY: Record<MessagingConnectionState, number> = {
   error: 5,
+  unknown: 4,
   pairing: 4,
   reconnecting: 3,
   starting: 2,
@@ -241,6 +243,7 @@ export function normalizeMessagingConnectionState(
     case "starting":
     case "disconnected":
     case "error":
+    case "unknown":
       return normalized;
     case "running":
       return "connected";
@@ -388,6 +391,21 @@ export function buildMessagingSummary(
   }).join(" · ");
 
   return { activeCount, errorCount, tone, label, tooltip };
+}
+
+export function getSessionLabel(
+  providerId: MessagingProviderId,
+  provider: MessagingProviderState,
+): string {
+  if (provider.sessionCount > 0) {
+    return `${provider.sessionCount} session${provider.sessionCount === 1 ? "" : "s"}`;
+  }
+  if (provider.running && provider.sessionCount === 0) {
+    return providerId === "telegram"
+      ? "Listening (no messages yet)"
+      : "Linked (idle)";
+  }
+  return "0 sessions";
 }
 
 export function hasConfiguredMessagingProviders(
@@ -755,9 +773,22 @@ export const useMessagingStore = create<MessagingState>()(
             closeProviderEvents("whatsapp");
           }
         } catch (error) {
-          set({
-            refreshing: false,
-            lastRefreshError: formatErrorMessage(error),
+          set((state) => {
+            const nextProviders = { ...state.providers };
+            for (const providerId of PROVIDER_IDS) {
+              const current = state.providers[providerId];
+              nextProviders[providerId] = {
+                ...current,
+                connectionState: "unknown",
+                statusNote: "Backend unreachable",
+                lastError: "Backend unreachable",
+              };
+            }
+            return {
+              providers: nextProviders,
+              refreshing: false,
+              lastRefreshError: formatErrorMessage(error),
+            };
           });
         }
       },
