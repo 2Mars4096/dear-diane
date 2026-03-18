@@ -511,7 +511,7 @@
 - [x] **Messaging status honesty / offline semantics** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 1
 - [x] **Messaging progress + queue visibility unification** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 2
 - [x] **Telegram operator UX polish** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 3
-- [ ] [31-33-autonomy-and-prompt-modules](plans/31-33-autonomy-and-prompt-modules.md) — user-facing `careful/balanced/aggressive` autonomy knob + `PromptModuleResolver` refactor + JIT task-specific detail loading for chat
+- [ ] [31-33-autonomy-and-prompt-modules](plans/31-33-autonomy-and-prompt-modules.md) — `auto/careful/balanced/aggressive` autonomy as a workflow-level operating style: per-turn inference, session tree propagation, per-tier orchestration behavior (context depth, decomposition, tool budget, completion standard, review injection), layered `PromptModuleResolver`, and JIT prompt detail loading
 - [ ] **Self-contained desktop packaging** — bundle the DAN backend/runtime with the Electron app/DMG so the desktop app does not depend on a separately managed Python environment or external `dan-serve` process. *(deferred — orthogonal to messaging reliability)*
 - [ ] **Formal RL-style learning loop (deferred)** — once messaging/runtime stability is boringly reliable, evaluate a more explicit reward/feedback loop on top of existing experience/principle learning rather than layering RL onto an unstable control plane. *(deferred — premature until messaging is boringly reliable)*
 
