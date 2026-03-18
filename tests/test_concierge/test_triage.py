@@ -5,7 +5,7 @@ import importlib
 
 import pytest
 
-from dan.server.concierge.models import Project, ResolvedContext, Task
+from dan.server.concierge.models import Project, ResolvedContext, Task, TaskTurn
 from dan.server.concierge.project_store import ProjectStore
 from dan.server.concierge.triage import fast_classify_text, triage
 
@@ -17,6 +17,7 @@ def _make_context(
     project_label: str = "Revenue Tracker",
     task_label: str = "Draft quarterly report",
     workflow_ids: list[str] | None = None,
+    turns: list[TaskTurn] | None = None,
 ) -> tuple[ResolvedContext, Project, Task]:
     project = Project(
         surface_id=surface_id,
@@ -24,6 +25,8 @@ def _make_context(
         linked_workflow_ids=workflow_ids or ["workflow-quarterly"],
     )
     task = Task(label=task_label, status="active")
+    if turns:
+        task.turns = turns
     project.tasks.append(task)
     project.current_task_id = task.task_id
     context = ResolvedContext(
@@ -34,6 +37,19 @@ def _make_context(
         confidence=1.0,
     )
     return context, project, task
+
+
+def _workflow_activity_turns() -> list[TaskTurn]:
+    """Recent turns that indicate workflow build/edit activity."""
+    return [
+        TaskTurn(role="user", content="build a workflow for quarterly reports"),
+        TaskTurn(
+            role="assistant",
+            content="I created a workflow with 3 nodes.",
+            intent="workflow_build",
+            metadata={"route_target": "workflow"},
+        ),
+    ]
 
 
 def _llm_json(payload: dict):
@@ -426,3 +442,166 @@ async def test_triage_embedding_none_falls_back_to_llm(monkeypatch):
     assert result.intent == "ask"
     assert result.route is not None
     assert result.route.target == "general"
+
+
+@pytest.mark.asyncio
+async def test_triage_llm_general_retry_followup_is_upgraded_to_workflow_edit():
+    context, _project, _task = _make_context(
+        task_label="General task", turns=_workflow_activity_turns(),
+    )
+
+    result = await triage(
+        "can you retry and fix this?",
+        context,
+        _llm_json(
+            {
+                "tier": 1,
+                "intent": "ask",
+                "route": {
+                    "mode": "ask",
+                    "target": "general",
+                    "action_hints": ["status_check"],
+                },
+                "confidence": 0.82,
+                "goal": "retry",
+                "deliverable": "retry",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "llm misroute",
+            }
+        ),
+    )
+
+    assert result.intent == "agent"
+    assert result.tier == 2
+    assert result.route is not None
+    assert result.route.mode.value == "agent"
+    assert result.route.target == "workflow"
+    assert "workflow_edit" in result.route.action_hints
+    assert "write_file" not in result.route.action_hints
+
+
+@pytest.mark.asyncio
+async def test_triage_embedding_general_retry_followup_is_upgraded_to_workflow_edit(monkeypatch):
+    context, _project, _task = _make_context(
+        task_label="General task", turns=_workflow_activity_turns(),
+    )
+
+    async def _embed_result(_text, _context):
+        return triage_module.TriageResult(
+            tier=1,
+            intent="ask",
+            route=triage_module.RouteDecision(
+                mode=triage_module.RouteMode.ASK,
+                target="general",
+                action_hints=["status_check"],
+                rationale="embedding misroute",
+            ),
+            confidence=0.88,
+            goal="retry",
+            deliverable="retry",
+        )
+
+    monkeypatch.setattr(triage_module, "_embedding_triage_result", _embed_result)
+
+    result = await triage(
+        "can you retry and fix this?",
+        context,
+        _llm_json(
+            {
+                "tier": 1,
+                "intent": "ask",
+                "route": {
+                    "mode": "ask",
+                    "target": "general",
+                    "action_hints": ["status_check"],
+                },
+                "confidence": 0.8,
+                "goal": "wrong",
+                "deliverable": "wrong",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "llm fallback",
+            }
+        ),
+    )
+
+    assert result.intent == "agent"
+    assert result.tier == 2
+    assert result.route is not None
+    assert result.route.mode.value == "agent"
+    assert result.route.target == "workflow"
+    assert "workflow_edit" in result.route.action_hints
+    assert "write_file" not in result.route.action_hints
+
+
+def test_fallback_infers_workflow_edit_for_retry_build_with_linked_workflow():
+    """'retry to build' + linked workflow + recent workflow activity → workflow_edit hint."""
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+    hints = triage_module._infer_fallback_action_hints(
+        "can you learn from previous failures and retry to build?",
+        context,
+    )
+    assert "workflow_edit" in hints
+
+
+def test_fallback_infers_workflow_edit_for_rebuild_workflow():
+    """'rebuild the ... workflow' → workflow_edit hint (entity RE + edit RE, no activity needed)."""
+    context, _project, _task = _make_context()
+    hints = triage_module._infer_fallback_action_hints(
+        "rebuild the daily equity watchlist workflow",
+        context,
+    )
+    assert "workflow_edit" in hints
+
+
+def test_fallback_no_workflow_edit_for_try_again_without_workflow_activity():
+    """'try again' + linked workflow but NO recent workflow activity → no workflow_edit."""
+    context, _project, _task = _make_context()
+    hints = triage_module._infer_fallback_action_hints(
+        "try again",
+        context,
+    )
+    assert "workflow_edit" not in hints
+
+
+def test_fallback_infers_workflow_edit_for_try_again_with_workflow_activity():
+    """'try again' + linked workflow + recent workflow activity → workflow_edit hint."""
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+    hints = triage_module._infer_fallback_action_hints(
+        "try again",
+        context,
+    )
+    assert "workflow_edit" in hints
+
+
+def test_fallback_no_workflow_edit_for_plain_retry_without_workflow_activity():
+    """Plain 'retry' + linked workflow but NO recent workflow activity → no workflow_edit."""
+    context, _project, _task = _make_context()
+    hints = triage_module._infer_fallback_action_hints(
+        "retry",
+        context,
+    )
+    assert "workflow_edit" not in hints
+
+
+def test_fallback_no_workflow_edit_for_generic_build_without_linked_workflow():
+    """'build a grocery list' with no linked workflows → no workflow_edit hint."""
+    context, _project, _task = _make_context(workflow_ids=[])
+    hints = triage_module._infer_fallback_action_hints(
+        "build a grocery list for tonight",
+        context,
+    )
+    assert "workflow_edit" not in hints

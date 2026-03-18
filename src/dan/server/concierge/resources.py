@@ -87,8 +87,11 @@ class ResourceTracker:
 
     @property
     def available(self) -> bool:
-        """``True`` if there is capacity for at least one new run."""
-        return self._active_runs < self._budget.max_concurrent_runs
+        """``True`` if there is capacity for another chat/run slot."""
+        return (
+            self._active_runs < self._budget.max_concurrent_runs
+            and self._active_llm_calls < self._budget.max_concurrent_llm_calls
+        )
 
     def snapshot(self) -> dict[str, Any]:
         """Current usage snapshot for status reporting."""

@@ -25,6 +25,10 @@ from dan.server.concierge.models import (
 from dan.server.concierge.project_store import ProjectStore
 from dan.server.concierge.runtime import Concierge
 from dan.server.concierge.session import SessionManager, SessionState
+from dan.server.chat.helpers import (
+    _missing_action_hints,
+    _tool_retry_prompt_for_missing_actions,
+)
 from dan.server.concierge.tier_executors import (
     InstantExecutor,
     MultiStepExecutor,
@@ -384,7 +388,7 @@ async def test_tier1_forwards_request_metadata_and_action_hints(tmp_path: Path) 
     assert call["mentions"] == mentions
     assert call["surface_context"]["active_file"]["path"] == "src/report.md"
     assert call["required_action_hints"] == ["read_file", "write_file"]
-    assert call["allow_mutation_tool"] is False
+    assert call["allow_mutation_tool"] is True
     assert call["cancel_event"] is cancel_event
 
 
@@ -858,6 +862,14 @@ def test_determine_stage_build_mode() -> None:
     assert _determine_stage(session) == "workflow_build"
 
 
+def test_determine_stage_requested_build_mode_override() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(),
+        msg=_FakeMsg(metadata={"mode": "agent", "requested_mode": "build"}),
+    )
+    assert _determine_stage(session) == "workflow_build"
+
+
 def test_determine_stage_workflow_edit_action_hint() -> None:
     route = _FakeRoute(action_hints=["workflow_edit"])
     session = _FakeSession(triage=_FakeTriage(route=route))
@@ -1184,6 +1196,74 @@ def test_resolve_triage_model_explicit_override_wins(tmp_path: Path) -> None:
     concierge._triage_model = "explicit-model"
 
     assert concierge._resolve_triage_model() == "explicit-model"
+
+
+def test_missing_action_hints_workflow_edit_unsatisfied() -> None:
+    assert _missing_action_hints(["workflow_edit"], set()) == ["workflow_edit"]
+
+
+def test_missing_action_hints_workflow_edit_satisfied_by_mutation_tool() -> None:
+    assert _missing_action_hints(["workflow_edit"], {"plan_graph_mutations"}) == []
+
+
+def test_retry_prompt_for_workflow_edit_mentions_mutation_tool() -> None:
+    prompt = _tool_retry_prompt_for_missing_actions(["workflow_edit"])
+    assert "plan_graph_mutations" in prompt
+    assert "workflow" in prompt.lower()
+
+
+def test_extract_chat_params_mutation_tool_true_for_workflow_route_without_edit_hint() -> None:
+    """mode=agent + route_target=workflow (no workflow_edit hint) → allow_mutation_tool=True."""
+    route = _FakeRoute(target="workflow", action_hints=["search_web"])
+    session = _FakeSession(
+        triage=_FakeTriage(intent="agent", route=route),
+        msg=_FakeMsg(metadata={"mode": "agent"}),
+    )
+    params = _extract_chat_params(session, "system prompt")
+    assert params["allow_mutation_tool"] is True
+
+
+def test_extract_chat_params_mutation_tool_true_for_build_mode_no_route() -> None:
+    """mode=build with no route or hints → allow_mutation_tool=True."""
+    session = _FakeSession(
+        triage=_FakeTriage(intent="ask"),
+        msg=_FakeMsg(metadata={"mode": "build"}),
+    )
+    params = _extract_chat_params(session, "system prompt")
+    assert params["allow_mutation_tool"] is True
+
+
+def test_extract_chat_params_requested_build_mode_override() -> None:
+    """requested_mode=build should restore build semantics even when mode was normalized."""
+    session = _FakeSession(
+        triage=_FakeTriage(intent="ask"),
+        msg=_FakeMsg(metadata={"mode": "agent", "requested_mode": "build"}),
+    )
+    params = _extract_chat_params(session, "system prompt")
+    assert params["mode"] == "build"
+    assert params["allow_mutation_tool"] is True
+
+
+def test_extract_chat_params_mutation_tool_false_for_agent_mode_file_route() -> None:
+    """mode=agent + route_target=file → allow_mutation_tool=False (no broadened gate)."""
+    route = _FakeRoute(target="file", action_hints=["read_file"])
+    session = _FakeSession(
+        triage=_FakeTriage(intent="agent", route=route),
+        msg=_FakeMsg(metadata={"mode": "agent"}),
+    )
+    params = _extract_chat_params(session, "system prompt")
+    assert params["allow_mutation_tool"] is False
+
+
+def test_extract_chat_params_metadata_override_takes_precedence() -> None:
+    """Explicit metadata['allow_mutation_tool']=False overrides the broadened gate."""
+    route = _FakeRoute(target="workflow", action_hints=["workflow_edit"])
+    session = _FakeSession(
+        triage=_FakeTriage(intent="agent", route=route),
+        msg=_FakeMsg(metadata={"mode": "build", "allow_mutation_tool": False}),
+    )
+    params = _extract_chat_params(session, "system prompt")
+    assert params["allow_mutation_tool"] is False
 
 
 def test_format_surface_context_truncates_large_payloads() -> None:

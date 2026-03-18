@@ -132,8 +132,17 @@ class ConcurrentDispatcher:
         self, msg: SurfaceMessage, project_id: str,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Spawn a processing task for a new project and yield its events."""
-        if self._resource_tracker is not None:
-            await self._resource_tracker.try_acquire("run")
+        track_resources = (
+            self._resource_tracker is not None
+            and not str(project_id).startswith("bypass:")
+        )
+        if track_resources:
+            acquired = await self._try_acquire_capacity_slot()
+            if not acquired:
+                context = self._concierge._resolve_context(msg)
+                async for event in self._enqueue_overflow(msg, context):
+                    yield event
+                return
 
         event_queue: asyncio.Queue[ChatStreamEvent | None] = asyncio.Queue()
 
@@ -150,8 +159,8 @@ class ConcurrentDispatcher:
                 logger.exception("Drain failed for project %s", project_id)
             finally:
                 self._active_tasks.pop(project_id, None)
-                if self._resource_tracker is not None:
-                    await self._resource_tracker.release("run")
+                if track_resources:
+                    await self._release_capacity_slot()
             try:
                 await self._drain_global_overflow()
             except Exception:
@@ -310,7 +319,7 @@ class ConcurrentDispatcher:
                 continue
 
             if self._resource_tracker is not None:
-                acquired = await self._resource_tracker.try_acquire("run")
+                acquired = await self._try_acquire_capacity_slot()
                 if not acquired:
                     await self._global_queue.put(
                         (queued_msg, channel_id),
@@ -350,11 +359,31 @@ class ConcurrentDispatcher:
         finally:
             self._active_tasks.pop(project_id, None)
             if self._resource_tracker is not None:
-                await self._resource_tracker.release("run")
+                await self._release_capacity_slot()
         try:
             await self._drain_global_overflow()
         except Exception:
             logger.exception("Overflow drain failed after project %s", project_id)
+
+    async def _try_acquire_capacity_slot(self) -> bool:
+        """Acquire both project and LLM slots for a live chat task."""
+        if self._resource_tracker is None:
+            return True
+        acquired_run = await self._resource_tracker.try_acquire("run")
+        if not acquired_run:
+            return False
+        acquired_llm = await self._resource_tracker.try_acquire("llm")
+        if acquired_llm:
+            return True
+        await self._resource_tracker.release("run")
+        return False
+
+    async def _release_capacity_slot(self) -> None:
+        """Release the slots held by `_try_acquire_capacity_slot()`."""
+        if self._resource_tracker is None:
+            return
+        await self._resource_tracker.release("llm")
+        await self._resource_tracker.release("run")
 
     # ------------------------------------------------------------------
     # Response bus management

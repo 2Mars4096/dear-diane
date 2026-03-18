@@ -2049,7 +2049,12 @@ def build_concierge(
     if not enable_dispatcher:
         return concierge
     from .dispatcher import ConcurrentDispatcher
+    from .resources import ResourceBudget, ResourceTracker
+
+    resource_tracker = ResourceTracker(ResourceBudget.from_env())
     dispatcher = ConcurrentDispatcher(
-        concierge, max_concurrent_projects=max_concurrent_projects,
+        concierge,
+        max_concurrent_projects=max_concurrent_projects,
+        resource_tracker=resource_tracker,
     )
     return concierge, dispatcher

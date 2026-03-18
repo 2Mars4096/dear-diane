@@ -53,7 +53,11 @@ _WORKFLOW_ENTITY_RE = re.compile(
     re.IGNORECASE,
 )
 _WORKFLOW_EDIT_RE = re.compile(
-    r"\b(?:add|remove|delete|rename|connect|disconnect|move|update|change|modify|edit|fix|patch|rewire)\b",
+    r"\b(?:add|remove|delete|rename|connect|disconnect|move|update|change|modify|edit|fix|patch|rewire|build|rebuild|retry|regenerate|redo|try\s+again)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_BUILD_VERB_RE = re.compile(
+    r"\b(?:rebuild|retry|regenerate|redo|try\s+again)\b",
     re.IGNORECASE,
 )
 _FURNACE_INTENT_RE = re.compile(
@@ -793,6 +797,63 @@ def _post_process_resume(
         result.resume_task_id = context.task.task_id
 
 
+def _enforce_workflow_edit_route(
+    result: TriageResult,
+    text: str,
+    context: ResolvedContext,
+) -> TriageResult:
+    inferred_hints = _infer_fallback_action_hints(text, context)
+    if "workflow_edit" not in inferred_hints:
+        return result
+
+    route = result.route
+    existing_hints = list(route.action_hints) if route is not None else []
+    promoted_hints: list[str] = []
+    for hint in existing_hints:
+        hint_text = str(hint or "").strip()
+        if hint_text in {"read_file", "search_web", "status_check"} and hint_text not in promoted_hints:
+            promoted_hints.append(hint_text)
+    if "workflow_edit" not in promoted_hints:
+        promoted_hints.append("workflow_edit")
+
+    keep_plan_route = result.intent == "plan"
+    promoted_intent = "plan" if keep_plan_route else "agent"
+    promoted_mode = RouteMode.PLAN if keep_plan_route else RouteMode.AGENT
+    rationale_parts = []
+    if route is not None and route.rationale:
+        rationale_parts.append(route.rationale)
+    rationale_parts.append(
+        "Workflow-edit heuristic reinforcement for anaphoric or retry/fix follow-up"
+    )
+    promoted_route = RouteDecision(
+        mode=promoted_mode,
+        target="workflow",
+        action_hints=promoted_hints,
+        rationale="; ".join(rationale_parts),
+    )
+
+    route_already_matches = (
+        route is not None
+        and route.target == "workflow"
+        and route.mode == promoted_mode
+        and route.action_hints == promoted_hints
+    )
+    if (
+        route_already_matches
+        and result.intent == promoted_intent
+        and int(result.tier) >= 2
+    ):
+        return result
+
+    return result.model_copy(
+        update={
+            "tier": max(2, int(result.tier)),
+            "intent": promoted_intent,
+            "route": promoted_route,
+        }
+    )
+
+
 def _post_process_triage_result(
     result: TriageResult,
     text: str,
@@ -803,6 +864,7 @@ def _post_process_triage_result(
     result.context_needs = normalize_context_needs(result.context_needs)
     result.entities = _resolve_entities(result.entities, context, project_store)
     _post_process_resume(result, text, context, project_store)
+    result = _enforce_workflow_edit_route(result, text, context)
     result = _enforce_furnace_route(result, text)
     return result
 
@@ -863,6 +925,34 @@ def _context_text(context: ResolvedContext) -> str:
     return " ".join(part for part in parts if part).lower()
 
 
+_WORKFLOW_ACTIVITY_INTENTS = frozenset({
+    "workflow_edit", "workflow_build", "build", "mutate",
+})
+_WORKFLOW_ACTIVITY_LABEL_RE = re.compile(
+    r"\b(?:workflow|graph|build|node)\b", re.IGNORECASE,
+)
+
+
+def _has_recent_workflow_activity(context: ResolvedContext, lookback: int = 4) -> bool:
+    """Check whether recent task turns indicate workflow build/edit activity.
+
+    Without this guard, generic retry language like "try again" would route
+    into workflow mutation whenever the project has any linked workflow,
+    even when the conversation is not about the workflow at all.
+    """
+    for turn in context.task.turns[-lookback:]:
+        if turn.intent and turn.intent in _WORKFLOW_ACTIVITY_INTENTS:
+            return True
+        meta = turn.metadata or {}
+        if meta.get("route_target") == "workflow":
+            return True
+        if meta.get("allow_mutation_tool"):
+            return True
+        if turn.role == "assistant" and _WORKFLOW_ACTIVITY_LABEL_RE.search(turn.content or ""):
+            return True
+    return False
+
+
 def _infer_fallback_action_hints(text: str, context: ResolvedContext) -> list[str]:
     lower = text.lower()
     context_text = _context_text(context)
@@ -875,6 +965,11 @@ def _infer_fallback_action_hints(text: str, context: ResolvedContext) -> list[st
     workflow_context_like = bool(_WORKFLOW_ENTITY_RE.search(text)) or (
         has_anaphora and bool(_WORKFLOW_ENTITY_RE.search(context_text))
     )
+    if not workflow_context_like:
+        has_linked_wf = bool(getattr(context.project, "linked_workflow_ids", None))
+        if has_linked_wf and _WORKFLOW_BUILD_VERB_RE.search(text):
+            if _has_recent_workflow_activity(context):
+                workflow_context_like = True
 
     hints: list[str] = []
     if workflow_context_like and _WORKFLOW_EDIT_RE.search(text):

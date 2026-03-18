@@ -183,9 +183,7 @@ def _determine_stage(session: Any) -> str:
 
     msg = getattr(session, "msg", None)
     metadata = getattr(msg, "metadata", None) if msg is not None else None
-    if not isinstance(metadata, dict):
-        metadata = {}
-    mode = str(metadata.get("mode") or "agent")
+    mode = _request_mode(metadata)
 
     action_hints = getattr(route, "action_hints", []) if route else []
     route_target = getattr(route, "target", "") if route else ""
@@ -237,7 +235,7 @@ def _extract_chat_params(
                 if turn.role in ("user", "assistant") and turn.content:
                     history.append({"role": turn.role, "content": turn.content})
 
-    mode: str = str(metadata.get("mode") or "agent")
+    mode = _request_mode(metadata)
     surface: str = getattr(msg, "surface", None) or "server"
     cancel_event = _cancel_event(session)
     if cancel_event is not None and not hasattr(cancel_event, "is_set"):
@@ -285,7 +283,12 @@ def _extract_chat_params(
 
     allow_mutation_tool = metadata.get("allow_mutation_tool")
     if not isinstance(allow_mutation_tool, bool):
-        allow_mutation_tool = "workflow_edit" in required_action_hints
+        route_target = getattr(route, "target", "") if route is not None else ""
+        allow_mutation_tool = (
+            "workflow_edit" in required_action_hints
+            or mode == "build"
+            or route_target == "workflow"
+        )
 
     stream_channel_id = str(metadata.get("stream_channel_id") or "").strip() or None
     attachment_prompt_context = str(metadata.get("attachment_prompt_context") or "").strip()
@@ -329,6 +332,17 @@ def _extract_chat_params(
         audit["concierge_model_override"] = model_override
         result["audit_metadata"] = audit
     return result
+
+
+def _request_mode(metadata: Any) -> str:
+    """Return the effective request mode, preserving explicit build overrides."""
+    if not isinstance(metadata, dict):
+        return "agent"
+    requested_mode = str(metadata.get("requested_mode") or "").strip().lower()
+    if requested_mode in {"build", "mutate"}:
+        return requested_mode
+    mode = str(metadata.get("mode") or "").strip()
+    return mode or "agent"
 
 
 # ---------------------------------------------------------------------------

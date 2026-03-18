@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 from unittest import mock
 
@@ -161,6 +162,13 @@ class TestResourceTracker:
         assert tracker.available is True
 
     @pytest.mark.asyncio
+    async def test_available_false_when_llm_budget_exhausted(self):
+        tracker = ResourceTracker(ResourceBudget(max_concurrent_runs=2, max_concurrent_llm_calls=1))
+        assert tracker.available is True
+        await tracker.try_acquire("llm")
+        assert tracker.available is False
+
+    @pytest.mark.asyncio
     async def test_snapshot(self):
         tracker = ResourceTracker(ResourceBudget(max_concurrent_runs=3, max_concurrent_llm_calls=5))
         await tracker.try_acquire("run")
@@ -197,6 +205,26 @@ class TestResourceTracker:
         )
         assert sum(results) == 3  # exactly 3 acquired
         assert tracker.snapshot()["active_runs"] == 3
+
+
+def test_build_concierge_wires_resource_tracker_from_env(monkeypatch):
+    from dan.server.concierge.runtime import build_concierge
+
+    monkeypatch.setenv("DAN_MAX_CONCURRENT_RUNS", "2")
+    monkeypatch.setenv("DAN_MAX_CONCURRENT_LLM", "7")
+
+    result = build_concierge(
+        chat_manager=mock.MagicMock(),
+        capability_context=SimpleNamespace(run_manager=None, activity_tracker=None),
+        enable_dispatcher=True,
+    )
+
+    assert isinstance(result, tuple)
+    _concierge, dispatcher = result
+    tracker = dispatcher._resource_tracker
+    assert tracker is not None
+    assert tracker.budget.max_concurrent_runs == 2
+    assert tracker.budget.max_concurrent_llm_calls == 7
 
 
 # =======================================================================
@@ -399,6 +427,41 @@ class TestDispatcherResourceConcurrency:
         )
 
         assert overflow_seen, "Legacy hard cap should still trigger overflow"
+
+    @pytest.mark.asyncio
+    async def test_dispatcher_honors_llm_budget(self):
+        """With max_llm_calls=1, a second project should overflow even if runs are available."""
+        tracker = ResourceTracker(ResourceBudget(max_concurrent_runs=5, max_concurrent_llm_calls=1))
+        concierge = _FakeConcierge(delay=0.1)
+        ctx_a = _make_context("proj-a", "A")
+        ctx_b = _make_context("proj-b", "B")
+        concierge.set_context("A", ctx_a)
+        concierge.set_context("B", ctx_b)
+
+        dispatcher = ConcurrentDispatcher(
+            concierge,
+            max_concurrent_projects=5,
+            resource_tracker=tracker,
+        )
+
+        overflow_seen = False
+
+        async def _dispatch(text: str):
+            nonlocal overflow_seen
+            async for event in dispatcher.dispatch(_make_msg(text)):
+                if event.model_dump().get("type") == "chat_queued":
+                    overflow_seen = True
+
+        async def _dispatch_b():
+            await asyncio.sleep(0.02)
+            await _dispatch("B: task")
+
+        await asyncio.gather(
+            _dispatch("A: task"),
+            _dispatch_b(),
+        )
+
+        assert overflow_seen, "LLM budget should trigger overflow when saturated"
 
     @pytest.mark.asyncio
     async def test_resource_released_after_completion(self):

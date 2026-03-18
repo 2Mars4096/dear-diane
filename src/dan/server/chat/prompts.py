@@ -341,7 +341,7 @@ Apply when user mentions a specific journal.
 {graph_summary}
 
 ## Rules
-- Produce a complete runnable workflow in one plan_graph_mutations call.
+- Produce a complete runnable workflow.
 - Prefer expand_pattern for known shapes; add_node/add_edge for custom.
 - strict=true on edges. Exact port names only.
 - Paper workflows: include full pipeline through LaTeX compile + package.
@@ -741,7 +741,7 @@ Do not dump an entire long file in one tool call.
 """
 
 EMPTY_GRAPH_SUMMARY_PLACEHOLDER = (
-    "Workflow is empty (0 nodes, 0 edges). Create from scratch using plan_graph_mutations."
+    "Workflow is empty (0 nodes, 0 edges). Build from scratch."
 )
 
 # ---------------------------------------------------------------------------

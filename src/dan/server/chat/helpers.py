@@ -20,6 +20,7 @@ _ACTION_HINT_TOOL_MAP: dict[str, frozenset[str]] = {
     "read_file": frozenset({"file_read", "pdf_read", "list_directory"}),
     "search_web": frozenset({"web_search", "web_fetch", "http_request"}),
     "write_file": frozenset({"file_write"}),
+    "workflow_edit": frozenset({"plan_graph_mutations"}),
     # Run-control turns (e.g. furnace session lifecycle) should execute API control
     # actions instead of ending as narrative prose.
     "run_control": frozenset({"http_request"}),
@@ -161,7 +162,15 @@ def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> s
     write_pending = "write_file" in missing_action_hints
     read_pending = "read_file" in missing_action_hints
     run_control_pending = "run_control" in missing_action_hints
+    workflow_edit_pending = "workflow_edit" in missing_action_hints
     handled_read = False
+
+    if workflow_edit_pending:
+        instructions.append(
+            "You need to modify the workflow graph. Call the plan_graph_mutations "
+            "tool with the appropriate operations (add_node, add_edge, "
+            "expand_pattern, etc.) to build or update the workflow."
+        )
 
     if search_pending and write_pending:
         instructions.append(
