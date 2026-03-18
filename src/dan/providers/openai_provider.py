@@ -53,7 +53,7 @@ class OpenAIProvider:
         is_kimi = normalized.startswith("kimi-")
         return ModelBehaviorProfile(
             supports_tool_calls=True,
-            supports_exact_tool_choice=True,
+            supports_exact_tool_choice=not is_kimi,
             supports_required_tool_choice=not is_kimi,
             assistant_replay_mode="raw",
         )

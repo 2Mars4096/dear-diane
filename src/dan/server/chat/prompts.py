@@ -15,6 +15,12 @@ from dan.server.graph_mutator import (
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class ToolReferenceEntry:
+    name: str
+    category: str = "other"
+
+
 def _normalize_autonomy_preference(
     value: str | None,
     *,
@@ -189,8 +195,11 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
         "function": {
             "name": "plan_graph_mutations",
             "description": (
-                "Plan a sequence of graph operations to modify the workflow. "
-                "Use this when the user asks to add, remove, or modify nodes or edges."
+                "Plan a sequence of graph operations for the current workflow. "
+                "Use this to build an empty workflow from scratch, add/remove/rewire/configure "
+                "nodes or edges, or replace obsolete workflow structure. "
+                "This is DAN's workflow-building/editing interface; do not wait for primitive "
+                "create_node/add_edge tools."
             ),
             "parameters": {
                 "type": "object",
@@ -369,6 +378,11 @@ _capability_reference_cache: str | None = None
 _CATEGORY_ORDER = [
     ("file", "File"),
     ("document", "Document"),
+    ("graph", "Workflow"),
+    ("workflow", "Workflow Edit"),
+    ("experience", "History"),
+    ("run", "Run"),
+    ("publish", "Publish"),
     ("web", "Web"),
     ("browser", "Browser"),
     ("system", "System"),
@@ -381,22 +395,52 @@ _CATEGORY_ORDER = [
 ]
 
 
-def generate_capability_reference() -> str:
-    """Build a compact tool-family summary for the system prompt."""
+def generate_capability_reference(
+    tool_entries: list[ToolReferenceEntry] | None = None,
+    *,
+    include_mutation_tool: bool = False,
+) -> str:
+    """Build a compact tool-family summary for the system prompt.
+
+    When ``tool_entries`` is provided, the summary reflects the actual request-time
+    tool catalog instead of the static built-in tool library.
+    """
     global _capability_reference_cache
-    if _capability_reference_cache is not None:
+    use_dynamic_catalog = tool_entries is not None
+    if (
+        not use_dynamic_catalog
+        and not include_mutation_tool
+        and _capability_reference_cache is not None
+    ):
         return _capability_reference_cache
 
-    try:
-        from dan.tools import get_all_tools
-        all_tools = get_all_tools()
-    except Exception:
-        all_tools = {}
+    if not use_dynamic_catalog:
+        try:
+            from dan.tools import get_all_tools
+            all_tools = get_all_tools()
+        except Exception:
+            all_tools = {}
+        tool_entries = [
+            ToolReferenceEntry(
+                name=tool_id,
+                category=str(meta.get("category", "other") or "other"),
+            )
+            for tool_id, (_fn, meta) in all_tools.items()
+        ]
 
     by_category: dict[str, list[str]] = {}
-    for tool_id, (_fn, meta) in all_tools.items():
-        cat = meta.get("category", "other")
-        by_category.setdefault(cat, []).append(tool_id)
+    for entry in tool_entries:
+        tool_name = str(entry.name or "").strip()
+        if not tool_name:
+            continue
+        category = str(entry.category or "other").strip() or "other"
+        bucket = by_category.setdefault(category, [])
+        if tool_name not in bucket:
+            bucket.append(tool_name)
+    if include_mutation_tool:
+        workflow_bucket = by_category.setdefault("workflow", [])
+        if "plan_graph_mutations" not in workflow_bucket:
+            workflow_bucket.append("plan_graph_mutations")
 
     def _family_preview(tool_ids: list[str], *, limit: int = 4) -> str:
         ordered = sorted(tool_ids)
@@ -409,7 +453,7 @@ def generate_capability_reference() -> str:
         "## Tool Use",
         "",
         "Use the provided tool schemas instead of guessing. Prefer tools when you need grounded facts, "
-        "file contents, web/system actions, or to write deliverables to disk.",
+        "file contents, web/system actions, workflow inspection/editing, or to write deliverables to disk.",
         "",
     ]
 
@@ -427,6 +471,17 @@ def generate_capability_reference() -> str:
         entries = by_category[cat_key]
         label = cat_key.replace("_", " ").title()
         lines.append(f"**{label}:** {_family_preview(entries)}")
+
+    if include_mutation_tool:
+        lines.append("")
+        lines.append(
+            "When the user wants to create or modify the current workflow, use `plan_graph_mutations`. "
+            "It is the workflow-building/editing tool for the current graph, including build-from-scratch on empty workflows. "
+            "Do not claim you need primitive `create_node`, `add_edge`, or similar workflow-edit tools."
+        )
+        lines.append(
+            "If the user also asks to validate or test the workflow, use the available run/workflow tools after planning the mutation."
+        )
 
     lines.append("")
     lines.append(
@@ -448,8 +503,12 @@ def generate_capability_reference() -> str:
         "For large files, locate relevant sections first and read targeted ranges."
     )
 
-    _capability_reference_cache = "\n".join(lines)
-    return _capability_reference_cache
+    reference = "\n".join(lines)
+    if use_dynamic_catalog:
+        return reference
+    if not include_mutation_tool:
+        _capability_reference_cache = reference
+    return reference
 
 
 def invalidate_capability_cache() -> None:

@@ -327,6 +327,12 @@ def _llm_error_status_code(exc: Exception) -> int | None:
     return None
 
 
+def _is_tool_choice_incompatible_error(exc: Exception) -> bool:
+    """Return whether the provider rejected explicit tool_choice settings."""
+    message = str(exc).lower()
+    return "tool_choice" in message and "thinking enabled" in message
+
+
 def _parse_retry_after_seconds(
     value: Any,
     *,

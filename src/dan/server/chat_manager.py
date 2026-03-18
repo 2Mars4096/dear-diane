@@ -97,6 +97,7 @@ from dan.server.chat.helpers import (  # noqa: F401
     _force_single_tool_request,
     _looks_like_missing_target_error,
     _write_file_escalation_prompt,
+    _is_tool_choice_incompatible_error,
     _is_transient_llm_error,
     _classify_llm_error_kind,
     _build_tool_followup_recovery_prompt,
@@ -125,6 +126,7 @@ from dan.server.chat.prompts import (  # noqa: F401
     _CATEGORY_ORDER,
     generate_capability_reference,
     invalidate_capability_cache,
+    ToolReferenceEntry,
     _WHATSAPP_SURFACE_HINTS,
     _RESEARCH_REPORT_PROMPT_HINT,
     _RESEARCH_HINT_CLASSIFIER_SYSTEM_PROMPT,
@@ -294,6 +296,12 @@ def _disable_tool_access_in_messages(
     else:
         messages.insert(0, {"role": "system", "content": TOOL_DISABLE_NOTE.strip()})
     return messages
+
+
+def _capability_registry_mode(mode: str) -> str:
+    """Resolve user-facing chat modes to capability-registry buckets."""
+    normalized = normalize_chat_mode(mode)
+    return "agent" if normalized == "auto" else normalized
 
 
 class ChatManager:
@@ -938,6 +946,7 @@ class ChatManager:
         try:
             effective_model = model_override or self._chat_model
             required_action_hints = _dedupe_action_hints(required_action_hints)
+            capability_mode = _capability_registry_mode(mode)
             graph_dict = self._graph_store.get_graph(workflow_id)
             if graph_dict is None:
                 _try_persist_audit(
@@ -1219,6 +1228,7 @@ class ChatManager:
                 extra_system_instructions=extra_system_instructions,
                 memory_project_id=memory_project_id,
                 include_memory_kernel_context=include_memory_kernel_context,
+                allow_mutation_tool=allow_mutation_tool,
                 model=effective_model,
                 autonomy_resolution=autonomy_resolution,
             )
@@ -1254,6 +1264,8 @@ class ChatManager:
             model_behavior = get_model_behavior(provider, effective_model)
             exact_tool_choice_supported = model_behavior.supports_exact_tool_choice
             required_tool_choice_supported = model_behavior.supports_required_tool_choice
+            allow_exact_tool_choice = exact_tool_choice_supported
+            allow_required_tool_choice = required_tool_choice_supported
             replay_raw_assistant_messages = (
                 model_behavior.assistant_replay_mode == "raw"
             )
@@ -1265,7 +1277,7 @@ class ChatManager:
 
             all_tools: list[dict[str, Any]] = []
             if self._capability_registry is not None:
-                all_tools = list(self._capability_registry.get_tools(mode))
+                all_tools = list(self._capability_registry.get_tools(capability_mode))
             prompt_supports_load_prompt_detail = any(
                 str(message_obj.get("role") or "") == "system"
                 and "load_prompt_detail" in str(message_obj.get("content") or "")
@@ -1277,7 +1289,7 @@ class ChatManager:
                     tool for tool in all_tools
                     if str(((tool.get("function") or {}).get("name")) or "") != "load_prompt_detail"
                 ]
-            if allow_mutation_tool and mode not in READ_ONLY_MODES:
+            if allow_mutation_tool and capability_mode not in READ_ONLY_MODES:
                 all_tools.append(MUTATION_TOOL_SCHEMA)
             satisfied_tool_names: set[str] = set()
             successful_tool_results: list[dict[str, Any]] = []
@@ -1296,8 +1308,8 @@ class ChatManager:
                     return _force_single_tool_request(
                         all_tools,
                         "file_write",
-                        allow_exact_tool_choice=exact_tool_choice_supported,
-                        allow_required_tool_choice=required_tool_choice_supported,
+                        allow_exact_tool_choice=allow_exact_tool_choice,
+                        allow_required_tool_choice=allow_required_tool_choice,
                     )
                 return (
                     all_tools,
@@ -1305,8 +1317,8 @@ class ChatManager:
                         required_action_hints,
                         satisfied_tool_names,
                         tool_results=successful_tool_results,
-                        allow_exact_tool_choice=exact_tool_choice_supported,
-                        allow_required_tool_choice=required_tool_choice_supported,
+                        allow_exact_tool_choice=allow_exact_tool_choice,
+                        allow_required_tool_choice=allow_required_tool_choice,
                     ),
                 )
 
@@ -1413,7 +1425,9 @@ class ChatManager:
 
             try:
                 # Retry loop for transient errors
-                for attempt in range(2):
+                attempt = 0
+                tool_choice_compat_fallback_used = False
+                while attempt < 2:
                     try:
                         request_tools, request_tool_choice = _tool_request_config()
                         result: CompletionResult | None = None
@@ -1451,6 +1465,19 @@ class ChatManager:
                         )
                         break
                     except Exception as e:
+                        if (
+                            not tool_choice_compat_fallback_used
+                            and _is_tool_choice_incompatible_error(e)
+                            and (allow_exact_tool_choice or allow_required_tool_choice)
+                        ):
+                            logger.warning(
+                                "Provider rejected explicit tool_choice for model %s; retrying with auto tool choice",
+                                effective_model,
+                            )
+                            allow_exact_tool_choice = False
+                            allow_required_tool_choice = False
+                            tool_choice_compat_fallback_used = True
+                            continue
                         _is_transient = (
                             isinstance(e, (asyncio.TimeoutError, TimeoutError))
                             or "timeout" in str(e).lower()
@@ -1460,8 +1487,11 @@ class ChatManager:
                         if attempt < 1 and _is_transient:
                             logger.warning("Transient error in LLM call (attempt %d), retrying: %s", attempt, e)
                             await asyncio.sleep(2 * (attempt + 1))
+                            attempt += 1
                             continue
                         raise
+                else:
+                    raise RuntimeError("Initial tool completion retries exhausted")
             except Exception as exc:
                 logger.warning(
                     "Tool-calling complete() failed (%s), falling back to text-only stream",
@@ -1563,11 +1593,18 @@ class ChatManager:
                     return step_type
                 return type(step).__name__
 
+            def _interrupted_tool_loop_content() -> str:
+                # Once structured tool results exist in the UI, avoid copying the
+                # one-line tool trace fallback into assistant text on stop.
+                if audit_tool_records:
+                    return ""
+                return "\n\n".join(combined_text_parts) if combined_text_parts else ""
+
             for _turn in range(max_tool_turns):
                 if cancel_event and cancel_event.is_set():
                     yield ChatInterruptedEvent(
                         message_id=message_id,
-                        content="\n\n".join(combined_text_parts) if combined_text_parts else "",
+                        content=_interrupted_tool_loop_content(),
                         token_usage={},
                     )
                     return
@@ -1584,7 +1621,7 @@ class ChatManager:
                             inject_id=inj["inject_id"],
                         )
 
-                cap_calls = self._extract_all_capability_tool_calls(result, mode)
+                cap_calls = self._extract_all_capability_tool_calls(result, capability_mode)
                 mutation_data = (
                     self._extract_mutation_from_result(result)
                     if allow_mutation_tool and not cap_calls
@@ -1627,9 +1664,7 @@ class ChatManager:
                                     "tools": continuation_tools,
                                     "tool_choice": continuation_tool_choice,
                                 },
-                                interrupted_content=lambda: "\n\n".join(combined_text_parts)
-                                if combined_text_parts
-                                else "",
+                                interrupted_content=_interrupted_tool_loop_content,
                                 emit_progress_ack=True,
                             ):
                                 if isinstance(step, CompletionResult):
@@ -1703,9 +1738,7 @@ class ChatManager:
                                         "tools": continuation_tools,
                                         "tool_choice": continuation_tool_choice,
                                     },
-                                    interrupted_content=lambda: "\n\n".join(combined_text_parts)
-                                    if combined_text_parts
-                                    else "",
+                                    interrupted_content=_interrupted_tool_loop_content,
                                     emit_progress_ack=True,
                                 ):
                                     if isinstance(step, CompletionResult):
@@ -2015,6 +2048,7 @@ class ChatManager:
                                 surface=surface,
                                 memory_project_id=memory_project_id,
                                 include_memory_kernel_context=include_memory_kernel_context,
+                                allow_mutation_tool=True,
                                 model=effective_model,
                                 autonomy_resolution=autonomy_resolution,
                             )
@@ -2110,12 +2144,6 @@ class ChatManager:
                     )
                     return
 
-                # Emit the LLM's planning text before executing tool calls
-                # so the UI shows what the assistant is doing
-                planning_text = (result.text or "").strip()
-                if planning_text:
-                    yield ChatTokenEvent(delta=planning_text, accumulated=planning_text)
-
                 # Capability tools → execute, build tool result messages, loop
                 tool_result_messages: list[dict[str, Any]] = []
                 raw_tool_calls = []
@@ -2125,7 +2153,7 @@ class ChatManager:
                     if (
                         name != "plan_graph_mutations"
                         and self._capability_registry is not None
-                        and self._capability_registry.is_available(name, mode)
+                        and self._capability_registry.is_available(name, capability_mode)
                     ):
                         raw_tool_calls.append(tc)
 
@@ -2203,7 +2231,7 @@ class ChatManager:
                                     pending["tool_name"],
                                     pending["args"],
                                     ctx,
-                                    mode=mode,
+                                    mode=capability_mode,
                                 )
                             else:
                                 cap_result = CapabilityResult(
@@ -2464,11 +2492,6 @@ class ChatManager:
                         "content": force_write_prompt,
                     })
 
-                messages = _compact_context(messages, effective_model)
-                _pressure_hint = context_pressure_hint(messages, effective_model)
-                if _pressure_hint:
-                    messages.append({"role": "system", "content": _pressure_hint})
-
                 followup_missing_action_hints = _missing_action_hints(
                     required_action_hints,
                     satisfied_tool_names,
@@ -2481,6 +2504,20 @@ class ChatManager:
                     followup_tools, followup_tool_choice = _tool_request_config(
                         force_file_write_now=force_file_write_next_turn,
                     )
+                    if (
+                        followup_missing_action_hints
+                        and followup_tool_choice == "auto"
+                    ):
+                        messages.append({
+                            "role": "user",
+                            "content": _tool_retry_prompt_for_missing_actions(
+                                followup_missing_action_hints,
+                            ),
+                        })
+                    messages = _compact_context(messages, effective_model)
+                    _pressure_hint = context_pressure_hint(messages, effective_model)
+                    if _pressure_hint:
+                        messages.append({"role": "system", "content": _pressure_hint})
                     logger.info(
                         "Tool-loop follow-up turn %d starting: tools=%s, missing_actions=%s, "
                         "force_file_write=%s, last_stream_channel_id=%s, context_msgs=%d",
@@ -2502,9 +2539,7 @@ class ChatManager:
                             "tools": followup_tools,
                             "tool_choice": followup_tool_choice,
                         },
-                        interrupted_content=lambda: "\n\n".join(combined_text_parts)
-                        if combined_text_parts
-                        else "",
+                        interrupted_content=_interrupted_tool_loop_content,
                         emit_progress_ack=True,
                     ):
                         if isinstance(step, CompletionResult):
@@ -2593,9 +2628,7 @@ class ChatManager:
                                         "tools": followup_tools,
                                         "tool_choice": followup_tool_choice,
                                     },
-                                    interrupted_content=lambda: "\n\n".join(combined_text_parts)
-                                    if combined_text_parts
-                                    else "",
+                                    interrupted_content=_interrupted_tool_loop_content,
                                     emit_progress_ack=True,
                                 ):
                                     if isinstance(step, CompletionResult):
@@ -2768,7 +2801,7 @@ class ChatManager:
             # Turn cap reached — prefer one final no-tools synthesis if the
             # model is still requesting more tools, so the user gets the best
             # partial answer available instead of a hard stop note alone.
-            final_cap_calls = self._extract_all_capability_tool_calls(result, mode)
+            final_cap_calls = self._extract_all_capability_tool_calls(result, capability_mode)
             missing_action_hints = _missing_action_hints(
                 required_action_hints,
                 satisfied_tool_names,
@@ -2809,9 +2842,7 @@ class ChatManager:
                             "temperature": 0.7,
                             "max_tokens": completion_max_tokens,
                         },
-                        interrupted_content=lambda: "\n\n".join(combined_text_parts)
-                        if combined_text_parts
-                        else "",
+                        interrupted_content=_interrupted_tool_loop_content,
                         emit_progress_ack=True,
                     ):
                         if isinstance(step, CompletionResult):
@@ -2866,9 +2897,7 @@ class ChatManager:
                             "temperature": 0.7,
                             "max_tokens": completion_max_tokens,
                         },
-                        interrupted_content=lambda: "\n\n".join(combined_text_parts)
-                        if combined_text_parts
-                        else "",
+                        interrupted_content=_interrupted_tool_loop_content,
                         emit_progress_ack=True,
                     ):
                         if isinstance(step, CompletionResult):
@@ -3090,13 +3119,14 @@ class ChatManager:
         """Extract all non-mutation capability tool calls from a CompletionResult."""
         if not result.tool_calls or self._capability_registry is None:
             return []
+        capability_mode = _capability_registry_mode(mode)
         out: list[tuple[str, dict[str, Any]]] = []
         for tc in result.tool_calls:
             func = tc.get("function", {})
             name = func.get("name", "")
             if name == "plan_graph_mutations":
                 continue
-            if self._capability_registry.is_available(name, mode):
+            if self._capability_registry.is_available(name, capability_mode):
                 try:
                     args = json.loads(func.get("arguments", "{}"))
                 except (json.JSONDecodeError, TypeError):
@@ -3283,6 +3313,7 @@ class ChatManager:
         memory_project_id: str | None = None,
         include_memory_kernel_context: bool = True,
         tools_available: bool = True,
+        allow_mutation_tool: bool = False,
         model: str | None = None,
         autonomy_resolution: Any | None = None,
     ) -> list[dict[str, str]]:
@@ -3341,6 +3372,10 @@ class ChatManager:
             prompt_context_obj,
         )
         module_hints = "\n\n".join(module.content.strip() for module in resolved_modules if module.content.strip())
+        prompt_supports_load_prompt_detail = any(
+            bool(module.detail_id)
+            for module in resolved_modules
+        )
 
         preflight_context = ""
         try:
@@ -3351,13 +3386,44 @@ class ChatManager:
             _now = _dt.datetime.now(_dt.timezone.utc).astimezone()
             preflight_context = f"Today is {_now.strftime('%A, %Y-%m-%d')}."
 
-        system_sections = [UNIFIED_SYSTEM_PROMPT.format(
+        capability_reference = ""
+        if tools_available:
+            capability_entries: list[ToolReferenceEntry] | None = None
+            if self._capability_registry is not None:
+                capability_entries = []
+                for tool_meta in self._capability_registry.describe_tools(normalized_mode):
+                    tool_name = str(tool_meta.get("name") or "").strip()
+                    if not tool_name:
+                        continue
+                    if tool_name == "load_prompt_detail" and not prompt_supports_load_prompt_detail:
+                        continue
+                    capability_entries.append(
+                        ToolReferenceEntry(
+                            name=tool_name,
+                            category=str(tool_meta.get("category") or "other"),
+                        )
+                    )
+            capability_reference = generate_capability_reference(
+                capability_entries,
+                include_mutation_tool=(
+                    allow_mutation_tool
+                    and normalized_mode not in {"ask", "plan", "conversation"}
+                ),
+            )
+        system_prompt = UNIFIED_SYSTEM_PROMPT.format(
             current_date=preflight_context,
-            capability_reference=generate_capability_reference(),
+            capability_reference=capability_reference,
             module_hints=module_hints,
             context_block=context_block,
             workflow_block=workflow_block,
-        ).strip()]
+        )
+        if not tools_available:
+            system_prompt = system_prompt.replace(
+                "You are DAN, a personal AI assistant with full tool access. You help with anything: research, file operations, web search, computation, communication, workflow building.",
+                "You are DAN, a personal AI assistant responding without tool access for this response. Help directly in natural language, be explicit about limits, and do not simulate or narrate tool calls.",
+                1,
+            )
+        system_sections = [system_prompt.strip()]
         if not tools_available:
             system_sections.append(
                 "## Tool access for this response\n"
@@ -3381,6 +3447,18 @@ class ChatManager:
             system_sections.append(memory_context)
         if extra_system_instructions:
             system_sections.append(extra_system_instructions.strip())
+        if (
+            tools_available
+            and allow_mutation_tool
+            and normalized_mode not in {"ask", "plan", "conversation"}
+        ):
+            system_sections.append(
+                "## Workflow mutation tool\n"
+                "`plan_graph_mutations` is the workflow-building/editing tool for the current workflow. "
+                "Use it to create a workflow from scratch, add/remove/rewire/configure nodes and edges, "
+                "or replace obsolete workflow structure. Do not claim you need primitive `create_node`, "
+                "`add_edge`, or similar workflow-edit tools."
+            )
         system_content = "\n\n".join(
             section.rstrip()
             for section in system_sections

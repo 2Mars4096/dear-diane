@@ -117,6 +117,22 @@ class ChatCapabilityRegistry:
         """Return tool schemas available for the given chat mode."""
         return [t.schema for t in self._tools.values() if mode in t.modes]
 
+    def describe_tools(self, mode: str) -> list[dict[str, str]]:
+        """Return lightweight request-time tool metadata for prompts/UI."""
+        described: list[dict[str, str]] = []
+        for tool in self._tools.values():
+            if mode not in tool.modes:
+                continue
+            func = tool.schema.get("function") if isinstance(tool.schema, dict) else None
+            described.append({
+                "name": tool.name,
+                "category": tool.category or "other",
+                "description": str(func.get("description") or "").strip()
+                if isinstance(func, dict)
+                else "",
+            })
+        return described
+
     def get_handler(self, name: str) -> CapabilityHandler | None:
         tool = self._tools.get(name)
         return tool.handler if tool else None
