@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -26,7 +27,9 @@ from dan.server.chat.helpers import (
 )
 from dan.server.chat_manager import (
     ChatCompleteEvent,
+    ChatInterruptedEvent,
     ChatManager,
+    ChatTokenEvent,
     ChatToolCallResultEvent,
     ChatToolCallStartEvent,
 )
@@ -95,6 +98,7 @@ def _make_manager(
     provider: _SequenceProvider,
     *,
     tool_call_log: list[dict[str, Any]],
+    capability_side_effect: Any | None = None,
 ) -> ChatManager:
     registry = ProviderRegistry()
     registry.register("default", provider)
@@ -106,6 +110,8 @@ def _make_manager(
                 "workflow_id": context.workflow_id,
             }
         )
+        if capability_side_effect is not None:
+            capability_side_effect(args, context)
         return CapabilityResult(
             success=True,
             message="Stub capability tool result",
@@ -247,11 +253,13 @@ async def test_send_message_with_tools_retries_transient_post_tool_followup_and_
     start_events = [event for event in events if isinstance(event, ChatToolCallStartEvent)]
     result_events = [event for event in events if isinstance(event, ChatToolCallResultEvent)]
     complete_events = [event for event in events if isinstance(event, ChatCompleteEvent)]
+    token_events = [event for event in events if isinstance(event, ChatTokenEvent)]
 
     assert len(start_events) == 1
     assert start_events[0].tool_name == "stub_capability"
     assert len(result_events) == 1
     assert result_events[0].status == "success"
+    assert all(event.delta != "Let me check that." for event in token_events)
     assert tool_call_log == [{"args": {"value": 7}, "workflow_id": "wf1"}]
     assert len(provider.requests) == 3
     assert complete_events[-1].content == "Recovered final answer from the completed tool results."
@@ -301,6 +309,184 @@ async def test_send_message_with_tools_surfaces_updated_followup_rate_limit_erro
         "The provider hit a rate or quota limit while generating the final answer from completed tool results."
     )
     assert "stub capability" in complete_events[-1].content
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_stop_after_tool_results_keeps_interrupted_content_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+    cancel_event = asyncio.Event()
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="",
+                tool_calls=[_tool_call(11)],
+                usage={"prompt_tokens": 8, "completion_tokens": 2},
+            ),
+        ]
+    )
+    mgr = _make_manager(
+        provider,
+        tool_call_log=tool_call_log,
+        capability_side_effect=lambda *_args: cancel_event.set(),
+    )
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Use the tool, then stop.",
+            history=[],
+            cancel_event=cancel_event,
+        )
+    )
+
+    interrupted_events = [event for event in events if isinstance(event, ChatInterruptedEvent)]
+    assert tool_call_log == [{"args": {"value": 11}, "workflow_id": "wf1"}]
+    assert interrupted_events
+    assert interrupted_events[-1].content == ""
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_retries_with_auto_tool_choice_when_provider_rejects_exact_choice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+    provider = _SequenceProvider(
+        [
+            RuntimeError("tool_choice 'specified' is incompatible with thinking enabled"),
+            CompletionResult(
+                text=json.dumps(
+                    {
+                        "description": "Add a new input node",
+                        "operations": [
+                            {"op": "add_node", "node_type": "input", "name": "Input"},
+                        ],
+                    }
+                ),
+                usage={"prompt_tokens": 5, "completion_tokens": 2},
+            ),
+        ]
+    )
+    mgr = _make_manager(provider, tool_call_log=tool_call_log)
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Build the workflow.",
+            history=[],
+            allow_mutation_tool=True,
+            required_action_hints=["workflow_edit"],
+        )
+    )
+
+    mutation_events = [event for event in events if getattr(event, "type", "") == "chat_mutation"]
+    assert mutation_events
+    assert provider.requests[0]["tool_choice"] != "auto"
+    assert provider.requests[1]["tool_choice"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_adds_followup_action_prompt_when_tool_choice_is_auto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Let me inspect first.",
+                tool_calls=[_tool_call(9)],
+                usage={"prompt_tokens": 7, "completion_tokens": 2},
+            ),
+            CompletionResult(
+                text=json.dumps(
+                    {
+                        "description": "Add a new input node",
+                        "operations": [
+                            {"op": "add_node", "node_type": "input", "name": "Input"},
+                        ],
+                    }
+                ),
+                usage={"prompt_tokens": 6, "completion_tokens": 3},
+            ),
+        ]
+    )
+    provider.supports_exact_tool_choice = False
+    provider.supports_required_tool_choice = False
+    mgr = _make_manager(provider, tool_call_log=tool_call_log)
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Inspect first, then build the workflow.",
+            history=[],
+            allow_mutation_tool=True,
+            required_action_hints=["workflow_edit"],
+        )
+    )
+
+    mutation_events = [event for event in events if getattr(event, "type", "") == "chat_mutation"]
+    followup_messages = provider.requests[1]["messages"]
+
+    assert mutation_events
+    assert tool_call_log == [{"args": {"value": 9}, "workflow_id": "wf1"}]
+    assert provider.requests[1]["tool_choice"] == "auto"
+    assert any(
+        message.get("role") == "user"
+        and "plan_graph_mutations" in str(message.get("content") or "")
+        for message in followup_messages
+        if isinstance(message, dict)
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_normalizes_build_mode_for_capability_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Let me check that.",
+                tool_calls=[_tool_call(5)],
+                usage={"prompt_tokens": 6, "completion_tokens": 2},
+            ),
+            CompletionResult(
+                text="The build tool step completed.",
+                tool_calls=[],
+                usage={"prompt_tokens": 4, "completion_tokens": 3},
+            ),
+        ]
+    )
+    mgr = _make_manager(provider, tool_call_log=tool_call_log)
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Build the workflow and inspect the tool result.",
+            history=[],
+            mode="build",
+            allow_mutation_tool=False,
+        )
+    )
+
+    complete_events = [event for event in events if isinstance(event, ChatCompleteEvent)]
+    first_request_tool_names = [
+        str(((tool.get("function") or {}).get("name")) or "")
+        for tool in provider.requests[0]["tools"]
+    ]
+
+    assert "stub_capability" in first_request_tool_names
+    assert tool_call_log == [{"args": {"value": 5}, "workflow_id": "wf1"}]
+    assert complete_events[-1].content == "The build tool step completed."
 
 
 @pytest.mark.asyncio
