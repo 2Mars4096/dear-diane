@@ -1,6 +1,6 @@
 # 32: Workflow Generation Optimization
 
-**Status:** in-progress
+**Status:** completed
 **Goal:** Improve the NL→workflow pipeline end-to-end so generated workflows are more powerful, less verbose, and work correctly on first attempt more often — before measuring quality in Phase 23.
 
 ## Motivation
@@ -85,7 +85,7 @@ Six targeted improvements, ordered by impact:
 
 ## Decisions
 
-- (filled in during execution)
+- Phase 22 is complete: all seven sub-plans landed, all listed success criteria are checked, and Phase 23 now evaluates the optimized generation pipeline rather than waiting on more Phase 22 implementation work.
 
 ## Notes
 

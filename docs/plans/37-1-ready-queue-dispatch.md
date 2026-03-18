@@ -1,7 +1,7 @@
 # 37-1: Ready-Queue Dispatch
 
 **Parent:** [37-engine-runtime-parallelism](37-engine-runtime-parallelism.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Replace the level-synchronous `asyncio.gather()` barrier in the engine scheduler with an eager/ready-queue model where nodes dispatch as soon as all inbound edges are satisfied.
 
 ## Context
@@ -50,7 +50,7 @@ This appears in three places:
 - [x] 4-2. Share the feature flag — if `DAN_EAGER_DISPATCH` is off, subgraphs also use level-sync.
 
 ### 5. Plan scheduler alignment
-- [ ] 5-1. Verify `execute_plan_tasks` (plan_scheduler.py L906-997) remains correct and compatible. It already uses a ready-queue pattern; no changes expected but confirm no regressions.
+- [x] 5-1. Verify `execute_plan_tasks` (plan_scheduler.py L906-997) remains correct and compatible. It already uses a ready-queue pattern; no changes expected but confirm no regressions.
 
 ### 6. Ordering guarantees
 - [x] 6-1. Document which ordering guarantees change: within a former "level", nodes may now complete in any order.
@@ -62,6 +62,7 @@ This appears in three places:
 - Implemented eager dispatch for acyclic graphs/subgraphs, per-iteration cycle bodies, and the outer cycle-aware scheduler path in `_execute_with_cycles()`.
 - Cycle handling still uses specialized gate-aware logic on top of the ready queue so loop exits are not released too early.
 - Ordering is now explicitly "dependency-deterministic" rather than "level-deterministic": nodes that become ready together are dispatched in sorted `node_id` order, but nodes from the same former level may finish in any order.
+- `execute_plan_tasks()` is now aligned with the same completion-driven model: it dispatches up to `max_parallel`, releases successors as soon as predecessors finish, and returns results in actual completion order instead of ready-batch order.
 
 ## Notes
 
@@ -71,4 +72,4 @@ This appears in three places:
 - Checkpoint and memory flush timing are handled by 37-3, not here. This plan assumes they will be adapted. During development, the eager loop can checkpoint after every node completion as a safe default.
 - `_execute_node` (L1180-1269) is the inner per-node method. It calls `_should_skip`, resolves inputs, dispatches to the executor, and stores outputs. The eager loop still routes through `_guarded_execute_node`, but the scheduler now relies on a sorted ready heap for tie-breaking instead of level order.
 - `resume()` (L643-682) restores state and then calls `_execute()`. Under eager dispatch, the ready-set initialization in `_execute` must handle pre-completed nodes from the restored state: completed/skipped nodes should pre-decrement successors' in-degree so the tracker starts with the correct ready set. This is covered by 37-3 task 4.
-- Implemented in this slice: `_execute_ready_queue()` helper, restored-state normalization (`RUNNING` → `PENDING`), successor decrement on `SKIPPED` nodes, sorted ready-heap tie-breaking, context-edge regression coverage for eager cross-level overlap, back-edge-aware ready-queue execution inside `_iterate_cycle`, and concurrent outer-cycle scheduling that lets non-loop branches continue while loop tasks run.
+- Implemented in this slice: `_execute_ready_queue()` helper, restored-state normalization (`RUNNING` → `PENDING`), successor decrement on `SKIPPED` nodes, sorted ready-heap tie-breaking, context-edge regression coverage for eager cross-level overlap, back-edge-aware ready-queue execution inside `_iterate_cycle`, concurrent outer-cycle scheduling that lets non-loop branches continue while loop tasks run, and plan-scheduler follow-up tests proving `execute_plan_tasks()` now releases successors on first completion and respects `max_parallel` without the old batch barrier.

@@ -1,7 +1,7 @@
 # 37-3: Checkpoint & Resume Safety
 
 **Parent:** [37-engine-runtime-parallelism](37-engine-runtime-parallelism.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Adapt checkpoint triggers, memory flushes, and resume logic so they work correctly with eager/ready-queue dispatch where nodes complete in arbitrary order rather than level-aligned batches.
 
 ## Context
@@ -70,8 +70,8 @@ With eager dispatch, `_execute()` must re-initialize the dependency tracker from
 - [x] 5-4. `FileSystemCheckpointStore.save()` (checkpoint.py L47-52) does synchronous `path.write_text()` inside an `async def`. If task 2-1 moves checkpointing to a background task, consider wrapping the write in `asyncio.to_thread()` to avoid blocking the event loop for large checkpoints.
 
 ### 6. Subgraph checkpoints
-- [ ] 6-1. Subgraphs currently skip checkpoints (`skip_checkpoint=True` in `_execute_with_cycles` called from `_run_subgraph`). Decide whether to enable them under eager dispatch or keep skipping.
-- [ ] 6-2. If enabled: subgraph checkpoint state must be nested inside the parent checkpoint, not overwrite it.
+- [x] 6-1. Subgraphs currently skip checkpoints (`skip_checkpoint=True` in `_execute_with_cycles` called from `_run_subgraph`). Decide whether to enable them under eager dispatch or keep skipping.
+- [x] 6-2. If enabled: subgraph checkpoint state must be nested inside the parent checkpoint, not overwrite it. Deferred because this phase keeps subgraph checkpoints disabled.
 - [x] 6-3. If kept skipped: document that subgraph progress is lost on crash and must be re-run from scratch.
 
 ## Decisions
@@ -82,6 +82,7 @@ With eager dispatch, `_execute()` must re-initialize the dependency tracker from
 - Resumed eager cycle scheduling now distinguishes completed gates that still carry `continue` / `loop` outputs from truly finished gates, so checkpointed loop state re-enters `_iterate_cycle()` instead of being treated like a terminal fan-out.
 - Queued memory writes are now tied to the top-level owning node and only persisted once that owner completes successfully; writes from still-running owners are deferred and writes from failed/skipped owners are dropped so checkpoint-triggered flushes cannot durably commit partial side effects.
 - Subgraph checkpointing remains disabled; resume still restarts a child subgraph from its entry boundary.
+- Nested subgraph checkpoint state is explicitly deferred rather than half-supported: the parent checkpoint tracks only the still-running parent node, and resume reruns the child subgraph from scratch.
 
 ## Notes
 

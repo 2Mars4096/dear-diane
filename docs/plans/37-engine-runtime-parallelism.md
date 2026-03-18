@@ -1,6 +1,6 @@
 # 37: Engine Runtime Parallelism
 
-**Status:** in-progress
+**Status:** completed
 **Goal:** Replace the level-sync barrier in the graph scheduler with eager/ready-queue dispatch, unify concurrency budgeting across nested subgraphs, harden checkpoint/resume semantics for the new model, and backfill engine-level regression tests that currently don't exist.
 
 ## Motivation
@@ -83,9 +83,10 @@ Four sub-plans, ordered by impact and dependency:
 
 ## Decisions
 
-- Eager dispatch now covers acyclic graphs, nested subgraphs, cycle re-iterations, and outer cycle-aware scheduling; remaining follow-up is plan-scheduler/ordering alignment plus benchmarking.
+- Eager dispatch now covers acyclic graphs, nested subgraphs, cycle re-iterations, outer cycle-aware scheduling, the concierge-facing `plan_scheduler.execute_plan_tasks()` path, and the slow benchmark/leak guard coverage for the scheduler runtime.
 - The legacy `max_concurrency` node semaphore is preserved only when eager dispatch is off. Under eager dispatch, `DAN_MAX_CONCURRENT_LLM` / `llm_max_concurrency` governs shared LLM-call concurrency instead.
 - CPU-bound throttling no longer lives in `_guarded_execute_node()`; it now routes through `ExecutionContext.node_slot()` so eager mode can keep a separate node semaphore without reintroducing whole-node LLM stalls.
+- Subgraph checkpoints stay disabled in this phase; a checkpoint can record only the still-running parent control-flow node, so resume restarts child subgraphs from their entry boundary instead of attempting partial nested restore.
 
 ## Notes
 
@@ -93,4 +94,4 @@ Four sub-plans, ordered by impact and dependency:
 - The engine scheduler also handles cycle regions (while-loop back-edges). The ready-queue must respect cycle boundaries: nodes inside a cycle region should not eagerly dispatch until the gate node releases them.
 - Feature flag rollout is critical. The level-sync scheduler is battle-tested; the eager scheduler needs time to prove equivalence before becoming default.
 - This plan does not touch concierge parallelism (29-5) or workflow generation (32). It is strictly engine execution path.
-- Implemented so far: eager dispatch for acyclic graphs/subgraphs plus cycle-aware outer/inner loop execution, shared LLM semaphore propagation into nested subgraphs, re-entrant node-slot throttling for CPU-bound work, timeout/depth guards for nested subgraphs, batched/background checkpoint saves with compatibility fields, deferral of memory writes from still-running owner scopes, resumed loop re-entry from checkpointed gate/body state, and a 33-test `tests/test_engine/test_scheduler_parallelism.py` regression suite plus concierge busy-poll proof.
+- Implemented so far: eager dispatch for acyclic graphs/subgraphs plus cycle-aware outer/inner loop execution, shared LLM semaphore propagation into nested subgraphs, re-entrant node-slot throttling for CPU-bound work, timeout/depth guards for nested subgraphs, batched/background checkpoint saves with compatibility fields, deferral of memory writes from still-running owner scopes, resumed loop re-entry from checkpointed gate/body state, and a 42-test engine regression suite (`tests/test_engine/test_scheduler_parallelism.py` with 39 tests = 35 default-path + 4 slow benchmarks, plus `tests/test_engine/test_plan_scheduler_execution.py` with 3 plan-scheduler alignment tests) plus concierge busy-poll proof.

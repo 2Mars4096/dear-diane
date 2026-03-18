@@ -1,7 +1,7 @@
 # 37-4: Runtime Regression Tests
 
 **Parent:** [37-engine-runtime-parallelism](37-engine-runtime-parallelism.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Backfill engine-level test coverage for the scheduler, concurrency control, and checkpoint/resume. Currently zero tests exist for these code paths.
 
 ## Context
@@ -38,27 +38,28 @@ This plan creates a dedicated test module `tests/test_engine/test_scheduler_para
 - [x] 3-4. **Memory flush before checkpoint** — node writes memory key `foo`. Checkpoint is taken. Resume and verify `foo` is in memory store.
 - [x] 3-5. **Checkpoint backward compatibility** — load a checkpoint from the level-sync scheduler (no `pending_node_ids`), resume with eager dispatch. Assert success.
 - [x] 3-6. **Cycle region checkpoint** — checkpoint mid-iteration of a while-loop. Resume and verify the loop completes correctly from the right iteration.
-- [ ] 3-7. **Subgraph progress on crash** — parallel subagents with 3 branches. Branch 1 completes, crash, resume. If 37-3 task 6-1 enables subgraph checkpoints: assert branch 1 is not re-run. If subgraph checkpoints remain skipped: assert all 3 branches re-run (document this as expected behavior, not a failure).
+- [x] 3-7. **Subgraph progress on crash** — parallel subagents with 3 branches. Branch 1 completes, crash, resume. If 37-3 task 6-1 enables subgraph checkpoints: assert branch 1 is not re-run. If subgraph checkpoints remain skipped: assert all 3 branches re-run (document this as expected behavior, not a failure).
 - [x] 3-8. **Skipped-node successor dispatch** — graph with a conditional branch (ControlEdge). One branch is skipped. Assert downstream nodes that depend on the skipped branch's successors still dispatch correctly (skipped nodes decrement successors).
 
 ### 4. Performance benchmark tests
-- [ ] 4-1. **Latency benchmark** — 3-level diamond graph with heterogeneous node latencies (mock sleep). Measure wall-clock time with eager vs level-sync. Assert eager is ≥20% faster.
-- [ ] 4-2. **Throughput benchmark** — 50-node graph with `max_concurrency=10`. Measure time to complete. Assert eager dispatch achieves ≥80% of theoretical throughput (sum of node durations / max_concurrency).
-- [ ] 4-3. **Checkpoint overhead** — 20-node graph. Measure time with checkpointing enabled vs disabled. Assert overhead is < 15% of total run time.
-- [ ] 4-4. **Memory usage** — run a 100-node graph and verify peak memory stays within 2x of a 10-node graph (no per-node memory leak).
+- [x] 4-1. **Latency benchmark** — 3-level diamond graph with heterogeneous node latencies (mock sleep). Measure wall-clock time with eager vs level-sync. Assert eager is ≥20% faster.
+- [x] 4-2. **Throughput benchmark** — 50-node graph with `max_concurrency=10`. Measure time to complete. Assert eager dispatch achieves ≥80% of theoretical throughput (sum of node durations / max_concurrency).
+- [x] 4-3. **Checkpoint overhead** — 20-node graph. Measure time with checkpointing enabled vs disabled. Assert overhead is < 15% of total run time.
+- [x] 4-4. **Memory leak guard** — run the same 100-node graph repeatedly and verify traced retained memory stays near the warm-run baseline instead of growing run-over-run (guard against scheduler leaks without assuming unrealistic sublinear per-node state).
 
 ### 5. Test infrastructure
 - [x] 5-1. Create `tests/test_engine/test_scheduler_parallelism.py`.
 - [x] 5-2. Create test fixtures: `MockExecutor` that records call times and supports configurable sleep, `MockCheckpointStore` that captures checkpoint data, `simple_graph_builder` helper that creates test graphs without the full builder DSL.
 - [x] 5-3. Use `pytest.mark.asyncio` and generous timing margins (≥2x expected) to avoid flakiness, matching the pattern in `test_parallelism_integration.py`.
-- [ ] 5-4. Performance benchmarks should be `pytest.mark.benchmark` or at minimum `pytest.mark.slow` so they don't run in the fast CI path.
+- [x] 5-4. Performance benchmarks should be `pytest.mark.benchmark` or at minimum `pytest.mark.slow` so they don't run in the fast CI path.
 
 ## Decisions
 
 - The initial suite now covers deterministic ordering invariants (linear chain, diamond, wide fan-out, sorted tie-breaking, and eager context-edge safety), nested LLM and node semaphore sharing, checkpoint payloads, resume behavior, and skipped-node progression.
 - Loop execution now has explicit coverage for eager cycle re-iteration, outer-cycle branch advancement, checkpoint-boundary resume, and mid-iteration resume on the same while graph family.
 - Node-semaphore coverage now spans legacy mode, eager CPU-bound throttling, nested `ParallelSubagents` -> `ForEach` sharing, vote fan-out composition, and fail-fast subgraph depth guarding.
-- Performance/benchmark coverage is still pending; the first pass prioritizes correctness and non-flaky scheduler regressions.
+- Subgraph crash coverage now explicitly locks down the current phase decision: because subgraph checkpoints remain disabled, a resumed parent reruns every branch inside a still-pending `ParallelSubagentsNode`.
+- Slow benchmark coverage now exists for end-to-end latency, eager throughput vs theoretical capacity, checkpoint overhead, and repeated-run memory retention.
 
 ## Notes
 
@@ -68,4 +69,5 @@ This plan creates a dedicated test module `tests/test_engine/test_scheduler_para
 - Consider reusing the `fan_out` test patterns from `test_parallelism_integration.py` (timing-based concurrency assertions with generous margins).
 - Test 3-7 has a dependency on 37-3 task 6-1 (subgraph checkpoint decision). Write the test to handle both outcomes (checkpoints enabled vs skipped) so it doesn't break regardless of the decision.
 - Test graphs need to include `ControlEdge` scenarios (conditional branching) and `ContextEdge` scenarios (shared context reads/writes) in addition to `DataEdge` dependency chains, since the eager dispatch must correctly handle all three edge types.
-- Implemented so far: 33 targeted engine tests plus an explicit concierge regression proving `_run_children_parallel()` no longer falls back to the old `asyncio.sleep(0.01)` busy-poll loop.
+- The original `100-node peak <= 2x 10-node peak` memory target turned out to be unrealistic because legitimate per-node scheduler state scales with graph size. The benchmark now guards the real failure mode: retained traced memory should stay near the warm-run baseline across repeated large runs.
+- Implemented so far: 39 engine regressions in `tests/test_engine/test_scheduler_parallelism.py` (35 default-path + 4 `slow` benchmarks) plus an explicit concierge regression proving `_run_children_parallel()` no longer falls back to the old `asyncio.sleep(0.01)` busy-poll loop.

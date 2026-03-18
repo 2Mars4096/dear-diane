@@ -1,7 +1,7 @@
 # 31-33: Autonomy Control & Prompt Module Resolver
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** in-progress
+**Status:** completed
 **Goal:** Give users an `auto / careful / balanced / aggressive` autonomy preference that controls DAN's **workflow-level operating style** — not just prompt wording, but how aggressively DAN explores context, decomposes work, chains steps, reviews progress, and pushes implementation forward. Autonomy propagates through the session tree so every tier executor applies the same initiative contract to its subtask. The plan also refactors hint-style prompt assembly into a layered `PromptModuleResolver`.
 
 ## Context
@@ -102,67 +102,67 @@ RESPONSE
 ## Tasks
 
 ### Task 0 — Preference model, resolution, and persistence
-- [ ] 0-1. Define `AutonomyPreference` (`auto`, `careful`, `balanced`, `aggressive`) and `AutonomyResolution` carrying `effective_level`, `source` (explicit / inferred / fallback), `reason`, and `announce_change`
-- [ ] 0-2. Add `autonomy_preference` field to `Project` (default `"auto"`); low-signal `auto` must resolve to `balanced`
-- [ ] 0-3. Add **per-session** override storage keyed by `external_id` / session scope (patterned after `/progress` overrides); store the user preference, not a singleton effective level
-- [ ] 0-4. Add normalization helpers that map legacy `AutonomyLevel` / `DAN_CONCIERGE_AUTONOMY` onto the new model
-- [ ] 0-5. Implement resolution logic: preference precedence, conservative auto-inference, and "did the effective autonomy change?" tracking
-- [ ] 0-6. Define conservative first-pass inference signals: risky/irreversible/ambiguous/messaging mutation turns bias `careful`; low-risk reversible or clearly directive turns may bias `aggressive`; weak or mixed signals resolve to `balanced`
+- [x] 0-1. Define `AutonomyPreference` (`auto`, `careful`, `balanced`, `aggressive`) and `AutonomyResolution` carrying `effective_level`, `source` (explicit / inferred / fallback), `reason`, and `announce_change`
+- [x] 0-2. Add `autonomy_preference` field to `Project` (default `"auto"`); low-signal `auto` must resolve to `balanced`
+- [x] 0-3. Add **per-session** override storage keyed by `external_id` / session scope (patterned after `/progress` overrides); store the user preference, not a singleton effective level
+- [x] 0-4. Add normalization helpers that map legacy `AutonomyLevel` / `DAN_CONCIERGE_AUTONOMY` onto the new model
+- [x] 0-5. Implement resolution logic: preference precedence, conservative auto-inference, and "did the effective autonomy change?" tracking
+- [x] 0-6. Define conservative first-pass inference signals: risky/irreversible/ambiguous/messaging mutation turns bias `careful`; low-risk reversible or clearly directive turns may bias `aggressive`; weak or mixed signals resolve to `balanced`
 
 ### Task 1 — Session tree propagation and policy hooks
-- [ ] 1-1. Add `autonomy_resolution: AutonomyResolution | None` as a first-class field on `Session`
-- [ ] 1-2. Set `autonomy_resolution` on root sessions during `TieredDispatcher.dispatch()` after triage resolves
-- [ ] 1-3. Propagate `autonomy_resolution` to child sessions in `SessionManager.create_child()` — children inherit the parent's resolved autonomy (subagent model: no re-triage, no re-resolution)
-- [ ] 1-4. Add `autonomy_resolution` parameter to `resolve_policy()`; `careful` lowers thresholds, `aggressive` raises them, hard safety invariants (destructive keywords, publish) never relax
-- [ ] 1-5. Thread `AutonomyResolution` into the response path so when the effective level changes, the assistant briefly states that change in the visible reply once
-- [ ] 1-6. Add `/autonomy [auto|careful|balanced|aggressive] [--project]` through `command_registry.py`; plain `/autonomy` is session-scoped, `--project` persists
-- [ ] 1-7. Include `autonomy_resolution` in session telemetry (`session_complete` and `tiered_dispatch_complete` events) so "why did DAN become aggressive here?" is answerable from logs
+- [x] 1-1. Add `autonomy_resolution: AutonomyResolution | None` as a first-class field on `Session`
+- [x] 1-2. Set `autonomy_resolution` on root sessions during `TieredDispatcher.dispatch()` after triage resolves
+- [x] 1-3. Propagate `autonomy_resolution` to child sessions in `SessionManager.create_child()` — children inherit the parent's resolved autonomy (subagent model: no re-triage, no re-resolution)
+- [x] 1-4. Add `autonomy_resolution` parameter to `resolve_policy()`; `careful` lowers thresholds, `aggressive` raises them, hard safety invariants (destructive keywords, publish) never relax
+- [x] 1-5. Thread `AutonomyResolution` into the response path so when the effective level changes, the assistant briefly states that change in the visible reply once
+- [x] 1-6. Add `/autonomy [auto|careful|balanced|aggressive] [--project]` through `command_registry.py`; plain `/autonomy` is session-scoped, `--project` persists
+- [x] 1-7. Include `autonomy_resolution` in session telemetry (`session_complete` and `tiered_dispatch_complete` events) so "why did DAN become aggressive here?" is answerable from logs
 
 ### Task 2 — Per-tier orchestration behavior
-- [ ] 2-1. **Context gathering intensity (root only):** extend `ContextGatherer.gather()` to accept `autonomy_resolution`; `aggressive` adds broader context signals (recent task turns, related file inspection, test/diff state); `careful` gathers only what triage explicitly requested. Child sessions inherit parent context and do not re-gather.
-- [ ] 2-2. **Decomposition threshold:** make `MultiStepExecutor._should_decompose()` autonomy-aware; `aggressive` lowers the bar to decompose, `careful` raises it
-- [ ] 2-3. **Tool loop budget:** thread autonomy into `_extract_chat_params()` and `send_message_with_tools()` so `max_tool_turns` is higher for `aggressive` (more exploration, more chaining) and lower for `careful`
-- [ ] 2-4. **Completion standard:** for `aggressive`, inject a self-review prompt into the tool loop's final-answer path: "before stopping, check: did I fully address the goal? should I verify/test? is there an obvious next step I should do now?" For `careful`, prompt the model to summarize what was done and surface any uncertainties
-- [ ] 2-5. **Parent-side synthesis review:** upgrade `MultiStepExecutor._synthesize()` so the parent checks whether child results collectively achieve the original goal. For `aggressive`, if the check finds clear gaps, the parent can spawn a bounded remediation child (max 1, inherits autonomy) to address them before producing the final response. For `careful`, the synthesis summarizes what was done and surfaces uncertainties for user review. For `balanced`, preserve current concatenation behavior.
-- [ ] 2-6. **Per-session factual context:** update `_build_prompt()` in `tier_executors.py` to include the effective autonomy level as factual metadata (e.g. `"Autonomy: aggressive"`) so the LLM knows its operating posture, but do **not** put behavioral prose here — behavioral instructions belong exclusively in the `interaction_policy` prompt module to avoid duplication
+- [x] 2-1. **Context gathering intensity (root only):** extend `ContextGatherer.gather()` to accept `autonomy_resolution`; `aggressive` adds broader context signals (recent task turns, related file inspection, test/diff state); `careful` gathers only what triage explicitly requested. Child sessions inherit parent context and do not re-gather.
+- [x] 2-2. **Decomposition threshold:** make `MultiStepExecutor._should_decompose()` autonomy-aware; `aggressive` lowers the bar to decompose, `careful` raises it
+- [x] 2-3. **Tool loop budget:** thread autonomy into `_extract_chat_params()` and `send_message_with_tools()` so `max_tool_turns` is higher for `aggressive` (more exploration, more chaining) and lower for `careful`
+- [x] 2-4. **Completion standard:** for `aggressive`, inject a self-review prompt into the tool loop's final-answer path: "before stopping, check: did I fully address the goal? should I verify/test? is there an obvious next step I should do now?" For `careful`, prompt the model to summarize what was done and surface any uncertainties
+- [x] 2-5. **Parent-side synthesis review:** upgrade `MultiStepExecutor._synthesize()` so the parent checks whether child results collectively achieve the original goal. For `aggressive`, hard gaps stay deterministic, but regex/keyword-style edge signals use a text-only LLM fallback before the parent decides whether to spawn a bounded remediation child (max 1, inherits autonomy). For `careful`, the synthesis summarizes what was done and surfaces uncertainties for user review. For `balanced`, preserve current concatenation behavior.
+- [x] 2-6. **Per-session factual context:** update `_build_prompt()` in `tier_executors.py` to include the effective autonomy level as factual metadata (e.g. `"Autonomy: aggressive"`) so the LLM knows its operating posture, but do **not** put behavioral prose here — behavioral instructions belong exclusively in the `interaction_policy` prompt module to avoid duplication
 
 ### Task 3 — PromptModuleResolver (layered hint sections)
-- [ ] 3-1. Define `PromptContext` dataclass: `mode`, `surface`, `model`, `user_message`, `workflow_id`, `autonomy_resolution`, `tools_available`, project metadata, precomputed hint flags
-- [ ] 3-2. Define async-friendly `PromptModule` / `ResolvedPromptModule` types in `chat/prompts.py` with a stable layer/family declaration (`interaction_policy`, `surface_presentation`, `task_specializer`)
-- [ ] 3-3. Implement `PromptModuleResolver` with registration, stable layer ordering, priority ordering within a layer, and JIT detail lookup
-- [ ] 3-4. Refactor `_build_messages()` so the resolver owns only hint-like sections and collapses them into a single `{module_hints}` prompt block
-- [ ] 3-5. Keep `user_context_block`, `mcp_block`, `memory_context`, workflow/context summaries, and `extra_system_instructions` outside the resolver in v1
-- [ ] 3-6. Thread resolved autonomy/project info from `_extract_chat_params()` into both `send()` and `send_message_with_tools()`
+- [x] 3-1. Define `PromptContext` dataclass: `mode`, `surface`, `model`, `user_message`, `workflow_id`, `autonomy_resolution`, `tools_available`, project metadata, precomputed hint flags
+- [x] 3-2. Define async-friendly `PromptModule` / `ResolvedPromptModule` types in `chat/prompts.py` with a stable layer/family declaration (`interaction_policy`, `surface_presentation`, `task_specializer`)
+- [x] 3-3. Implement `PromptModuleResolver` with registration, stable layer ordering, priority ordering within a layer, and JIT detail lookup
+- [x] 3-4. Refactor `_build_messages()` so the resolver owns only hint-like sections and collapses them into a single `{module_hints}` prompt block
+- [x] 3-5. Keep `user_context_block`, `mcp_block`, `memory_context`, workflow/context summaries, and `extra_system_instructions` outside the resolver in v1
+- [x] 3-6. Thread resolved autonomy/project info from `_extract_chat_params()` into both `send()` and `send_message_with_tools()`
 
 ### Task 4 — Initial prompt modules
-- [ ] 4-1. Register `interaction_policy` as the **single source** of behavioral autonomy instructions, merging current `_MODE_HINTS` with autonomy-specific posture:
+- [x] 4-1. Register `interaction_policy` as the **single source** of behavioral autonomy instructions, merging current `_MODE_HINTS` with autonomy-specific posture:
   - `careful`: explain plan first, ask more readily when ambiguous, wait for approval before modifications
   - `balanced`: match current default behavior
   - `aggressive`: minimize user-facing questions, state assumptions briefly, push forward, self-review before stopping, explore context proactively
-- [ ] 4-2. Register `surface_presentation` by migrating `_resolve_surface_hints()`, including Telegram bot-name formatting
-- [ ] 4-3. Register `research_specializer` using the current detector path, preserving inline guidance quality
-- [ ] 4-4. Keep the module boundary open for future task specializers (`exploration`, `code_review`, `debug_protocol`)
+- [x] 4-2. Register `surface_presentation` by migrating `_resolve_surface_hints()`, including Telegram bot-name formatting
+- [x] 4-3. Register `research_specializer` using the current detector path, preserving inline guidance quality
+- [x] 4-4. Keep the module boundary open for future task specializers (`exploration`, `code_review`, `debug_protocol`)
 
 ### Task 5 — Chat-side JIT prompt detail loading
-- [ ] 5-1. Add `load_prompt_detail` as a normal chat capability (schema + handler + registry registration)
-- [ ] 5-2. Expose `load_prompt_detail` only when at least one resolved module has extra detail available **and** `tools_available=True`
-- [ ] 5-3. Split research guidance into compact inline core plus optional expanded detail
-- [ ] 5-4. Add `exploration_specializer` as the first genuinely JIT-heavy task-specializer
-- [ ] 5-5. When tools are unavailable, never emit instructions telling the model to call `load_prompt_detail`
+- [x] 5-1. Add `load_prompt_detail` as a normal chat capability (schema + handler + registry registration)
+- [x] 5-2. Expose `load_prompt_detail` only when at least one resolved module has extra detail available **and** `tools_available=True`
+- [x] 5-3. Split research guidance into compact inline core plus optional expanded detail
+- [x] 5-4. Add `exploration_specializer` as the first genuinely JIT-heavy task-specializer
+- [x] 5-5. When tools are unavailable, never emit instructions telling the model to call `load_prompt_detail`
 
 ### Task 6 — Tests
-- [ ] 6-1. Unit tests for `AutonomyPreference`, `AutonomyResolution`, and `resolve_policy()` integration across explicit and `auto` modes, including hard-safety invariants
-- [ ] 6-2. Unit tests proving session overrides do not leak across `external_id` / surface scopes
-- [ ] 6-3. Integration tests for `/autonomy` command registration/dispatch, including `auto`, session override, and `--project` persistence
-- [ ] 6-4. Unit tests for auto-inference transitions and "announce change once" behavior
-- [ ] 6-5. **Session tree propagation tests:** root session sets `autonomy_resolution`, children inherit it (subagent model), hard safety still fires per-action regardless of autonomy level
-- [ ] 6-6. **Orchestration behavior tests:** `_should_decompose()` threshold changes with autonomy, `max_tool_turns` adjusts, context gathering broadens with `aggressive` at root level only
-- [ ] 6-7. **Synthesis review tests:** `aggressive` synthesis detects gaps and spawns at most one remediation child; `careful` synthesis surfaces uncertainties; `balanced` preserves current concatenation behavior
-- [ ] 6-8. Unit tests for `PromptModuleResolver` ordering, async resolution, layer composition, JIT exposure
-- [ ] 6-9. Regression test that `tools_available=False` prompt builds never suggest `load_prompt_detail`
-- [ ] 6-10. Capability test that `load_prompt_detail` returns expected module body and fails cleanly on unknown IDs
-- [ ] 6-11. Balanced-mode regression that migrated interaction/surface/research hints remain materially equivalent to current output when `auto` resolves to `balanced`
-- [ ] 6-12. Telemetry test that `autonomy_resolution` appears in `session_complete` event metadata
+- [x] 6-1. Unit tests for `AutonomyPreference`, `AutonomyResolution`, and `resolve_policy()` integration across explicit and `auto` modes, including hard-safety invariants
+- [x] 6-2. Unit tests proving session overrides do not leak across `external_id` / surface scopes
+- [x] 6-3. Integration tests for `/autonomy` command registration/dispatch, including `auto`, session override, and `--project` persistence
+- [x] 6-4. Unit tests for auto-inference transitions and "announce change once" behavior
+- [x] 6-5. **Session tree propagation tests:** root session sets `autonomy_resolution`, children inherit it (subagent model), hard safety still fires per-action regardless of autonomy level
+- [x] 6-6. **Orchestration behavior tests:** `_should_decompose()` threshold changes with autonomy, `max_tool_turns` adjusts, context gathering broadens with `aggressive` at root level only
+- [x] 6-7. **Synthesis review tests:** `aggressive` synthesis detects gaps and spawns at most one remediation child; `careful` synthesis surfaces uncertainties; `balanced` preserves current concatenation behavior
+- [x] 6-8. Unit tests for `PromptModuleResolver` ordering, async resolution, layer composition, JIT exposure
+- [x] 6-9. Regression test that `tools_available=False` prompt builds never suggest `load_prompt_detail`
+- [x] 6-10. Capability test that `load_prompt_detail` returns expected module body and fails cleanly on unknown IDs
+- [x] 6-11. Balanced-mode regression that migrated interaction/surface/research hints remain materially equivalent to current output when `auto` resolves to `balanced`
+- [x] 6-12. Telemetry test that `autonomy_resolution` appears in `session_complete` event metadata
 
 ## Decisions
 
@@ -170,15 +170,21 @@ RESPONSE
 - Autonomy propagates through the session tree as a first-class field on `Session`. Every tier head — root or child — applies the same initiative contract to its subtask.
 - **Children are subagents.** They inherit context and autonomy from their parent. They do not re-triage or re-run context gathering. This matches the existing `_build_child_session()` design and keeps the child path lightweight.
 - **Review and remediation are parent-side.** After children complete, the parent's `_synthesize()` step checks results against the original goal. If `aggressive` finds gaps, it spawns at most one remediation child — not a separate review child or recursive self-review tree. This avoids runaway self-review loops while still giving the parent the ability to push for completion.
+- Aggressive parent-side review now uses an explicit deterministic completion check: planned-subtask coverage, open follow-up signals in child output, and coarse goal/deliverable term coverage replace the earlier "multiple children implies review" heuristic. Regex/keyword-style edge signals do not directly force remediation; they trigger a text-only LLM fallback review first.
 - **Behavioral instructions live in one place.** The `interaction_policy` prompt module is the single source of autonomy behavior prose. `_build_prompt()` carries only factual metadata (autonomy level, goal, domain) — never behavioral instructions that duplicate the module.
 - The default stored preference is `auto`. Conservative inference falls back to `balanced` when signals are weak, preserving current behavior.
 - User-set explicit autonomy always beats inferred autonomy.
 - Hard safety never relaxes: `resolve_policy()` applies destructive/publish/irreversible confirmation gates per-action at every session tree level, regardless of autonomy.
 - `aggressive` means "more initiative, more self-driven orchestration, more forward motion" — not "more reckless." It asks the user fewer blocking questions but asks the system/workspace more questions (inspect files, check recent changes, review against goal, verify before stopping).
+- Session-scoped concierge autonomy state is keyed by `surface + external_id` (with legacy external-id fallback on load) so `/autonomy` preferences and last-effective tracking do not leak across surfaces that happen to reuse the same user/thread identifier.
 - The `PromptModuleResolver` rollout is intentionally narrow: it owns hint-like prompt sections only, not memory/MCP/tool inventories/workflow summaries.
 - Prompt modules are layered: `interaction_policy`, `surface_presentation`, `task_specializer`. Mode + autonomy are merged into one `interaction_policy` layer so they cannot contradict each other.
 - When effective autonomy changes, the assistant says so briefly once.
 - Legacy `AutonomyLevel` / `DAN_CONCIERGE_AUTONOMY` inputs are mapped, not broken.
+- Internal text-only review calls now reuse the same resolved workflow/project/autonomy context extraction as the tool-loop path, so prompt modules and memory scoping stay aligned across both `send()` and `send_message_with_tools()`.
+- `research_specializer` now follows the intended JIT pattern: a compact inline behavior block stays in the main prompt, while the step-by-step research workflow lives in `prompt:research_specializer:full`.
+- `exploration_specializer` is now the first additional task-specializer beyond research, using the same pattern: heuristic-first routing, tiny LLM fallback on ambiguous triggers, compact inline guidance, and a heavier `load_prompt_detail` expansion path.
+- Aggressive root-only context gathering now broadens beyond triage-explicit reads with bounded extra signals: recent task turns, a compact task snapshot, related file snippets from surface/task context, and a tiny git-status repo snapshot when a workspace root is available.
 
 ## Notes
 
@@ -188,6 +194,9 @@ RESPONSE
 - If `load_prompt_detail` needs resolver access at capability-execution time, prefer exposing lookup through `CapabilityContext` / `ctx.chat_manager`.
 - Prefer runtime-provided `AutonomyResolution` metadata over asking the model to infer its own autonomy state from scattered prompt text.
 - The "max 1 remediation child" rule in synthesis review is enforced by a simple flag, not by the generic session budget. This prevents `aggressive` synthesis from exhausting the child budget on repeated remediation attempts.
+- Current implementation intentionally leaves richer aggressive root-context gathering (related files, test/diff inspection), compact-vs-expanded research prompt splitting, an `exploration_specializer`, and the remaining session-isolation/telemetry/balanced-equivalence regressions as follow-up hardening items.
+- Plan scope is complete. Future prompt specializers (`code_review`, `debug_protocol`, etc.) can build on the same resolver/JIT pattern established here.
+- Internal rule for this area: when regex/keyword heuristics are used as a completion or routing fast path, prefer an LLM fallback for ambiguous edge cases rather than letting the regex be the final authority.
 - Future heavy modules can follow after this lands: debugging protocol, code-review checklist, exploration playbook, domain-specific prompt packs.
 
 ## Estimate
