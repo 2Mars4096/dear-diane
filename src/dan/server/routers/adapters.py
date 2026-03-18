@@ -244,11 +244,12 @@ def _load_telegram_desktop_state() -> dict[str, Any]:
 
     bot = fleet.bots.get(_TELEGRAM_DESKTOP_BOT_KEY)
     if bot is None:
-        return {"bot_token": "", "bot_username": "", "allowed_chat_ids": []}
+        return {"bot_token": "", "bot_username": "", "allowed_chat_ids": [], "auto_start": False}
     return {
         "bot_token": str(bot.token or "").strip(),
         "bot_username": str(getattr(bot, "username", "") or "").strip(),
         "allowed_chat_ids": _coerce_int_list(bot.allowed_users),
+        "auto_start": bool(getattr(bot, "auto_start", False)),
     }
 
 
@@ -257,6 +258,7 @@ def _save_telegram_desktop_state(
     bot_token: str | None = None,
     bot_username: str | None = None,
     allowed_chat_ids: list[int] | None = None,
+    auto_start: bool | None = None,
 ) -> dict[str, Any]:
     from dan.adapters.telegram_config import (
         TelegramBotConfig,
@@ -284,6 +286,8 @@ def _save_telegram_desktop_state(
     bot_config.username = next_username
     bot_config.allowed_users = next_allowed
     bot_config.default = False
+    if auto_start is not None:
+        bot_config.auto_start = auto_start
     fleet.bots[_TELEGRAM_DESKTOP_BOT_KEY] = bot_config
     save_fleet_config(fleet)
 
@@ -295,6 +299,7 @@ def _save_telegram_desktop_state(
         "bot_token": next_token,
         "bot_username": next_username,
         "allowed_chat_ids": next_allowed,
+        "auto_start": bool(bot_config.auto_start),
     }
 
 

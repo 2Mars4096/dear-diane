@@ -24,6 +24,7 @@ class TelegramBotConfig(BaseModel):
     projects: list[str] = Field(default_factory=list)
     default: bool = False
     allowed_users: list[int | str] = Field(default_factory=list)
+    auto_start: bool = False
 
 
 class TelegramGroupConfig(BaseModel):
