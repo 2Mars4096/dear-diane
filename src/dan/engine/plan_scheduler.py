@@ -8,6 +8,7 @@ Design: plan optimistically, validate mechanically, fix dynamically.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections import defaultdict, deque
@@ -916,11 +917,11 @@ async def execute_plan_tasks(
 
     Returns results in completion order.
     """
-    import asyncio
     import time as _time
 
     task_map = {t.id: t for t in dag.tasks}
     order = dag.topological_order()
+    order_index = {tid: idx for idx, tid in enumerate(order)}
 
     remaining_in_degree: dict[str, int] = {tid: 0 for tid in order}
     succ_map: dict[str, list[str]] = {tid: [] for tid in order}
@@ -932,67 +933,73 @@ async def execute_plan_tasks(
     ready = [tid for tid in order if remaining_in_degree[tid] == 0]
     results: list[PlanTaskResult] = []
     completed_set: set[str] = set()
-    sem = asyncio.Semaphore(dag.constraints.max_parallel)
+    in_flight: dict[asyncio.Task[PlanTaskResult], str] = {}
+    max_parallel = max(1, int(getattr(dag.constraints, "max_parallel", 1) or 1))
+    _ = schedule
 
     async def _run_one(task_id: str) -> PlanTaskResult:
-        async with sem:
-            t0 = _time.monotonic()
-            task = task_map[task_id]
+        t0 = _time.monotonic()
+        task = task_map[task_id]
+        try:
+            run_task = getattr(concierge, "run_plan_task", None)
+            if run_task is not None:
+                output = await run_task(task)
+            else:
+                output = f"[simulated] {task.name}"
+            elapsed = (_time.monotonic() - t0) / 60.0
+            return PlanTaskResult(
+                task_id=task_id,
+                success=True,
+                output=str(output),
+                actual_duration_minutes=elapsed,
+            )
+        except Exception as exc:
+            elapsed = (_time.monotonic() - t0) / 60.0
+            return PlanTaskResult(
+                task_id=task_id,
+                success=False,
+                error=str(exc),
+                actual_duration_minutes=elapsed,
+            )
+
+    while ready or in_flight:
+        while ready and len(in_flight) < max_parallel:
+            task_id = ready.pop(0)
+            if task_id in completed_set or task_id in in_flight.values():
+                continue
+            in_flight[asyncio.create_task(_run_one(task_id))] = task_id
+
+        if not in_flight:
+            break
+
+        done, _ = await asyncio.wait(
+            in_flight.keys(),
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for finished_task in done:
+            task_id = in_flight.pop(finished_task)
             try:
-                run_task = getattr(concierge, "run_plan_task", None)
-                if run_task is not None:
-                    output = await run_task(task)
-                else:
-                    output = f"[simulated] {task.name}"
-                elapsed = (_time.monotonic() - t0) / 60.0
-                return PlanTaskResult(
-                    task_id=task_id,
-                    success=True,
-                    output=str(output),
-                    actual_duration_minutes=elapsed,
-                )
-            except Exception as exc:
-                elapsed = (_time.monotonic() - t0) / 60.0
-                return PlanTaskResult(
+                result = finished_task.result()
+            except BaseException as exc:
+                result = PlanTaskResult(
                     task_id=task_id,
                     success=False,
                     error=str(exc),
-                    actual_duration_minutes=elapsed,
                 )
-
-    while ready or len(completed_set) < len(order):
-        if not ready:
-            await asyncio.sleep(0.01)
-            continue
-
-        batch = list(ready)
-        ready.clear()
-
-        coros = [_run_one(tid) for tid in batch]
-        batch_results = await asyncio.gather(*coros, return_exceptions=True)
-
-        for idx, r in enumerate(batch_results):
-            if isinstance(r, BaseException):
-                failed_tid = batch[idx]
-                results.append(PlanTaskResult(
-                    task_id=failed_tid, success=False, error=str(r),
-                ))
-                completed_set.add(failed_tid)
-                for s in succ_map.get(failed_tid, []):
-                    remaining_in_degree[s] -= 1
-                    if remaining_in_degree[s] == 0 and s not in completed_set:
-                        ready.append(s)
-                continue
-            assert isinstance(r, PlanTaskResult)
-            results.append(r)
-            completed_set.add(r.task_id)
-            for s in succ_map.get(r.task_id, []):
-                remaining_in_degree[s] -= 1
-                if remaining_in_degree[s] == 0 and s not in completed_set:
-                    ready.append(s)
-
-        if len(completed_set) >= len(order):
-            break
+            results.append(result)
+            completed_set.add(task_id)
+            in_flight_ids = set(in_flight.values())
+            for successor_id in succ_map.get(task_id, []):
+                remaining_in_degree[successor_id] -= 1
+                if (
+                    remaining_in_degree[successor_id] == 0
+                    and successor_id not in completed_set
+                    and successor_id not in ready
+                    and successor_id not in in_flight_ids
+                ):
+                    ready.append(successor_id)
+        ready.sort(key=lambda task_id: order_index[task_id])
 
     return results
 

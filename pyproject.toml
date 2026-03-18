@@ -105,8 +105,9 @@ packages = ["src/dan"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-m 'not integration and not quality_suite'"
+addopts = "-m 'not integration and not quality_suite and not slow'"
 markers = [
     "integration: tests that require a live LLM API key (deselect with -m 'not integration')",
     "quality_suite: generation quality suite tests (deselect with -m 'not quality_suite')",
+    "slow: longer-running benchmark-style regressions (deselect with -m 'not slow')",
 ]
