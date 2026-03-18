@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 import time
 import uuid
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator, Protocol
 
 if TYPE_CHECKING:
@@ -12,10 +15,12 @@ if TYPE_CHECKING:
 
 from dan.server.chat_manager import (
     ChatCompleteEvent,
+    ChatErrorEvent,
     ChatInterruptedEvent,
     ChatStreamEvent,
 )
 
+from .autonomy import autonomy_max_tool_turns, build_autonomy_announcement
 from .identity import format_prefix
 from .models import IntentCategory, PendingAction, ResolvedContext, RouteDecision, SurfaceMessage, TaskTurn
 
@@ -32,6 +37,33 @@ _MULTI_ACTION_KEYWORDS = frozenset({
 _MISSING_TERMINAL_EVENT_FALLBACK = (
     "The response stream ended before a final answer was produced. "
     "Please ask me to continue from the latest progress."
+)
+_GOAL_REVIEW_STOPWORDS = frozenset({
+    "about", "across", "after", "against", "before", "brief", "child", "children",
+    "combined", "deliverable", "finish", "from", "goal", "into", "original",
+    "parent", "remaining", "result", "results", "review", "session", "task",
+    "tasks", "that", "them", "then", "this", "with", "work",
+})
+_PENDING_CHECKBOX_RE = re.compile(r"(?im)^\s*[-*]?\s*\[\s\]\s+(.+)$")
+_OPEN_LOOP_REVIEW_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
+    (
+        re.compile(r"\b(?:todo|fixme)\b", re.IGNORECASE),
+        "contains TODO-style follow-up markers",
+    ),
+    (
+        re.compile(
+            r"\b(?:could not|couldn't|unable to|failed to|blocked by|waiting on)\b",
+            re.IGNORECASE,
+        ),
+        "reports incomplete execution",
+    ),
+    (
+        re.compile(
+            r"\b(?:not yet|not implemented|not found|follow[- ]up|remaining|next steps?|pending)\b",
+            re.IGNORECASE,
+        ),
+        "calls out remaining follow-up work",
+    ),
 )
 
 
@@ -50,6 +82,12 @@ class TierExecutor(Protocol):
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _SynthesisGapReview:
+    hard_gap_reason: str | None = None
+    ambiguous_gap_reason: str | None = None
 
 def _complete_event(content: str, **kwargs: Any) -> ChatCompleteEvent:
     return ChatCompleteEvent(
@@ -88,6 +126,234 @@ def _synthesize_missing_terminal_event(session: Any) -> ChatCompleteEvent:
         getattr(session, "id", "unknown"),
     )
     return _complete_event(_MISSING_TERMINAL_EVENT_FALLBACK)
+
+
+def _autonomy_level(session: Any, default: str = "balanced") -> str:
+    resolution = getattr(session, "autonomy_resolution", None)
+    level = getattr(resolution, "effective_level", "") if resolution is not None else ""
+    return str(level or default)
+
+
+def _prepend_autonomy_announcement(session: Any, content: str) -> str:
+    if getattr(session, "parent_id", None) is not None:
+        return content
+    announcement = build_autonomy_announcement(getattr(session, "autonomy_resolution", None))
+    if not announcement:
+        return content
+    if not content:
+        return announcement
+    if content.startswith(announcement):
+        return content
+    return f"{announcement}\n\n{content}"
+
+
+def _workflow_id_for_session(session: Any) -> str:
+    msg = getattr(session, "msg", None)
+    metadata = getattr(msg, "metadata", None) if msg is not None else None
+    workflow_id = str(metadata.get("workflow_id") or "") if isinstance(metadata, dict) else ""
+    if workflow_id:
+        return workflow_id
+    ctx = getattr(session, "context", None)
+    proj = getattr(ctx, "project", None) if ctx else None
+    linked = getattr(proj, "linked_workflow_ids", None) if proj else None
+    if linked:
+        workflow_id = str(linked[-1] or "").strip()
+        if workflow_id:
+            return workflow_id
+    return "_scratch"
+
+
+def _resolve_session_model_override(concierge: Any, session: Any) -> str | None:
+    tier_resolver = getattr(concierge, "_tier_resolver", None)
+    return tier_resolver.resolve_model(_determine_stage(session)) if tier_resolver else None
+
+
+def _planned_subtasks(session: Any) -> list[str]:
+    triage = getattr(session, "triage", None)
+    if triage is not None and getattr(triage, "subtasks", None):
+        return [
+            str(task).strip()
+            for task in getattr(triage, "subtasks", [])
+            if str(task).strip()
+        ]
+    task_context = getattr(session, "task_context", None)
+    if isinstance(task_context, dict):
+        return [
+            str(task).strip()
+            for task in task_context.get("subtasks", [])
+            if str(task).strip()
+        ]
+    return []
+
+
+def _significant_terms(text: str, *, limit: int | None = None) -> list[str]:
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in re.findall(r"[a-z0-9][a-z0-9._/-]*", text.lower()):
+        token = raw.strip("._/-")
+        if len(token) < 4 or token.isdigit() or token in _GOAL_REVIEW_STOPWORDS:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        terms.append(token)
+        if limit is not None and len(terms) >= limit:
+            break
+    return terms
+
+
+def _collect_followup_signals(text: str, *, limit: int = 2) -> list[str]:
+    if not str(text or "").strip():
+        return []
+    signals: list[str] = []
+    pending_items = [
+        item.strip()
+        for item in _PENDING_CHECKBOX_RE.findall(text)
+        if str(item).strip()
+    ]
+    if pending_items:
+        preview = "; ".join(pending_items[:2])
+        signals.append(f"contains pending checklist items ({preview})")
+    for pattern, label in _OPEN_LOOP_REVIEW_PATTERNS:
+        if pattern.search(text):
+            signals.append(label)
+        if len(signals) >= limit:
+            break
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for signal in signals:
+        if signal in seen:
+            continue
+        seen.add(signal)
+        deduped.append(signal)
+        if len(deduped) >= limit:
+            break
+    return deduped
+
+
+def _collect_synthesis_uncertainties(child_results: dict[str, Any], manager: Any) -> list[str]:
+    uncertainties: list[str] = []
+    for child_id, result in child_results.items():
+        child = manager.get(child_id)
+        label = getattr(child, "task", child_id)
+        content = str(getattr(result, "content", "") or "").strip()
+        error = str(getattr(result, "error", "") or "").strip()
+        if error:
+            uncertainties.append(f"- {label}: {error}")
+            continue
+        for signal in _collect_followup_signals(content, limit=1):
+            uncertainties.append(f"- {label}: {signal}")
+    return uncertainties
+
+
+def _deterministic_synthesis_gap_review(
+    session: Any,
+    child_results: dict[str, Any],
+    manager: Any,
+) -> _SynthesisGapReview:
+    if not child_results:
+        return _SynthesisGapReview(hard_gap_reason="no child sessions produced usable output")
+    missing_output: list[str] = []
+    errored: list[str] = []
+    child_labels: list[str] = []
+    combined_evidence_parts: list[str] = []
+    for child_id, result in child_results.items():
+        child = manager.get(child_id)
+        label = getattr(child, "task", child_id)
+        child_labels.append(label)
+        content = str(getattr(result, "content", "") or "").strip()
+        error = str(getattr(result, "error", "") or "").strip()
+        if error:
+            errored.append(f"{label}: {error}")
+        elif not content:
+            missing_output.append(label)
+        else:
+            combined_evidence_parts.append(f"{label}\n{content}")
+    if errored:
+        return _SynthesisGapReview(
+            hard_gap_reason="one or more child sessions failed: " + "; ".join(errored[:3]),
+        )
+    if missing_output:
+        return _SynthesisGapReview(
+            hard_gap_reason="one or more child sessions produced no content: "
+            + ", ".join(missing_output[:3]),
+        )
+    expected_subtasks = _planned_subtasks(session)
+    if expected_subtasks:
+        missing_subtasks = [task for task in expected_subtasks if task not in child_labels]
+        if missing_subtasks:
+            return _SynthesisGapReview(
+                hard_gap_reason="planned subtasks were not completed: "
+                + ", ".join(missing_subtasks[:3]),
+            )
+    ambiguous_reasons: list[str] = []
+    uncertainties = _collect_synthesis_uncertainties(child_results, manager)
+    if uncertainties:
+        trimmed = [item.removeprefix("- ").strip() for item in uncertainties[:3]]
+        ambiguous_reasons.append(
+            "child results still show unresolved follow-up work: " + "; ".join(trimmed),
+        )
+    triage = getattr(session, "triage", None)
+    goal_text = "\n".join(
+        part for part in [
+            str(getattr(session, "task", "") or "").strip(),
+            str(getattr(triage, "goal", "") or "").strip(),
+            str(getattr(triage, "deliverable", "") or "").strip(),
+        ]
+        if part
+    )
+    goal_terms = _significant_terms(goal_text, limit=6)
+    if len(goal_terms) < 3:
+        return _SynthesisGapReview(
+            ambiguous_gap_reason="; ".join(ambiguous_reasons[:2]) if ambiguous_reasons else None,
+        )
+    evidence_terms = set(_significant_terms("\n\n".join(combined_evidence_parts)))
+    missing_goal_terms = [term for term in goal_terms if term not in evidence_terms]
+    if len(missing_goal_terms) >= max(2, len(goal_terms) // 2):
+        ambiguous_reasons.append(
+            "combined child results do not clearly cover the original goal: keyword coverage is missing for "
+            + ", ".join(missing_goal_terms[:3]),
+        )
+    return _SynthesisGapReview(
+        ambiguous_gap_reason="; ".join(ambiguous_reasons[:2]) if ambiguous_reasons else None,
+    )
+
+
+def _find_synthesis_gap_reason(session: Any, child_results: dict[str, Any], manager: Any) -> str | None:
+    review = _deterministic_synthesis_gap_review(session, child_results, manager)
+    return review.hard_gap_reason or review.ambiguous_gap_reason
+
+
+def _parse_synthesis_review_response(content: str) -> tuple[str | None, str]:
+    text = str(content or "").strip()
+    if not text:
+        return None, ""
+    candidate = text
+    if candidate.startswith("```"):
+        first_newline = candidate.find("\n")
+        if first_newline != -1:
+            candidate = candidate[first_newline + 1 :]
+        if candidate.endswith("```"):
+            candidate = candidate[:-3]
+        candidate = candidate.strip()
+    try:
+        payload = json.loads(candidate)
+    except json.JSONDecodeError:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start == -1 or end <= start:
+            return None, text
+        try:
+            payload = json.loads(candidate[start : end + 1])
+        except json.JSONDecodeError:
+            return None, text
+    if not isinstance(payload, dict):
+        return None, text
+    decision = str(payload.get("decision", "") or "").strip().lower()
+    reason = str(payload.get("reason", "") or "").strip()
+    if decision not in {"accept", "remediate"}:
+        return None, text
+    return decision, reason or text
 
 
 def _cancel_event(session: Any) -> Any | None:
@@ -142,6 +408,13 @@ def _mark_session_cancelled(
 def _build_prompt(session: Any) -> str:
     parts: list[str] = []
     triage = getattr(session, "triage", None)
+    autonomy_resolution = getattr(session, "autonomy_resolution", None)
+    if autonomy_resolution is not None:
+        parts.append(
+            "Autonomy: "
+            f"{getattr(autonomy_resolution, 'effective_level', 'balanced')}"
+            f" ({getattr(autonomy_resolution, 'source', 'fallback')})"
+        )
     if triage:
         if getattr(triage, "goal", None):
             parts.append(f"User goal: {triage.goal}")
@@ -152,9 +425,32 @@ def _build_prompt(session: Any) -> str:
     if ctx and getattr(ctx, "domain", None):
         parts.append(f"Domain: {ctx.domain}")
 
+    task_context = getattr(session, "task_context", None)
+    if isinstance(task_context, dict):
+        previous_result = str(task_context.get("previous_result", "") or "").strip()
+        if previous_result:
+            parts.append(f"Previous step result:\n{previous_result[:4000]}")
+        synthesis_context = str(task_context.get("synthesis_context", "") or "").strip()
+        if synthesis_context:
+            parts.append(f"Parent synthesis context:\n{synthesis_context[:4000]}")
+        remediation_reason = str(task_context.get("remediation_reason", "") or "").strip()
+        if remediation_reason:
+            parts.append(f"Remediation reason: {remediation_reason}")
+
     msg = getattr(session, "msg", None)
     metadata = getattr(msg, "metadata", None) if msg is not None else None
     if isinstance(metadata, dict):
+        recent_turns = metadata.get("autonomy_recent_turns")
+        if isinstance(recent_turns, list):
+            cleaned_turns = [str(item or "").strip() for item in recent_turns if str(item or "").strip()]
+            if cleaned_turns:
+                parts.append("Recent task turns:\n" + "\n".join(cleaned_turns[:4]))
+        task_snapshot = str(metadata.get("autonomy_task_snapshot", "") or "").strip()
+        if task_snapshot:
+            parts.append(f"Task snapshot:\n{task_snapshot[:2000]}")
+        repo_snapshot = str(metadata.get("autonomy_repo_snapshot", "") or "").strip()
+        if repo_snapshot:
+            parts.append(f"Repo snapshot:\n{repo_snapshot[:2000]}")
         memory_context = str(metadata.get("memory_context", "") or "").strip()
         if memory_context:
             parts.append(f"Relevant memory:\n{memory_context[:4000]}")
@@ -215,15 +511,7 @@ def _extract_chat_params(
     triage = getattr(session, "triage", None)
     route = getattr(triage, "route", None)
 
-    workflow_id: str = str(metadata.get("workflow_id") or "")
-    if not workflow_id:
-        ctx = getattr(session, "context", None)
-        proj = getattr(ctx, "project", None) if ctx else None
-        linked = getattr(proj, "linked_workflow_ids", None) if proj else None
-        if linked:
-            workflow_id = linked[-1]
-    if not workflow_id:
-        workflow_id = "_scratch"
+    workflow_id = _workflow_id_for_session(session)
 
     message: str = getattr(msg, "text", "") or getattr(session, "task", "") or "Hello"
 
@@ -293,6 +581,7 @@ def _extract_chat_params(
 
     stream_channel_id = str(metadata.get("stream_channel_id") or "").strip() or None
     attachment_prompt_context = str(metadata.get("attachment_prompt_context") or "").strip()
+    autonomy_resolution = getattr(session, "autonomy_resolution", None)
     prompt_context = system_prompt
     if attachment_prompt_context:
         prompt_context = (
@@ -326,6 +615,10 @@ def _extract_chat_params(
         "stream_channel_id": stream_channel_id,
         "memory_project_id": memory_project_id,
         "include_memory_kernel_context": not bool(str(metadata.get("memory_context") or "").strip()),
+        "max_tool_turns": autonomy_max_tool_turns(
+            getattr(autonomy_resolution, "effective_level", None),
+        ),
+        "autonomy_resolution": autonomy_resolution,
     }
     if model_override:
         result["model_override"] = model_override
@@ -333,6 +626,27 @@ def _extract_chat_params(
         audit["concierge_model_override"] = model_override
         result["audit_metadata"] = audit
     return result
+
+
+def _extract_text_chat_context_params(
+    session: Any,
+    *,
+    model_override: str | None = None,
+) -> dict[str, Any]:
+    base = _extract_chat_params(session, "", model_override=model_override)
+    return {
+        "workflow_id": base.get("workflow_id", "_scratch"),
+        "thread_id": base.get("thread_id"),
+        "client_graph_revision": base.get("client_graph_revision"),
+        "cancel_event": base.get("cancel_event"),
+        "surface_context": base.get("surface_context"),
+        "surface": base.get("surface"),
+        "extra_system_instructions": base.get("extra_system_instructions", ""),
+        "memory_project_id": base.get("memory_project_id"),
+        "include_memory_kernel_context": base.get("include_memory_kernel_context", True),
+        "model_override": base.get("model_override"),
+        "autonomy_resolution": base.get("autonomy_resolution"),
+    }
 
 
 def _request_mode(metadata: Any) -> str:
@@ -450,9 +764,7 @@ class SingleShotExecutor:
 
         manager.update_state(session.id, "running")
 
-        stage = _determine_stage(session)
-        tier_resolver = getattr(self._concierge, "_tier_resolver", None)
-        model_override = tier_resolver.resolve_model(stage) if tier_resolver else None
+        model_override = _resolve_session_model_override(self._concierge, session)
 
         system_prompt = _build_prompt(session)
         chat_params = _extract_chat_params(session, system_prompt, model_override=model_override)
@@ -467,14 +779,16 @@ class SingleShotExecutor:
             ):
                 if isinstance(event, ChatInterruptedEvent):
                     saw_terminal = True
-                    final_content = event.content
+                    final_content = _prepend_autonomy_announcement(session, event.content)
                     token_usage = dict(event.token_usage)
-                    yield event
+                    yield event.model_copy(update={"content": final_content})
                     break
                 if isinstance(event, ChatCompleteEvent):
                     saw_terminal = True
-                    final_content = event.content
+                    final_content = _prepend_autonomy_announcement(session, event.content)
                     token_usage = dict(event.token_usage)
+                    yield event.model_copy(update={"content": final_content})
+                    continue
                 yield event
         except Exception as exc:
             from dan.providers import LLMAuthenticationError
@@ -499,8 +813,8 @@ class SingleShotExecutor:
 
         if not saw_terminal:
             synthesized = _synthesize_missing_terminal_event(session)
-            final_content = synthesized.content
-            yield synthesized
+            final_content = _prepend_autonomy_announcement(session, synthesized.content)
+            yield synthesized.model_copy(update={"content": final_content})
 
         from .session import SessionResult as _SR
         manager.set_result(
@@ -554,11 +868,22 @@ class MultiStepExecutor:
         if tier is not None and tier != 2:
             return False
 
+        # Workflow build/edit turns must stay on the direct chat-manager path so
+        # the graph generation / mutation fast paths can run against the target
+        # workflow instead of decomposing into generic child sessions.
+        if _determine_stage(session) == "workflow_build":
+            return False
+
         triage = getattr(session, "triage", None)
         subtasks = getattr(triage, "subtasks", None) if triage else None
         task_ctx = getattr(session, "task_context", {}) or {}
 
-        has_subtasks = (subtasks and len(subtasks) > 1) or len(task_ctx.get("subtasks", [])) > 1
+        explicit_subtasks = list(subtasks or task_ctx.get("subtasks", []) or [])
+        autonomy_level = _autonomy_level(session)
+        if autonomy_level == "aggressive":
+            has_subtasks = len(explicit_subtasks) >= 1
+        else:
+            has_subtasks = len(explicit_subtasks) > 1
         if not has_subtasks:
             return False
 
@@ -567,7 +892,13 @@ class MultiStepExecutor:
 
         max_depth = getattr(session, "max_depth", 3)
         depth = getattr(session, "depth", 0)
-        return depth < max_depth
+        if depth >= max_depth:
+            return False
+
+        subtask_count = len(explicit_subtasks)
+        if autonomy_level == "careful":
+            return subtask_count > 2
+        return True
 
     # -- direct execution (leaf) -------------------------------------------
 
@@ -579,9 +910,7 @@ class MultiStepExecutor:
             yield _interrupted_event()
             return
 
-        stage = _determine_stage(session)
-        tier_resolver = getattr(self._concierge, "_tier_resolver", None)
-        model_override = tier_resolver.resolve_model(stage) if tier_resolver else None
+        model_override = _resolve_session_model_override(self._concierge, session)
 
         system_prompt = _build_prompt(session)
         chat_params = _extract_chat_params(session, system_prompt, model_override=model_override)
@@ -596,14 +925,16 @@ class MultiStepExecutor:
             ):
                 if isinstance(event, ChatInterruptedEvent):
                     saw_terminal = True
-                    final_content = event.content
+                    final_content = _prepend_autonomy_announcement(session, event.content)
                     token_usage = dict(event.token_usage)
-                    yield event
+                    yield event.model_copy(update={"content": final_content})
                     break
                 if isinstance(event, ChatCompleteEvent):
                     saw_terminal = True
-                    final_content = event.content
+                    final_content = _prepend_autonomy_announcement(session, event.content)
                     token_usage = dict(event.token_usage)
+                    yield event.model_copy(update={"content": final_content})
+                    continue
                 yield event
         except Exception as exc:
             from dan.providers import LLMAuthenticationError
@@ -628,8 +959,8 @@ class MultiStepExecutor:
 
         if not saw_terminal:
             synthesized = _synthesize_missing_terminal_event(session)
-            final_content = synthesized.content
-            yield synthesized
+            final_content = _prepend_autonomy_announcement(session, synthesized.content)
+            yield synthesized.model_copy(update={"content": final_content})
 
         from .session import SessionResult as _SR
         manager.set_result(
@@ -672,6 +1003,7 @@ class MultiStepExecutor:
         children: list[Any] = []
         interrupted = False
         interrupted_emitted = False
+        synthesis_review_usage: dict[str, int] = {}
 
         try:
             if child_execution == "parallel":
@@ -768,13 +1100,55 @@ class MultiStepExecutor:
             return
 
         manager.update_state(session.id, "running")
+        if _autonomy_level(session) == "aggressive":
+            gap_reason, synthesis_review_usage = await self._review_synthesis_gap_reason(
+                session,
+                child_results,
+                manager,
+            )
+            if gap_reason and manager.can_spawn_child(session.id):
+                remediation_child = self._build_child_session(
+                    session,
+                    manager,
+                    "Review the child results against the original goal and finish any remaining work.",
+                )
+                remediation_child.task_context = {
+                    **(getattr(remediation_child, "task_context", {}) or {}),
+                    "remediation_reason": (
+                        f"review combined child results against the original goal: {gap_reason}"
+                        if gap_reason
+                        else "review combined child results against the original goal"
+                    ),
+                    "synthesis_context": self._synthesize(session, child_results, manager),
+                }
+                progress_event = self._child_progress_event(session, remediation_child)
+                if progress_event is not None:
+                    yield progress_event
+                async for event in self._run_child(remediation_child, manager):
+                    if isinstance(event, ChatInterruptedEvent):
+                        _mark_session_cancelled(
+                            manager,
+                            session,
+                            start=start,
+                            child_results=child_results,
+                        )
+                        yield event
+                        return
+                    yield event
+                remediation_state = manager.get(remediation_child.id)
+                if remediation_state and getattr(remediation_state, "result", None):
+                    child_results[remediation_child.id] = remediation_state.result
+
         final_content = self._synthesize(session, child_results, manager)
+        final_content = _prepend_autonomy_announcement(session, final_content)
 
         from .session import SessionResult as _SR
         total_tokens: dict[str, int] = {}
         for r in child_results.values():
             for k, v in (getattr(r, "token_usage", {}) or {}).items():
                 total_tokens[k] = total_tokens.get(k, 0) + v
+        for k, v in synthesis_review_usage.items():
+            total_tokens[k] = total_tokens.get(k, 0) + v
 
         manager.set_result(
             session.id,
@@ -949,6 +1323,108 @@ class MultiStepExecutor:
 
     # -- synthesis ---------------------------------------------------------
 
+    async def _review_synthesis_gap_reason(
+        self,
+        session: Any,
+        child_results: dict[str, Any],
+        manager: Any,
+    ) -> tuple[str | None, dict[str, int]]:
+        review = _deterministic_synthesis_gap_review(session, child_results, manager)
+        if review.hard_gap_reason:
+            return review.hard_gap_reason, {}
+        if not review.ambiguous_gap_reason:
+            return None, {}
+        llm_gap_reason, token_usage = await self._review_synthesis_gap_reason_with_llm(
+            session,
+            child_results,
+            manager,
+            review.ambiguous_gap_reason,
+        )
+        return llm_gap_reason, token_usage
+
+    async def _review_synthesis_gap_reason_with_llm(
+        self,
+        session: Any,
+        child_results: dict[str, Any],
+        manager: Any,
+        ambiguous_reason: str,
+    ) -> tuple[str | None, dict[str, int]]:
+        chat_manager = getattr(self._concierge, "chat_manager", None)
+        if chat_manager is None or not hasattr(chat_manager, "send_message"):
+            return None, {}
+        triage = getattr(session, "triage", None)
+        planned_subtasks = _planned_subtasks(session)
+        child_sections: list[str] = []
+        for child_id, result in child_results.items():
+            child = manager.get(child_id)
+            label = getattr(child, "task", child_id)
+            content = str(getattr(result, "content", "") or "").strip()
+            error = str(getattr(result, "error", "") or "").strip()
+            body = error or content or "(no output)"
+            if len(body) > 1200:
+                body = body[:1200].rstrip() + "..."
+            child_sections.append(f"### {label}\n{body}")
+        review_payload_parts = [
+            f"Original goal: {str(getattr(triage, 'goal', '') or getattr(session, 'task', '') or '').strip()}",
+            f"Deliverable: {str(getattr(triage, 'deliverable', '') or '').strip()}",
+        ]
+        if planned_subtasks:
+            review_payload_parts.append("Planned subtasks:\n- " + "\n- ".join(planned_subtasks[:8]))
+        review_payload_parts.append(f"Deterministic ambiguous signal: {ambiguous_reason}")
+        review_payload_parts.append("Child outputs:\n" + "\n\n".join(child_sections[:6]))
+        review_payload = "\n\n".join(part for part in review_payload_parts if part.strip())
+        final_content = ""
+        token_usage: dict[str, int] = {}
+        review_chat_params = _extract_text_chat_context_params(
+            session,
+            model_override=_resolve_session_model_override(self._concierge, session),
+        )
+        try:
+            async for event in chat_manager.send_message(
+                workflow_id=review_chat_params["workflow_id"],
+                message=review_payload,
+                history=[],
+                thread_id=review_chat_params["thread_id"],
+                client_graph_revision=review_chat_params["client_graph_revision"],
+                mode="agent",
+                cancel_event=review_chat_params["cancel_event"],
+                prompt_context=(
+                    "You are doing an internal execution-quality review for the parent session. "
+                    "Judge whether the child results fully satisfy the original goal.\n\n"
+                    "Use the deterministic signal only as a hint. If the apparent issue is just wording "
+                    "or keyword mismatch, choose accept. If there is a real missing requirement or unfinished work, "
+                    "choose remediate.\n\n"
+                    "Return JSON only in this exact schema:\n"
+                    '{"decision":"accept"|"remediate","reason":"one sentence"}'
+                ),
+                surface_context=review_chat_params["surface_context"],
+                surface=review_chat_params["surface"],
+                extra_system_instructions=review_chat_params["extra_system_instructions"],
+                memory_project_id=review_chat_params["memory_project_id"],
+                include_memory_kernel_context=review_chat_params["include_memory_kernel_context"],
+                model_override=review_chat_params["model_override"],
+                autonomy_resolution=review_chat_params["autonomy_resolution"],
+                record_summary=False,
+            ):
+                if isinstance(event, ChatErrorEvent):
+                    logger.warning("Synthesis review fallback failed: %s", event.error)
+                    return None, {}
+                if hasattr(event, "accumulated"):
+                    final_content = str(getattr(event, "accumulated", "") or final_content)
+                if isinstance(event, (ChatCompleteEvent, ChatInterruptedEvent)):
+                    final_content = str(getattr(event, "content", "") or final_content)
+                    token_usage = dict(getattr(event, "token_usage", {}) or {})
+                    break
+        except Exception:
+            logger.warning("Synthesis review fallback raised unexpectedly", exc_info=True)
+            return None, {}
+        decision, reason = _parse_synthesis_review_response(final_content)
+        if decision == "remediate":
+            return reason or ambiguous_reason, token_usage
+        if decision != "accept":
+            logger.warning("Synthesis review fallback returned unparseable content: %r", final_content[:400])
+        return None, token_usage
+
     @staticmethod
     def _synthesize(session: Any, child_results: dict[str, Any], manager: Any) -> str:
         parts: list[str] = []
@@ -958,4 +1434,10 @@ class MultiStepExecutor:
             if child and content:
                 task_label = getattr(child, "task", child_id)
                 parts.append(f"## {task_label}\n\n{content}")
-        return "\n\n".join(parts) if parts else "Task completed but no content was produced."
+        if not parts:
+            return "Task completed but no content was produced."
+        combined = "\n\n".join(parts)
+        uncertainties = _collect_synthesis_uncertainties(child_results, manager)
+        if _autonomy_level(session) == "careful" and uncertainties:
+            combined = f"{combined}\n\n## Uncertainties\n" + "\n".join(uncertainties)
+        return combined

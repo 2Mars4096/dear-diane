@@ -113,6 +113,7 @@ from dan.server.chat.helpers import (  # noqa: F401
     build_debug_context,
 )
 from dan.server.chat.prompts import (  # noqa: F401
+    DEFAULT_PROMPT_MODULE_RESOLVER,
     NODE_TYPES,
     EDGE_TYPES,
     _build_mutation_tool_schema,
@@ -128,9 +129,10 @@ from dan.server.chat.prompts import (  # noqa: F401
     _RESEARCH_REPORT_PROMPT_HINT,
     _RESEARCH_HINT_CLASSIFIER_SYSTEM_PROMPT,
     _classify_research_prompt_signal,
+    _EXPLORATION_HINT_CLASSIFIER_SYSTEM_PROMPT,
+    _classify_exploration_prompt_signal,
+    PromptContext,
     SURFACE_HINTS,
-    _resolve_mode_hints,
-    _resolve_surface_hints,
     _looks_like_research_report_request,
     UNIFIED_SYSTEM_PROMPT,
     EMPTY_GRAPH_SUMMARY_PLACEHOLDER,
@@ -323,6 +325,7 @@ class ChatManager:
         )
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._injection_queues: dict[str, asyncio.Queue[dict[str, str]]] = {}
+        self._prompt_details_by_workflow: dict[str, dict[str, str]] = {}
 
     def register_stream(self, channel_id: str) -> asyncio.Event:
         """Register a cancellation event for an active stream."""
@@ -367,6 +370,27 @@ class ChatManager:
             except asyncio.QueueEmpty:
                 break
         return items
+
+    def set_prompt_details(self, workflow_id: str, details: dict[str, str]) -> None:
+        workflow_key = str(workflow_id or "").strip()
+        if not workflow_key:
+            return
+        if details:
+            self._prompt_details_by_workflow[workflow_key] = dict(details)
+        else:
+            self._prompt_details_by_workflow.pop(workflow_key, None)
+
+    def clear_prompt_details(self, workflow_id: str) -> None:
+        workflow_key = str(workflow_id or "").strip()
+        if workflow_key:
+            self._prompt_details_by_workflow.pop(workflow_key, None)
+
+    def get_prompt_detail(self, workflow_id: str, detail_id: str) -> str | None:
+        workflow_key = str(workflow_id or "").strip()
+        detail_key = str(detail_id or "").strip()
+        if not workflow_key or not detail_key:
+            return None
+        return (self._prompt_details_by_workflow.get(workflow_key) or {}).get(detail_key)
 
     def set_behavior_store(self, store: Any) -> None:
         """Inject a BehaviorStore for domain detection and parameter resolution."""
@@ -750,6 +774,8 @@ class ChatManager:
         memory_project_id: str | None = None,
         include_memory_kernel_context: bool = True,
         model_override: str | None = None,
+        autonomy_resolution: Any | None = None,
+        record_summary: bool = True,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream a text-only LLM response (no function calling)."""
         try:
@@ -785,6 +811,7 @@ class ChatManager:
                 include_memory_kernel_context=include_memory_kernel_context,
                 tools_available=False,
                 model=effective_model,
+                autonomy_resolution=autonomy_resolution,
             )
 
             provider = self._resolve_provider(
@@ -846,11 +873,12 @@ class ChatManager:
                     token_usage=token_usage,
                 )
             else:
-                self._record_conversation_summary(
-                    workflow_id=workflow_id,
-                    user_message=message,
-                    assistant_message=final_content,
-                )
+                if record_summary:
+                    self._record_conversation_summary(
+                        workflow_id=workflow_id,
+                        user_message=message,
+                        assistant_message=final_content,
+                    )
                 
                 cost = estimate_cost(effective_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
                 if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
@@ -900,6 +928,7 @@ class ChatManager:
         memory_project_id: str | None = None,
         include_memory_kernel_context: bool = True,
         model_override: str | None = None,
+        autonomy_resolution: Any | None = None,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Process a user message using LLM function calling for graph mutations.
 
@@ -1191,6 +1220,7 @@ class ChatManager:
                 memory_project_id=memory_project_id,
                 include_memory_kernel_context=include_memory_kernel_context,
                 model=effective_model,
+                autonomy_resolution=autonomy_resolution,
             )
             provider = self._resolve_provider(
                 pii_session_key=thread_id or workflow_id,
@@ -1236,6 +1266,17 @@ class ChatManager:
             all_tools: list[dict[str, Any]] = []
             if self._capability_registry is not None:
                 all_tools = list(self._capability_registry.get_tools(mode))
+            prompt_supports_load_prompt_detail = any(
+                str(message_obj.get("role") or "") == "system"
+                and "load_prompt_detail" in str(message_obj.get("content") or "")
+                for message_obj in messages
+                if isinstance(message_obj, dict)
+            )
+            if not prompt_supports_load_prompt_detail:
+                all_tools = [
+                    tool for tool in all_tools
+                    if str(((tool.get("function") or {}).get("name")) or "") != "load_prompt_detail"
+                ]
             if allow_mutation_tool and mode not in READ_ONLY_MODES:
                 all_tools.append(MUTATION_TOOL_SCHEMA)
             satisfied_tool_names: set[str] = set()
@@ -1427,7 +1468,25 @@ class ChatManager:
                     exc,
                 )
                 try:
-                    fallback_messages = _disable_tool_access_in_messages(messages)
+                    fallback_messages = await self._build_messages(
+                        summary,
+                        message,
+                        history,
+                        mode=mode,
+                        debug_context=debug_context,
+                        prompt_context=prompt_context,
+                        mentions=mentions,
+                        surface_context=surface_context,
+                        workflow_id=workflow_id,
+                        graph_dict=graph_dict,
+                        surface=surface,
+                        extra_system_instructions=extra_system_instructions,
+                        memory_project_id=memory_project_id,
+                        include_memory_kernel_context=include_memory_kernel_context,
+                        tools_available=False,
+                        model=effective_model,
+                        autonomy_resolution=autonomy_resolution,
+                    )
                     async for event in self._stream_with_json_fallback(
                         provider, fallback_messages, message_id,
                         revision, revision_mismatch, graph_dict,
@@ -1460,6 +1519,7 @@ class ChatManager:
             emitted_attachment_paths: set[str] = set()
             tool_result_cache: dict[str, CapabilityResult] = {}
             file_read_cache: dict[str, list[tuple[int, float, CapabilityResult]]] = {}
+            completion_review_requested = False
 
             def _tool_cache_key(tool_name: str, args: dict[str, Any]) -> str:
                 try:
@@ -1712,6 +1772,65 @@ class ChatManager:
                         )
                         return
 
+                    autonomy_level = str(
+                        getattr(autonomy_resolution, "effective_level", "") or "",
+                    ).strip().lower()
+                    if (
+                        autonomy_level in {"careful", "aggressive"}
+                        and not completion_review_requested
+                        and _turn < max_tool_turns - 1
+                    ):
+                        partial = result.text or ""
+                        if partial:
+                            combined_text_parts.append(partial)
+                            messages.append({"role": "assistant", "content": partial})
+                        if autonomy_level == "aggressive":
+                            review_prompt = (
+                                "Before you stop, check whether you fully addressed the goal. "
+                                "If verification, testing, or one obvious next step should be done now, do it. "
+                                "If the answer is already complete, return the final answer."
+                            )
+                        else:
+                            review_prompt = (
+                                "Before you stop, make sure the answer clearly summarizes what was done "
+                                "and surfaces any remaining uncertainties or approvals needed."
+                            )
+                        messages.append({"role": "user", "content": review_prompt})
+                        messages = _compact_context(messages, effective_model)
+                        completion_review_requested = True
+                        try:
+                            continuation_tools, continuation_tool_choice = _tool_request_config(
+                                force_file_write_now=force_file_write_next_turn,
+                            )
+                            continuation_result = None
+                            async for step in _iter_guarded_complete(
+                                request_kwargs={
+                                    "messages": messages,
+                                    "model": effective_model,
+                                    "temperature": 0.7,
+                                    "max_tokens": completion_max_tokens,
+                                    "tools": continuation_tools,
+                                    "tool_choice": continuation_tool_choice,
+                                },
+                                interrupted_content=lambda: "\n\n".join(combined_text_parts)
+                                if combined_text_parts
+                                else "",
+                                emit_progress_ack=True,
+                            ):
+                                if isinstance(step, CompletionResult):
+                                    continuation_result = step
+                                else:
+                                    yield step
+                                    if isinstance(step, ChatInterruptedEvent):
+                                        return
+                            if continuation_result is None:
+                                raise RuntimeError("Completion review produced no result")
+                            result = continuation_result
+                            usage_totals = _merge_usage_totals(usage_totals, result.usage)
+                            continue
+                        except Exception as exc:
+                            logger.warning("Completion review continuation failed: %s", exc)
+
                     content = result.text or ""
                     if not content.strip() and combined_text_parts:
                         content = "\n\n".join(combined_text_parts)
@@ -1897,6 +2016,7 @@ class ChatManager:
                                 memory_project_id=memory_project_id,
                                 include_memory_kernel_context=include_memory_kernel_context,
                                 model=effective_model,
+                                autonomy_resolution=autonomy_resolution,
                             )
                             replan_messages.append({
                                 "role": "user",
@@ -3164,6 +3284,7 @@ class ChatManager:
         include_memory_kernel_context: bool = True,
         tools_available: bool = True,
         model: str | None = None,
+        autonomy_resolution: Any | None = None,
     ) -> list[dict[str, str]]:
         effective_model = model or self._chat_model
         normalized_mode = normalize_chat_mode(mode)
@@ -3188,18 +3309,38 @@ class ChatManager:
             else serialize_for_prompt(summary)
         )
         workflow_block = f"## Current Workflow\n{graph_text}"
-        surface_hints = _resolve_surface_hints(surface, effective_model)
-        mode_hints = _resolve_mode_hints(normalized_mode)
         research_hint_enabled = await self._should_inject_research_prompt_hint(
             user_message,
             workflow_id=workflow_id,
             model=effective_model,
         )
-        task_hints = (
-            _RESEARCH_REPORT_PROMPT_HINT
-            if research_hint_enabled
-            else ""
+        exploration_hint_enabled = False
+        if not research_hint_enabled:
+            exploration_hint_enabled = await self._should_inject_exploration_prompt_hint(
+                user_message,
+                workflow_id=workflow_id,
+                model=effective_model,
+            )
+        prompt_context_obj = PromptContext(
+            mode=normalized_mode,
+            surface=surface or "server",
+            model=effective_model,
+            user_message=user_message,
+            workflow_id=workflow_id,
+            autonomy_resolution=autonomy_resolution,
+            tools_available=tools_available,
+            project_metadata={
+                "memory_project_id": memory_project_id,
+            },
+            precomputed_hint_flags={
+                "research_specializer": research_hint_enabled,
+                "exploration_specializer": exploration_hint_enabled,
+            },
         )
+        resolved_modules, _prompt_details = await DEFAULT_PROMPT_MODULE_RESOLVER.resolve(
+            prompt_context_obj,
+        )
+        module_hints = "\n\n".join(module.content.strip() for module in resolved_modules if module.content.strip())
 
         preflight_context = ""
         try:
@@ -3213,9 +3354,7 @@ class ChatManager:
         system_sections = [UNIFIED_SYSTEM_PROMPT.format(
             current_date=preflight_context,
             capability_reference=generate_capability_reference(),
-            surface_hints=surface_hints,
-            mode_hints=mode_hints,
-            task_hints=task_hints,
+            module_hints=module_hints,
             context_block=context_block,
             workflow_block=workflow_block,
         ).strip()]
@@ -3327,6 +3466,50 @@ class ChatManager:
         except Exception:
             logger.debug(
                 "Research prompt classifier fallback failed; defaulting to no hint",
+                exc_info=True,
+            )
+            return False
+
+    async def _should_inject_exploration_prompt_hint(
+        self,
+        user_message: str,
+        *,
+        workflow_id: str = "",
+        model: str | None = None,
+    ) -> bool:
+        heuristic = _classify_exploration_prompt_signal(user_message)
+        if heuristic == "yes":
+            return True
+        if heuristic == "no":
+            return False
+
+        effective_model = model or self._chat_model
+        pii_key = workflow_id or f"exploration-hint:{hashlib.sha256(user_message.encode('utf-8')).hexdigest()[:12]}"
+        try:
+            provider = self._resolve_provider(
+                pii_session_key=pii_key,
+                model=effective_model,
+            )
+            result = await asyncio.wait_for(
+                provider.complete(
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": _EXPLORATION_HINT_CLASSIFIER_SYSTEM_PROMPT,
+                        },
+                        {"role": "user", "content": user_message},
+                    ],
+                    model=effective_model,
+                    temperature=0.0,
+                    max_tokens=3,
+                ),
+                timeout=min(_LLM_CALL_TIMEOUT_SECONDS, 8.0),
+            )
+            answer = (result.text or "").strip().lower()
+            return answer.startswith("yes")
+        except Exception:
+            logger.debug(
+                "Exploration prompt classifier fallback failed; defaulting to no hint",
                 exc_info=True,
             )
             return False

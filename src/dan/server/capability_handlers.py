@@ -146,6 +146,7 @@ from dan.server.capabilities.introspection import (
 )
 from dan.server.capabilities.misc import (
     handle_current_datetime,
+    handle_load_prompt_detail,
     handle_telegram_poll,
     handle_send_email,
 )
@@ -243,6 +244,24 @@ CURRENT_DATETIME_CAPABILITY_SCHEMA = build_tool_schema(
         "(e.g. 'how many days until June 1?', 'what day is it?')."
     ),
     parameters={"type": "object", "properties": {}},
+)
+
+LOAD_PROMPT_DETAIL_CAPABILITY_SCHEMA = build_tool_schema(
+    name="load_prompt_detail",
+    description=(
+        "Load extra prompt guidance for a resolved prompt module when the system "
+        "has exposed a detail_id for the current request."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "detail_id": {
+                "type": "string",
+                "description": "Prompt detail identifier from the current request context.",
+            },
+        },
+        "required": ["detail_id"],
+    },
 )
 
 TELEGRAM_POLL_CAPABILITY_SCHEMA = build_tool_schema(
@@ -692,6 +711,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
     registry.register("file_grep", FILE_GREP_CAPABILITY_SCHEMA, handle_file_grep, modes=list(ALL_MODES), category="file", cacheable=True)
     registry.register("pdf_read", PDF_READ_CAPABILITY_SCHEMA, handle_pdf_read, modes=list(ALL_MODES), category="file", cacheable=True)
     registry.register("current_datetime", CURRENT_DATETIME_CAPABILITY_SCHEMA, handle_current_datetime, modes=list(ALL_MODES), category="system")
+    registry.register("load_prompt_detail", LOAD_PROMPT_DETAIL_CAPABILITY_SCHEMA, handle_load_prompt_detail, modes=list(ALL_MODES), category="system", cacheable=True)
     registry.register("send_email", SEND_EMAIL_CAPABILITY_SCHEMA, handle_send_email, modes=WRITE_MODES, category="communication")
     registry.register("telegram_poll", TELEGRAM_POLL_CAPABILITY_SCHEMA, handle_telegram_poll, modes=["agent", "conversation"], category="communication")
     registry.register("screenshot", SCREENSHOT_CAPABILITY_SCHEMA, handle_screenshot, modes=list(ALL_MODES), category="system")

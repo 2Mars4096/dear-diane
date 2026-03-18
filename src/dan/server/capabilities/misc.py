@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
+from dan.server.chat.prompts import get_prompt_detail_body
 
 
 async def handle_current_datetime(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
@@ -16,6 +17,27 @@ async def handle_current_datetime(args: dict[str, Any], ctx: CapabilityContext) 
         success=True,
         message=f"Local: {now.strftime('%A, %B %d, %Y %I:%M %p')} | UTC: {utc.strftime('%Y-%m-%d %H:%M:%S')}",
         data={"local": now.isoformat(), "utc": utc.isoformat()},
+    )
+
+
+async def handle_load_prompt_detail(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    detail_id = str(args.get("detail_id") or "").strip()
+    if not detail_id:
+        return CapabilityResult(success=False, message="'detail_id' is required.")
+    detail = get_prompt_detail_body(detail_id)
+    if not detail:
+        return CapabilityResult(
+            success=False,
+            message=f"Unknown prompt detail: {detail_id}",
+        )
+    return CapabilityResult(
+        success=True,
+        message=detail,
+        data={"detail_id": detail_id},
+        output_preview=detail[:200],
     )
 
 

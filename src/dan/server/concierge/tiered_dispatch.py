@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, AsyncIterator
 
 if TYPE_CHECKING:
@@ -36,10 +37,173 @@ def _sanitize_user_turn_metadata(msg: SurfaceMessage | None) -> dict[str, Any]:
     }
 
 
+def _normalize_context_file_path(raw_path: Any, *, workspace_root: str = "") -> str | None:
+    text = str(raw_path or "").strip()
+    if not text:
+        return None
+    path = Path(text).expanduser()
+    if not path.is_absolute() and workspace_root:
+        path = Path(workspace_root).expanduser() / path
+    try:
+        return str(path.resolve())
+    except Exception:
+        return str(path)
+
+
+def _read_bounded_files(
+    paths: list[str],
+    *,
+    limit: int = 2,
+    max_bytes: int = 100_000,
+    max_chars: int = 2000,
+) -> dict[str, str]:
+    content: dict[str, str] = {}
+    for raw_path in paths:
+        normalized = _normalize_context_file_path(raw_path)
+        if not normalized or normalized in content:
+            continue
+        file_path = Path(normalized)
+        if not file_path.is_file():
+            continue
+        try:
+            if file_path.stat().st_size > max_bytes:
+                continue
+            text = file_path.read_text(encoding="utf-8", errors="replace").strip()
+        except Exception:
+            continue
+        if not text:
+            continue
+        content[normalized] = text[:max_chars]
+        if len(content) >= limit:
+            break
+    return content
+
+
+def _collect_aggressive_related_paths(
+    msg: SurfaceMessage,
+    context: Any,
+    *,
+    existing_paths: set[str] | None = None,
+    limit: int = 2,
+) -> list[str]:
+    metadata = getattr(msg, "metadata", {}) or {}
+    surface_context = metadata.get("surface_context") if isinstance(metadata, dict) else {}
+    if not isinstance(surface_context, dict):
+        surface_context = {}
+    workspace_root = str(surface_context.get("workspace_root") or "").strip()
+    candidates: list[str] = []
+
+    mentioned_files = surface_context.get("mentioned_files")
+    if isinstance(mentioned_files, list):
+        for file_ctx in mentioned_files:
+            if not isinstance(file_ctx, dict):
+                continue
+            normalized = _normalize_context_file_path(
+                file_ctx.get("path"),
+                workspace_root=workspace_root,
+            )
+            if normalized:
+                candidates.append(normalized)
+
+    import_neighbors = surface_context.get("import_neighbors")
+    if isinstance(import_neighbors, list):
+        for item in import_neighbors:
+            normalized = _normalize_context_file_path(item, workspace_root=workspace_root)
+            if normalized:
+                candidates.append(normalized)
+
+    task_obj = getattr(context, "task", None) if context is not None else None
+    artifacts = getattr(task_obj, "artifacts", None)
+    if isinstance(artifacts, dict):
+        for path in artifacts.values():
+            normalized = _normalize_context_file_path(path)
+            if normalized:
+                candidates.append(normalized)
+
+    seen = set(existing_paths or set())
+    selected: list[str] = []
+    for candidate in candidates:
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        selected.append(candidate)
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _build_aggressive_task_snapshot(context: Any) -> str:
+    project = getattr(context, "project", None) if context is not None else None
+    task_obj = getattr(context, "task", None) if context is not None else None
+    lines: list[str] = []
+
+    summary = str(getattr(project, "summary", "") or "").strip()
+    if summary:
+        lines.append(f"Project summary: {summary[:300]}")
+
+    pending_steps = getattr(task_obj, "pending_steps", None) or []
+    cleaned_steps = [str(item or "").strip() for item in pending_steps if str(item or "").strip()]
+    if cleaned_steps:
+        lines.append("Pending steps: " + "; ".join(cleaned_steps[:3]))
+
+    blocker = str(getattr(task_obj, "current_blocker", "") or "").strip()
+    if blocker:
+        lines.append(f"Current blocker: {blocker[:200]}")
+
+    artifacts = getattr(task_obj, "artifacts", None)
+    if isinstance(artifacts, dict) and artifacts:
+        artifact_paths = [str(path or "").strip() for path in artifacts.values() if str(path or "").strip()]
+        if artifact_paths:
+            lines.append("Known artifacts: " + ", ".join(artifact_paths[:3]))
+
+    return "\n".join(lines)
+
+
+async def _build_aggressive_repo_snapshot(msg: SurfaceMessage) -> str:
+    metadata = getattr(msg, "metadata", {}) or {}
+    surface_context = metadata.get("surface_context") if isinstance(metadata, dict) else {}
+    if not isinstance(surface_context, dict):
+        return ""
+    workspace_root = str(surface_context.get("workspace_root") or "").strip()
+    if not workspace_root:
+        return ""
+    try:
+        from dan.tools.git_status import git_status
+
+        status = await git_status(workspace_root)
+    except Exception:
+        return ""
+
+    lines: list[str] = []
+    branch = str(status.get("branch") or "").strip()
+    if branch:
+        lines.append(f"Git branch: {branch}")
+    staged = [str(item or "").strip() for item in status.get("staged", []) if str(item or "").strip()]
+    modified = [str(item or "").strip() for item in status.get("modified", []) if str(item or "").strip()]
+    untracked = [str(item or "").strip() for item in status.get("untracked", []) if str(item or "").strip()]
+    if staged:
+        lines.append("Staged changes: " + ", ".join(staged[:3]))
+    if modified:
+        lines.append("Modified files: " + ", ".join(modified[:3]))
+    if untracked:
+        lines.append("Untracked files: " + ", ".join(untracked[:3]))
+    ahead = int(status.get("ahead", 0) or 0)
+    behind = int(status.get("behind", 0) or 0)
+    if ahead or behind:
+        lines.append(f"Upstream delta: +{ahead} / -{behind}")
+    return "\n".join(lines)
+
+
 class ContextGatherer:
     """Fetch only the context that triage says is needed, replacing speculative parallel prep."""
 
-    async def gather(self, msg: SurfaceMessage, triage: Any, concierge: Any) -> Any:
+    async def gather(
+        self,
+        msg: SurfaceMessage,
+        triage: Any,
+        concierge: Any,
+        autonomy_resolution: Any | None = None,
+    ) -> Any:
         from .fan_out import fan_out_dict
 
         tasks: dict[str, Any] = {}
@@ -108,8 +272,8 @@ class ContextGatherer:
             msg.metadata["memory_context"] = memory
 
         auto_read = results.get("auto_read", {})
-        if isinstance(auto_read, dict) and auto_read:
-            msg.metadata["auto_read_content"] = auto_read
+        if not isinstance(auto_read, dict):
+            auto_read = {}
 
         domain_block = results.get("domain", "")
         if project_id and domain_needs and hasattr(concierge, "_retrieve_domain_expertise"):
@@ -124,6 +288,35 @@ class ContextGatherer:
                 logger.debug("Project-scoped domain refresh failed", exc_info=True)
         if isinstance(domain_block, str) and domain_block:
             msg.metadata["domain_expertise"] = domain_block
+
+        if getattr(autonomy_resolution, "effective_level", "") == "aggressive":
+            task_obj = getattr(context, "task", None) if context is not None else None
+            recent_turns = []
+            for turn in (getattr(task_obj, "turns", None) or [])[-4:]:
+                role = str(getattr(turn, "role", "") or "").strip()
+                content = str(getattr(turn, "content", "") or "").strip()
+                if role and content:
+                    recent_turns.append(f"{role}: {content[:200]}")
+            if recent_turns:
+                msg.metadata["autonomy_recent_turns"] = recent_turns
+            task_snapshot = _build_aggressive_task_snapshot(context)
+            if task_snapshot:
+                msg.metadata["autonomy_task_snapshot"] = task_snapshot
+            repo_snapshot = await _build_aggressive_repo_snapshot(msg)
+            if repo_snapshot:
+                msg.metadata["autonomy_repo_snapshot"] = repo_snapshot
+            related_paths = _collect_aggressive_related_paths(
+                msg,
+                context,
+                existing_paths=set(auto_read),
+            )
+            if related_paths:
+                related_read = await asyncio.to_thread(_read_bounded_files, related_paths)
+                if related_read:
+                    auto_read = {**auto_read, **related_read}
+
+        if auto_read:
+            msg.metadata["auto_read_content"] = auto_read
 
         return context
 
@@ -148,8 +341,13 @@ class TieredDispatcher:
 
     async def dispatch(self, msg: SurfaceMessage) -> AsyncIterator[Any]:
         from dan.server.chat_manager import ChatStreamEvent
+        from .autonomy import resolve_autonomy
 
-        self._concierge._concierge_state = self._concierge._load_concierge_state(msg.external_id)
+        state_scope_id = self._concierge._concierge_state_scope_key(msg.surface, msg.external_id)
+        self._concierge._concierge_state = self._concierge._load_concierge_state(
+            state_scope_id,
+            legacy_scope_ids=[msg.external_id],
+        )
         self._ensure_progress_session(msg)
 
         intake_event = self._phase_event(
@@ -171,7 +369,40 @@ class TieredDispatcher:
         else:
             triage, triage_context = await self._do_triage(msg)
 
-        session = self._session_manager.create_root(msg, triage, triage.tier)
+        turn_preference = None
+        msg_metadata = getattr(msg, "metadata", None)
+        if isinstance(msg_metadata, dict):
+            turn_preference = msg_metadata.get("turn_autonomy_preference")
+        project_preference = getattr(
+            getattr(triage_context, "project", None),
+            "autonomy_preference",
+            None,
+        )
+        session_preference = getattr(self._concierge._concierge_state, "autonomy_preference", None)
+        last_autonomy_level = getattr(self._concierge._concierge_state, "last_autonomy_level", None)
+        route = getattr(triage, "route", None)
+        autonomy_resolution = resolve_autonomy(
+            text=msg.text,
+            triage=triage,
+            surface=msg.surface,
+            turn_preference=turn_preference,
+            session_preference=session_preference,
+            project_preference=project_preference,
+            env_preference=getattr(self._concierge, "_default_autonomy_preference", "auto"),
+            last_effective_level=last_autonomy_level,
+            action_hints=getattr(route, "action_hints", None),
+        )
+        if isinstance(msg_metadata, dict):
+            msg_metadata["autonomy_preference"] = autonomy_resolution.preferred_level
+            msg_metadata["autonomy_resolution"] = autonomy_resolution.model_dump()
+        self._concierge._concierge_state.last_autonomy_level = autonomy_resolution.effective_level
+
+        session = self._session_manager.create_root(
+            msg,
+            triage,
+            triage.tier,
+            autonomy_resolution=autonomy_resolution,
+        )
         execution_order = getattr(triage, "execution_order", "")
         if execution_order == "serial":
             session.child_execution = "serial"
@@ -205,7 +436,12 @@ class TieredDispatcher:
         )
         if context_event is not None:
             yield context_event
-        context = await self._context_gatherer.gather(msg, triage, self._concierge)
+        context = await self._context_gatherer.gather(
+            msg,
+            triage,
+            self._concierge,
+            autonomy_resolution=autonomy_resolution,
+        )
         session.context = context
 
         execution_event = self._phase_event(
@@ -296,6 +532,11 @@ class TieredDispatcher:
                     "model_used": session.result.model_used if session.result else None,
                     "children_count": len(session.children),
                     "error": session.result.error if session.result else None,
+                    "autonomy_resolution": (
+                        session.autonomy_resolution.model_dump()
+                        if getattr(session, "autonomy_resolution", None) is not None
+                        else {}
+                    ),
                 },
             )
         except Exception:
@@ -355,7 +596,14 @@ class TieredDispatcher:
                             context,
                             session.msg,
                             result.content,
-                            metadata=assistant_metadata,
+                        metadata={
+                            **assistant_metadata,
+                            "autonomy_resolution": (
+                                session.autonomy_resolution.model_dump()
+                                if getattr(session, "autonomy_resolution", None) is not None
+                                else {}
+                            ),
+                        },
                             write_conversation_memory=not memory_already_recorded,
                         )
                     else:
@@ -365,7 +613,14 @@ class TieredDispatcher:
                             TaskTurn(
                                 role="assistant",
                                 content=result.content,
-                                metadata=assistant_metadata,
+                                metadata={
+                                    **assistant_metadata,
+                                    "autonomy_resolution": (
+                                        session.autonomy_resolution.model_dump()
+                                        if getattr(session, "autonomy_resolution", None) is not None
+                                        else {}
+                                    ),
+                                },
                             ),
                             session.msg.external_id if session.msg else "",
                         )
@@ -392,6 +647,11 @@ class TieredDispatcher:
                     "session_tree_size": len(tree_trace),
                     "total_tokens": total_tokens,
                     "session_tree": trace_data,
+                    "autonomy_resolution": (
+                        session.autonomy_resolution.model_dump()
+                        if getattr(session, "autonomy_resolution", None) is not None
+                        else {}
+                    ),
                 },
             )
 

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 import logging
 import re
-from typing import Any, Literal
+from typing import Any, Awaitable, Callable, Literal
 
 from dan.server.graph_mutator import (
     _default_node_config,
@@ -12,6 +13,17 @@ from dan.server.graph_mutator import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_autonomy_preference(
+    value: str | None,
+    *,
+    default: str = "balanced",
+) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"auto", "careful", "balanced", "aggressive"}:
+        return raw
+    return default
 
 # ---------------------------------------------------------------------------
 # Node / edge type constants
@@ -466,6 +478,14 @@ _RESEARCH_REPORT_PROMPT_HINT = """\
 
 When asked for a research report, literature review, equity analysis, or deep-dive topic:
 
+- Ground factual claims in tool results; if support is missing, say so.
+- Search multiple angles, then read the strongest sources instead of relying only on snippets.
+- Outline longer deliverables before writing.
+- For long documents, write incrementally to disk one section at a time instead of trying to emit everything in one pass.
+- For academic topics, check for relevant local PDFs when likely available.
+"""
+
+_RESEARCH_REPORT_PROMPT_DETAIL = """\
 ### Phase 1 — Research
 1. Use the current date shown above to anchor words like "recent"; include the year in time-sensitive searches.
 2. Search multiple angles (typically 3-8 distinct web_search queries). Batch same-type calls: \
@@ -556,6 +576,71 @@ Return `YES` only when the user's request is for a substantial researched synthe
 Return `NO` for ordinary Q&A, simple summaries, short explanations, or generic analysis requests that do not clearly need that heavier research/report workflow.
 """
 
+_EXPLORATION_STRONG_PHRASES = (
+    "help me understand",
+    "walk me through",
+    "trace the flow",
+    "trace how",
+    "where is",
+    "what handles",
+    "map the codebase",
+    "explore the codebase",
+)
+
+_EXPLORATION_DISCOVERY_CUES = (
+    "explore",
+    "inspect",
+    "investigate",
+    "trace",
+    "understand",
+    "map",
+    "skim",
+    "walk through",
+)
+
+_EXPLORATION_TARGET_CUES = (
+    "codebase",
+    "repo",
+    "repository",
+    "module",
+    "file",
+    "files",
+    "folder",
+    "folders",
+    "directory",
+    "directories",
+    "symbol",
+    "symbols",
+    "function",
+    "class",
+    "flow",
+    "call path",
+    "execution path",
+)
+
+_EXPLORATION_NEGATIVE_CUES = (
+    "report",
+    "memo",
+    "literature review",
+    "write",
+    "implement",
+    "fix",
+    "patch",
+    "edit",
+    "add",
+    "refactor",
+)
+
+_EXPLORATION_HINT_CLASSIFIER_SYSTEM_PROMPT = """\
+You decide whether DAN should enable its special exploration behavior.
+
+Return ONLY `YES` or `NO`.
+
+Return `YES` only when the user's request is mainly about understanding, mapping, tracing, or locating existing code/files/system behavior before making changes.
+
+Return `NO` for requests whose main goal is writing, fixing, implementing, mutating workflows, or producing a research/report deliverable.
+"""
+
 SURFACE_HINTS = {
     "whatsapp": _WHATSAPP_SURFACE_HINTS,
     "whatsapp-web": _WHATSAPP_SURFACE_HINTS,
@@ -639,6 +724,268 @@ def _classify_research_prompt_signal(
 
 def _looks_like_research_report_request(user_message: str) -> bool:
     return _classify_research_prompt_signal(user_message) == "yes"
+
+
+def _classify_exploration_prompt_signal(
+    user_message: str,
+) -> Literal["yes", "no", "maybe"]:
+    msg = (user_message or "").lower()
+    if any(_contains_prompt_signal(msg, phrase) for phrase in _EXPLORATION_STRONG_PHRASES):
+        return "yes"
+
+    discovery_score = _count_prompt_signals(msg, _EXPLORATION_DISCOVERY_CUES)
+    target_score = _count_prompt_signals(msg, _EXPLORATION_TARGET_CUES)
+    negative_score = _count_prompt_signals(msg, _EXPLORATION_NEGATIVE_CUES)
+
+    if negative_score >= 2 and discovery_score == 0:
+        return "no"
+    if discovery_score >= 1 and target_score >= 1 and negative_score == 0:
+        return "yes"
+    if target_score >= 1 and negative_score == 0:
+        return "maybe"
+    if discovery_score >= 1 and negative_score <= 1:
+        return "maybe"
+    return "no"
+
+
+# ---------------------------------------------------------------------------
+# Prompt module resolver
+# ---------------------------------------------------------------------------
+
+PromptLayer = Literal["interaction_policy", "surface_presentation", "task_specializer"]
+
+
+@dataclass
+class PromptContext:
+    mode: str
+    surface: str
+    model: str
+    user_message: str
+    workflow_id: str
+    autonomy_resolution: Any | None = None
+    tools_available: bool = True
+    project_metadata: dict[str, Any] = field(default_factory=dict)
+    precomputed_hint_flags: dict[str, bool] = field(default_factory=dict)
+
+
+@dataclass
+class ResolvedPromptModule:
+    module_id: str
+    layer: PromptLayer
+    priority: int
+    content: str
+    detail_id: str | None = None
+    detail_body: str = ""
+
+
+PromptModuleResolverFn = Callable[[PromptContext], Awaitable[ResolvedPromptModule | None]]
+
+
+@dataclass
+class PromptModule:
+    module_id: str
+    layer: PromptLayer
+    priority: int
+    resolver: PromptModuleResolverFn
+
+
+class PromptModuleResolver:
+    _LAYER_ORDER: tuple[PromptLayer, ...] = (
+        "interaction_policy",
+        "surface_presentation",
+        "task_specializer",
+    )
+
+    def __init__(self) -> None:
+        self._modules: list[PromptModule] = []
+
+    def register(self, module: PromptModule) -> None:
+        self._modules.append(module)
+
+    async def resolve(
+        self,
+        context: PromptContext,
+    ) -> tuple[list[ResolvedPromptModule], dict[str, str]]:
+        resolved: list[ResolvedPromptModule] = []
+        details: dict[str, str] = {}
+        for module in self._modules:
+            item = await module.resolver(context)
+            if item is None or not item.content.strip():
+                continue
+            resolved.append(item)
+            if item.detail_id and item.detail_body.strip():
+                details[item.detail_id] = item.detail_body.strip()
+        resolved.sort(
+            key=lambda item: (
+                self._LAYER_ORDER.index(item.layer),
+                item.priority,
+                item.module_id,
+            ),
+        )
+        return resolved, details
+
+
+def _resolve_interaction_policy_module_content(context: PromptContext) -> str:
+    mode_key = (context.mode or "agent").strip().lower()
+    mode_key = {
+        "auto": "agent",
+        "build": "agent",
+        "mutate": "agent",
+    }.get(mode_key, mode_key)
+    base_mode_hints = _MODE_HINTS.get(mode_key, _MODE_HINTS["agent"]).strip()
+    autonomy_level = _normalize_autonomy_preference(
+        getattr(context.autonomy_resolution, "effective_level", None),
+        default="balanced",
+    )
+    autonomy_block = {
+        "careful": """\
+## Autonomy Behavior: Careful
+- Prefer the smallest safe next step.
+- Ask focused questions before ambiguous edits or irreversible actions.
+- Summarize what you completed and surface uncertainties before stopping.
+""",
+        "balanced": """\
+## Autonomy Behavior: Balanced
+- Match the current default DAN operating style.
+- Move forward on clear next steps, but avoid unnecessary extra work.
+""",
+        "aggressive": """\
+## Autonomy Behavior: Aggressive
+- Keep pushing the task forward with minimal blocking questions.
+- State key assumptions briefly, then continue with the next concrete step.
+- Before stopping, self-review whether verification, testing, or one obvious follow-up should be done now.
+""",
+    }[autonomy_level].strip()
+    return f"{base_mode_hints}\n\n{autonomy_block}"
+
+
+async def _resolve_interaction_policy_module(
+    context: PromptContext,
+) -> ResolvedPromptModule | None:
+    return ResolvedPromptModule(
+        module_id="interaction_policy",
+        layer="interaction_policy",
+        priority=10,
+        content=_resolve_interaction_policy_module_content(context),
+    )
+
+
+async def _resolve_surface_presentation_module(
+    context: PromptContext,
+) -> ResolvedPromptModule | None:
+    return ResolvedPromptModule(
+        module_id="surface_presentation",
+        layer="surface_presentation",
+        priority=10,
+        content=_resolve_surface_hints(context.surface, context.model),
+    )
+
+
+async def _resolve_research_specializer_module(
+    context: PromptContext,
+) -> ResolvedPromptModule | None:
+    if not context.precomputed_hint_flags.get("research_specializer", False):
+        return None
+    content = _RESEARCH_REPORT_PROMPT_HINT.strip()
+    detail_body = _RESEARCH_REPORT_PROMPT_DETAIL.strip()
+    if context.tools_available:
+        content = (
+            f"{content}\n"
+            "\nAdditional prompt detail is available via `load_prompt_detail` with "
+            "detail_id=`prompt:research_specializer:full` if you need more guidance."
+        )
+    return ResolvedPromptModule(
+        module_id="research_specializer",
+        layer="task_specializer",
+        priority=20,
+        content=content,
+        detail_id="prompt:research_specializer:full",
+        detail_body=detail_body,
+    )
+
+
+async def _resolve_exploration_specializer_module(
+    context: PromptContext,
+) -> ResolvedPromptModule | None:
+    if not context.precomputed_hint_flags.get("exploration_specializer", False):
+        return None
+    content = """\
+## Exploration & Understanding Behavior
+- Start by mapping the relevant area before proposing changes.
+- Prefer targeted reads/searches that build a coherent model of the current code or system.
+- Name the key files, symbols, or execution flow you inspected and how they connect.
+- If you are still uncertain, say what remains unclear instead of guessing.
+""".strip()
+    detail_body = """\
+### Exploration workflow
+1. Start broad enough to find the right area: use targeted search or directory inspection to locate the relevant files, symbols, or subsystems.
+2. Narrow to the smallest set of sources that explain the behavior. Prefer reading targeted ranges over dumping whole files.
+3. Explain the current behavior in terms of ownership, data flow, and dependencies: what calls what, where state enters/leaves, and which modules are responsible.
+4. For "where is X handled?" or "how does Y work?" questions, answer from inspected evidence instead of intuition.
+5. If a fix or refactor is eventually needed, summarize the current structure first so later edits are grounded in the real design.
+""".strip()
+    if context.tools_available:
+        content = (
+            f"{content}\n"
+            "\nAdditional prompt detail is available via `load_prompt_detail` with "
+            "detail_id=`prompt:exploration_specializer:full` if you need more guidance."
+        )
+    return ResolvedPromptModule(
+        module_id="exploration_specializer",
+        layer="task_specializer",
+        priority=30,
+        content=content,
+        detail_id="prompt:exploration_specializer:full",
+        detail_body=detail_body,
+    )
+
+
+def build_default_prompt_module_resolver() -> PromptModuleResolver:
+    resolver = PromptModuleResolver()
+    resolver.register(PromptModule(
+        module_id="interaction_policy",
+        layer="interaction_policy",
+        priority=10,
+        resolver=_resolve_interaction_policy_module,
+    ))
+    resolver.register(PromptModule(
+        module_id="surface_presentation",
+        layer="surface_presentation",
+        priority=10,
+        resolver=_resolve_surface_presentation_module,
+    ))
+    resolver.register(PromptModule(
+        module_id="research_specializer",
+        layer="task_specializer",
+        priority=20,
+        resolver=_resolve_research_specializer_module,
+    ))
+    resolver.register(PromptModule(
+        module_id="exploration_specializer",
+        layer="task_specializer",
+        priority=30,
+        resolver=_resolve_exploration_specializer_module,
+    ))
+    return resolver
+
+
+DEFAULT_PROMPT_MODULE_RESOLVER = build_default_prompt_module_resolver()
+
+_PROMPT_DETAIL_BODIES = {
+    "prompt:research_specializer:full": _RESEARCH_REPORT_PROMPT_DETAIL.strip(),
+    "prompt:exploration_specializer:full": (
+        "### Exploration workflow\n"
+        "1. Start broad enough to find the right area: use targeted search or directory inspection to locate the relevant files, symbols, or subsystems.\n"
+        "2. Narrow to the smallest set of sources that explain the behavior. Prefer reading targeted ranges over dumping whole files.\n"
+        "3. Explain the current behavior in terms of ownership, data flow, and dependencies: what calls what, where state enters/leaves, and which modules are responsible.\n"
+        "4. For \"where is X handled?\" or \"how does Y work?\" questions, answer from inspected evidence instead of intuition.\n"
+        "5. If a fix or refactor is eventually needed, summarize the current structure first so later edits are grounded in the real design."
+    ),
+}
+
+
+def get_prompt_detail_body(detail_id: str) -> str | None:
+    return _PROMPT_DETAIL_BODIES.get(str(detail_id or "").strip())
 
 
 # ---------------------------------------------------------------------------
@@ -729,11 +1076,7 @@ Do not dump an entire long file in one tool call.
 20. When web search results are numbered, cite them inline as [1], [2] and include markdown links to the source URLs when helpful.
 21. If `list_directory` says a listing is partial/truncated, do NOT infer absence from the cutoff. Continue with `start_after` or narrow the listing with `glob_pattern` before concluding a file or directory is missing.
 
-{surface_hints}
-
-{mode_hints}
-
-{task_hints}
+{module_hints}
 
 {context_block}
 

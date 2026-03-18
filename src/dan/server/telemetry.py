@@ -50,6 +50,8 @@ EventType = Literal[
     "fast_command",
     "workflow_run",
     "workflow_node",
+    "session_complete",
+    "tiered_dispatch_complete",
     "guard_check",
     "classification",
     "memory_retrieval",

@@ -391,6 +391,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
     _register_chat_stream(stream_channel_id, queue)
     cancel_event = cm.register_stream(stream_channel_id)
     attachment_prompt_context = _build_attachment_prompt_context(req)
+    surface_context = req.surface_context if isinstance(req.surface_context, dict) else {}
 
     structured_mentions = [
         MentionRef(type=m.type, identifier=m.identifier)
@@ -428,6 +429,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
 
         try:
             normalized_mode = normalize_chat_mode(req.mode)
+            effective_mode = req.mode if req.mode in ("build", "mutate") else normalized_mode
             graph_dict = gs.get_graph(req.workflow_id)
 
             if req.workflow_id == "_scratch" and graph_dict is None:
@@ -473,7 +475,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                         "cancel_event": cancel_event,
                         "selected_path": req.attachment_path,
                         "attachment_prompt_context": attachment_prompt_context,
-                        "surface_context": req.surface_context,
+                        "surface_context": surface_context,
                         "stream_channel_id": stream_channel_id,
                     },
                 )
@@ -482,7 +484,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                 else:
                     event_stream = _concierge.process(_surface_msg)
             else:
-                use_tools = graph_dict is not None and normalized_mode not in ("ask", "plan")
+                use_tools = graph_dict is not None and effective_mode not in ("ask", "plan")
 
                 send = (
                     cm.send_message_with_tools
@@ -503,7 +505,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                     history=req.history,
                     thread_id=req.thread_id,
                     client_graph_revision=req.client_graph_revision,
-                    mode=normalized_mode,
+                    mode=effective_mode,
                     cancel_event=cancel_event,
                     mentions=structured_mentions,
                     debug_context=debug_ctx,
