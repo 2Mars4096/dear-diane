@@ -483,9 +483,12 @@ async def init_engine(state: AppState) -> None:
         from dan.server.telemetry import get_telemetry_store
 
         state.telemetry_store = get_telemetry_store()
-        await state.telemetry_store.prune()
         logger.info(
             "Telemetry store initialized (%s)", type(state.telemetry_store).__name__
+        )
+        asyncio.create_task(
+            _deferred_telemetry_prune(state.telemetry_store),
+            name="deferred-telemetry-prune",
         )
     except Exception:
         _record_startup_degradation(
@@ -647,6 +650,7 @@ async def init_managers(state: AppState) -> None:
         provider_registry=_build_chat_provider_registry(),
         graph_store=state.graph_store,
         mention_resolver=state.mention_resolver,
+        chat_store=state.chat_store,
         capability_registry=state.capability_registry,
         capability_context=state.capability_context,
         user_profile=state.user_profile,
@@ -729,52 +733,54 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
     except ImportError:
         pass
 
-    # Self-knowledge RAG indexing (19-5)
+    # Self-knowledge RAG indexing (19-5) — deferred to background task to avoid
+    # blocking startup (refresh involves embedding operations).
     state.self_knowledge_index = None
-    try:
-        from dan.rag import DEFAULT_EMBEDDING_MODEL, build_embedding_registry
-        from dan.meta.self_knowledge import SelfKnowledgeIndex
 
-        embedding_registry = build_embedding_registry(engine_config)
-        _emb_model = getattr(
-            engine_config, "default_embedding_model", DEFAULT_EMBEDDING_MODEL
-        )
-        if embedding_registry.has_provider("default"):
+    async def _deferred_self_knowledge() -> None:
+        try:
+            from dan.rag import DEFAULT_EMBEDDING_MODEL, build_embedding_registry
+            from dan.meta.self_knowledge import SelfKnowledgeIndex
+
+            embedding_registry = build_embedding_registry(engine_config)
+            _emb_model = getattr(
+                engine_config, "default_embedding_model", DEFAULT_EMBEDDING_MODEL
+            )
+            if not embedding_registry.has_provider("default"):
+                return
             provider = embedding_registry.resolve(_emb_model)
             _project_root = Path(__file__).resolve().parents[3]
             docs_dir = _project_root / "docs"
-            doc_paths = []
-            for fname in ("llm-api-guide.md", "architecture.md"):
-                p = docs_dir / fname
-                if p.exists():
-                    doc_paths.append(p)
+            doc_paths = [
+                p for fname in ("llm-api-guide.md", "architecture.md")
+                if (p := docs_dir / fname).exists()
+            ]
+            if not doc_paths:
+                return
+            idx = SelfKnowledgeIndex(
+                embedding_provider=provider, embedding_model=_emb_model,
+            )
+            examples_dir = _project_root / "examples"
+            await idx.refresh(
+                doc_paths=doc_paths,
+                examples_dir=examples_dir if examples_dir.is_dir() else None,
+                tool_registry=(
+                    state.run_manager._tool_registry if state.run_manager else None
+                ),
+            )
+            state.self_knowledge_index = idx
+            app.state.self_knowledge_index = idx
+            logger.info("Self-knowledge index refreshed (%d docs)", len(doc_paths))
+        except Exception:
+            _record_startup_degradation(
+                state, "self_knowledge",
+                "self-knowledge indexing failed to initialize",
+            )
+            logger.debug("Self-knowledge indexing skipped", exc_info=True)
 
-            if doc_paths:
-                state.self_knowledge_index = SelfKnowledgeIndex(
-                    embedding_provider=provider,
-                    embedding_model=_emb_model,
-                )
-                examples_dir = _project_root / "examples"
-                await state.self_knowledge_index.refresh(
-                    doc_paths=doc_paths,
-                    examples_dir=examples_dir if examples_dir.is_dir() else None,
-                    tool_registry=(
-                        state.run_manager._tool_registry
-                        if state.run_manager
-                        else None
-                    ),
-                )
-                logger.info(
-                    "Self-knowledge index refreshed (%d docs)", len(doc_paths)
-                )
-    except Exception:
-        _record_startup_degradation(
-            state,
-            "self_knowledge",
-            "self-knowledge indexing failed to initialize",
-        )
-        logger.debug("Self-knowledge indexing skipped", exc_info=True)
-
+    state._deferred_self_knowledge_task = asyncio.create_task(
+        _deferred_self_knowledge(), name="deferred-self-knowledge",
+    )
     app.state.self_knowledge_index = state.self_knowledge_index
 
     # Wire experience/discovery into capability context (25-2)
@@ -1286,6 +1292,13 @@ async def lifespan(app: FastAPI):
     Creates an :class:`AppState`, runs phased init, attaches it to
     ``app.state.dan``, yields, then shuts down.
     """
+    import time as _time
+
+    _t0 = _time.perf_counter()
+
+    def _phase_ms() -> str:
+        return f"{(_time.perf_counter() - _t0) * 1000:.0f}ms"
+
     from dan.server.graph_store import GraphStore
     from dan.server.chat_store import ChatStore
     from dan.server.test_cases import TestCaseStore
@@ -1301,22 +1314,37 @@ async def lifespan(app: FastAPI):
 
     log_startup_configuration_warnings()
     init_learning_tiers()
+
     await init_stores(state)
+    logger.info("Startup phase 1/6 (stores) [%s]", _phase_ms())
+
     await init_engine(state)
-    _mirror_state_to_globals(state)  # expose run_manager etc. before later phases need them
+    logger.info("Startup phase 2/6 (engine) [%s]", _phase_ms())
+
+    _mirror_state_to_globals(state)
+
     await init_capabilities(state)
+    logger.info("Startup phase 3/6 (capabilities) [%s]", _phase_ms())
+
     await init_managers(state)
-    _mirror_state_to_globals(state)  # expose chat_manager etc. before integrations
+    logger.info("Startup phase 4/6 (managers) [%s]", _phase_ms())
+
+    _mirror_state_to_globals(state)
+
     await init_integrations(state, app)
+    logger.info("Startup phase 5/6 (integrations) [%s]", _phase_ms())
+
     await init_background(state, app)
+    logger.info("Startup phase 6/6 (background) [%s]", _phase_ms())
 
     app.state.dan = state
     app.state.mcp_bridge = state.mcp_bridge
     app.state.startup_summary = get_startup_degradation_summary(state)
 
-    _mirror_state_to_globals(state)  # final pass to catch anything set by integrations/background
+    _mirror_state_to_globals(state)
 
     await init_adapters(app)
+    logger.info("Startup complete [%s]", _phase_ms())
 
     yield
 

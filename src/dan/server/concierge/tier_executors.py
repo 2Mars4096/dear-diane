@@ -65,6 +65,15 @@ _OPEN_LOOP_REVIEW_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         "calls out remaining follow-up work",
     ),
 )
+_WORKFLOW_ACTIVITY_RE = re.compile(
+    r"\b(?:workflow|graph|node|edge|mutation|plan_graph_mutations|watchlist|ticker|equity)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_FOLLOWUP_RE = re.compile(
+    r"\b(?:build|rebuild|delete|remove|retry|again|fix|update|test|run|work(?:ing)?)\b",
+    re.IGNORECASE,
+)
+_ANAPHORA_RE = re.compile(r"\b(?:it|that|this|those|them)\b", re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -136,6 +145,41 @@ def _autonomy_level(session: Any, default: str = "balanced") -> str:
 
 def _task_mentions_workflow(task_desc: str) -> bool:
     return bool(re.search(r"\b(?:workflow|graph|node|edge|mutation|build|edit)\b", task_desc, re.IGNORECASE))
+
+
+def _history_has_workflow_activity(history: list[dict[str, str]]) -> bool:
+    for turn in history[-6:]:
+        content = str(turn.get("content") or "").strip()
+        if content and _WORKFLOW_ACTIVITY_RE.search(content):
+            return True
+    return False
+
+
+def _should_keep_mutation_tool_for_followup(
+    message: str,
+    history: list[dict[str, str]],
+) -> bool:
+    text = str(message or "").strip()
+    if not text or not _history_has_workflow_activity(history):
+        return False
+    if _WORKFLOW_ACTIVITY_RE.search(text):
+        return True
+    return bool(_WORKFLOW_FOLLOWUP_RE.search(text) and _ANAPHORA_RE.search(text))
+
+
+def _should_promote_ask_mode_for_workflow_followup(
+    message: str,
+    history: list[dict[str, str]],
+) -> bool:
+    text = str(message or "").strip()
+    if not text or not _history_has_workflow_activity(history):
+        return False
+    if not _WORKFLOW_FOLLOWUP_RE.search(text):
+        return False
+    return bool(
+        _WORKFLOW_ACTIVITY_RE.search(text)
+        or _ANAPHORA_RE.search(text)
+    )
 
 
 def _filter_child_route(parent_route: Any, task_desc: str) -> Any:
@@ -665,6 +709,8 @@ def _extract_chat_params(
                     history.append({"role": turn.role, "content": turn.content})
 
     mode = _request_mode(metadata)
+    if mode == "ask" and _should_promote_ask_mode_for_workflow_followup(message, history):
+        mode = "agent"
     surface: str = getattr(msg, "surface", None) or "server"
     cancel_event = _cancel_event(session)
     if cancel_event is not None and not hasattr(cancel_event, "is_set"):
@@ -724,6 +770,8 @@ def _extract_chat_params(
             or mode == "build"
             or (route_target == "workflow" and not workflow_query_only)
         )
+        if not allow_mutation_tool and _should_keep_mutation_tool_for_followup(message, history):
+            allow_mutation_tool = True
 
     stream_channel_id = str(metadata.get("stream_channel_id") or "").strip() or None
     attachment_prompt_context = str(metadata.get("attachment_prompt_context") or "").strip()

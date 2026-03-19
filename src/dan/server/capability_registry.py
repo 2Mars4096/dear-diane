@@ -45,6 +45,10 @@ class CapabilityContext:
     chat_manager: Any = None
     event_bus: Any = None
     test_case_store: Any = None
+    grounding_required: bool = False
+    thread_id: str | None = None
+    web_budget_state: dict[str, int] = field(default_factory=dict)
+    search_state: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

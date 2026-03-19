@@ -11,6 +11,14 @@ from email.utils import parsedate_to_datetime
 from typing import Any
 
 from dan.server.capability_registry import CapabilityResult
+from dan.server.search_models import (
+    CitationRecord,
+    CitationVerification,
+    InlineCitation,
+    SearchResult,
+    canonicalize_search_url,
+    parse_search_result_set,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +77,47 @@ _TOOL_HISTORY_COMPAT_MARKERS = (
     "tool call transcript",
 )
 
+_LIVE_DATA_PHRASES = (
+    "what happened",
+    "recent",
+    "news",
+    "milestone",
+    "latest",
+    "today",
+    "this week",
+    "this month",
+    "current",
+    "updates",
+    "headlines",
+)
+_AT_WEB_TOKEN_RE = re.compile(r"(?<!\w)@web(?!\w)", re.IGNORECASE)
+_NUMERIC_OR_DATE_RE = re.compile(
+    r"\b\d[\d,]*(?:\.\d+)?%?"
+    r"|\b(?:19|20)\d{2}\b"
+    r"|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+\d{1,2}(?:,\s*\d{4})?",
+    re.IGNORECASE,
+)
+_CLAIM_TERM_STOP_WORDS = frozenset({
+    "a",
+    "an",
+    "and",
+    "as",
+    "at",
+    "by",
+    "for",
+    "from",
+    "in",
+    "is",
+    "of",
+    "on",
+    "or",
+    "the",
+    "to",
+    "was",
+    "were",
+    "with",
+})
+
 
 # ---------------------------------------------------------------------------
 # Small standalone helpers
@@ -108,6 +157,9 @@ def _has_grounded_web_support(
             continue
         grounded_count = data.get("grounded_result_count")
         if isinstance(grounded_count, int) and grounded_count > 0:
+            return True
+        search_result_set = parse_search_result_set(data)
+        if search_result_set is not None and search_result_set.grounded_result_count > 0:
             return True
     return False
 
@@ -675,14 +727,19 @@ def _extract_cited_sources(tool_calls: list[dict[str, Any]]) -> list[str]:
         result_data = tc.get("result_data")
 
         if name in ("web_search", "web_fetch"):
+            search_result_set = parse_search_result_set(result_data)
+            if search_result_set is not None:
+                for result in search_result_set.results:
+                    url = canonicalize_search_url(result.url) or result.url
+                    _add(url)
             for url in _URL_RE.findall(output):
-                _add(url)
+                _add(canonicalize_search_url(url) or url)
             args_text = json.dumps(args, default=str) if isinstance(args, dict) else str(args)
             for url in _URL_RE.findall(args_text):
-                _add(url)
+                _add(canonicalize_search_url(url) or url)
             if isinstance(result_data, dict):
                 for url in _URL_RE.findall(json.dumps(result_data, default=str)):
-                    _add(url)
+                    _add(canonicalize_search_url(url) or url)
 
         elif name in ("pdf_read", "file_read"):
             if isinstance(args, dict):
@@ -708,6 +765,368 @@ def _extract_cited_sources(tool_calls: list[dict[str, Any]]) -> list[str]:
                 _add(path_match2.group(1))
 
     return sources
+
+
+def has_explicit_web_trigger(message: str, mentions: list[Any] | None = None) -> bool:
+    if isinstance(mentions, list):
+        for mention in mentions:
+            if isinstance(mention, dict) and str(mention.get("type") or "").lower() == "web":
+                return True
+            if str(getattr(mention, "type", "") or "").lower() == "web":
+                return True
+    return bool(_AT_WEB_TOKEN_RE.search(str(message or "")))
+
+
+def should_require_web_grounding(
+    message: str,
+    *,
+    mode: str,
+    required_action_hints: list[str] | None = None,
+    mentions: list[Any] | None = None,
+) -> bool:
+    text = str(message or "").strip()
+    text_lower = text.lower()
+    if "search_web" in (required_action_hints or []):
+        return True
+    if has_explicit_web_trigger(text, mentions):
+        return True
+    if any(phrase in text_lower for phrase in _LIVE_DATA_PHRASES):
+        return True
+    if mode not in {"agent", "conversation"}:
+        return False
+    return (
+        text.endswith("?")
+        or text_lower.startswith(("what ", "who ", "when ", "where ", "why ", "how ", "which "))
+    )
+
+
+def _claim_text_for_span(text: str, start: int, end: int) -> str:
+    left = max(
+        text.rfind(".", 0, start),
+        text.rfind("?", 0, start),
+        text.rfind("!", 0, start),
+        text.rfind("\n", 0, start),
+    )
+    right_candidates = [idx for idx in (
+        text.find(".", end),
+        text.find("?", end),
+        text.find("!", end),
+        text.find("\n", end),
+    ) if idx != -1]
+    right = min(right_candidates) if right_candidates else len(text)
+    return text[left + 1:right].strip()
+
+
+def _expand_citation_indices(raw: str) -> list[int]:
+    indices: list[int] = []
+    for chunk in raw.split(","):
+        part = chunk.strip()
+        if not part:
+            continue
+        if "-" in part:
+            start_raw, end_raw = part.split("-", 1)
+            try:
+                start = int(start_raw.strip())
+                end = int(end_raw.strip())
+            except ValueError:
+                continue
+            if start > 0 and end >= start:
+                indices.extend(list(range(start, end + 1)))
+            continue
+        try:
+            value = int(part)
+        except ValueError:
+            continue
+        if value > 0:
+            indices.append(value)
+    return indices
+
+
+def extract_inline_citations(text: str) -> list[InlineCitation]:
+    citations: list[InlineCitation] = []
+    for match in re.finditer(r"\[([0-9,\-\s]+)\]", str(text or "")):
+        indices = _expand_citation_indices(match.group(1))
+        if not indices:
+            continue
+        surrounding = text[max(0, match.start() - 50): min(len(text), match.end() + 50)]
+        claim_text = _claim_text_for_span(text, match.start(), match.end())
+        for index in indices:
+            citations.append(InlineCitation(
+                index=index,
+                surrounding_text=surrounding.strip(),
+                claim_text=claim_text or surrounding.strip(),
+            ))
+    return citations
+
+
+def _citation_source_url(payload: dict[str, Any]) -> str:
+    url = str(payload.get("url", "") or "").strip()
+    if url:
+        return url
+    source = payload.get("source")
+    if isinstance(source, dict):
+        return str(source.get("url", "") or "").strip()
+    if isinstance(source, str):
+        return source.strip()
+    return ""
+
+
+def _resolve_citation_source_index(
+    payload: dict[str, Any],
+    search_results: list[SearchResult],
+) -> int | None:
+    for key in ("source_index", "citation_index", "search_result_index", "result_index", "index"):
+        value = payload.get(key)
+        try:
+            index = int(value)
+        except (TypeError, ValueError):
+            index = 0
+        if index > 0:
+            return index
+
+    url = canonicalize_search_url(_citation_source_url(payload))
+    if url:
+        for result in search_results:
+            result_url = canonicalize_search_url(result.url) or str(result.url or "").strip()
+            if result_url and result_url == url:
+                return result.index
+
+    title = str(payload.get("title", "") or "").strip().lower()
+    if title:
+        for result in search_results:
+            if str(result.title or "").strip().lower() == title:
+                return result.index
+    return None
+
+
+def extract_native_inline_citations(
+    raw_assistant_message: dict[str, Any] | None,
+    search_results: list[SearchResult],
+) -> list[InlineCitation]:
+    if not isinstance(raw_assistant_message, dict):
+        return []
+    raw_blocks = raw_assistant_message.get("anthropic_content")
+    if not isinstance(raw_blocks, list):
+        return []
+
+    citations: list[InlineCitation] = []
+    for raw_block in raw_blocks:
+        if not isinstance(raw_block, dict):
+            continue
+        block_text = str(
+            raw_block.get("text")
+            or raw_block.get("cited_text")
+            or ""
+        ).strip()
+        block_citations = raw_block.get("citations")
+        if isinstance(block_citations, list):
+            for item in block_citations:
+                if not isinstance(item, dict):
+                    continue
+                source_index = _resolve_citation_source_index(item, search_results)
+                if source_index is None:
+                    source_index = _resolve_citation_source_index(raw_block, search_results)
+                if source_index is None:
+                    continue
+                claim_text = str(
+                    item.get("cited_text")
+                    or item.get("text")
+                    or block_text
+                    or ""
+                ).strip()
+                if not claim_text:
+                    continue
+                citations.append(InlineCitation(
+                    index=source_index,
+                    surrounding_text=block_text or claim_text,
+                    claim_text=claim_text,
+                ))
+            continue
+
+        if str(raw_block.get("type") or "").strip() != "search_result":
+            continue
+        source_index = _resolve_citation_source_index(raw_block, search_results)
+        claim_text = str(raw_block.get("cited_text") or "").strip()
+        if source_index is None or not claim_text:
+            continue
+        citations.append(InlineCitation(
+            index=source_index,
+            surrounding_text=claim_text,
+            claim_text=claim_text,
+        ))
+    return citations
+
+
+def extract_response_citations(
+    response_text: str,
+    search_results: list[SearchResult],
+    *,
+    raw_assistant_message: dict[str, Any] | None = None,
+) -> list[InlineCitation]:
+    seen: set[tuple[int, str]] = set()
+    combined: list[InlineCitation] = []
+    for citation in extract_native_inline_citations(raw_assistant_message, search_results) + extract_inline_citations(response_text):
+        key = (citation.index, citation.claim_text)
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append(citation)
+    return combined
+
+
+def _extract_claim_terms(text: str) -> tuple[list[str], list[str]]:
+    claim_text = str(text or "")
+    numeric_terms = re.findall(r"(?:19|20)\d{2}|\d[\d,]*(?:\.\d+)?%?", claim_text)
+    lexical_terms: list[str] = []
+    for token in re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", claim_text.lower()):
+        if token in _CLAIM_TERM_STOP_WORDS:
+            continue
+        lexical_terms.append(token)
+    deduped_lexical = list(dict.fromkeys(lexical_terms))
+    deduped_numeric = list(dict.fromkeys(numeric_terms))
+    return deduped_lexical, deduped_numeric
+
+
+def _matching_excerpt(source_text: str, anchor_terms: list[str]) -> str | None:
+    lowered = source_text.lower()
+    for term in anchor_terms:
+        idx = lowered.find(term.lower())
+        if idx == -1:
+            continue
+        start = max(0, idx - 80)
+        end = min(len(source_text), idx + max(120, len(term) + 80))
+        return source_text[start:end].strip()
+    return None
+
+
+def verify_citation(
+    citation: InlineCitation,
+    search_results: list[SearchResult],
+) -> CitationVerification:
+    source = next((item for item in search_results if item.index == citation.index), None)
+    if source is None:
+        return CitationVerification(
+            citation_index=citation.index,
+            claim_text=citation.claim_text,
+            verified=False,
+            confidence=0.0,
+            reason=f"cited source [{citation.index}] does not exist",
+        )
+
+    source_text = str(source.fetched_content or source.snippet or "").strip()
+    if not source_text:
+        return CitationVerification(
+            citation_index=citation.index,
+            claim_text=citation.claim_text,
+            source_url=source.url,
+            verified=False,
+            confidence=0.0,
+            reason="cited source has no fetched content or usable snippet",
+        )
+
+    if not _NUMERIC_OR_DATE_RE.search(citation.claim_text):
+        return CitationVerification(
+            citation_index=citation.index,
+            claim_text=citation.claim_text,
+            source_url=source.url,
+            source_excerpt_match=_matching_excerpt(source_text, [citation.claim_text]),
+            verified=False,
+            confidence=0.0,
+            reason="claim is outside numeric/date verification scope",
+        )
+
+    lexical_terms, numeric_terms = _extract_claim_terms(citation.claim_text)
+    lowered_source = source_text.lower()
+    if numeric_terms and not all(term.lower() in lowered_source for term in numeric_terms):
+        return CitationVerification(
+            citation_index=citation.index,
+            claim_text=citation.claim_text,
+            source_url=source.url,
+            source_excerpt_match=_matching_excerpt(source_text, numeric_terms),
+            verified=False,
+            confidence=0.0,
+            reason="source does not contain the claimed numeric/date value",
+        )
+
+    total_terms = max(len(lexical_terms), 1)
+    matched_terms = sum(1 for term in lexical_terms if term in lowered_source)
+    match_ratio = matched_terms / total_terms
+    verified = match_ratio >= 0.6
+    excerpt = _matching_excerpt(source_text, numeric_terms or lexical_terms)
+    return CitationVerification(
+        citation_index=citation.index,
+        claim_text=citation.claim_text,
+        source_url=source.url,
+        source_excerpt_match=excerpt,
+        verified=verified,
+        confidence=match_ratio,
+        reason="matched claim terms in source" if verified else "source only partially matches claim terms",
+    )
+
+
+def verify_response_citations(
+    response_text: str,
+    search_results: list[SearchResult],
+    *,
+    raw_assistant_message: dict[str, Any] | None = None,
+) -> list[CitationVerification]:
+    verifications: list[CitationVerification] = []
+    for citation in extract_response_citations(
+        response_text,
+        search_results,
+        raw_assistant_message=raw_assistant_message,
+    ):
+        if not _NUMERIC_OR_DATE_RE.search(citation.claim_text):
+            continue
+        verifications.append(verify_citation(citation, search_results))
+    return verifications
+
+
+def _citation_verification_key(index: int, claim_text: str) -> tuple[int, str]:
+    normalized = str(claim_text or "").strip().rstrip(".,;:")
+    return (int(index), normalized)
+
+
+def build_citation_records(
+    response_text: str,
+    search_results: list[SearchResult],
+    *,
+    verifications: list[CitationVerification] | None = None,
+    raw_assistant_message: dict[str, Any] | None = None,
+) -> list[CitationRecord]:
+    verification_by_key = {
+        _citation_verification_key(item.citation_index, item.claim_text): item
+        for item in (verifications or [])
+    }
+    records: list[CitationRecord] = []
+    seen: set[tuple[int, str]] = set()
+    for citation in extract_response_citations(
+        response_text,
+        search_results,
+        raw_assistant_message=raw_assistant_message,
+    ):
+        source = next((item for item in search_results if item.index == citation.index), None)
+        if source is None:
+            continue
+        key = (citation.index, citation.claim_text)
+        if key in seen:
+            continue
+        seen.add(key)
+        verification = verification_by_key.get(
+            _citation_verification_key(citation.index, citation.claim_text)
+        )
+        records.append(CitationRecord(
+            claim_text=citation.claim_text,
+            source_index=citation.index,
+            source_url=source.url,
+            cited_excerpt=(
+                verification.source_excerpt_match
+                if verification is not None and verification.source_excerpt_match
+                else str(source.fetched_content or source.snippet or "")[:280]
+            ),
+            verified=verification.verified if verification is not None else None,
+        ))
+    return records
 
 
 # ---------------------------------------------------------------------------
@@ -781,11 +1200,7 @@ def detect_chat_mode(
     if recent_run_failed or debug_via_word or debug_via_stem or debug_via_phrase or debug_via_context or debug_via_fix:
         return "debug"
 
-    live_data_phrases = [
-        "what happened", "recent", "news", "milestone", "latest", "today",
-        "this week", "this month", "current", "updates", "headlines",
-    ]
-    if any(p in msg_lower for p in live_data_phrases):
+    if any(p in msg_lower for p in _LIVE_DATA_PHRASES):
         return "conversation"
 
     if is_question:

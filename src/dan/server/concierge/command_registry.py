@@ -493,6 +493,15 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
         group="session",
     ))
     registry.register(CommandDescriptor(
+        name="/search",
+        kind="chat",
+        surfaces=["all"],
+        args_schema="<query>",
+        help_text="Run an explicit grounded web search with fetched excerpts",
+        group="session",
+        handler="dan.server.concierge.runtime.Concierge.handle_search_command",
+    ))
+    registry.register(CommandDescriptor(
         name="/exit",
         kind="repl",
         surfaces=["cli"],

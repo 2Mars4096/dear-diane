@@ -173,6 +173,18 @@ WEB_SEARCH_CAPABILITY_SCHEMA = build_tool_schema(
             "query": {"type": "string", "description": "Search query — be specific and include relevant keywords."},
             "num_results": {"type": "integer", "description": "Number of results to return (1-10). Default 3. Use 1 for quick lookups, more for research."},
             "fetch_content": {"type": "boolean", "description": "If true, automatically fetch and include content from the top search results in parallel. Use this for grounded live answers instead of relying only on snippets."},
+            "search_depth": {"type": "string", "enum": ["quick", "thorough"], "description": "Quick = snippets only / fewer results. Thorough = richer search and auto-grounding-friendly defaults."},
+            "allowed_domains": {"type": "array", "items": {"type": "string"}, "description": "Optional allowlist of domains to prefer/filter to."},
+            "blocked_domains": {"type": "array", "items": {"type": "string"}, "description": "Optional blocklist of domains to exclude. Mutually exclusive with allowed_domains."},
+            "location": {
+                "type": "object",
+                "properties": {
+                    "country": {"type": "string", "description": "Country hint, e.g. US."},
+                    "language": {"type": "string", "description": "Language hint, e.g. en."},
+                },
+                "additionalProperties": False,
+                "description": "Optional location/language hint for the search provider.",
+            },
         },
         "required": ["query"],
     },
@@ -539,6 +551,20 @@ LIST_GRAPHS_SCHEMA = build_tool_schema(
     parameters={"type": "object", "properties": {}},
 )
 
+DELETE_GRAPH_SCHEMA = build_tool_schema(
+    name="delete_graph",
+    description="Delete a saved workflow. Use when the user asks 'delete this workflow', 'remove obsolete workflows', or 'delete graph X'.",
+    parameters={
+        "type": "object",
+        "properties": {
+            "graph_id": {
+                "type": "string",
+                "description": "Workflow ID to delete (defaults to the active workflow).",
+            },
+        },
+    },
+)
+
 GET_ACTIVITY_SCHEMA = build_tool_schema(
     name="get_activity",
     description="Show current run activity: active runs, recent completions, and connected surfaces. Use when the user asks 'what's running?', 'show activity', or 'any active runs?'.",
@@ -559,6 +585,117 @@ async def handle_list_graphs(args: dict[str, Any], ctx: CapabilityContext) -> Ca
         lines.append(f"- **{gid}** ({node_count} nodes, {edge_count} edges)")
     text = f"Found {len(graphs)} workflow(s):\n" + "\n".join(lines)
     return CapabilityResult(success=True, message=text, data=graphs, output_preview=_truncate(text))
+
+
+def _resolve_graph_delete_target(
+    graph_store: Any,
+    requested_graph_id: str,
+) -> tuple[str | None, str | None]:
+    requested = str(requested_graph_id or "").strip()
+    if not requested:
+        return None, None
+
+    try:
+        graphs = graph_store.list_graphs()
+    except Exception:
+        return requested, None
+
+    requested_lower = requested.lower()
+    exact_id = next(
+        (
+            str(graph.get("graph_id") or "").strip()
+            for graph in graphs
+            if str(graph.get("graph_id") or "").strip() == requested
+        ),
+        None,
+    )
+    if exact_id:
+        return exact_id, None
+
+    name_matches = [
+        str(graph.get("graph_id") or "").strip()
+        for graph in graphs
+        if str(graph.get("name") or "").strip().lower() == requested_lower
+        and str(graph.get("graph_id") or "").strip()
+    ]
+    if len(name_matches) == 1:
+        resolved = name_matches[0]
+        return resolved, f"Matched workflow name `{requested}` to graph ID `{resolved}`."
+    if len(name_matches) > 1:
+        sample = ", ".join(f"`{match}`" for match in name_matches[:5])
+        return None, (
+            f"Workflow name `{requested}` matches multiple graph IDs: {sample}. "
+            "Use an exact `graph_id`."
+        )
+    return requested, None
+
+
+async def handle_delete_graph(args: dict[str, Any], ctx: CapabilityContext) -> CapabilityResult:
+    if ctx.graph_store is None:
+        return CapabilityResult(success=False, message="Graph store not available.")
+    requested_graph_id = str(args.get("graph_id") or ctx.workflow_id or "").strip()
+    if not requested_graph_id:
+        return CapabilityResult(
+            success=False,
+            message="No workflow ID provided to delete.",
+            error_type="invalid_input",
+        )
+    if requested_graph_id == "_scratch":
+        return CapabilityResult(
+            success=False,
+            message="Cannot delete the ephemeral `_scratch` workflow. Save it first if you want to remove a named workflow.",
+            error_type="invalid_input",
+        )
+    graph_id, resolution_message = _resolve_graph_delete_target(
+        ctx.graph_store,
+        requested_graph_id,
+    )
+    if graph_id is None:
+        return CapabilityResult(
+            success=False,
+            message=resolution_message or f"Workflow `{requested_graph_id}` could not be resolved.",
+            error_type="invalid_input",
+        )
+    try:
+        deleted = bool(ctx.graph_store.delete_graph(graph_id))
+    except ValueError as exc:
+        return CapabilityResult(
+            success=False,
+            message=f"Invalid workflow ID: {exc}",
+            error_type="invalid_input",
+        )
+    if not deleted:
+        text = (
+            f"Workflow `{requested_graph_id}` is not present in the current catalog, so there was nothing to delete."
+        )
+        if requested_graph_id != graph_id:
+            text = (
+                f"Workflow `{requested_graph_id}` resolved to `{graph_id}`, but it is already absent from the current catalog."
+            )
+        return CapabilityResult(
+            success=True,
+            message=text,
+            data={
+                "graph_id": graph_id,
+                "requested_graph_id": requested_graph_id,
+                "deleted": False,
+                "already_absent": True,
+            },
+            output_preview=text,
+        )
+    text = f"Deleted workflow `{graph_id}`."
+    if resolution_message:
+        text = f"{resolution_message} {text}"
+    return CapabilityResult(
+        success=True,
+        message=text,
+        data={
+            "graph_id": graph_id,
+            "requested_graph_id": requested_graph_id,
+            "deleted": True,
+        },
+        output_preview=text,
+    )
 
 # ── Experience schemas (25-2) ──────────────────────────────────────
 
@@ -728,6 +865,7 @@ def register_workflow_catalog_capabilities(registry: ChatCapabilityRegistry) -> 
 def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
     """Register the foundational read-only tools (25-1)."""
     registry.register("list_graphs", LIST_GRAPHS_SCHEMA, handle_list_graphs, modes=list(ALL_MODES), category="graph")
+    registry.register("delete_graph", DELETE_GRAPH_SCHEMA, handle_delete_graph, modes=WRITE_MODES, category="graph")
     registry.register("get_activity", GET_ACTIVITY_SCHEMA, handle_get_activity, modes=list(ALL_MODES), category="run")
     registry.register("web_search", WEB_SEARCH_CAPABILITY_SCHEMA, handle_web_search, modes=["ask", "agent", "build", "mutate", "conversation", "debug"], category="web", cacheable=True)
     registry.register("file_read", FILE_READ_CAPABILITY_SCHEMA, handle_file_read, modes=list(ALL_MODES), category="file", cacheable=True)

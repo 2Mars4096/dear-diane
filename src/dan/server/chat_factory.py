@@ -341,6 +341,7 @@ def build_chat_services(
         provider_registry=provider_registry,
         graph_store=graph_store,
         mention_resolver=mention_resolver,
+        chat_store=chat_store,
         capability_registry=capability_registry,
         capability_context=capability_context,
         user_profile=user_profile,

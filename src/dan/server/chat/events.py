@@ -64,6 +64,12 @@ class ChatErrorEvent(BaseModel):
     error: str
 
 
+class ChatNoticeEvent(BaseModel):
+    type: str = "chat_notice"
+    content: str
+    level: str = "info"
+
+
 class ChatMutationEvent(BaseModel):
     type: str = "chat_mutation"
     message_id: str
@@ -75,6 +81,7 @@ class ChatMutationEvent(BaseModel):
     graph_revision: str
     revision_mismatch: bool = False
     detected_mode: str | None = None
+    applied: bool = False
 
 
 class ChatInterruptedEvent(BaseModel):
@@ -184,6 +191,7 @@ ChatStreamEvent = (
     ChatTokenEvent
     | ChatCompleteEvent
     | ChatErrorEvent
+    | ChatNoticeEvent
     | ChatMutationEvent
     | ChatInterruptedEvent
     | ChatToolCallStartEvent

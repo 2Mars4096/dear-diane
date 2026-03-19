@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from dan.server.chat.helpers import _extract_cited_sources
+from dan.server.search_models import CitationRecord, CitationVerification, SearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -255,10 +256,39 @@ def _try_persist_audit(
                 duration_ms=r.get("duration_ms", 0),
                 source_urls=list(r.get("source_urls") or []),
                 source_files=list(r.get("source_files") or []),
+                search_results=[
+                    item if isinstance(item, SearchResult) else SearchResult.model_validate(item)
+                    for item in (r.get("search_results") or [])
+                ],
+                citations=[
+                    item if isinstance(item, CitationRecord) else CitationRecord.model_validate(item)
+                    for item in (r.get("citations") or [])
+                ],
+                citation_verifications=[
+                    item
+                    if isinstance(item, CitationVerification)
+                    else CitationVerification.model_validate(item)
+                    for item in (r.get("citation_verifications") or [])
+                ],
             )
             for r in audit_tool_records
         ]
         cited = _extract_cited_sources(audit_tool_records)
+        aggregated_search_results = [
+            result
+            for record in tc_records
+            for result in record.search_results
+        ]
+        aggregated_citations = [
+            citation
+            for record in tc_records
+            for citation in record.citations
+        ]
+        aggregated_verifications = [
+            verification
+            for record in tc_records
+            for verification in record.citation_verifications
+        ]
         run_id = str(audit_metadata.get("run_id") or "").strip()
         if not run_id:
             for record in audit_tool_records:
@@ -287,6 +317,9 @@ def _try_persist_audit(
             model=model,
             tool_calls=tc_records,
             cited_sources=cited,
+            search_results=aggregated_search_results,
+            citations=aggregated_citations,
+            citation_verifications=aggregated_verifications,
             memory_item_ids=list(audit_metadata.get("memory_item_ids") or []),
         )
         ChatAuditStore().append(record)

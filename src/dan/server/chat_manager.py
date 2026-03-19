@@ -63,6 +63,7 @@ from dan.server.chat.events import (  # noqa: F401
     GraphSummary,
     ChatTokenEvent,
     ChatCompleteEvent,
+    ChatNoticeEvent,
     ChatErrorEvent,
     ChatMutationEvent,
     ChatInterruptedEvent,
@@ -106,6 +107,9 @@ from dan.server.chat.helpers import (  # noqa: F401
     _clean_tool_result,
     _summarize_tool_result,
     _extract_cited_sources,
+    build_citation_records,
+    should_require_web_grounding,
+    verify_response_citations,
     _URL_RE,
     CHAT_MODE_ALIASES,
     normalize_chat_mode,
@@ -113,6 +117,7 @@ from dan.server.chat.helpers import (  # noqa: F401
     detect_chat_mode,
     build_debug_context,
 )
+from dan.server.search_models import parse_search_result_set
 from dan.server.chat.prompts import (  # noqa: F401
     DEFAULT_PROMPT_MODULE_RESOLVER,
     NODE_TYPES,
@@ -217,6 +222,7 @@ __all__ = [
     "GraphSummary",
     "ChatTokenEvent",
     "ChatCompleteEvent",
+    "ChatNoticeEvent",
     "ChatErrorEvent",
     "ChatMutationEvent",
     "ChatInterruptedEvent",
@@ -322,6 +328,125 @@ def _disable_tool_access_in_messages(
     return messages
 
 
+def _load_recent_search_urls(
+    chat_store: Any,
+    workflow_id: str,
+    thread_id: str | None,
+) -> list[str]:
+    if chat_store is None or not thread_id:
+        return []
+    try:
+        meta = chat_store.get_thread_meta(workflow_id, thread_id)
+    except Exception:
+        return []
+    urls = meta.get("recent_search_urls") if isinstance(meta, dict) else []
+    if not isinstance(urls, list):
+        return []
+    return [str(url or "").strip() for url in urls if str(url or "").strip()][:50]
+
+
+def _persist_recent_search_urls(
+    chat_store: Any,
+    workflow_id: str,
+    thread_id: str | None,
+    urls: list[str],
+) -> None:
+    if chat_store is None or not thread_id:
+        return
+    try:
+        meta = chat_store.get_thread_meta(workflow_id, thread_id)
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["recent_search_urls"] = list(dict.fromkeys(urls))[-50:]
+        chat_store.set_thread_meta(workflow_id, thread_id, meta)
+    except Exception:
+        logger.debug("Failed to persist recent search URLs", exc_info=True)
+
+
+def _persist_citation_summary(
+    chat_store: Any,
+    workflow_id: str,
+    thread_id: str | None,
+    verifications: list[Any],
+) -> None:
+    if chat_store is None or not thread_id:
+        return
+    try:
+        meta = chat_store.get_thread_meta(workflow_id, thread_id)
+        if not isinstance(meta, dict):
+            meta = {}
+        verified = sum(1 for item in verifications if getattr(item, "verified", False))
+        unverified = sum(1 for item in verifications if not getattr(item, "verified", False))
+        meta["latest_citation_summary"] = {
+            "verified": verified,
+            "unverified": unverified,
+            "ran": bool(verifications),
+        }
+        chat_store.set_thread_meta(workflow_id, thread_id, meta)
+    except Exception:
+        logger.debug("Failed to persist citation summary", exc_info=True)
+
+
+def _citation_warning_text(verifications: list[Any]) -> str | None:
+    flagged = [item for item in verifications if not getattr(item, "verified", True)]
+    if not flagged:
+        return None
+    return (
+        "Some cited claims could not be verified against the retrieved source content. "
+        "Please double-check the cited source before relying on those figures."
+    )
+
+
+def _progress_ack_event(
+    *,
+    message_id: str,
+    label: str,
+    context_window: int,
+    graph_revision: str,
+    revision_mismatch: bool,
+) -> ChatCompleteEvent:
+    phase_label = str(label or "").strip()
+    return ChatCompleteEvent(
+        message_id=message_id,
+        content=phase_label,
+        token_usage={},
+        context_window=context_window,
+        graph_revision=graph_revision,
+        revision_mismatch=revision_mismatch,
+        detected_mode="progress_ack",
+        phase_label=phase_label or None,
+    )
+
+
+def _format_mutation_preview_content(
+    *,
+    description: str,
+    dry_result: Any,
+    is_empty_graph: bool,
+    applied: bool = False,
+) -> str:
+    preview_kind = "workflow build preview" if is_empty_graph else "workflow update preview"
+    summary = str(description or "").strip()
+
+    if applied and getattr(dry_result, "success", False):
+        action = "Built" if is_empty_graph else "Updated"
+        lead = f"{action} and applied the workflow. Dry-run validation passed."
+        tail = "The workflow is saved and ready to run."
+    elif getattr(dry_result, "success", False):
+        lead = f"Prepared a {preview_kind}. Dry-run validation passed."
+        tail = "These changes are proposed, not applied yet."
+    elif getattr(dry_result, "stale_plan", False):
+        lead = f"Prepared a {preview_kind}, but it is based on a stale graph revision."
+        tail = "These changes are still only proposed, not applied yet."
+    else:
+        lead = f"Prepared a {preview_kind}. Dry-run validation found issues."
+        tail = "These changes are proposed, not applied yet."
+
+    if summary:
+        return f"{lead} {tail}\n\nPlanned changes: {summary}"
+    return f"{lead} {tail}"
+
+
 def _capability_registry_mode(mode: str) -> str:
     """Resolve user-facing chat modes to capability-registry buckets."""
     normalized = normalize_chat_mode(mode)
@@ -334,6 +459,7 @@ class ChatManager:
         provider_registry: ProviderRegistry,
         graph_store: GraphStore,
         mention_resolver: Any | None = None,
+        chat_store: Any | None = None,
         capability_registry: Any | None = None,
         capability_context: Any | None = None,
         user_profile: Any | None = None,
@@ -344,6 +470,7 @@ class ChatManager:
         self._providers = provider_registry
         self._graph_store = graph_store
         self._mention_resolver = mention_resolver
+        self._chat_store = chat_store
         self._capability_registry = capability_registry
         self._capability_context = capability_context
         self._user_profile = user_profile
@@ -913,7 +1040,7 @@ class ChatManager:
                     )
                 
                 cost = estimate_cost(effective_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
-                if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost > 0:
+                if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost is not None and cost > 0:
                     final_content += f"\n\n[~${cost:.4f}]"
 
                 yield ChatCompleteEvent(
@@ -971,6 +1098,14 @@ class ChatManager:
             effective_model = model_override or self._chat_model
             required_action_hints = _dedupe_action_hints(required_action_hints)
             capability_mode = _capability_registry_mode(mode)
+            grounding_required = should_require_web_grounding(
+                message,
+                mode=capability_mode,
+                required_action_hints=required_action_hints,
+                mentions=mentions,
+            )
+            if grounding_required and "search_web" not in required_action_hints:
+                required_action_hints = [*required_action_hints, "search_web"]
             graph_dict = self._graph_store.get_graph(workflow_id)
             if graph_dict is None:
                 _try_persist_audit(
@@ -1574,6 +1709,71 @@ class ChatManager:
             tool_result_cache: dict[str, CapabilityResult] = {}
             file_read_cache: dict[str, list[tuple[int, float, CapabilityResult]]] = {}
             completion_review_requested = False
+            search_state = {
+                "turn_seen_urls": [],
+                "session_seen_order": _load_recent_search_urls(
+                    self._chat_store,
+                    workflow_id,
+                    thread_id,
+                ),
+            }
+            web_budget_state = {
+                "web_search_calls_made": 0,
+                "web_fetch_attempts_made": 0,
+                "max_web_search_calls_per_turn": int(
+                    os.environ.get("DAN_MAX_WEB_SEARCH_CALLS_PER_TURN", "4")
+                ),
+                "max_web_fetch_attempts_per_turn": int(
+                    os.environ.get("DAN_MAX_WEB_FETCH_ATTEMPTS_PER_TURN", "8")
+                ),
+            }
+
+            def _finalize_search_audit_metadata(
+                assistant_text: str,
+                *,
+                raw_assistant_message: dict[str, Any] | None = None,
+            ) -> dict[str, Any]:
+                search_results = [
+                    search_result
+                    for record in audit_tool_records
+                    for search_result in (record.get("search_results") or [])
+                ]
+                verifications = []
+                if os.environ.get("DAN_VERIFY_CITATIONS", "0").strip() == "1" and search_results:
+                    verifications = verify_response_citations(
+                        assistant_text,
+                        search_results,
+                        raw_assistant_message=raw_assistant_message,
+                    )
+                citations = build_citation_records(
+                    assistant_text,
+                    search_results,
+                    verifications=verifications,
+                    raw_assistant_message=raw_assistant_message,
+                )
+                for record in audit_tool_records:
+                    if record.get("tool_name") != "web_search":
+                        continue
+                    record["citations"] = citations
+                    record["citation_verifications"] = verifications
+                _persist_recent_search_urls(
+                    self._chat_store,
+                    workflow_id,
+                    thread_id,
+                    list(search_state.get("session_seen_order") or []),
+                )
+                _persist_citation_summary(
+                    self._chat_store,
+                    workflow_id,
+                    thread_id,
+                    verifications,
+                )
+                citation_warning = _citation_warning_text(verifications)
+                return {
+                    "citations": citations,
+                    "citation_verifications": verifications,
+                    "citation_warning": citation_warning,
+                }
 
             def _tool_cache_key(tool_name: str, args: dict[str, Any]) -> str:
                 try:
@@ -1623,6 +1823,43 @@ class ChatManager:
                 if audit_tool_records:
                     return ""
                 return "\n\n".join(combined_text_parts) if combined_text_parts else ""
+
+            def _split_inventory_then_delete_batch(
+                pending_items: list[dict[str, Any]],
+            ) -> tuple[list[dict[str, Any]], str | None]:
+                inventory_tools = {"list_graphs", "list_my_workflows", "search_workflows"}
+                destructive_tools = {"delete_graph"}
+                tool_names = {
+                    str(item.get("tool_name") or "").strip()
+                    for item in pending_items
+                }
+                if tool_names.isdisjoint(inventory_tools) or tool_names.isdisjoint(destructive_tools):
+                    return pending_items, None
+
+                executed_items: list[dict[str, Any]] = []
+                deferred_count = 0
+                for item in pending_items:
+                    tool_name = str(item.get("tool_name") or "").strip()
+                    if tool_name in destructive_tools:
+                        deferred_count += 1
+                        continue
+                    executed_items.append(item)
+
+                if not executed_items or deferred_count == 0:
+                    return pending_items, None
+
+                logger.info(
+                    "Deferring %d delete_graph call(s) until after workflow inventory results",
+                    deferred_count,
+                )
+                followup_prompt = (
+                    "You now have the latest workflow inventory. If you still need to delete workflows, "
+                    "call `delete_graph` only for exact `graph_id` values returned by the latest inventory "
+                    "tool results in this conversation. Do not guess, reuse remembered IDs, or delete from "
+                    "stale names. If the intended workflow is not listed anymore, say it is already absent "
+                    "instead of calling `delete_graph`."
+                )
+                return executed_items, followup_prompt
 
             for _turn in range(max_tool_turns):
                 if cancel_event and cancel_event.is_set():
@@ -1901,6 +2138,10 @@ class ChatManager:
                         user_message=message,
                         assistant_message=content,
                     )
+                    search_audit_metadata = _finalize_search_audit_metadata(
+                        content,
+                        raw_assistant_message=result.raw_assistant_message,
+                    )
                     _try_persist_audit(
                         workflow_id=workflow_id,
                         message_id=message_id,
@@ -1915,9 +2156,15 @@ class ChatManager:
                     )
                     
                     cost = estimate_cost(effective_model, normalized_usage.get("prompt_tokens", 0), normalized_usage.get("completion_tokens", 0))
-                    if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost > 0:
+                    if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost is not None and cost > 0:
                         content += f"\n\n[~${cost:.4f}]"
                         
+                    citation_warning = str(search_audit_metadata.get("citation_warning") or "").strip()
+                    if citation_warning:
+                        yield ChatNoticeEvent(
+                            content=citation_warning,
+                            level="warning",
+                        )
                     yield ChatCompleteEvent(
                         message_id=message_id,
                         content=content,
@@ -1939,6 +2186,13 @@ class ChatManager:
                         tool_call_id=tool_call_id,
                         tool_name="plan_graph_mutations",
                         args_preview=_build_args_preview(mutation_data),
+                    )
+                    yield _progress_ack_event(
+                        message_id=message_id,
+                        label="Preparing workflow change preview",
+                        context_window=_get_context_window(effective_model),
+                        graph_revision=revision,
+                        revision_mismatch=revision_mismatch,
                     )
 
                     ops = _normalize_generated_mutation_ops(
@@ -1966,6 +2220,13 @@ class ChatManager:
                         for attempt in range(_MUTATION_AUTO_RETRY_MAX):
                             mutation_metrics.record_retry()
                             error_summary = "; ".join(e.message for e in dry_result.errors)
+                            yield _progress_ack_event(
+                                message_id=message_id,
+                                label="Repairing workflow change preview",
+                                context_window=_get_context_window(effective_model),
+                                graph_revision=revision,
+                                revision_mismatch=revision_mismatch,
+                            )
                             logger.info(
                                 "Dry-run failed for plan %s, attempting auto-retry %d/%d: %s",
                                 plan.plan_id,
@@ -2053,6 +2314,13 @@ class ChatManager:
 
                     if dry_result.stale_plan:
                         mutation_metrics.record_stale_plan()
+                        yield _progress_ack_event(
+                            message_id=message_id,
+                            label="Refreshing workflow change preview",
+                            context_window=_get_context_window(effective_model),
+                            graph_revision=revision,
+                            revision_mismatch=revision_mismatch,
+                        )
                         logger.info(
                             "Stale plan for %s, re-planning against current revision",
                             plan.plan_id,
@@ -2166,22 +2434,135 @@ class ChatManager:
                     plan_dump = plan.model_dump()
                     if mode == "debug":
                         plan_dump.setdefault("metadata", {})["source"] = "debug-fix"
+
+                    auto_apply_requested = bool(mutation_data.get("auto_apply", False))
+                    did_apply = False
+                    new_revision = revision
+
+                    if (
+                        auto_apply_requested
+                        and dry_result.success
+                        and dry_result.new_graph is not None
+                        and self._graph_store is not None
+                    ):
+                        apply_result = GraphMutator().apply(
+                            graph_dict, plan, current_revision=revision,
+                        )
+                        if apply_result.success and apply_result.new_graph is not None:
+                            self._graph_store.save_graph(workflow_id, apply_result.new_graph)
+                            new_revision = compute_graph_revision(apply_result.new_graph)
+                            graph_dict = apply_result.new_graph
+                            revision = new_revision
+                            did_apply = True
+                            logger.info(
+                                "Auto-applied mutation plan %s for workflow %s (new rev %s)",
+                                plan.plan_id, workflow_id, new_revision,
+                            )
+                            from dan.server.mutation_metrics import mutation_metrics as _apply_metrics
+                            _apply_metrics.record_apply(True)
+
+                    preview_content = _format_mutation_preview_content(
+                        description=mutation_data.get("description", ""),
+                        dry_result=dry_result,
+                        is_empty_graph=is_empty_graph,
+                        applied=did_apply,
+                    )
                     self._record_conversation_summary(
                         workflow_id=workflow_id,
                         user_message=message,
-                        assistant_message=mutation_data.get("reasoning", result.text or ""),
+                        assistant_message=preview_content,
                     )
                     yield ChatMutationEvent(
                         message_id=message_id,
-                        content=mutation_data.get("reasoning", result.text or ""),
+                        content=preview_content,
                         mutation_plan=plan_dump,
                         dry_run_result=dry_result.model_dump(),
                         token_usage=normalized_usage,
                         context_window=_get_context_window(effective_model),
-                        graph_revision=revision,
-                        revision_mismatch=revision_mismatch,
+                        graph_revision=new_revision if did_apply else revision,
+                        revision_mismatch=False if did_apply else revision_mismatch,
+                        applied=did_apply,
                     )
-                    return
+
+                    if not did_apply:
+                        return
+
+                    satisfied_tool_names.add("plan_graph_mutations")
+
+                    mutation_tc = None
+                    for tc in (result.tool_calls or []):
+                        if tc.get("function", {}).get("name") == "plan_graph_mutations":
+                            mutation_tc = tc
+                            break
+
+                    apply_result_text = json.dumps({
+                        "success": True,
+                        "applied": True,
+                        "graph_revision": new_revision,
+                        "message": (
+                            "Workflow built and applied successfully. "
+                            "The workflow is saved and ready to run. "
+                            "Call `start_run` to execute it."
+                        ),
+                    })
+
+                    if mutation_tc is not None:
+                        tc_id = mutation_tc.get("id", tool_call_id)
+                        assistant_msg = _build_assistant_followup_message(
+                            text=result.text or "",
+                            tool_calls=[mutation_tc],
+                        )
+                        if assistant_msg is not None:
+                            messages.append(assistant_msg)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": apply_result_text,
+                        })
+                    else:
+                        if (result.text or "").strip():
+                            messages.append({"role": "assistant", "content": result.text})
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "The workflow mutation was applied automatically. "
+                                + apply_result_text
+                            ),
+                        })
+                    yield _progress_ack_event(
+                        message_id=message_id,
+                        label="Workflow applied \u2014 proceeding to run",
+                        context_window=_get_context_window(effective_model),
+                        graph_revision=new_revision,
+                        revision_mismatch=False,
+                    )
+
+                    messages = _compact_context(messages, effective_model)
+                    aa_tools, aa_tool_choice = _tool_request_config()
+                    aa_result: CompletionResult | None = None
+                    async for step in _iter_guarded_complete(
+                        request_kwargs={
+                            "messages": messages,
+                            "model": effective_model,
+                            "temperature": 0.7,
+                            "max_tokens": completion_max_tokens,
+                            "tools": aa_tools,
+                            "tool_choice": aa_tool_choice,
+                        },
+                        interrupted_content=_interrupted_tool_loop_content,
+                        emit_progress_ack=True,
+                    ):
+                        if isinstance(step, CompletionResult):
+                            aa_result = step
+                        else:
+                            yield step
+                            if isinstance(step, ChatInterruptedEvent):
+                                return
+                    if aa_result is None:
+                        raise RuntimeError("Auto-apply follow-up produced no result")
+                    result = aa_result
+                    usage_totals = _merge_usage_totals(usage_totals, result.usage)
+                    continue
 
                 # Capability tools → execute, build tool result messages, loop
                 tool_result_messages: list[dict[str, Any]] = []
@@ -2197,34 +2578,45 @@ class ChatManager:
                         raw_tool_calls.append(tc)
 
                 pending_capabilities: list[dict[str, Any]] = []
-                dedupe_sources: dict[str, int] = {}
                 for idx, (cap_name, cap_args) in enumerate(cap_calls):
                     cap_call_id = f"tc_{uuid.uuid4().hex[:10]}"
                     args_preview = json.dumps(cap_args)[:200] if cap_args else ""
-                    yield ChatToolCallStartEvent(
-                        tool_call_id=cap_call_id,
-                        tool_name=cap_name,
-                        args_preview=args_preview,
-                    )
                     pending_capabilities.append({
                         "tool_name": cap_name,
                         "args": cap_args,
                         "args_preview": args_preview,
                         "event_tool_call_id": cap_call_id,
+                        "raw_tool_call": raw_tool_calls[idx]
+                        if idx < len(raw_tool_calls) else None,
                         "raw_tool_call_id": raw_tool_calls[idx].get("id", cap_call_id)
                         if idx < len(raw_tool_calls) else cap_call_id,
                     })
+
+                deferred_capability_prompt: str | None = None
+                pending_capabilities, deferred_capability_prompt = (
+                    _split_inventory_then_delete_batch(pending_capabilities)
+                )
+
+                dedupe_sources: dict[str, int] = {}
+                for idx, pending in enumerate(pending_capabilities):
+                    cap_name = pending["tool_name"]
+                    cap_args = pending["args"]
+                    yield ChatToolCallStartEvent(
+                        tool_call_id=pending["event_tool_call_id"],
+                        tool_name=cap_name,
+                        args_preview=pending["args_preview"],
+                    )
                     tool_is_cacheable = bool(
                         self._capability_registry is not None
                         and self._capability_registry.is_cacheable(cap_name)
                     )
                     cache_key = _tool_cache_key(cap_name, cap_args) if tool_is_cacheable else None
-                    pending_capabilities[-1]["tool_is_cacheable"] = tool_is_cacheable
-                    pending_capabilities[-1]["cache_key"] = cache_key
+                    pending["tool_is_cacheable"] = tool_is_cacheable
+                    pending["cache_key"] = cache_key
                     if cache_key is not None and cache_key in dedupe_sources:
-                        pending_capabilities[-1]["dedupe_from"] = dedupe_sources[cache_key]
+                        pending["dedupe_from"] = dedupe_sources[cache_key]
                     elif cache_key is not None:
-                        dedupe_sources[cache_key] = len(pending_capabilities) - 1
+                        dedupe_sources[cache_key] = idx
 
                 async def _execute_capability_call(
                     pending: dict[str, Any],
@@ -2265,7 +2657,14 @@ class ChatManager:
                     while True:
                         try:
                             if ctx is not None and self._capability_registry is not None:
-                                ctx = dataclasses.replace(ctx, workflow_id=workflow_id)
+                                ctx = dataclasses.replace(
+                                    ctx,
+                                    workflow_id=workflow_id,
+                                    grounding_required=grounding_required,
+                                    thread_id=thread_id,
+                                    web_budget_state=web_budget_state,
+                                    search_state=search_state,
+                                )
                                 cap_result = await self._capability_registry.execute(
                                     pending["tool_name"],
                                     pending["args"],
@@ -2457,6 +2856,13 @@ class ChatManager:
                         "source_files": [
                             str(cap_args.get("path") or cap_args.get("file_path") or cap_args.get("filepath") or "")
                         ] if cap_name in ("pdf_read", "file_read") and isinstance(cap_args, dict) else [],
+                        "search_results": (
+                            parse_search_result_set(cap_result.data).results
+                            if parse_search_result_set(cap_result.data) is not None
+                            else []
+                        ),
+                        "citations": [],
+                        "citation_verifications": [],
                     })
                     combined_text_parts.append(
                         _summarize_tool_result(
@@ -2473,20 +2879,39 @@ class ChatManager:
                         "role": "tool",
                         "tool_call_id": pending["raw_tool_call_id"],
                         "content": _clean_tool_result(cap_name, cap_result.message),
+                        "anthropic_tool_result_content": (
+                            cap_result.data.get("anthropic_tool_result_content")
+                            if isinstance(cap_result.data, dict)
+                            else None
+                        ),
                     })
 
+                executed_raw_tool_calls = [
+                    pending.get("raw_tool_call")
+                    for pending in pending_capabilities
+                    if isinstance(pending.get("raw_tool_call"), dict)
+                ]
+                can_replay_raw_assistant_message = (
+                    replay_raw_assistant_messages
+                    and len(executed_raw_tool_calls) == len(raw_tool_calls)
+                )
                 assistant_tool_message = _build_assistant_followup_message(
                     text=result.text or "",
-                    tool_calls=raw_tool_calls,
+                    tool_calls=executed_raw_tool_calls,
                     raw_assistant_message=(
                         result.raw_assistant_message
-                        if replay_raw_assistant_messages
+                        if can_replay_raw_assistant_message
                         else None
                     ),
                 )
                 if assistant_tool_message is not None:
                     messages.append(assistant_tool_message)
                 messages.extend(tool_result_messages)
+                if deferred_capability_prompt:
+                    messages.append({
+                        "role": "user",
+                        "content": deferred_capability_prompt,
+                    })
                 if any(
                     pending["status"] == "success"
                     and pending["tool_name"] in ("web_search", "web_fetch", "http_request")
@@ -2775,6 +3200,10 @@ class ChatManager:
                             user_message=message,
                             assistant_message=content,
                         )
+                        search_audit_metadata = _finalize_search_audit_metadata(
+                            content,
+                            raw_assistant_message=result.raw_assistant_message,
+                        )
                         _try_persist_audit(
                             workflow_id=workflow_id,
                             message_id=message_id,
@@ -2787,6 +3216,12 @@ class ChatManager:
                             surface=surface,
                             audit_metadata=audit_metadata,
                         )
+                        citation_warning = str(search_audit_metadata.get("citation_warning") or "").strip()
+                        if citation_warning:
+                            yield ChatNoticeEvent(
+                                content=citation_warning,
+                                level="warning",
+                            )
                         yield ChatCompleteEvent(
                             message_id=message_id,
                             content=content,
@@ -2814,6 +3249,7 @@ class ChatManager:
                         user_message=message,
                         assistant_message=combined_content,
                     )
+                    search_audit_metadata = _finalize_search_audit_metadata(combined_content)
                     _try_persist_audit(
                         workflow_id=workflow_id,
                         message_id=message_id,
@@ -2826,6 +3262,12 @@ class ChatManager:
                         surface=surface,
                         audit_metadata=audit_metadata,
                     )
+                    citation_warning = str(search_audit_metadata.get("citation_warning") or "").strip()
+                    if citation_warning:
+                        yield ChatNoticeEvent(
+                            content=citation_warning,
+                            level="warning",
+                        )
                     yield ChatCompleteEvent(
                         message_id=message_id,
                         content=combined_content,
@@ -2962,6 +3404,10 @@ class ChatManager:
                 user_message=message,
                 assistant_message=final_content,
             )
+            search_audit_metadata = _finalize_search_audit_metadata(
+                final_content,
+                raw_assistant_message=result.raw_assistant_message,
+            )
             _try_persist_audit(
                 workflow_id=workflow_id,
                 message_id=message_id,
@@ -2976,9 +3422,15 @@ class ChatManager:
             )
             token_usage = _normalize_usage(usage_totals or result.usage)
             cost = estimate_cost(effective_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
-            if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost > 0:
+            if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost is not None and cost > 0:
                 final_content += f"\n\n[~${cost:.4f}]"
 
+            citation_warning = str(search_audit_metadata.get("citation_warning") or "").strip()
+            if citation_warning:
+                yield ChatNoticeEvent(
+                    content=citation_warning,
+                    level="warning",
+                )
             yield ChatCompleteEvent(
                 message_id=message_id,
                 content=final_content,
@@ -3138,7 +3590,7 @@ class ChatManager:
         )
         
         cost = estimate_cost(_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
-        if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost > 0:
+        if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost is not None and cost > 0:
             final_content += f"\n\n[~${cost:.4f}]"
 
         yield ChatCompleteEvent(
@@ -3698,7 +4150,7 @@ class ChatManager:
                     token_usage = _normalize_usage(chunk.usage)
 
             cost = estimate_cost(_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
-            if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost > 0:
+            if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost is not None and cost > 0:
                 final_content += f"\n\n[~${cost:.4f}]"
 
             yield ChatCompleteEvent(

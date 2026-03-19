@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import dataclasses
 import inspect
 import json
 import logging
@@ -649,6 +651,36 @@ class Concierge:
                 f"\n**Total**: {g_p:,} prompt + {g_c:,} completion "
                 f"= {g_t:,} tokens — ${g_cost:.4f}"
             )
+            chat_store = getattr(self.chat_manager, "_chat_store", None)
+            metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
+            thread_id = str(
+                metadata.get("thread_id")
+                or getattr(msg, "session_id", "")
+                or msg.external_id
+                or ""
+            ).strip()
+            workflow_id = str(metadata.get("workflow_id") or "").strip()
+            active_projects = self.project_store.list_active(msg.external_id)
+            if not workflow_id and active_projects:
+                linked = list(active_projects[0].linked_workflow_ids or [])
+                if linked:
+                    workflow_id = str(linked[-1] or "").strip()
+            if not workflow_id:
+                workflow_id = str(
+                    getattr(self.capability_context, "workflow_id", "") or "_scratch"
+                ).strip()
+            if chat_store is not None and thread_id and workflow_id:
+                try:
+                    meta = chat_store.get_thread_meta(workflow_id, thread_id)
+                except Exception:
+                    meta = {}
+                summary = meta.get("latest_citation_summary") if isinstance(meta, dict) else None
+                if isinstance(summary, dict) and summary.get("ran"):
+                    verified = int(summary.get("verified", 0) or 0)
+                    unverified = int(summary.get("unverified", 0) or 0)
+                    lines.append(
+                        f"\n**Citations**: {verified} verified, {unverified} unverified"
+                    )
             return self._complete_event(content="\n".join(lines))
 
         if descriptor.name == "/retry":
@@ -785,6 +817,46 @@ class Concierge:
                 handler(msg.text, getattr(msg, "external_id", None)),
             )
         return None
+
+    async def handle_search_command(self, msg: SurfaceMessage) -> ChatCompleteEvent:
+        args_str = re.sub(r"^/search\b", "", msg.text, count=1, flags=re.IGNORECASE).strip()
+        if not args_str:
+            return self._complete_event(content="Usage: `/search <query>`")
+        if self.capability_context is None:
+            return self._complete_event(content="Web search is unavailable.")
+
+        from dan.server.capabilities.web import handle_web_search
+
+        if dataclasses.is_dataclass(self.capability_context):
+            ctx = dataclasses.replace(
+                self.capability_context,
+                workflow_id="_scratch",
+                grounding_required=True,
+                thread_id=str(getattr(msg, "session_id", "") or getattr(msg, "external_id", "") or "").strip() or None,
+                web_budget_state={},
+                search_state={},
+            )
+        else:
+            ctx = copy.copy(self.capability_context)
+            setattr(ctx, "workflow_id", "_scratch")
+            setattr(ctx, "grounding_required", True)
+            setattr(
+                ctx,
+                "thread_id",
+                str(getattr(msg, "session_id", "") or getattr(msg, "external_id", "") or "").strip() or None,
+            )
+            setattr(ctx, "web_budget_state", {})
+            setattr(ctx, "search_state", {})
+        result = await handle_web_search(
+            {
+                "query": args_str,
+                "num_results": 5,
+                "fetch_content": True,
+                "search_depth": "thorough",
+            },
+            ctx,
+        )
+        return self._complete_event(content=result.message)
 
     async def _try_fast_command(
         self, msg: SurfaceMessage,

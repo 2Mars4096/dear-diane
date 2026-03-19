@@ -257,6 +257,16 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
                         "type": "string",
                         "description": "Step-by-step reasoning for why these operations are needed",
                     },
+                    "auto_apply": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": (
+                            "When true, automatically apply the mutation after "
+                            "a successful dry-run and continue so you can call "
+                            "start_run in the same turn. Use when the user wants "
+                            "an end-to-end build-and-run flow."
+                        ),
+                    },
                     "operations": {
                         "type": "array",
                         "items": {
@@ -433,6 +443,9 @@ Apply when user mentions a specific journal.
 - strict=true on edges. Exact port names only.
 - For control-flow nodes like for_each and composite, add the node first and then use replace_body_graph to define the nested body graph.
 - `for_each` uses top-level ports `items` and `results`; `item` is a body-subgraph input, not a top-level for_each output port.
+- `plan_graph_mutations` prepares a proposed workflow preview/diff. It does not apply the changes or run the workflow by itself.
+- In user-facing status text, distinguish the real phase: inspect current workflow, prepare mutation plan, validate preview, apply changes, test run.
+- Do not say the workflow is built, applied, or tested until that step has actually happened.
 - Paper workflows: include full pipeline through LaTeX compile + package.
 - Ambiguous intent → sensible defaults (intro, methods, results, discussion).
 """
@@ -548,7 +561,20 @@ def generate_capability_reference(
             "Do not claim you need primitive `create_node`, `add_edge`, or similar workflow-edit tools."
         )
         lines.append(
-            "If the user also asks to validate or test the workflow, use the available run/workflow tools after planning the mutation."
+            "When the user asks to build AND run/test the workflow in the same request, set `auto_apply: true` "
+            "on `plan_graph_mutations`. This applies the mutation automatically after a successful dry-run "
+            "and lets you call `start_run` immediately in the same turn. "
+            "If the user only asks to build or preview, omit `auto_apply` (the default is false) "
+            "so the changes stay proposed until the user explicitly applies them."
+        )
+        lines.append(
+            "Be explicit about workflow status: `plan_graph_mutations` prepares a proposed preview/diff. "
+            "Say whether the workflow is only proposed, already applied, or actually tested."
+        )
+        lines.append(
+            "For workflow deletion, first inspect the current inventory (`list_graphs` / `search_workflows`), "
+            "then call `delete_graph` only for exact `graph_id` values from that fresh result. "
+            "Do not batch speculative `delete_graph` calls with the inventory request."
         )
 
     lines.append("")
@@ -1202,6 +1228,7 @@ Do not dump an entire long file in one tool call.
 19. Prefer fetched page content over search snippets. If you only have snippets, say the answer is tentative or fetch more before concluding.
 20. When web search results are numbered, cite them inline as [1], [2] and include markdown links to the source URLs when helpful.
 21. If `list_directory` says a listing is partial/truncated, do NOT infer absence from the cutoff. Continue with `start_after` or narrow the listing with `glob_pattern` before concluding a file or directory is missing.
+22. Separate proposed work from completed work. If a workflow change is only dry-run validated or waiting for apply/confirmation, say that clearly instead of implying it already happened. When `auto_apply: true` was used and the tool result confirms the apply succeeded, the workflow IS applied and you can proceed to `start_run`.
 
 {module_hints}
 

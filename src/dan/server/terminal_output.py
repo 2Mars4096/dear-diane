@@ -19,6 +19,8 @@ async def collect_terminal_content(
             raise RuntimeError(getattr(event, "error", "Unknown concierge error"))
         if evt_type == "chat_interrupted":
             raise RuntimeError("Scheduled action was interrupted")
+        if evt_type == "chat_notice":
+            continue
         if evt_type != "chat_complete":
             continue
         if getattr(event, "detected_mode", None) == "progress_ack":

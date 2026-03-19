@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from importlib import util as importlib_util
+import inspect
 import json
 import logging
 import os
@@ -494,13 +495,9 @@ async def _adapter_heartbeat_loop() -> None:
     while True:
         await asyncio.sleep(_heartbeat_interval)
         for adapter_id, (adapter, _task) in list(_active_adapters.items()):
-            if not hasattr(adapter, "get_connection_snapshot"):
-                continue
-            try:
-                snapshot = await adapter.get_connection_snapshot()
+            snapshot = await _read_adapter_connection_snapshot(adapter_id, adapter)
+            if snapshot is not None:
                 _merge_adapter_snapshot(adapter_id, snapshot)
-            except Exception:
-                logger.debug("Heartbeat snapshot failed for %s", adapter_id, exc_info=True)
 
 
 def _ensure_heartbeat_running() -> None:
@@ -518,7 +515,25 @@ def _cancel_heartbeat() -> None:
     _heartbeat_task = None
 
 
-def _build_adapter_status_payload(
+async def _read_adapter_connection_snapshot(
+    adapter_id: str,
+    adapter: Any,
+) -> dict[str, Any] | None:
+    if not hasattr(adapter, "get_connection_snapshot"):
+        return None
+    try:
+        live_snapshot = adapter.get_connection_snapshot()
+        if inspect.isawaitable(live_snapshot):
+            live_snapshot = await live_snapshot
+    except Exception:
+        logger.debug("Failed to read adapter snapshot for %s", adapter_id, exc_info=True)
+        return None
+    if isinstance(live_snapshot, dict):
+        return dict(live_snapshot)
+    return None
+
+
+async def _build_adapter_status_payload(
     adapter_id: str,
     adapter: Any,
     task: asyncio.Task[Any],
@@ -530,15 +545,10 @@ def _build_adapter_status_payload(
     running = _adapter_is_running(adapter, task)
     snapshot = dict(_adapter_status_snapshots.get(adapter_id, {}))
 
-    if hasattr(adapter, "get_connection_snapshot"):
-        try:
-            live_snapshot = adapter.get_connection_snapshot()
-        except Exception:
-            logger.debug("Failed to read adapter snapshot for %s", adapter_id, exc_info=True)
-        else:
-            if isinstance(live_snapshot, dict):
-                snapshot.update(live_snapshot)
-                _adapter_status_snapshots[adapter_id] = snapshot
+    live_snapshot = await _read_adapter_connection_snapshot(adapter_id, adapter)
+    if live_snapshot is not None:
+        snapshot.update(live_snapshot)
+        _adapter_status_snapshots[adapter_id] = snapshot
 
     connection_state = str(
         snapshot.get("connection_state") or ("connected" if running else "disconnected"),
@@ -562,12 +572,12 @@ def _build_adapter_status_payload(
     }
 
 
-def _find_active_surface_snapshot(surface_type: str) -> dict[str, Any]:
+async def _find_active_surface_snapshot(surface_type: str) -> dict[str, Any]:
     now = time.time()
     for adapter_id, (adapter, task) in _active_adapters.items():
         if _adapter_surface_types.get(adapter_id) != surface_type:
             continue
-        return _build_adapter_status_payload(adapter_id, adapter, task, now)
+        return await _build_adapter_status_payload(adapter_id, adapter, task, now)
     return {}
 
 
@@ -580,11 +590,11 @@ def _adapter_ids_for_surface(surface_type: str) -> list[str]:
     ]
 
 
-def _build_telegram_config_summary() -> dict[str, Any]:
+async def _build_telegram_config_summary() -> dict[str, Any]:
     state = _load_telegram_desktop_state()
     env_token = os.environ.get("DAN_TELEGRAM_BOT_TOKEN", "").strip()
     token = env_token or state["bot_token"]
-    live = _find_active_surface_snapshot("telegram")
+    live = await _find_active_surface_snapshot("telegram")
     dependency = _build_dependency_summary(
         module_name="telegram",
         package_name="python-telegram-bot",
@@ -606,10 +616,10 @@ def _build_telegram_config_summary() -> dict[str, Any]:
     }
 
 
-def _build_whatsapp_web_config_summary() -> dict[str, Any]:
+async def _build_whatsapp_web_config_summary() -> dict[str, Any]:
     settings = _load_whatsapp_web_settings()
     session_db = Path(settings["db_path"])
-    live = _find_active_surface_snapshot("whatsapp-web")
+    live = await _find_active_surface_snapshot("whatsapp-web")
     dependency = _build_dependency_summary(
         module_name="neonize",
         package_name="neonize",
@@ -1030,7 +1040,7 @@ async def adapter_status():
     now = time.time()
     for aid, (adapter, task) in _active_adapters.items():
         store = _adapter_session_stores.get(aid)
-        payload = _build_adapter_status_payload(aid, adapter, task, now)
+        payload = await _build_adapter_status_payload(aid, adapter, task, now)
         if store is not None:
             sessions = await store.all_sessions()
             payload["session_count"] = len(sessions)
@@ -1042,9 +1052,9 @@ async def adapter_status():
 async def get_adapter_config(adapter_type: str):
     normalized = adapter_type.strip().lower()
     if normalized == "telegram":
-        return _build_telegram_config_summary()
+        return await _build_telegram_config_summary()
     if normalized == "whatsapp-web":
-        return _build_whatsapp_web_config_summary()
+        return await _build_whatsapp_web_config_summary()
     raise HTTPException(status_code=404, detail=f"Adapter config '{adapter_type}' not found")
 
 
@@ -1086,7 +1096,7 @@ async def save_adapter_config(adapter_type: str, body: dict[str, Any]):
             commands=commands,
             mini_app_url=mini_app_url_sentinel,  # type: ignore[arg-type]
         )
-        summary = _build_telegram_config_summary()
+        summary = await _build_telegram_config_summary()
         summary["bot_username"] = state["bot_username"] or None
         summary["allowed_chat_ids"] = state["allowed_chat_ids"]
         summary["allowed_chat_count"] = len(state["allowed_chat_ids"])
@@ -1106,7 +1116,7 @@ async def save_adapter_config(adapter_type: str, body: dict[str, Any]):
             else None,
             auto_start=bool(wa_auto_start) if wa_auto_start is not None else None,
         )
-        summary = _build_whatsapp_web_config_summary()
+        summary = await _build_whatsapp_web_config_summary()
         summary["allowed_jids"] = settings["allowed_jids"]
         summary["allowed_jid_count"] = len(settings["allowed_jids"])
         summary["db_path"] = settings["db_path"]
@@ -1128,7 +1138,7 @@ async def reset_adapter_config(adapter_type: str):
 
     db_path = Path(settings["db_path"])
     _remove_sqlite_artifacts(db_path)
-    return _build_whatsapp_web_config_summary()
+    return await _build_whatsapp_web_config_summary()
 
 
 @router.post("/api/adapters/{adapter_id}/apply-commands")
