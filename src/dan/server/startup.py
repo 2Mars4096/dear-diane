@@ -22,11 +22,95 @@ if TYPE_CHECKING:
     from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
+_API_KEY_PLACEHOLDERS = frozenset({"your-api-key-here", "changeme", "replace-me"})
+_PRIMARY_LLM_KEY_ENV_VARS = (
+    "DAN_LLM_API_KEY",
+    "LLM_API_KEY",
+    "DAN_OPENAI_API_KEY",
+    "OPENAI_API_KEY",
+    "DAN_ANTHROPIC_API_KEY",
+    "DAN_GOOGLE_API_KEY",
+)
 
 
 # ---------------------------------------------------------------------------
 # Config helpers (moved from app.py)
 # ---------------------------------------------------------------------------
+
+
+def get_llm_api_key_status() -> str:
+    """Return configured/missing/placeholder for any supported primary chat key."""
+    saw_placeholder = False
+    for env_name in _PRIMARY_LLM_KEY_ENV_VARS:
+        raw = str(os.environ.get(env_name, "") or "").strip()
+        if not raw:
+            continue
+        if raw.lower() in _API_KEY_PLACEHOLDERS:
+            saw_placeholder = True
+            continue
+        return "configured"
+    return "placeholder" if saw_placeholder else "missing"
+
+
+def log_startup_configuration_warnings() -> None:
+    status = get_llm_api_key_status()
+    if status == "missing":
+        logger.warning(
+            "DAN_LLM_API_KEY is missing. Set DAN_LLM_API_KEY in your .env file. "
+            "See .env.example."
+        )
+    elif status == "placeholder":
+        logger.warning(
+            "DAN_LLM_API_KEY is still set to a placeholder value. Update your .env "
+            "file with a real key. See .env.example."
+        )
+
+    try:
+        from dan.tools.shell_command import shell_sandbox_explicitly_disabled
+
+        if shell_sandbox_explicitly_disabled():
+            logger.warning(
+                "Shell sandbox is explicitly disabled (DAN_SANDBOX_SHELL=0). "
+                "Shell commands will run without the subprocess sandbox."
+            )
+    except Exception:
+        logger.debug("Shell sandbox warning check failed", exc_info=True)
+
+
+def _record_startup_degradation(
+    state: AppState,
+    subsystem: str,
+    message: str,
+) -> None:
+    entry = {
+        "subsystem": subsystem.strip() or "unknown",
+        "message": message.strip(),
+    }
+    if entry not in state.startup_degradations:
+        state.startup_degradations.append(entry)
+
+
+def get_startup_degradation_summary(state: AppState) -> dict[str, Any]:
+    issues = [dict(item) for item in state.startup_degradations]
+    return {
+        "status": "degraded" if issues else "ok",
+        "issues": issues,
+    }
+
+
+def log_startup_degradation_summary(state: AppState) -> None:
+    summary = get_startup_degradation_summary(state)
+    issues = summary["issues"]
+    if not issues:
+        return
+    rendered = "; ".join(
+        f"{issue['subsystem']}: {issue['message']}" for issue in issues
+    )
+    logger.warning(
+        "Startup degradation summary | %d subsystem(s): %s",
+        len(issues),
+        rendered,
+    )
 
 
 def _get_engine_config():
@@ -170,6 +254,7 @@ def _build_chat_provider_registry():
 
 async def _initialize_mcp_bridge_for_server(
     *,
+    state: AppState,
     capability_registry: Any,
     tool_registry: Any | None,
     capability_context: Any,
@@ -190,6 +275,11 @@ async def _initialize_mcp_bridge_for_server(
             tool_registry,
         )
     except Exception:
+        _record_startup_degradation(
+            state,
+            "mcp_bridge",
+            "auto-connect failed; MCP-backed tools may be unavailable",
+        )
         logger.warning("MCP bridge startup failed", exc_info=True)
     capability_context.mcp_bridge = bridge
     return bridge
@@ -341,6 +431,11 @@ async def init_stores(state: AppState) -> None:
     try:
         state.block_registry.scan()
     except OSError as exc:
+        _record_startup_degradation(
+            state,
+            "block_registry",
+            "scan degraded; continuing with partial in-memory registry",
+        )
         logger.warning(
             "Block registry scan degraded during startup; continuing with partial in-memory registry: %s",
             exc,
@@ -361,6 +456,11 @@ async def init_stores(state: AppState) -> None:
         except OSError as exc:
             state.furnace_enabled = False
             state.furnace_session_store = None
+            _record_startup_degradation(
+                state,
+                "furnace_api",
+                "disabled during startup; recipe sessions unavailable",
+            )
             logger.warning(
                 "Furnace startup degraded; disabling Furnace API for this process: %s",
                 exc,
@@ -388,6 +488,11 @@ async def init_engine(state: AppState) -> None:
             "Telemetry store initialized (%s)", type(state.telemetry_store).__name__
         )
     except Exception:
+        _record_startup_degradation(
+            state,
+            "telemetry",
+            "telemetry store failed to initialize",
+        )
         logger.debug("Telemetry store init skipped", exc_info=True)
 
     # Lazy indexer — closure captures engine config
@@ -465,6 +570,7 @@ async def init_capabilities(state: AppState) -> None:
     )
 
     state.mcp_bridge = await _initialize_mcp_bridge_for_server(
+        state=state,
         capability_registry=state.capability_registry,
         tool_registry=(
             state.run_manager.tool_registry if state.run_manager is not None else None
@@ -608,6 +714,11 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
                 len(state.notification_manager.channels),
             )
     except Exception:
+        _record_startup_degradation(
+            state,
+            "notifications",
+            "notification manager failed to initialize",
+        )
         logger.warning("Notification manager startup failed", exc_info=True)
 
     try:
@@ -657,6 +768,11 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
                     "Self-knowledge index refreshed (%d docs)", len(doc_paths)
                 )
     except Exception:
+        _record_startup_degradation(
+            state,
+            "self_knowledge",
+            "self-knowledge indexing failed to initialize",
+        )
         logger.debug("Self-knowledge indexing skipped", exc_info=True)
 
     app.state.self_knowledge_index = state.self_knowledge_index
@@ -737,6 +853,11 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
             state.concierge = result
             state.dispatcher = None
     except Exception:
+        _record_startup_degradation(
+            state,
+            "concierge",
+            "concierge dispatcher failed to initialize",
+        )
         logger.warning("Concierge startup failed", exc_info=True)
         state.concierge = None
         state.dispatcher = None
@@ -824,6 +945,11 @@ async def init_background(state: AppState, app: FastAPI) -> None:
                 app.state.task_scheduler = state.task_scheduler
                 logger.info("Task scheduler started (authority=SERVER)")
     except Exception:
+        _record_startup_degradation(
+            state,
+            "task_scheduler",
+            "task scheduler failed to initialize",
+        )
         logger.debug("Task scheduler startup skipped", exc_info=True)
 
     # 31-15: Learning tier activation — store resolved tier on concierge
@@ -907,6 +1033,11 @@ async def init_background(state: AppState, app: FastAPI) -> None:
                 ],
             )
     except Exception:
+        _record_startup_degradation(
+            state,
+            "skill_store",
+            "skill store failed to initialize",
+        )
         logger.debug("Skill store startup failed", exc_info=True)
 
     # Memory consolidation loop
@@ -973,6 +1104,7 @@ async def init_background(state: AppState, app: FastAPI) -> None:
         autonomy,
         scheduler_status,
     )
+    log_startup_degradation_summary(state)
 
 
 # ---------------------------------------------------------------------------
@@ -1167,6 +1299,7 @@ async def lifespan(app: FastAPI):
         test_case_store=TestCaseStore(base_dir=graphs_dir),
     )
 
+    log_startup_configuration_warnings()
     init_learning_tiers()
     await init_stores(state)
     await init_engine(state)
@@ -1179,6 +1312,7 @@ async def lifespan(app: FastAPI):
 
     app.state.dan = state
     app.state.mcp_bridge = state.mcp_bridge
+    app.state.startup_summary = get_startup_degradation_summary(state)
 
     _mirror_state_to_globals(state)  # final pass to catch anything set by integrations/background
 
@@ -1213,3 +1347,4 @@ def _mirror_state_to_globals(state: AppState) -> None:
     _app_mod._experience_index_cache = state.experience_index_cache
     _app_mod._furnace_session_store = state.furnace_session_store
     _app_mod._furnace_enabled = state.furnace_enabled
+    _app_mod._startup_degradations = list(state.startup_degradations)

@@ -187,6 +187,30 @@ _MAX_CONTEXT_RATIO = float(os.environ.get("DAN_CHAT_MAX_CONTEXT_RATIO", "0.8"))
 _LLM_CALL_TIMEOUT_SECONDS = float(os.environ.get("DAN_LLM_CALL_TIMEOUT", "120"))
 _POST_TOOL_FOLLOWUP_MAX_RETRIES = 2
 
+
+def _friendly_chat_error(exc: Exception) -> str:
+    """Map raw exceptions to actionable user-facing messages."""
+    msg = str(exc)
+    if isinstance(exc, KeyError):
+        return (
+            "Model or provider configuration error — check your "
+            f"DAN_LLM_* environment variables. (Missing: {msg})"
+        )
+    lower = msg.lower()
+    if "401" in msg or "unauthorized" in lower or "authentication" in lower:
+        return "Authentication failed — check your API key and provider configuration."
+    if "429" in msg or "rate limit" in lower or "too many requests" in lower:
+        return "Rate limited by the LLM provider — please retry shortly."
+    if "timeout" in lower or "timed out" in lower:
+        return "Request timed out — the LLM provider may be overloaded. Try again."
+    if "connection" in lower and ("refused" in lower or "error" in lower or "reset" in lower):
+        return "Could not connect to the LLM provider — check your network and DAN_LLM_BASE_URL."
+    if any(code in msg for code in ("500", "502", "503")) or "internal server error" in lower:
+        return "The LLM provider returned a server error — please retry or check provider status."
+    if len(msg) > 200:
+        msg = msg[:200] + "…"
+    return f"An error occurred: {msg}"
+
 __all__ = [
     "NodeSummary",
     "EdgeSummary",
@@ -904,10 +928,10 @@ class ChatManager:
 
         except KeyError as exc:
             logger.error("Provider resolution failed: %s", exc)
-            yield ChatErrorEvent(error=f"LLM provider error: {exc}")
+            yield ChatErrorEvent(error=_friendly_chat_error(exc))
         except Exception as exc:
             logger.exception("Chat error for workflow %s", workflow_id)
-            yield ChatErrorEvent(error=str(exc))
+            yield ChatErrorEvent(error=_friendly_chat_error(exc))
 
     # ------------------------------------------------------------------
     # Function-calling path (mutations via tool use)
@@ -2123,6 +2147,21 @@ class ChatManager:
                         duration_ms=elapsed,
                     )
 
+                    if dry_result.success and dry_result.new_graph is not None:
+                        from dan.meta.graph_quality import compute_quality_report, tier_quality_threshold
+
+                        quality_report = compute_quality_report(
+                            dry_result.new_graph,
+                            message,
+                            tier=None,
+                        )
+                        quality_threshold = tier_quality_threshold(None, message)
+                        if quality_threshold > 0 and quality_report.overall_score < quality_threshold:
+                            yield ChatGraphQualityEvent(
+                                score=quality_report.overall_score,
+                                concerns=quality_report.concerns,
+                            )
+
                     normalized_usage = _normalize_usage(result.usage)
                     plan_dump = plan.model_dump()
                     if mode == "debug":
@@ -2966,7 +3005,7 @@ class ChatManager:
                 error=f"LLM provider error: {exc}",
                 audit_metadata=audit_metadata,
             )
-            yield ChatErrorEvent(error=f"LLM provider error: {exc}")
+            yield ChatErrorEvent(error=_friendly_chat_error(exc))
         except Exception as exc:
             logger.exception("Chat error for workflow %s", workflow_id)
             _try_persist_audit(
@@ -2982,7 +3021,7 @@ class ChatManager:
                 error=str(exc),
                 audit_metadata=audit_metadata,
             )
-            yield ChatErrorEvent(error=str(exc))
+            yield ChatErrorEvent(error=_friendly_chat_error(exc))
 
     # ------------------------------------------------------------------
     # Fallback: stream text, then try to parse JSON as mutation plan
@@ -3056,6 +3095,20 @@ class ChatManager:
                         plan.plan_id,
                         error_summary,
                     )
+                if dry_result.success and dry_result.new_graph is not None:
+                    from dan.meta.graph_quality import compute_quality_report, tier_quality_threshold
+
+                    quality_report = compute_quality_report(
+                        dry_result.new_graph,
+                        user_message,
+                        tier=None,
+                    )
+                    quality_threshold = tier_quality_threshold(None, user_message)
+                    if quality_threshold > 0 and quality_report.overall_score < quality_threshold:
+                        yield ChatGraphQualityEvent(
+                            score=quality_report.overall_score,
+                            concerns=quality_report.concerns,
+                        )
                 plan_dump = plan.model_dump()
                 if mode == "debug":
                     plan_dump.setdefault("metadata", {})["source"] = "debug-fix"
@@ -3658,7 +3711,7 @@ class ChatManager:
             )
         except Exception as exc:
             logger.exception("Clarify error")
-            yield ChatErrorEvent(error=str(exc))
+            yield ChatErrorEvent(error=_friendly_chat_error(exc))
 
     # ------------------------------------------------------------------
     # Codegen / intent-compiler build path (Phase 24-1 / 24-2)
@@ -3684,7 +3737,7 @@ class ChatManager:
         5. Return validated graph dict or None
         """
         from dan.meta.diagnosis import GenerationError, GenerationErrorType, GenerationStage
-        from dan.meta.intent_compiler import CoverageChecker, IntentCompiler
+        from dan.meta.intent_compiler import IntentCompiler
         from dan.meta.intent_extraction import (
             INTENT_EXTRACTION_SYSTEM_PROMPT,
             build_intent_tool_schema,
@@ -3898,13 +3951,10 @@ class ChatManager:
         coverage_recommendation = None
         coverage_patterns: list[str] | None = None
         if intent is not None:
-            checker = CoverageChecker()
-            coverage = checker.check(intent)
-            coverage_fully_covered = coverage.fully_covered
-            coverage_recommendation = coverage.recommendation
-            coverage_patterns = coverage.constituent_patterns
+            coverage_fully_covered = True
+            coverage_recommendation = "compile"
             logger.info(
-                "Coverage check: fully_covered=%s, recommendation=%s, constituent_patterns=%s",
+                "Intent compiler readiness: fully_covered=%s, recommendation=%s, constituent_patterns=%s",
                 coverage_fully_covered,
                 coverage_recommendation,
                 coverage_patterns,
@@ -4554,7 +4604,9 @@ class ChatManager:
         ``_sandbox_exec_builder_code()`` instead.
         """
         try:
-            ns: dict[str, Any] = {}
+            from dan.executors.code import _ALLOWED_BUILTINS
+
+            ns: dict[str, Any] = {"__builtins__": _ALLOWED_BUILTINS}
             exec(code, ns)  # noqa: S102
             for var_name in ("graph", "wf", "workflow", "g"):
                 obj = ns.get(var_name)

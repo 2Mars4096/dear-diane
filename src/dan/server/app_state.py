@@ -92,6 +92,7 @@ class AppState:
     # -- Misc ----------------------------------------------------------------
     graphs_dir: str = ""
     skill_store: Any = None
+    startup_degradations: list[dict[str, str]] = field(default_factory=list)
 
     # -- Accessor guards -----------------------------------------------------
 

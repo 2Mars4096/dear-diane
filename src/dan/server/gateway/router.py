@@ -119,13 +119,29 @@ async def _dispatch_text(
         raise HTTPException(422, f"Planner produced invalid graph: {exc}") from exc
     workflow_name = workflow_id
 
-    plan_event = {
+    plan_event: dict[str, Any] = {
         "event_type": "plan_created",
         "goal": goal,
         "workflow_id": workflow_id,
         "timestamp": time.time(),
     }
+    if exec_result.get("legacy_fallback"):
+        plan_event["warning"] = exec_result.get(
+            "warning", "Code generation fell back to a simplified workflow."
+        )
+        plan_event["legacy_fallback"] = True
     bus.broadcast(plan_event)
+
+    if exec_result.get("legacy_fallback"):
+        bus.broadcast({
+            "event_type": "notification",
+            "level": "warning",
+            "title": "Simplified Workflow",
+            "message": exec_result.get(
+                "warning", "Code generation fell back to a simplified workflow."
+            ),
+            "timestamp": time.time(),
+        })
 
     run_id = f"run-{int(time.time() * 1000)}"
     if surface_id:

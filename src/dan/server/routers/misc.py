@@ -84,13 +84,18 @@ def _read_runtime_config_values() -> dict[str, str]:
 @router.get("/health")
 async def health_check() -> dict[str, Any]:
     """Health check endpoint for server discovery."""
-    from dan.server.app import _run_manager
+    from dan.server.app import _run_manager, _startup_degradations
 
     result: dict[str, Any] = {"status": "ok"}
     if _run_manager is not None:
         runs = _run_manager.list_runs()
         active = [r for r in runs if r.get("status") in ("running", "pending")]
         result["active_runs"] = len(active)
+    issues = [dict(item) for item in _startup_degradations]
+    result["startup"] = {
+        "status": "degraded" if issues else "ok",
+        "issues": issues,
+    }
     return result
 
 

@@ -624,10 +624,11 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
             raise
         except Exception as exc:
             logger.exception("Chat _produce() error for channel %s", stream_channel_id)
+            from dan.server.chat_manager import _friendly_chat_error
             await _put_chat_stream_event(
                 stream_channel_id,
                 queue,
-                {"type": "chat_error", "error": str(exc)},
+                {"type": "chat_error", "error": _friendly_chat_error(exc)},
             )
         finally:
             cm.unregister_stream(stream_channel_id)

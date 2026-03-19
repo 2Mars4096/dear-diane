@@ -260,6 +260,10 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
                     "operations": {
                         "type": "array",
                         "items": {
+                            # Intentionally expose the safest/highest-value mutation ops here.
+                            # Lower-level ops like rename_node, set_metadata, reorder_edges,
+                            # batch_set_positions, and duplicate_node stay hidden until the
+                            # chat planner has stronger invariants for using them correctly.
                             "oneOf": [
                                 add_node_schema,
                                 remove_node_schema,

@@ -73,6 +73,7 @@ _dispatcher: Any | None = None
 _mcp_bridge: Any | None = None
 _furnace_session_store: Any | None = None
 _furnace_enabled: bool = False
+_startup_degradations: list[dict[str, str]] = []
 
 
 def _get_engine_config():
@@ -285,11 +286,16 @@ def _build_meta_controller():
     ) -> dict[str, Any]:
         workflow_id = str(prepared_workflow_id or "").strip()
         graph_data = prepared_graph if isinstance(prepared_graph, dict) else None
+        _plan_warning: str | None = None
         if graph_data is None:
             user_text = getattr(plan, "description", None)
             exec_result = await planner.execute_plan(plan, user_text=user_text)
             workflow_id = str(exec_result.get("workflow_id", "")).strip()
             graph_data = exec_result.get("graph")
+            if exec_result.get("legacy_fallback"):
+                _plan_warning = exec_result.get("warning")
+        elif isinstance(graph_data, dict) and graph_data.get("legacy_fallback"):
+            _plan_warning = graph_data.get("warning")
         if not workflow_id:
             workflow_id = f"meta-{_uuid.uuid4().hex[:10]}"
         if not isinstance(graph_data, dict):
@@ -340,7 +346,7 @@ def _build_meta_controller():
                 principle_dicts = [p.model_dump() for p in principles]
             except Exception:
                 logger.debug("Failed loading principles for %s", workflow_id, exc_info=True)
-        return {
+        result = {
             "success": bool(snapshot.get("success", False)),
             "run_id": rec.run_id,
             "workflow_id": workflow_id,
@@ -349,6 +355,10 @@ def _build_meta_controller():
             "principles": principle_dicts,
             "outputs": snapshot.get("outputs", {}),
         }
+        if _plan_warning:
+            result["warning"] = _plan_warning
+            result["legacy_fallback"] = True
+        return result
 
     from dan.server.routers.meta import _meta_subscribers
 
