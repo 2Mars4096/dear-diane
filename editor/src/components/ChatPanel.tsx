@@ -141,7 +141,7 @@ import {
 } from "../lib/runStreamRecovery";
 import {
   formatCodeContextForChat,
-  parseClipboardCodeContext,
+  resolveClipboardCodeContext,
 } from "../lib/clipboardContext";
 
 const DEFAULT_WIDTH = 380;
@@ -2345,7 +2345,7 @@ export default function ChatPanel({
     const text = e.clipboardData.getData("text/plain");
     const html = e.clipboardData.getData("text/html");
 
-    const codeCtx = parseClipboardCodeContext(text, html || undefined);
+    const codeCtx = resolveClipboardCodeContext(text, html || undefined);
     if (codeCtx) {
       e.preventDefault();
       const formatted = formatCodeContextForChat(codeCtx);

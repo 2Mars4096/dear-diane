@@ -38,6 +38,7 @@ import {
   deriveTestPath,
   stripFences,
 } from "../../lib/aiCodeActions";
+import { rememberCopiedCodeContext } from "../../lib/clipboardContext";
 import Breadcrumbs from "./Breadcrumbs";
 import PeekDefinition, { findDefinitions, findDefinitionsLsp, type PeekDef } from "./PeekDefinition";
 import {
@@ -621,7 +622,10 @@ export default function MonacoTabs() {
     editor.addAction({
       id: "copy-with-context",
       label: "Copy with File & Line Info",
-      keybindings: [monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyC],
+      keybindings: [
+        monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyC,
+        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyC,
+      ],
       precondition: "editorHasSelection",
       run: (ed) => {
         const sel = ed.getSelection();
@@ -632,19 +636,28 @@ export default function MonacoTabs() {
         const startLine = sel.startLineNumber;
         const endLine = sel.endLineNumber;
         const lang = ed.getModel()?.getLanguageId() ?? "";
-        const lineRange = startLine === endLine ? `L${startLine}` : `L${startLine}-L${endLine}`;
-        const header = `// ${afp}:${lineRange}`;
-        const plainText = `${header}\n${text}`;
+        rememberCopiedCodeContext(text, {
+          filePath: afp,
+          startLine,
+          endLine,
+          lang,
+          code: text,
+        });
+        const plainText = text;
         const htmlText =
           `<pre data-dan-file="${afp.replace(/"/g, "&quot;")}" data-dan-start="${startLine}" data-dan-end="${endLine}" data-dan-lang="${lang}">` +
           `<code>${text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</code></pre>`;
-        const item = new ClipboardItem({
-          "text/plain": new Blob([plainText], { type: "text/plain" }),
-          "text/html": new Blob([htmlText], { type: "text/html" }),
-        });
-        navigator.clipboard.write([item]).catch(() => {
-          navigator.clipboard.writeText(plainText).catch(() => {});
-        });
+        if (typeof ClipboardItem !== "undefined") {
+          const item = new ClipboardItem({
+            "text/plain": new Blob([plainText], { type: "text/plain" }),
+            "text/html": new Blob([htmlText], { type: "text/html" }),
+          });
+          navigator.clipboard.write([item]).catch(() => {
+            navigator.clipboard.writeText(plainText).catch(() => {});
+          });
+          return;
+        }
+        navigator.clipboard.writeText(plainText).catch(() => {});
       },
     });
 

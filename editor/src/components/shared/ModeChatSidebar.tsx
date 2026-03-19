@@ -86,7 +86,7 @@ import { buildSurfaceContext } from "../../lib/contextBudget";
 import { extractImportPaths } from "../../lib/importResolver";
 import {
   formatCodeContextForChat,
-  parseClipboardCodeContext,
+  resolveClipboardCodeContext,
 } from "../../lib/clipboardContext";
 import {
   detectProjectType,
@@ -856,7 +856,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     const text = e.clipboardData.getData("text/plain");
     const html = e.clipboardData.getData("text/html");
 
-    const codeCtx = parseClipboardCodeContext(text, html || undefined);
+    const codeCtx = resolveClipboardCodeContext(text, html || undefined);
     if (codeCtx) {
       e.preventDefault();
       const formatted = formatCodeContextForChat(codeCtx);

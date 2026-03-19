@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   formatCodeContextForChat,
   parseClipboardCodeContext,
+  rememberCopiedCodeContext,
+  resolveClipboardCodeContext,
 } from "../clipboardContext";
 
 describe("parseClipboardCodeContext", () => {
@@ -64,6 +66,19 @@ describe("parseClipboardCodeContext", () => {
     expect(result?.code).toBe('const s = "hello";');
   });
 
+  it("allows spaces in file paths for explicit plain-text headers", () => {
+    const result = parseClipboardCodeContext(
+      "// /Users/me/My Project/src/app.ts:L4-L6\nconst x = 1;",
+    );
+    expect(result).toEqual({
+      filePath: "/Users/me/My Project/src/app.ts",
+      startLine: 4,
+      endLine: 6,
+      lang: "ts",
+      code: "const x = 1;",
+    });
+  });
+
   it("handles HTML entities in code", () => {
     const html =
       '<pre data-dan-file="test.tsx" data-dan-start="1" data-dan-end="1" data-dan-lang="tsx"><code>const x = a &lt; b &amp;&amp; c &gt; d;</code></pre>';
@@ -106,5 +121,25 @@ describe("formatCodeContextForChat", () => {
       code: "def hi\n  puts 'hi'\nend",
     });
     expect(result).toContain("```rb\n");
+  });
+});
+
+describe("resolveClipboardCodeContext", () => {
+  it("falls back to the last copied editor context when plain text matches", () => {
+    rememberCopiedCodeContext("const x = 1;", {
+      filePath: "/tmp/demo.ts",
+      startLine: 8,
+      endLine: 10,
+      lang: "ts",
+      code: "const x = 1;",
+    });
+
+    expect(resolveClipboardCodeContext("const x = 1;")).toEqual({
+      filePath: "/tmp/demo.ts",
+      startLine: 8,
+      endLine: 10,
+      lang: "ts",
+      code: "const x = 1;",
+    });
   });
 });
