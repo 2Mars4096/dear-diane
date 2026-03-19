@@ -285,6 +285,14 @@ function formatToolProgressMessage(
         return target ? `Updated ${target}. Continuing...` : "Updated file. Continuing...";
       }
       return target ? `Failed to update ${target}. Continuing...` : "File update failed. Continuing...";
+    case "plan_graph_mutations":
+      if (phase === "running") {
+        return "Preparing workflow change preview";
+      }
+      if (phase === "success") {
+        return "Prepared workflow change preview. Review/apply when ready.";
+      }
+      return "Workflow change preview failed. Continuing...";
     default: {
       const name = humanizeToolName(toolCall.toolName);
       if (phase === "running") {

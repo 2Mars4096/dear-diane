@@ -171,6 +171,90 @@ describe("editorChat attachment helpers", () => {
     );
   });
 
+  it("forwards progress acknowledgements separately from terminal completions", () => {
+    const onProgressStatus = vi.fn();
+    const onComplete = vi.fn();
+    vi.mocked(connectChatStream).mockImplementation((_channelId, onEvent, onClose) => {
+      onEvent({
+        type: "chat_complete",
+        detected_mode: "progress_ack",
+        phase_label: "Preparing workflow change preview",
+        content: "",
+      });
+      onEvent({
+        type: "chat_complete",
+        content: "Done",
+      });
+      return {
+        close: () => {
+          onClose?.({ code: 1000 } as CloseEvent);
+        },
+      } as unknown as WebSocket;
+    });
+
+    streamEditorChatResponse(
+      {
+        message_id: "msg-progress",
+        stream_channel_id: "chat-123",
+      },
+      {
+        onProgressStatus,
+        onComplete,
+      },
+    );
+
+    expect(onProgressStatus).toHaveBeenCalledWith(
+      "Preparing workflow change preview",
+      expect.objectContaining({ detected_mode: "progress_ack" }),
+    );
+    expect(onComplete).toHaveBeenCalledWith(
+      "Done",
+      expect.objectContaining({ type: "chat_complete" }),
+    );
+  });
+
+  it("forwards non-terminal notices without ending the stream", () => {
+    const onNotice = vi.fn();
+    const onComplete = vi.fn();
+    vi.mocked(connectChatStream).mockImplementation((_channelId, onEvent, onClose) => {
+      onEvent({
+        type: "chat_notice",
+        content: "Some cited claims could not be verified.",
+        level: "warning",
+      });
+      onEvent({
+        type: "chat_complete",
+        content: "Done",
+      });
+      return {
+        close: () => {
+          onClose?.({ code: 1000 } as CloseEvent);
+        },
+      } as unknown as WebSocket;
+    });
+
+    streamEditorChatResponse(
+      {
+        message_id: "msg-notice",
+        stream_channel_id: "chat-123",
+      },
+      {
+        onNotice,
+        onComplete,
+      },
+    );
+
+    expect(onNotice).toHaveBeenCalledWith(
+      "Some cited claims could not be verified.",
+      "warning",
+      expect.objectContaining({ type: "chat_notice" }),
+    );
+    expect(onComplete).toHaveBeenCalledWith(
+      "Done",
+      expect.objectContaining({ type: "chat_complete" }),
+    );
+  });
+
   it("forwards injected messages to callers", () => {
     vi.mocked(connectChatStream).mockImplementation((_channelId, _onEvent, onClose) => {
       return {

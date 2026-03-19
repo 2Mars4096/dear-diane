@@ -93,4 +93,16 @@ describe("toolCallPresentation", () => {
     expect(result?.text).toBe('Finished web search for "oil prices 2026 outlook". Continuing...');
     expect(result?.filePath).toBeUndefined();
   });
+
+  it("uses workflow-preview wording for plan_graph_mutations", () => {
+    const result = describeLatestToolProgress([
+      {
+        id: "a",
+        toolName: "plan_graph_mutations",
+        argsPreview: '{"description":"Build workflow"}',
+        status: "running",
+      },
+    ]);
+    expect(result?.text).toBe("Preparing workflow change preview");
+  });
 });

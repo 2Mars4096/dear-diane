@@ -85,6 +85,10 @@ import { extractFileWritePaths } from "../../lib/toolCallPresentation";
 import { buildSurfaceContext } from "../../lib/contextBudget";
 import { extractImportPaths } from "../../lib/importResolver";
 import {
+  formatCodeContextForChat,
+  parseClipboardCodeContext,
+} from "../../lib/clipboardContext";
+import {
   detectProjectType,
   type ProjectDetection,
 } from "../../lib/workspaceIntelligence";
@@ -850,6 +854,21 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     }
 
     const text = e.clipboardData.getData("text/plain");
+    const html = e.clipboardData.getData("text/html");
+
+    const codeCtx = parseClipboardCodeContext(text, html || undefined);
+    if (codeCtx) {
+      e.preventDefault();
+      const formatted = formatCodeContextForChat(codeCtx);
+      setInput((prev) => {
+        const before = prev;
+        return before ? `${before}\n${formatted}` : formatted;
+      });
+      setPasteHint(null);
+      requestAnimationFrame(() => adjustTextarea(textareaRef.current));
+      return;
+    }
+
     if (/^https?:\/\/\S+$/.test(text.trim())) {
       setPasteHint({ type: "url", value: text.trim() });
       return;
@@ -864,7 +883,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     ) {
       setPasteHint({ type: "code", value: text });
     }
-  }, []);
+  }, [adjustTextarea]);
 
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     if (e.dataTransfer.types.includes("Files")) {
@@ -1525,6 +1544,16 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
               })),
             );
           },
+          onProgressStatus: (status) => {
+            if (controller.signal.aborted) return;
+            setMessages((prev) =>
+              upsertAssistantMessage(prev, assistantId, (message) => ({
+                ...message,
+                progressStatus: status || message.progressStatus,
+                progressFilePath: undefined,
+              })),
+            );
+          },
           onToolCallStart: (toolCall) => {
             if (
               toolCall.toolName === "file_write"
@@ -1567,6 +1596,18 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
                 Date.now(),
               ),
             );
+          },
+          onNotice: (content) => {
+            if (controller.signal.aborted || !content.trim()) return;
+            setMessages((prev) => [
+              ...prev,
+              {
+                id: crypto.randomUUID(),
+                role: "system",
+                content,
+                timestamp: Date.now(),
+              },
+            ]);
           },
           onChannelChange: (nextChannelId) => {
             setActiveChannelId(nextChannelId);
@@ -1976,7 +2017,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             onClick={() => setShowThreadList((prev) => !prev)}
             disabled={streaming}
             title={showThreadList ? "Back to conversation" : "Chat history"}
-            className="rounded p-1 text-gray-500 transition-colors hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-gray-300"
+            className="rounded p-1 text-gray-700 transition-colors hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-300 dark:hover:text-indigo-400"
           >
             {showThreadList ? <ArrowLeft size={14} /> : <History size={14} />}
           </button>
@@ -1984,7 +2025,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             onClick={handleNewChat}
             disabled={streaming}
             title="New chat"
-            className="rounded p-1 text-gray-500 transition-colors hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-gray-300"
+            className="rounded p-1 text-gray-700 transition-colors hover:text-indigo-600 disabled:cursor-not-allowed disabled:opacity-40 dark:text-gray-300 dark:hover:text-indigo-400"
           >
             <Plus size={14} />
           </button>

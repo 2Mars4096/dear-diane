@@ -72,6 +72,7 @@ export interface ChatStreamEvent {
   type:
     | "chat_token"
     | "chat_complete"
+    | "chat_notice"
     | "chat_queued"
     | "chat_error"
     | "chat_mutation"
@@ -88,6 +89,7 @@ export interface ChatStreamEvent {
   accumulated?: string;
   message_id?: string;
   content?: string;
+  level?: string;
   token_usage?: { prompt: number; completion: number };
   estimated_cost?: number | null;
   context_window?: number;
@@ -104,6 +106,7 @@ export interface ChatStreamEvent {
   output_preview?: string;
   duration_ms?: number;
   detected_mode?: string;
+  phase_label?: string;
   stream_channel_id?: string;
   correlation_id?: string;
   queue_position?: number;

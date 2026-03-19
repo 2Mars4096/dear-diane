@@ -1,4 +1,5 @@
 import type { ChatMessage, ChatStreamEvent } from "../types/chat";
+import { progressAckText } from "./chatProgress";
 import { safeTokenUsage, toBackendMessage } from "./chatMessagePersistence";
 import { formatInterruptedAssistantContent } from "./chatInterrupted";
 import { upsertToolCallResult, upsertToolCallStart } from "./toolCallState";
@@ -67,10 +68,16 @@ function handleEvent(stream: BackgroundStream, evt: ChatStreamEvent) {
     );
   } else if (evt.type === "chat_complete") {
     const isProgressAck = evt.detected_mode === "progress_ack";
+    const progressText = isProgressAck ? progressAckText(evt) : null;
     stream.messages = stream.messages.map((m) =>
       m.id === aid
         ? isProgressAck
-          ? { ...m, tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null }
+          ? {
+              ...m,
+              progressStatus: progressText ?? m.progressStatus,
+              progressFilePath: undefined,
+              tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
+            }
           : {
               ...m,
               content: evt.content || m.content,
@@ -155,6 +162,20 @@ function handleEvent(stream: BackgroundStream, evt: ChatStreamEvent) {
           }
         : m,
     );
+  } else if (evt.type === "chat_notice") {
+    const notice = (evt.content ?? "").trim();
+    if (notice) {
+      stream.messages = [
+        ...stream.messages,
+        {
+          id: crypto.randomUUID(),
+          role: "system",
+          content: notice,
+          timestamp: Date.now(),
+        },
+      ];
+      saveMessages(stream);
+    }
   } else if (
     evt.type === "chat_error" ||
     evt.type === "chat_interrupted"

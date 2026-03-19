@@ -112,6 +112,7 @@ import {
   resolveAttachmentName,
   sanitizeChatHistory,
 } from "../lib/editorChat";
+import { progressAckText } from "../lib/chatProgress";
 import { upsertToolCallResult, upsertToolCallStart } from "../lib/toolCallState";
 import {
   buildMessagingSettingsEventDetail,
@@ -134,6 +135,14 @@ import {
 } from "../lib/chatStreamLifecycle";
 import { formatInterruptedAssistantContent } from "../lib/chatInterrupted";
 import { deriveGraphRevisionSource, getClientGraphRevision } from "../lib/chatGraphRevision";
+import {
+  mergeRunEventPayloads,
+  recoverTerminalRunStateFromSnapshot,
+} from "../lib/runStreamRecovery";
+import {
+  formatCodeContextForChat,
+  parseClipboardCodeContext,
+} from "../lib/clipboardContext";
 
 const DEFAULT_WIDTH = 380;
 const MIN_WIDTH = 280;
@@ -1307,6 +1316,56 @@ export default function ChatPanel({
               event.code,
               runWsHadTransportError,
             );
+            const runId =
+              initialRunRef?.runId ?? parseRunIdFromStreamChannel(streamChannelId);
+            const recoveredScope = initialRunRef?.scope ?? "full";
+            if (backendState !== "unavailable" && runId) {
+              try {
+                const runInfo = await api.getRun(runId);
+                const eventResponse = await api.getRunEvents(runId).catch(() => ({
+                  events: [] as Array<Record<string, unknown>>,
+                  source: "memory" as const,
+                }));
+                const recoveredRun = recoverTerminalRunStateFromSnapshot({
+                  runInfo,
+                  rawEvents: eventResponse.events,
+                  scope: recoveredScope,
+                });
+                if (recoveredRun) {
+                  setError(null);
+                  setMessages((prev) => {
+                    const updated = prev.map((message) => {
+                      if (message.id !== assistantId) return message;
+                      const baseRunRef = message.runRef ?? initialRunRef ?? {
+                        runId,
+                        scope: recoveredScope,
+                        status: recoveredRun.status,
+                      };
+                      return {
+                        ...message,
+                        runEvents: mergeRunEventPayloads(
+                          message.runEvents,
+                          recoveredRun.runEvents,
+                        ),
+                        runRef: {
+                          ...baseRunRef,
+                          status: recoveredRun.status,
+                        },
+                      };
+                    });
+                    persistThreadMessages(
+                      capturedGraphId,
+                      activeThreadIdRef.current,
+                      updated,
+                    );
+                    return updated;
+                  });
+                  return;
+                }
+              } catch {
+                // Fall back to the generic disconnect banner below.
+              }
+            }
             const disconnectError = getStreamDisconnectError({
               closedIntentionally: runWsClosedIntentionally,
               closeCode: event.code,
@@ -1755,6 +1814,7 @@ export default function ChatPanel({
               });
             } else if (evt.type === "chat_complete") {
               const isProgressAck = evt.detected_mode === "progress_ack";
+              const progressText = isProgressAck ? progressAckText(evt) : null;
               if (evt.context_window) setContextWindow(evt.context_window);
               if (evt.detected_mode && !isProgressAck) setDetectedMode(evt.detected_mode);
               setMessages((prev) => {
@@ -1763,7 +1823,8 @@ export default function ChatPanel({
                     ? isProgressAck
                       ? {
                           ...m,
-                          progressStatus: evt.content || m.progressStatus,
+                          progressStatus: progressText || m.progressStatus,
+                          progressFilePath: undefined,
                           tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
                         }
                       : {
@@ -1997,6 +2058,19 @@ export default function ChatPanel({
               });
             } else if (evt.type === "ping") {
               // WS keepalive — no-op
+            } else if (evt.type === "chat_notice") {
+              const notice = (evt.content ?? "").trim();
+              if (notice) {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: crypto.randomUUID(),
+                    role: "system",
+                    content: notice,
+                    timestamp: Date.now(),
+                  },
+                ]);
+              }
             } else if (evt.type === "chat_error") {
               if (evt.error?.includes("revision_mismatch")) {
                 setStaleRevision(true);
@@ -2269,6 +2343,23 @@ export default function ChatPanel({
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const text = e.clipboardData.getData("text/plain");
+    const html = e.clipboardData.getData("text/html");
+
+    const codeCtx = parseClipboardCodeContext(text, html || undefined);
+    if (codeCtx) {
+      e.preventDefault();
+      const formatted = formatCodeContextForChat(codeCtx);
+      setInputText((prev) => (prev ? `${prev}\n${formatted}` : formatted));
+      setPasteHint(null);
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current;
+        if (ta) {
+          ta.style.height = "auto";
+          ta.style.height = `${Math.min(ta.scrollHeight, 160)}px`;
+        }
+      });
+      return;
+    }
 
     if (/^https?:\/\/\S+$/.test(text.trim())) {
       setPasteHint({ type: "url", value: text.trim() });
@@ -2736,7 +2827,13 @@ export default function ChatPanel({
         }
 
         const updated = messagesRef.current.map((m) =>
-          m.id === msg.id ? { ...m, mutationStatus: "applied" as const } : m,
+          m.id === msg.id
+            ? {
+                ...m,
+                mutationStatus: "applied" as const,
+                content: summarizeMutationPlan(plan),
+              }
+            : m,
         );
         setMessages(updated);
         const pastLen = useGraphStore.getState()._history.past.length;

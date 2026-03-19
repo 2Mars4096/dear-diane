@@ -1,6 +1,7 @@
 import type { ChatStreamEvent, RunEventPayload } from "../types/chat";
 import type { ChatMessageResponse } from "./api";
 import { connectChatStream } from "./api";
+import { progressAckText } from "./chatProgress";
 import { getStreamReconnectDelayMs, shouldReconnectStream } from "./chatStreamLifecycle";
 import { isElectron, nativeFs } from "./electronBridge";
 
@@ -89,6 +90,8 @@ export interface StartEditorChatOptions {
 export interface StreamEditorChatHandlers {
   onQueued?: (position: number) => void;
   onProgress?: (content: string, delta: string) => void;
+  onProgressStatus?: (status: string, event: ChatStreamEvent) => void;
+  onNotice?: (content: string, level: string, event: ChatStreamEvent) => void;
   onComplete?: (content: string, event: ChatStreamEvent | ChatMessageResponse) => void;
   onError?: (message: string) => void;
   onRunEvent?: (event: RunEventPayload) => void;
@@ -651,6 +654,15 @@ export function streamEditorChatResponse(
           return;
         }
 
+        if (event.type === "chat_notice") {
+          handlers.onNotice?.(
+            event.content ?? "",
+            event.level ?? "info",
+            event,
+          );
+          return;
+        }
+
         if (event.type === "chat_interrupted") {
           state.terminalEventSeen = true;
           if (typeof event.content === "string") {
@@ -672,7 +684,13 @@ export function streamEditorChatResponse(
         }
 
         if (event.type === "chat_complete") {
-          if (event.detected_mode === "progress_ack") return;
+          if (event.detected_mode === "progress_ack") {
+            const progressStatus = progressAckText(event);
+            if (progressStatus) {
+              handlers.onProgressStatus?.(progressStatus, event);
+            }
+            return;
+          }
           state.terminalEventSeen = true;
           if (typeof event.content === "string" && event.content) {
             accumulated = event.content;

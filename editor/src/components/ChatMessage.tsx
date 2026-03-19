@@ -514,6 +514,11 @@ function RunRefBlock({
       text: "Run failed",
       color: "text-red-600 bg-red-50 border-red-100",
     },
+    cancelled: {
+      icon: <X size={12} className="text-gray-500" />,
+      text: "Run cancelled",
+      color: "text-gray-600 bg-gray-50 border-gray-100",
+    },
   };
 
   const cfg = configs[runRef.status] ?? configs.running;
