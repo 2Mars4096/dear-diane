@@ -2,72 +2,180 @@
  * LSP Manager — manages language server lifecycle for the editor.
  *
  * HOW TO ADD A CUSTOM LANGUAGE SERVER:
- * 1. Add a ServerConfig entry to SERVER_CONFIGS with command, args, languages, and fileExtensions.
+ * 1. Add a ServerConfig entry to SERVER_CONFIGS with launch, languages, and fileExtensions.
  * 2. Add detection logic to detectAndStart():
  *    - Check for project marker files (e.g. Cargo.toml for Rust).
  *    - For system binaries (not npm-installed), use commandExists() and log an install hint if missing.
- * 3. For npm-based servers, use "npx --no-install <server> --stdio" as the command pattern.
+ * 3. For bundled Node-based servers, use a packageBin launch so the packaged app does not depend
+ *    on ambient cwd or a globally installed npm/npx.
  */
 
-import { LspClient } from "./lspClient";
+import { LspClient, type LspClientOptions } from "./lspClient";
 import { type BrowserWindow } from "electron";
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { commandExists } from "./commandExists";
 
+type LaunchSpec =
+  | {
+      type: "command";
+      command: string;
+      args: string[];
+    }
+  | {
+      type: "packageBin";
+      packageName: string;
+      binName: string;
+      args: string[];
+    };
+
 interface ServerConfig {
-  command: string;
-  args: string[];
+  launch: LaunchSpec;
   languages: string[];
   fileExtensions: string[];
 }
 
+function candidatePackageRoots(): string[] {
+  const roots = new Set<string>();
+  if (typeof __dirname === "string") {
+    roots.add(path.resolve(__dirname, ".."));
+  }
+  roots.add(process.cwd());
+  roots.add(path.resolve(process.cwd(), "editor"));
+  return Array.from(roots);
+}
+
+function resolvePackageBinPath(packageName: string, binName: string): string {
+  for (const appRoot of candidatePackageRoots()) {
+    const packageJsonPath = path.join(appRoot, "node_modules", packageName, "package.json");
+    if (!fs.existsSync(packageJsonPath)) {
+      continue;
+    }
+
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
+      bin?: string | Record<string, string>;
+    };
+    const binEntry =
+      typeof packageJson.bin === "string" ? packageJson.bin : packageJson.bin?.[binName];
+
+    if (!binEntry) {
+      throw new Error(`Package ${packageName} does not expose bin ${binName}`);
+    }
+
+    return path.resolve(path.dirname(packageJsonPath), binEntry);
+  }
+
+  throw new Error(`Could not resolve ${packageName} from the app's bundled node_modules`);
+}
+
+function workspaceCwd(rootUri: string): string | undefined {
+  try {
+    return fileURLToPath(rootUri);
+  } catch {
+    return undefined;
+  }
+}
+
+function resolveLaunch(
+  launch: LaunchSpec,
+  rootUri: string,
+): { command: string; args: string[]; options?: LspClientOptions } {
+  const cwd = workspaceCwd(rootUri);
+
+  if (launch.type === "command") {
+    return {
+      command: launch.command,
+      args: launch.args,
+      options: cwd ? { cwd } : undefined,
+    };
+  }
+
+  return {
+    command: process.execPath,
+    args: [resolvePackageBinPath(launch.packageName, launch.binName), ...launch.args],
+    options: {
+      ...(cwd ? { cwd } : {}),
+      env: { ELECTRON_RUN_AS_NODE: "1" },
+    },
+  };
+}
+
 const SERVER_CONFIGS: Record<string, ServerConfig> = {
   typescript: {
-    command: "npx",
-    args: ["--no-install", "typescript-language-server", "--stdio"],
+    launch: {
+      type: "packageBin",
+      packageName: "typescript-language-server",
+      binName: "typescript-language-server",
+      args: ["--stdio"],
+    },
     languages: ["typescript", "typescriptreact", "javascript", "javascriptreact"],
     fileExtensions: [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
   },
   python: {
-    command: "npx",
-    args: ["--no-install", "pyright-langserver", "--stdio"],
+    launch: {
+      type: "packageBin",
+      packageName: "pyright",
+      binName: "pyright-langserver",
+      args: ["--stdio"],
+    },
     languages: ["python"],
     fileExtensions: [".py", ".pyi"],
   },
   json: {
-    command: "npx",
-    args: ["--no-install", "vscode-json-language-server", "--stdio"],
+    launch: {
+      type: "packageBin",
+      packageName: "vscode-langservers-extracted",
+      binName: "vscode-json-language-server",
+      args: ["--stdio"],
+    },
     languages: ["json", "jsonc"],
     fileExtensions: [".json", ".jsonc"],
   },
   css: {
-    command: "npx",
-    args: ["--no-install", "vscode-css-language-server", "--stdio"],
+    launch: {
+      type: "packageBin",
+      packageName: "vscode-langservers-extracted",
+      binName: "vscode-css-language-server",
+      args: ["--stdio"],
+    },
     languages: ["css", "scss", "less"],
     fileExtensions: [".css", ".scss", ".less"],
   },
   html: {
-    command: "npx",
-    args: ["--no-install", "vscode-html-language-server", "--stdio"],
+    launch: {
+      type: "packageBin",
+      packageName: "vscode-langservers-extracted",
+      binName: "vscode-html-language-server",
+      args: ["--stdio"],
+    },
     languages: ["html"],
     fileExtensions: [".html", ".htm"],
   },
   go: {
-    command: "gopls",
-    args: ["serve"],
+    launch: {
+      type: "command",
+      command: "gopls",
+      args: ["serve"],
+    },
     languages: ["go"],
     fileExtensions: [".go"],
   },
   rust: {
-    command: "rust-analyzer",
-    args: [],
+    launch: {
+      type: "command",
+      command: "rust-analyzer",
+      args: [],
+    },
     languages: ["rust"],
     fileExtensions: [".rs"],
   },
   cpp: {
-    command: "clangd",
-    args: ["--background-index"],
+    launch: {
+      type: "command",
+      command: "clangd",
+      args: ["--background-index"],
+    },
     languages: ["c", "cpp"],
     fileExtensions: [".c", ".cpp", ".cc", ".h", ".hpp", ".hh"],
   },
@@ -87,13 +195,20 @@ export class LspManager {
     args: string[],
     rootUri: string,
     serverId: string,
+    options?: LspClientOptions,
   ) => LspClient;
 
   constructor(
-    clientFactory?: (command: string, args: string[], rootUri: string, serverId: string) => LspClient,
+    clientFactory?: (
+      command: string,
+      args: string[],
+      rootUri: string,
+      serverId: string,
+      options?: LspClientOptions,
+    ) => LspClient,
   ) {
-    this.clientFactory = clientFactory ?? ((command, args, rootUri, serverId) =>
-      new LspClient(command, args, rootUri, serverId));
+    this.clientFactory = clientFactory ?? ((command, args, rootUri, serverId, options) =>
+      new LspClient(command, args, rootUri, serverId, options));
   }
 
   setMainWindow(win: BrowserWindow) {
@@ -229,7 +344,21 @@ export class LspManager {
     }
 
     const startPromise = (async () => {
-      const client = this.clientFactory(config.command, config.args, rootUri, serverId);
+      let resolvedLaunch: { command: string; args: string[]; options?: LspClientOptions };
+      try {
+        resolvedLaunch = resolveLaunch(config.launch, rootUri);
+      } catch (err) {
+        console.error(`Failed to resolve LSP server ${serverId}:`, err);
+        return;
+      }
+
+      const client = this.clientFactory(
+        resolvedLaunch.command,
+        resolvedLaunch.args,
+        rootUri,
+        serverId,
+        resolvedLaunch.options,
+      );
 
       client.on("notification", (method: string, params: any) => {
         if (method === "textDocument/publishDiagnostics") {

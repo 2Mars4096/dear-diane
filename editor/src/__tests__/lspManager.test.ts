@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -96,5 +97,31 @@ describe("LspManager", () => {
         }),
       }),
     );
+  });
+
+  it("launches bundled Node-based servers without npx", async () => {
+    let launch:
+      | {
+          command: string;
+          args: string[];
+          options?: { env?: NodeJS.ProcessEnv; cwd?: string };
+        }
+      | undefined;
+
+    const manager = new LspManager((command, args, _rootUri, _serverId, options) => {
+      launch = { command, args, options };
+      return new FakeLspClient() as any;
+    });
+
+    await manager.startServer("json", "file:///workspace");
+
+    expect(launch).toBeDefined();
+    expect(launch?.command).toBe(process.execPath);
+    expect(launch?.args.at(-1)).toBe("--stdio");
+    expect(launch?.args[0]).toContain(
+      `${path.sep}node_modules${path.sep}vscode-langservers-extracted${path.sep}`,
+    );
+    expect(launch?.options?.env?.ELECTRON_RUN_AS_NODE).toBe("1");
+    expect(launch?.options?.cwd).toContain("workspace");
   });
 });

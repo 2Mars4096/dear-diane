@@ -10,6 +10,11 @@ export interface LspMessage {
   error?: any;
 }
 
+export interface LspClientOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+}
+
 const REQUEST_TIMEOUT_MS = 10_000;
 
 export class LspClient extends EventEmitter {
@@ -27,18 +32,31 @@ export class LspClient extends EventEmitter {
   private command: string;
   private args: string[];
   private rootUri: string;
+  private options: LspClientOptions;
 
-  constructor(command: string, args: string[], rootUri: string, _languageId: string) {
+  constructor(
+    command: string,
+    args: string[],
+    rootUri: string,
+    _languageId: string,
+    options?: LspClientOptions,
+  ) {
     super();
     this.command = command;
     this.args = args;
     this.rootUri = rootUri;
+    this.options = options ?? {};
   }
 
   async start(): Promise<void> {
     this.process = spawn(this.command, this.args, {
+      cwd: this.options.cwd,
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, NODE_NO_WARNINGS: "1" },
+      env: {
+        ...process.env,
+        NODE_NO_WARNINGS: "1",
+        ...(this.options.env ?? {}),
+      },
     });
 
     this.process.stdout!.on("data", (chunk: Buffer) => this.handleData(chunk));
