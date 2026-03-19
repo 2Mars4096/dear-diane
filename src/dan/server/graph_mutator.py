@@ -585,6 +585,11 @@ def _recompute_entry_exit_points(graph: dict[str, Any]) -> None:
     graph["exit_points"] = [n["id"] for n in nodes if n["id"] not in has_outgoing]
 
 
+def _refresh_entry_exit(graph: dict[str, Any]) -> None:
+    """Backward-compatible wrapper for inferring graph entry/exit points."""
+    _recompute_entry_exit_points(graph)
+
+
 def _ensure_subgraph(graph: dict[str, Any], parent_id: str, body_nodes: list[dict], body_edges: list[dict], entry_ids: list[str], exit_ids: list[str]) -> str:
     """Create a sub-graph entry in graph['sub_graphs'] for a control-flow node.
     Returns the sub_graph key."""
