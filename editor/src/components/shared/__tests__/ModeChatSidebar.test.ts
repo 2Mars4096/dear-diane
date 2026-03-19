@@ -121,7 +121,7 @@ describe("ModeChatSidebar", () => {
     vi.stubGlobal(
       "requestAnimationFrame",
       ((callback: FrameRequestCallback) =>
-        setTimeout(() => callback(0), 0)) as typeof requestAnimationFrame,
+        setTimeout(() => callback(0), 0)) as unknown as typeof requestAnimationFrame,
     );
     vi.stubGlobal(
       "cancelAnimationFrame",
