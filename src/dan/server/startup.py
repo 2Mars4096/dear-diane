@@ -592,8 +592,15 @@ async def init_capabilities(state: AppState) -> None:
 
 async def init_managers(state: AppState) -> None:
     """Phase 4: create MentionResolver, load memory subsystems, create ChatManager."""
+    import time as _time
+    _p4_t0 = _time.perf_counter()
+
+    def _p4_ms() -> str:
+        return f"{(_time.perf_counter() - _p4_t0) * 1000:.0f}ms"
+
     from dan.server.chat_manager import ChatManager
     from dan.server.mention_resolver import CodeResolver, MentionResolver
+    logger.debug("  phase 4 sub: imports done [%s]", _p4_ms())
 
     workspace_root = os.environ.get("DAN_WORKSPACE_ROOT", os.getcwd())
     state.mention_resolver = MentionResolver(
@@ -618,11 +625,13 @@ async def init_managers(state: AppState) -> None:
         state.conversation_memory = ConversationMemoryStore()
     except Exception:
         logger.debug("Conversation memory load skipped", exc_info=True)
+    logger.debug("  phase 4 sub: memory stores loaded [%s]", _p4_ms())
 
-    # Memory kernel
+    # Memory kernel — constructor is fast; import_profile / import_all are
+    # deferred to a background task because they scan the full conversation
+    # history and can take 30+ seconds on a well-used installation.
     state.memory_kernel = None
     try:
-        from dan.engine.memory_adapters import ConversationAdapter, ProfileAdapter
         from dan.engine.memory_kernel import DualWriteAdapter, MemoryKernel
 
         state.memory_kernel = MemoryKernel(
@@ -631,31 +640,56 @@ async def init_managers(state: AppState) -> None:
                 user_profile=state.user_profile,
             )
         )
-        if state.user_profile:
-            imported = ProfileAdapter.import_profile(
-                state.user_profile, state.memory_kernel
-            )
-            if imported:
-                logger.debug(
-                    "Imported %d profile items into memory kernel", imported
-                )
-        if state.conversation_memory:
-            imported = ConversationAdapter.import_all(
-                state.conversation_memory, state.memory_kernel
-            )
-            if imported:
-                logger.debug(
-                    "Imported %d conversation items into memory kernel", imported
-                )
     except Exception:
         logger.debug("Memory kernel load skipped", exc_info=True)
+
+    if state.memory_kernel is not None:
+        def _sync_memory_kernel_import() -> None:
+            """Run in a thread so the blocking I/O doesn't stall the event loop."""
+            try:
+                from dan.engine.memory_adapters import (
+                    ConversationAdapter,
+                    ProfileAdapter,
+                )
+
+                if state.user_profile:
+                    p_imported = ProfileAdapter.import_profile(
+                        state.user_profile, state.memory_kernel,
+                    )
+                    if p_imported:
+                        logger.debug(
+                            "Imported %d profile items into memory kernel",
+                            p_imported,
+                        )
+                if state.conversation_memory:
+                    c_imported = ConversationAdapter.import_all(
+                        state.conversation_memory, state.memory_kernel,
+                    )
+                    if c_imported:
+                        logger.debug(
+                            "Imported %d conversation items into memory kernel",
+                            c_imported,
+                        )
+            except Exception:
+                logger.debug(
+                    "Deferred memory kernel import failed", exc_info=True,
+                )
+
+        asyncio.create_task(
+            asyncio.to_thread(_sync_memory_kernel_import),
+            name="deferred-memory-kernel-import",
+        )
+    logger.debug("  phase 4 sub: memory kernel done [%s]", _p4_ms())
 
     if state.memory_kernel is not None and state.run_manager is not None:
         state.run_manager._memory_kernel = state.memory_kernel
         state.run_manager._config.memory_kernel = state.memory_kernel
 
+    _provider_registry = _build_chat_provider_registry()
+    logger.debug("  phase 4 sub: provider registry built [%s]", _p4_ms())
+
     state.chat_manager = ChatManager(
-        provider_registry=_build_chat_provider_registry(),
+        provider_registry=_provider_registry,
         graph_store=state.graph_store,
         mention_resolver=state.mention_resolver,
         chat_store=state.chat_store,
@@ -666,6 +700,7 @@ async def init_managers(state: AppState) -> None:
         memory_kernel=state.memory_kernel,
         telemetry_store=state.telemetry_store,
     )
+    logger.debug("  phase 4 sub: ChatManager created [%s]", _p4_ms())
 
     state.capability_context.chat_manager = state.chat_manager
 
