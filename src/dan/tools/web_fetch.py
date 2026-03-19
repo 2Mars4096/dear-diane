@@ -13,6 +13,8 @@ from typing import Any
 
 import httpx
 
+from dan.server.search_models import canonicalize_search_url
+
 _DEFAULT_CACHE_TTL_SECONDS = 900.0
 _DEFAULT_USER_AGENT = "Mozilla/5.0 (compatible; deep-agent-network/0.1; +https://github.com/deep-agent-network)"
 _FETCH_CACHE: dict[tuple[str, int, int], tuple[float, dict[str, Any]]] = {}
@@ -101,7 +103,8 @@ def _fetch_user_agent() -> str:
 
 
 def _fetch_cache_key(url: str, timeout: int, max_length: int) -> tuple[str, int, int]:
-    return url.strip(), int(timeout), int(max_length)
+    normalized_url = canonicalize_search_url(url) or url.strip()
+    return normalized_url, int(timeout), int(max_length)
 
 
 def _get_cached_fetch(key: tuple[str, int, int]) -> dict[str, Any] | None:

@@ -23,6 +23,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from dan.server.search_models import CitationRecord, CitationVerification, SearchResult
+
 logger = logging.getLogger(__name__)
 
 _SECRET_PATTERN = re.compile(
@@ -91,6 +93,9 @@ class ToolCallRecord(BaseModel):
     duration_ms: int = 0
     source_urls: list[str] = Field(default_factory=list)
     source_files: list[str] = Field(default_factory=list)
+    search_results: list[SearchResult] = Field(default_factory=list)
+    citations: list[CitationRecord] = Field(default_factory=list)
+    citation_verifications: list[CitationVerification] = Field(default_factory=list)
 
 
 class ChatAuditRecord(BaseModel):
@@ -118,6 +123,9 @@ class ChatAuditRecord(BaseModel):
 
     assistant_message: str = ""
     cited_sources: list[str] = Field(default_factory=list)
+    search_results: list[SearchResult] = Field(default_factory=list)
+    citations: list[CitationRecord] = Field(default_factory=list)
+    citation_verifications: list[CitationVerification] = Field(default_factory=list)
 
     memory_item_ids: list[str] = Field(default_factory=list)
 
@@ -128,6 +136,39 @@ class ChatAuditRecord(BaseModel):
         payload["user_message"] = _redact_text(self.user_message)
         payload["assistant_message"] = _redact_text(self.assistant_message)
         payload["cited_sources"] = [_redact_text(s) for s in self.cited_sources]
+        payload["search_results"] = [
+            SearchResult.model_validate({
+                **result.model_dump(mode="python"),
+                "title": _redact_text(result.title),
+                "url": _redact_text(result.url),
+                "snippet": _redact_text(result.snippet),
+                "fetched_content": _redact_text(result.fetched_content or "")
+                if result.fetched_content is not None
+                else None,
+            }).model_dump(mode="python")
+            for result in self.search_results
+        ]
+        payload["citations"] = [
+            CitationRecord.model_validate({
+                **citation.model_dump(mode="python"),
+                "claim_text": _redact_text(citation.claim_text),
+                "source_url": _redact_text(citation.source_url),
+                "cited_excerpt": _redact_text(citation.cited_excerpt),
+            }).model_dump(mode="python")
+            for citation in self.citations
+        ]
+        payload["citation_verifications"] = [
+            CitationVerification.model_validate({
+                **verification.model_dump(mode="python"),
+                "claim_text": _redact_text(verification.claim_text),
+                "source_url": _redact_text(verification.source_url),
+                "source_excerpt_match": _redact_text(verification.source_excerpt_match or "")
+                if verification.source_excerpt_match is not None
+                else None,
+                "reason": _redact_text(verification.reason),
+            }).model_dump(mode="python")
+            for verification in self.citation_verifications
+        ]
         payload["tool_calls"] = [
             ToolCallRecord.model_validate(
                 {
@@ -138,6 +179,39 @@ class ChatAuditRecord(BaseModel):
                     "duration_ms": tc.duration_ms,
                     "source_urls": [_redact_text(u) for u in tc.source_urls],
                     "source_files": [_redact_text(p) for p in tc.source_files],
+                    "search_results": [
+                        SearchResult.model_validate({
+                            **result.model_dump(mode="python"),
+                            "title": _redact_text(result.title),
+                            "url": _redact_text(result.url),
+                            "snippet": _redact_text(result.snippet),
+                            "fetched_content": _redact_text(result.fetched_content or "")
+                            if result.fetched_content is not None
+                            else None,
+                        }).model_dump(mode="python")
+                        for result in tc.search_results
+                    ],
+                    "citations": [
+                        CitationRecord.model_validate({
+                            **citation.model_dump(mode="python"),
+                            "claim_text": _redact_text(citation.claim_text),
+                            "source_url": _redact_text(citation.source_url),
+                            "cited_excerpt": _redact_text(citation.cited_excerpt),
+                        }).model_dump(mode="python")
+                        for citation in tc.citations
+                    ],
+                    "citation_verifications": [
+                        CitationVerification.model_validate({
+                            **verification.model_dump(mode="python"),
+                            "claim_text": _redact_text(verification.claim_text),
+                            "source_url": _redact_text(verification.source_url),
+                            "source_excerpt_match": _redact_text(verification.source_excerpt_match or "")
+                            if verification.source_excerpt_match is not None
+                            else None,
+                            "reason": _redact_text(verification.reason),
+                        }).model_dump(mode="python")
+                        for verification in tc.citation_verifications
+                    ],
                 }
             ).model_dump(mode="python")
             for tc in self.tool_calls

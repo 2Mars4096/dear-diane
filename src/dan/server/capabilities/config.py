@@ -8,8 +8,9 @@ from typing import Any
 from dan.server.capability_registry import CapabilityContext, CapabilityResult
 
 _CONFIGURABLE_PREFIXES = (
-    "DAN_SMTP_", "DAN_BRAVE_API_KEY", "DAN_TAVILY_API_KEY",
+    "DAN_SMTP_", "DAN_BRAVE_API_KEY", "DAN_TAVILY_API_KEY", "DAN_SERPER_API_KEY",
     "DAN_GOOGLE_API_KEY", "DAN_ANTHROPIC_API_KEY", "DAN_OPENAI_API_KEY",
+    "DAN_SEARCH_",
     "DAN_STATA_", "DAN_MCP_", "DAN_TOOL_", "DAN_PATH_",
     "DAN_LLM_MODEL", "DAN_CHAT_MODEL", "DAN_LLM_BASE_URL",
     "DAN_BOT_NAME", "DAN_ENABLE_TIER_POLICY", "DAN_FULL_TOOLS",
