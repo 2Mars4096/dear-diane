@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import heapq
 import hashlib
 import json
@@ -25,7 +26,37 @@ from dan.engine.context_runtime import (
     resolve_reference,
 )
 from dan.engine.events import EngineEvent, EventType
+from dan.engine.runtime_composition import (
+    RuntimeCompositionError,
+    dynamic_topology_enabled,
+    invoke_child_workflow,
+)
 from dan.engine.executor import EngineConfig, ExecutionContext, ExecutorRegistry, NodeResult
+from dan.engine.runtime_policy import (
+    EffectiveRunPolicy,
+    RunPhase,
+    RunPolicy,
+    StopReason,
+    is_critical_checkpoint_node,
+    progress_snapshot,
+    resolve_effective_run_policy,
+    stable_invocation_key,
+)
+from dan.engine.runtime_repair import (
+    RuntimeFailureContext,
+    RuntimeRepairAttempt,
+    RuntimeRepairKind,
+    apply_pending_overlay,
+    build_runtime_error_record,
+    classify_runtime_failure,
+    clear_pending_overlays,
+    failure_signature,
+    overlay_patch_for_node,
+    plan_runtime_repair,
+    record_repair_attempt,
+    repair_summary_for_node,
+    runtime_self_healing_enabled,
+)
 from dan.engine.memory import MemoryEntry, MemoryScope, MemoryWriteRequest
 from dan.engine.memory_store import FileSystemMemoryStore, MemoryStore, NullMemoryStore
 from dan.engine.state import ExecutionState, NodeStatus
@@ -292,6 +323,7 @@ class Engine:
         event_callback: EventCallback | None = None,
         memory_store: MemoryStore | None = None,
         human_renderer: "HumanRenderer | None" = None,
+        workflow_loader: Callable[[str], Any | None] | None = None,
     ) -> None:
         from dan.engine.executor import HumanRenderer as _HR  # noqa: F811
         self.config = config or EngineConfig()
@@ -299,6 +331,7 @@ class Engine:
         self.human_input_callback = human_input_callback
         self.human_renderer: _HR | None = human_renderer
         self.event_callback = event_callback
+        self.workflow_loader = workflow_loader or getattr(self.config, "workflow_loader", None)
 
         if checkpoint_store is not None:
             self.checkpoint_store: CheckpointStore | None = checkpoint_store
@@ -325,6 +358,7 @@ class Engine:
         self.provider_registry = self._build_provider_registry()
         self.embedding_registry = self._build_embedding_registry()
         self._register_defaults()
+        self._active_run_states: dict[str, ExecutionState] = {}
 
     def _build_provider_registry(self):
         """Create the ProviderRegistry from engine config."""
@@ -618,6 +652,7 @@ class Engine:
         run_id: str | None = None,
         session_id: str | None = None,
         workflow_id: str | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> RunResult:
         """Execute *graph* from entry points to exit points.
 
@@ -650,10 +685,14 @@ class Engine:
         if inputs:
             self._inject_inputs(state, graph, inputs)
 
-        return await self._execute(
-            graph, state, shared_context, artifacts, local_state,
-            session_id=session_id, workflow_id=workflow_id,
-        )
+        try:
+            return await self._execute(
+                graph, state, shared_context, artifacts, local_state,
+                session_id=session_id, workflow_id=workflow_id,
+                run_policy=run_policy,
+            )
+        finally:
+            self._active_run_states.pop(state.run_id, None)
 
     async def resume(
         self,
@@ -661,6 +700,7 @@ class Engine:
         run_id: str,
         session_id: str | None = None,
         workflow_id: str | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> RunResult:
         """Resume a previously checkpointed run."""
         if self.checkpoint_store is None:
@@ -690,11 +730,52 @@ class Engine:
         local_state = LocalStateManager()
         local_state.restore(checkpoint.get("local_state", {}))
 
-        return await self._execute(
-            graph, state, shared_context, artifacts, local_state,
-            session_id=session_id, workflow_id=workflow_id,
-            cost_tracker_state=checkpoint.get("cost_tracker"),
+        try:
+            return await self._execute(
+                graph, state, shared_context, artifacts, local_state,
+                session_id=session_id, workflow_id=workflow_id,
+                cost_tracker_state=checkpoint.get("cost_tracker"),
+                run_policy=run_policy,
+                persisted_run_policy=(checkpoint.get("checkpoint_data", {}) or {}).get("effective_run_policy"),
+            )
+        finally:
+            self._active_run_states.pop(state.run_id, None)
+
+    async def queue_pending_overlay(
+        self,
+        run_id: str,
+        node_id: str,
+        patch: dict[str, Any],
+        *,
+        source: str = "user",
+        reason: str = "",
+    ) -> bool:
+        """Apply an execution-local overlay to a currently pending node."""
+
+        state = self._active_run_states.get(run_id)
+        if state is None:
+            return False
+        status = state.node_statuses.get(node_id)
+        if status not in (NodeStatus.PENDING, NodeStatus.WAITING):
+            return False
+
+        from dan.engine.runtime_repair import RuntimeOverlay
+
+        overlay = RuntimeOverlay(
+            node_id=node_id,
+            patch=dict(patch),
+            source=source,
+            reason=reason,
+            provenance={"external_request": True},
         )
+        apply_pending_overlay(state, overlay)
+        await self._emit(EngineEvent(
+            event_type=EventType.NODE_OVERLAY_APPLIED,
+            run_id=run_id,
+            node_id=node_id,
+            data={"overlay": overlay.model_dump()},
+        ))
+        return True
 
     # ------------------------------------------------------------------
     # Internal scheduling
@@ -803,6 +884,8 @@ class Engine:
         *,
         node_ids: set[str] | None = None,
         on_node_finished: Callable[[str], Awaitable[None]] | None = None,
+        before_dispatch: Callable[[list[str], list[str]], Awaitable[bool]] | None = None,
+        on_progress: Callable[[list[str], list[str]], Awaitable[None]] | None = None,
         excluded_edge_ids: set[str] | None = None,
     ) -> None:
         """Execute acyclic graph regions eagerly as dependencies complete."""
@@ -817,7 +900,14 @@ class Engine:
         active: dict[str, asyncio.Task[None]] = {}
 
         while ready or active:
+            if on_progress is not None:
+                await on_progress(sorted(ready), sorted(active))
             while ready:
+                if before_dispatch is not None:
+                    should_continue = await before_dispatch(sorted(ready), sorted(active))
+                    if not should_continue:
+                        ready.clear()
+                        break
                 node_id = heapq.heappop(ready)
                 queued.discard(node_id)
                 if state.node_statuses.get(node_id) != NodeStatus.PENDING or node_id in active:
@@ -877,10 +967,26 @@ class Engine:
         session_id: str | None = None,
         workflow_id: str | None = None,
         cost_tracker_state: dict | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
+        persisted_run_policy: dict[str, Any] | None = None,
     ) -> RunResult:
         """Core scheduling loop: dispatch ready nodes, checkpoint, repeat."""
         run_start = _time.time()
+        run_start_monotonic = _time.monotonic()
         memory_writes: list[MemoryWriteRequest] = []
+        self._active_run_states[state.run_id] = state
+        effective_run_policy = resolve_effective_run_policy(
+            self.config,
+            run_policy,
+            persisted=persisted_run_policy,
+        )
+        state.run_state["effective_run_policy"] = effective_run_policy.snapshot()
+        state.run_state["phase"] = RunPhase.ACTIVE.value
+        if not state.run_state.get("resume_notes"):
+            state.run_state["resume_notes"] = [
+                "Subgraphs resume from their entry boundary.",
+                "Dynamic child workflows replay from their invocation boundary.",
+            ]
 
         short_term_mem = None
         if self.config.memory_pipeline_enabled:
@@ -890,7 +996,11 @@ class Engine:
         await self._emit(EngineEvent(
             event_type=EventType.RUN_STARTED,
             run_id=state.run_id,
-            data={"node_count": len(graph.nodes)},
+            data={
+                "node_count": len(graph.nodes),
+                "run_policy": effective_run_policy.snapshot(),
+                "phase": RunPhase.ACTIVE.value,
+            },
         ))
 
         # -- 15-1 + 17-3: Hyperedge resolver with self-evolving rules ----------
@@ -951,9 +1061,19 @@ class Engine:
         from dan.providers.cost_tracker import CostTracker
         from dan.providers.model_selector import ModelSelector
 
+        effective_run_budget = (
+            effective_run_policy.max_cost
+            if effective_run_policy.max_cost is not None
+            else self.config.run_budget
+        )
+        budget_action = (
+            "warn"
+            if effective_run_policy.max_cost is not None
+            else self.config.on_budget_exceeded
+        )
         cost_tracker = CostTracker(
-            run_budget=self.config.run_budget,
-            on_budget_exceeded=self.config.on_budget_exceeded,
+            run_budget=effective_run_budget,
+            on_budget_exceeded=budget_action,
         )
         if cost_tracker_state is not None:
             cost_tracker.restore(cost_tracker_state)
@@ -1016,6 +1136,8 @@ class Engine:
             tier_tracker=getattr(self.config, "tier_tracker", None),
             node_semaphore=node_sem,
             llm_semaphore=llm_sem,
+            run_policy=effective_run_policy,
+            runtime_repair_enabled=runtime_self_healing_enabled(self.config),
         )
         context._node_result_cache = node_result_cache
         context._semantic_cache = semantic_cache
@@ -1033,8 +1155,73 @@ class Engine:
         checkpoint_task: asyncio.Task[None] | None = None
         completed_since_checkpoint = 0
         last_checkpoint_at = _time.monotonic()
-        checkpoint_batch_size = self._checkpoint_batch_size()
-        checkpoint_interval_sec = self._checkpoint_interval_sec()
+        checkpoint_batch_size = max(1, int(effective_run_policy.checkpoint_batch_size))
+        checkpoint_interval_sec = max(0.1, float(effective_run_policy.checkpoint_interval_sec))
+        limit_stop_reason: StopReason = StopReason.NONE
+        limit_stop_requested = False
+
+        async def _emit_progress(
+            ready_node_ids: list[str] | None = None,
+            active_node_ids: list[str] | None = None,
+        ) -> None:
+            if not effective_run_policy.progress_enabled:
+                return
+            snapshot = progress_snapshot(
+                graph,
+                state,
+                elapsed_seconds=_time.monotonic() - run_start_monotonic,
+                ready_node_ids=ready_node_ids,
+                active_node_ids=active_node_ids,
+            )
+            if not effective_run_policy.progress_stage_labels:
+                snapshot["stage_label"] = ""
+            if not effective_run_policy.progress_eta_enabled:
+                snapshot["eta_seconds"] = None
+            state.run_state["progress"] = snapshot
+            if effective_run_policy.progress_emit_events:
+                await self._emit(EngineEvent(
+                    event_type=EventType.RUN_PROGRESS,
+                    run_id=state.run_id,
+                    data={
+                        **snapshot,
+                        "phase": state.run_state.get("phase", RunPhase.ACTIVE.value),
+                    },
+                ))
+
+        async def _mark_limit_stop(reason: StopReason) -> None:
+            nonlocal limit_stop_reason, limit_stop_requested
+            if limit_stop_requested:
+                return
+            limit_stop_requested = True
+            limit_stop_reason = reason
+            state.run_state["phase"] = RunPhase.STOPPING_ON_LIMIT.value
+            state.run_state["stop_reason"] = reason.value
+            state.run_state["partial"] = True
+            state.run_state["resumable"] = bool(self.checkpoint_store is not None)
+            await self._emit(EngineEvent(
+                event_type=EventType.RUN_LIMIT_REACHED,
+                run_id=state.run_id,
+                data={
+                    "stop_reason": reason.value,
+                    "elapsed_seconds": round(_time.monotonic() - run_start_monotonic, 3),
+                    "total_cost": round(cost_tracker.total_cost(), 6),
+                },
+            ))
+            await _emit_progress()
+            await _maybe_checkpoint(reason.value, force=True)
+
+        async def _check_run_limits() -> bool:
+            if limit_stop_requested:
+                return True
+            max_duration = effective_run_policy.max_duration
+            if max_duration is not None and (_time.monotonic() - run_start_monotonic) >= max_duration:
+                await _mark_limit_stop(StopReason.DURATION_LIMIT)
+                return True
+            max_cost = effective_run_policy.max_cost
+            if max_cost is not None and cost_tracker.total_cost() >= max_cost:
+                await _mark_limit_stop(StopReason.COST_LIMIT)
+                return True
+            return False
 
         async def _await_checkpoint_task() -> None:
             nonlocal checkpoint_task
@@ -1077,6 +1264,29 @@ class Engine:
             )
             completed_since_checkpoint = 0
             last_checkpoint_at = _time.monotonic()
+            state.run_state["latest_checkpoint_trigger"] = trigger
+            state.run_state["latest_checkpoint_timestamp"] = checkpoint.get("checkpoint_data", {}).get("timestamp")
+
+        async def _before_dispatch(ready_node_ids: list[str], active_node_ids: list[str]) -> bool:
+            await _emit_progress(ready_node_ids, active_node_ids)
+            return not await _check_run_limits()
+
+        async def _on_node_finished(node_id: str) -> None:
+            node = graph.node_by_id(node_id)
+            trigger = ""
+            if node is not None and is_critical_checkpoint_node(node, effective_run_policy):
+                trigger = "critical_node"
+            elif getattr(node, "node_type", None) in {"human", "human_in_the_loop"}:
+                trigger = "human_input"
+            elif isinstance(state.node_metadata.get(node_id), dict) and state.node_metadata[node_id].get("halt"):
+                trigger = "halt"
+
+            if trigger:
+                await _maybe_checkpoint(trigger, force=True)
+            else:
+                await _maybe_checkpoint(node_id, force=False)
+            await _emit_progress()
+            await _check_run_limits()
 
         if not back_edges:
             if eager_dispatch:
@@ -1084,22 +1294,30 @@ class Engine:
                     graph,
                     state,
                     context,
-                    on_node_finished=_maybe_checkpoint,
+                    on_node_finished=_on_node_finished,
+                    before_dispatch=_before_dispatch,
+                    on_progress=_emit_progress,
                 )
-                if self._check_halt(state):
+                if limit_stop_requested:
+                    await _maybe_checkpoint(limit_stop_reason.value, force=True)
+                elif self._check_halt(state):
                     await _maybe_checkpoint("halt", force=True)
                 else:
                     await _maybe_checkpoint("run_end", force=True)
                 await _await_checkpoint_task()
             else:
                 for level in levels:
+                    if await _check_run_limits():
+                        break
                     ready = [
                         nid for nid in level
                         if state.node_statuses.get(nid) == NodeStatus.PENDING
                     ]
                     if not ready:
+                        await _emit_progress()
                         continue
 
+                    await _emit_progress(ready, [])
                     tasks = [
                         self._guarded_execute_node(nid, graph, state, context)
                         for nid in ready
@@ -1112,13 +1330,26 @@ class Engine:
                     if self.checkpoint_store is not None:
                         await self._save_checkpoint(
                             state, shared_context, artifacts, local_state,
+                            cost_tracker=cost_tracker,
                             graph=graph, graph_id=workflow_id or "", checkpoint_trigger="level",
                         )
+
+                    if await _check_run_limits():
+                        if self.checkpoint_store is not None:
+                            await self._save_checkpoint(
+                                state, shared_context, artifacts, local_state,
+                                cost_tracker=cost_tracker,
+                                graph=graph,
+                                graph_id=workflow_id or "",
+                                checkpoint_trigger=limit_stop_reason.value,
+                            )
+                        break
 
                     if self._check_halt(state):
                         if self.checkpoint_store is not None:
                             await self._save_checkpoint(
                                 state, shared_context, artifacts, local_state,
+                                cost_tracker=cost_tracker,
                                 graph=graph, graph_id=workflow_id or "", checkpoint_trigger="halt",
                             )
                         break
@@ -1128,11 +1359,40 @@ class Engine:
                 shared_context, artifacts, local_state,
                 cost_tracker=cost_tracker,
                 graph_id=workflow_id or "",
+                before_dispatch=_before_dispatch,
+                on_node_finished=_on_node_finished,
+                on_progress=_emit_progress,
+                limit_checker=_check_run_limits,
             )
 
         await self._flush_memory_writes(
             context, workflow_id, session_id, state.run_id,
         )
+        if limit_stop_requested:
+            state.run_state["phase"] = (
+                RunPhase.RESUMABLE.value
+                if self.checkpoint_store is not None
+                else RunPhase.PARTIAL.value
+            )
+            state.run_state["partial"] = True
+            state.run_state["resumable"] = bool(self.checkpoint_store is not None)
+            state.run_state["stop_reason"] = limit_stop_reason.value
+            await _emit_progress()
+            await _maybe_checkpoint(limit_stop_reason.value, force=True)
+            await _await_checkpoint_task()
+        elif self._check_halt(state):
+            state.run_state["phase"] = RunPhase.PAUSED.value
+            state.run_state["stop_reason"] = StopReason.HALT.value
+            state.run_state["partial"] = True
+            state.run_state["resumable"] = bool(self.checkpoint_store is not None)
+            await _emit_progress()
+        else:
+            state.run_state["phase"] = (
+                RunPhase.FAILED.value
+                if any(s == NodeStatus.FAILED for s in state.node_statuses.values())
+                else RunPhase.COMPLETED.value
+            )
+            await _emit_progress()
         result = self._build_result(graph, state)
         result.metadata["__run_cache__"] = {
             "memoization": node_result_cache.stats(),
@@ -1180,10 +1440,15 @@ class Engine:
                 "success": result.success,
                 "errors": result.errors,
                 "elapsed_seconds": elapsed,
+                "phase": state.run_state.get("phase", RunPhase.ACTIVE.value),
+                "stop_reason": state.run_state.get("stop_reason", ""),
+                "partial": bool(state.run_state.get("partial", False)),
+                "resumable": bool(state.run_state.get("resumable", False)),
                 "cache_stats": result.metadata["__run_cache__"],
                 **total_usage,
             },
         ))
+        self._active_run_states.pop(state.run_id, None)
         return result
 
     async def _guarded_execute_node(
@@ -1215,6 +1480,10 @@ class Engine:
         *,
         skip_checkpoint: bool = False,
         graph_id: str = "",
+        before_dispatch: Callable[[list[str], list[str]], Awaitable[bool]] | None = None,
+        on_node_finished: Callable[[str], Awaitable[None]] | None = None,
+        on_progress: Callable[[list[str], list[str]], Awaitable[None]] | None = None,
+        limit_checker: Callable[[], Awaitable[bool]] | None = None,
     ) -> None:
         """Execute graph with cycle regions handled via bounded iteration."""
         if self._use_eager_dispatch():
@@ -1331,7 +1600,14 @@ class Engine:
                 )
 
             while ready or active or cycle_tasks:
+                if on_progress is not None:
+                    await on_progress(sorted(ready), sorted(active))
                 while ready:
+                    if before_dispatch is not None:
+                        should_continue = await before_dispatch(sorted(ready), sorted(active))
+                        if not should_continue:
+                            ready.clear()
+                            break
                     node_id = heapq.heappop(ready)
                     queued.discard(node_id)
                     if state.node_statuses.get(node_id) != NodeStatus.PENDING or node_id in active:
@@ -1393,6 +1669,9 @@ class Engine:
                             heapq.heappush(ready, dep)
                             queued.add(dep)
 
+                    if on_node_finished is not None:
+                        await on_node_finished(node_id)
+
                     if self._check_halt(state):
                         for pending_task in active.values():
                             pending_task.cancel()
@@ -1429,6 +1708,20 @@ class Engine:
                             heapq.heappush(ready, dep)
                             queued.add(dep)
 
+                    if limit_checker is not None and await limit_checker():
+                        for pending_task in active.values():
+                            pending_task.cancel()
+                        for pending_task in cycle_tasks.values():
+                            pending_task.cancel()
+                        if active or cycle_tasks:
+                            await asyncio.gather(
+                                *active.values(),
+                                *cycle_tasks.values(),
+                                return_exceptions=True,
+                            )
+                        await _checkpoint(state.run_state.get("stop_reason", "halt"))
+                        return
+
                     if self._check_halt(state):
                         for pending_task in active.values():
                             pending_task.cancel()
@@ -1449,18 +1742,28 @@ class Engine:
         executed_gates: set[str] = set()
 
         for level in levels:
+            if limit_checker is not None and await limit_checker():
+                break
             ready = [
                 nid for nid in level
                 if state.node_statuses.get(nid) == NodeStatus.PENDING
             ]
             if not ready:
+                if on_progress is not None:
+                    await on_progress([], [])
                 continue
 
+            if on_progress is not None:
+                await on_progress(ready, [])
             tasks = [
                 self._guarded_execute_node(nid, graph, state, context)
                 for nid in ready
             ]
             await asyncio.gather(*tasks)
+
+            if on_node_finished is not None:
+                for nid in ready:
+                    await on_node_finished(nid)
 
             if self._check_halt(state):
                 if not skip_checkpoint and self.checkpoint_store is not None:
@@ -1517,6 +1820,15 @@ class Engine:
                                 checkpoint_trigger="cycle_boundary",
                             )
                         executed_gates.add(nid)
+
+            if limit_checker is not None and await limit_checker():
+                if not skip_checkpoint and self.checkpoint_store is not None:
+                    await self._save_checkpoint(
+                        state, shared_context, artifacts, local_state,
+                        cost_tracker=cost_tracker,
+                        graph=graph, graph_id=graph_id, checkpoint_trigger=state.run_state.get("stop_reason", "halt"),
+                    )
+                break
 
             if not skip_checkpoint and self.checkpoint_store is not None:
                 await self._save_checkpoint(
@@ -1669,6 +1981,34 @@ class Engine:
             if has_state_schema:
                 context.active_loop_scope_id = None
 
+    @staticmethod
+    def _materialize_node_for_execution(
+        node: Any,
+        state: ExecutionState,
+        context: ExecutionContext,
+    ) -> Any:
+        """Apply run-policy defaults and pending overlays without mutating the graph."""
+
+        updates: dict[str, Any] = {}
+        run_policy = getattr(context, "run_policy", None)
+
+        if run_policy is not None:
+            if getattr(node, "retry_policy", None) is None and getattr(run_policy, "default_retry_policy", None) is not None:
+                updates["retry_policy"] = run_policy.default_retry_policy.model_copy(deep=True)
+            if hasattr(node, "failure_policy") and getattr(node, "failure_policy", None) is None and getattr(run_policy, "default_failure_policy", None) is not None:
+                updates["failure_policy"] = copy.deepcopy(run_policy.default_failure_policy)
+            if hasattr(node, "model_policy") and getattr(node, "model_policy", None) is None and getattr(run_policy, "default_model_policy", None) is not None:
+                updates["model_policy"] = copy.deepcopy(run_policy.default_model_policy)
+
+        overlay_patch = overlay_patch_for_node(state, getattr(node, "id", ""))
+        if overlay_patch:
+            for key, value in overlay_patch.items():
+                updates[key] = copy.deepcopy(value)
+
+        if not updates:
+            return node
+        return node.model_copy(update=updates, deep=True)
+
     async def _execute_node(
         self,
         node_id: str,
@@ -1688,6 +2028,8 @@ class Engine:
             return
 
         node_type_str = getattr(node, "node_type", None)
+        node = self._materialize_node_for_execution(node, state, context)
+        node_type_str = getattr(node, "node_type", node_type_str)
 
         if self._should_skip(node_id, graph, state):
             state.mark(node_id, NodeStatus.SKIPPED)
@@ -2052,6 +2394,10 @@ class Engine:
                     },
                 ))
 
+        if not isinstance(result.metadata, dict):
+            result.metadata = {}
+        result.metadata.setdefault("elapsed_seconds", round(_time.time() - _node_start_time, 3))
+
         if getattr(context, "state_store", None) is not None:
             usage = (
                 result.metadata.get("usage", {})
@@ -2091,6 +2437,118 @@ class Engine:
                 ))
             except Exception:
                 logger.debug("Failed to externalize node state for %s", node_id, exc_info=True)
+
+        if result.status == NodeStatus.FAILED and getattr(context, "runtime_repair_enabled", False):
+            error_message = result.error or "runtime node failure"
+            category = classify_runtime_failure(node, error_message, result.metadata)
+            signature = failure_signature(node, category, error_message)
+            error_record = build_runtime_error_record(
+                RuntimeFailureContext(
+                    run_id=state.run_id,
+                    workflow_id=context.workflow_id,
+                    node_id=node_id,
+                    node_type=node_type_str or "",
+                    category=category,
+                    failure_signature=signature,
+                    error_message=error_message,
+                    metadata=result.metadata or {},
+                ),
+                input_snapshot=dict(inputs) if isinstance(inputs, dict) else None,
+            )
+            failure_context = RuntimeFailureContext(
+                run_id=state.run_id,
+                workflow_id=context.workflow_id,
+                node_id=node_id,
+                node_type=node_type_str or "",
+                category=category,
+                failure_signature=signature,
+                error_message=error_message,
+                metadata=result.metadata or {},
+                error_record=error_record,
+            )
+            plan = plan_runtime_repair(state, node, failure_context)
+            if plan.kind != RuntimeRepairKind.NONE:
+                await self._emit(EngineEvent(
+                    event_type=EventType.NODE_REPAIR_STARTED,
+                    run_id=state.run_id,
+                    node_id=node_id,
+                    node_type=node_type_str,
+                    data={
+                        "category": category.value,
+                        "repair_kind": plan.kind.value,
+                        "failure_signature": signature,
+                    },
+                ))
+
+            if plan.overlay is not None:
+                apply_pending_overlay(state, plan.overlay)
+                await self._emit(EngineEvent(
+                    event_type=EventType.NODE_OVERLAY_APPLIED,
+                    run_id=state.run_id,
+                    node_id=node_id,
+                    node_type=node_type_str,
+                    data={
+                        "overlay": plan.overlay.model_dump(),
+                        "category": category.value,
+                    },
+                ))
+
+            attempt = RuntimeRepairAttempt(
+                kind=plan.kind,
+                category=category,
+                failure_signature=signature,
+                outcome="applied" if plan.retry_current_node else "skipped",
+                reason=error_message,
+                cause=plan.summary.get("cause", category.value),
+                next_step=plan.summary.get("next_step", ""),
+                user_visible_message=plan.summary.get("user_visible_message", ""),
+                post_run_repair_level=plan.summary.get("post_run_repair_level", ""),
+                overlay=plan.overlay,
+                diagnostic_record=error_record,
+            )
+            record_repair_attempt(state, node_id, attempt)
+
+            if plan.retry_current_node and plan.kind != RuntimeRepairKind.ADVISORY:
+                await self._emit(EngineEvent(
+                    event_type=EventType.NODE_REPAIR_APPLIED,
+                    run_id=state.run_id,
+                    node_id=node_id,
+                    node_type=node_type_str,
+                    data={
+                        "category": category.value,
+                        "repair_kind": plan.kind.value,
+                        "summary": plan.summary,
+                    },
+                ))
+                state.mark(node_id, NodeStatus.PENDING)
+                state.node_errors.pop(node_id, None)
+                if plan.retry_delay_sec > 0:
+                    await asyncio.sleep(plan.retry_delay_sec)
+                return await self._execute_node(node_id, graph, state, context)
+
+            clear_pending_overlays(state, node_id)
+            await self._emit(EngineEvent(
+                event_type=(
+                    EventType.NODE_REPAIR_FAILED
+                    if plan.kind != RuntimeRepairKind.NONE
+                    else EventType.NODE_REPAIR_SKIPPED
+                ),
+                run_id=state.run_id,
+                node_id=node_id,
+                node_type=node_type_str,
+                data={
+                    "category": category.value,
+                    "repair_kind": plan.kind.value,
+                    "summary": plan.summary,
+                },
+            ))
+
+        if result.status in (NodeStatus.COMPLETED, NodeStatus.SKIPPED):
+            clear_pending_overlays(state, node_id)
+
+        if not isinstance(result.metadata, dict):
+            result.metadata = {}
+        result.metadata["runtime_repair_summary"] = repair_summary_for_node(state, node_id)
 
         state.mark(node_id, result.status)
         if result.error:
@@ -2292,6 +2750,8 @@ class Engine:
         tier_tracker: Any | None = None,
         node_semaphore: asyncio.Semaphore | None = None,
         llm_semaphore: asyncio.Semaphore | None = None,
+        run_policy: EffectiveRunPolicy | None = None,
+        runtime_repair_enabled: bool = False,
     ) -> ExecutionContext:
         tool_registry = None
         if self.executor_registry.has("tool_operator"):
@@ -2310,6 +2770,15 @@ class Engine:
                 parent_node = graph.node_by_id(parent_node_id)
                 if parent_node is not None:
                     bc = getattr(parent_node, "boundary_contract", None)
+            if dynamic_topology_enabled(self.config) and parent_node_id is not None and targeted_inputs is None:
+                envelope = await run_child_workflow(
+                    {"mode": "sub_graph", "ref": sub_graph_key},
+                    inputs,
+                    parent_node_id=parent_node_id,
+                    source="engine",
+                    boundary_contract=bc,
+                )
+                return dict(getattr(envelope, "outputs", {}) or {})
             return await self._run_subgraph(
                 sub_graph_key, inputs, graph, state,
                 shared_context, artifacts, local_state,
@@ -2325,6 +2794,78 @@ class Engine:
                 tier_tracker=tier_tracker,
                 parent_node_semaphore=node_semaphore,
                 parent_llm_semaphore=llm_semaphore,
+            )
+
+        async def run_child_workflow(
+            spec: Any,
+            inputs: dict[str, Any],
+            *,
+            parent_node_id: str,
+            source: str = "engine",
+            boundary_contract: Any | None = None,
+        ) -> Any:
+            from dan.models.control_flow import ChildWorkflowCall, DynamicExpansionSpec
+
+            if isinstance(spec, str):
+                spec = DynamicExpansionSpec(ref=spec)
+            elif isinstance(spec, dict):
+                spec = DynamicExpansionSpec(**spec)
+
+            if not dynamic_topology_enabled(self.config):
+                raise RuntimeCompositionError(
+                    "Dynamic topology is disabled. "
+                    "Enable config.dynamic_topology_enabled or DAN_DYNAMIC_TOPOLOGY=1."
+                )
+
+            if spec.mode not in {"sub_graph", "template_branch", "workflow_ref"}:
+                raise RuntimeCompositionError(
+                    "Dynamic expansion mode "
+                    f"'{spec.mode}' is not supported by the engine runtime yet. "
+                    "Supported modes: ['sub_graph', 'template_branch', 'workflow_ref']."
+                )
+
+            call = ChildWorkflowCall(
+                spec=spec,
+                inputs=dict(inputs),
+                parent_node_id=parent_node_id,
+                call_id=stable_invocation_key(parent_node_id, spec.mode, spec.ref, inputs)[:12],
+                source=source,
+            )
+            return await invoke_child_workflow(
+                call=call,
+                state=state,
+                parent_run_id=state.run_id,
+                layer_path=layer_path,
+                boundary_contract=boundary_contract,
+                emit_event=lambda event_type, data: self._emit(EngineEvent(
+                    event_type=EventType(event_type),
+                    run_id=state.run_id,
+                    node_id=parent_node_id,
+                    data=data,
+                )),
+                run_child=lambda ref, payload, **kwargs: self._run_child_overlay_graph(
+                    ref=ref,
+                    mode=kwargs.get("mode", spec.mode),
+                    parent_graph=graph,
+                    parent_state=state,
+                    inputs=payload,
+                    shared_context=shared_context,
+                    artifacts=artifacts,
+                    local_state=local_state,
+                    layer_path=layer_path + ((parent_node_id,) if parent_node_id else ()),
+                    boundary_contract=kwargs.get("boundary_contract"),
+                    session_id=session_id,
+                    memory_writes=memory_writes,
+                    short_term_memory=short_term_memory,
+                    parent_hyperedge_resolver=hyperedge_resolver,
+                    parent_node_id=parent_node_id,
+                    model_selector=model_selector,
+                    cost_tracker=cost_tracker,
+                    tier_tracker=tier_tracker,
+                    parent_node_semaphore=node_semaphore,
+                    parent_llm_semaphore=llm_semaphore,
+                    child_run_id=kwargs.get("child_run_id"),
+                ),
             )
 
         return ExecutionContext(
@@ -2353,6 +2894,9 @@ class Engine:
             tier_tracker=tier_tracker,
             node_semaphore=node_semaphore,
             llm_semaphore=llm_semaphore,
+            run_policy=run_policy,
+            runtime_repair_enabled=runtime_repair_enabled,
+            run_child_workflow=run_child_workflow,
         )
 
     async def _run_subgraph(
@@ -2377,6 +2921,7 @@ class Engine:
         tier_tracker: Any | None = None,
         parent_node_semaphore: asyncio.Semaphore | None = None,
         parent_llm_semaphore: asyncio.Semaphore | None = None,
+        child_run_id: str | None = None,
     ) -> dict[str, Any]:
         """Execute a named sub-graph and return its outputs."""
         max_subgraph_depth = int(getattr(self.config, "max_subgraph_depth", 32))
@@ -2502,6 +3047,251 @@ class Engine:
 
         return outputs
 
+    async def _run_child_overlay_graph(
+        self,
+        *,
+        ref: str,
+        mode: str,
+        parent_graph: Graph,
+        parent_state: ExecutionState,
+        inputs: dict[str, Any],
+        shared_context: SharedContextStore,
+        artifacts: ArtifactStore,
+        local_state: LocalStateManager,
+        layer_path: tuple[str, ...] = (),
+        boundary_contract: Any | None = None,
+        session_id: str | None = None,
+        memory_writes: list[MemoryWriteRequest] | None = None,
+        short_term_memory: Any | None = None,
+        parent_hyperedge_resolver: Any | None = None,
+        parent_node_id: str | None = None,
+        model_selector: Any | None = None,
+        cost_tracker: Any | None = None,
+        tier_tracker: Any | None = None,
+        parent_node_semaphore: asyncio.Semaphore | None = None,
+        parent_llm_semaphore: asyncio.Semaphore | None = None,
+        child_run_id: str | None = None,
+    ) -> dict[str, Any]:
+        if mode in {"sub_graph", "template_branch"}:
+            return await self._run_subgraph(
+                ref,
+                inputs,
+                parent_graph,
+                parent_state,
+                shared_context,
+                artifacts,
+                local_state,
+                layer_path,
+                None,
+                boundary_contract=boundary_contract,
+                session_id=session_id,
+                memory_writes=memory_writes,
+                short_term_memory=short_term_memory,
+                parent_hyperedge_resolver=parent_hyperedge_resolver,
+                parent_node_id=parent_node_id,
+                model_selector=model_selector,
+                cost_tracker=cost_tracker,
+                tier_tracker=tier_tracker,
+                parent_node_semaphore=parent_node_semaphore,
+                parent_llm_semaphore=parent_llm_semaphore,
+                child_run_id=child_run_id,
+            )
+
+        if mode != "workflow_ref":
+            raise RuntimeCompositionError(f"Unsupported dynamic child mode '{mode}'")
+
+        loader = self.workflow_loader
+        if loader is None:
+            raise RuntimeCompositionError(
+                "workflow_ref requires an engine workflow_loader, but none is configured."
+            )
+
+        raw_graph = loader(ref)
+        if raw_graph is None:
+            raise RuntimeCompositionError(
+                f"workflow_ref '{ref}' could not be resolved by the engine workflow_loader."
+            )
+        if isinstance(raw_graph, Graph):
+            child_graph = raw_graph
+        else:
+            try:
+                child_graph = Graph.model_validate(raw_graph)
+            except Exception as exc:
+                raise RuntimeCompositionError(
+                    f"workflow_ref '{ref}' did not resolve to a valid graph: {exc}"
+                ) from exc
+
+        return await self._run_graph_overlay(
+            sub_graph=child_graph,
+            inputs=inputs,
+            parent_state=parent_state,
+            shared_context=shared_context,
+            artifacts=artifacts,
+            local_state=local_state,
+            layer_path=layer_path,
+            targeted_inputs=None,
+            boundary_contract=boundary_contract,
+            session_id=session_id,
+            memory_writes=memory_writes,
+            short_term_memory=short_term_memory,
+            parent_hyperedge_resolver=parent_hyperedge_resolver,
+            parent_node_id=parent_node_id,
+            model_selector=model_selector,
+            cost_tracker=cost_tracker,
+            tier_tracker=tier_tracker,
+            parent_node_semaphore=parent_node_semaphore,
+            parent_llm_semaphore=parent_llm_semaphore,
+            child_run_id=child_run_id,
+            workflow_id=ref,
+        )
+
+    async def _run_graph_overlay(
+        self,
+        *,
+        sub_graph: Graph,
+        inputs: dict[str, Any],
+        parent_state: ExecutionState,
+        shared_context: SharedContextStore,
+        artifacts: ArtifactStore,
+        local_state: LocalStateManager,
+        layer_path: tuple[str, ...] = (),
+        targeted_inputs: dict[str, dict[str, Any]] | None = None,
+        boundary_contract: Any | None = None,
+        session_id: str | None = None,
+        memory_writes: list[MemoryWriteRequest] | None = None,
+        short_term_memory: Any | None = None,
+        parent_hyperedge_resolver: Any | None = None,
+        parent_node_id: str | None = None,
+        model_selector: Any | None = None,
+        cost_tracker: Any | None = None,
+        tier_tracker: Any | None = None,
+        parent_node_semaphore: asyncio.Semaphore | None = None,
+        parent_llm_semaphore: asyncio.Semaphore | None = None,
+        child_run_id: str | None = None,
+        workflow_id: str | None = None,
+    ) -> dict[str, Any]:
+        max_subgraph_depth = int(getattr(self.config, "max_subgraph_depth", 32))
+        if max_subgraph_depth > 0 and len(layer_path) > max_subgraph_depth:
+            raise RuntimeError(
+                f"Subgraph nesting depth {len(layer_path)} exceeds configured limit "
+                f"{max_subgraph_depth}"
+            )
+
+        if self.config.boundary_enforcement and boundary_contract is not None:
+            child_context_store: SharedContextStore = ScopedContextView(
+                shared_context,
+                sub_graph.shared_context,
+                reads_global=boundary_contract.reads_global,
+                writes_global=boundary_contract.writes_global,
+            )
+        else:
+            child_context_store = shared_context
+
+        child_resolver = None
+        if parent_hyperedge_resolver is not None or sub_graph.hyperedges:
+            from dan.engine.hyperedge_runtime import HyperedgeResolver
+
+            parent_hes = (
+                parent_hyperedge_resolver.active_hyperedges
+                if parent_hyperedge_resolver is not None
+                else None
+            )
+            child_resolver = HyperedgeResolver(
+                sub_graph,
+                parent_hyperedges=parent_hes,
+                parent_scope_node_id=parent_node_id,
+            )
+
+        sub_state = ExecutionState(sub_graph, run_id=parent_state.run_id)
+        sub_context = self._make_context(
+            sub_state,
+            child_context_store,
+            artifacts,
+            local_state,
+            sub_graph,
+            layer_path,
+            session_id=session_id,
+            memory_writes=memory_writes,
+            short_term_memory=short_term_memory,
+            hyperedge_resolver=child_resolver,
+            model_selector=model_selector,
+            cost_tracker=cost_tracker,
+            tier_tracker=tier_tracker,
+            node_semaphore=parent_node_semaphore,
+            llm_semaphore=parent_llm_semaphore,
+        )
+        sub_context.workflow_id = workflow_id or ""
+
+        if inputs:
+            for entry_id in sub_graph.entry_points:
+                entry_node = sub_graph.node_by_id(entry_id)
+                if entry_node is not None:
+                    if getattr(entry_node, "node_type", None) == "input":
+                        for var in getattr(entry_node, "variables", []):
+                            var_name = getattr(var, "name", None)
+                            if var_name and var_name in inputs:
+                                sub_state.port_data.set(
+                                    f"__input__{entry_id}",
+                                    var_name,
+                                    inputs[var_name],
+                                )
+                    for port in entry_node.input_ports:
+                        if port.name in inputs:
+                            sub_state.port_data.set(
+                                f"__input__{entry_id}",
+                                port.name,
+                                inputs[port.name],
+                            )
+
+        if targeted_inputs:
+            for node_id, port_values in targeted_inputs.items():
+                for port_name, value in port_values.items():
+                    sub_state.port_data.set(f"__input__{node_id}", port_name, value)
+
+        levels, back_edges, cycle_regions = _topological_levels_with_backedges(sub_graph)
+
+        if not back_edges:
+            if self._use_eager_dispatch():
+                await self._execute_ready_queue(sub_graph, sub_state, sub_context)
+            else:
+                for level in levels:
+                    ready = [
+                        nid for nid in level
+                        if sub_state.node_statuses.get(nid) == NodeStatus.PENDING
+                    ]
+                    if not ready:
+                        continue
+                    tasks = [
+                        self._guarded_execute_node(nid, sub_graph, sub_state, sub_context)
+                        for nid in ready
+                    ]
+                    await asyncio.gather(*tasks)
+                    if self._check_halt(sub_state):
+                        break
+        else:
+            await self._execute_with_cycles(
+                sub_graph,
+                sub_state,
+                sub_context,
+                levels,
+                back_edges,
+                cycle_regions,
+                shared_context,
+                artifacts,
+                local_state,
+                cost_tracker=cost_tracker,
+                skip_checkpoint=True,
+                graph_id=workflow_id or "",
+            )
+
+        if isinstance(child_context_store, ScopedContextView):
+            child_context_store.propagate_to_parent()
+
+        outputs: dict[str, Any] = {}
+        for exit_id in sub_graph.exit_points:
+            outputs.update(sub_state.port_data.get_node_outputs(exit_id))
+        return outputs
+
     async def _preload_memory(
         self,
         shared_context: SharedContextStore,
@@ -2585,7 +3375,11 @@ class Engine:
 
         pending_ids = [
             nid for nid, s in state.node_statuses.items()
-            if s == NodeStatus.RUNNING
+            if s in (NodeStatus.RUNNING, NodeStatus.PENDING, NodeStatus.WAITING)
+        ]
+        remaining_ids = [
+            nid for nid, s in state.node_statuses.items()
+            if s not in (NodeStatus.COMPLETED, NodeStatus.SKIPPED)
         ]
 
         graph_rev: str | None = None
@@ -2603,6 +3397,12 @@ class Engine:
             node_outputs=node_outputs,
             pending_node_ids=pending_ids,
             checkpoint_trigger=checkpoint_trigger,
+            effective_run_policy=state.run_state.get("effective_run_policy"),
+            stop_reason=state.run_state.get("stop_reason", ""),
+            partial=bool(state.run_state.get("partial", False)),
+            resumable=bool(state.run_state.get("resumable", False)),
+            remaining_node_ids=remaining_ids,
+            progress=dict(state.run_state.get("progress", {})),
         )
         checkpoint["checkpoint_data"] = checkpoint_data.model_dump()
         return checkpoint
@@ -2733,6 +3533,37 @@ class Engine:
         has_failures = any(
             s == NodeStatus.FAILED for s in state.node_statuses.values()
         )
+        partial = bool(state.run_state.get("partial", False))
+        completed_ids = [
+            nid for nid, s in state.node_statuses.items()
+            if s == NodeStatus.COMPLETED
+        ]
+        pending_ids = [
+            nid for nid, s in state.node_statuses.items()
+            if s in (NodeStatus.PENDING, NodeStatus.RUNNING, NodeStatus.WAITING)
+        ]
+        remaining_ids = [
+            nid for nid, s in state.node_statuses.items()
+            if s not in (NodeStatus.COMPLETED, NodeStatus.SKIPPED)
+        ]
+        metadata = dict(state.node_metadata)
+        metadata.update({
+            "run_phase": state.run_state.get("phase", RunPhase.ACTIVE.value),
+            "stop_reason": state.run_state.get("stop_reason", ""),
+            "partial": partial,
+            "resumable": bool(state.run_state.get("resumable", False)),
+            "completed_node_ids": completed_ids,
+            "pending_node_ids": pending_ids,
+            "remaining_node_ids": remaining_ids,
+            "latest_checkpoint_trigger": state.run_state.get("latest_checkpoint_trigger", ""),
+            "latest_checkpoint_timestamp": state.run_state.get("latest_checkpoint_timestamp"),
+            "progress": dict(state.run_state.get("progress", {})),
+            "effective_run_policy": state.run_state.get("effective_run_policy"),
+            "resume_notes": list(state.run_state.get("resume_notes", [])),
+            "repair_lineage": dict(state.run_state.get("repair_lineage", {})),
+            "pending_overlays": dict(state.run_state.get("pending_overlays", {})),
+            "dynamic_topology": dict(state.run_state.get("dynamic_topology", {})),
+        })
 
         return RunResult(
             run_id=state.run_id,
@@ -2740,5 +3571,5 @@ class Engine:
             success=not has_failures,
             node_statuses={nid: s.value for nid, s in state.node_statuses.items()},
             errors=dict(state.node_errors),
-            metadata=dict(state.node_metadata),
+            metadata=metadata,
         )

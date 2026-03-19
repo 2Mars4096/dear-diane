@@ -102,6 +102,20 @@ class ExecutionState:
         self.port_data = PortDataStore()
         self.node_errors: dict[str, str] = {}
         self.node_metadata: dict[str, dict[str, Any]] = {}
+        self.run_state: dict[str, Any] = {
+            "phase": "active",
+            "stop_reason": "",
+            "partial": False,
+            "resumable": False,
+            "effective_run_policy": None,
+            "latest_checkpoint_trigger": "",
+            "latest_checkpoint_timestamp": None,
+            "progress": {},
+            "repair_lineage": {},
+            "pending_overlays": {},
+            "dynamic_topology": {},
+            "resume_notes": [],
+        }
 
     def mark(self, node_id: str, status: NodeStatus) -> None:
         self.node_statuses[node_id] = status
@@ -130,6 +144,7 @@ class ExecutionState:
             "port_data": self.port_data.snapshot(),
             "node_errors": dict(self.node_errors),
             "node_metadata": dict(self.node_metadata),
+            "run_state": dict(self.run_state),
         }
 
     def restore_from_snapshot(self, snap: dict[str, Any]) -> None:
@@ -140,3 +155,17 @@ class ExecutionState:
         self.port_data = PortDataStore.from_snapshot(snap["port_data"])
         self.node_errors = snap.get("node_errors", {})
         self.node_metadata = snap.get("node_metadata", {})
+        self.run_state = snap.get("run_state", {
+            "phase": "active",
+            "stop_reason": "",
+            "partial": False,
+            "resumable": False,
+            "effective_run_policy": None,
+            "latest_checkpoint_trigger": "",
+            "latest_checkpoint_timestamp": None,
+            "progress": {},
+            "repair_lineage": {},
+            "pending_overlays": {},
+            "dynamic_topology": {},
+            "resume_notes": [],
+        })

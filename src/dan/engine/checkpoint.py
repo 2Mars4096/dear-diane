@@ -117,6 +117,12 @@ class CheckpointData(BaseModel):
     node_outputs: dict[str, Any] = Field(default_factory=dict)
     pending_node_ids: list[str] = Field(default_factory=list)
     checkpoint_trigger: str = ""
+    effective_run_policy: dict[str, Any] | None = None
+    stop_reason: str = ""
+    partial: bool = False
+    resumable: bool = False
+    remaining_node_ids: list[str] = Field(default_factory=list)
+    progress: dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

@@ -19,8 +19,13 @@ class NormResult:
     """Result of a normalization attempt."""
 
     success: bool
-    data: dict[str, Any] | None = None
+    data: Any = None
     error_message: str | None = None
+    failure_category: str = ""
+    invalid_payload_preview: str = ""
+    schema_errors: list[str] | None = None
+    extracted_json: str | None = None
+    repair_strategy: str = ""
 
 
 _JSON_FENCE_RE = re.compile(
@@ -69,6 +74,22 @@ def _extract_json(text: str) -> str | None:
                     return text[start : i + 1]
 
     return text.strip() if text.strip() else None
+
+
+def _mechanical_json_repair(text: str) -> str | None:
+    """Attempt safe mechanical JSON cleanup without a model call."""
+
+    repaired = text.strip()
+    if not repaired:
+        return None
+
+    repaired = re.sub(r",(\s*[}\]])", r"\1", repaired)
+    repaired = repaired.strip("` \n\t")
+    repaired = repaired.replace("\ufeff", "")
+
+    # Trim prose before/after the first balanced object/array again after cleanup.
+    extracted = _extract_json(repaired)
+    return extracted.strip() if extracted else None
 
 
 def _validate_type(value: Any, schema: dict[str, Any], path: str) -> list[str]:
@@ -121,7 +142,12 @@ class OutputNormalizer:
     """Stateless normalizer that extracts and validates structured output."""
 
     @staticmethod
-    def normalize(raw_text: str, schema: dict[str, Any]) -> NormResult:
+    def normalize(
+        raw_text: str,
+        schema: dict[str, Any],
+        *,
+        allow_mechanical_repair: bool = False,
+    ) -> NormResult:
         """Attempt to extract and validate JSON from *raw_text*.
 
         Returns a NormResult with success=True and the parsed data on
@@ -137,11 +163,28 @@ class OutputNormalizer:
                     "Please respond with a JSON object matching this schema:\n"
                     f"{json.dumps(schema, indent=2)}"
                 ),
+                failure_category="invalid_json",
+                invalid_payload_preview=raw_text[:500],
             )
 
         try:
             parsed = json.loads(json_str)
         except json.JSONDecodeError as exc:
+            if allow_mechanical_repair:
+                repaired = _mechanical_json_repair(json_str)
+                if repaired and repaired != json_str:
+                    try:
+                        parsed = json.loads(repaired)
+                        validation_errors = _validate_type(parsed, schema, "$")
+                        if not validation_errors:
+                            return NormResult(
+                                success=True,
+                                data=parsed,
+                                extracted_json=repaired,
+                                repair_strategy="mechanical_json_repair",
+                            )
+                    except json.JSONDecodeError:
+                        pass
             return NormResult(
                 success=False,
                 error_message=(
@@ -149,6 +192,9 @@ class OutputNormalizer:
                     "Please respond with a valid JSON object matching this schema:\n"
                     f"{json.dumps(schema, indent=2)}"
                 ),
+                failure_category="invalid_json",
+                invalid_payload_preview=json_str[:500],
+                extracted_json=json_str,
             )
 
         validation_errors = _validate_type(parsed, schema, "$")
@@ -161,6 +207,10 @@ class OutputNormalizer:
                     f"Expected schema:\n{json.dumps(schema, indent=2)}\n"
                     "Please fix the output and try again."
                 ),
+                failure_category="schema_mismatch",
+                invalid_payload_preview=json.dumps(parsed, default=str)[:500],
+                schema_errors=validation_errors,
+                extracted_json=json_str,
             )
 
-        return NormResult(success=True, data=parsed)
+        return NormResult(success=True, data=parsed, extracted_json=json_str)

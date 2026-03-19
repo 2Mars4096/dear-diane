@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol, runtime_checkable
 
 from dan.engine.context_runtime import ArtifactStore, LocalStateManager, SharedContextStore
+from dan.engine.runtime_policy import EffectiveRunPolicy
 from dan.engine.state import ExecutionState, NodeStatus
 from dan.models.nodes import NodeBase
 
@@ -218,6 +219,11 @@ class EngineConfig:
     memory_kernel: Any | None = None
     # -- 21-5: Block resolution at runtime -------------------------------------
     block_registry: BlockRegistry | None = None
+    # -- 37-5/37-6/37-7: Runtime robustness, self-healing, composition ---------
+    runtime_self_healing_enabled: bool = False
+    dynamic_topology_enabled: bool = False
+    runtime_progress_default_on: bool = True
+    workflow_loader: Callable[[str], Any | None] | None = None
 
 
 @dataclass
@@ -273,6 +279,9 @@ class ExecutionContext:
         tier_tracker: Any | None = None,
         node_semaphore: Any | None = None,
         llm_semaphore: Any | None = None,
+        run_policy: EffectiveRunPolicy | None = None,
+        runtime_repair_enabled: bool = False,
+        run_child_workflow: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self.state = state
         self.config = config
@@ -300,6 +309,9 @@ class ExecutionContext:
         self.tier_tracker = tier_tracker
         self.node_semaphore = node_semaphore
         self.llm_semaphore = llm_semaphore
+        self.run_policy = run_policy or EffectiveRunPolicy()
+        self.runtime_repair_enabled = runtime_repair_enabled
+        self._run_child_workflow = run_child_workflow
         # -- 16-3: Auto-wrap legacy callback into renderer protocol
         if human_renderer is not None:
             self.human_renderer: HumanRenderer | None = human_renderer
@@ -535,6 +547,27 @@ class ExecutionContext:
         if self._run_subgraph is None:
             raise RuntimeError("Sub-graph execution not available in this context")
         return await self._run_subgraph(sub_graph_key, inputs, parent_node_id, targeted_inputs)
+
+    async def run_child_workflow(
+        self,
+        spec: Any,
+        inputs: dict[str, Any],
+        *,
+        parent_node_id: str,
+        source: str = "engine",
+        boundary_contract: Any | None = None,
+    ) -> Any:
+        """Invoke the engine-owned child workflow runtime primitive."""
+
+        if self._run_child_workflow is None:
+            raise RuntimeError("Child workflow execution not available in this context")
+        return await self._run_child_workflow(
+            spec,
+            inputs,
+            parent_node_id=parent_node_id,
+            source=source,
+            boundary_contract=boundary_contract,
+        )
 
 
 @runtime_checkable
