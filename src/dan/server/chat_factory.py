@@ -255,6 +255,7 @@ def build_chat_services(
         tool_registry=tool_registry,
         run_store=run_store,
         telemetry_store=telemetry_store,
+        graph_loader=graph_store.get_graph,
     )
     activity_tracker = ActivityTracker(run_manager)
 

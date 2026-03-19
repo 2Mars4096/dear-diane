@@ -273,11 +273,23 @@ def _build_meta_controller():
 
     session_store = MetaSessionStore(memory_store)
 
-    async def _run_workflow(plan: Any, session_id: str) -> dict[str, Any]:
-        user_text = getattr(plan, "description", None)
-        exec_result = await planner.execute_plan(plan, user_text=user_text)
-        workflow_id = str(exec_result.get("workflow_id", "")).strip()
-        graph_data = exec_result.get("graph")
+    async def _run_workflow(
+        plan: Any,
+        session_id: str,
+        *,
+        workflow_inputs: dict[str, Any] | None = None,
+        upstream_handoffs: dict[str, Any] | None = None,
+        workflow_spec: dict[str, Any] | None = None,
+        prepared_graph: dict[str, Any] | None = None,
+        prepared_workflow_id: str | None = None,
+    ) -> dict[str, Any]:
+        workflow_id = str(prepared_workflow_id or "").strip()
+        graph_data = prepared_graph if isinstance(prepared_graph, dict) else None
+        if graph_data is None:
+            user_text = getattr(plan, "description", None)
+            exec_result = await planner.execute_plan(plan, user_text=user_text)
+            workflow_id = str(exec_result.get("workflow_id", "")).strip()
+            graph_data = exec_result.get("graph")
         if not workflow_id:
             workflow_id = f"meta-{_uuid.uuid4().hex[:10]}"
         if not isinstance(graph_data, dict):
@@ -293,7 +305,12 @@ def _build_meta_controller():
         rec = await rm.start_run(
             graph_model,
             graph_id=workflow_id,
+            inputs=dict(workflow_inputs or {}),
             session_id=session_id,
+            goal_context={
+                "meta_workflow_spec": dict(workflow_spec or {}),
+                "upstream_handoffs": dict(upstream_handoffs or {}),
+            },
         )
         while True:
             current = rm.get_run(rec.run_id)

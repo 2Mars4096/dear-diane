@@ -120,6 +120,7 @@ from dan.server.capabilities.runs import (
     handle_get_run_logs,
     handle_get_run_checkpoints,
     handle_rerun_from_checkpoint,
+    handle_apply_pending_overlay,
     handle_submit_human_input,
 )
 from dan.server.capabilities.browser import (
@@ -582,14 +583,35 @@ LIST_BLOCKS_SCHEMA = build_tool_schema(name="list_blocks", description="List all
 
 RUN_WRITE_MODES = ["agent", "build", "mutate", "debug"]
 
-START_RUN_SCHEMA = build_tool_schema(name="start_run", description="Start a workflow run. Use when the user says 'run it', 'execute', or 'start the workflow'.", parameters={"type": "object", "properties": {"workflow_id": {"type": "string", "description": "Workflow/graph ID to run (default: current chat workflow)"}, "inputs": {"type": "object", "description": "Optional input values for the workflow"}, "run_id": {"type": "string", "description": "Optional custom run ID"}, "session_id": {"type": "string", "description": "Optional session ID"}}})
+RUN_POLICY_SCHEMA = {
+    "type": "object",
+    "description": "Optional per-run execution policy/profile override.",
+    "properties": {
+        "profile": {"type": "string", "enum": ["default", "long_running"], "description": "Named policy profile."},
+        "max_duration": {"type": "number", "description": "Hard wall-clock ceiling in seconds."},
+        "max_cost": {"type": "number", "description": "Hard cost ceiling in USD-equivalent tracked cost."},
+        "checkpoint_batch_size": {"type": "integer", "description": "Checkpoint after this many completed nodes."},
+        "checkpoint_interval_sec": {"type": "number", "description": "Checkpoint at least this often in seconds."},
+        "checkpoint_on_critical_nodes": {"type": "boolean", "description": "Force checkpoints around critical-tagged nodes."},
+        "critical_node_tags": {"type": "array", "items": {"type": "string"}, "description": "Node tags treated as critical checkpoints."},
+        "partial_results": {"type": "boolean", "description": "Return partial results when a run stops on policy limits."},
+        "progress_enabled": {"type": "boolean", "description": "Enable structured progress snapshots."},
+        "progress_emit_events": {"type": "boolean", "description": "Emit progress events while the run executes."},
+        "progress_eta_enabled": {"type": "boolean", "description": "Include ETA estimates in progress snapshots."},
+        "progress_stage_labels": {"type": "boolean", "description": "Include heuristic stage labels in progress snapshots."},
+        "fallback_model": {"type": "string", "description": "Fallback model to use for long-running retry defaults."},
+    },
+}
+
+START_RUN_SCHEMA = build_tool_schema(name="start_run", description="Start a workflow run. Use when the user says 'run it', 'execute', or 'start the workflow'.", parameters={"type": "object", "properties": {"workflow_id": {"type": "string", "description": "Workflow/graph ID to run (default: current chat workflow)"}, "inputs": {"type": "object", "description": "Optional input values for the workflow"}, "run_id": {"type": "string", "description": "Optional custom run ID"}, "session_id": {"type": "string", "description": "Optional session ID"}, "run_policy": RUN_POLICY_SCHEMA}})
 GET_RUN_STATUS_SCHEMA = build_tool_schema(name="get_run_status", description="Get status of a run. Supports run_id or 'latest', 'last_failed', 'paused'. Use when the user asks 'status of the run', 'how did it go?', or 'what's running?'.", parameters={"type": "object", "properties": {"run_id": {"type": "string", "description": "Run ID or 'latest'|'last_failed'|'paused'"}}, "required": ["run_id"]})
 LIST_ACTIVE_RUNS_SCHEMA = build_tool_schema(name="list_active_runs", description="List active and recent runs. Use when the user asks 'what's running?', 'show active runs', or 'list runs'.", parameters={"type": "object", "properties": {}})
 CANCEL_RUN_SCHEMA = build_tool_schema(name="cancel_run", description="Cancel a running workflow. Use when the user says 'cancel run X' or 'stop the run'.", parameters={"type": "object", "properties": {"run_id": {"type": "string", "description": "Run ID to cancel"}}, "required": ["run_id"]})
-RESUME_RUN_SCHEMA = build_tool_schema(name="resume_run", description="Resume a checkpointed run. Use when the user says 'resume run X' or 'continue the run'.", parameters={"type": "object", "properties": {"run_id": {"type": "string", "description": "Run ID to resume"}, "workflow_id": {"type": "string", "description": "Workflow/graph ID"}, "session_id": {"type": "string", "description": "Optional session ID"}}, "required": ["run_id", "workflow_id"]})
+RESUME_RUN_SCHEMA = build_tool_schema(name="resume_run", description="Resume a checkpointed run. Use when the user says 'resume run X' or 'continue the run'.", parameters={"type": "object", "properties": {"run_id": {"type": "string", "description": "Run ID to resume"}, "workflow_id": {"type": "string", "description": "Workflow/graph ID"}, "session_id": {"type": "string", "description": "Optional session ID"}, "run_policy": RUN_POLICY_SCHEMA}, "required": ["run_id", "workflow_id"]})
 GET_RUN_LOGS_SCHEMA = build_tool_schema(name="get_run_logs", description="Get event logs for a run. Use when the user asks 'show logs', 'what happened?', or 'run output'.", parameters={"type": "object", "properties": {"run_id": {"type": "string", "description": "Run ID or 'latest'|'last_failed'|'paused'"}, "limit": {"type": "integer", "description": "Max events to return", "default": 50}, "node_id": {"type": "string", "description": "Filter by node ID (optional)"}}, "required": ["run_id"]})
 GET_RUN_CHECKPOINTS_SCHEMA = build_tool_schema(name="get_run_checkpoints", description="Get checkpoint info for a run (completed nodes, staleness). Use for partial reruns.", parameters={"type": "object", "properties": {"run_id": {"type": "string", "description": "Run ID or 'latest'|'last_failed'|'paused'"}}, "required": ["run_id"]})
-RERUN_FROM_CHECKPOINT_SCHEMA = build_tool_schema(name="rerun_from_checkpoint", description="Partial rerun from a checkpoint. Use when the user says 'rerun from node X' or 'retry downstream'.", parameters={"type": "object", "properties": {"source_run_id": {"type": "string", "description": "Run ID with checkpoint"}, "workflow_id": {"type": "string", "description": "Workflow/graph ID"}, "scope_type": {"type": "string", "enum": ["downstream_of", "single_node", "subgraph"], "description": "Rerun scope type"}, "target_node_id": {"type": "string", "description": "Target node for downstream_of or single_node"}, "sub_graph_key": {"type": "string", "description": "Sub-graph key for subgraph scope"}, "session_id": {"type": "string", "description": "Optional session ID"}}, "required": ["source_run_id", "workflow_id", "scope_type"]})
+RERUN_FROM_CHECKPOINT_SCHEMA = build_tool_schema(name="rerun_from_checkpoint", description="Partial rerun from a checkpoint. Use when the user says 'rerun from node X' or 'retry downstream'.", parameters={"type": "object", "properties": {"source_run_id": {"type": "string", "description": "Run ID with checkpoint"}, "workflow_id": {"type": "string", "description": "Workflow/graph ID"}, "scope_type": {"type": "string", "enum": ["downstream_of", "single_node", "subgraph"], "description": "Rerun scope type"}, "target_node_id": {"type": "string", "description": "Target node for downstream_of or single_node"}, "sub_graph_key": {"type": "string", "description": "Sub-graph key for subgraph scope"}, "session_id": {"type": "string", "description": "Optional session ID"}, "run_policy": RUN_POLICY_SCHEMA}, "required": ["source_run_id", "workflow_id", "scope_type"]})
+APPLY_PENDING_OVERLAY_SCHEMA = build_tool_schema(name="apply_pending_overlay", description="Apply a bounded execution-local overlay to a still-pending node in a live run. Use for mid-run prompt/model/tool/config adaptation before the node starts.", parameters={"type": "object", "properties": {"run_id": {"type": "string", "description": "Run ID or 'latest'|'last_failed'|'paused'"}, "node_id": {"type": "string", "description": "Pending node ID to patch"}, "patch": {"type": "object", "description": "Whitelisted overlay patch for prompt/model/tool/config fields"}, "source": {"type": "string", "description": "Overlay source label", "default": "user"}, "reason": {"type": "string", "description": "Why the overlay is being applied"}}, "required": ["run_id", "node_id", "patch"]})
 SUBMIT_HUMAN_INPUT_SCHEMA = build_tool_schema(name="submit_human_input", description="Submit response for a pending HumanNode. Use when the user provides input for a paused run.", parameters={"type": "object", "properties": {"run_id": {"type": "string", "description": "Run ID"}, "request_id": {"type": "string", "description": "Request ID from human_input_needed event"}, "response": {"type": "object", "description": 'User response (e.g. {"approved": true} or {"text": "..."})'}}, "required": ["run_id", "request_id", "response"]})
 
 # ── Workflow catalog schemas (29-4) ────────────────────────────────
@@ -691,6 +713,7 @@ def register_run_lifecycle_capabilities(registry: ChatCapabilityRegistry) -> Non
     registry.register("get_run_logs", GET_RUN_LOGS_SCHEMA, handle_get_run_logs, modes=list(ALL_MODES), category="run")
     registry.register("get_run_checkpoints", GET_RUN_CHECKPOINTS_SCHEMA, handle_get_run_checkpoints, modes=list(ALL_MODES), category="run")
     registry.register("rerun_from_checkpoint", RERUN_FROM_CHECKPOINT_SCHEMA, handle_rerun_from_checkpoint, modes=RUN_WRITE_MODES, category="run")
+    registry.register("apply_pending_overlay", APPLY_PENDING_OVERLAY_SCHEMA, handle_apply_pending_overlay, modes=RUN_WRITE_MODES, category="run")
     registry.register("submit_human_input", SUBMIT_HUMAN_INPUT_SCHEMA, handle_submit_human_input, modes=RUN_WRITE_MODES, category="run")
 
 

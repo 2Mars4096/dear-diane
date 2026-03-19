@@ -104,9 +104,15 @@ async def handle_start_run(
     inputs = args.get("inputs")
     run_id = args.get("run_id")
     session_id = args.get("session_id")
+    run_policy = args.get("run_policy")
     try:
         record = await ctx.run_manager.start_run(
-            graph, graph_id=graph_id, inputs=inputs, run_id=run_id, session_id=session_id
+            graph,
+            graph_id=graph_id,
+            inputs=inputs,
+            run_id=run_id,
+            session_id=session_id,
+            run_policy=run_policy,
         )
         if ctx.event_bus is not None:
             from dan.server.run_relay import relay_run_events_to_bus
@@ -161,6 +167,14 @@ async def handle_get_run_status(
         f"**{snap.get('run_id', '?')}** ({snap.get('graph_id', '?')})",
         f"Status: {snap.get('status', '?')}",
     ]
+    if snap.get("phase"):
+        parts.append(f"Phase: {snap.get('phase')}")
+    if snap.get("stop_reason"):
+        parts.append(f"Stop: {snap.get('stop_reason')}")
+    if snap.get("partial"):
+        parts.append("Partial: yes")
+    if snap.get("resumable"):
+        parts.append("Resumable: yes")
     node_statuses = snap.get("node_statuses", {})
     if node_statuses:
         done = sum(1 for s in node_statuses.values() if s in ("completed", "failed", "skipped"))
@@ -266,9 +280,14 @@ async def handle_resume_run(
     if graph is None:
         return CapabilityResult(success=False, message=f"Workflow '{workflow_id}' not found.")
     session_id = args.get("session_id")
+    run_policy = args.get("run_policy")
     try:
         record = await ctx.run_manager.resume_run(
-            graph, graph_id=workflow_id, run_id=run_id, session_id=session_id
+            graph,
+            graph_id=workflow_id,
+            run_id=run_id,
+            session_id=session_id,
+            run_policy=run_policy,
         )
     except Exception as exc:
         logger.exception("resume_run failed")
@@ -368,9 +387,15 @@ async def handle_get_run_checkpoints(
         )
     parts = [
         f"Run: {info.get('run_id', '?')}",
+        f"Phase: {info.get('phase', '?')}",
         f"Completed nodes: {info.get('completed_node_ids', [])}",
+        f"Pending nodes: {info.get('pending_node_ids', [])}",
         f"Node output keys: {info.get('node_output_keys', [])}",
     ]
+    if info.get("stop_reason"):
+        parts.append(f"Stop reason: {info.get('stop_reason')}")
+    if info.get("remaining_node_ids"):
+        parts.append(f"Remaining nodes: {info.get('remaining_node_ids', [])}")
     if info.get("graph_revision"):
         parts.append(f"Graph revision: {info['graph_revision']}")
     text = "\n".join(parts)
@@ -405,9 +430,15 @@ async def handle_rerun_from_checkpoint(
     if graph is None:
         return CapabilityResult(success=False, message=f"Workflow '{workflow_id}' not found.")
     session_id = args.get("session_id")
+    run_policy = args.get("run_policy")
     try:
         record = await ctx.run_manager.rerun_from_checkpoint(
-            graph, graph_id=workflow_id, source_run_id=source_run_id, scope=scope, session_id=session_id
+            graph,
+            graph_id=workflow_id,
+            source_run_id=source_run_id,
+            scope=scope,
+            session_id=session_id,
+            run_policy=run_policy,
         )
     except ValueError as exc:
         return CapabilityResult(success=False, message=f"Invalid scope or checkpoint: {exc}")
@@ -421,6 +452,57 @@ async def handle_rerun_from_checkpoint(
         message=f"Rerun started: {record.run_id}",
         data={"run_id": record.run_id, "status": record.status.value, "source_run_id": source_run_id},
         output_preview=f"Rerun {record.run_id} started from checkpoint.",
+    )
+
+
+async def handle_apply_pending_overlay(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    if ctx.run_manager is None:
+        return CapabilityResult(success=False, message="Run manager not available.")
+    ref = str(args.get("run_id", "")).strip()
+    node_id = str(args.get("node_id", "")).strip()
+    patch = args.get("patch")
+    if not ref or not node_id:
+        return CapabilityResult(success=False, message="run_id and node_id are required.")
+    if not isinstance(patch, dict) or not patch:
+        return CapabilityResult(success=False, message="patch must be a non-empty dict.")
+    run_id = resolve_run_reference(ref, ctx.run_manager, ctx.run_store)
+    if run_id is None:
+        if ref == "paused":
+            disambig = get_pending_run_disambiguation(ctx.run_manager)
+            if disambig:
+                return CapabilityResult(success=False, message=disambig)
+        return CapabilityResult(success=False, message=f"Could not resolve run reference '{ref}'.")
+    source = str(args.get("source", "user")).strip() or "user"
+    reason = str(args.get("reason", "")).strip()
+    try:
+        applied = await ctx.run_manager.apply_pending_overlay(
+            run_id,
+            node_id,
+            patch,
+            source=source,
+            reason=reason,
+        )
+    except Exception as exc:
+        logger.exception("apply_pending_overlay failed")
+        return CapabilityResult(success=False, message=f"Apply overlay failed: {exc}")
+    if not applied:
+        return CapabilityResult(
+            success=False,
+            message=(
+                f"Overlay was not applied to node '{node_id}'. "
+                "The run may not be live, or the node is no longer pending."
+            ),
+            data={"run_id": run_id, "node_id": node_id, "applied": False},
+            output_preview=f"Overlay not applied to {node_id}.",
+        )
+    return CapabilityResult(
+        success=True,
+        message=f"Overlay applied to node '{node_id}' in run {run_id}.",
+        data={"run_id": run_id, "node_id": node_id, "applied": True},
+        output_preview=f"Overlay applied to {node_id}.",
     )
 
 

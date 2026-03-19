@@ -15,6 +15,7 @@ from typing import Any
 
 from dan.engine.events import EngineEvent, EventType
 from dan.engine.executor import EngineConfig, ExecutorRegistry
+from dan.engine.runtime_policy import RunPhase, RunPolicy
 from dan.engine.scheduler import Engine, RunResult
 from dan.executors.tool import ToolExecutor, ToolRegistry
 from dan.models.graph import Graph
@@ -39,6 +40,7 @@ class RunRecord:
     run_id: str
     graph_id: str
     status: RunStatus = RunStatus.PENDING
+    phase: str = RunPhase.ACTIVE.value
     result: RunResult | None = None
     node_statuses: dict[str, str] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -54,11 +56,18 @@ class RunRecord:
     error: str | None = None
     goal_context: dict[str, Any] | None = None
 
+    def _result_meta(self) -> dict[str, Any]:
+        if self.result is None or not isinstance(self.result.metadata, dict):
+            return {}
+        return self.result.metadata
+
     def snapshot(self) -> dict[str, Any]:
+        meta = self._result_meta()
         return {
             "run_id": self.run_id,
             "graph_id": self.graph_id,
             "status": self.status.value,
+            "phase": self.phase,
             "node_statuses": dict(self.node_statuses),
             "started_at": self.started_at,
             "finished_at": self.finished_at,
@@ -72,6 +81,20 @@ class RunRecord:
             "elapsed_seconds": self.elapsed_seconds,
             "node_usage": dict(self.node_usage),
             "error": self.error,
+            "stop_reason": meta.get("stop_reason", ""),
+            "partial": bool(meta.get("partial", False)),
+            "resumable": bool(meta.get("resumable", False)),
+            "completed_node_ids": list(meta.get("completed_node_ids", [])),
+            "pending_node_ids": list(meta.get("pending_node_ids", [])),
+            "remaining_node_ids": list(meta.get("remaining_node_ids", [])),
+            "progress": dict(meta.get("progress", {})),
+            "latest_checkpoint_trigger": meta.get("latest_checkpoint_trigger", ""),
+            "latest_checkpoint_timestamp": meta.get("latest_checkpoint_timestamp"),
+            "resume_notes": list(meta.get("resume_notes", [])),
+            "effective_run_policy": meta.get("effective_run_policy"),
+            "repair_lineage": dict(meta.get("repair_lineage", {})),
+            "pending_overlays": dict(meta.get("pending_overlays", {})),
+            "dynamic_topology": dict(meta.get("dynamic_topology", {})),
         }
 
     @staticmethod
@@ -81,6 +104,7 @@ class RunRecord:
             run_id=summary["run_id"],
             graph_id=summary.get("graph_id", ""),
             status=RunStatus(summary.get("status", "completed")),
+            phase=summary.get("phase", RunPhase.COMPLETED.value),
             started_at=summary.get("started_at", 0),
             finished_at=summary.get("finished_at"),
             total_prompt_tokens=summary.get("total_prompt_tokens", 0),
@@ -100,6 +124,23 @@ class RunRecord:
             success=success if success is not None else True,
             errors=errors,
             outputs=outputs,
+            metadata={
+                "run_phase": summary.get("phase", RunPhase.COMPLETED.value),
+                "stop_reason": summary.get("stop_reason", ""),
+                "partial": bool(summary.get("partial", False)),
+                "resumable": bool(summary.get("resumable", False)),
+                "completed_node_ids": summary.get("completed_node_ids", []) or [],
+                "pending_node_ids": summary.get("pending_node_ids", []) or [],
+                "remaining_node_ids": summary.get("remaining_node_ids", []) or [],
+                "progress": summary.get("progress", {}) or {},
+                "latest_checkpoint_trigger": summary.get("latest_checkpoint_trigger", ""),
+                "latest_checkpoint_timestamp": summary.get("latest_checkpoint_timestamp"),
+                "resume_notes": summary.get("resume_notes", []) or [],
+                "effective_run_policy": summary.get("effective_run_policy"),
+                "repair_lineage": summary.get("repair_lineage", {}) or {},
+                "pending_overlays": summary.get("pending_overlays", {}) or {},
+                "dynamic_topology": summary.get("dynamic_topology", {}) or {},
+            },
         )
         return rec
 
@@ -114,15 +155,18 @@ class RunManager:
         run_store: RunStore | None = None,
         memory_kernel: Any | None = None,
         telemetry_store: Any | None = None,
+        graph_loader: Any | None = None,
     ) -> None:
         self._config = engine_config or EngineConfig()
         self._tool_registry = tool_registry or ToolRegistry()
         self._run_store = run_store
         self._memory_kernel = memory_kernel
         self._telemetry_store = telemetry_store
+        self._graph_loader = graph_loader
         self._runs: dict[str, RunRecord] = {}
         self._subscribers: dict[str, list[asyncio.Queue[dict[str, Any]]]] = defaultdict(list)
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._engines: dict[str, Engine] = {}
         self._max_event_buffer = 10000
         self._pending_human_inputs: dict[str, asyncio.Event] = {}
         self._human_input_responses: dict[str, dict[str, Any]] = {}
@@ -510,12 +554,19 @@ class RunManager:
         graph: Graph,
         graph_id: str,
         inputs: dict[str, Any] | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> RunRecord | None:
         """Atomically check approval state and start run. Returns None if cancelled."""
         record = self.get_run(run_id)
         if record is None or record.status == RunStatus.CANCELLED:
             return None
-        return await self.start_run(graph, graph_id=graph_id, inputs=inputs, run_id=run_id)
+        return await self.start_run(
+            graph,
+            graph_id=graph_id,
+            inputs=inputs,
+            run_id=run_id,
+            run_policy=run_policy,
+        )
 
     # ------------------------------------------------------------------
     # Run lifecycle
@@ -529,12 +580,14 @@ class RunManager:
         run_id: str | None = None,
         session_id: str | None = None,
         goal_context: dict[str, Any] | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> RunRecord:
         existing = self._runs.get(run_id) if run_id else None
         record = RunRecord(
             run_id=run_id or f"run-{int(time.time() * 1000)}",
             graph_id=graph_id,
             status=RunStatus.PENDING,
+            phase=RunPhase.ACTIVE.value,
             goal_context=dict(goal_context or {}) if goal_context else None,
         )
         if existing is not None:
@@ -543,7 +596,13 @@ class RunManager:
             record.started_at = existing.started_at
         self._runs[record.run_id] = record
         task = asyncio.create_task(
-            self._run_task(record, graph, inputs, session_id=session_id),
+            self._run_task(
+                record,
+                graph,
+                inputs,
+                session_id=session_id,
+                run_policy=run_policy,
+            ),
             name=f"dan-run-{record.run_id}",
         )
         self._tasks[record.run_id] = task
@@ -555,19 +614,48 @@ class RunManager:
         graph_id: str,
         run_id: str,
         session_id: str | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> RunRecord:
         record = RunRecord(
             run_id=run_id,
             graph_id=graph_id,
             status=RunStatus.PENDING,
+            phase=RunPhase.ACTIVE.value,
         )
         self._runs[run_id] = record
         task = asyncio.create_task(
-            self._resume_task(record, graph, session_id=session_id),
+            self._resume_task(
+                record,
+                graph,
+                session_id=session_id,
+                run_policy=run_policy,
+            ),
             name=f"dan-resume-{run_id}",
         )
         self._tasks[run_id] = task
         return record
+
+    async def apply_pending_overlay(
+        self,
+        run_id: str,
+        node_id: str,
+        patch: dict[str, Any],
+        *,
+        source: str = "user",
+        reason: str = "",
+    ) -> bool:
+        """Apply an execution-local overlay to a pending node in a live run."""
+
+        engine = self._engines.get(run_id)
+        if engine is None:
+            return False
+        return await engine.queue_pending_overlay(
+            run_id,
+            node_id,
+            patch,
+            source=source,
+            reason=reason,
+        )
 
     # ------------------------------------------------------------------
     # Checkpoint portal: partial rerun
@@ -587,13 +675,28 @@ class RunManager:
         if checkpoint is None:
             return None
         cd = checkpoint.get("checkpoint_data", {})
+        run_state = (((checkpoint.get("state") or {}).get("run_state")) or {})
         return {
             "run_id": run_id,
             "timestamp": cd.get("timestamp"),
             "graph_id": cd.get("graph_id", ""),
             "graph_revision": cd.get("graph_revision"),
             "completed_node_ids": cd.get("completed_node_ids", []),
+            "pending_node_ids": cd.get("pending_node_ids", []),
+            "remaining_node_ids": cd.get("remaining_node_ids", []),
             "node_output_keys": list((cd.get("node_outputs") or {}).keys()),
+            "checkpoint_trigger": cd.get("checkpoint_trigger", ""),
+            "stop_reason": cd.get("stop_reason", ""),
+            "partial": bool(cd.get("partial", False)),
+            "resumable": bool(cd.get("resumable", False)),
+            "phase": run_state.get("phase", RunPhase.ACTIVE.value),
+            "progress": cd.get("progress", {}) or {},
+            "latest_checkpoint_timestamp": run_state.get("latest_checkpoint_timestamp", cd.get("timestamp")),
+            "resume_notes": run_state.get("resume_notes", []) or [],
+            "effective_run_policy": run_state.get("effective_run_policy", cd.get("effective_run_policy")),
+            "repair_lineage": run_state.get("repair_lineage", {}) or {},
+            "pending_overlays": run_state.get("pending_overlays", {}) or {},
+            "dynamic_topology": run_state.get("dynamic_topology", {}) or {},
             "has_state": "state" in checkpoint,
         }
 
@@ -611,6 +714,7 @@ class RunManager:
         source_run_id: str,
         scope: "RerunScope",
         session_id: str | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> RunRecord:
         """Start a partial rerun from a checkpoint.
 
@@ -688,6 +792,7 @@ class RunManager:
             run_id=new_run_id,
             graph_id=graph_id,
             status=RunStatus.PENDING,
+            phase=RunPhase.ACTIVE.value,
         )
         self._runs[new_run_id] = record
 
@@ -699,6 +804,7 @@ class RunManager:
                 source_run_id=source_run_id,
                 scope=scope,
                 session_id=session_id,
+                run_policy=run_policy,
             ),
             name=f"dan-rerun-{new_run_id}",
         )
@@ -715,6 +821,10 @@ class RunManager:
         run_id = event.run_id
         record = self._runs.get(run_id)
         if record is not None:
+            if event.event_type == EventType.RUN_PROGRESS:
+                record.phase = str((event.data or {}).get("phase", record.phase))
+            elif event.event_type == EventType.RUN_LIMIT_REACHED:
+                record.phase = RunPhase.STOPPING_ON_LIMIT.value
             if event.event_type == EventType.INTERMEDIATE_TEXT and event.node_id:
                 for i in range(len(record.events) - 1, -1, -1):
                     old = record.events[i]
@@ -1128,6 +1238,20 @@ class RunManager:
                 "run_errors": errors_data,
                 "run_events": record.events[-100:],
                 "node_statuses": dict(record.node_statuses),
+                "runtime_repair_lineage": (
+                    dict((record.result.metadata or {}).get("repair_lineage", {}))
+                    if record.result and isinstance(record.result.metadata, dict)
+                    else {}
+                ),
+                "runtime_repair_summaries": (
+                    {
+                        node_id: dict(node_meta.get("runtime_repair_summary", {}))
+                        for node_id, node_meta in (record.result.metadata or {}).items()
+                        if isinstance(node_meta, dict) and node_meta.get("runtime_repair_summary")
+                    }
+                    if record.result and isinstance(record.result.metadata, dict)
+                    else {}
+                ),
             }
 
             async def _do_reflection():
@@ -1376,6 +1500,7 @@ class RunManager:
         graph: Graph,
         inputs: dict[str, Any] | None,
         session_id: str | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> None:
         record.status = RunStatus.RUNNING
         engine = Engine(
@@ -1383,28 +1508,36 @@ class RunManager:
             executor_registry=self._make_executor_registry(),
             event_callback=self._event_callback,
             human_input_callback=self._make_human_input_callback(record.run_id),
+            workflow_loader=self._graph_loader,
         )
         # 17-1: Wire error context provider so LLMExecutor can augment prompts
         ecp = self._build_error_context_provider()
         if ecp is not None:
             engine.error_context_provider = ecp
+        self._engines[record.run_id] = engine
         try:
             result = await engine.run(
                 graph, inputs=inputs, run_id=record.run_id,
                 session_id=session_id, workflow_id=record.graph_id,
+                run_policy=run_policy,
             )
             record.result = result
             record.status = RunStatus.COMPLETED if result.success else RunStatus.FAILED
+            record.phase = str(result.metadata.get("run_phase", RunPhase.COMPLETED.value))
             if result.node_statuses:
                 record.node_statuses.update(result.node_statuses)
         except Exception as exc:
             logger.exception("Run %s failed with exception", record.run_id)
             record.status = RunStatus.FAILED
+            record.phase = RunPhase.FAILED.value
             record.result = RunResult(
                 run_id=record.run_id, success=False,
                 errors={"exception": str(exc)},
+                metadata={"run_phase": RunPhase.FAILED.value},
             )
         finally:
+            engine._active_run_states.pop(record.run_id, None)
+            self._engines.pop(record.run_id, None)
             await self._enrich_and_persist(record, graph=graph)
 
     async def _resume_task(
@@ -1412,6 +1545,7 @@ class RunManager:
         record: RunRecord,
         graph: Graph,
         session_id: str | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> None:
         record.status = RunStatus.RUNNING
         engine = Engine(
@@ -1419,24 +1553,31 @@ class RunManager:
             executor_registry=self._make_executor_registry(),
             event_callback=self._event_callback,
             human_input_callback=self._make_human_input_callback(record.run_id),
+            workflow_loader=self._graph_loader,
         )
+        self._engines[record.run_id] = engine
         try:
             result = await engine.resume(
                 graph, run_id=record.run_id,
                 session_id=session_id, workflow_id=record.graph_id,
+                run_policy=run_policy,
             )
             record.result = result
             record.status = RunStatus.COMPLETED if result.success else RunStatus.FAILED
+            record.phase = str(result.metadata.get("run_phase", RunPhase.COMPLETED.value))
             if result.node_statuses:
                 record.node_statuses.update(result.node_statuses)
         except Exception as exc:
             logger.exception("Resume %s failed with exception", record.run_id)
             record.status = RunStatus.FAILED
+            record.phase = RunPhase.FAILED.value
             record.result = RunResult(
                 run_id=record.run_id, success=False,
                 errors={"exception": str(exc)},
+                metadata={"run_phase": RunPhase.FAILED.value},
             )
         finally:
+            self._engines.pop(record.run_id, None)
             await self._enrich_and_persist(record, graph=graph)
 
     async def _rerun_task(
@@ -1451,6 +1592,7 @@ class RunManager:
         source_run_id: str,
         scope: Any,
         session_id: str | None = None,
+        run_policy: RunPolicy | dict[str, Any] | None = None,
     ) -> None:
         """Execute a partial rerun, injecting checkpoint outputs for skipped nodes."""
         from dan.engine.context_runtime import (
@@ -1467,10 +1609,12 @@ class RunManager:
             executor_registry=self._make_executor_registry(),
             event_callback=self._event_callback,
             human_input_callback=self._make_human_input_callback(record.run_id),
+            workflow_loader=self._graph_loader,
         )
         ecp = self._build_error_context_provider()
         if ecp is not None:
             engine.error_context_provider = ecp
+        self._engines[record.run_id] = engine
 
         try:
             # -- Build initial state from checkpoint -----------------------
@@ -1522,6 +1666,8 @@ class RunManager:
                 graph, state, shared_context, artifacts, local_state,
                 session_id=session_id, workflow_id=record.graph_id,
                 cost_tracker_state=checkpoint.get("cost_tracker"),
+                run_policy=run_policy,
+                persisted_run_policy=getattr(checkpoint_data, "effective_run_policy", None),
             )
 
             # Tag provenance into result metadata.
@@ -1534,15 +1680,19 @@ class RunManager:
 
             record.result = result
             record.status = RunStatus.COMPLETED if result.success else RunStatus.FAILED
+            record.phase = str(result.metadata.get("run_phase", RunPhase.COMPLETED.value))
             if result.node_statuses:
                 record.node_statuses.update(result.node_statuses)
 
         except Exception as exc:
             logger.exception("Rerun %s failed with exception", record.run_id)
             record.status = RunStatus.FAILED
+            record.phase = RunPhase.FAILED.value
             record.result = RunResult(
                 run_id=record.run_id, success=False,
                 errors={"exception": str(exc)},
+                metadata={"run_phase": RunPhase.FAILED.value},
             )
         finally:
+            self._engines.pop(record.run_id, None)
             await self._enrich_and_persist(record, graph=graph)

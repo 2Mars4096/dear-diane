@@ -29,11 +29,13 @@ class RunRequest(BaseModel):
     inputs: dict[str, Any] | None = None
     run_id: str | None = None
     session_id: str | None = None
+    run_policy: dict[str, Any] | None = None
 
 
 class ResumeRequest(BaseModel):
     graph_id: str
     session_id: str | None = None
+    run_policy: dict[str, Any] | None = None
 
 
 class RerunRequest(BaseModel):
@@ -42,6 +44,14 @@ class RerunRequest(BaseModel):
     target_node_id: str | None = None
     sub_graph_key: str | None = None
     session_id: str | None = None
+    run_policy: dict[str, Any] | None = None
+
+
+class PendingOverlayRequest(BaseModel):
+    node_id: str
+    patch: dict[str, Any]
+    source: str = "user"
+    reason: str = ""
 
 
 # ------------------------------------------------------------------
@@ -59,6 +69,7 @@ async def start_run(req: RunRequest):
     record = await rm.start_run(
         graph, graph_id=req.graph_id, inputs=req.inputs, run_id=req.run_id,
         session_id=req.session_id,
+        run_policy=req.run_policy,
     )
     from dan.server.gateway.router import _event_bus
     if _event_bus is not None:
@@ -85,6 +96,7 @@ async def resume_run(run_id: str, req: ResumeRequest):
     record = await rm.resume_run(
         graph, graph_id=req.graph_id, run_id=run_id,
         session_id=req.session_id,
+        run_policy=req.run_policy,
     )
     return {"run_id": record.run_id, "status": record.status.value}
 
@@ -257,6 +269,14 @@ async def list_run_checkpoints(run_id: str):
             "graph_id": info.get("graph_id", ""),
             "graph_revision": info.get("graph_revision"),
             "completed_node_count": len(info.get("completed_node_ids", [])),
+            "pending_node_ids": info.get("pending_node_ids", []),
+            "remaining_node_ids": info.get("remaining_node_ids", []),
+            "phase": info.get("phase", ""),
+            "stop_reason": info.get("stop_reason", ""),
+            "partial": bool(info.get("partial", False)),
+            "resumable": bool(info.get("resumable", False)),
+            "progress": info.get("progress", {}) or {},
+            "effective_run_policy": info.get("effective_run_policy"),
             "has_state": info.get("has_state", False),
             **staleness_info,
         }],
@@ -276,6 +296,14 @@ async def get_checkpoint_detail(run_id: str, checkpoint_id: str):
         "graph_id": info.get("graph_id", ""),
         "graph_revision": info.get("graph_revision"),
         "completed_node_ids": info.get("completed_node_ids", []),
+        "pending_node_ids": info.get("pending_node_ids", []),
+        "remaining_node_ids": info.get("remaining_node_ids", []),
+        "phase": info.get("phase", ""),
+        "stop_reason": info.get("stop_reason", ""),
+        "partial": bool(info.get("partial", False)),
+        "resumable": bool(info.get("resumable", False)),
+        "progress": info.get("progress", {}) or {},
+        "effective_run_policy": info.get("effective_run_policy"),
         "node_output_keys": info.get("node_output_keys", []),
     }
 
@@ -302,6 +330,7 @@ async def rerun_from_checkpoint(run_id: str, req: RerunRequest):
             source_run_id=run_id,
             scope=scope,
             session_id=req.session_id,
+            run_policy=req.run_policy,
         )
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -313,6 +342,34 @@ async def rerun_from_checkpoint(run_id: str, req: RerunRequest):
         "status": record.status.value,
         "source_run_id": run_id,
         "scope": scope.model_dump(),
+    }
+
+
+@router.post("/api/runs/{run_id}/overlay")
+async def apply_pending_overlay(run_id: str, req: PendingOverlayRequest):
+    rm = get_run_manager()
+    record = rm.get_run(run_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Run '{run_id}' not found")
+    applied = await rm.apply_pending_overlay(
+        run_id,
+        req.node_id,
+        req.patch,
+        source=req.source,
+        reason=req.reason,
+    )
+    if not applied:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Overlay was not applied to node '{req.node_id}'. "
+                "The run may not be live, or the node is no longer pending."
+            ),
+        )
+    return {
+        "run_id": run_id,
+        "node_id": req.node_id,
+        "applied": True,
     }
 
 

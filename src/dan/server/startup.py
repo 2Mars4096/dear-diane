@@ -428,6 +428,7 @@ async def init_engine(state: AppState) -> None:
         tool_registry=_build_tool_registry(_get_indexer),
         run_store=state.run_store,
         telemetry_store=state.telemetry_store,
+        graph_loader=state.graph_store.get_graph,
     )
     # Expose the indexer getter for app-level RAG endpoints
     state._get_indexer = _get_indexer  # type: ignore[attr-defined]
