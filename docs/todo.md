@@ -481,17 +481,17 @@
 > reviews, and module audits. Round 1 (38-1 through 38-5) is complete. Round 2 (38-6 through
 > 38-10) covers security, workflow gen bugs, concierge triage, cross-platform dev mode, and UX.
 
-- [ ] [38-review-hardening](plans/38-review-hardening.md) — umbrella plan for code review and deep system review follow-ups
+- [x] [38-review-hardening](plans/38-review-hardening.md) — umbrella plan for code review and deep system review follow-ups
   - [x] [38-1-furnace-write-safety](plans/38-1-furnace-write-safety.md) — P1: sanitize `source_id` path traversal, artifact containment, source ID collisions
   - [x] [38-2-furnace-lifecycle](plans/38-2-furnace-lifecycle.md) — P2: session state machine, cancel semantics, duplicate start/resume prevention, multi-subscriber SSE
   - [x] [38-3-startup-config-hardening](plans/38-3-startup-config-hardening.md) — P1/P2: lazy `~/.dan` writes, safe-mode startup, dynamic telemetry DB path
   - [x] [38-4-domain-learning-fidelity](plans/38-4-domain-learning-fidelity.md) — P2: broader keyword seeds, abbreviation aliases, original label preservation
   - [x] [38-5-provider-tool-doc-alignment](plans/38-5-provider-tool-doc-alignment.md) — P2/P3: Google provider test realignment, clipboard errors, README safety contract
-  - [ ] [38-6-security-hardening](plans/38-6-security-hardening.md) — P1: workspace sandbox strict mode, exec builtins audit, shell sandbox default, HTML sanitization (DOMPurify), SQL parameterization
-  - [ ] [38-7-chat-wf-gen-fixes](plans/38-7-chat-wf-gen-fixes.md) — P1/P2: validation gate bug, locals() sentinel, CoverageChecker, tool_id fallback, legacy single-node fallback, workflow_query routing, mutation quality gate
-  - [ ] [38-8-concierge-triage-correctness](plans/38-8-concierge-triage-correctness.md) — P1/P2: triage max_tokens=60→256, child_execution type mismatch, asyncio.run fragility, plan decomposition stub, synthesis quality, volatile state race, route inheritance
-  - [ ] [38-9-cross-platform-dev-mode](plans/38-9-cross-platform-dev-mode.md) — P1/P2: terminal /bin/zsh hardcoding, commandExists cross-platform, Electron degradation banner, extension language providers, LSP auto-restart
-  - [ ] [38-10-ux-onboarding-quick-wins](plans/38-10-ux-onboarding-quick-wins.md) — P1/P2: API key validation, error wrapping, cost visibility default, hide coming-soon modes, reassurance delay, CLI progress, startup degradation summary
+  - [x] [38-6-security-hardening](plans/38-6-security-hardening.md) — P1: workspace sandbox strict mode, exec builtins audit, shell sandbox default, HTML sanitization (DOMPurify), SQL parameterization
+  - [x] [38-7-chat-wf-gen-fixes](plans/38-7-chat-wf-gen-fixes.md) — P1/P2: validation gate bug, locals() sentinel, CoverageChecker, tool_id fallback, legacy single-node fallback, workflow_query routing, mutation quality gate
+  - [x] [38-8-concierge-triage-correctness](plans/38-8-concierge-triage-correctness.md) — P1/P2: triage max_tokens=60→256, child_execution type mismatch, asyncio.run fragility, plan decomposition stub, synthesis quality, volatile state race, route inheritance
+  - [x] [38-9-cross-platform-dev-mode](plans/38-9-cross-platform-dev-mode.md) — P1/P2: terminal /bin/zsh hardcoding, commandExists cross-platform, Electron degradation banner, extension language providers, LSP auto-restart
+  - [x] [38-10-ux-onboarding-quick-wins](plans/38-10-ux-onboarding-quick-wins.md) — P1/P2: API key validation, error wrapping, cost visibility default, hide coming-soon modes, reassurance delay, CLI progress, startup degradation summary
 
 ## Backlog (unphased)
 

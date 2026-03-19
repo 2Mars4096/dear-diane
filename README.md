@@ -36,8 +36,15 @@ cd editor && npm install && cd ..
 
 ### Configure
 
-DAN is highly configurable via environment variables. See `.env.example` for the full list of options, including model tiering, learning features, cost controls, and MCP servers.
+DAN is highly configurable via environment variables.
 
+**Fastest path** — copy the minimal config (just API key + model):
+```bash
+cp .env.minimal .env
+# Edit .env and fill in your API key
+```
+
+**Full config** — copy `.env.example` for all available options (model tiering, learning features, cost controls, MCP servers, sandbox settings, and more):
 ```bash
 cp .env.example .env
 ```

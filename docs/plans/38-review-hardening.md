@@ -1,6 +1,6 @@
 # 38: Review Hardening
 
-**Status:** in-progress
+**Status:** completed
 **Goal:** Address all actionable findings from the 2026-03-17 and 2026-03-19 code reviews, module audits, and deep system reviews, prioritized by risk.
 
 ## Motivation
@@ -24,15 +24,15 @@ Review documents: `docs/reviews/2026-03-17-*.md` and `docs/reviews/2026-03-19-*.
 | [38-4](38-4-domain-learning-fidelity.md) | Domain Learning Fidelity | broader keyword seeds, abbreviation aliases, original label preservation | P2 | ✅ |
 | [38-5](38-5-provider-tool-doc-alignment.md) | Provider, Tool & Doc Alignment | Google provider test realignment, clipboard error messaging, README safety contract | P2/P3 | ✅ |
 
-### Round 2 (2026-03-19) — Open
+### Round 2 (2026-03-19) — Completed
 
 | # | Sub-Plan | Scope | Priority | Status |
 |---|----------|-------|----------|--------|
-| [38-6](38-6-security-hardening.md) | Security Hardening | workspace sandbox strict mode, exec builtins audit, shell sandbox default, HTML sanitization, SQL parameterization | P1 | not-started |
-| [38-7](38-7-chat-wf-gen-fixes.md) | Chat Dispatch & WF Gen Fixes | validation gate bug, locals() sentinel, CoverageChecker, tool_id fallback, legacy single-node fallback, workflow_query routing, mutation quality gate | P1/P2 | in-progress |
-| [38-8](38-8-concierge-triage-correctness.md) | Concierge Triage Correctness | max_tokens=60, child_execution type mismatch, asyncio.run fragility, plan decomposition stub, synthesis quality, state race, route inheritance | P1/P2 | in-progress |
-| [38-9](38-9-cross-platform-dev-mode.md) | Cross-Platform Development Mode | terminal /bin/zsh hardcoding, commandExists cross-platform, Electron degradation banner, extension providers, LSP restart | P1/P2 | not-started |
-| [38-10](38-10-ux-onboarding-quick-wins.md) | UX & Onboarding Quick Wins | API key validation, error wrapping, cost visibility, coming-soon modes, reassurance delay, CLI progress, startup summary | P1/P2 | in-progress |
+| [38-6](38-6-security-hardening.md) | Security Hardening | workspace sandbox strict mode, exec builtins audit, shell sandbox default, HTML sanitization, SQL parameterization | P1 | ✅ |
+| [38-7](38-7-chat-wf-gen-fixes.md) | Chat Dispatch & WF Gen Fixes | validation gate bug, locals() sentinel, CoverageChecker, tool_id fallback, legacy single-node fallback, workflow_query routing, mutation quality gate | P1/P2 | ✅ |
+| [38-8](38-8-concierge-triage-correctness.md) | Concierge Triage Correctness | max_tokens=60, child_execution type mismatch, asyncio.run fragility, plan decomposition stub, synthesis quality, state race, route inheritance | P1/P2 | ✅ |
+| [38-9](38-9-cross-platform-dev-mode.md) | Cross-Platform Development Mode | terminal /bin/zsh hardcoding, commandExists cross-platform, Electron degradation banner, extension providers, LSP restart | P1/P2 | ✅ |
+| [38-10](38-10-ux-onboarding-quick-wins.md) | UX & Onboarding Quick Wins | API key validation, error wrapping, cost visibility, coming-soon modes, reassurance delay, CLI progress, startup summary | P1/P2 | ✅ |
 
 ## Dependencies / Sequencing
 
@@ -57,13 +57,13 @@ All Round 2 sub-plans are independent and can run in any order.
 - [x] Google provider regression tests pass against current API surface
 - [x] README safety claims match actual file-tool behavior
 
-### Round 2
-- [ ] All `exec()` calls use restricted builtins; workspace sandbox strict mode available
-- [ ] Triage LLM produces parseable JSON instead of falling back to heuristics most of the time
-- [ ] Terminal creation works on Windows and Linux; Development Mode shows honest degradation in browser
-- [ ] Users see actionable errors, cost visibility, and API key guidance on first run
-- [ ] Chat dispatch correctly separates workflow queries from workflow builds
-- [ ] All existing tests continue to pass
+### Round 2 (completed)
+- [x] All `exec()` calls use restricted builtins; workspace sandbox strict mode available
+- [x] Triage LLM produces parseable JSON instead of falling back to heuristics most of the time
+- [x] Terminal creation works on Windows and Linux; Development Mode shows honest degradation in browser
+- [x] Users see actionable errors, cost visibility, and API key guidance on first run
+- [x] Chat dispatch correctly separates workflow queries from workflow builds
+- [x] All existing tests continue to pass
 
 ## Decisions
 

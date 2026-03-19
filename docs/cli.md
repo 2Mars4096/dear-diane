@@ -37,7 +37,7 @@ These apply across all commands:
 | `DAN_TIER_MAP` | JSON map of tier levels to models | — |
 | `DAN_LEARNING_MODE` | Enable all safe learning features | `0` (off) |
 | `DAN_FULL_TOOLS` | Expose all 32+ tools in chat | `0` (off) |
-| `DAN_SHOW_COST` | Show cost metrics in the UI and terminal | `0` (off) |
+| `DAN_SHOW_COST` | Show cost metrics in the UI and terminal | `1` (on) |
 | `DAN_CONCIERGE_PREP_TIMEOUT` | Timeout for parallel capability prep | `10.0` |
 
 Place these in a `.env` file at the project root; all commands auto-load it.
