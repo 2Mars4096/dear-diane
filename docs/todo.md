@@ -466,27 +466,32 @@
 > backfill engine-level regression tests. Strictly engine execution path — not concierge (29-5)
 > or generation pipeline (32).
 
-- [ ] [37-engine-runtime-parallelism](plans/37-engine-runtime-parallelism.md) — eager dispatch/concurrency/checkpoint/test substrate is in place; follow-on long-running robustness, bounded runtime self-healing, and validated dynamic topology/composition remain
+- [x] [37-engine-runtime-parallelism](plans/37-engine-runtime-parallelism.md) — eager dispatch, concurrency budgeting, checkpoint/resume, runtime regression tests, long-running robustness, bounded self-healing, and dynamic topology/composition all complete
   - [x] [37-1-ready-queue-dispatch](plans/37-1-ready-queue-dispatch.md) — A. Acyclic + cycle-aware eager dispatch plus ordering/context-edge follow-up landed; `execute_plan_tasks()` now uses completion-driven dispatch too
   - [x] [37-2-concurrency-budgeting](plans/37-2-concurrency-budgeting.md) — B. Shared LLM-call semaphore, eager CPU-bound node slot, vote composition, busy-poll fix, and nested/depth deadlock hardening landed
   - [x] [37-3-checkpoint-resume-safety](plans/37-3-checkpoint-resume-safety.md) — C. Batched/background checkpoints plus cycle-boundary, mid-iteration, and idempotent-memory resume landed; subgraph checkpoints intentionally remain disabled, so resume restarts child subgraphs from entry
   - [x] [37-4-runtime-regression-tests](plans/37-4-runtime-regression-tests.md) — D. 42 engine regressions landed overall (38 default-path + 4 slow benchmarks across the engine runtime suite and plan-scheduler execution tests) plus concierge busy-poll proof; subgraph crash behavior and memory-retention coverage are both in place
-  - [ ] [37-5-long-running-workflow-robustness](plans/37-5-long-running-workflow-robustness.md) — E. Per-run execution profiles, hard duration/cost ceilings, partial results, stronger checkpoint cadence, and structured progress for multi-hour runs
-  - [ ] [37-6-runtime-self-healing-and-adaptation](plans/37-6-runtime-self-healing-and-adaptation.md) — F. Bounded runtime repair matrix, repair lineage, and safe pending-node overlays without structural/redesign autonomy
-  - [ ] [37-7-dynamic-topology-and-workflow-composition](plans/37-7-dynamic-topology-and-workflow-composition.md) — G. Constrained runtime child-workflow spawning/composition with typed handoff, lineage, budgets, and resume-safe execution overlays
+  - [x] [37-5-long-running-workflow-robustness](plans/37-5-long-running-workflow-robustness.md) — E. Per-run execution profiles, hard duration/cost ceilings, partial results, stronger checkpoint cadence, and structured progress for multi-hour runs
+  - [x] [37-6-runtime-self-healing-and-adaptation](plans/37-6-runtime-self-healing-and-adaptation.md) — F. Bounded runtime repair matrix, repair lineage, and safe pending-node overlays without structural/redesign autonomy
+  - [x] [37-7-dynamic-topology-and-workflow-composition](plans/37-7-dynamic-topology-and-workflow-composition.md) — G. Constrained runtime child-workflow spawning/composition with typed handoff, lineage, budgets, and resume-safe execution overlays
 
 ## Phase 27 — Review Hardening
 
-> Address all actionable findings from the 2026-03-17 code review and module audit: Furnace
-> write safety, Furnace lifecycle correctness, startup/config robustness, domain learning
-> fidelity, and provider/tool/doc alignment.
+> Address all actionable findings from the 2026-03-17 and 2026-03-19 code reviews, deep system
+> reviews, and module audits. Round 1 (38-1 through 38-5) is complete. Round 2 (38-6 through
+> 38-10) covers security, workflow gen bugs, concierge triage, cross-platform dev mode, and UX.
 
-- [x] [38-review-hardening](plans/38-review-hardening.md) — umbrella plan for code review and module audit follow-ups
+- [ ] [38-review-hardening](plans/38-review-hardening.md) — umbrella plan for code review and deep system review follow-ups
   - [x] [38-1-furnace-write-safety](plans/38-1-furnace-write-safety.md) — P1: sanitize `source_id` path traversal, artifact containment, source ID collisions
   - [x] [38-2-furnace-lifecycle](plans/38-2-furnace-lifecycle.md) — P2: session state machine, cancel semantics, duplicate start/resume prevention, multi-subscriber SSE
   - [x] [38-3-startup-config-hardening](plans/38-3-startup-config-hardening.md) — P1/P2: lazy `~/.dan` writes, safe-mode startup, dynamic telemetry DB path
   - [x] [38-4-domain-learning-fidelity](plans/38-4-domain-learning-fidelity.md) — P2: broader keyword seeds, abbreviation aliases, original label preservation
   - [x] [38-5-provider-tool-doc-alignment](plans/38-5-provider-tool-doc-alignment.md) — P2/P3: Google provider test realignment, clipboard errors, README safety contract
+  - [ ] [38-6-security-hardening](plans/38-6-security-hardening.md) — P1: workspace sandbox strict mode, exec builtins audit, shell sandbox default, HTML sanitization (DOMPurify), SQL parameterization
+  - [ ] [38-7-chat-wf-gen-fixes](plans/38-7-chat-wf-gen-fixes.md) — P1/P2: validation gate bug, locals() sentinel, CoverageChecker, tool_id fallback, legacy single-node fallback, workflow_query routing, mutation quality gate
+  - [ ] [38-8-concierge-triage-correctness](plans/38-8-concierge-triage-correctness.md) — P1/P2: triage max_tokens=60→256, child_execution type mismatch, asyncio.run fragility, plan decomposition stub, synthesis quality, volatile state race, route inheritance
+  - [ ] [38-9-cross-platform-dev-mode](plans/38-9-cross-platform-dev-mode.md) — P1/P2: terminal /bin/zsh hardcoding, commandExists cross-platform, Electron degradation banner, extension language providers, LSP auto-restart
+  - [ ] [38-10-ux-onboarding-quick-wins](plans/38-10-ux-onboarding-quick-wins.md) — P1/P2: API key validation, error wrapping, cost visibility default, hide coming-soon modes, reassurance delay, CLI progress, startup degradation summary
 
 ## Backlog (unphased)
 
@@ -533,6 +538,20 @@
 - [ ] **Preference/domain confirmation UX** — surface inferred durable preferences and domains so users can confirm, reject, or edit them instead of silently storing or dropping uncertain guesses.
 - [ ] **Progressive disclosure / onboarding levels** — add lighter beginner/basic affordances alongside advanced surfaces so new users are not dropped into full capability density immediately.
 - [ ] **Decompose giant orchestration and UI modules** — continue splitting the largest runtime/editor files (`chat_manager.py`, `runtime.py`, `run_manager.py`, `furnace.py`, `scheduler.py`, `ChatPanel.tsx`, `ResearchMode.tsx`) by lifecycle boundary to improve test locality and maintainability.
+
+### 2026-03-19 review — lower-priority and IDE feature backlog
+- [ ] **Audit top-10 `except Exception` files for silent swallows** — 715 `except Exception` across 145 files; top offenders: `chat_manager.py` (50), `startup.py` (33), `runtime.py` (26), `run_manager.py` (23). Replace silent catches with specific types or at minimum `logger.debug()`.
+- [ ] **Pure Python cosine → numpy in triage** — `triage.py:276-288` computes cosine similarity element-by-element in Python; numpy would be ~100x faster for 1536-dim vectors.
+- [ ] **Autonomy: surface-specific tuning for CLI** — `autonomy.py:113-144` checks messaging surfaces for careful mode but has no special handling for CLI vs web (CLI users likely expect more aggressive defaults).
+- [ ] **Multi-root workspace LSP support** — `useMonacoLsp.ts:174-177` only starts LSP for `pinnedRoots[0]`.
+- [ ] **Additional LSP features** — missing document highlights, code lens, semantic tokens, folding range, selection range providers.
+- [ ] **Multi-turn context for inline completion** — each FIM request is independent with no awareness of recent edits or cursor patterns.
+- [ ] **Codebase Q&A beyond 5 open files** — `askCodebase()` only sends 5 open files truncated to 2000 chars; no embedding-based retrieval.
+- [ ] **Additional debug adapters** — only Node.js and Python; Go, Rust, C++, Java missing.
+- [ ] **Diff gutter indicators in editor** — no green/red bars for added/modified/deleted lines like VS Code.
+- [ ] **Tab drag-and-drop reordering** — `MonacoTabs.tsx` has tabs with close/context-menu but no drag reorder.
+- [ ] **No launch.json support** — debug configs stored in localStorage, not version-controlled.
+- [ ] **Inline edit diff preview** — `InlineEdit.tsx` replaces selected code directly without showing a diff overlay like Cursor.
 
 ### Hierarchical agent delegation (deferred)
 - [ ] **Dynamic hierarchical delegation tree (`DelegationNode`)** — new node type for recursive divide-and-conquer with depth-aware model tiering. Agent receives a task, decides whether to handle directly (base case) or decompose and delegate to lower-tier sub-agents (recursive case). Tree depth and branching factor are data-dependent, not design-time fixed. Fields: `agent_prompt`, `decompose_schema`, `max_depth`, `max_children`, `max_total_agents` (global budget), `tier_by_depth` (`{0: "critical", 1: "reasoning", 2: "routine", 3: "micro"}`), `self_handle_condition`, `reduce_strategy`, `timeout_per_depth`. Guardrails: `max_total_agents` across tree, per-depth budget/time caps, model tier degrades at leaf. Reuses existing infra: engine scheduling (sub-graph execution), TierPolicy (depth-to-tier mapping), FailurePolicy (timeout/stagnation), SharedContextStore (parent-child context). Parent can monitor children (like `OrchestratorNode`) and cancel/replace if stalled.

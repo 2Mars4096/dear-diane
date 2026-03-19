@@ -231,6 +231,14 @@ Write up:
 | `docs/changelog.md` | Update — fixes applied |
 | `docs/todo.md` | Update — remaining generation quality work |
 
+### Cycle 6: Generation pipeline correctness from 2026-03-19 workflow-generation review
+
+> These tasks address structural bugs in the generation pipeline identified during the 2026-03-19 deep review. They are pre-existing code bugs, not findings from eval reruns.
+
+- [ ] 24. **End-to-end integration tests** — add 3-5 representative prompts exercising: NL → intent extraction → compilation → validation → enrichment → execution readiness. Each pipeline stage has unit coverage but seams between components are untested.
+- [ ] 25. **Model tiering abstraction** — replace hardcoded `gpt-4o` / `gpt-4o-mini` in `generation_defaults.py` model tiering with abstract tier labels that map to provider-specific models via config, so non-OpenAI users get correct assignments.
+- [ ] 26. **Automated roundtrip test suite** — decompile reference graphs, recompile, and assert structural equivalence to lock down the lossless round-trip claim.
+
 ## Decisions
 
 - **Granular failure modes (33-8 Task 7):** Added `routing_blocked` to `_determine_status()` when events contain "please confirm" or "meta session started" — distinguishes confirmation-blocked builds from generic `no_graph_created`.

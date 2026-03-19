@@ -1,51 +1,77 @@
 # 38: Review Hardening
 
-**Status:** completed
-**Goal:** Address all actionable findings from the 2026-03-17 code review and module audit, prioritized by risk.
+**Status:** in-progress
+**Goal:** Address all actionable findings from the 2026-03-17 and 2026-03-19 code reviews, module audits, and deep system reviews, prioritized by risk.
 
 ## Motivation
 
-A repository-wide code review and module audit (`docs/reviews/2026-03-17-code-review.md`, `docs/reviews/2026-03-17-module-audit.md`) identified issues across five areas: Furnace write safety, Furnace lifecycle correctness, startup/config robustness, domain learning fidelity, and provider/tool/doc alignment. This plan tracks fixes in priority order.
+Repository-wide code reviews and deep system reviews across two rounds identified issues spanning security, correctness, cross-platform support, and user experience:
+
+- **2026-03-17 round:** Furnace write safety, lifecycle correctness, startup/config robustness, domain learning fidelity, provider/tool/doc alignment. All addressed in 38-1 through 38-5.
+- **2026-03-19 round:** Security gaps (sandbox bypass, unsandboxed exec, XSS), workflow generation bugs, concierge triage correctness, cross-platform Development Mode breakage, and UX/onboarding polish. Tracked in 38-6 through 38-10.
+
+Review documents: `docs/reviews/2026-03-17-*.md` and `docs/reviews/2026-03-19-*.md`.
 
 ## Sub-Plans
 
-| # | Sub-Plan | Scope | Priority | Dependencies |
-|---|----------|-------|----------|--------------|
-| [38-1](38-1-furnace-write-safety.md) | Furnace Write Safety | `source_id` path traversal, artifact containment, source ID collision | P1 | None |
-| [38-2](38-2-furnace-lifecycle.md) | Furnace Lifecycle State Machine | cancel semantics, duplicate start/resume, delete/cancel races, multi-subscriber SSE | P2 | None |
-| [38-3](38-3-startup-config-hardening.md) | Startup & Config Hardening | lazy `~/.dan` writes, safe-mode startup, dynamic telemetry DB path | P1/P2 | None |
-| [38-4](38-4-domain-learning-fidelity.md) | Domain Learning Fidelity | broader keyword seeds, abbreviation aliases, original label preservation | P2 | None |
-| [38-5](38-5-provider-tool-doc-alignment.md) | Provider, Tool & Doc Alignment | Google provider test realignment, clipboard error messaging, README safety contract | P2/P3 | None |
+### Round 1 (2026-03-17) — Completed
+
+| # | Sub-Plan | Scope | Priority | Status |
+|---|----------|-------|----------|--------|
+| [38-1](38-1-furnace-write-safety.md) | Furnace Write Safety | `source_id` path traversal, artifact containment, source ID collision | P1 | ✅ |
+| [38-2](38-2-furnace-lifecycle.md) | Furnace Lifecycle State Machine | cancel semantics, duplicate start/resume, delete/cancel races, multi-subscriber SSE | P2 | ✅ |
+| [38-3](38-3-startup-config-hardening.md) | Startup & Config Hardening | lazy `~/.dan` writes, safe-mode startup, dynamic telemetry DB path | P1/P2 | ✅ |
+| [38-4](38-4-domain-learning-fidelity.md) | Domain Learning Fidelity | broader keyword seeds, abbreviation aliases, original label preservation | P2 | ✅ |
+| [38-5](38-5-provider-tool-doc-alignment.md) | Provider, Tool & Doc Alignment | Google provider test realignment, clipboard error messaging, README safety contract | P2/P3 | ✅ |
+
+### Round 2 (2026-03-19) — Open
+
+| # | Sub-Plan | Scope | Priority | Status |
+|---|----------|-------|----------|--------|
+| [38-6](38-6-security-hardening.md) | Security Hardening | workspace sandbox strict mode, exec builtins audit, shell sandbox default, HTML sanitization, SQL parameterization | P1 | not-started |
+| [38-7](38-7-chat-wf-gen-fixes.md) | Chat Dispatch & WF Gen Fixes | validation gate bug, locals() sentinel, CoverageChecker, tool_id fallback, legacy single-node fallback, workflow_query routing, mutation quality gate | P1/P2 | in-progress |
+| [38-8](38-8-concierge-triage-correctness.md) | Concierge Triage Correctness | max_tokens=60, child_execution type mismatch, asyncio.run fragility, plan decomposition stub, synthesis quality, state race, route inheritance | P1/P2 | in-progress |
+| [38-9](38-9-cross-platform-dev-mode.md) | Cross-Platform Development Mode | terminal /bin/zsh hardcoding, commandExists cross-platform, Electron degradation banner, extension providers, LSP restart | P1/P2 | not-started |
+| [38-10](38-10-ux-onboarding-quick-wins.md) | UX & Onboarding Quick Wins | API key validation, error wrapping, cost visibility, coming-soon modes, reassurance delay, CLI progress, startup summary | P1/P2 | in-progress |
 
 ## Dependencies / Sequencing
 
+Round 2 recommended execution order:
 ```
-38-1 (Furnace Write Safety)         ← start here, smallest effort, highest risk
-38-3 (Startup & Config Hardening)   ← independent, unblocks CI
-38-2 (Furnace Lifecycle)            ← independent, larger refactor
-38-4 (Domain Learning Fidelity)     ← independent, product quality
-38-5 (Provider/Tool/Doc Alignment)  ← independent, regression coverage
+38-7 (Chat & WF Gen Fixes)       ← confirmed regressions, fix first
+38-6 (Security Hardening)         ← security before new features
+38-8 (Concierge Triage)           ← max_tokens=60 is highest-leverage single fix
+38-10 (UX & Onboarding)           ← high ROI, mostly small changes
+38-9 (Cross-Platform Dev Mode)    ← important but lower urgency if all users are on macOS
 ```
 
-All sub-plans are independent and can run in any order. Recommended priority: 38-1, 38-3, 38-2, 38-4, 38-5.
+All Round 2 sub-plans are independent and can run in any order.
 
 ## Success Criteria
 
+### Round 1 (completed)
 - [x] No Furnace artifact writes outside the session directory regardless of `source_id` content
 - [x] Server starts cleanly when `~/.dan` is not writable (features degrade, server doesn't crash)
 - [x] Furnace cancel actually stops the running worker; duplicate starts are prevented
 - [x] Domain learning captures common real-world domains and abbreviations
 - [x] Google provider regression tests pass against current API surface
 - [x] README safety claims match actual file-tool behavior
-- [x] All existing tests continue to pass
+
+### Round 2
+- [ ] All `exec()` calls use restricted builtins; workspace sandbox strict mode available
+- [ ] Triage LLM produces parseable JSON instead of falling back to heuristics most of the time
+- [ ] Terminal creation works on Windows and Linux; Development Mode shows honest degradation in browser
+- [ ] Users see actionable errors, cost visibility, and API key guidance on first run
+- [ ] Chat dispatch correctly separates workflow queries from workflow builds
+- [ ] All existing tests continue to pass
 
 ## Decisions
 
-- Execute the five sub-plans in parallel tracks, but converge them on shared regression coverage before updating tracking docs.
-- Prefer router-local runtime state for live Furnace workers/cancellation and keep on-disk session JSON serializable and resumable.
+- Execute the five Round 2 sub-plans in parallel tracks.
+- Round 2 was triggered by a second wave of reviews on 2026-03-19 covering general project health, concierge triage, chat dispatch, workflow generation, development mode, and user experience.
 
 ## Notes
 
 - Review documents live in `docs/reviews/`.
-- The 85 cascading test errors in the full suite collapse to a single root cause (home-directory writes); fixing 38-3 should eliminate them.
-- Implemented across Furnace, startup/telemetry, domain-learning, docs, and regression suites on 2026-03-17.
+- Round 1 was implemented on 2026-03-17.
+- One finding from the 2026-03-19 chat-dispatch review (P1: `prompts.py` import-order regression) was already fixed — variables are now in correct definition order. Not tracked as a Round 2 task.

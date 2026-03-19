@@ -1,7 +1,7 @@
 # 37-6: Bounded Runtime Self-Healing & Pending-Node Adaptation
 
 **Parent:** [37-engine-runtime-parallelism](37-engine-runtime-parallelism.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Add a bounded runtime repair layer to engine execution so node failures can be classified, retried, schema-repaired, and safely adapted via per-node overlays and persisted lineage without allowing structural or redesign-style autonomy during normal runs.
 
 ## Context
@@ -16,52 +16,52 @@
 ## Tasks
 
 ### 1. Runtime failure classification and repair bridge
-- [ ] 1-1. Define runtime repair models (`RuntimeFailureContext`, `RuntimeRepairAttempt`, `RuntimeRepairPlan`, `RuntimeOverlay`) that capture `run_id`, `workflow_id`, `node_id`, `node_type`, failure signature, retry budget, and overlay provenance.
-- [ ] 1-2. Add a scheduler/executor handoff so `NODE_FAILED`, output-normalization exhaustion, tool-loop exhaustion, and code execution failures all flow through one bounded runtime diagnosis entry point.
-- [ ] 1-3. Map runtime failures onto stable categories aligned with existing terminology: `retry`, `prompt_fix`, `parameter_fix`, plus classes such as `timeout`, `llm_failure`, `schema_mismatch`, `tool_failure`, `config_failure`, `code_failure`, `condition_failure`, `unknown`.
-- [ ] 1-4. Reuse `RepairClassifier`, `ErrorRecord`, and generation-time artifact-mapping ideas where helpful, but keep the runtime path distinct from the generation/post-run diagnosis loops.
+- [x] 1-1. Define runtime repair models (`RuntimeFailureContext`, `RuntimeRepairAttempt`, `RuntimeRepairPlan`, `RuntimeOverlay`) that capture `run_id`, `workflow_id`, `node_id`, `node_type`, failure signature, retry budget, and overlay provenance.
+- [x] 1-2. Add a scheduler/executor handoff so `NODE_FAILED`, output-normalization exhaustion, tool-loop exhaustion, and code execution failures all flow through one bounded runtime diagnosis entry point.
+- [x] 1-3. Map runtime failures onto stable categories aligned with existing terminology: `retry`, `prompt_fix`, `parameter_fix`, plus classes such as `timeout`, `llm_failure`, `schema_mismatch`, `tool_failure`, `config_failure`, `code_failure`, `condition_failure`, `unknown`.
+- [x] 1-4. Reuse `RepairClassifier`, `ErrorRecord`, and generation-time artifact-mapping ideas where helpful, but keep the runtime path distinct from the generation/post-run diagnosis loops.
 
 ### 2. Bounded retry matrix by failure type
-- [ ] 2-1. Define an explicit failure-type to action matrix:
+- [x] 2-1. Define an explicit failure-type to action matrix:
   - `timeout` / transient API failures -> retry with backoff
   - `schema_mismatch` / invalid JSON -> schema repair path
   - `tool` / `config` failures -> whitelisted parameter overlay
   - `code` failures -> bounded repair or fail-fast
   - `unknown` -> one conservative retry then surface failure
-- [ ] 2-2. Add per-node caps for each repair kind so the engine cannot loop indefinitely on a single failing node.
-- [ ] 2-3. Deduplicate repeated no-op repairs by storing a failure-signature hash per node and refusing to re-apply the same repair kind once it already failed for the same signature.
-- [ ] 2-4. Keep `RepairLevel.STRUCTURAL` and `RepairLevel.REDESIGN` out of the normal engine path; if runtime diagnosis reaches those conclusions, emit advisory lineage only and fail/defer to post-run handling.
+- [x] 2-2. Add per-node caps for each repair kind so the engine cannot loop indefinitely on a single failing node.
+- [x] 2-3. Deduplicate repeated no-op repairs by storing a failure-signature hash per node and refusing to re-apply the same repair kind once it already failed for the same signature.
+- [x] 2-4. Keep `RepairLevel.STRUCTURAL` and `RepairLevel.REDESIGN` out of the normal engine path; if runtime diagnosis reaches those conclusions, emit advisory lineage only and fail/defer to post-run handling.
 
 ### 3. LLM schema / JSON repair path
-- [ ] 3-1. Extend `OutputNormalizer` / `NormResult` and `executors/llm.py` to emit structured normalization failures with invalid payload preview, schema errors, attempt count, and model used.
-- [ ] 3-2. Add a deterministic JSON-repair fast path before another model call (fence stripping, extracted-object reuse, trailing-text cleanup), but only when the fix is mechanical and schema-safe.
-- [ ] 3-3. If deterministic repair fails, issue one bounded schema-repair re-prompt that asks only for corrected structured output while preserving the node's original task and schema.
-- [ ] 3-4. Preserve current tier-escalation behavior as the final bounded step for LLM schema failures; record whether recovery came from normalization retry, schema re-prompt, or tier escalation.
+- [x] 3-1. Extend `OutputNormalizer` / `NormResult` and `executors/llm.py` to emit structured normalization failures with invalid payload preview, schema errors, attempt count, and model used.
+- [x] 3-2. Add a deterministic JSON-repair fast path before another model call (fence stripping, extracted-object reuse, trailing-text cleanup), but only when the fix is mechanical and schema-safe.
+- [x] 3-3. If deterministic repair fails, issue one bounded schema-repair re-prompt that asks only for corrected structured output while preserving the node's original task and schema.
+- [x] 3-4. Preserve current tier-escalation behavior as the final bounded step for LLM schema failures; record whether recovery came from normalization retry, schema re-prompt, or tier escalation.
 
 ### 4. Tool, config, and code repair paths
-- [ ] 4-1. For tool failures, distinguish transient execution errors from bad `tool_id`, `tool_config`, or timeout mismatches, and allow only whitelisted parameter repairs through execution-local overlay state rather than persisted graph mutation.
-- [ ] 4-2. For LLM/config failures, allow bounded pending-node overlays for safe fields such as `system_prompt`, `prompt_template`, `model`, `temperature`, `max_tokens`, and `retry_policy`.
-- [ ] 4-3. For code failures, add a narrow repair path only when the failing code is runtime-generated or explicitly repairable from available source text; static user-authored `CodeOperator` code should default to fail-fast plus lineage capture.
-- [ ] 4-4. Ensure every runtime repair path operates on execution-local state and never mutates the persisted workflow definition during a run.
+- [x] 4-1. For tool failures, distinguish transient execution errors from bad `tool_id`, `tool_config`, or timeout mismatches, and allow only whitelisted parameter repairs through execution-local overlay state rather than persisted graph mutation.
+- [x] 4-2. For LLM/config failures, allow bounded pending-node overlays for safe fields such as `system_prompt`, `prompt_template`, `model`, `temperature`, `max_tokens`, and `retry_policy`.
+- [x] 4-3. For code failures, add a narrow repair path only when the failing code is runtime-generated or explicitly repairable from available source text; static user-authored `CodeOperator` code should default to fail-fast plus lineage capture.
+- [x] 4-4. Ensure every runtime repair path operates on execution-local state and never mutates the persisted workflow definition during a run.
 
 ### 5. Per-node repair lineage, events, and checkpoint persistence
-- [ ] 5-1. Extend execution state and checkpoint payloads with per-node repair lineage: attempts made, remaining budgets, failure signatures, active overlays, and last repair outcome.
-- [ ] 5-2. Add explicit engine events for repair observability, e.g. `NODE_REPAIR_STARTED`, `NODE_REPAIR_APPLIED`, `NODE_REPAIR_FAILED`, `NODE_OVERLAY_APPLIED`, and `NODE_REPAIR_SKIPPED`.
-- [ ] 5-3. Persist enough lineage in checkpoints that resume can continue with the same repair budgets and pending overlays instead of re-running an exhausted repair loop from scratch.
-- [ ] 5-4. Mirror completed repair summaries into the repair/failure-memory path after the run so reflection and experience learning can see what runtime self-healing already tried.
-- [ ] 5-5. Attach concise actionable repair summaries (`cause`, `repair_attempted`, `next_step`, `user_visible_message`) so run-manager/UI surfaces do not have to infer human-readable guidance from raw exceptions alone.
+- [x] 5-1. Extend execution state and checkpoint payloads with per-node repair lineage: attempts made, remaining budgets, failure signatures, active overlays, and last repair outcome.
+- [x] 5-2. Add explicit engine events for repair observability, e.g. `NODE_REPAIR_STARTED`, `NODE_REPAIR_APPLIED`, `NODE_REPAIR_FAILED`, `NODE_OVERLAY_APPLIED`, and `NODE_REPAIR_SKIPPED`.
+- [x] 5-3. Persist enough lineage in checkpoints that resume can continue with the same repair budgets and pending overlays instead of re-running an exhausted repair loop from scratch.
+- [x] 5-4. Mirror completed repair summaries into the repair/failure-memory path after the run so reflection and experience learning can see what runtime self-healing already tried.
+- [x] 5-5. Attach concise actionable repair summaries (`cause`, `repair_attempted`, `next_step`, `user_visible_message`) so run-manager/UI surfaces do not have to infer human-readable guidance from raw exceptions alone.
 
 ### 6. Safe mid-run pending-node overlays
-- [ ] 6-1. Add a scheduler-managed overlay map for nodes still in `PENDING` state; overlays apply at dispatch time and are ignored for `RUNNING`, `COMPLETED`, `FAILED`, or `SKIPPED` nodes.
-- [ ] 6-2. Support two overlay sources: automatic runtime repair decisions and explicit concierge/user mid-run adaptation requests.
-- [ ] 6-3. Persist overlay provenance (`source`, `reason`, `created_at`, `based_on_failure_signature`) so the engine can explain why a pending node ran with modified prompt/config.
-- [ ] 6-4. Make checkpoint/resume restore pending-node overlays exactly, so resumed runs preserve the same not-yet-executed prompt/config adjustments.
+- [x] 6-1. Add a scheduler-managed overlay map for nodes still in `PENDING` state; overlays apply at dispatch time and are ignored for `RUNNING`, `COMPLETED`, `FAILED`, or `SKIPPED` nodes.
+- [x] 6-2. Support two overlay sources: automatic runtime repair decisions and explicit concierge/user mid-run adaptation requests.
+- [x] 6-3. Persist overlay provenance (`source`, `reason`, `created_at`, `based_on_failure_signature`) so the engine can explain why a pending node ran with modified prompt/config.
+- [x] 6-4. Make checkpoint/resume restore pending-node overlays exactly, so resumed runs preserve the same not-yet-executed prompt/config adjustments.
 
 ### 7. Tests, rollout guards, and failure containment
-- [ ] 7-1. Extend engine regression coverage with cases for invalid JSON recovery, schema-mismatch exhaustion, transient tool retries, tool/config overlays, code-repair gating, and checkpoint-resume with persisted repair lineage.
-- [ ] 7-2. Add negative tests proving normal execution never auto-applies structural graph mutations or redesigns, and never mutates completed/running nodes mid-run.
-- [ ] 7-3. Gate the feature behind an explicit config/env flag (`DAN_RUNTIME_SELF_HEALING=1` or equivalent), default off initially.
-- [ ] 7-4. Add regression assertions that bounded runtime repair does not introduce scheduler deadlocks or materially degrade the no-failure happy path.
+- [x] 7-1. Extend engine regression coverage with cases for invalid JSON recovery, schema-mismatch exhaustion, transient tool retries, tool/config overlays, code-repair gating, and checkpoint-resume with persisted repair lineage.
+- [x] 7-2. Add negative tests proving normal execution never auto-applies structural graph mutations or redesigns, and never mutates completed/running nodes mid-run.
+- [x] 7-3. Gate the feature behind an explicit config/env flag (`DAN_RUNTIME_SELF_HEALING=1` or equivalent), default off initially.
+- [x] 7-4. Add regression assertions that bounded runtime repair does not introduce scheduler deadlocks or materially degrade the no-failure happy path.
 
 ## Primary Files
 
@@ -91,12 +91,12 @@
 
 ## Success Criteria
 
-- [ ] Runtime node failures are classified into stable, inspectable categories and routed through a bounded repair matrix instead of ad hoc executor-specific behavior.
-- [ ] LLM nodes recover known invalid-JSON / schema-mismatch failures within configured caps, with recovery reason recorded in node metadata and events.
-- [ ] Pending-node overlays survive checkpoint/resume and never change the persisted workflow graph or mutate already running/completed nodes.
-- [ ] Per-node repair lineage is visible in events, checkpoints, and final run metadata, and can feed post-run reflection / experience systems.
-- [ ] Normal engine execution never auto-applies `structural_fix` or `redesign`; those remain advisory or post-run concerns.
-- [ ] No deadlocks, runaway retry loops, or material happy-path slowdown are introduced when runtime self-healing is enabled.
+- [x] Runtime node failures are classified into stable, inspectable categories and routed through a bounded repair matrix instead of ad hoc executor-specific behavior.
+- [x] LLM nodes recover known invalid-JSON / schema-mismatch failures within configured caps, with recovery reason recorded in node metadata and events.
+- [x] Pending-node overlays survive checkpoint/resume and never change the persisted workflow graph or mutate already running/completed nodes.
+- [x] Per-node repair lineage is visible in events, checkpoints, and final run metadata, and can feed post-run reflection / experience systems.
+- [x] Normal engine execution never auto-applies `structural_fix` or `redesign`; those remain advisory or post-run concerns.
+- [x] No deadlocks, runaway retry loops, or material happy-path slowdown are introduced when runtime self-healing is enabled.
 
 ## Decisions
 
@@ -114,6 +114,8 @@
 - Checkpoint equivalence is the main correctness risk: resume must restore repair budgets, failure signatures, and overlays exactly enough that a resumed run behaves like a non-crashed run with the same bounded repair history.
 - This slice is about runtime recovery, not topology evolution.
 - Review-driven UX requirement: repair events and final run metadata should surface actionable guidance, not just structural/runtime diagnostics.
+- Completion note:
+  runtime repair lineage now carries a shared `ErrorRecord`-shaped diagnostic record plus a normalized post-run repair level from `RepairClassifier`, while keeping the bounded runtime matrix separate from post-run redesign loops.
 
 ## Estimate
 

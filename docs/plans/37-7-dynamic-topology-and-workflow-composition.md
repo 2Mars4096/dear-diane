@@ -1,7 +1,7 @@
 # 37-7: Validated Dynamic Topology & Child Workflow Composition
 
 **Parent:** [37-engine-runtime-parallelism](37-engine-runtime-parallelism.md)
-**Status:** not-started
+**Status:** completed
 **Goal:** Add an engine-owned, constrained runtime expansion model so workflows can spawn validated child branches/workflows with typed input/output handoff, shared budgets, lineage, and safe checkpoint/resume behavior, without permitting arbitrary in-run graph mutation.
 
 ## Context
@@ -16,47 +16,47 @@
 ## Tasks
 
 ### 1. Define the constrained runtime expansion contract
-- [ ] 1-1. Introduce explicit runtime models for validated expansion in `models/control_flow.py` / `models/graph.py` (e.g. `DynamicExpansionSpec`, `ChildWorkflowCall`, `SpawnPolicy`) that reference predeclared `sub_graphs`, registered blocks, or persisted workflow IDs instead of raw node/edge patches.
-- [ ] 1-2. Limit v1 expansion modes to engine-safe patterns: spawn a child subgraph, clone a validated template branch, or invoke a child workflow operator with declared schemas.
-- [ ] 1-3. Explicitly exclude arbitrary free-form graph mutation and mid-run rewiring of unrelated nodes.
-- [ ] 1-4. Reuse the existing `BoundaryContract` (`accepts`, `returns`, `signals`, `reads_global`, `writes_global`) rather than inventing a second handoff system.
+- [x] 1-1. Introduce explicit runtime models for validated expansion in `models/control_flow.py` / `models/graph.py` (e.g. `DynamicExpansionSpec`, `ChildWorkflowCall`, `SpawnPolicy`) that reference predeclared `sub_graphs`, registered blocks, or persisted workflow IDs instead of raw node/edge patches.
+- [x] 1-2. Limit v1 expansion modes to engine-safe patterns: spawn a child subgraph, clone a validated template branch, or invoke a child workflow operator with declared schemas.
+- [x] 1-3. Explicitly exclude arbitrary free-form graph mutation and mid-run rewiring of unrelated nodes.
+- [x] 1-4. Reuse the existing `BoundaryContract` (`accepts`, `returns`, `signals`, `reads_global`, `writes_global`) rather than inventing a second handoff system.
 
 ### 2. Add an engine-owned child workflow / dynamic branch execution primitive
-- [ ] 2-1. Extend the runtime contract in the engine so executors can request a validated child execution through a first-class API rather than overloading ad hoc subgraph execution paths.
-- [ ] 2-2. Implement dynamic topology as an execution overlay tracked by the scheduler, not by mutating `Graph.nodes` / `Graph.edges` in place during a run.
-- [ ] 2-3. Ensure spawned children inherit the ready queue, shared semaphores, and cycle/checkpoint guards from Phase 37 so dynamic work behaves like native engine work.
-- [ ] 2-4. Add a first-class child workflow operator path for typed workflow-to-workflow composition, not just prompt-only orchestration.
+- [x] 2-1. Extend the runtime contract in the engine so executors can request a validated child execution through a first-class API rather than overloading ad hoc subgraph execution paths.
+- [x] 2-2. Implement dynamic topology as an execution overlay tracked by the scheduler, not by mutating `Graph.nodes` / `Graph.edges` in place during a run.
+- [x] 2-3. Ensure spawned children inherit the ready queue, shared semaphores, and cycle/checkpoint guards from Phase 37 so dynamic work behaves like native engine work.
+- [x] 2-4. Add a first-class child workflow operator path for typed workflow-to-workflow composition, not just prompt-only orchestration.
 
 ### 3. Enforce typed handoff and cross-workflow coordination
-- [ ] 3-1. Define a typed child-result envelope (`status`, `outputs`, `signals`, `artifacts`, `run_id`, lineage metadata) so parents consume structured results instead of prompt-only summaries.
-- [ ] 3-2. Validate parent-to-child inputs and child-to-parent outputs against `BoundaryContract` and the existing boundary-validation path before execution and on return.
-- [ ] 3-3. Add a clean handoff path into meta-controller / system-plan coordination so upstream outputs become typed downstream workflow inputs.
-- [ ] 3-4. Keep global/shared-context access bounded through explicit contract fields instead of ad hoc memory coupling.
-- [ ] 3-5. Ensure boundary mismatch failures surface actionable validation guidance to runtime/status consumers instead of raw structural diagnostics alone.
+- [x] 3-1. Define a typed child-result envelope (`status`, `outputs`, `signals`, `artifacts`, `run_id`, lineage metadata) so parents consume structured results instead of prompt-only summaries.
+- [x] 3-2. Validate parent-to-child inputs and child-to-parent outputs against `BoundaryContract` and the existing boundary-validation path before execution and on return.
+- [x] 3-3. Add a clean handoff path into meta-controller / system-plan coordination so upstream outputs become typed downstream workflow inputs.
+- [x] 3-4. Keep global/shared-context access bounded through explicit contract fields instead of ad hoc memory coupling.
+- [x] 3-5. Ensure boundary mismatch failures surface actionable validation guidance to runtime/status consumers instead of raw structural diagnostics alone.
 
 ### 4. Add lineage, limits, and budget accounting
-- [ ] 4-1. Track parent/child lineage in runtime state and events (`parent_run_id`, `parent_node_id`, `child_run_id`, template/workflow key, spawn index, layer path extension).
-- [ ] 4-2. Add hard safety limits for dynamic execution: max child depth, max spawns per node, max total dynamic children per run, optional per-child timeout, and budget-share metadata.
-- [ ] 4-3. Roll child token/cost/concurrency usage into the same run-level accounting used by the engine today so spawned work cannot silently bypass budgets.
-- [ ] 4-4. Ensure lineage and limits are included in checkpoints and surfaced in run metadata/events for debugging and UX consumers.
+- [x] 4-1. Track parent/child lineage in runtime state and events (`parent_run_id`, `parent_node_id`, `child_run_id`, template/workflow key, spawn index, layer path extension).
+- [x] 4-2. Add hard safety limits for dynamic execution: max child depth, max spawns per node, max total dynamic children per run, optional per-child timeout, and budget-share metadata.
+- [x] 4-3. Roll child token/cost/concurrency usage into the same run-level accounting used by the engine today so spawned work cannot silently bypass budgets.
+- [x] 4-4. Ensure lineage and limits are included in checkpoints and surfaced in run metadata/events for debugging and UX consumers.
 
 ### 5. Define checkpoint/resume semantics for spawned children
-- [ ] 5-1. Extend checkpoint payloads to record dynamic child invocation decisions, completed child results, and in-flight child records needed to rebuild the execution overlay on resume.
-- [ ] 5-2. Keep the v1 resume boundary simple and safe: a child workflow is resumable from its invocation boundary, not from arbitrary mid-child internal state unless that path is already covered by engine checkpoint semantics.
-- [ ] 5-3. Guarantee idempotent replay rules so resumed parents do not duplicate already committed child side effects or memory writes.
-- [ ] 5-4. Make explicit when child workflow replay restarts from the invocation boundary rather than partial nested restore.
+- [x] 5-1. Extend checkpoint payloads to record dynamic child invocation decisions, completed child results, and in-flight child records needed to rebuild the execution overlay on resume.
+- [x] 5-2. Keep the v1 resume boundary simple and safe: a child workflow is resumable from its invocation boundary, not from arbitrary mid-child internal state unless that path is already covered by engine checkpoint semantics.
+- [x] 5-3. Guarantee idempotent replay rules so resumed parents do not duplicate already committed child side effects or memory writes.
+- [x] 5-4. Make explicit when child workflow replay restarts from the invocation boundary rather than partial nested restore.
 
 ### 6. Integrate with orchestrator and meta-controller consumers
-- [ ] 6-1. Update `OrchestratorNode` / async-loop execution paths to dispatch via the new engine child-workflow primitive when the work item is a validated child workflow rather than an in-graph team-only subgraph.
-- [ ] 6-2. Update `MetaController` system execution so `depends_on` / upstream-output coordination can graduate from prompt-only handoffs to typed engine-managed child/run handoff where appropriate.
-- [ ] 6-3. Keep `server/concierge/runtime.py` as a caller/integrator that consumes typed events and handoffs, not the source of truth for spawn/resume semantics.
-- [ ] 6-4. Preserve feature-flagged fallbacks so existing orchestrator/meta paths keep working while the engine-owned contract is proved out.
+- [x] 6-1. Update `OrchestratorNode` / async-loop execution paths to dispatch via the new engine child-workflow primitive when the work item is a validated child workflow rather than an in-graph team-only subgraph.
+- [x] 6-2. Update `MetaController` system execution so `depends_on` / upstream-output coordination can graduate from prompt-only handoffs to typed engine-managed child/run handoff where appropriate.
+- [x] 6-3. Keep `server/concierge/runtime.py` as a caller/integrator that consumes typed events and handoffs, not the source of truth for spawn/resume semantics.
+- [x] 6-4. Preserve feature-flagged fallbacks so existing orchestrator/meta paths keep working while the engine-owned contract is proved out.
 
 ### 7. Backfill tests, feature flagging, and docs
-- [ ] 7-1. Add engine tests for schema validation, spawn-limit enforcement, lineage emission, budget roll-up, and deterministic resume with dynamic children.
-- [ ] 7-2. Add integration coverage for async orchestrator redispatch, meta-controller workflow dependencies, and repeated child invocation of the same template/workflow.
-- [ ] 7-3. Ship behind a feature flag (`DAN_DYNAMIC_TOPOLOGY=1` or equivalent).
-- [ ] 7-4. Document clear v1 exclusions: no arbitrary graph edits, no partial nested restore, and no editor/frontend-first authoring surface in this slice.
+- [x] 7-1. Add engine tests for schema validation, spawn-limit enforcement, lineage emission, budget roll-up, and deterministic resume with dynamic children.
+- [x] 7-2. Add integration coverage for async orchestrator redispatch, meta-controller workflow dependencies, and repeated child invocation of the same template/workflow.
+- [x] 7-3. Ship behind a feature flag (`DAN_DYNAMIC_TOPOLOGY=1` or equivalent).
+- [x] 7-4. Document clear v1 exclusions: no arbitrary graph edits, no partial nested restore, and no editor/frontend-first authoring surface in this slice.
 
 ## Primary Files
 
@@ -85,12 +85,12 @@
 
 ## Success Criteria
 
-- [ ] Dynamic expansion is only possible through predeclared, validated templates/subgraphs/workflow references; arbitrary runtime graph mutation is impossible through the public contract.
-- [ ] Spawned child work respects the same global node/LLM concurrency and budget accounting as the parent run.
-- [ ] Parent-to-child and child-to-parent handoff is schema-validated and returns a typed result envelope with lineage metadata.
-- [ ] Checkpoint/resume rebuilds dynamic child execution deterministically and does not duplicate committed side effects on replay.
-- [ ] `OrchestratorNode` and `MetaController` can coordinate validated child workflows through engine-owned APIs instead of prompt-only handoff strings alone.
-- [ ] The feature ships behind a guarded flag with engine/meta regression coverage for spawn limits, lineage, resume, and budget roll-up.
+- [x] Dynamic expansion is only possible through predeclared, validated templates/subgraphs/workflow references; arbitrary runtime graph mutation is impossible through the public contract.
+- [x] Spawned child work respects the same global node/LLM concurrency and budget accounting as the parent run.
+- [x] Parent-to-child and child-to-parent handoff is schema-validated and returns a typed result envelope with lineage metadata.
+- [x] Checkpoint/resume rebuilds dynamic child execution deterministically and does not duplicate committed side effects on replay.
+- [x] `OrchestratorNode` and `MetaController` can coordinate validated child workflows through engine-owned APIs instead of prompt-only handoff strings alone.
+- [x] The feature ships behind a guarded flag with engine/meta regression coverage for spawn limits, lineage, resume, and budget roll-up.
 
 ## Decisions
 
@@ -107,6 +107,14 @@
 - This slice depends on 37-5 and 37-6 making long-running durability and bounded runtime-repair behavior predictable first.
 - Review-driven maintainability constraint: keep the child-workflow execution contract modular enough that future UI/meta integrations consume it rather than duplicating it.
 - Review-driven UX requirement: boundary/handoff validation failures should be phrased as actionable mismatch guidance, not only as low-level structural errors.
+- V1 exclusions:
+  no arbitrary graph edits or unrelated node rewiring during execution.
+- V1 exclusions:
+  no partial nested restore below the child invocation boundary.
+- V1 exclusions:
+  no editor/frontend-first authoring surface in this slice; the engine contract lands first.
+- Current supported runtime expansion modes:
+  `sub_graph`, `template_branch`, and `workflow_ref`, all behind the engine dynamic-topology guard.
 
 ## Estimate
 
