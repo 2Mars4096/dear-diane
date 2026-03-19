@@ -59,9 +59,14 @@ export function chooseInitialChatThreadId(params: {
 }): string | null {
   const availableIds = new Set(params.threads.map((thread) => thread.id));
   const candidates = [
-    params.workspaceActiveThreadId,
+    // An explicit in-session handoff (for example from the compact sidebar)
+    // should win immediately.
     params.appWorkflowId === params.workflowId ? params.appThreadId : null,
+    // On startup, prefer the workflow-scoped persisted full-chat selection
+    // over the broader workspace fallback, which can point at a different
+    // chat surface's last thread.
     readSavedActiveThreadSelection(params.workflowId, params.workspaceId),
+    params.workspaceActiveThreadId,
   ];
   for (const candidate of candidates) {
     if (candidate && availableIds.has(candidate)) {

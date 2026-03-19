@@ -41,7 +41,7 @@ describe("chatThreadRestore", () => {
     );
   });
 
-  it("prefers workspace, then app, then saved, then most recent thread", () => {
+  it("prefers explicit app handoff, then saved selection, then workspace fallback", () => {
     const threads = [makeThread("first"), makeThread("second")];
 
     saveActiveThreadSelection("_scratch", "second", "ws-a");
@@ -64,6 +64,17 @@ describe("chatThreadRestore", () => {
         workspaceActiveThreadId: "second",
         appThreadId: "first",
         appWorkflowId: "_scratch",
+      }),
+    ).toBe("first");
+
+    expect(
+      chooseInitialChatThreadId({
+        threads,
+        workflowId: "_scratch",
+        workspaceId: "ws-a",
+        workspaceActiveThreadId: "first",
+        appThreadId: null,
+        appWorkflowId: null,
       }),
     ).toBe("second");
 
