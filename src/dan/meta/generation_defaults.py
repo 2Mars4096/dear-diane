@@ -208,11 +208,16 @@ class DefaultsEnricher:
         if has_validator:
             return
 
-        data_edges = graph_dict.get("edges", {}).get("data", [])
+        raw_edges = graph_dict.get("edges", [])
+        data_edges = (
+            raw_edges.get("data", [])
+            if isinstance(raw_edges, dict)
+            else (raw_edges if isinstance(raw_edges, list) else [])
+        )
         if not data_edges:
             return
 
-        source_ids = {e["source_node_id"] for e in data_edges}
+        source_ids = {e["source_node_id"] for e in data_edges if isinstance(e, dict)}
         all_node_ids = {n.get("id") for n in nodes if n.get("id")}
 
         terminal_ids = all_node_ids - source_ids
@@ -246,7 +251,11 @@ class DefaultsEnricher:
                 edge["target_node_id"] = val_id
                 edge["target_port"] = "data"
 
-            graph_dict.setdefault("edges", {}).setdefault("data", []).append({
+            edges = graph_dict.get("edges")
+            if not isinstance(edges, list):
+                edges = edges.get("data", []) if isinstance(edges, dict) else []
+                graph_dict["edges"] = edges
+            edges.append({
                 "source_node_id": val_id,
                 "source_port": "valid",
                 "target_node_id": tid,
@@ -296,7 +305,11 @@ class DefaultsEnricher:
         }
         nodes.append(reviewer)
 
-        graph_dict.setdefault("edges", {}).setdefault("data", []).append({
+        edges = graph_dict.get("edges")
+        if not isinstance(edges, list):
+            edges = edges.get("data", []) if isinstance(edges, dict) else []
+            graph_dict["edges"] = edges
+        edges.append({
             "source_node_id": cid,
             "source_port": "text",
             "target_node_id": rev_id,

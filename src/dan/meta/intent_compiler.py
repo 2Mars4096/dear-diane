@@ -84,10 +84,10 @@ def _infer_tool_id(name: str, description: str) -> str:
         if re.search(pattern, text):
             return tool_id
     logger.warning(
-        "No tool keyword match for stage '%s'; falling back to web_search",
+        "No tool keyword match for stage '%s'; falling back to llm_operator",
         name or description,
     )
-    return "web_search"
+    return "llm_operator"
 
 
 def _mask_string_literals(text: str) -> tuple[str, list[str]]:
@@ -821,6 +821,7 @@ class IntentCompiler:
         from dan.builder.refs import NodeRef as NR
 
         ref: NodeRef | tuple[NodeRef, NodeRef] | None = None
+        first_entry_ref: NodeRef | None = None
 
         if pattern == "linear_chain" and len(stages) >= 2:
             steps = tuple(
@@ -905,7 +906,7 @@ class IntentCompiler:
             )
 
         if prev_ref is not None:
-            entry_ref = first_entry_ref if 'first_entry_ref' in locals() and first_entry_ref else ref
+            entry_ref = first_entry_ref if first_entry_ref is not None else ref
             if isinstance(prev_ref, tuple):
                 prev_ref[0] >> entry_ref
                 prev_ref[1] >> entry_ref
@@ -983,6 +984,7 @@ class IntentCompiler:
         """Compile a single segment using convenience methods where possible."""
         lines: list[str] = []
         ref_var = f"seg_{seg_idx}"
+        first_entry_var: str | None = None
 
         if pattern == "linear_chain" and len(stages) >= 2:
             steps = []
@@ -1070,7 +1072,7 @@ class IntentCompiler:
                 ref_var = exit_
 
         if prev_ref_var and lines:
-            entry_var = first_entry_var if 'first_entry_var' in locals() and first_entry_var else ref_var
+            entry_var = first_entry_var if first_entry_var is not None else ref_var
             if prev_ref_var.startswith("__both__:"):
                 _, branch_a, branch_b = prev_ref_var.split(":")
                 lines.insert(0, f"{branch_b} >> {entry_var}")

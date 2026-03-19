@@ -8,6 +8,7 @@ graduated repair, with human override at any checkpoint.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import os
 import time
@@ -45,6 +46,7 @@ class _WorkflowDependencyHandoff(BaseModel):
     known_issues: list[str] = Field(default_factory=list)
     suggestions: list[str] = Field(default_factory=list)
     artifacts_produced: list[str] = Field(default_factory=list)
+    outputs: dict[str, Any] = Field(default_factory=dict)
 
     def to_prompt_context(self, budget: int = 1500) -> str:
         header = (
@@ -136,6 +138,7 @@ def _assemble_workflow_dependency_handoff(
         known_issues=known_issues,
         suggestions=suggestions,
         artifacts_produced=artifacts,
+        outputs=dict(outputs) if isinstance(outputs, dict) else {},
     )
 
 
@@ -461,13 +464,31 @@ class MetaController:
                     _wf_result: dict[str, Any] | None = None
                     if self._run_workflow:
                         try:
-                            result = await self._run_workflow(
-                                plan_output.plan, session.session_id
+                            workflow_inputs = self._build_workflow_inputs(spec, handoffs)
+                            result = await self._invoke_run_workflow(
+                                plan_output.plan,
+                                session.session_id,
+                                workflow_inputs=workflow_inputs,
+                                upstream_handoffs={
+                                    dep_name: handoff.model_dump()
+                                    for dep_name, handoff in _upstream.items()
+                                } if _deps else {},
+                                workflow_spec=spec.model_dump(),
+                                prepared_graph=graph_data if isinstance(graph_data, dict) else None,
+                                prepared_workflow_id=wf_id,
                             )
                             run_id = result.get("run_id", "") if isinstance(result, dict) else ""
                             run_ids.append(run_id)
                             session.run_ids.append(run_id)
                             _wf_result = result if isinstance(result, dict) else {"status": "completed"}
+                            actual_workflow_id = (
+                                str(result.get("workflow_id", "")).strip()
+                                if isinstance(result, dict)
+                                else ""
+                            )
+                            if actual_workflow_id:
+                                built_ids[-1] = actual_workflow_id
+                                session.workflow_ids[-1] = actual_workflow_id
                         except Exception as exc:
                             logger.warning("Workflow %s execution failed: %s", spec.name, exc)
                             run_ids.append("")
@@ -821,7 +842,7 @@ class MetaController:
             logger.error("No run_workflow callable configured")
             return None
         try:
-            result = await self._run_workflow(plan, session.session_id)
+            result = await self._invoke_run_workflow(plan, session.session_id)
             return result if isinstance(result, dict) else {
                 "success": False,
                 "error_context": "Invalid result type",
@@ -829,6 +850,67 @@ class MetaController:
         except Exception as exc:
             logger.exception("Execution failed for session %s", session.session_id)
             return {"success": False, "error_context": str(exc)}
+
+    def _build_workflow_inputs(
+        self,
+        spec: Any,
+        handoffs: dict[str, _WorkflowDependencyHandoff],
+    ) -> dict[str, Any]:
+        declared_names = {
+            str(item.get("name", "")).strip()
+            for item in (getattr(spec, "inputs", None) or [])
+            if isinstance(item, dict) and str(item.get("name", "")).strip()
+        }
+        if not declared_names:
+            return {}
+
+        resolved: dict[str, Any] = {}
+        for dep_name in getattr(spec, "depends_on", None) or []:
+            handoff = handoffs.get(dep_name)
+            if handoff is None:
+                continue
+            for key, value in handoff.outputs.items():
+                if key in declared_names and key not in resolved:
+                    resolved[key] = value
+        return resolved
+
+    async def _invoke_run_workflow(
+        self,
+        plan: Any,
+        session_id: str,
+        **extra_kwargs: Any,
+    ) -> Any:
+        if self._run_workflow is None:
+            raise RuntimeError("No run_workflow callable configured")
+
+        call_kwargs = {k: v for k, v in extra_kwargs.items() if v not in ({}, None, [])}
+        try:
+            signature = inspect.signature(self._run_workflow)
+        except (TypeError, ValueError):
+            signature = None
+
+        if signature is not None:
+            accepts_kwargs = any(
+                param.kind == inspect.Parameter.VAR_KEYWORD
+                for param in signature.parameters.values()
+            )
+            if accepts_kwargs:
+                return await self._run_workflow(plan, session_id, **call_kwargs)
+            supported_kwargs = {
+                name: value
+                for name, value in call_kwargs.items()
+                if name in signature.parameters
+            }
+            if supported_kwargs:
+                return await self._run_workflow(plan, session_id, **supported_kwargs)
+            return await self._run_workflow(plan, session_id)
+
+        try:
+            return await self._run_workflow(plan, session_id, **call_kwargs)
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            return await self._run_workflow(plan, session_id)
 
     async def _record_pending_repair_outcomes(self, session: MetaSession, success: bool) -> None:
         if not self._repair or not session.workflow_id:
