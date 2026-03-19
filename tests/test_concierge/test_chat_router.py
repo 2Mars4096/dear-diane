@@ -56,6 +56,26 @@ class _FakeChatManager:
         )
 
 
+class _ProgressAckChatManager(_FakeChatManager):
+    async def send_message_with_tools(self, **kwargs: Any) -> AsyncIterator[ChatCompleteEvent]:
+        self.calls.append(kwargs)
+        yield ChatCompleteEvent(
+            message_id="router-progress",
+            content="",
+            token_usage={},
+            context_window=0,
+            graph_revision="",
+            detected_mode="progress_ack",
+        )
+        yield ChatCompleteEvent(
+            message_id="router-complete",
+            content="Built directly.",
+            token_usage={},
+            context_window=0,
+            graph_revision="",
+        )
+
+
 @pytest.mark.asyncio
 async def test_chat_message_non_concierge_preserves_build_mode_and_surface_context(
     monkeypatch: pytest.MonkeyPatch,
@@ -92,3 +112,42 @@ async def test_chat_message_non_concierge_preserves_build_mode_and_surface_conte
     assert manager.calls[0]["surface_context"] == {"workspace_root": "/tmp/demo"}
     assert [event["type"] for event in events] == ["chat_complete"]
     assert events[0]["content"] == "Built directly."
+
+
+@pytest.mark.asyncio
+async def test_chat_message_auto_mode_preserves_progress_ack_detected_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _ProgressAckChatManager()
+    graph_store = _FakeGraphStore()
+    chat_router._chat_streams.clear()
+
+    monkeypatch.setattr(chat_router, "get_chat_manager", lambda: manager)
+    monkeypatch.setattr(chat_router, "get_graph_store", lambda: graph_store)
+    monkeypatch.setattr(chat_router, "get_concierge", lambda: None)
+    monkeypatch.setattr(chat_router, "get_dispatcher", lambda: None)
+    monkeypatch.setattr(chat_router, "detect_chat_mode", lambda *_args, **_kwargs: "agent")
+
+    req = chat_router.ChatMessageRequest(
+        workflow_id="wf-1",
+        message="Build a simple chain",
+        mode="auto",
+    )
+
+    response = await chat_router.chat_message(req, concierge=False)
+    channel_id = response["stream_channel_id"]
+
+    queue = chat_router._chat_streams[channel_id][0]
+    events: list[dict[str, Any]] = []
+    while True:
+        item = await asyncio.wait_for(queue.get(), timeout=1.0)
+        if item is None:
+            break
+        events.append(item)
+
+    assert manager.calls
+    assert [event["type"] for event in events] == ["chat_complete", "chat_complete"]
+    assert events[0]["detected_mode"] == "progress_ack"
+    assert events[0]["content"] == ""
+    assert events[1]["detected_mode"] == "agent"
+    assert events[1]["content"] == "Built directly."

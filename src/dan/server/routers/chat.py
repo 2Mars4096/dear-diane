@@ -552,8 +552,10 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                     await _put_chat_stream_event(stream_channel_id, queue, payload)
                     continue
 
-                if detected_mode and evt_type in (
-                    "chat_complete", "chat_mutation",
+                if (
+                    detected_mode
+                    and evt_type in ("chat_complete", "chat_mutation")
+                    and not payload.get("detected_mode")
                 ):
                     payload["detected_mode"] = detected_mode
                 run_stream_id = payload.get("stream_channel_id")
