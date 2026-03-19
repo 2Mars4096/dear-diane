@@ -11,6 +11,8 @@ import uuid as _uuid
 import warnings
 from typing import Any
 
+from pydantic import BaseModel
+
 from dan.engine.conditions import ConditionError, evaluate_condition, evaluate_expression
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
@@ -1582,11 +1584,8 @@ class OrchestratorExecutor:
                         merged.update(t_inputs)
 
                         team_status[t_name] = "running"
-                        sub_key = node.teams[t_name]
                         task = asyncio.create_task(
-                            context.run_subgraph(
-                                sub_key, merged, parent_node_id=node.id,
-                            )
+                            self._dispatch_team(node, context, t_name, merged)
                         )
                         team_tasks[t_name] = task
 
@@ -1606,7 +1605,11 @@ class OrchestratorExecutor:
                             event_type="parallel_branch_started",
                             node_id=node.id,
                             node_type="orchestrator",
-                            data={"branch_key": sub_key, "team_name": t_name},
+                            data={
+                                "branch_key": self._team_dispatch_ref(node, t_name),
+                                "team_name": t_name,
+                                "dispatch_mode": self._team_dispatch_mode(node, t_name),
+                            },
                         )
                         orchestrator_log.append({
                             "iteration": iteration,
@@ -1787,13 +1790,14 @@ class OrchestratorExecutor:
         team_results: dict[str, Any] = {}
         team_status: dict[str, str] = {}
 
-        for team_name, sub_key in node.teams.items():
+        for team_name in node.teams:
             team_status[team_name] = "running"
             task = asyncio.create_task(
-                context.run_subgraph(
-                    sub_key,
+                self._dispatch_team(
+                    node,
+                    context,
+                    team_name,
                     self._build_team_inputs(node, inputs, team_name),
-                    parent_node_id=node.id,
                 )
             )
             team_tasks[team_name] = task
@@ -1801,7 +1805,11 @@ class OrchestratorExecutor:
                 event_type="parallel_branch_started",
                 node_id=node.id,
                 node_type="orchestrator",
-                data={"branch_key": sub_key, "team_name": team_name},
+                data={
+                    "branch_key": self._team_dispatch_ref(node, team_name),
+                    "team_name": team_name,
+                    "dispatch_mode": self._team_dispatch_mode(node, team_name),
+                },
             )
 
         for team_name, task in team_tasks.items():
@@ -1937,6 +1945,52 @@ class OrchestratorExecutor:
         overrides = node.team_inputs.get(team_name, {})
         inner.update(overrides)
         return inner
+
+    @staticmethod
+    def _team_dispatch_mode(node: OrchestratorNode, team_name: str) -> str:
+        spec = node.team_expansions.get(team_name)
+        return spec.mode if spec is not None else "sub_graph"
+
+    @staticmethod
+    def _team_dispatch_ref(node: OrchestratorNode, team_name: str) -> str:
+        spec = node.team_expansions.get(team_name)
+        return spec.ref if spec is not None else node.teams[team_name]
+
+    async def _dispatch_team(
+        self,
+        node: OrchestratorNode,
+        context: ExecutionContext,
+        team_name: str,
+        team_inputs: dict[str, Any],
+    ) -> dict[str, Any]:
+        spec = node.team_expansions.get(team_name)
+        if spec is None:
+            return await context.run_subgraph(
+                node.teams[team_name],
+                team_inputs,
+                parent_node_id=node.id,
+            )
+
+        envelope = await context.run_child_workflow(
+            spec,
+            team_inputs,
+            parent_node_id=node.id,
+            source="engine",
+            boundary_contract=spec.boundary_contract,
+        )
+        if isinstance(envelope, BaseModel):
+            payload = envelope.model_dump()
+            outputs = payload.get("outputs", {})
+            return outputs if isinstance(outputs, dict) else {"result": outputs}
+        outputs = getattr(envelope, "outputs", None)
+        if isinstance(outputs, dict):
+            return outputs
+        if isinstance(envelope, dict):
+            child_outputs = envelope.get("outputs")
+            if isinstance(child_outputs, dict):
+                return child_outputs
+            return envelope
+        return {"result": envelope}
 
     @staticmethod
     async def _call_orchestrator_llm(

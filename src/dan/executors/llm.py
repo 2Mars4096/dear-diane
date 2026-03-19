@@ -437,6 +437,9 @@ class LLMExecutor:
         policy = node.retry_policy or _LLM_DEFAULT_RETRY
         model = node.model or context.config.llm_default_model
         started_at = time.perf_counter()
+        runtime_healing = bool(getattr(context, "runtime_repair_enabled", False))
+        schema_repair_used = False
+        recovery_path: list[str] = []
 
         effective_policy = None
         tier_result = None
@@ -621,11 +624,24 @@ class LLMExecutor:
                     metadata=meta,
                 )
 
-            result = OutputNormalizer.normalize(raw_text, node.output_json_schema)  # type: ignore[arg-type]
+            result = OutputNormalizer.normalize(
+                raw_text,
+                node.output_json_schema,  # type: ignore[arg-type]
+                allow_mechanical_repair=runtime_healing,
+            )
             if result.success:
                 self._record_tier_outcome(context, node, tier_result, True)
                 data = result.data or {}
                 outputs = {**data, "result": data}
+                if result.repair_strategy:
+                    recovery_path.append(result.repair_strategy)
+                if schema_repair_used:
+                    recovery_path.append("schema_reprompt")
+                if recovery_path:
+                    meta["runtime_repair"] = {
+                        "recovery_path": recovery_path,
+                        "failure_category": result.failure_category or "",
+                    }
                 self._record_prompt_outcome(
                     context, node, rendered_prompt, assembled_inputs,
                     raw_text, True, cumulative_usage, started_at,
@@ -636,7 +652,26 @@ class LLMExecutor:
                     metadata=meta,
                 )
 
-            if attempt < max_norm_retries:
+            if runtime_healing and not schema_repair_used and result.failure_category in {
+                "invalid_json",
+                "schema_mismatch",
+            }:
+                schema_repair_used = True
+                messages.append({"role": "assistant", "content": raw_text})
+                messages.append({
+                    "role": "user",
+                    "content": self._schema_repair_prompt(
+                        node.output_json_schema or {},
+                        result.error_message or "",
+                    ),
+                })
+                recovery_path.append("schema_reprompt_requested")
+                logger.debug(
+                    "Schema repair reprompt requested for node '%s': %s",
+                    node.id,
+                    result.error_message,
+                )
+            elif attempt < max_norm_retries:
                 messages.append({"role": "assistant", "content": raw_text})
                 messages.append({"role": "user", "content": result.error_message or ""})
                 logger.debug(
@@ -761,6 +796,12 @@ class LLMExecutor:
                             last_error = api_error
 
         fail_meta = {"model": model, "usage": cumulative_usage}
+        if recovery_path or schema_repair_used:
+            fail_meta["runtime_repair"] = {
+                "recovery_path": recovery_path,
+                "schema_reprompt_used": schema_repair_used,
+                "last_error": last_error or "",
+            }
         self._record_tier_outcome(context, node, tier_result, False)
         self._record_prompt_outcome(
             context,
@@ -787,6 +828,17 @@ class LLMExecutor:
             outputs={}, status=NodeStatus.FAILED,
             error=last_error or "LLM execution failed",
             metadata=fail_meta,
+        )
+
+    @staticmethod
+    def _schema_repair_prompt(schema: dict[str, Any], error_message: str) -> str:
+        """Repair prompt used for the bounded schema/JSON correction retry."""
+
+        return (
+            "Return only corrected JSON that preserves the original task result. "
+            "Do not add commentary or markdown fences.\n\n"
+            f"Validation error:\n{error_message}\n\n"
+            f"Required schema:\n{json.dumps(schema, indent=2)}"
         )
 
     def _record_prompt_outcome(
@@ -1355,4 +1407,3 @@ class LLMExecutor:
             tracker.save()
         except Exception:
             logger.debug("Tier tracker update failed", exc_info=True)
-

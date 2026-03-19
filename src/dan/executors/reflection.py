@@ -297,6 +297,36 @@ class ReflectionExecutor:
         if inputs.get("error_text"):
             parts.append(f"\n### Raw Error Text\n{inputs['error_text'][:2000]}\n")
 
+        runtime_repair_lineage = inputs.get("runtime_repair_lineage")
+        runtime_repair_summaries = inputs.get("runtime_repair_summaries")
+        if isinstance(runtime_repair_lineage, dict) and runtime_repair_lineage:
+            parts.append("\n### Runtime Repair Lineage\n")
+            for node_id, lineage in list(runtime_repair_lineage.items())[:20]:
+                if not isinstance(lineage, dict):
+                    continue
+                last_summary = lineage.get("last_summary", {})
+                attempts = lineage.get("attempts", [])
+                if isinstance(last_summary, dict) and last_summary:
+                    parts.append(
+                        f"- node `{node_id}`: attempted `{last_summary.get('repair_attempted', '')}`; "
+                        f"cause `{last_summary.get('cause', '')}`; "
+                        f"next_step `{last_summary.get('next_step', '')}`; "
+                        f"attempts={len(attempts) if isinstance(attempts, list) else 0}\n"
+                    )
+                else:
+                    parts.append(
+                        f"- node `{node_id}`: attempts={len(attempts) if isinstance(attempts, list) else 0}\n"
+                    )
+
+        if isinstance(runtime_repair_summaries, dict) and runtime_repair_summaries:
+            parts.append("\n### Runtime Repair Summaries\n")
+            for node_id, summary in list(runtime_repair_summaries.items())[:20]:
+                if not isinstance(summary, dict):
+                    continue
+                parts.append(
+                    f"- node `{node_id}`: {json.dumps(summary, default=str)[:500]}\n"
+                )
+
         if len(parts) <= 1:
             raw_keys = [k for k in inputs if k not in ("existing_principles",)]
             if raw_keys:
