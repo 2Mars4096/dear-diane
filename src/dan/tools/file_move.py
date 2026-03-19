@@ -39,8 +39,8 @@ TOOL_METADATA = {
 
 
 async def file_move(source: str, destination: str, **_kwargs) -> dict:
-    src = validate_path(source)
-    dst = validate_path(destination)
+    src = validate_path(source, operation="delete")
+    dst = validate_path(destination, operation="write")
 
     if not os.path.exists(src):
         raise FileNotFoundError(f"Source not found: '{source}'")

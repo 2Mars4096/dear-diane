@@ -561,7 +561,8 @@ class SqliteBackend:
             else:
                 if not _SAFE_JSON_KEY_RE.fullmatch(key):
                     raise ValueError(f"Invalid filter key: {key}")
-                clauses.append(f"json_extract(data, '$.{key}') = ?")
+                clauses.append("json_extract(data, ?) = ?")
+                params.append(f"$.{key}")
                 params.append(json.dumps(value) if not isinstance(value, str) else value)
 
         where = " AND ".join(clauses) if clauses else "1=1"

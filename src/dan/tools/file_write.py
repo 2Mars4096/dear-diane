@@ -61,7 +61,7 @@ async def file_write(
     encoding: str = "utf-8",
     **_kwargs,
 ) -> dict:
-    resolved = validate_path(path)
+    resolved = validate_path(path, operation="write")
 
     if mode not in ("overwrite", "append"):
         raise ValueError(

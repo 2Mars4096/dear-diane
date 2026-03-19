@@ -53,7 +53,7 @@ async def compress(
     **_kwargs,
 ) -> dict:
     resolved_paths = [validate_path(p) for p in paths]
-    resolved_output = validate_path(output)
+    resolved_output = validate_path(output, operation="write")
     file_count = 0
 
     os.makedirs(os.path.dirname(resolved_output) or ".", exist_ok=True)

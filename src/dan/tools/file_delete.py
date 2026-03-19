@@ -41,7 +41,7 @@ TOOL_METADATA = {
 
 
 async def file_delete(path: str, recursive: bool = False, **_kwargs) -> dict:
-    resolved = validate_path(path)
+    resolved = validate_path(path, operation="delete")
 
     if not os.path.exists(resolved):
         raise FileNotFoundError(f"Path not found: '{path}'")

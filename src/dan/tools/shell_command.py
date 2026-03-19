@@ -5,6 +5,9 @@ from __future__ import annotations
 import asyncio
 import os
 
+_TRUE_VALUES = {"true", "1", "yes", "on"}
+_FALSE_VALUES = {"false", "0", "no", "off"}
+
 TOOL_METADATA = {
     "tool_id": "shell_command",
     "description": (
@@ -68,7 +71,17 @@ def _check_allowlist(command: str) -> None:
 
 def _use_sandbox() -> bool:
     """Check whether sandbox mode is enabled via env var."""
-    return os.environ.get("DAN_SANDBOX_SHELL", "").lower() in ("true", "1", "yes")
+    raw = os.environ.get("DAN_SANDBOX_SHELL", "").strip().lower()
+    if not raw:
+        return True
+    if raw in _FALSE_VALUES:
+        return False
+    return True
+
+
+def shell_sandbox_explicitly_disabled() -> bool:
+    raw = os.environ.get("DAN_SANDBOX_SHELL", "").strip().lower()
+    return bool(raw) and raw in _FALSE_VALUES
 
 
 async def shell_command(

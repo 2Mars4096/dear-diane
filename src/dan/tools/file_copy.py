@@ -46,7 +46,7 @@ TOOL_METADATA = {
 
 async def file_copy(source: str, destination: str, recursive: bool = False, **_kwargs) -> dict:
     src = validate_path(source)
-    dst = validate_path(destination)
+    dst = validate_path(destination, operation="write")
 
     if not os.path.exists(src):
         raise FileNotFoundError(f"Source not found: '{source}'")
