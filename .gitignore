@@ -68,6 +68,9 @@ checkpoints/
 # Memory store (runtime-generated, not source-controlled)
 memory/
 
+# Workspace-installed block artifacts
+.dan/blocks/
+
 # Graph runtime data (runs, chats, UI state, adapter scratch files)
 graphs/.last_opened
 graphs/runs/
