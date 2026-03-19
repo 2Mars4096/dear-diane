@@ -134,6 +134,46 @@ def _autonomy_level(session: Any, default: str = "balanced") -> str:
     return str(level or default)
 
 
+def _task_mentions_workflow(task_desc: str) -> bool:
+    return bool(re.search(r"\b(?:workflow|graph|node|edge|mutation|build|edit)\b", task_desc, re.IGNORECASE))
+
+
+def _filter_child_route(parent_route: Any, task_desc: str) -> Any:
+    if parent_route is None:
+        return None
+    action_hints = [
+        str(hint).strip()
+        for hint in getattr(parent_route, "action_hints", None) or []
+        if str(hint).strip()
+    ]
+    if not action_hints and not getattr(parent_route, "target", None):
+        return parent_route
+
+    workflow_related = {"workflow_edit", "workflow_build", "workflow_query"}
+    if _task_mentions_workflow(task_desc):
+        filtered_hints = action_hints
+        target = getattr(parent_route, "target", "general")
+    else:
+        filtered_hints = [hint for hint in action_hints if hint not in workflow_related]
+        target = "general" if getattr(parent_route, "target", "") == "workflow" else getattr(parent_route, "target", "general")
+
+    if (
+        filtered_hints == action_hints
+        and target == getattr(parent_route, "target", None)
+    ):
+        return parent_route
+
+    try:
+        return parent_route.model_copy(
+            update={
+                "target": target,
+                "action_hints": filtered_hints,
+            }
+        )
+    except Exception:
+        return parent_route
+
+
 def _prepend_autonomy_announcement(session: Any, content: str) -> str:
     if getattr(session, "parent_id", None) is not None:
         return content
@@ -145,6 +185,18 @@ def _prepend_autonomy_announcement(session: Any, content: str) -> str:
     if content.startswith(announcement):
         return content
     return f"{announcement}\n\n{content}"
+
+
+def _fallback_split_task(task: str) -> list[str]:
+    text = str(task or "").strip()
+    if not text:
+        return []
+    parts = [
+        part.strip(" \t\r\n,.;:")
+        for part in re.split(r"\s+\band\b\s+", text, flags=re.IGNORECASE)
+        if part.strip(" \t\r\n,.;:")
+    ]
+    return parts if len(parts) > 1 else [text]
 
 
 def _workflow_id_for_session(session: Any) -> str:
@@ -356,6 +408,81 @@ def _parse_synthesis_review_response(content: str) -> tuple[str | None, str]:
     return decision, reason or text
 
 
+def _extract_json_candidate(text: str) -> Any | None:
+    candidate = str(text or "").strip()
+    if not candidate:
+        return None
+    if candidate.startswith("```"):
+        first_newline = candidate.find("\n")
+        if first_newline != -1:
+            candidate = candidate[first_newline + 1 :]
+        if candidate.endswith("```"):
+            candidate = candidate[:-3]
+        candidate = candidate.strip()
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        start_obj = candidate.find("{")
+        end_obj = candidate.rfind("}")
+        if start_obj != -1 and end_obj > start_obj:
+            try:
+                return json.loads(candidate[start_obj : end_obj + 1])
+            except json.JSONDecodeError:
+                pass
+        start_list = candidate.find("[")
+        end_list = candidate.rfind("]")
+        if start_list != -1 and end_list > start_list:
+            try:
+                return json.loads(candidate[start_list : end_list + 1])
+            except json.JSONDecodeError:
+                pass
+    return None
+
+
+def _normalize_subtask_items(tasks: list[Any], *, fallback_task: str) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in tasks:
+        item = str(raw or "").strip()
+        if not item:
+            continue
+        item = re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", item).strip()
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(item)
+        if len(normalized) >= 8:
+            break
+    return normalized or ([fallback_task] if fallback_task else [])
+
+
+def _parse_subtask_decomposition_response(content: str, *, fallback_task: str) -> list[str] | None:
+    payload = _extract_json_candidate(content)
+    raw_tasks: list[Any] | None = None
+    if isinstance(payload, dict):
+        candidate = payload.get("subtasks")
+        if isinstance(candidate, list):
+            raw_tasks = candidate
+    elif isinstance(payload, list):
+        raw_tasks = payload
+
+    if raw_tasks is None:
+        bullets = [
+            re.sub(r"^\s*(?:[-*]|\d+[.)])\s*", "", line).strip()
+            for line in str(content or "").splitlines()
+            if re.match(r"^\s*(?:[-*]|\d+[.)])\s+", line)
+        ]
+        if bullets:
+            raw_tasks = bullets
+
+    if raw_tasks is None:
+        return None
+    return _normalize_subtask_items(raw_tasks, fallback_task=fallback_task)
+
+
 def _cancel_event(session: Any) -> Any | None:
     msg = getattr(session, "msg", None)
     metadata = getattr(msg, "metadata", None) if msg is not None else None
@@ -399,6 +526,9 @@ def _mark_session_cancelled(
         _SR(
             content=content,
             error="cancelled",
+            metadata={
+                "completion_status": "interrupted" if content else "cancelled",
+            },
             duration_ms=(time.monotonic() - start) * 1000,
             child_results=child_results or {},
         ),
@@ -788,6 +918,7 @@ class SingleShotExecutor:
         final_content = ""
         token_usage: dict[str, int] = {}
         saw_terminal = False
+        interrupted = False
 
         try:
             async for event in self._concierge.chat_manager.send_message_with_tools(
@@ -795,6 +926,7 @@ class SingleShotExecutor:
             ):
                 if isinstance(event, ChatInterruptedEvent):
                     saw_terminal = True
+                    interrupted = True
                     final_content = _prepend_autonomy_announcement(session, event.content)
                     token_usage = dict(event.token_usage)
                     yield event.model_copy(update={"content": final_content})
@@ -821,7 +953,7 @@ class SingleShotExecutor:
             else:
                 logger.exception("SingleShot execution failed for session %s", session.id)
 
-        if _cancel_requested(session):
+        if interrupted or _cancel_requested(session):
             _mark_session_cancelled(manager, session, start=start, content=final_content)
             if not saw_terminal:
                 yield _interrupted_event(final_content)
@@ -837,7 +969,10 @@ class SingleShotExecutor:
             session.id,
             _SR(
                 content=final_content,
-                metadata={"memory_recorded_by_chat_manager": True},
+                metadata={
+                    "memory_recorded_by_chat_manager": True,
+                    "completion_status": "completed",
+                },
                 token_usage=token_usage,
                 duration_ms=(time.monotonic() - start) * 1000,
             ),
@@ -893,13 +1028,18 @@ class MultiStepExecutor:
         triage = getattr(session, "triage", None)
         subtasks = getattr(triage, "subtasks", None) if triage else None
         task_ctx = getattr(session, "task_context", {}) or {}
+        task = str(getattr(session, "task", "") or "").strip()
 
         explicit_subtasks = list(subtasks or task_ctx.get("subtasks", []) or [])
         autonomy_level = _autonomy_level(session)
-        if autonomy_level == "aggressive":
-            has_subtasks = len(explicit_subtasks) >= 1
+        if explicit_subtasks:
+            if autonomy_level == "aggressive":
+                has_subtasks = len(explicit_subtasks) >= 1
+            else:
+                has_subtasks = len(explicit_subtasks) > 1
         else:
-            has_subtasks = len(explicit_subtasks) > 1
+            inferred_subtasks = _fallback_split_task(task)
+            has_subtasks = len(inferred_subtasks) > 1
         if not has_subtasks:
             return False
 
@@ -934,6 +1074,7 @@ class MultiStepExecutor:
         final_content = ""
         token_usage: dict[str, int] = {}
         saw_terminal = False
+        interrupted = False
 
         try:
             async for event in self._concierge.chat_manager.send_message_with_tools(
@@ -941,6 +1082,7 @@ class MultiStepExecutor:
             ):
                 if isinstance(event, ChatInterruptedEvent):
                     saw_terminal = True
+                    interrupted = True
                     final_content = _prepend_autonomy_announcement(session, event.content)
                     token_usage = dict(event.token_usage)
                     yield event.model_copy(update={"content": final_content})
@@ -967,7 +1109,7 @@ class MultiStepExecutor:
             else:
                 logger.exception("MultiStep direct execution failed for session %s", session.id)
 
-        if _cancel_requested(session):
+        if interrupted or _cancel_requested(session):
             _mark_session_cancelled(manager, session, start=start, content=final_content)
             if not saw_terminal:
                 yield _interrupted_event(final_content)
@@ -983,7 +1125,10 @@ class MultiStepExecutor:
             session.id,
             _SR(
                 content=final_content,
-                metadata={"memory_recorded_by_chat_manager": True},
+                metadata={
+                    "memory_recorded_by_chat_manager": True,
+                    "completion_status": "completed",
+                },
                 token_usage=token_usage,
                 duration_ms=(time.monotonic() - start) * 1000,
             ),
@@ -997,6 +1142,7 @@ class MultiStepExecutor:
     ) -> AsyncIterator[ChatStreamEvent]:
         triage = getattr(session, "triage", None)
         subtasks: list[str] = []
+        decomposition_usage: dict[str, int] = {}
 
         if triage and getattr(triage, "subtasks", None):
             subtasks = list(triage.subtasks)
@@ -1005,7 +1151,11 @@ class MultiStepExecutor:
             subtasks = list(task_ctx.get("subtasks", []))
 
         if not subtasks:
-            subtasks = self._plan_decomposition(session)
+            subtasks, decomposition_usage = await self._plan_decomposition(session)
+        if len(subtasks) <= 1:
+            async for event in self._execute_directly(session, manager, start):
+                yield event
+            return
 
         if _cancel_requested(session):
             _mark_session_cancelled(manager, session, start=start)
@@ -1026,6 +1176,7 @@ class MultiStepExecutor:
         interrupted = False
         interrupted_emitted = False
         synthesis_review_usage: dict[str, int] = {}
+        synthesis_usage: dict[str, int] = {}
 
         try:
             if child_execution == "parallel":
@@ -1161,7 +1312,12 @@ class MultiStepExecutor:
                 if remediation_state and getattr(remediation_state, "result", None):
                     child_results[remediation_child.id] = remediation_state.result
 
-        final_content = self._synthesize(session, child_results, manager)
+        synthesized_content, synthesis_usage = await self._maybe_llm_synthesize(
+            session,
+            child_results,
+            manager,
+        )
+        final_content = synthesized_content or self._synthesize(session, child_results, manager)
         final_content = _prepend_autonomy_announcement(session, final_content)
 
         from .session import SessionResult as _SR
@@ -1171,11 +1327,16 @@ class MultiStepExecutor:
                 total_tokens[k] = total_tokens.get(k, 0) + v
         for k, v in synthesis_review_usage.items():
             total_tokens[k] = total_tokens.get(k, 0) + v
+        for k, v in synthesis_usage.items():
+            total_tokens[k] = total_tokens.get(k, 0) + v
+        for k, v in decomposition_usage.items():
+            total_tokens[k] = total_tokens.get(k, 0) + v
 
         manager.set_result(
             session.id,
             _SR(
                 content=final_content,
+                metadata={"completion_status": "completed"},
                 token_usage=total_tokens,
                 duration_ms=(time.monotonic() - start) * 1000,
                 child_results=child_results,
@@ -1193,27 +1354,94 @@ class MultiStepExecutor:
             return 1
 
         lower = task_desc.lower()
-        if " and " in lower:
+        if len(_fallback_split_task(lower)) > 1:
             return 2
         for kw in _MULTI_ACTION_KEYWORDS:
             if kw in lower:
                 return 2
         return 1
 
-    # -- plan decomposition (stub — LLM call in future) --------------------
+    async def _cheap_llm_complete(
+        self,
+        session: Any,
+        *,
+        system_prompt: str,
+        user_prompt: str,
+    ) -> tuple[str | None, dict[str, int]]:
+        chat_manager = getattr(self._concierge, "chat_manager", None)
+        providers = getattr(chat_manager, "_providers", None) if chat_manager is not None else None
+        if providers is None or not hasattr(providers, "resolve"):
+            return None, {}
+        model = _resolve_session_model_override(self._concierge, session) or getattr(chat_manager, "_chat_model", "")
+        if not model:
+            return None, {}
+        try:
+            provider = providers.resolve(model)
+            result = await provider.complete(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                model=model,
+                temperature=0.0,
+            )
+            text = str(getattr(result, "text", "") or "").strip()
+            usage = dict(getattr(result, "usage", {}) or {})
+            return text or None, usage
+        except Exception:
+            logger.debug("Lightweight concierge LLM helper failed", exc_info=True)
+            return None, {}
+
+    # -- plan decomposition -------------------------------------------------
+
+    async def _plan_decomposition(self, session: Any) -> tuple[list[str], dict[str, int]]:
+        task = str(getattr(session, "task", "") or "").strip()
+        if not task:
+            return [], {}
+
+        fallback = _fallback_split_task(task)
+        triage = getattr(session, "triage", None)
+        goal = str(getattr(triage, "goal", "") or "").strip()
+        deliverable = str(getattr(triage, "deliverable", "") or "").strip()
+        prompt_parts = [f"Task: {task}"]
+        if goal and goal != task:
+            prompt_parts.append(f"Goal: {goal}")
+        if deliverable and deliverable not in {task, goal}:
+            prompt_parts.append(f"Deliverable: {deliverable}")
+
+        content, usage = await self._cheap_llm_complete(
+            session,
+            system_prompt=(
+                "Decompose the user's task into the smallest useful ordered subtasks. "
+                "Prefer 2-6 concrete steps. Do not invent new goals. "
+                "If the task should stay as one step, return a single-item list. "
+                'Return JSON only in one of these forms: {"subtasks":["step 1","step 2"]} or ["step 1","step 2"].'
+            ),
+            user_prompt="\n".join(prompt_parts),
+        )
+        if content:
+            parsed = _parse_subtask_decomposition_response(content, fallback_task=task)
+            if parsed:
+                return parsed, usage
+        return fallback, {}
 
     @staticmethod
-    def _plan_decomposition(session: Any) -> list[str]:
-        task = getattr(session, "task", "") or ""
-        if not task:
-            return []
-        parts = [p.strip() for p in task.split(" and ") if p.strip()]
-        return parts if len(parts) > 1 else [task]
+    def _should_llm_synthesize(session: Any, child_results: dict[str, Any]) -> bool:
+        if not child_results:
+            return False
+        level = _autonomy_level(session)
+        if level == "aggressive":
+            return True
+        if level == "balanced":
+            return len(child_results) >= 3
+        return False
 
     # -- running children --------------------------------------------------
 
     def _build_child_session(self, session: Any, manager: Any, task_desc: str) -> Any:
         child_tier = self._estimate_child_tier(task_desc)
+        parent_triage = getattr(session, "triage", None)
+        child_route = _filter_child_route(getattr(parent_triage, "route", None), task_desc)
         child = manager.create_child(
             parent_id=session.id,
             task=task_desc,
@@ -1226,15 +1454,25 @@ class MultiStepExecutor:
 
         parent_msg = getattr(session, "msg", None)
         if parent_msg is not None:
+            child_metadata = {
+                **parent_msg.metadata,
+                "tiered_parent_session_id": session.id,
+                "tiered_root_session_id": session.root_id,
+                "tiered_child_task": task_desc,
+            }
+            if child_route is not None:
+                child_metadata["route_target"] = getattr(child_route, "target", child_metadata.get("route_target"))
+                child_metadata["allow_mutation_tool"] = bool(
+                    getattr(child_route, "target", "") == "workflow"
+                    and any(
+                        hint in {"workflow_edit", "workflow_build"}
+                        for hint in getattr(child_route, "action_hints", None) or []
+                    )
+                )
             child.msg = parent_msg.model_copy(
                 update={
                     "text": task_desc,
-                    "metadata": {
-                        **parent_msg.metadata,
-                        "tiered_parent_session_id": session.id,
-                        "tiered_root_session_id": session.root_id,
-                        "tiered_child_task": task_desc,
-                    },
+                    "metadata": child_metadata,
                 }
             )
         else:
@@ -1245,11 +1483,10 @@ class MultiStepExecutor:
         try:
             from .triage import TriageResult
 
-            parent_triage = getattr(session, "triage", None)
             child.triage = TriageResult(
                 tier=child_tier,
                 intent=getattr(parent_triage, "intent", "ask"),
-                route=getattr(parent_triage, "route", None),
+                route=child_route,
                 confidence=getattr(parent_triage, "confidence", 0.6),
                 goal=task_desc,
                 deliverable=task_desc,
@@ -1446,6 +1683,52 @@ class MultiStepExecutor:
         if decision != "accept":
             logger.warning("Synthesis review fallback returned unparseable content: %r", final_content[:400])
         return None, token_usage
+
+    async def _maybe_llm_synthesize(
+        self,
+        session: Any,
+        child_results: dict[str, Any],
+        manager: Any,
+    ) -> tuple[str | None, dict[str, int]]:
+        if not self._should_llm_synthesize(session, child_results):
+            return None, {}
+
+        triage = getattr(session, "triage", None)
+        child_sections: list[str] = []
+        for child_id, result in child_results.items():
+            child = manager.get(child_id)
+            label = getattr(child, "task", child_id)
+            content = str(getattr(result, "content", "") or "").strip()
+            error = str(getattr(result, "error", "") or "").strip()
+            body = error or content or "(no output)"
+            if len(body) > 1200:
+                body = body[:1200].rstrip() + "..."
+            child_sections.append(f"## {label}\n{body}")
+
+        user_prompt_parts = [
+            f"Original task: {str(getattr(session, 'task', '') or '').strip()}",
+            f"Goal: {str(getattr(triage, 'goal', '') or '').strip()}",
+            f"Deliverable: {str(getattr(triage, 'deliverable', '') or '').strip()}",
+        ]
+        planned_subtasks = _planned_subtasks(session)
+        if planned_subtasks:
+            user_prompt_parts.append("Planned subtasks:\n- " + "\n- ".join(planned_subtasks[:8]))
+        uncertainties = _collect_synthesis_uncertainties(child_results, manager)
+        if uncertainties:
+            user_prompt_parts.append("Known uncertainties:\n" + "\n".join(uncertainties[:6]))
+        user_prompt_parts.append("Child outputs:\n" + "\n\n".join(child_sections[:6]))
+
+        content, usage = await self._cheap_llm_complete(
+            session,
+            system_prompt=(
+                "You are synthesizing child task outputs into one coherent final response for the user. "
+                "Merge overlapping information, preserve important specifics, and do not invent facts. "
+                "If any child output is incomplete, blocked, or uncertain, mention that clearly in the final response. "
+                "Return plain text only."
+            ),
+            user_prompt="\n\n".join(part for part in user_prompt_parts if part.strip()),
+        )
+        return (content, usage) if content else (None, {})
 
     @staticmethod
     def _synthesize(session: Any, child_results: dict[str, Any], manager: Any) -> str:

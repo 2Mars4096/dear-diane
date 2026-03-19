@@ -494,13 +494,6 @@ class TieredDispatcher:
 
     async def _do_triage(self, msg: SurfaceMessage) -> tuple[Any, Any]:
         """Run triage LLM call. Returns (TriageResult, ResolvedContext)."""
-        from .triage import fast_classify_text
-
-        fast = fast_classify_text(msg.text)
-        if fast is not None:
-            context = self._concierge._resolve_context(msg)
-            return fast, context
-
         context = self._concierge._resolve_context(msg)
         concierge_state = getattr(self._concierge, "_concierge_state", None)
         llm_complete = getattr(self._concierge, "_triage_llm_complete", None)
@@ -666,7 +659,14 @@ class TieredDispatcher:
             if hasattr(self._concierge, "_finalize_task"):
                 state_value = session.state if isinstance(session.state, str) else session.state.value
                 task_status_override = None
-                if result.error == "cancelled" or state_value == "cancelled":
+                completion_status = ""
+                if getattr(result, "metadata", None):
+                    completion_status = str(result.metadata.get("completion_status", "") or "").strip().lower()
+                if (
+                    result.error == "cancelled"
+                    or state_value == "cancelled"
+                    or completion_status in {"interrupted", "partial", "cancelled"}
+                ):
                     task_status_override = "paused"
                 elif result.error or state_value == "failed":
                     task_status_override = "blocked"

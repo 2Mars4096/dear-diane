@@ -50,6 +50,16 @@ _FILE_PATH_RE = re.compile(r"(?:^|[\s\"'])(/[\w./-]+|[\w./-]+\.\w{1,6})(?=[\"'\s
 _SENTENCE_END_RE = re.compile(r"[.!?]")
 
 
+def _run_coroutine_sync(
+    awaitable: Any,
+    *,
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> Any:
+    if loop is not None and loop.is_running():
+        return asyncio.run_coroutine_threadsafe(awaitable, loop).result()
+    return asyncio.run(awaitable)
+
+
 def _format_clarification_text(question: str, options: list[str] | None) -> str:
     if not options:
         return question
@@ -194,6 +204,7 @@ class Concierge:
             autonomy_level or os.environ.get("DAN_CONCIERGE_AUTONOMY", "auto"),
         )
         self._volatile_concierge_states: dict[str, ConciergeState] = {}
+        self._volatile_concierge_state_locks: dict[str, asyncio.Lock] = {}
         self._pending_preference_surface: dict[str, list[Any]] = {}
         self._progress_sessions: dict[str, Any] = {}
 
@@ -778,6 +789,18 @@ class Concierge:
     async def _try_fast_command(
         self, msg: SurfaceMessage,
     ) -> ChatCompleteEvent | None:
+        from .triage import fast_classify_text
+
+        fast_social = fast_classify_text(msg.text)
+        normalized = msg.text.strip().lower()
+        if (
+            fast_social is not None
+            and fast_social.is_social
+            and normalized not in {"yes", "no", "confirm", "cancel"}
+        ):
+            self._telem_is_fast_command = True
+            return self._complete_event(content=fast_social.social_response or "")
+
         if not self._is_fast_command(msg.text):
             return None
         registry = get_default_registry()
@@ -1114,7 +1137,8 @@ class Concierge:
                     and getattr(item, "detected_mode", None) == "progress_ack"
                 )
                 if is_phase_event and not progress_unlocked:
-                    continue
+                    progress_unlocked = True
+                    first_event_received = True
                 if not is_phase_event:
                     first_event_received = True
                 yield item
@@ -1152,24 +1176,34 @@ class Concierge:
     async def _process_inner(self, msg: SurfaceMessage) -> AsyncIterator[ChatStreamEvent]:
         self._current_surface_id = msg.external_id
         state_scope_id = self._concierge_state_scope_key(msg.surface, msg.external_id)
-        self._concierge_state = self._load_concierge_state(
-            state_scope_id,
-            legacy_scope_ids=[msg.external_id],
-        )
-        self._concierge_state.last_interaction_at = time.time()
-        self._telem_model = getattr(self.chat_manager, "_chat_model", None)
-        try:
-            fast_event = await self._try_fast_command(msg)
-            if fast_event is not None:
-                yield fast_event
-                return
+        lock = self._volatile_concierge_state_locks.setdefault(state_scope_id, asyncio.Lock())
+        async with lock:
+            self._concierge_state = self._load_concierge_state(
+                state_scope_id,
+                legacy_scope_ids=[msg.external_id],
+            )
+            self._concierge_state.last_interaction_at = time.time()
+            self._telem_model = getattr(self.chat_manager, "_chat_model", None)
+            try:
+                fast_event = await self._try_fast_command(msg)
+                if fast_event is not None:
+                    yield fast_event
+                    return
 
-            self._ensure_progress_session(msg)
+                self._ensure_progress_session(msg)
+                intake_event = self._make_phase_event(
+                    msg.external_id,
+                    "intake",
+                    "Understanding your request",
+                    force=True,
+                )
+                if intake_event is not None:
+                    yield intake_event
 
-            async for event in self._tiered_dispatcher.dispatch(msg):
-                yield event
-        finally:
-            self._save_concierge_state(state_scope_id, self._concierge_state)
+                async for event in self._tiered_dispatcher.dispatch(msg):
+                    yield event
+            finally:
+                self._save_concierge_state(state_scope_id, self._concierge_state)
 
     # ------------------------------------------------------------------
     # State persistence
@@ -1383,11 +1417,18 @@ class Concierge:
             if providers is None:
                 return
             model = self._resolve_triage_model()
+            main_loop = asyncio.get_running_loop()
 
             class _ThreadedReflectionLLM:
-                def __init__(self, provider_registry: Any, model_name: str) -> None:
+                def __init__(
+                    self,
+                    provider_registry: Any,
+                    model_name: str,
+                    loop: asyncio.AbstractEventLoop,
+                ) -> None:
                     self._provider_registry = provider_registry
                     self._model_name = model_name
+                    self._loop = loop
 
                 def complete(self, prompt: str, max_tokens: int = 1000) -> str:
                     async def _call() -> str:
@@ -1399,9 +1440,9 @@ class Concierge:
                             max_tokens=max_tokens,
                         )
                         return result.text
-                    return asyncio.run(_call())
+                    return _run_coroutine_sync(_call(), loop=self._loop)
 
-            threaded_llm = _ThreadedReflectionLLM(providers, model)
+            threaded_llm = _ThreadedReflectionLLM(providers, model, main_loop)
             reflector = DomainReflector(memory_kernel=self.memory_kernel, llm=threaded_llm)
             turns = list(context.task.turns)
             items = await asyncio.to_thread(reflector.reflect, domain, turns)
@@ -1658,7 +1699,7 @@ class Concierge:
             ),
             "memory_extraction": lambda: asyncio.to_thread(
                 self._try_memory_extraction, message, response, goal_context,
-                project_id=project_id, domain=domain,
+                project_id=project_id, domain=domain, main_loop=asyncio.get_running_loop(),
             ),
         }
         if include_episode:
@@ -1741,6 +1782,7 @@ class Concierge:
         goal_context: dict[str, Any] | None = None,
         project_id: str | None = None,
         domain: str | None = None,
+        main_loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         if self.memory_kernel is None:
             return
@@ -1750,12 +1792,15 @@ class Concierge:
             from dan.engine.memory_extractor import MemoryExtractor
             extractor = MemoryExtractor()
             tool_activity = (goal_context or {}).get("metadata", {}).get("tool_calls")
-            candidates = asyncio.run(extractor.extract_with_llm(
-                user_message=user_message,
-                assistant_message=assistant_message,
-                tool_calls=tool_activity if isinstance(tool_activity, list) else None,
-                goal_context=goal_context,
-            ))
+            candidates = _run_coroutine_sync(
+                extractor.extract_with_llm(
+                    user_message=user_message,
+                    assistant_message=assistant_message,
+                    tool_calls=tool_activity if isinstance(tool_activity, list) else None,
+                    goal_context=goal_context,
+                ),
+                loop=main_loop,
+            )
             self._remember_search_dirs_from_candidates(candidates)
             for candidate in candidates:
                 candidate_tags = list(candidate.tags or [])

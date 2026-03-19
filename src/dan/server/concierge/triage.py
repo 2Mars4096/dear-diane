@@ -526,10 +526,10 @@ def _build_triage_messages(
         {"role": "system", "content": _TRIAGE_SYSTEM_PROMPT},
     ]
 
-    recent = context.task.turns[-4:]
+    recent = context.task.turns[-6:]
     for turn in recent:
         if turn.role in ("user", "assistant") and turn.content:
-            messages.append({"role": turn.role, "content": turn.content[:200]})
+            messages.append({"role": turn.role, "content": turn.content[:400]})
 
     context_parts: list[str] = []
     if context.project.label:
