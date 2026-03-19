@@ -329,6 +329,14 @@ def _auto_register_published_workflows(
             logger.warning("Failed to auto-register %s", pub_file, exc_info=True)
 
 
+async def _deferred_telemetry_prune(store: Any) -> None:
+    """Run telemetry prune in the background so it doesn't block startup."""
+    try:
+        await store.prune()
+    except Exception:
+        logger.debug("Deferred telemetry prune failed", exc_info=True)
+
+
 async def _consolidation_loop(
     kernel: Any, interval_hours: float, graph_store: Any
 ) -> None:
@@ -797,20 +805,29 @@ async def init_integrations(state: AppState, app: FastAPI) -> None:
     _exp_store = _get_experience_store(with_index=_exp_index is not None)
 
     if state.memory_kernel is not None:
-        try:
-            from dan.engine.memory_adapters import ExperienceAdapter
+        if getattr(state.memory_kernel, "_dual_write", None) is not None:
+            state.memory_kernel._dual_write._experience_store = _exp_store
 
-            imported = await ExperienceAdapter.import_all(_exp_store, state.memory_kernel)
-            if imported:
-                logger.debug(
-                    "Imported %d workflow experiences into memory kernel", imported
+        async def _deferred_experience_import() -> None:
+            try:
+                from dan.engine.memory_adapters import ExperienceAdapter
+
+                imported = await ExperienceAdapter.import_all(
+                    _exp_store, state.memory_kernel,
                 )
-            if getattr(state.memory_kernel, "_dual_write", None) is not None:
-                state.memory_kernel._dual_write._experience_store = _exp_store
-        except Exception:
-            logger.debug(
-                "Experience import into memory kernel skipped", exc_info=True
-            )
+                if imported:
+                    logger.debug(
+                        "Imported %d workflow experiences into memory kernel",
+                        imported,
+                    )
+            except Exception:
+                logger.debug(
+                    "Experience import into memory kernel skipped", exc_info=True,
+                )
+
+        asyncio.create_task(
+            _deferred_experience_import(), name="deferred-experience-import",
+        )
 
     from dan.meta.discovery import DiscoveryService
 
