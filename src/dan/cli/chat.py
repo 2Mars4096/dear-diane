@@ -20,6 +20,7 @@ from typing import Any, AsyncIterator
 import httpx
 
 from dan.cli.adapter import _is_progress_ack_event
+from dan.server.startup import get_llm_api_key_status
 
 
 def _compute_graph_revision(graph_dict: dict) -> str:
@@ -35,6 +36,107 @@ logger = logging.getLogger("dan.cli.chat")
 
 _DEFAULT_URL = "http://127.0.0.1:8000"
 _PING_TIMEOUT = 3.0
+
+
+def _format_api_key_status_label() -> str:
+    status = get_llm_api_key_status()
+    if status == "configured":
+        return "configured"
+    if status == "placeholder":
+        return "placeholder"
+    return "missing"
+
+
+def _format_estimated_cost(value: float) -> str:
+    return f"~${value:.4f}"
+
+
+def _friendly_http_error_message(
+    status_code: int,
+    body: str,
+    *,
+    action: str,
+) -> str:
+    detail = (body or "").strip()
+    if status_code == 401:
+        message = f"{action} failed: check your API key and provider/model configuration."
+    elif status_code == 429:
+        message = f"{action} failed: rate limited, please retry shortly."
+    elif status_code == 404:
+        message = f"{action} failed: requested resource or route was not found."
+    elif status_code >= 500:
+        message = f"{action} failed: server error, check logs."
+    else:
+        message = f"{action} failed ({status_code})."
+    if detail:
+        logger.debug("HTTP %s during %s: %s", status_code, action, detail)
+    return message
+
+
+def _progress_ack_text(event: dict[str, Any]) -> str:
+    phase_label = str(event.get("phase_label", "") or "").strip()
+    content = str(event.get("content", "") or "").strip()
+    if phase_label:
+        return f"Thinking... {phase_label}"
+    if content:
+        return content
+    return "Thinking..."
+
+
+class _CliProgressDisplay:
+    """Render streamed progress events through the shared CLI renderer."""
+
+    def __init__(self, verbosity: str | None = None) -> None:
+        from dan.server.concierge.progress_ux import CLIProgressRenderer, resolve_verbosity
+
+        self._renderer = CLIProgressRenderer()
+        self._verbosity = verbosity or resolve_verbosity("cli")
+        self._next_index = 0
+        self._last_phase_label: str | None = None
+        self._printed_any = False
+
+    async def render(self, event: dict[str, Any]) -> list[str]:
+        if not _is_progress_ack_event(event):
+            return []
+
+        phase_label = str(event.get("phase_label", "") or "").strip()
+        message = _progress_ack_text(event)
+
+        if self._verbosity == "minimal":
+            if self._printed_any:
+                return []
+            self._printed_any = True
+            if phase_label:
+                await self._renderer.phase_update("progress", phase_label)
+            else:
+                await self._renderer.heartbeat(0.0, message)
+            return self._drain()
+
+        if phase_label:
+            if self._verbosity == "compact" and phase_label == self._last_phase_label:
+                return []
+            self._last_phase_label = phase_label
+            self._printed_any = True
+            await self._renderer.phase_update("progress", phase_label)
+            return self._drain()
+
+        if self._verbosity == "full":
+            self._printed_any = True
+            await self._renderer.heartbeat(0.0, message)
+            return self._drain()
+
+        return []
+
+    def reset(self) -> None:
+        self._renderer.output.clear()
+        self._next_index = 0
+        self._last_phase_label = None
+        self._printed_any = False
+
+    def _drain(self) -> list[str]:
+        lines = self._renderer.output[self._next_index :]
+        self._next_index = len(self._renderer.output)
+        return lines
 
 
 def _looks_like_path_input(line: str) -> bool:
@@ -96,6 +198,20 @@ class ChatClient:
         except (httpx.ConnectError, httpx.TimeoutException, OSError) as e:
             return (False, str(e))
 
+    async def get_health(self) -> dict[str, Any]:
+        http = await self._get_http()
+        resp = await http.get("/health", timeout=_PING_TIMEOUT)
+        if resp.status_code != 200:
+            raise RuntimeError(
+                _friendly_http_error_message(
+                    resp.status_code,
+                    resp.text,
+                    action="Health check",
+                )
+            )
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else {"status": "unknown"}
+
     async def send_chat_message(
         self,
         workflow_id: str,
@@ -122,7 +238,13 @@ class ChatClient:
         except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
             raise RuntimeError(f"Cannot reach server: {exc}") from exc
         if resp.status_code != 200:
-            raise RuntimeError(f"Chat API error {resp.status_code}: {resp.text}")
+            raise RuntimeError(
+                _friendly_http_error_message(
+                    resp.status_code,
+                    resp.text,
+                    action="Chat request",
+                )
+            )
         return resp.json()
 
     async def stream_chat_events(
@@ -160,7 +282,13 @@ class ChatClient:
         http = await self._get_http()
         resp = await http.post(f"/api/graphs/{graph_id}/apply-mutation", json=body)
         if resp.status_code != 200:
-            raise RuntimeError(f"Apply mutation error {resp.status_code}: {resp.text}")
+            raise RuntimeError(
+                _friendly_http_error_message(
+                    resp.status_code,
+                    resp.text,
+                    action="Apply mutation",
+                )
+            )
         return resp.json()
 
     async def get_graph(self, graph_id: str) -> dict[str, Any] | None:
@@ -173,7 +301,13 @@ class ChatClient:
         if resp.status_code == 404:
             return None
         if resp.status_code != 200:
-            raise RuntimeError(f"Get graph error {resp.status_code}: {resp.text}")
+            raise RuntimeError(
+                _friendly_http_error_message(
+                    resp.status_code,
+                    resp.text,
+                    action="Load workflow",
+                )
+            )
         payload = resp.json()
         return payload.get("data", payload) if isinstance(payload, dict) else payload
 
@@ -190,7 +324,13 @@ class ChatClient:
         if resp.status_code == 404:
             return False
         if resp.status_code != 200:
-            raise RuntimeError(f"Submit input error {resp.status_code}: {resp.text}")
+            raise RuntimeError(
+                _friendly_http_error_message(
+                    resp.status_code,
+                    resp.text,
+                    action="Submit human input",
+                )
+            )
         return True
 
     async def cancel_run(self, run_id: str) -> bool:
@@ -207,7 +347,13 @@ class ChatClient:
         except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
             raise RuntimeError(f"Cannot reach server: {exc}") from exc
         if resp.status_code != 200:
-            raise RuntimeError(f"List graphs error {resp.status_code}: {resp.text}")
+            raise RuntimeError(
+                _friendly_http_error_message(
+                    resp.status_code,
+                    resp.text,
+                    action="List workflows",
+                )
+            )
         return resp.json().get("graphs", [])
 
     async def create_graph(self, graph_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -223,7 +369,13 @@ class ChatClient:
         if resp.status_code == 409:
             raise RuntimeError(f"Workflow '{graph_id}' already exists")
         if resp.status_code != 200:
-            raise RuntimeError(f"Create graph error {resp.status_code}: {resp.text}")
+            raise RuntimeError(
+                _friendly_http_error_message(
+                    resp.status_code,
+                    resp.text,
+                    action="Create workflow",
+                )
+            )
         return resp.json()
 
     async def save_graph(self, graph_id: str, data: dict[str, Any]) -> None:
@@ -234,7 +386,13 @@ class ChatClient:
         except (httpx.ConnectError, httpx.TimeoutException, OSError) as exc:
             raise RuntimeError(f"Cannot reach server: {exc}") from exc
         if resp.status_code != 200:
-            raise RuntimeError(f"Save graph error {resp.status_code}: {resp.text}")
+            raise RuntimeError(
+                _friendly_http_error_message(
+                    resp.status_code,
+                    resp.text,
+                    action="Save workflow",
+                )
+            )
 
 
 _MAX_HISTORY_MESSAGES = 40
@@ -540,6 +698,8 @@ async def _run_repl(
     client_graph_revision: str | None = None
     preference_extractor: Any | None = None
     preference_suggestion_shown = False
+    session_estimated_cost = 0.0
+    startup_summary: dict[str, Any] | None = None
 
     Console = None
     try:
@@ -661,12 +821,17 @@ async def _run_repl(
                 logger.debug("Failed to persist profile preferences", exc_info=True)
 
     def _status() -> None:
-        _print(f"dan-chat — workflow: {workflow_id} (mode: {mode})")
+        _print(
+            "dan-chat — "
+            f"workflow: {workflow_id} (mode: {mode}) | "
+            f"session cost: {_format_estimated_cost(session_estimated_cost)}"
+        )
 
     def _banner() -> None:
         model_name = os.environ.get("DAN_CHAT_MODEL") or os.environ.get("DAN_LLM_MODEL", "claude-sonnet-4-6")
         tier_policy = "on" if os.environ.get("DAN_ENABLE_TIER_POLICY") == "1" else "off"
         learning = "on" if os.environ.get("DAN_LEARNING_MODE") == "1" else "off"
+        api_key = _format_api_key_status_label()
         mcp_names = []
         try:
             mcp_conf = Path.home() / ".dan" / "mcp.json"
@@ -676,7 +841,25 @@ async def _run_repl(
         except Exception:
             pass
         mcp_str = ",".join(mcp_names) if mcp_names else "none"
-        _print(f"Model: {model_name} | Tier: {tier_policy} | Learning: {learning} | MCP: {mcp_str}")
+        _print(
+            f"Model: {model_name} | Tier: {tier_policy} | Learning: {learning} | "
+            f"API key: {api_key} | MCP: {mcp_str}"
+        )
+        if startup_summary:
+            issues = startup_summary.get("issues", [])
+            if isinstance(issues, list) and issues:
+                labels = [
+                    str(issue.get("subsystem", "unknown"))
+                    for issue in issues[:3]
+                    if isinstance(issue, dict)
+                ]
+                extra = f" +{len(issues) - len(labels)} more" if len(issues) > len(labels) else ""
+                _print(
+                    f"Startup: degraded ({', '.join(labels)}{extra})",
+                    style="yellow" if console else None,
+                )
+            else:
+                _print("Startup: ok")
 
     def _help() -> None:
         from dan.server.concierge.command_registry import get_default_registry
@@ -685,6 +868,16 @@ async def _run_repl(
         _print(_help_text)
 
     # Fetch graph on startup for non-scratch workflows
+    try:
+        startup_summary = await client.get_health()
+        startup_summary = (
+            startup_summary.get("startup")
+            if isinstance(startup_summary, dict)
+            else None
+        )
+    except Exception:
+        startup_summary = None
+
     if workflow_id != "_scratch":
         try:
             graph_data = await client.get_graph(workflow_id)
@@ -719,7 +912,9 @@ async def _run_repl(
         as a single labeled block (used for background/queued responses).
         """
         nonlocal client_graph_revision
+        nonlocal session_estimated_cost
         acc = ""
+        progress_display = _CliProgressDisplay()
         try:
             async for event in client.stream_chat_events(channel):
                 if event is None:
@@ -733,8 +928,13 @@ async def _run_repl(
                         acc += delta
                 elif ev_type == "chat_complete":
                     if _is_progress_ack_event(event):
+                        for line in await progress_display.render(event):
+                            _print(line, style="dim" if console else None)
                         continue
                     content = acc or str(event.get("content", "") or "")
+                    estimated_cost = event.get("estimated_cost")
+                    if isinstance(estimated_cost, (int, float)):
+                        session_estimated_cost += float(estimated_cost)
                     if stream_tokens:
                         if acc:
                             print()
@@ -800,7 +1000,7 @@ async def _run_repl(
             _print(f"[queued] > {line}", style="dim" if console else None)
         else:
             try:
-                line = input("> ").strip()
+                line = input(f"[{_format_estimated_cost(session_estimated_cost)}] > ").strip()
             except (EOFError, KeyboardInterrupt):
                 _print("")
                 break
@@ -1136,6 +1336,7 @@ async def _run_repl(
 
         pending_stream_ids: list[str] = [stream_channel_id]
         seen_stream_ids: set[str] = set()
+        progress_display = _CliProgressDisplay()
         try:
             while pending_stream_ids:
                 current_stream_id = pending_stream_ids.pop(0)
@@ -1157,8 +1358,13 @@ async def _run_repl(
 
                     elif ev_type == "chat_complete":
                         if _is_progress_ack_event(event):
+                            for line in await progress_display.render(event):
+                                _print(line, style="dim" if console else None)
                             continue
                         complete_content = accumulated or str(event.get("content", "") or "")
+                        estimated_cost = event.get("estimated_cost")
+                        if isinstance(estimated_cost, (int, float)):
+                            session_estimated_cost += float(estimated_cost)
                         if accumulated:
                             print()  # newline after streamed tokens
                         elif complete_content:

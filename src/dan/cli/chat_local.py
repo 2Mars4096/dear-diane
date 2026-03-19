@@ -93,6 +93,15 @@ class LocalChatRuntime:
     async def ping(self) -> tuple[bool, str | None]:
         return (True, None)
 
+    async def get_health(self) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "startup": {
+                "status": "ok",
+                "issues": [],
+            },
+        }
+
     async def close(self) -> None:
         pass
 
