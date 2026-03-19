@@ -565,6 +565,28 @@ DELETE_GRAPH_SCHEMA = build_tool_schema(
     },
 )
 
+APPLY_LAST_MUTATION_SCHEMA = build_tool_schema(
+    name="apply_last_mutation",
+    description=(
+        "Apply the latest proposed workflow mutation preview from this chat thread. "
+        "Use when the user says 'apply it', 'looks good, apply', or 'go ahead' after a workflow preview. "
+        "Do not use this for live-run overlays; it applies workflow build/edit previews."
+    ),
+    parameters={
+        "type": "object",
+        "properties": {
+            "workflow_id": {
+                "type": "string",
+                "description": "Workflow ID to apply against (defaults to the active workflow).",
+            },
+            "message_id": {
+                "type": "string",
+                "description": "Optional assistant message ID containing the proposed mutation preview. Defaults to the latest proposed preview in the current thread.",
+            },
+        },
+    },
+)
+
 GET_ACTIVITY_SCHEMA = build_tool_schema(
     name="get_activity",
     description="Show current run activity: active runs, recent completions, and connected surfaces. Use when the user asks 'what's running?', 'show activity', or 'any active runs?'.",
@@ -696,6 +718,274 @@ async def handle_delete_graph(args: dict[str, Any], ctx: CapabilityContext) -> C
         },
         output_preview=text,
     )
+
+
+def _get_chat_store_for_mutations(ctx: CapabilityContext) -> Any:
+    manager = getattr(ctx, "chat_manager", None)
+    return getattr(manager, "_chat_store", None) if manager is not None else None
+
+
+def _get_latest_mutation_preview(
+    chat_store: Any,
+    workflow_id: str,
+    thread_id: str | None,
+    *,
+    message_id: str | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    if chat_store is None or not thread_id:
+        return None, "No chat thread context is available for applying a workflow preview."
+
+    target_message_id = str(message_id or "").strip() or None
+    thread = None
+    try:
+        thread = chat_store.get_thread(workflow_id, thread_id)
+    except Exception:
+        thread = None
+
+    if thread is not None:
+        saw_thread_mutation = False
+        for msg in reversed(getattr(thread, "messages", []) or []):
+            if target_message_id and getattr(msg, "id", None) != target_message_id:
+                continue
+            mutation_plan = getattr(msg, "mutation_plan", None)
+            if not isinstance(mutation_plan, dict) or not mutation_plan:
+                continue
+            saw_thread_mutation = True
+            status = getattr(msg, "mutation_status", None)
+            if status not in (None, "proposed"):
+                continue
+            return {
+                "message_id": getattr(msg, "id", None),
+                "mutation_plan": mutation_plan,
+                "dry_run_result": getattr(msg, "dry_run_result", None),
+            }, None
+        if target_message_id:
+            return None, f"No proposed workflow preview with message_id `{target_message_id}` was found in this chat."
+        if saw_thread_mutation:
+            return None, (
+                "This chat does not currently have a proposed workflow preview to apply. "
+                "The latest preview may already be applied or rejected."
+            )
+
+    try:
+        meta = chat_store.get_thread_meta(workflow_id, thread_id)
+    except Exception:
+        meta = {}
+    preview = meta.get("latest_mutation_preview") if isinstance(meta, dict) else None
+    if isinstance(preview, dict) and isinstance(preview.get("mutation_plan"), dict):
+        preview_message_id = str(preview.get("message_id") or "").strip() or None
+        if target_message_id and preview_message_id != target_message_id:
+            return None, f"No proposed workflow preview with message_id `{target_message_id}` was found in this chat."
+        return {
+            "message_id": preview_message_id,
+            "mutation_plan": preview.get("mutation_plan"),
+            "dry_run_result": preview.get("dry_run_result"),
+        }, None
+
+    return None, (
+        "No proposed workflow preview is available in this chat yet. "
+        "Ask me to build or modify the workflow first."
+    )
+
+
+def _mark_mutation_preview_applied(
+    chat_store: Any,
+    workflow_id: str,
+    thread_id: str | None,
+    *,
+    message_id: str | None,
+) -> None:
+    if chat_store is None or not thread_id:
+        return
+    try:
+        thread = chat_store.get_thread(workflow_id, thread_id)
+        if thread is not None:
+            changed = False
+            for msg in reversed(getattr(thread, "messages", []) or []):
+                if message_id and getattr(msg, "id", None) != message_id:
+                    continue
+                mutation_plan = getattr(msg, "mutation_plan", None)
+                if not isinstance(mutation_plan, dict) or not mutation_plan:
+                    continue
+                if getattr(msg, "mutation_status", None) in (None, "proposed"):
+                    msg.mutation_status = "applied"
+                    changed = True
+                    break
+            if changed:
+                from datetime import datetime, timezone
+
+                thread.updated_at = datetime.now(timezone.utc)
+                chat_store.save_thread(thread)
+    except Exception:
+        logger.debug("Failed to mark mutation preview as applied", exc_info=True)
+
+    try:
+        meta = chat_store.get_thread_meta(workflow_id, thread_id)
+        if isinstance(meta, dict):
+            preview = meta.get("latest_mutation_preview")
+            preview_message_id = (
+                str(preview.get("message_id") or "").strip()
+                if isinstance(preview, dict)
+                else ""
+            )
+            if not message_id or not preview_message_id or preview_message_id == message_id:
+                meta.pop("latest_mutation_preview", None)
+                chat_store.set_thread_meta(workflow_id, thread_id, meta)
+    except Exception:
+        logger.debug("Failed to clear latest mutation preview metadata", exc_info=True)
+
+
+def _apply_mutation_plan_via_graph_store(
+    graph_store: Any,
+    workflow_id: str,
+    mutation_plan: dict[str, Any],
+) -> CapabilityResult:
+    from dan.models.graph import Graph
+    from dan.server.chat_manager import compute_graph_revision
+    from dan.server.graph_mutator import GraphMutator, MutationPlan
+    from dan.server.mutation_metrics import mutation_metrics
+    from dan.validation.graph import validate_graph
+
+    if graph_store is None:
+        return CapabilityResult(
+            success=False,
+            message="Graph store not available.",
+            error_type="unavailable",
+        )
+
+    graph_data = graph_store.get_graph(workflow_id)
+    if graph_data is None:
+        return CapabilityResult(
+            success=False,
+            message=f"Workflow `{workflow_id}` not found.",
+            error_type="not_found",
+        )
+
+    try:
+        plan = MutationPlan.model_validate(mutation_plan)
+    except Exception as exc:
+        return CapabilityResult(
+            success=False,
+            message=f"Invalid mutation plan: {exc}",
+            error_type="invalid_input",
+        )
+
+    revision = compute_graph_revision(graph_data)
+    result = GraphMutator().apply(graph_data, plan, current_revision=revision)
+    if not result.success:
+        mutation_metrics.record_apply(False)
+        first_error = result.errors[0].message if result.errors else "Mutation apply failed."
+        if result.stale_plan:
+            first_error = (
+                "The workflow changed since this preview was created. "
+                "Please rebuild or refresh the preview before applying it."
+            )
+        return CapabilityResult(
+            success=False,
+            message=first_error,
+            data={
+                "stale_plan": result.stale_plan,
+                "errors": [error.model_dump() for error in result.errors],
+            },
+            output_preview=first_error,
+            error_type="stale_plan" if result.stale_plan else "apply_failed",
+        )
+
+    strict_validation = (
+        os.environ.get("DAN_STRICT_MUTATION_VALIDATION", "true").lower() == "true"
+    )
+    warnings: list[str] = []
+    if strict_validation:
+        try:
+            graph = Graph.model_validate(result.new_graph)
+        except Exception as exc:
+            mutation_metrics.record_apply(False)
+            mutation_metrics.record_validation(False)
+            return CapabilityResult(
+                success=False,
+                message=f"Graph parse error after apply: {exc}",
+                error_type="validation_failed",
+            )
+
+        raw_errors = validate_graph(graph)
+        fatal: list[str] = []
+        for msg in raw_errors:
+            lower = msg.lower()
+            if any(token in lower for token in ("warning", "deprecated", "untyped")):
+                warnings.append(msg)
+            else:
+                fatal.append(msg)
+        mutation_metrics.record_validation(len(fatal) == 0)
+        if fatal:
+            mutation_metrics.record_apply(False)
+            return CapabilityResult(
+                success=False,
+                message=fatal[0],
+                data={"errors": [{"message": msg} for msg in fatal]},
+                output_preview=fatal[0],
+                error_type="validation_failed",
+            )
+
+    mutation_metrics.record_apply(True)
+    graph_store.save_graph(workflow_id, result.new_graph)
+    new_revision = compute_graph_revision(result.new_graph)
+    text = "Applied the workflow preview successfully."
+    if warnings:
+        text += f" Validation warnings: {warnings[0]}"
+    return CapabilityResult(
+        success=True,
+        message=text,
+        data={
+            "workflow_id": workflow_id,
+            "graph_revision": new_revision,
+            "warnings": warnings,
+            "diagnostics": result.diagnostics,
+        },
+        output_preview=text,
+    )
+
+
+async def handle_apply_last_mutation(
+    args: dict[str, Any],
+    ctx: CapabilityContext,
+) -> CapabilityResult:
+    workflow_id = str(args.get("workflow_id") or ctx.workflow_id or "").strip()
+    if not workflow_id:
+        return CapabilityResult(
+            success=False,
+            message="No workflow ID is available for applying the preview.",
+            error_type="invalid_input",
+        )
+
+    chat_store = _get_chat_store_for_mutations(ctx)
+    preview, error = _get_latest_mutation_preview(
+        chat_store,
+        workflow_id,
+        ctx.thread_id,
+        message_id=args.get("message_id"),
+    )
+    if preview is None:
+        return CapabilityResult(
+            success=False,
+            message=error or "No proposed workflow preview is available in this chat.",
+            error_type="not_found",
+        )
+
+    result = _apply_mutation_plan_via_graph_store(
+        ctx.graph_store,
+        workflow_id,
+        preview["mutation_plan"],
+    )
+    if result.success:
+        _mark_mutation_preview_applied(
+            chat_store,
+            workflow_id,
+            ctx.thread_id,
+            message_id=preview.get("message_id"),
+        )
+        if isinstance(result.data, dict):
+            result.data["message_id"] = preview.get("message_id")
+    return result
 
 # ── Experience schemas (25-2) ──────────────────────────────────────
 
@@ -866,6 +1156,7 @@ def register_base_capabilities(registry: ChatCapabilityRegistry) -> None:
     """Register the foundational read-only tools (25-1)."""
     registry.register("list_graphs", LIST_GRAPHS_SCHEMA, handle_list_graphs, modes=list(ALL_MODES), category="graph")
     registry.register("delete_graph", DELETE_GRAPH_SCHEMA, handle_delete_graph, modes=WRITE_MODES, category="graph")
+    registry.register("apply_last_mutation", APPLY_LAST_MUTATION_SCHEMA, handle_apply_last_mutation, modes=WRITE_MODES, category="graph")
     registry.register("get_activity", GET_ACTIVITY_SCHEMA, handle_get_activity, modes=list(ALL_MODES), category="run")
     registry.register("web_search", WEB_SEARCH_CAPABILITY_SCHEMA, handle_web_search, modes=["ask", "agent", "build", "mutate", "conversation", "debug"], category="web", cacheable=True)
     registry.register("file_read", FILE_READ_CAPABILITY_SCHEMA, handle_file_read, modes=list(ALL_MODES), category="file", cacheable=True)

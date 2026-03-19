@@ -568,6 +568,17 @@ def generate_capability_reference(
             "so the changes stay proposed until the user explicitly applies them."
         )
         lines.append(
+            "When the user later says to apply a previously proposed workflow preview from this chat, "
+            "use `apply_last_mutation` instead of re-planning the same mutation. "
+            "Do NOT use `apply_pending_overlay` for workflow previews; that tool only patches live runs."
+        )
+        lines.append(
+            "When the user wants to run or test the workflow itself, use `start_run`. "
+            "For the current workflow you usually do not need to guess a workflow_id; "
+            "the current workflow context will be used by default. "
+            "Do NOT use `http_request` or Furnace endpoints for ordinary workflow execution."
+        )
+        lines.append(
             "Be explicit about workflow status: `plan_graph_mutations` prepares a proposed preview/diff. "
             "Say whether the workflow is only proposed, already applied, or actually tested."
         )
@@ -1228,7 +1239,7 @@ Do not dump an entire long file in one tool call.
 19. Prefer fetched page content over search snippets. If you only have snippets, say the answer is tentative or fetch more before concluding.
 20. When web search results are numbered, cite them inline as [1], [2] and include markdown links to the source URLs when helpful.
 21. If `list_directory` says a listing is partial/truncated, do NOT infer absence from the cutoff. Continue with `start_after` or narrow the listing with `glob_pattern` before concluding a file or directory is missing.
-22. Separate proposed work from completed work. If a workflow change is only dry-run validated or waiting for apply/confirmation, say that clearly instead of implying it already happened. When `auto_apply: true` was used and the tool result confirms the apply succeeded, the workflow IS applied and you can proceed to `start_run`.
+22. Separate proposed work from completed work. If a workflow change is only dry-run validated or waiting for apply/confirmation, say that clearly instead of implying it already happened. When `auto_apply: true` was used and the tool result confirms the apply succeeded, the workflow IS applied and you can proceed to `start_run`. If the user later asks to apply an existing preview, prefer `apply_last_mutation` rather than rebuilding the same plan.
 
 {module_hints}
 

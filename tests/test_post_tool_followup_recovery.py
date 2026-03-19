@@ -1150,3 +1150,88 @@ async def test_send_message_with_tools_auto_apply_text_based_mutation_uses_user_
         and "applied automatically" in str(msg.get("content") or "")
         for msg in followup_messages
     ), "Text-based mutations should use a user message continuation"
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_repairs_invalid_mutation_plan_internally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Here is the workflow preview.",
+                tool_calls=[
+                    {
+                        "id": "call_bad_mut",
+                        "type": "function",
+                        "function": {
+                            "name": "plan_graph_mutations",
+                            "arguments": json.dumps({
+                                "description": "Add an input node",
+                                "operations": [
+                                    {
+                                        "node_type": "input",
+                                        "name": "Workflow Input",
+                                    }
+                                ],
+                            }),
+                        },
+                    },
+                ],
+                usage={"prompt_tokens": 10, "completion_tokens": 5},
+            ),
+            CompletionResult(
+                text="Repairing the preview.",
+                tool_calls=[
+                    {
+                        "id": "call_good_mut",
+                        "type": "function",
+                        "function": {
+                            "name": "plan_graph_mutations",
+                            "arguments": json.dumps({
+                                "description": "Add an input node",
+                                "operations": [
+                                    {
+                                        "op": "add_node",
+                                        "node_type": "input",
+                                        "name": "Workflow Input",
+                                    }
+                                ],
+                            }),
+                        },
+                    },
+                ],
+                usage={"prompt_tokens": 12, "completion_tokens": 6},
+            ),
+        ]
+    )
+
+    mgr = _make_manager(provider, tool_call_log=[])
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Build the workflow.",
+            history=[],
+            allow_mutation_tool=True,
+        )
+    )
+
+    mutation_events = [e for e in events if isinstance(e, ChatMutationEvent)]
+    assert len(mutation_events) == 1
+    assert mutation_events[0].dry_run_result["success"] is True
+    assert len(provider.requests) == 2
+
+    repair_messages = provider.requests[1]["messages"]
+    assert any(
+        msg.get("role") == "system"
+        and "repair dan workflow mutation plans" in str(msg.get("content") or "").lower()
+        for msg in repair_messages
+    )
+    assert any(
+        msg.get("role") == "user"
+        and "Compilation or validation failures" in str(msg.get("content") or "")
+        and "Current mutation proposal" in str(msg.get("content") or "")
+        for msg in repair_messages
+    )

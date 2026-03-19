@@ -46,6 +46,8 @@ from dan.server.capability_registry import CapabilityResult
 from dan.server.graph_mutator import (
     GraphMutator,
     MutationPlan,
+    MutationResult,
+    OperationError,
     PATTERN_LIBRARY,
     _default_node_config,
     _default_ports,
@@ -385,6 +387,48 @@ def _persist_citation_summary(
         chat_store.set_thread_meta(workflow_id, thread_id, meta)
     except Exception:
         logger.debug("Failed to persist citation summary", exc_info=True)
+
+
+def _persist_latest_mutation_preview(
+    chat_store: Any,
+    workflow_id: str,
+    thread_id: str | None,
+    *,
+    message_id: str,
+    mutation_plan: dict[str, Any],
+    dry_run_result: dict[str, Any],
+) -> None:
+    if chat_store is None or not thread_id:
+        return
+    try:
+        meta = chat_store.get_thread_meta(workflow_id, thread_id)
+        if not isinstance(meta, dict):
+            meta = {}
+        meta["latest_mutation_preview"] = {
+            "message_id": message_id,
+            "mutation_plan": mutation_plan,
+            "dry_run_result": dry_run_result,
+        }
+        chat_store.set_thread_meta(workflow_id, thread_id, meta)
+    except Exception:
+        logger.debug("Failed to persist latest mutation preview", exc_info=True)
+
+
+def _clear_latest_mutation_preview(
+    chat_store: Any,
+    workflow_id: str,
+    thread_id: str | None,
+) -> None:
+    if chat_store is None or not thread_id:
+        return
+    try:
+        meta = chat_store.get_thread_meta(workflow_id, thread_id)
+        if not isinstance(meta, dict) or "latest_mutation_preview" not in meta:
+            return
+        meta.pop("latest_mutation_preview", None)
+        chat_store.set_thread_meta(workflow_id, thread_id, meta)
+    except Exception:
+        logger.debug("Failed to clear latest mutation preview", exc_info=True)
 
 
 def _citation_warning_text(verifications: list[Any]) -> str | None:
@@ -1202,9 +1246,32 @@ class ChatManager:
                         _path = _gen_summary_evt.path_taken
                         if len(_gen_summary_evt.fallback_chain) > 1 or _wall_s > 10:
                             _path_suffix = f" Built via {_path} in {_wall_s:.1f}s."
+                    workflow_name = str(new_summary.name or "").strip()
+                    node_preview_items = [
+                        str(getattr(node, "name", "") or getattr(node, "id", "")).strip()
+                        for node in new_graph.nodes[:5]
+                    ]
+                    node_preview_items = [item for item in node_preview_items if item]
+                    node_preview = ""
+                    if node_preview_items:
+                        extra_nodes = max(0, new_summary.node_count - len(node_preview_items))
+                        preview_text = ", ".join(f"`{item}`" for item in node_preview_items)
+                        if extra_nodes:
+                            preview_text += f", +{extra_nodes} more"
+                        node_preview = f" Nodes: {preview_text}."
                     summary_message = (
-                        f"Workflow created with {new_summary.node_count} nodes "
-                        f"and {new_summary.edge_count} edges.{_path_suffix}"
+                        f"Workflow saved to current id `{workflow_id}`"
+                        + (
+                            f' with name "{workflow_name}"'
+                            if workflow_name and workflow_name != workflow_id
+                            else ""
+                        )
+                        + (
+                            f". Created with {new_summary.node_count} nodes "
+                            f"and {new_summary.edge_count} edges."
+                        )
+                        + node_preview
+                        + _path_suffix
                     )
                     self._record_conversation_summary(
                         workflow_id=workflow_id,
@@ -1581,6 +1648,115 @@ class ChatManager:
                     if complete_task is not None and not complete_task.done():
                         complete_task.cancel()
                     raise
+
+            def _compile_mutation_preview(
+                mutation_payload: dict[str, Any],
+                *,
+                graph_snapshot: dict[str, Any],
+                base_revision: str,
+            ) -> tuple[dict[str, Any], MutationPlan | None, MutationResult]:
+                fallback_payload = {
+                    "operations": mutation_payload.get("operations", []),
+                    "description": mutation_payload.get("description", ""),
+                    "reasoning": mutation_payload.get("reasoning", ""),
+                    "base_graph_revision": base_revision,
+                }
+                try:
+                    ops = _normalize_generated_mutation_ops(
+                        mutation_payload.get("operations", []),
+                    )
+                    if is_empty_graph:
+                        ops = _coerce_strict_edges(ops)
+                    plan_payload = {
+                        "operations": ops,
+                        "description": mutation_payload.get("description", ""),
+                        "reasoning": mutation_payload.get("reasoning", ""),
+                        "base_graph_revision": base_revision,
+                    }
+                    plan = MutationPlan.model_validate(plan_payload)
+                except Exception as exc:
+                    error_message = f"{type(exc).__name__}: {exc}"
+                    return (
+                        fallback_payload,
+                        None,
+                        MutationResult(
+                            success=False,
+                            new_graph=None,
+                            errors=[
+                                OperationError(
+                                    op_index=-1,
+                                    op_type="compilation",
+                                    message=error_message,
+                                )
+                            ],
+                        ),
+                    )
+
+                try:
+                    dry_result = GraphMutator().dry_run(
+                        graph_snapshot,
+                        plan,
+                        current_revision=base_revision,
+                    )
+                except Exception as exc:
+                    error_message = f"{type(exc).__name__}: {exc}"
+                    dry_result = MutationResult(
+                        success=False,
+                        new_graph=None,
+                        errors=[
+                            OperationError(
+                                op_index=-1,
+                                op_type="compilation",
+                                message=error_message,
+                            )
+                        ],
+                    )
+                return plan_payload, plan, dry_result
+
+            def _build_mutation_repair_messages(
+                *,
+                current_mutation: dict[str, Any],
+                current_plan_payload: dict[str, Any],
+                current_dry_result: MutationResult,
+            ) -> list[dict[str, str]]:
+                error_payload = {
+                    "errors": [
+                        error.model_dump()
+                        for error in getattr(current_dry_result, "errors", []) or []
+                    ],
+                    "diagnostics": list(
+                        getattr(current_dry_result, "diagnostics", []) or []
+                    ),
+                    "stale_plan": bool(
+                        getattr(current_dry_result, "stale_plan", False)
+                    ),
+                }
+                return [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You repair DAN workflow mutation plans. Preserve the user's requested workflow "
+                            "behavior and only fix mechanical graph-compilation, schema, or validation issues "
+                            "in the plan. Do not broaden scope, do not ask the user for clarification, and "
+                            "do not change the requested outcome unless a minimal structural adjustment is "
+                            "strictly required for a valid graph. Return ONLY a `plan_graph_mutations` tool "
+                            "call or a JSON object matching that tool."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"User request:\n{message}\n\n"
+                            f"Current workflow summary:\n{serialize_for_prompt(summary)}\n\n"
+                            "Current mutation proposal:\n"
+                            f"```json\n{json.dumps(current_plan_payload or current_mutation, indent=2)}\n```\n\n"
+                            "Compilation or validation failures:\n"
+                            f"```json\n{json.dumps(error_payload, indent=2)}\n```\n\n"
+                            "Produce a corrected `plan_graph_mutations` call that keeps the same requested "
+                            "workflow behavior while fixing only the mechanical issues above."
+                        ),
+                    },
+                ]
 
             try:
                 # Retry loop for transient errors
@@ -2195,19 +2371,10 @@ class ChatManager:
                         revision_mismatch=revision_mismatch,
                     )
 
-                    ops = _normalize_generated_mutation_ops(
-                        mutation_data.get("operations", []),
-                    )
-                    if is_empty_graph:
-                        ops = _coerce_strict_edges(ops)
-                    plan = MutationPlan.model_validate({
-                        "operations": ops,
-                        "description": mutation_data.get("description", ""),
-                        "reasoning": mutation_data.get("reasoning", ""),
-                        "base_graph_revision": revision,
-                    })
-                    dry_result = GraphMutator().dry_run(
-                        graph_dict, plan, current_revision=revision,
+                    plan_payload, plan, dry_result = _compile_mutation_preview(
+                        mutation_data,
+                        graph_snapshot=graph_dict,
+                        base_revision=revision,
                     )
 
                     if (
@@ -2216,10 +2383,12 @@ class ChatManager:
                         and _MUTATION_AUTO_RETRY
                         and _MUTATION_AUTO_RETRY_MAX > 0
                     ):
-                        retry_assistant = result.text or ""
                         for attempt in range(_MUTATION_AUTO_RETRY_MAX):
                             mutation_metrics.record_retry()
-                            error_summary = "; ".join(e.message for e in dry_result.errors)
+                            error_summary = "; ".join(
+                                error.message
+                                for error in getattr(dry_result, "errors", []) or []
+                            ) or "unknown compilation/validation error"
                             yield _progress_ack_event(
                                 message_id=message_id,
                                 label="Repairing workflow change preview",
@@ -2229,25 +2398,15 @@ class ChatManager:
                             )
                             logger.info(
                                 "Dry-run failed for plan %s, attempting auto-retry %d/%d: %s",
-                                plan.plan_id,
+                                plan.plan_id if plan is not None else "invalid-plan",
                                 attempt + 1,
                                 _MUTATION_AUTO_RETRY_MAX,
                                 error_summary,
                             )
-                            retry_messages = list(messages)
-                            if retry_assistant.strip():
-                                retry_messages.append(
-                                    {"role": "assistant", "content": retry_assistant}
-                                )
-                            retry_messages.append(
-                                {
-                                    "role": "user",
-                                    "content": (
-                                        f"The mutation plan produced these errors:\n{error_summary}\n\n"
-                                        "Please produce a corrected plan_graph_mutations call "
-                                        "that fixes these issues."
-                                    ),
-                                },
+                            retry_messages = _build_mutation_repair_messages(
+                                current_mutation=mutation_data,
+                                current_plan_payload=plan_payload,
+                                current_dry_result=dry_result,
                             )
                             try:
                                 retry_result: CompletionResult | None = None
@@ -2277,32 +2436,23 @@ class ChatManager:
                                 logger.debug("Auto-retry LLM call failed: %s", retry_exc)
                                 break
 
-                            retry_assistant = retry_result.text or retry_assistant
                             retry_mutation = self._extract_mutation_from_result(retry_result)
                             if retry_mutation is None:
                                 continue
 
-                            retry_ops = _normalize_generated_mutation_ops(
-                                retry_mutation.get("operations", []),
-                            )
-                            if is_empty_graph:
-                                retry_ops = _coerce_strict_edges(retry_ops)
-                            retry_plan = MutationPlan.model_validate({
-                                "operations": retry_ops,
-                                "description": retry_mutation.get("description", ""),
-                                "reasoning": retry_mutation.get("reasoning", ""),
-                                "base_graph_revision": revision,
-                            })
-                            retry_dry = GraphMutator().dry_run(
-                                graph_dict, retry_plan, current_revision=revision,
+                            retry_plan_payload, retry_plan, retry_dry = _compile_mutation_preview(
+                                retry_mutation,
+                                graph_snapshot=graph_dict,
+                                base_revision=revision,
                             )
 
+                            plan_payload = retry_plan_payload
                             plan = retry_plan
                             dry_result = retry_dry
                             mutation_data = retry_mutation
                             result = retry_result
 
-                            if retry_dry.success:
+                            if retry_plan is not None and retry_dry.success:
                                 logger.info(
                                     "Auto-retry succeeded for plan %s on attempt %d",
                                     plan.plan_id,
@@ -2323,7 +2473,7 @@ class ChatManager:
                         )
                         logger.info(
                             "Stale plan for %s, re-planning against current revision",
-                            plan.plan_id,
+                            plan.plan_id if plan is not None else "invalid-plan",
                         )
                         graph_dict = self._graph_store.get_graph(workflow_id)
                         if graph_dict is not None:
@@ -2380,25 +2530,16 @@ class ChatManager:
                                     replan_result,
                                 )
                                 if replan_mutation is not None:
-                                    replan_ops = _normalize_generated_mutation_ops(
-                                        replan_mutation.get("operations", []),
+                                    replan_plan_payload, replan_plan, replan_dry = _compile_mutation_preview(
+                                        replan_mutation,
+                                        graph_snapshot=graph_dict,
+                                        base_revision=revision,
                                     )
-                                    if is_empty_graph:
-                                        replan_ops = _coerce_strict_edges(replan_ops)
-                                    replan_plan = MutationPlan.model_validate({
-                                        "operations": replan_ops,
-                                        "description": replan_mutation.get("description", ""),
-                                        "reasoning": replan_mutation.get("reasoning", ""),
-                                        "base_graph_revision": revision,
-                                    })
-                                    replan_dry = GraphMutator().dry_run(
-                                        graph_dict,
-                                        replan_plan,
-                                        current_revision=revision,
-                                    )
-                                    if replan_dry.success:
+                                    if replan_plan is not None and replan_dry.success:
+                                        plan_payload = replan_plan_payload
                                         plan = replan_plan
                                         dry_result = replan_dry
+                                        mutation_data = replan_mutation
                                         logger.info("Stale-plan re-planning succeeded")
                             except Exception as replan_exc:
                                 logger.debug(
@@ -2431,7 +2572,11 @@ class ChatManager:
                             )
 
                     normalized_usage = _normalize_usage(result.usage)
-                    plan_dump = plan.model_dump()
+                    plan_dump = (
+                        plan.model_dump()
+                        if plan is not None
+                        else dict(plan_payload)
+                    )
                     if mode == "debug":
                         plan_dump.setdefault("metadata", {})["source"] = "debug-fix"
 
@@ -2467,6 +2612,21 @@ class ChatManager:
                         is_empty_graph=is_empty_graph,
                         applied=did_apply,
                     )
+                    if did_apply:
+                        _clear_latest_mutation_preview(
+                            self._chat_store,
+                            workflow_id,
+                            thread_id,
+                        )
+                    else:
+                        _persist_latest_mutation_preview(
+                            self._chat_store,
+                            workflow_id,
+                            thread_id,
+                            message_id=message_id,
+                            mutation_plan=plan_dump,
+                            dry_run_result=dry_result.model_dump(),
+                        )
                     self._record_conversation_summary(
                         workflow_id=workflow_id,
                         user_message=message,
@@ -3528,14 +3688,24 @@ class ChatManager:
         mutation_data = _try_parse_mutation_json(final_content) if allow_mutation_tool else None
         if mutation_data is not None:
             try:
-                plan = MutationPlan.model_validate({
-                    "operations": _normalize_generated_mutation_ops(
+                try:
+                    ops = _normalize_generated_mutation_ops(
                         mutation_data.get("operations", []),
-                    ),
-                    "description": mutation_data.get("description", ""),
-                    "reasoning": mutation_data.get("reasoning", ""),
-                    "base_graph_revision": revision,
-                })
+                    )
+                    plan = MutationPlan.model_validate({
+                        "operations": ops,
+                        "description": mutation_data.get("description", ""),
+                        "reasoning": mutation_data.get("reasoning", ""),
+                        "base_graph_revision": revision,
+                    })
+                except Exception as plan_exc:
+                    logger.debug("Fallback mutation plan validation failed: %s", plan_exc)
+                    plan = MutationPlan(
+                        operations=[],
+                        description=mutation_data.get("description", ""),
+                        reasoning=mutation_data.get("reasoning", ""),
+                        base_graph_revision=revision,
+                    )
                 dry_result = GraphMutator().dry_run(
                     graph_dict, plan, current_revision=revision,
                 )
@@ -3568,6 +3738,14 @@ class ChatManager:
                     workflow_id=workflow_id,
                     user_message=user_message,
                     assistant_message=mutation_data.get("reasoning", ""),
+                )
+                _persist_latest_mutation_preview(
+                    self._chat_store,
+                    workflow_id,
+                    thread_id,
+                    message_id=message_id,
+                    mutation_plan=plan_dump,
+                    dry_run_result=dry_result.model_dump(),
                 )
                 yield ChatMutationEvent(
                     message_id=message_id,

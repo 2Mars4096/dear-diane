@@ -2387,6 +2387,8 @@ def test_extract_chat_params_mutation_tool_true_for_workflow_followup_history() 
 
     params = _extract_chat_params(session, "system prompt")
     assert params["allow_mutation_tool"] is True
+    assert "workflow_run" in params["required_action_hints"]
+    assert "run_control" not in params["required_action_hints"]
 
 
 def test_extract_chat_params_mutation_tool_false_for_workflow_query_only() -> None:
@@ -2439,6 +2441,50 @@ def test_extract_chat_params_promotes_ask_mode_for_workflow_action_followup() ->
     params = _extract_chat_params(session, "system prompt")
     assert params["mode"] == "agent"
     assert params["allow_mutation_tool"] is True
+    assert "workflow_run" in params["required_action_hints"]
+    assert "run_control" not in params["required_action_hints"]
+
+
+def test_extract_chat_params_promotes_ask_mode_for_workflow_apply_followup() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(intent="ask", route=_FakeRoute(target="general")),
+        msg=_FakeMsg(metadata={"mode": "ask"}),
+    )
+    session.msg.text = "good please apply"
+    session.context = SimpleNamespace(
+        project=SimpleNamespace(linked_workflow_ids=["_scratch"]),
+        task=SimpleNamespace(
+            turns=[
+                SimpleNamespace(role="user", content="Build the workflow around watchlist.csv"),
+                SimpleNamespace(role="assistant", content="Prepared a workflow change preview for the watchlist workflow."),
+            ],
+        ),
+    )
+
+    params = _extract_chat_params(session, "system prompt")
+    assert params["mode"] == "agent"
+    assert params["allow_mutation_tool"] is True
+
+
+def test_extract_chat_params_keeps_furnace_run_control_when_explicit() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(intent="agent", route=_FakeRoute(target="general", action_hints=["run_control"])),
+        msg=_FakeMsg(metadata={"mode": "agent"}),
+    )
+    session.msg.text = "please start the furnace session again"
+    session.context = SimpleNamespace(
+        project=SimpleNamespace(linked_workflow_ids=["_scratch"]),
+        task=SimpleNamespace(
+            turns=[
+                SimpleNamespace(role="user", content="Build the workflow around watchlist.csv"),
+                SimpleNamespace(role="assistant", content="Prepared a workflow change preview for the watchlist workflow."),
+            ],
+        ),
+    )
+
+    params = _extract_chat_params(session, "system prompt")
+    assert "run_control" in params["required_action_hints"]
+    assert "workflow_run" not in params["required_action_hints"]
 
 
 def test_extract_chat_params_mutation_tool_false_for_agent_mode_file_route() -> None:

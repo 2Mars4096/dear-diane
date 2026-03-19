@@ -70,7 +70,19 @@ _WORKFLOW_ACTIVITY_RE = re.compile(
     re.IGNORECASE,
 )
 _WORKFLOW_FOLLOWUP_RE = re.compile(
-    r"\b(?:build|rebuild|delete|remove|retry|again|fix|update|test|run|work(?:ing)?)\b",
+    r"\b(?:build|rebuild|delete|remove|retry|again|fix|update|test|run|work(?:ing)?|apply|approve|confirm)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_APPROVAL_RE = re.compile(
+    r"\b(?:apply|approve|confirm)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_RUN_RE = re.compile(
+    r"\b(?:run|test|execute|launch|start)\b",
+    re.IGNORECASE,
+)
+_FURNACE_CONTROL_RE = re.compile(
+    r"\b(?:furnace|distill(?:ation)?|recipe session|start session)\b",
     re.IGNORECASE,
 )
 _ANAPHORA_RE = re.compile(r"\b(?:it|that|this|those|them)\b", re.IGNORECASE)
@@ -164,6 +176,8 @@ def _should_keep_mutation_tool_for_followup(
         return False
     if _WORKFLOW_ACTIVITY_RE.search(text):
         return True
+    if _WORKFLOW_APPROVAL_RE.search(text):
+        return True
     return bool(_WORKFLOW_FOLLOWUP_RE.search(text) and _ANAPHORA_RE.search(text))
 
 
@@ -174,12 +188,28 @@ def _should_promote_ask_mode_for_workflow_followup(
     text = str(message or "").strip()
     if not text or not _history_has_workflow_activity(history):
         return False
+    if _WORKFLOW_APPROVAL_RE.search(text):
+        return True
     if not _WORKFLOW_FOLLOWUP_RE.search(text):
         return False
     return bool(
         _WORKFLOW_ACTIVITY_RE.search(text)
         or _ANAPHORA_RE.search(text)
     )
+
+
+def _should_prefer_workflow_run_followup(
+    message: str,
+    history: list[dict[str, str]],
+) -> bool:
+    text = str(message or "").strip()
+    if not text or not _history_has_workflow_activity(history):
+        return False
+    if _FURNACE_CONTROL_RE.search(text):
+        return False
+    if _WORKFLOW_ACTIVITY_RE.search(text) and _WORKFLOW_RUN_RE.search(text):
+        return True
+    return bool(_WORKFLOW_RUN_RE.search(text) and _ANAPHORA_RE.search(text))
 
 
 def _filter_child_route(parent_route: Any, task_desc: str) -> Any:
@@ -738,6 +768,13 @@ def _extract_chat_params(
             hint_text = str(hint or "").strip()
             if hint_text and hint_text not in required_action_hints:
                 required_action_hints.append(hint_text)
+
+    if _should_prefer_workflow_run_followup(message, history):
+        required_action_hints = [
+            hint for hint in required_action_hints if hint != "run_control"
+        ]
+        if "workflow_run" not in required_action_hints:
+            required_action_hints.append("workflow_run")
 
     # Furnace/run-control turns should be operational (session lifecycle API calls),
     # not purely narrative summaries.

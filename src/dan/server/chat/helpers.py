@@ -30,7 +30,8 @@ _ACTION_HINT_TOOL_MAP: dict[str, frozenset[str]] = {
     "read_file": frozenset({"file_read", "pdf_read", "list_directory"}),
     "search_web": frozenset({"web_search", "web_fetch", "http_request"}),
     "write_file": frozenset({"file_write"}),
-    "workflow_edit": frozenset({"plan_graph_mutations"}),
+    "workflow_edit": frozenset({"plan_graph_mutations", "apply_last_mutation"}),
+    "workflow_run": frozenset({"start_run"}),
     # Run-control turns (e.g. furnace session lifecycle) should execute API control
     # actions instead of ending as narrative prose.
     "run_control": frozenset({"http_request"}),
@@ -216,14 +217,17 @@ def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> s
     write_pending = "write_file" in missing_action_hints
     read_pending = "read_file" in missing_action_hints
     run_control_pending = "run_control" in missing_action_hints
+    workflow_run_pending = "workflow_run" in missing_action_hints
     workflow_edit_pending = "workflow_edit" in missing_action_hints
     handled_read = False
 
     if workflow_edit_pending:
         instructions.append(
-            "You need to modify the workflow graph. Call the plan_graph_mutations "
-            "tool with the appropriate operations (add_node, add_edge, "
-            "expand_pattern, etc.) to build or update the workflow."
+            "You still need to complete workflow editing. If the user is asking "
+            "to apply a previously proposed workflow preview from this chat, call "
+            "`apply_last_mutation`. Otherwise call `plan_graph_mutations` with the "
+            "appropriate operations (add_node, add_edge, expand_pattern, etc.) "
+            "to build or update the workflow."
         )
 
     if search_pending and write_pending:
@@ -277,6 +281,12 @@ def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> s
             "Prefer chunked reads: use file_read or pdf_read with specific "
             "start_line/end_line ranges (or grep to locate sections) instead of "
             "re-reading the whole file."
+        )
+    if workflow_run_pending:
+        instructions.append(
+            "You still need to execute the workflow itself. Use `start_run` for the current workflow "
+            "(omit `workflow_id` unless you truly need a non-current one). "
+            "Do NOT use `http_request` or Furnace endpoints for an ordinary workflow run."
         )
     if run_control_pending:
         instructions.append(

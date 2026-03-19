@@ -115,7 +115,7 @@ def build_classifier_prompt() -> str:
     catalog = "\n\n".join(_render_definition(definition) for definition in INTENT_DEFINITIONS)
     return (
         "You are DAN's routing classifier. Choose exactly one top-level route for the latest user message.\n"
-        'Return JSON only with this schema: {"intent":"<name>","confidence":0.0,"reason":"short explanation","target":"general|file|web|run|workflow|memory","action_hints":["read_file|search_web|write_file|status_check|workflow_query|experience_lookup|run_control|publish|workflow_edit|long_horizon_goal"],"goal":"one-sentence user goal","deliverable":"one-sentence expected outcome","constraints":["short constraint"],"next_step":"short immediate next action"}\n\n'
+        'Return JSON only with this schema: {"intent":"<name>","confidence":0.0,"reason":"short explanation","target":"general|file|web|run|workflow|memory","action_hints":["read_file|search_web|write_file|status_check|workflow_query|experience_lookup|run_control|workflow_run|publish|workflow_edit|long_horizon_goal"],"goal":"one-sentence user goal","deliverable":"one-sentence expected outcome","constraints":["short constraint"],"next_step":"short immediate next action"}\n\n'
         "Routing principles:\n"
         "- First infer the user's real goal and expected deliverable.\n"
         "- Then choose the route, target, and action hints that best match that goal.\n"
@@ -131,8 +131,9 @@ def build_classifier_prompt() -> str:
         "- Use `read_file` when the task should inspect a local file or folder before answering.\n"
         "- Use `search_web` when the task needs live external information.\n"
         "- Use `write_file` when the task must save or create a local artifact.\n"
-        "- Use `workflow_edit` for workflow-structure edits and `long_horizon_goal` for broader automation planning.\n"
-        "- Use `status_check`, `workflow_query`, `experience_lookup`, `run_control`, or `publish` only when they are clearly the main action.\n\n"
+        "- Use `workflow_edit` for workflow-structure edits, `workflow_run` for executing the current workflow, and `long_horizon_goal` for broader automation planning.\n"
+        "- Use `run_control` only for Furnace / session-control requests, not ordinary workflow runs.\n"
+        "- Use `status_check`, `workflow_query`, `experience_lookup`, `run_control`, `workflow_run`, or `publish` only when they are clearly the main action.\n\n"
         "Route catalog:\n"
         f"{catalog}\n"
     )

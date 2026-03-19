@@ -26,7 +26,9 @@ from dan.server.chat.helpers import (
 )
 from dan.server.concierge.actions import _NUMERIC_CLAIM_RE
 from dan.server.capability_handlers import (
+    APPLY_LAST_MUTATION_SCHEMA,
     WEB_SEARCH_CAPABILITY_SCHEMA,
+    handle_apply_last_mutation,
     handle_delete_graph,
     handle_web_fetch,
     handle_web_search,
@@ -194,6 +196,117 @@ class TestDeleteGraphCapabilityRegistration:
         assert result.success is False
         assert result.error_type == "invalid_input"
         assert "Cannot delete" in result.message
+
+class TestApplyLastMutationCapabilityRegistration:
+    def _registry(self) -> ChatCapabilityRegistry:
+        reg = ChatCapabilityRegistry()
+        register_base_capabilities(reg)
+        return reg
+
+    def test_apply_last_mutation_registered_for_agent_mode(self):
+        reg = self._registry()
+        assert "apply_last_mutation" in reg.list_tool_names("agent")
+        assert APPLY_LAST_MUTATION_SCHEMA["function"]["name"] == "apply_last_mutation"
+
+    def test_apply_last_mutation_not_in_ask_mode(self):
+        reg = self._registry()
+        assert "apply_last_mutation" not in reg.list_tool_names("ask")
+
+    @pytest.mark.asyncio
+    async def test_apply_last_mutation_handler_applies_latest_preview(self):
+        saved_graphs: list[dict[str, object]] = []
+        saved_threads: list[object] = []
+        saved_meta: list[dict[str, object]] = []
+        mutation_plan = {
+            "description": "Add a workflow input",
+            "operations": [
+                {
+                    "op": "add_node",
+                    "id": "workflow_input",
+                    "node_type": "input",
+                    "name": "Workflow Input",
+                }
+            ],
+        }
+        thread = SimpleNamespace(
+            messages=[
+                SimpleNamespace(
+                    id="mut-1",
+                    mutation_plan=mutation_plan,
+                    dry_run_result={"success": True},
+                    mutation_status="proposed",
+                )
+            ],
+            updated_at=None,
+        )
+        chat_store = SimpleNamespace(
+            get_thread=lambda workflow_id, thread_id: thread,
+            save_thread=lambda thread_obj: saved_threads.append(thread_obj),
+            get_thread_meta=lambda workflow_id, thread_id: {
+                "latest_mutation_preview": {
+                    "message_id": "mut-1",
+                    "mutation_plan": mutation_plan,
+                    "dry_run_result": {"success": True},
+                }
+            },
+            set_thread_meta=lambda workflow_id, thread_id, meta: saved_meta.append(meta),
+        )
+        graph_store = SimpleNamespace(
+            get_graph=lambda workflow_id: {
+                "version": "dan_graph_v1",
+                "metadata": {"name": "test"},
+                "nodes": [
+                    {
+                        "id": "n1",
+                        "name": "Node 1",
+                        "node_type": "llm_operator",
+                        "model": "test-model",
+                        "prompt_template": "Hello",
+                    }
+                ],
+                "edges": [],
+            },
+            save_graph=lambda workflow_id, graph: saved_graphs.append(graph),
+        )
+
+        result = await handle_apply_last_mutation(
+            {},
+            CapabilityContext(
+                workflow_id="wf1",
+                graph_store=graph_store,
+                thread_id="thread-1",
+                chat_manager=SimpleNamespace(_chat_store=chat_store),
+            ),
+        )
+
+        assert result.success is True
+        assert saved_graphs
+        assert any(node["id"] == "workflow_input" for node in saved_graphs[0]["nodes"])
+        assert thread.messages[0].mutation_status == "applied"
+        assert saved_threads, "Applying from chat should persist the updated thread status"
+        assert saved_meta and "latest_mutation_preview" not in saved_meta[-1]
+        assert result.data["message_id"] == "mut-1"
+
+    @pytest.mark.asyncio
+    async def test_apply_last_mutation_handler_requires_existing_preview(self):
+        chat_store = SimpleNamespace(
+            get_thread=lambda workflow_id, thread_id: SimpleNamespace(messages=[]),
+            get_thread_meta=lambda workflow_id, thread_id: {},
+        )
+
+        result = await handle_apply_last_mutation(
+            {},
+            CapabilityContext(
+                workflow_id="wf1",
+                graph_store=SimpleNamespace(),
+                thread_id="thread-1",
+                chat_manager=SimpleNamespace(_chat_store=chat_store),
+            ),
+        )
+
+        assert result.success is False
+        assert result.error_type == "not_found"
+        assert "No proposed workflow preview" in result.message
 
     @pytest.mark.asyncio
     async def test_web_search_handler_returns_results(self):

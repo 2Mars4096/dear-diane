@@ -939,7 +939,51 @@ class GraphMutator:
     ) -> list[tuple[int, GraphOperation]]:
         """Return (original_index, op) pairs sorted by execution order."""
         indexed = list(enumerate(operations))
-        indexed.sort(key=lambda pair: _OP_SORT_ORDER.get(pair[1].op, 99))
+        replacement_ids = {
+            op.node_id
+            for op in operations
+            if isinstance(op, RemoveNode)
+            and any(
+                isinstance(candidate, AddNode)
+                and bool(candidate.id)
+                and candidate.id == op.node_id
+                for candidate in operations
+            )
+        }
+
+        def _replacement_priority(op: GraphOperation) -> float | None:
+            if not replacement_ids:
+                return None
+            if isinstance(op, RemoveEdge) and (
+                op.source_id in replacement_ids or op.target_id in replacement_ids
+            ):
+                return 5.0
+            if isinstance(op, RemoveNode) and op.node_id in replacement_ids:
+                return 6.0
+            if isinstance(op, AddNode) and op.id in replacement_ids:
+                return 6.5
+            if isinstance(op, (EditNode, SetNodePosition, ReplaceBodyGraph)) and (
+                getattr(op, "node_id", None) in replacement_ids
+            ):
+                return 6.7
+            if isinstance(op, ApplySkill) and any(
+                target in replacement_ids for target in op.target_nodes
+            ):
+                return 6.7
+            if isinstance(op, AddEdge) and (
+                op.source_id in replacement_ids or op.target_id in replacement_ids
+            ):
+                return 7.0
+            return None
+
+        indexed.sort(
+            key=lambda pair: (
+                _replacement_priority(pair[1])
+                if _replacement_priority(pair[1]) is not None
+                else _OP_SORT_ORDER.get(pair[1].op, 99),
+                pair[0],
+            )
+        )
         return indexed
 
     _STRUCTURAL_OPS = frozenset({
