@@ -7,7 +7,7 @@ import pytest
 
 from dan.server.concierge.models import Project, ResolvedContext, Task, TaskTurn
 from dan.server.concierge.project_store import ProjectStore
-from dan.server.concierge.triage import fast_classify_text, triage
+from dan.server.concierge.triage import _build_triage_messages, fast_classify_text, triage
 
 triage_module = importlib.import_module("dan.server.concierge.triage")
 
@@ -345,6 +345,29 @@ def test_fast_classify_text_handles_simple_social_turn():
 def test_fast_classify_text_ignores_non_social_turn():
     result = fast_classify_text("Please summarize this file")
     assert result is None
+
+
+def test_build_triage_messages_includes_six_recent_turns_with_wider_truncation():
+    turns = [
+        TaskTurn(role="user", content=f"user turn {idx} " + ("x" * 450))
+        if idx % 2 == 0
+        else TaskTurn(role="assistant", content=f"assistant turn {idx} " + ("y" * 450))
+        for idx in range(8)
+    ]
+    context, _project, _task = _make_context(turns=turns)
+
+    messages = _build_triage_messages("continue", context)
+
+    history_messages = [
+        message
+        for message in messages
+        if message["role"] in {"user", "assistant"}
+    ]
+    prior_messages = history_messages[:-1]
+    assert len(prior_messages) == 6
+    assert "turn 0" not in prior_messages[0]["content"]
+    assert "turn 2" in prior_messages[0]["content"]
+    assert len(prior_messages[0]["content"]) == 400
 
 
 @pytest.mark.asyncio

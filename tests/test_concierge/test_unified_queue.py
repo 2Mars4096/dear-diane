@@ -3,6 +3,7 @@ and immediate-start guarantee."""
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,10 +13,12 @@ from dan.server.chat_manager import ChatCompleteEvent, ChatQueuedEvent
 from dan.server.concierge.dispatcher import ConcurrentDispatcher, _is_bypass_command
 from dan.server.concierge.models import (
     Project,
+    ResolvedContext,
     SurfaceMessage,
     Task,
 )
-from dan.server.concierge.runtime import Concierge
+from dan.server.concierge.runtime import Concierge, _run_coroutine_sync
+from dan.server.concierge.triage import triage
 
 
 # ---------------------------------------------------------------------------
@@ -195,6 +198,136 @@ class TestParallelMemoryExtraction:
             memory_kernel=None,
         )
         c._store_memory_candidates("hi", "hello", None)
+
+
+@pytest.mark.asyncio
+async def test_run_coroutine_sync_reuses_running_loop_from_thread() -> None:
+    async def _compute() -> str:
+        await asyncio.sleep(0)
+        return "ok"
+
+    result = await asyncio.to_thread(
+        _run_coroutine_sync,
+        _compute(),
+        loop=asyncio.get_running_loop(),
+    )
+
+    assert result == "ok"
+
+
+@pytest.mark.asyncio
+async def test_triage_llm_complete_uses_256_token_budget_and_parses_json(
+) -> None:
+    complete_calls: list[dict[str, Any]] = []
+
+    class FakeProvider:
+        async def complete(self, **kwargs: Any) -> Any:
+            complete_calls.append(kwargs)
+            return MagicMock(
+                text=json.dumps(
+                    {
+                        "tier": 1,
+                        "intent": "ask",
+                        "route": {
+                            "mode": "ask",
+                            "target": "general",
+                            "action_hints": ["status_check"],
+                        },
+                        "confidence": 0.93,
+                        "goal": "Explain the quarterly task",
+                        "deliverable": "Short explanation",
+                        "entities": [],
+                        "is_resume": False,
+                        "resume_task_id": None,
+                        "is_social": False,
+                        "social_response": None,
+                        "context_needs": ["memory"],
+                        "subtasks": [],
+                        "execution_order": "parallel",
+                        "rationale": " ".join(["valid"] * 120),
+                    }
+                )
+            )
+
+    class FakeProviders:
+        def resolve(self, model: str) -> Any:
+            assert model == "triage-model"
+            return FakeProvider()
+
+        def provider_names(self) -> list[str]:
+            return ["default"]
+
+    chat_manager = MagicMock()
+    chat_manager._providers = FakeProviders()
+    concierge = Concierge(
+        project_store=MagicMock(),
+        chat_manager=chat_manager,
+        capability_context=MagicMock(),
+    )
+    context = ResolvedContext(
+        project=Project(surface_id="cli-user", label="Revenue Tracker"),
+        task=Task(label="Draft quarterly report", status="active"),
+        is_new_project=False,
+        is_new_task=False,
+        confidence=1.0,
+    )
+
+    with patch("dan.server.concierge.triage._embedding_triage_result", new=AsyncMock(return_value=None)):
+        with patch.object(concierge, "_resolve_triage_model", return_value="triage-model"):
+            result = await triage(
+                "Explain the quarterly report task",
+                context,
+                concierge._triage_llm_complete,
+            )
+
+    assert complete_calls
+    assert complete_calls[0]["max_tokens"] == 256
+    assert result.intent == "ask"
+    assert result.goal == "Explain the quarterly task"
+    assert result.route is not None
+    assert result.route.target == "general"
+
+
+@pytest.mark.asyncio
+async def test_same_surface_concurrent_process_inner_preserves_state_updates() -> None:
+    concierge = Concierge(
+        project_store=MagicMock(),
+        chat_manager=MagicMock(),
+        capability_context=MagicMock(),
+    )
+    concierge._try_fast_command = AsyncMock(return_value=None)
+    concierge._ensure_progress_session = MagicMock()
+
+    async def _dispatch(msg: SurfaceMessage) -> AsyncIterator[ChatCompleteEvent]:
+        concierge._concierge_state.pending_clarifications.append({"turn": msg.text})
+        await asyncio.sleep(0.05)
+        yield _complete_event(f"reply to: {msg.text}")
+
+    concierge._tiered_dispatcher = MagicMock()
+    concierge._tiered_dispatcher.dispatch = _dispatch
+
+    async def _consume(text: str) -> list[ChatCompleteEvent]:
+        return [
+            event
+            async for event in concierge._process_inner(
+                _msg(text=text, surface="cli", external_id="shared-user")
+            )
+        ]
+
+    first_task = asyncio.create_task(_consume("first"))
+    await asyncio.sleep(0.01)
+    second_task = asyncio.create_task(_consume("second"))
+    first_events, second_events = await asyncio.gather(first_task, second_task)
+
+    scope = concierge._concierge_state_scope_key("cli", "shared-user")
+    saved_state = concierge._volatile_concierge_states[scope]
+
+    assert [event.content for event in first_events] == ["reply to: first"]
+    assert [event.content for event in second_events] == ["reply to: second"]
+    assert [item["turn"] for item in saved_state.pending_clarifications] == [
+        "first",
+        "second",
+    ]
 
 
 # ---------------------------------------------------------------------------

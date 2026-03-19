@@ -133,6 +133,47 @@ class MockChatManager:
             yield event
 
 
+class _FakeProvider:
+    def __init__(self, response_text: str, *, error: Exception | None = None) -> None:
+        self._response_text = response_text
+        self._error = error
+        self.calls: list[dict[str, Any]] = []
+
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> Any:
+        self.calls.append(
+            {
+                "messages": messages,
+                "model": model,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                **kwargs,
+            }
+        )
+        if self._error is not None:
+            raise self._error
+        return SimpleNamespace(
+            text=self._response_text,
+            usage={"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18},
+        )
+
+
+class _FakeProviderRegistry:
+    def __init__(self, provider: _FakeProvider) -> None:
+        self._provider = provider
+        self.resolved_models: list[str] = []
+
+    def resolve(self, model: str) -> _FakeProvider:
+        self.resolved_models.append(model)
+        return self._provider
+
+
 class DummyContextGatherer:
     async def gather(
         self,
@@ -224,6 +265,17 @@ def _interruptible_stream(cancel_event: asyncio.Event) -> Callable[[], AsyncIter
         yield ChatInterruptedEvent(
             message_id="cancelled-child",
             content="partial child output",
+            token_usage={},
+        )
+
+    return _stream
+
+
+def _terminal_interrupt_stream(content: str) -> Callable[[], AsyncIterator[Any]]:
+    async def _stream() -> AsyncIterator[Any]:
+        yield ChatInterruptedEvent(
+            message_id="terminal-interrupt",
+            content=content,
             token_usage={},
         )
 
@@ -372,6 +424,45 @@ async def test_tier1_path_emits_phase_events(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_process_emits_immediate_intake_ack_before_reassurance_timeout(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    concierge._REASSURANCE_INITIAL_DELAY = 60
+    concierge._REASSURANCE_REPEAT_INTERVAL = 60
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="ask",
+            goal="Answer the user directly",
+            deliverable="Answer the user directly",
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["What is the status?"] = "All systems nominal."
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text="What is the status?",
+            )
+        )
+    ]
+
+    first_complete = next(
+        event
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+    )
+    assert getattr(first_complete, "detected_mode", None) == "progress_ack"
+    assert "Understanding your request" in first_complete.content
+
+
+@pytest.mark.asyncio
 async def test_tier1_forwards_request_metadata_and_action_hints(tmp_path: Path) -> None:
     concierge = _make_concierge(tmp_path)
 
@@ -482,6 +573,50 @@ async def test_tier1_enables_mutation_tool_only_for_workflow_edits(tmp_path: Pat
 
 
 @pytest.mark.asyncio
+async def test_tier1_workflow_query_only_keeps_mutation_tool_disabled(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="agent",
+            goal="Explain the current workflow",
+            deliverable="Workflow explanation",
+            route=RouteDecision(
+                mode=RouteMode.AGENT,
+                target="workflow",
+                action_hints=["workflow_query"],
+            ),
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Explain the current workflow"] = "This workflow reviews and summarizes documents."
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="editor",
+                external_id="editor-user",
+                text="Explain the current workflow",
+                metadata={
+                    "workflow_id": "wf-123",
+                    "mode": "agent",
+                },
+            )
+        )
+    ]
+
+    assert any(getattr(event, "type", "") == "chat_complete" for event in events)
+    assert concierge.chat_manager.call_log == ["Explain the current workflow"]
+    call = concierge.chat_manager.calls[-1]
+    assert call["allow_mutation_tool"] is False
+    assert call["required_action_hints"] == ["workflow_query"]
+
+
+@pytest.mark.asyncio
 async def test_tier2_build_override_skips_decomposition_and_calls_builder_directly(
     tmp_path: Path,
 ) -> None:
@@ -534,6 +669,44 @@ async def test_tier2_build_override_skips_decomposition_and_calls_builder_direct
     assert root.children == []
     assert root.result is not None
     assert root.result.content == "Workflow created."
+
+
+def test_build_child_session_drops_workflow_route_hints_for_non_workflow_subtasks(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    executor = MultiStepExecutor(concierge, dispatcher=None)
+    manager = SessionManager()
+    session = manager.create_root(
+        SurfaceMessage(
+            surface="cli",
+            external_id="cli-user",
+            text="Investigate and summarize",
+            metadata={"mode": "agent", "workflow_id": "wf-123"},
+        ),
+        triage=TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Investigate and summarize",
+            deliverable="Investigate and summarize",
+            subtasks=["search docs"],
+            execution_order="serial",
+            route=RouteDecision(
+                mode=RouteMode.AGENT,
+                target="workflow",
+                action_hints=["workflow_query", "search_web"],
+            ),
+        ),
+        tier=SessionTier.MULTI,
+    )
+
+    child = executor._build_child_session(session, manager, "search docs")
+
+    assert child.triage is not None
+    assert child.triage.route is not None
+    assert child.triage.route.target == "general"
+    assert child.triage.route.action_hints == ["search_web"]
+    assert child.msg.metadata["allow_mutation_tool"] is False
 
 
 @pytest.mark.asyncio
@@ -694,6 +867,90 @@ async def test_tier2_decomposition_bubbles_child_events(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_tier2_decomposition_uses_llm_when_triage_has_no_subtasks(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=2,
+            intent="ask",
+            goal="Search docs and summarize findings",
+            deliverable="Search docs and summarize findings",
+            execution_order="serial",
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    provider = _FakeProvider('{"subtasks":["search docs","summarize findings"]}')
+    concierge.chat_manager._providers = _FakeProviderRegistry(provider)
+    concierge.chat_manager._responses["search docs"] = _complete_stream("Search complete.")
+    concierge.chat_manager._responses["summarize findings"] = _complete_stream("Summary complete.")
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text="Search docs and summarize findings",
+            )
+        )
+    ]
+
+    assert concierge.chat_manager.call_log == ["search docs", "summarize findings"]
+    assert provider.calls
+    assert provider.calls[0].get("max_tokens") is None
+    terminal_messages = [
+        event.content
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    ]
+    assert any("## search docs" in content and "## summarize findings" in content for content in terminal_messages)
+
+
+@pytest.mark.asyncio
+async def test_tier2_decomposition_falls_back_to_split_when_llm_unavailable(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=2,
+            intent="ask",
+            goal="Search docs and summarize findings",
+            deliverable="Search docs and summarize findings",
+            execution_order="serial",
+        )
+
+    _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Search docs"] = _complete_stream("Search complete.")
+    concierge.chat_manager._responses["summarize findings"] = _complete_stream("Summary complete.")
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="cli-user",
+                text="Search docs and summarize findings",
+            )
+        )
+    ]
+
+    assert concierge.chat_manager.call_log == ["Search docs", "summarize findings"]
+    terminal_messages = [
+        event.content
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    ]
+    assert any("## Search docs" in content and "## summarize findings" in content for content in terminal_messages)
+
+
+@pytest.mark.asyncio
 async def test_cancellation_stops_serial_child_fan_out_and_marks_tree_cancelled(
     tmp_path: Path,
 ) -> None:
@@ -736,6 +993,45 @@ async def test_cancellation_stops_serial_child_fan_out_and_marks_tree_cancelled(
     assert root is not None
     assert root.state == SessionState.CANCELLED
     assert len(root.children) == 1
+
+
+@pytest.mark.asyncio
+async def test_tier1_terminal_interrupt_marks_session_cancelled_with_partial_status(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=1,
+            intent="agent",
+            goal="Continue the migration",
+            deliverable="Continue the migration",
+        )
+
+    dispatcher = _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Continue the migration"] = _terminal_interrupt_stream(
+        "Partial migration notes"
+    )
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(
+                surface="cli",
+                external_id="interrupt-user",
+                text="Continue the migration",
+            )
+        )
+    ]
+
+    assert any(getattr(event, "type", "") == "chat_interrupted" for event in events)
+    root = dispatcher._session_manager.get_root("interrupt-user")
+    assert root is not None
+    assert root.state == SessionState.CANCELLED
+    assert root.result is not None
+    assert root.result.content == "Partial migration notes"
+    assert root.result.metadata["completion_status"] == "interrupted"
 
 
 @pytest.mark.asyncio
@@ -1280,6 +1576,99 @@ def test_synthesize_balanced_preserves_plain_concatenation() -> None:
     assert "## Part one" in synthesized
     assert "## Part two" in synthesized
     assert "## Uncertainties" not in synthesized
+
+
+@pytest.mark.asyncio
+async def test_balanced_synthesis_uses_llm_for_three_or_more_children(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    provider = _FakeProvider("Unified summary across all child tasks.")
+    concierge.chat_manager._providers = _FakeProviderRegistry(provider)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Summarize all work",
+            deliverable="Unified summary",
+            subtasks=["Part one", "Part two", "Part three"],
+            execution_order="serial",
+        )
+
+    dispatcher = _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Part one"] = _complete_stream("Completed the first part.")
+    concierge.chat_manager._responses["Part two"] = _complete_stream("Completed the second part.")
+    concierge.chat_manager._responses["Part three"] = _complete_stream("Completed the third part.")
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(surface="cli", external_id="balanced-user", text="Summarize all work")
+        )
+    ]
+
+    assert provider.calls
+    assert provider.calls[0].get("max_tokens") is None
+    terminal_messages = [
+        event.content
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    ]
+    assert terminal_messages[-1] == "Unified summary across all child tasks."
+
+    root = dispatcher._session_manager.get_root("balanced-user")
+    assert root is not None
+    assert root.result is not None
+    assert root.result.content == "Unified summary across all child tasks."
+
+
+@pytest.mark.asyncio
+async def test_balanced_synthesis_falls_back_to_concatenation_when_llm_fails(
+    tmp_path: Path,
+) -> None:
+    concierge = _make_concierge(tmp_path)
+    concierge.chat_manager._providers = _FakeProviderRegistry(
+        _FakeProvider("", error=RuntimeError("provider down"))
+    )
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Summarize all work",
+            deliverable="Unified summary",
+            subtasks=["Part one", "Part two", "Part three"],
+            execution_order="serial",
+        )
+
+    dispatcher = _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["Part one"] = _complete_stream("Completed the first part.")
+    concierge.chat_manager._responses["Part two"] = _complete_stream("Completed the second part.")
+    concierge.chat_manager._responses["Part three"] = _complete_stream("Completed the third part.")
+
+    events = [
+        event
+        async for event in concierge.process(
+            SurfaceMessage(surface="cli", external_id="balanced-fallback-user", text="Summarize all work")
+        )
+    ]
+
+    terminal_messages = [
+        event.content
+        for event in events
+        if getattr(event, "type", "") == "chat_complete"
+        and getattr(event, "detected_mode", None) != "progress_ack"
+    ]
+    assert "## Part one" in terminal_messages[-1]
+    assert "## Part two" in terminal_messages[-1]
+    assert "## Part three" in terminal_messages[-1]
+
+    root = dispatcher._session_manager.get_root("balanced-fallback-user")
+    assert root is not None
+    assert root.result is not None
+    assert "## Part one" in root.result.content
 
 
 @pytest.mark.asyncio
