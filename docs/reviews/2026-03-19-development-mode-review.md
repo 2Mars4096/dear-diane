@@ -13,11 +13,16 @@ Scope reviewed:
 
 Mostly yes on the packaged Electron path: the editor build passes, Electron compiles, the mode-chat tests pass, and the backend capability/dispatch suites I ran were green. On macOS desktop, the product is close to a real daily-driver development surface.
 
-It is not yet at a clean "works like Codex / Claude Code / Cursor" bar across all advertised environments, though. The main issues are cross-platform terminal defaults, missing truthfulness/gating outside Electron, and a few still-placeholder development panels.
+It is not yet at a clean "works like Codex / Claude Code / Cursor" bar across all advertised environments, though. The original review's cross-platform terminal defaults and missing truthfulness/gating outside Electron have now been addressed; the main still-open issue from this review is the presence of a few still-placeholder development panels.
 
-## Active findings
+## Resolution updates (2026-03-19)
 
-### P1: Windows/Linux terminal flows are broken by hard-coded `/bin/zsh` defaults
+- **Addressed:** cross-platform terminal defaults, browser/Vite degradation truthfulness, extension provider round-tripping, and LSP restart/self-healing.
+- **Still open:** placeholder Workflow/Furnace/secondary development panels that still look more complete than they are.
+
+## Findings
+
+### P1: Windows/Linux terminal flows are broken by hard-coded `/bin/zsh` defaults *(Addressed 2026-03-19)*
 
 - `editor/package.json:21-22` advertises `dist:win` and `dist:linux`.
 - `editor/src/store/useSettingsStore.ts:14-18` seeds terminal profiles with only Unix shells and sets `zsh` as the default at `editor/src/store/useSettingsStore.ts:94-95`.
@@ -29,7 +34,9 @@ It is not yet at a clean "works like Codex / Claude Code / Cursor" bar across al
   - Linux machines without `zsh` installed will hit the same issue.
   - higher-level development flows built on terminal execution, including `Apply & Test` in `editor/src/components/modes/CodeMode.tsx:777-803`, inherit the same breakage.
 
-### P2: Development mode is mounted in browser/Vite builds even though most IDE capabilities silently degrade outside Electron
+**Resolution:** Renderer-side terminal creation now uses platform-aware shell/profile defaults across `TerminalPanel.tsx`, `ChatSidebar.tsx`, `ModeChatSidebar.tsx`, and `useSettingsStore.ts`, with shared test coverage for terminal profile selection.
+
+### P2: Development mode is mounted in browser/Vite builds even though most IDE capabilities silently degrade outside Electron *(Addressed 2026-03-19)*
 
 - `editor/package.json:10` defines `npm run dev` as plain `vite`, while `editor/package.json:16` uses a separate `electron:dev` path.
 - `editor/src/components/shell/AppShell.tsx:232-240` always mounts `CodeMode`; there is no top-level Electron gate or degraded-mode banner in `editor/src/components/modes/CodeMode.tsx:467-620`.
@@ -45,6 +52,8 @@ It is not yet at a clean "works like Codex / Claude Code / Cursor" bar across al
 - User impact:
   - a user running the browser/Vite client can enter Development mode and see a full IDE shell that cannot actually open a workspace folder or perform the production-grade local actions the UI implies.
   - that mismatch is especially costly because `npm run dev` is the most obvious local entrypoint.
+
+**Resolution:** `CodeMode.tsx` now shows an explicit non-Electron degradation banner, and the desktop-only folder/terminal/git/LSP actions are guarded so the browser path is honest instead of silently no-oping.
 
 ### P3: Development mode still exposes unfinished panels as if they are first-class tools
 
@@ -65,4 +74,4 @@ Passing:
 - `pytest -q tests/test_server/test_shell_command_capability.py tests/test_server/test_app_terminal_output.py tests/test_server/test_capability_registry.py tests/test_concierge/test_fast_commands.py tests/test_concierge/test_tiered_dispatch.py`
 - `pytest -q tests/test_server/test_capability_exposure.py tests/test_server/test_capability_run_lifecycle.py`
 
-No new code was edited for this review.
+No new code was edited during the original review pass; see the resolution updates above for the fixes that landed afterward.

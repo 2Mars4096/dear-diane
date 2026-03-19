@@ -93,7 +93,7 @@
   - [x] [10-2-mention-co-navigation](plans/10-2-mention-co-navigation.md) — B. `@` autocomplete (nodes/workflows/sub-graphs), mention chips, click→canvas navigation, canvas→chat suggestion *(core UI done; canvas→chat, backend resolution, tests deferred to 12-3/12-6)*
   - [x] [10-3-nl-graph-mutation](plans/10-3-nl-graph-mutation.md) — C. Graph operation primitives, LLM function-calling schema, multi-step mutation planning, validation, error recovery
   - [x] [10-4-graph-diff-confirmation](plans/10-4-graph-diff-confirmation.md) — D. Before/after diff computation, visual diff preview, accept/reject/partial-accept, undo integration, session-scoped conversation rollback
-- [x] [10-5-history-execution](plans/10-5-history-execution.md) — E. Per-workflow chat persistence, thread list UI, graph delta tracking, session rollback metadata *(core persistence, thread UI, auto-restore, session markers done; post-follow-up now preserves tool traces/run events/attachments across reloads with regression coverage; delta tracking UI, cascade delete, offline resilience, remaining endpoint/UI tests deferred to 12-*)*
+- [x] [10-5-history-execution](plans/10-5-history-execution.md) — E. Per-workflow chat persistence, thread list UI, graph delta tracking, session rollback metadata *(core persistence, thread UI, auto-restore, session markers done; post-follow-up now preserves tool traces/run events/attachments across reloads with regression coverage, scopes `_scratch` restore keys by workspace, and prefers the saved full-screen selection over the broader workspace fallback on startup; delta tracking UI, cascade delete, offline resilience, remaining endpoint/UI tests deferred to 12-*)*
   - [x] [10-6-scoped-run-from-chat](plans/10-6-scoped-run-from-chat.md) — F. Full/node/sub-graph run API, server-authoritative target resolution, chat command handling, run event streaming into thread *(core API, scoped builder, command parser, event mapper done; output mapping, NL intent, rate guard, tests, docs deferred to 12-*)*
   - [x] [10-7-apply-mutation-flow](plans/10-7-apply-mutation-flow.md) — G. Wire GraphDiffPreview, POST apply-mutation endpoint, chat→preview→apply pipeline, session marker
   - [x] [10-8-nl-mutation-hardening](plans/10-8-nl-mutation-hardening.md) — Validate-before-save gate, port-aware edges, entry/exit recompute, typed tool schema, prompt enrichment, auto-retry, pattern macros, stale-plan/idempotency hardening, mutation CI, acceptance metrics rollout
@@ -124,7 +124,7 @@
   - [x] [12-5-conversation-lifecycle](plans/12-5-conversation-lifecycle.md) — E. Stop generation, checkpoints (basic), export, search, pin threads *(message queue [task 2], thread branching [task 7], restore checkpoints deferred)*
   - [x] [12-6-chat-quality-harness](plans/12-6-chat-quality-harness.md) — F. Regression tests, provider compatibility matrix, mutation metrics baseline (92 tests) *(latency benchmarks + E2E smoke tests deferred)*
   - [x] [12-7-chat-branching-tree](plans/12-7-chat-branching-tree.md) — G. Branch-based exploration in chat complete: thread rows now expose branch lineage/active-sibling cues and full-screen chat has a collapsible branch tree navigator
-  - [x] [12-8-mode-chat-sidebar-parity](plans/12-8-mode-chat-sidebar-parity.md) — H. Research/Development sidebar chat now reuses most full-chat composer, stream-lifecycle, rendering, and handoff affordances without adding full thread management to the compact rail
+  - [x] [12-8-mode-chat-sidebar-parity](plans/12-8-mode-chat-sidebar-parity.md) — H. Research/Development sidebar chat now reuses most full-chat composer, stream-lifecycle, rendering, and handoff affordances, and the follow-up parity pass restores `_scratch` history/new-thread controls plus branch actions (`edit`, `regenerate`, `explore`) directly inside the compact rail instead of forcing a maximize handoff
 
 ## Phase 8 — Observe & Recover
 > Execution persistence, debugging tools, and iterative refinement capabilities.
@@ -479,7 +479,8 @@
 
 > Address all actionable findings from the 2026-03-17 and 2026-03-19 code reviews, deep system
 > reviews, and module audits. Round 1 (38-1 through 38-5) is complete. Round 2 (38-6 through
-> 38-10) covers security, workflow gen bugs, concierge triage, cross-platform dev mode, and UX.
+> 38-12) covers security, workflow gen bugs, concierge triage, cross-platform dev mode, UX, and
+> chat stream-contract follow-ups.
 
 - [x] [38-review-hardening](plans/38-review-hardening.md) — umbrella plan for code review and deep system review follow-ups
   - [x] [38-1-furnace-write-safety](plans/38-1-furnace-write-safety.md) — P1: sanitize `source_id` path traversal, artifact containment, source ID collisions
@@ -492,8 +493,12 @@
   - [x] [38-8-concierge-triage-correctness](plans/38-8-concierge-triage-correctness.md) — P1/P2: triage max_tokens=60→256, child_execution type mismatch, asyncio.run fragility, plan decomposition stub, synthesis quality, volatile state race, route inheritance
   - [x] [38-9-cross-platform-dev-mode](plans/38-9-cross-platform-dev-mode.md) — P1/P2: terminal /bin/zsh hardcoding, commandExists cross-platform, Electron degradation banner, extension language providers, LSP auto-restart
   - [x] [38-10-ux-onboarding-quick-wins](plans/38-10-ux-onboarding-quick-wins.md) — P1/P2: API key validation, error wrapping, cost visibility default, hide coming-soon modes, reassurance delay, CLI progress, startup degradation summary
+  - [x] [38-11-packaged-lsp-launching](plans/38-11-packaged-lsp-launching.md) — P1: packaged/CWD-independent launch for bundled TypeScript/Python/JSON/CSS/HTML language servers
+  - [x] [38-12-chat-progress-ack-preservation](plans/38-12-chat-progress-ack-preservation.md) — P1: preserve backend `progress_ack` labels so full-screen chat does not terminate live streams early
 
 ## Backlog (unphased)
+
+- [ ] **Upgrade the editor Node runtime to >=20.19 for Vite 7 parity** — local `cd editor && npm run build` now passes again, but Vite warns that the current machine is on Node `20.17.0`.
 
 ### strengthen workflow to make it more powerful and easier to use
 - [ ] **Finish native light-theme migration for legacy shell panels** — current settings/light-mode patch adds a scoped compatibility bridge in `editor/src/index.css` plus top-level shell updates, but older dark-only panel internals should still be converted to explicit light/dark classes component-by-component.

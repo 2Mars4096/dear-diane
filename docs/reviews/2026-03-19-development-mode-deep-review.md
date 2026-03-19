@@ -6,6 +6,13 @@
 
 ---
 
+## Resolution updates (2026-03-19)
+
+- **Addressed:** `P1-2`, `P1-3`, `P1-4`, `P1-5`, `P1-6`, `P2-7`, and `P2-20` via the completed cross-platform/dev-mode hardening plan.
+- **Still open:** tab drag-and-drop, multi-root LSP, extra LSP/debug features, launch.json/workspace config support, diff gutters, and the broader extension-surface gaps.
+
+---
+
 ## 1. Core IDE Capabilities
 
 ### Feature Inventory
@@ -62,7 +69,7 @@ The IDE layout follows a VS Code-faithful pattern: `ActivityBar | Sidebar | (Edi
 ### P1 Issues
 
 - **P1-1: No tab drag-and-drop reordering.** `MonacoTabs.tsx` implements tabs with close/context-menu but no drag reorder. VS Code users heavily rely on this.
-- **P1-2: Terminal defaults to `/bin/zsh` everywhere with no platform detection.** `TerminalPanel.tsx` line 147: `const shell = resolvedProfile?.shell || "/bin/zsh"`. Also `ChatSidebar.tsx` line 453 and `ModeChatSidebar.tsx` line 776 hardcode `/bin/zsh`. This breaks on Linux and Windows.
+- **P1-2: Terminal defaults to `/bin/zsh` everywhere with no platform detection.** *(Addressed 2026-03-19)* `TerminalPanel.tsx` line 147: `const shell = resolvedProfile?.shell || "/bin/zsh"`. Also `ChatSidebar.tsx` line 453 and `ModeChatSidebar.tsx` line 776 hardcode `/bin/zsh`. This breaks on Linux and Windows.
 
 ### P2 Issues
 
@@ -111,13 +118,13 @@ All registered at `useMonacoLsp.ts` via `monaco.languages.register*Provider("*")
 
 ### P1 Issues
 
-- **P1-3: `commandExists()` at `lspManager.ts` line 25-31 uses `which` which is macOS/Linux only.** On Windows, `where` is needed. Go, Rust, and C++ LSP detection will fail on Windows.
+- **P1-3: `commandExists()` at `lspManager.ts` line 25-31 uses `which` which is macOS/Linux only.** *(Addressed 2026-03-19)* On Windows, `where` is needed. Go, Rust, and C++ LSP detection will fail on Windows.
 
 ### P2 Issues
 
 - **P2-5: No multi-root workspace support in LSP.** `useMonacoLsp.ts` line 174-177 only starts LSP for `pinnedRoots[0]`.
 - **P2-6: Missing LSP features:** No document highlights, code lens, semantic tokens, folding range, or selection range provider.
-- **P2-7: No LSP restart/reconnect mechanism.** If a language server crashes, it's just deleted, no automatic restart.
+- **P2-7: No LSP restart/reconnect mechanism.** *(Addressed 2026-03-19)* If a language server crashes, it's just deleted, no automatic restart.
 - **P2-8: No YAML, Dockerfile, or Markdown language server support.**
 
 ### P3 Issues
@@ -226,7 +233,7 @@ Extensions run in a **forked Node.js process** (`extensionHostWorker.ts`) with a
 
 ### P1 Issues
 
-- **P1-4: Language provider registrations from extensions are event-only, not functional.** `extensionHostWorker.ts` lines 174-199: `registerCompletionItemProvider`, `registerHoverProvider`, `registerDefinitionProvider` all just `sendEvent()` without routing provider calls. **Extension-contributed language features do not work.**
+- **P1-4: Language provider registrations from extensions are event-only, not functional.** *(Addressed 2026-03-19)* `extensionHostWorker.ts` lines 174-199: `registerCompletionItemProvider`, `registerHoverProvider`, `registerDefinitionProvider` all just `sendEvent()` without routing provider calls. **Extension-contributed language features do not work.**
 
 ### P2 Issues
 
@@ -262,12 +269,12 @@ The application is **macOS-only in practice**. `main.ts:507` has the only platfo
 
 ### P1 Issues
 
-- **P1-5: Three renderer-side locations hardcode `/bin/zsh`** without platform detection. Windows/Linux terminal creation will fail.
-- **P1-6: Default terminal profiles only define Unix shells** (`zsh`, `bash`, `sh`). No PowerShell or CMD.
+- **P1-5: Three renderer-side locations hardcode `/bin/zsh`** *(Addressed 2026-03-19)* without platform detection. Windows/Linux terminal creation will fail.
+- **P1-6: Default terminal profiles only define Unix shells** *(Addressed 2026-03-19)* (`zsh`, `bash`, `sh`). No PowerShell or CMD.
 
 ### P2 Issues
 
-- **P2-20: `commandExists()` uses `which` (macOS/Linux only).** Needs `where` on Windows.
+- **P2-20: `commandExists()` uses `which` (macOS/Linux only).** *(Addressed 2026-03-19)* Needs `where` on Windows.
 - **P2-21: `#!/bin/sh` shebang in generated editor scripts.** Won't work on Windows.
 
 ---
@@ -279,11 +286,11 @@ The application is **macOS-only in practice**. `main.ts:507` has the only platfo
 | ID | Issue | File(s) |
 |----|-------|---------|
 | P1-1 | No tab drag-and-drop reordering | `MonacoTabs.tsx` |
-| P1-2 | Terminal hardcodes `/bin/zsh` (breaks Linux/Windows) | `TerminalPanel.tsx:147` |
-| P1-3 | `commandExists()` uses `which` (macOS/Linux only) | `lspManager.ts:27` |
-| P1-4 | Extension language providers are no-ops (sendEvent only) | `extensionHostWorker.ts:174-199` |
-| P1-5 | Three renderer locations hardcode `/bin/zsh` | `ChatSidebar.tsx:453`, `ModeChatSidebar.tsx:776`, `TerminalPanel.tsx:412` |
-| P1-6 | Default terminal profiles are Unix-only | `useSettingsStore.ts:15-17` |
+| P1-2 | Terminal hardcodes `/bin/zsh` (breaks Linux/Windows) *(addressed 2026-03-19)* | `TerminalPanel.tsx:147` |
+| P1-3 | `commandExists()` uses `which` (macOS/Linux only) *(addressed 2026-03-19)* | `lspManager.ts:27` |
+| P1-4 | Extension language providers are no-ops (sendEvent only) *(addressed 2026-03-19)* | `extensionHostWorker.ts:174-199` |
+| P1-5 | Three renderer locations hardcode `/bin/zsh` *(addressed 2026-03-19)* | `ChatSidebar.tsx:453`, `ModeChatSidebar.tsx:776`, `TerminalPanel.tsx:412` |
+| P1-6 | Default terminal profiles are Unix-only *(addressed 2026-03-19)* | `useSettingsStore.ts:15-17` |
 
 ### P2 -- Important
 
@@ -291,7 +298,7 @@ The application is **macOS-only in practice**. `main.ts:507` has the only platfo
 |----|-------|------|
 | P2-5 | LSP only for first pinned root | LSP |
 | P2-6 | Missing LSP features (highlights, code lens, semantic tokens) | LSP |
-| P2-7 | No LSP crash auto-restart | LSP |
+| P2-7 | No LSP crash auto-restart *(addressed 2026-03-19)* | LSP |
 | P2-9 | No multi-turn context for inline completion | AI |
 | P2-10 | Codebase Q&A limited to 5 open files | AI |
 | P2-12 | Only Node+Python debug adapters | Debug |
@@ -311,10 +318,10 @@ Development Mode is an **impressively ambitious and largely complete** VS Code-l
 - Write confirmation safety for files outside workspace roots
 
 **Primary gaps vs VS Code/Cursor:**
-1. Cross-platform support is macOS-only in practice (P1-2, P1-5, P1-6)
-2. Extension system is structurally present but functionally incomplete (P1-4, P2-16)
-3. Debug adapter coverage limited to Node+Python (P2-12)
-4. No semantic tokens, code lens, or document highlights from LSP (P2-6)
-5. No launch.json or workspace-level configuration files (P2-14)
+1. Tab/file ergonomics still lag mature editors (for example, no tab drag-and-drop reordering).
+2. Extension system still lacks many major VS Code API surfaces beyond the newly functional language-provider bridge.
+3. Debug adapter coverage is still limited to Node+Python.
+4. LSP breadth is still behind VS Code (semantic tokens, code lens, document highlights, multi-root).
+5. Workspace/project configuration remains localStorage-centric rather than file-based (`launch.json`, etc.).
 
-The most impactful improvements would be: (1) fixing cross-platform shell handling, (2) making extension language providers functional, and (3) adding LSP auto-restart.
+The most impactful remaining improvements would be: (1) multi-root + richer LSP features, (2) tab drag-and-drop and other core editor ergonomics, and (3) file-based debug/workspace configuration support.

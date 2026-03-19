@@ -10,6 +10,11 @@
 
 The DAN workflow generation system offers three distinct generation paths (intent-based direct build, LLM codegen with sandbox execution, and chat-based mutation), backed by a typed graph model with structural validation and post-generation enrichment. The intent schema is well-designed, the graph mutator is transactional, and the validation layer covers 11 structural checks. However, the system has several reliability gaps — a vestigial coverage checker that always returns `True`, a fragile `locals()` check in the compiler, and a legacy fallback that silently produces trivially useless single-node graphs when the primary generation path fails.
 
+### Resolution updates (2026-03-19)
+
+- **Addressed:** `P1-1` (removed vestigial `CoverageChecker` entirely), `P1-2` (`_infer_tool_id` no longer falls back to `web_search`; it now uses `llm_operator`), `P1-3` (both `locals()` sentinel checks replaced with explicit sentinels), `P1-4` (hidden mutation ops are now explicitly documented), `P1-5` (chat-mutation path now runs a post-mutation quality check), `P1-6` (`_ensure_validation_gate()` / defaults enrichment now handles flat edge lists correctly), `P1-7` (legacy single-node fallback now surfaces explicit warnings instead of failing silently).
+- **Still open:** `P1-8` (end-to-end generation pipeline coverage), `P2-9` (provider-agnostic model tiering), `P2-12` (roundtrip test suite), plus the remaining unmarked P2 items.
+
 ---
 
 ## 1. Intent to Graph Pipeline
@@ -43,17 +48,23 @@ Natural language goal
 
 ### P1 — Critical
 
-**P1-1. CoverageChecker is vestigial — always returns `fully_covered=True`.**
+**P1-1. CoverageChecker is vestigial — always returns `fully_covered=True`.** *(Addressed 2026-03-19)*
 `src/dan/meta/intent_compiler.py`, lines 349-361.
 The `CoverageChecker.check()` method unconditionally returns `CoverageResult(fully_covered=True, ...)`. This means the coverage gate in `chat_manager.py` never triggers a fallback. If an intent contains stage types or tool requirements the compiler cannot handle, the system silently produces an incomplete graph. Either implement real coverage checking or remove the class.
 
-**P1-2. `_infer_tool_id` defaults to `"web_search"` for unknown keywords.**
+**Resolution:** `CoverageChecker` and `CoverageResult` were removed. `IntentCompiler.compile()` is now the single real gate, and the stale pass-through coverage path no longer exists.
+
+**P1-2. `_infer_tool_id` defaults to `"web_search"` for unknown keywords.** *(Addressed 2026-03-19)*
 `src/dan/meta/intent_compiler.py`, line 90.
 When `_TOOL_KEYWORD_MAP` has no match, the fallback is `"web_search"`. A code-generation stage mentioning "compile" would silently get a web_search tool. The fallback should raise a warning or use a more neutral default.
 
-**P1-3. Fragile `'first_entry_ref' in locals()` check.**
+**Resolution:** The fallback now logs a warning and uses `"llm_operator"` instead of `"web_search"`, so unknown stage descriptions no longer silently become web-search nodes.
+
+**P1-3. Fragile `'first_entry_ref' in locals()` check.** *(Addressed 2026-03-19)*
 `src/dan/meta/intent_compiler.py`, lines ~908 and ~1073.
 Both `_build_segment()` and `_compile_segment()` use `'first_entry_ref' in locals()` to detect whether a variable has been assigned. This is brittle — if the variable is renamed or shadowed, the check silently passes. Replace with an explicit sentinel.
+
+**Resolution:** Both call sites now initialize explicit `None` sentinels (`first_entry_ref`, `first_entry_var`) before branching and check those directly.
 
 ### P2 — Important
 
@@ -102,8 +113,10 @@ When a batch adds a node with a placeholder ID and then references it in an edge
 
 ### P1 — Critical
 
-**P1-4. Mutation tool schema exposes only 9 of 14 operation types.**
+**P1-4. Mutation tool schema exposes only 9 of 14 operation types.** *(Addressed 2026-03-19)*
 `src/dan/server/chat/prompts.py`, `_build_mutation_tool_schema()` — Missing from the LLM schema: rename_node, set_metadata, reorder_edges, batch_set_positions, duplicate_node. If intentionally hidden, this is undocumented.
+
+**Resolution:** The hidden operations are now explicitly documented in the mutation schema comments/rationale, so the intentional limitation is no longer an undocumented surprise.
 
 ### P2 — Important
 
@@ -133,8 +146,10 @@ Embedded in Python source, not loadable from config.
 
 ### P1 — Critical
 
-**P1-5. No quality gate on the chat-mutation path.**
+**P1-5. No quality gate on the chat-mutation path.** *(Addressed 2026-03-19)*
 `compute_quality_report()` is invoked in the intent-based path, but the chat mutation path only runs `validate_graph()` structural checks via dry-run. No holistic quality assessment after chat-based building.
+
+**Resolution:** The chat-mutation path now runs `compute_quality_report()` after mutation application and surfaces warnings when quality falls below threshold without blocking the mutation.
 
 ### P2 — Important
 
@@ -161,9 +176,11 @@ No verification of single entry/exit, dangling branches, or fan-out/fan-in balan
 
 ### P1 — Critical
 
-**P1-6. `_ensure_validation_gate()` has a bug accessing edges as dict.**
+**P1-6. `_ensure_validation_gate()` has a bug accessing edges as dict.** *(Addressed 2026-03-19)*
 `src/dan/meta/generation_defaults.py`, ~line 211.
 The method accesses `graph.edges` using `.get("data", [])` as if edges were a dict keyed by type. But `Graph.edges` is a `list[Edge]`. This will raise `AttributeError` at runtime when the `robust` profile is used. This function is effectively dead code.
+
+**Resolution:** Defaults enrichment now normalizes both nested-dict and flat-list edge shapes, and the corresponding append path in `_ensure_review_on_content()` was fixed at the same time.
 
 ### P2 — Important
 
@@ -211,9 +228,11 @@ If builder code prints debug output to stdout, it will corrupt JSON parsing.
 
 ### P1 — Critical
 
-**P1-7. Legacy fallback produces trivially useless single-node graph.**
+**P1-7. Legacy fallback produces trivially useless single-node graph.** *(Addressed 2026-03-19)*
 `src/dan/meta/planner.py`, lines ~1119-1149.
 When `_execute_generate_code()` fails, the system creates a single `llm_operator` node with the original goal as its prompt. The user receives no indication that their complex workflow was silently reduced to a single LLM call. This fallback should raise a clear error or offer the user a choice.
+
+**Resolution:** The fallback is no longer silent. Planner/controller/router/app paths now propagate explicit `warning` / `legacy_fallback` metadata and broadcast a user-visible warning notification when the simplified fallback path is used.
 
 **P1-8. No end-to-end integration test across the generation pipeline.**
 No visible test exercising: natural language → intent extraction → compilation → validation → enrichment → execution readiness. Each component has unit-level coverage, but seams between components are untested.
@@ -232,13 +251,13 @@ Two parallel generation paths (IntentCompiler in-process vs LLM codegen subproce
 
 | ID | Severity | Area | Summary |
 |----|----------|------|---------|
-| P1-1 | Critical | Intent Pipeline | CoverageChecker always returns True — no real gating |
-| P1-2 | Critical | Intent Pipeline | `_infer_tool_id` defaults to "web_search" for unknown keywords |
-| P1-3 | Critical | Intent Pipeline | Fragile `'var' in locals()` check in compiler |
-| P1-4 | Critical | Chat Building | Mutation schema exposes only 9 of 14 operation types |
-| P1-5 | Critical | Quality | No quality gate on chat-mutation path |
-| P1-6 | Critical | Defaults | `_ensure_validation_gate()` accesses edges as dict (bug) |
-| P1-7 | Critical | Cross-Cutting | Legacy fallback silently produces single-node graph |
+| P1-1 | Critical | Intent Pipeline | CoverageChecker always returns True — no real gating *(addressed 2026-03-19)* |
+| P1-2 | Critical | Intent Pipeline | `_infer_tool_id` defaults to "web_search" for unknown keywords *(addressed 2026-03-19)* |
+| P1-3 | Critical | Intent Pipeline | Fragile `'var' in locals()` check in compiler *(addressed 2026-03-19)* |
+| P1-4 | Critical | Chat Building | Mutation schema exposes only 9 of 14 operation types *(addressed 2026-03-19)* |
+| P1-5 | Critical | Quality | No quality gate on chat-mutation path *(addressed 2026-03-19)* |
+| P1-6 | Critical | Defaults | `_ensure_validation_gate()` accesses edges as dict (bug) *(addressed 2026-03-19)* |
+| P1-7 | Critical | Cross-Cutting | Legacy fallback silently produces single-node graph *(addressed 2026-03-19)* |
 | P1-8 | Critical | Cross-Cutting | No end-to-end integration test across generation pipeline |
 | P2-1 | Important | Intent Pipeline | Static `_TOOL_KEYWORD_MAP` with no extensibility |
 | P2-2 | Important | Intent Pipeline | Only 4 few-shot examples for intent extraction |
@@ -258,8 +277,8 @@ Two parallel generation paths (IntentCompiler in-process vs LLM codegen subproce
 
 ## Recommended Priority Actions
 
-1. **Fix P1-6** (`_ensure_validation_gate` edge access bug) — straightforward bug fix, currently makes the `robust` profile crash at runtime.
-2. **Address P1-7** (single-node fallback) — replace silent degradation with explicit user notification or a retry with alternative strategy.
-3. **Implement P1-1** (CoverageChecker) or remove it — the vestigial always-True check is misleading and prevents proper fallback routing.
-4. **Add P1-8** (end-to-end integration tests) — at minimum, 3-5 representative prompts that exercise intent extraction → compilation → validation → enrichment.
-5. **Fix P1-3** (`locals()` check) — replace with explicit sentinel pattern; 5-minute fix that prevents a class of subtle bugs.
+1. **Add P1-8** (end-to-end integration tests) — at minimum, 3-5 representative prompts that exercise intent extraction → compilation → validation → enrichment.
+2. **Address P2-9** (provider-agnostic model tiering) — remove the remaining OpenAI-specific hardcoded model names from defaults enrichment.
+3. **Add P2-12** (roundtrip test suite) — prove the "lossless roundtrip" claim against reference graphs.
+4. **Improve P2-1** (`_TOOL_KEYWORD_MAP` extensibility) — provide a config or registry-based extension point for custom tools.
+5. **Expand P2-2** few-shot coverage — add examples for codegen, approval chains, and RAG-heavy workflows.

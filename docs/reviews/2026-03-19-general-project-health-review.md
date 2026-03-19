@@ -6,9 +6,16 @@
 
 ---
 
+## Resolution updates (2026-03-19)
+
+- **Addressed:** `1.1` (strict workspace sandbox mode and Electron-side write-path parity), `1.2` (all relevant `exec()` sites now use restricted builtins plus CI audit coverage), `1.3` (shell sandbox defaults on with explicit opt-out warnings), `2.4` (shared HTML sanitization via DOMPurify), `2.5` (dev dependency minimum versions pinned), `2.6` (security-critical SQL-key validation explicitly documented and regression-tested).
+- **Still open:** oversized modules/components and the broad `except Exception` audit.
+
+---
+
 ## P1 -- Critical
 
-### 1.1 Workspace path sandboxing allows arbitrary file access via absolute paths
+### 1.1 Workspace path sandboxing allows arbitrary file access via absolute paths *(Addressed 2026-03-19)*
 
 **File:** `src/dan/tools/_workspace.py`, lines 20-27
 
@@ -16,9 +23,9 @@ The `validate_path()` function allows *any* absolute path as-is, only logging a 
 
 All file tools (`file_read`, `file_write`, `file_delete`, `file_copy`, `file_move`, `list_directory`) go through `validate_path()` and are therefore affected.
 
-**Recommendation:** Add an opt-in strict mode (e.g., `DAN_STRICT_SANDBOX=1`) that rejects absolute paths outside the workspace root, or at minimum restrict writes/deletes to within the workspace.
+**Resolution:** `DAN_STRICT_SANDBOX=1` now enforces workspace-root restrictions for write/delete-style operations, Electron write-path IPC mirrors the same policy, and regressions cover relative paths, absolute in-workspace paths, absolute outside-workspace rejection, and symlink escapes.
 
-### 1.2 Multiple unsandboxed `exec()` calls on LLM-generated code
+### 1.2 Multiple unsandboxed `exec()` calls on LLM-generated code *(Addressed 2026-03-19)*
 
 **Files and lines:**
 - `src/dan/meta/diagnosis.py:1005` and `1084` -- `exec(code, ns)` with no builtins restriction, used as fallback when sandbox runner is unavailable
@@ -27,17 +34,15 @@ All file tools (`file_read`, `file_write`, `file_delete`, `file_copy`, `file_mov
 
 The `diagnosis.py` and `chat_manager.py` exec calls do not restrict `__builtins__`, meaning LLM-generated code has access to `open()`, `os`, `import`, `subprocess`, etc. While `chat_manager.py` labels its function as "ONLY for intent-compiled code," the boundary is a convention, not enforced.
 
-**Recommendation:** Ensure all `exec()` calls use `{"__builtins__": _ALLOWED_BUILTINS}` at minimum. Prefer the subprocess sandbox path for any code that could originate from LLM output.
+**Resolution:** The relevant `exec()` sites now use restricted builtins, and `tests/test_security/test_exec_builtins_audit.py` enforces this repo-wide with an AST-level guard so new unrestricted `exec()` / `eval()` usage fails CI.
 
-### 1.3 Shell command tool defaults to no allowlist
+### 1.3 Shell command tool defaults to no allowlist *(Addressed 2026-03-19)*
 
 **File:** `src/dan/tools/shell_command.py`, lines 56-66
 
 `DAN_SHELL_ALLOW` is empty by default, meaning the allowlist check is a no-op. The sandbox mode (`DAN_SANDBOX_SHELL`) also defaults to off. In production, an LLM agent can execute arbitrary shell commands with no restrictions.
 
-**Recommendation:** Default to sandbox mode enabled, or require explicit opt-out. Document the security implications clearly.
-
----
+**Resolution:** Shell sandboxing now defaults to enabled, explicit opt-out is documented, startup warns when sandboxing is disabled, and the shell-related test suite has been revalidated with sandbox mode on.
 
 ## P2 -- Important
 
@@ -86,7 +91,7 @@ Many silently swallow exceptions (no logging, no re-raise), making debugging dif
 
 **Recommendation:** Audit the highest-count files. Replace silent `except Exception:` with specific exception types or at minimum `logger.debug()` calls.
 
-### 2.4 No HTML sanitization library for `dangerouslySetInnerHTML`
+### 2.4 No HTML sanitization library for `dangerouslySetInnerHTML` *(Addressed 2026-03-19)*
 
 **9 usages of `dangerouslySetInnerHTML`** across the editor codebase, rendering markdown via the `marked` library directly into the DOM. No DOMPurify or equivalent sanitization library is used. The `renderMarkdown` function in `ChatMessage.tsx` filters `javascript:` protocol (line 205-206), but this is manual and does not cover all XSS vectors (event handlers, SVG-based attacks).
 
@@ -99,23 +104,23 @@ Many silently swallow exceptions (no logging, no re-raise), making debugging dif
 - `editor/src/components/research/WritingPane.tsx`
 - `editor/src/components/MentionAutocomplete.tsx`
 
-**Recommendation:** Add DOMPurify as a dependency and sanitize all HTML before injection.
+**Resolution:** The editor now uses a shared `sanitizeHtml()` helper backed by DOMPurify, and all previously listed `dangerouslySetInnerHTML` sinks were routed through it with focused XSS regression coverage.
 
-### 2.5 Dev dependencies unpinned for `pytest-cov` and `pytest-asyncio`
+### 2.5 Dev dependencies unpinned for `pytest-cov` and `pytest-asyncio` *(Addressed 2026-03-19)*
 
 **File:** `pyproject.toml`, lines 93-95
 
-These have no version constraints, unlike `pytest>=8.0`. A `pytest-asyncio` major version bump could break the test suite.
+These had no version constraints, unlike `pytest>=8.0`. A `pytest-asyncio` major version bump could break the test suite.
 
-**Recommendation:** Pin minimum versions: `"pytest-cov>=4.0"`, `"pytest-asyncio>=0.23"`.
+**Resolution:** `pyproject.toml` now pins minimum versions as `"pytest-cov>=5.0"` and `"pytest-asyncio>=0.23"`.
 
-### 2.6 SQL injection surface in learning_tiers.py (mitigated but fragile)
+### 2.6 SQL injection surface in learning_tiers.py (mitigated but fragile) *(Addressed 2026-03-19)*
 
 **File:** `src/dan/engine/learning_tiers.py`, lines 562-569
 
 The `query()` method constructs SQL with f-strings for `json_extract(data, '$.{key}')`. Protected by `_SAFE_JSON_KEY_RE = re.compile(r"^[a-zA-Z0-9_]+$")` (line 24), which validates keys before interpolation. However, the validation is a regex convention rather than parameterized SQL.
 
-**Recommendation:** Add a comment explaining why the regex is security-critical, or switch to parameterized column access.
+**Resolution:** The security-critical key validation is now explicitly documented and covered by an adversarial regression test that proves invalid keys are rejected before interpolation.
 
 ---
 
@@ -182,9 +187,9 @@ Models, edges, nodes, and ports use Pydantic v2 throughout with proper type anno
 
 | Severity | Count | Key Theme |
 |----------|-------|-----------|
-| P1 Critical | 3 | Security: workspace sandbox bypass, unsandboxed exec, default-open shell |
-| P2 Important | 6 | Module sizes, exception handling, XSS, unpinned deps |
+| P1 Critical | 3 | Security: workspace sandbox bypass, unsandboxed exec, default-open shell *(all addressed 2026-03-19)* |
+| P2 Important | 6 | Module sizes, exception handling, XSS, unpinned deps *(security/XSS/dependency subset addressed 2026-03-19)* |
 | P3 Nice to Have | 4 | Provider test coverage, dependency ranges, eval docs |
 | Strengths | 8 | Test suite, architecture, dependency discipline, typing |
 
-The project demonstrates strong engineering discipline in its test suite, module organization, and typing. The primary concerns are security-related: the workspace sandbox allows arbitrary file access via absolute paths, several `exec()` calls run without builtins restrictions, and the shell tool defaults to unrestricted mode. These are design decisions documented in the code but represent real risk if the system is deployed in multi-tenant or untrusted contexts.
+The project demonstrates strong engineering discipline in its test suite, module organization, and typing. The biggest security concerns from the original review have now been addressed: strict workspace sandboxing exists, unrestricted `exec()` use is guarded and audited, shell sandboxing defaults on, HTML rendering is sanitized, and the SQL-key validation path is explicitly documented/tested. The main remaining concerns are maintainability-oriented: oversized modules/components and broad exception handling.

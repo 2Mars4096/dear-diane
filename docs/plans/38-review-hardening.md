@@ -8,7 +8,7 @@
 Repository-wide code reviews and deep system reviews across two rounds identified issues spanning security, correctness, cross-platform support, and user experience:
 
 - **2026-03-17 round:** Furnace write safety, lifecycle correctness, startup/config robustness, domain learning fidelity, provider/tool/doc alignment. All addressed in 38-1 through 38-5.
-- **2026-03-19 round:** Security gaps (sandbox bypass, unsandboxed exec, XSS), workflow generation bugs, concierge triage correctness, cross-platform Development Mode breakage, and UX/onboarding polish. Tracked in 38-6 through 38-10.
+- **2026-03-19 round:** Security gaps (sandbox bypass, unsandboxed exec, XSS), workflow generation bugs, concierge triage correctness, cross-platform Development Mode breakage, UX/onboarding polish, packaged-LSP launching, and the progress-ack stream-label follow-up. Tracked in 38-6 through 38-12.
 
 Review documents: `docs/reviews/2026-03-17-*.md` and `docs/reviews/2026-03-19-*.md`.
 
@@ -33,6 +33,8 @@ Review documents: `docs/reviews/2026-03-17-*.md` and `docs/reviews/2026-03-19-*.
 | [38-8](38-8-concierge-triage-correctness.md) | Concierge Triage Correctness | max_tokens=60, child_execution type mismatch, asyncio.run fragility, plan decomposition stub, synthesis quality, state race, route inheritance | P1/P2 | ✅ |
 | [38-9](38-9-cross-platform-dev-mode.md) | Cross-Platform Development Mode | terminal /bin/zsh hardcoding, commandExists cross-platform, Electron degradation banner, extension providers, LSP restart | P1/P2 | ✅ |
 | [38-10](38-10-ux-onboarding-quick-wins.md) | UX & Onboarding Quick Wins | API key validation, error wrapping, cost visibility, coming-soon modes, reassurance delay, CLI progress, startup summary | P1/P2 | ✅ |
+| [38-11](38-11-packaged-lsp-launching.md) | Packaged LSP Launching | bundled Node-based language servers no longer depend on `npx`, cwd, or dev-only packaging | P1 | ✅ |
+| [38-12](38-12-chat-progress-ack-preservation.md) | Chat Progress-Ack Preservation | preserve backend `progress_ack` event labels so full-screen chat does not terminate live streams early | P1 | ✅ |
 
 ## Dependencies / Sequencing
 

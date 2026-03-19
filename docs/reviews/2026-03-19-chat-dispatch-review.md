@@ -8,7 +8,7 @@ Scope reviewed:
 - `src/dan/server/concierge/tier_executors.py`
 - related prompt/tool wiring in `src/dan/server/chat/prompts.py`
 
-## Active findings
+## Findings
 
 ### ~~P1: `chat_manager` import path is broken by mutation-tool schema construction order~~ **ALREADY FIXED**
 
@@ -24,7 +24,9 @@ Scope reviewed:
 - ~~User impact:~~
   - ~~the direct backend `chat_manager` path no longer imports cleanly under the focused test harness, so task dispatch can fail before triage, tool selection, or streaming logic runs.~~
 
-### P2: workflow queries are still broadened into workflow-build dispatch
+### ~~P2: workflow queries are still broadened into workflow-build dispatch~~ **ADDRESSED**
+
+> **Status: Resolved.** Fixed 2026-03-19 in `src/dan/server/concierge/tier_executors.py`: `workflow_query`-only turns now stay on the normal conversation/read path, `allow_mutation_tool` defaults to `False` for those read-only workflow queries, and focused regressions were added in `tests/test_concierge/test_tiered_dispatch.py`.
 
 - `tests/test_concierge/test_triage.py:119-130` shows triage can legitimately return `route.target="workflow"` with `action_hints=["workflow_query"]`.
 - `src/dan/server/concierge/tier_executors.py:488-490` maps any `route_target == "workflow"` to `workflow_build` before the plan checks run, even when the route only asked for `workflow_query`.
@@ -40,10 +42,15 @@ Scope reviewed:
 
 ## Verification notes
 
+- Current status:
+  - `pytest -q tests/test_concierge/test_tiered_dispatch.py`
+  - `pytest -q tests/test_concierge/test_triage.py`
+- Historical snapshot from the original review:
+
 - Passing:
   - `pytest -q tests/test_concierge/test_tiered_dispatch.py tests/test_concierge/test_triage.py`
   - `pytest -q tests/test_server/test_chat_integration.py`
 - Failing:
   - `pytest -q tests/test_server/test_chat_manager.py -k text_only_build_messages_adds_no_tools_override -vv`
 
-The passing concierge and chat-integration suites suggest the main dispatch logic is still mostly wired, but the two issues above are real regressions in the chat-manager/backend handoff.
+The original review captured two real regressions. As of 2026-03-19, both are now addressed.

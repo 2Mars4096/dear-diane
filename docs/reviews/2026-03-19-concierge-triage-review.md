@@ -22,33 +22,48 @@ The concierge system processes user messages through a multi-stage pipeline:
 
 ---
 
+## Resolution updates (2026-03-19)
+
+- **Addressed:** `P1-1` (duplicate fast-classification path removed), `P1-2` (triage `max_tokens` raised from `60` to `256`), `P1-3` (`asyncio.run()` replaced with loop-safe bridging), `P1-4` (`Session.child_execution` now accepts `"mixed"` and `MultiStepExecutor` handles it explicitly), `P2-2` (stub decomposition replaced with lightweight LLM + fallback split), `P2-3` (tier-2 synthesis now has an LLM path with deterministic fallback), `P2-4` (volatile same-surface state now serialized with locks), `P2-5` (child-route inheritance filtered), `P2-6` (triage context window widened), `P2-7` (task finalization now distinguishes completed vs interrupted/cancelled).
+- **Still open:** `P2-1` plus the currently unmarked P3 items.
+
+---
+
 ## Findings
 
 ### P1 -- Critical Issues
 
-#### P1-1: Duplicate fast-classification in dispatch path
+#### P1-1: Duplicate fast-classification in dispatch path *(Addressed 2026-03-19)*
 
 **Files:** `tiered_dispatch.py:496-502`, `triage.py:1132-1139`
 
 `TieredDispatcher._do_triage()` calls `fast_classify_text()` at line 499, and if it matches, it returns the fast result with only `_resolve_context()` called. But the main `triage()` function at line 1132 also calls `fast_classify_text()` as its first step. When `_do_triage()` returns the fast result, it skips post-processing (`_post_process_triage_result`) which normalizes context needs, resolves entities, and enforces furnace/workflow routes. This means a social message arriving through `_do_triage` gets a raw TriageResult without post-processing, while the same message arriving through the full `triage()` function does get post-processed. The difference is small for social turns but represents a code smell -- the two code paths can diverge silently.
 
-#### P1-2: Triage LLM max_tokens=60 is dangerously low
+**Resolution:** The duplicate dispatcher-side fast path was removed so the runtime/triage path owns social short-circuiting and post-processing behavior consistently.
+
+#### P1-2: Triage LLM max_tokens=60 is dangerously low *(Addressed 2026-03-19)*
 
 **File:** `runtime.py:409`
 
 The triage system prompt asks the LLM to return a complex JSON object with 13 fields (tier, intent, route, confidence, goal, deliverable, entities, is_resume, resume_task_id, is_social, social_response, context_needs, subtasks, execution_order, rationale). 60 tokens is far too few for this response. A minimal valid response is easily 100+ tokens. This will cause frequent truncation, leading to JSON parse failures and fallback to the heuristic path. The heuristic fallback has only 0.50-0.58 confidence, which degrades routing quality.
 
-#### P1-3: `_ThreadedReflectionLLM.complete()` calls `asyncio.run()` inside a running event loop
+**Resolution:** `runtime.py` now uses `max_tokens=256` for triage completion, which is sufficient for the required structured JSON payload.
+
+#### P1-3: `_ThreadedReflectionLLM.complete()` calls `asyncio.run()` inside a running event loop *(Addressed 2026-03-19)*
 
 **File:** `runtime.py:1402`
 
 `asyncio.run()` cannot be called from within a running event loop (it raises `RuntimeError`). This code is used in `_domain_reflect_async` which runs as a background task on the event loop. The `asyncio.to_thread(reflector.reflect, ...)` at line 1407 does move execution to a thread, but the thread-local state still causes issues depending on Python version. In Python 3.10+, `asyncio.run()` creates a new event loop per call which works from a background thread, but this is fragile and may fail under certain executor configurations.
 
-#### P1-4: Session model `child_execution` literal type mismatch
+**Resolution:** The threaded reflection / memory extraction path now uses loop-safe async bridging instead of `asyncio.run()`, and regression coverage was added for already-running event-loop scenarios.
+
+#### P1-4: Session model `child_execution` literal type mismatch *(Addressed 2026-03-19)*
 
 **File:** `session.py:102`
 
 The Session model declares `child_execution` as `Literal["parallel", "serial"]` but `tiered_dispatch.py:410` assigns `"mixed"` to it. Pydantic will raise a validation error if strict validation is enabled, or silently accept it with lax validation. The "mixed" value is then never checked by any consumer -- `_decompose_and_execute` only checks for `"parallel"` at line 1009 and falls through to serial for everything else. This means "mixed" is functionally identical to "serial", making the triage system's "mixed" execution_order signal meaningless.
+
+**Resolution:** `Session.child_execution` now includes `"mixed"` in its literal type, and `MultiStepExecutor` logs and normalizes `"mixed"` to the current serial-safe fallback explicitly instead of relying on an implicit else path.
 
 ### P2 -- Significant Issues
 
@@ -58,41 +73,53 @@ The Session model declares `child_execution` as `Literal["parallel", "serial"]` 
 
 When `_embedding_triage_result()` succeeds, it returns a `TriageResult` that gets post-processed. However, the embedding classification operates only on the raw text, without awareness of conversation context. A message like "do that again" will be classified by embedding similarity against prototypes without any understanding that "that" refers to a previous workflow build. The post-processing at `_enforce_workflow_edit_route` partially compensates by checking `_infer_fallback_action_hints`, but this relies on regex heuristics rather than the semantic understanding the LLM triage would provide.
 
-#### P2-2: MultiStepExecutor._plan_decomposition is a stub
+#### P2-2: MultiStepExecutor._plan_decomposition is a stub *(Addressed 2026-03-19)*
 
 **File:** `tier_executors.py:1183-1189`
 
 When triage does not provide subtasks and the task context has none, the system falls back to splitting on `" and "`. This is extremely naive -- "research quantum computing and write a report" would produce two subtasks but "investigate the pros and cons" would incorrectly split into "investigate the pros" and "cons". The comment says "LLM call in future" but this is a live code path.
 
-#### P2-3: Synthesis is mechanical concatenation, not coherent
+**Resolution:** Tier-2 decomposition now attempts a lightweight LLM-produced JSON subtask plan and falls back to the old string-split helper only when providers are unavailable or the LLM output is unusable.
+
+#### P2-3: Synthesis is mechanical concatenation, not coherent *(Addressed 2026-03-19)*
 
 **File:** `tier_executors.py:1428-1443`
 
 For tier-2 tasks, the synthesis simply concatenates child results under headers. There is no LLM-powered synthesis to produce a coherent response. The user sees section headers like "## Search for quantum computing papers" followed by "## Write a summary" rather than a unified answer. Only in the "aggressive" autonomy mode does a remediation child get spawned (lines 1103-1140), and even then it addresses gaps rather than synthesizing.
 
-#### P2-4: Race condition in volatile concierge state
+**Resolution:** Tier-2 synthesis now has an autonomy-gated lightweight LLM synthesis path with deterministic concatenation retained as the fallback.
+
+#### P2-4: Race condition in volatile concierge state *(Addressed 2026-03-19)*
 
 **File:** `runtime.py:1196-1201`
 
 When no memory kernel is available, concierge state is stored in `_volatile_concierge_states` (a plain dict). Concurrent requests to the same surface will read and write this dict without synchronization. Since the concierge is an async system serving multiple requests, two concurrent `_process_inner` calls for the same surface can get stale state or overwrite each other's updates. The `model_copy(deep=True)` prevents mutation aliasing but not read-modify-write races.
 
-#### P2-5: Child sessions inherit parent's route blindly
+**Resolution:** Same-surface volatile state updates are now serialized with per-surface `asyncio.Lock`s, with a regression covering concurrent dispatches to the same surface.
+
+#### P2-5: Child sessions inherit parent's route blindly *(Addressed 2026-03-19)*
 
 **File:** `tier_executors.py:1226-1235`
 
 All child sessions inherit the parent's route (including action_hints like `workflow_edit`, `run_control`, etc.). A parent task "research quantum computing and build a workflow for it" decomposed into subtasks would give both the research child and the workflow child the same `workflow_edit` action hint. This could cause the research subtask to erroneously enable mutation tools.
 
-#### P2-6: Context turn truncation is aggressive
+**Resolution:** Child-session route/action-hint propagation is now filtered so subtasks only inherit hints relevant to their decomposed task.
+
+#### P2-6: Context turn truncation is aggressive *(Addressed 2026-03-19)*
 
 **File:** `triage.py:529-532`
 
 Only the last 4 turns are included in triage context, each truncated to 200 characters. For complex multi-step workflows, this means the triage LLM has very limited visibility into what the conversation is actually about. Combined with the 60-token max_tokens limit (P1-2), triage accuracy for deep conversations is likely poor.
 
-#### P2-7: `_finalize_task` marks all intents as "completed"
+**Resolution:** The triage context window has been widened to include more turns and substantially more text per turn, coordinated with the higher triage token budget.
+
+#### P2-7: `_finalize_task` marks all intents as "completed" *(Addressed 2026-03-19)*
 
 **File:** `runtime.py:1313-1317`
 
 Since `IntentCategory` only has ASK, AGENT, and PLAN, the else branch is unreachable. Every task that produces content is marked "completed" regardless of whether the task was actually finished. A multi-step research task that was interrupted after one subtask will still be marked "completed" if some content was produced.
+
+**Resolution:** Finalization now consults `SessionState` plus `SessionResult.metadata["completion_status"]`, so interrupted/cancelled work is no longer reported as fully completed.
 
 ### P3 -- Minor Issues
 
@@ -170,4 +197,4 @@ The `_enforce_workflow_edit_route` function (triage.py:800-854) and `_has_recent
 
 ## Summary
 
-The concierge and tiered triage system is architecturally sound with good separation of concerns, robust fallback chains, and thoughtful budget enforcement. The most impactful issue is **P1-2** (max_tokens=60 for triage LLM) which likely causes the majority of triage calls to fall back to heuristics, undermining the entire classification pipeline. **P1-4** (child_execution literal mismatch) is a latent type safety issue. **P2-2** (stub decomposition) and **P2-3** (concatenation-only synthesis) are the biggest user-facing quality gaps for Tier 2 tasks. The autonomy model is well-calibrated in structure but under-tested against real-world edge cases like mixed-intent messages.
+The concierge and tiered triage system is architecturally sound with good separation of concerns, robust fallback chains, and thoughtful budget enforcement. Most of the highest-impact issues from the original review are now addressed: triage token starvation, duplicate fast-classification, loop-unsafe async bridging, child-execution typing, stub decomposition, concatenation-only synthesis, same-surface volatile-state races, route over-propagation, aggressive context truncation, and over-eager completion marking. The biggest clearly still-open design gap in this review is **P2-1** (embedding triage without true anaphora awareness), along with the lower-priority P3 polish items.
