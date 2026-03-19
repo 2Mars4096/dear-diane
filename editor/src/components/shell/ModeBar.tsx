@@ -28,6 +28,7 @@ export default function ModeBar() {
   const activeMode = useAppStore((s) => s.activeMode);
   const setMode = useAppStore((s) => s.setMode);
   const setGlobalPaletteVisible = useAppStore((s) => s.setGlobalPaletteVisible);
+  const enabledModes = MODE_CONFIGS.filter((mode) => mode.enabled);
 
   const isElectron = typeof window !== "undefined" && "electronAPI" in window;
   const isMac = typeof navigator !== "undefined" && /Mac/.test(navigator.platform);
@@ -39,22 +40,19 @@ export default function ModeBar() {
     >
       <span className="text-gray-900 dark:text-white font-bold text-sm mr-3 tracking-wide select-none">DAN</span>
       <div className="flex items-center gap-0.5">
-        {MODE_CONFIGS.map((mode) => {
+        {enabledModes.map((mode) => {
           const Icon = ICON_MAP[mode.icon];
           const isActive = activeMode === mode.id;
           return (
             <button
               key={mode.id}
               onClick={() => setMode(mode.id)}
-              disabled={!mode.enabled}
-              title={mode.enabled ? `${mode.label} (⌘${mode.shortcut})` : `${mode.label} (coming soon)`}
+              title={`${mode.label} (⌘${mode.shortcut})`}
               className={`
                 app-no-drag flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-all
                 ${isActive
                   ? "bg-gray-200 text-gray-900 dark:bg-white/15 dark:text-white"
-                  : mode.enabled
-                    ? "text-gray-500 hover:text-gray-900 hover:bg-gray-200 dark:text-gray-400 dark:hover:text-white dark:hover:bg-white/5"
-                    : "text-gray-400 dark:text-gray-600 cursor-not-allowed"
+                  : "text-gray-500 hover:text-gray-900 hover:bg-gray-200 dark:text-gray-400 dark:hover:text-white dark:hover:bg-white/5"
                 }
               `}
             >
