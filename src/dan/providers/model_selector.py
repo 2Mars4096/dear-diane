@@ -225,9 +225,7 @@ class ModelSelector:
         user_params = policy.tier_params or (
             getattr(config, "tier_params", None) if config else None
         )
-        provider_name = configured_providers[0] if configured_providers else "anthropic"
-        tier_params_map = resolve_tier_params(provider_name, user_params)
-        params = tier_params_map.get(result.tier.value, {})
+        params: dict[str, Any] = {}
 
         if not self._tier_map_validated:
             self._tier_map_validated = True
@@ -254,6 +252,16 @@ class ModelSelector:
                 result.tier.value,
                 model,
             )
+
+        try:
+            provider_name = self._provider_registry.resolve_name(model)
+        except Exception:
+            provider_name = configured_providers[0] if configured_providers else "anthropic"
+        if provider_name == "default" and configured_providers:
+            provider_name = configured_providers[0]
+
+        tier_params_map = resolve_tier_params(provider_name, user_params)
+        params = tier_params_map.get(result.tier.value, {})
 
         return model, result, params
 

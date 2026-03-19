@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_PREFIX_PATTERNS: list[tuple[str, str]] = [
     ("gpt-", "openai"),
+    ("kimi-", "openai"),
     ("o1", "openai"),
     ("o3", "openai"),
     ("o4", "openai"),
@@ -46,31 +47,38 @@ class ProviderRegistry:
         """Add a custom prefix → provider mapping."""
         self._prefix_patterns.append((prefix, provider_name))
 
-    def resolve(self, model: str) -> LLMProvider:
-        """Resolve a model name to its provider.
+    def resolve_name(self, model: str) -> str:
+        """Resolve a model name to its provider name.
 
-        Raises KeyError if no matching provider is found.
+        Mirrors :meth:`resolve` but returns the matching registry key instead of
+        the provider instance so callers can derive provider-specific behavior
+        (for example tier parameter defaults) from the model they actually plan
+        to invoke.
         """
-        # 1. Exact model override
         if model in self._model_overrides:
             provider_name = self._model_overrides[model]
             if provider_name in self._providers:
-                return self._providers[provider_name]
+                return provider_name
 
-        # 2. Prefix pattern match
         for prefix, provider_name in self._prefix_patterns:
             if model.startswith(prefix) and provider_name in self._providers:
-                return self._providers[provider_name]
+                return provider_name
 
-        # 3. Default fallback
         if "default" in self._providers:
-            return self._providers["default"]
+            return "default"
 
         raise KeyError(
             f"No provider found for model '{model}'. "
             f"Registered providers: {sorted(self._providers)}. "
             f"Model overrides: {self._model_overrides}"
         )
+
+    def resolve(self, model: str) -> LLMProvider:
+        """Resolve a model name to its provider.
+
+        Raises KeyError if no matching provider is found.
+        """
+        return self._providers[self.resolve_name(model)]
 
     def has_provider(self, name: str) -> bool:
         return name in self._providers

@@ -19,6 +19,7 @@ class AnthropicProvider:
 
     supports_exact_tool_choice = True
     supports_tool_calls = True
+    assistant_replay_mode = "raw"
 
     def __init__(self, config: ProviderConfig) -> None:
         try:
@@ -110,6 +111,16 @@ class AnthropicProvider:
 
     @staticmethod
     def _serialize_content_block(block: Any) -> dict[str, Any]:
+        if isinstance(block, dict):
+            return dict(block)
+        model_dump = getattr(block, "model_dump", None)
+        if callable(model_dump):
+            try:
+                dumped = model_dump(mode="python")
+            except TypeError:
+                dumped = model_dump()
+            if isinstance(dumped, dict):
+                return dumped
         block_type = getattr(block, "type", None)
         if block_type == "text":
             return {
@@ -124,7 +135,20 @@ class AnthropicProvider:
                 "input": getattr(block, "input", {}) or {},
             }
         payload: dict[str, Any] = {"type": str(block_type or "")}
-        for key in ("text", "thinking", "signature", "id", "name", "input"):
+        for key in (
+            "text",
+            "thinking",
+            "signature",
+            "id",
+            "name",
+            "input",
+            "cited_text",
+            "title",
+            "url",
+            "source",
+            "content",
+            "citations",
+        ):
             if hasattr(block, key):
                 value = getattr(block, key)
                 if value is not None:
@@ -206,10 +230,13 @@ class AnthropicProvider:
             if role == "tool":
                 tool_result_id = str(msg.get("tool_call_id") or "").strip()
                 if tool_result_id:
+                    tool_content = msg.get("anthropic_tool_result_content")
+                    if not isinstance(tool_content, list):
+                        tool_content = str(msg.get("content") or "")
                     pending_tool_results.append({
                         "type": "tool_result",
                         "tool_use_id": tool_result_id,
-                        "content": str(msg.get("content") or ""),
+                        "content": tool_content,
                     })
                 continue
 
@@ -217,6 +244,16 @@ class AnthropicProvider:
 
             if role == "assistant":
                 blocks: list[dict[str, Any]] = []
+                raw_blocks = msg.get("anthropic_content")
+                if isinstance(raw_blocks, list) and raw_blocks:
+                    for part in raw_blocks:
+                        if isinstance(part, dict):
+                            blocks.append(dict(part))
+                    converted.append({
+                        "role": "assistant",
+                        "content": blocks,
+                    })
+                    continue
                 content = msg.get("content", "")
                 if isinstance(content, str) and content:
                     blocks.append({"type": "text", "text": content})

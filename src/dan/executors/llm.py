@@ -710,7 +710,12 @@ class LLMExecutor:
                     esc_user_params = getattr(effective_policy, "tier_params", None) or (
                         getattr(context.config, "tier_params", None)
                     )
-                    esc_provider_name = esc_providers[0] if esc_providers else "anthropic"
+                    try:
+                        esc_provider_name = context.provider_registry.resolve_name(esc_model)
+                    except Exception:
+                        esc_provider_name = esc_providers[0] if esc_providers else "anthropic"
+                    if esc_provider_name == "default" and esc_providers:
+                        esc_provider_name = esc_providers[0]
                     esc_tier_params = resolve_tier_params(
                         esc_provider_name, esc_user_params,
                     ).get(next_tier.value, {})

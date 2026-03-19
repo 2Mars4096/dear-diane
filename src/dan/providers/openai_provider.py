@@ -89,6 +89,46 @@ class OpenAIProvider:
         return temperature
 
     @staticmethod
+    def _apply_compatibility_defaults(
+        model: str,
+        call_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply provider-specific request defaults for compatible backends.
+
+        Moonshot documents that ``kimi-k2.5`` enables thinking by default and
+        counts both ``reasoning_content`` and final ``content`` against
+        ``max_tokens``. For ordinary low-budget text generations, that can
+        exhaust the whole allowance before any visible answer is returned.
+        When callers have *not* explicitly opted into thinking, and this is a
+        plain text call without tools, disable thinking automatically so the
+        output budget is reserved for the final answer.
+        """
+        normalized = str(model or "").strip().lower()
+        if not normalized.startswith("kimi-k2.5"):
+            return call_kwargs
+        if "thinking" not in call_kwargs and not call_kwargs.get("tools"):
+            max_tokens = call_kwargs.get("max_tokens")
+            if isinstance(max_tokens, int) and 0 < max_tokens < 16000:
+                call_kwargs["thinking"] = {"type": "disabled"}
+        thinking = call_kwargs.get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type") == "disabled":
+            call_kwargs["temperature"] = 0.6
+        return call_kwargs
+
+    @staticmethod
+    def _move_provider_fields_to_extra_body(
+        call_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Move provider-specific request fields into ``extra_body`` for SDK calls."""
+        extra_body = dict(call_kwargs.get("extra_body") or {})
+        for field in ("thinking",):
+            if field in call_kwargs:
+                extra_body[field] = call_kwargs.pop(field)
+        if extra_body:
+            call_kwargs["extra_body"] = extra_body
+        return call_kwargs
+
+    @staticmethod
     def _dump_model_object(obj: Any) -> dict[str, Any]:
         if isinstance(obj, dict):
             return dict(obj)
@@ -163,6 +203,8 @@ class OpenAIProvider:
             call_kwargs["max_tokens"] = max_tokens
         if self._timeout_seconds is not None:
             call_kwargs.setdefault("timeout", self._timeout_seconds)
+        call_kwargs = self._apply_compatibility_defaults(model, call_kwargs)
+        call_kwargs = self._move_provider_fields_to_extra_body(call_kwargs)
 
         try:
             resp = await self._client.chat.completions.create(**call_kwargs)
@@ -201,6 +243,29 @@ class OpenAIProvider:
         max_tokens: int | None = None,
         **kwargs: Any,
     ) -> AsyncIterator[StreamChunk]:
+        # Some Kimi/OpenAI-compatible endpoints accept streaming requests but
+        # emit empty text deltas, which leaves downstream workflows with blank
+        # outputs despite non-zero completion tokens. Fall back to a regular
+        # completion call and surface the full text as a synthetic stream.
+        if str(model or "").strip().lower().startswith("kimi-"):
+            result = await self.complete(
+                messages=messages,
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **kwargs,
+            )
+            accumulated = result.text or ""
+            if accumulated:
+                yield StreamChunk(delta=accumulated, accumulated=accumulated)
+            yield StreamChunk(
+                delta="",
+                accumulated=accumulated,
+                done=True,
+                usage=result.usage,
+            )
+            return
+
         effective_temperature = self._normalize_temperature(model, temperature)
         call_kwargs: dict[str, Any] = {
             "model": model,
@@ -215,6 +280,8 @@ class OpenAIProvider:
             call_kwargs["max_tokens"] = max_tokens
         if self._timeout_seconds is not None:
             call_kwargs.setdefault("timeout", self._timeout_seconds)
+        call_kwargs = self._apply_compatibility_defaults(model, call_kwargs)
+        call_kwargs = self._move_provider_fields_to_extra_body(call_kwargs)
 
         try:
             stream = await self._client.chat.completions.create(**call_kwargs)
