@@ -15,6 +15,7 @@ import pytest
 from dan.engine.correction_memory import CorrectionStore
 from dan.engine.memory_kernel import MemoryKernel
 from dan.engine.user_profile import UserProfile
+from dan.server.capability_registry import CapabilityResult
 from dan.server.chat_manager import ChatCompleteEvent
 from dan.server.concierge.command_registry import CommandDescriptor, CommandRegistry
 from dan.server.concierge.dispatcher import _is_bypass_command
@@ -238,6 +239,25 @@ class TestFastCommandSkipsPrep:
         assert profile.common_domains == ["paper_rendering"]
         assert memory_kernel.get("fact:domain:paper_rendering") is not None
 
+    @pytest.mark.asyncio
+    async def test_search_command_runs_direct_grounded_search(self, tmp_path, monkeypatch):
+        async def _fake_handle_web_search(args, ctx):
+            assert args["query"] == "latest dan"
+            assert args["fetch_content"] is True
+            assert getattr(ctx, "grounding_required", False) is True
+            return CapabilityResult(success=True, message="grounded results")
+
+        monkeypatch.setattr(
+            "dan.server.capabilities.web.handle_web_search",
+            _fake_handle_web_search,
+        )
+
+        c = _build_concierge(tmp_path)
+        events = await _collect(c, _make_msg("/search latest dan"))
+
+        assert len(events) == 1
+        assert events[0].content == "grounded results"
+
 
 # ---------------------------------------------------------------------------
 # Dispatcher bypass for command prefixes
@@ -366,6 +386,75 @@ class TestCostCommand:
         assert "claude-sonnet-4" in content
         assert "1,000" in content  # grand total = 300 + 700
         assert "1,998" not in content  # other session excluded
+
+    @pytest.mark.asyncio
+    async def test_cost_surfaces_latest_citation_summary(self, tmp_path):
+        store = InMemoryTelemetryStore()
+        await store.record(TelemetryEvent(
+            event_type="chat_turn",
+            session_id="test-surface",
+            model="gpt-4o",
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            estimated_cost=0.0008,
+        ))
+        c = _build_concierge(tmp_path, telemetry_store=store)
+        c.capability_context.workflow_id = "_scratch"
+        c.chat_manager._chat_store = MagicMock()
+        c.chat_manager._chat_store.get_thread_meta.return_value = {
+            "latest_citation_summary": {
+                "ran": True,
+                "verified": 4,
+                "unverified": 1,
+            }
+        }
+
+        events = await _collect(c, _make_msg("/cost"))
+
+        assert len(events) == 1
+        assert "Citations" in events[0].content
+        assert "4 verified, 1 unverified" in events[0].content
+
+    @pytest.mark.asyncio
+    async def test_cost_prefers_request_workflow_metadata_for_citation_summary(self, tmp_path):
+        store = InMemoryTelemetryStore()
+        await store.record(TelemetryEvent(
+            event_type="chat_turn",
+            session_id="test-surface",
+            model="gpt-4o",
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            estimated_cost=0.0008,
+        ))
+        c = _build_concierge(tmp_path, telemetry_store=store)
+        c.capability_context.workflow_id = "stale-context-workflow"
+        project = c.project_store.create_project("test", "test-surface")
+        c.project_store.link_workflow(project.project_id, "linked-project-workflow", "test-surface")
+        c.chat_manager._chat_store = MagicMock()
+        c.chat_manager._chat_store.get_thread_meta.side_effect = lambda workflow_id, thread_id: (
+            {
+                "latest_citation_summary": {
+                    "ran": True,
+                    "verified": 2,
+                    "unverified": 0,
+                }
+            }
+            if (workflow_id, thread_id) == ("request-workflow", "request-thread")
+            else {}
+        )
+
+        msg = _make_msg("/cost")
+        msg.metadata = {"workflow_id": "request-workflow", "thread_id": "request-thread"}
+        events = await _collect(c, msg)
+
+        assert len(events) == 1
+        assert "2 verified, 0 unverified" in events[0].content
+        c.chat_manager._chat_store.get_thread_meta.assert_called_with(
+            "request-workflow",
+            "request-thread",
+        )
 
 
 # ---------------------------------------------------------------------------

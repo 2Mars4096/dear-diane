@@ -2369,6 +2369,26 @@ def test_extract_chat_params_mutation_tool_true_for_workflow_route_without_edit_
     assert params["allow_mutation_tool"] is True
 
 
+def test_extract_chat_params_mutation_tool_true_for_workflow_followup_history() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(intent="agent", route=_FakeRoute(target="general", action_hints=["run_control"])),
+        msg=_FakeMsg(metadata={"mode": "agent"}),
+    )
+    session.msg.text = "so is it gonna work? I have the watchlist.csv set with 1 ticker for test"
+    session.context = SimpleNamespace(
+        project=SimpleNamespace(linked_workflow_ids=["_scratch"]),
+        task=SimpleNamespace(
+            turns=[
+                SimpleNamespace(role="user", content="Build the workflow around watchlist.csv"),
+                SimpleNamespace(role="assistant", content="Prepared a workflow change preview for the watchlist workflow."),
+            ],
+        ),
+    )
+
+    params = _extract_chat_params(session, "system prompt")
+    assert params["allow_mutation_tool"] is True
+
+
 def test_extract_chat_params_mutation_tool_false_for_workflow_query_only() -> None:
     route = _FakeRoute(target="workflow", action_hints=["workflow_query"])
     session = _FakeSession(
@@ -2397,6 +2417,27 @@ def test_extract_chat_params_requested_build_mode_override() -> None:
     )
     params = _extract_chat_params(session, "system prompt")
     assert params["mode"] == "build"
+    assert params["allow_mutation_tool"] is True
+
+
+def test_extract_chat_params_promotes_ask_mode_for_workflow_action_followup() -> None:
+    session = _FakeSession(
+        triage=_FakeTriage(intent="ask", route=_FakeRoute(target="general")),
+        msg=_FakeMsg(metadata={"mode": "ask"}),
+    )
+    session.msg.text = "Sounds good, can you run this workflow to test ?"
+    session.context = SimpleNamespace(
+        project=SimpleNamespace(linked_workflow_ids=["_scratch"]),
+        task=SimpleNamespace(
+            turns=[
+                SimpleNamespace(role="user", content="Build the workflow around watchlist.csv"),
+                SimpleNamespace(role="assistant", content="Prepared a workflow change preview for the watchlist workflow."),
+            ],
+        ),
+    )
+
+    params = _extract_chat_params(session, "system prompt")
+    assert params["mode"] == "agent"
     assert params["allow_mutation_tool"] is True
 
 

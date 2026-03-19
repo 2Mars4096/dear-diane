@@ -29,6 +29,7 @@ from dan.server.chat_manager import (
     ChatCompleteEvent,
     ChatInterruptedEvent,
     ChatManager,
+    ChatMutationEvent,
     ChatTokenEvent,
     ChatToolCallResultEvent,
     ChatToolCallStartEvent,
@@ -99,42 +100,44 @@ def _make_manager(
     *,
     tool_call_log: list[dict[str, Any]],
     capability_side_effect: Any | None = None,
+    capability_registry: ChatCapabilityRegistry | None = None,
 ) -> ChatManager:
     registry = ProviderRegistry()
     registry.register("default", provider)
 
-    async def _stub_capability(args: dict[str, Any], context: CapabilityContext) -> CapabilityResult:
-        tool_call_log.append(
-            {
-                "args": dict(args),
-                "workflow_id": context.workflow_id,
-            }
-        )
-        if capability_side_effect is not None:
-            capability_side_effect(args, context)
-        return CapabilityResult(
-            success=True,
-            message="Stub capability tool result",
-            data={"value": args.get("value")},
-        )
+    if capability_registry is None:
+        async def _stub_capability(args: dict[str, Any], context: CapabilityContext) -> CapabilityResult:
+            tool_call_log.append(
+                {
+                    "args": dict(args),
+                    "workflow_id": context.workflow_id,
+                }
+            )
+            if capability_side_effect is not None:
+                capability_side_effect(args, context)
+            return CapabilityResult(
+                success=True,
+                message="Stub capability tool result",
+                data={"value": args.get("value")},
+            )
 
-    capability_registry = ChatCapabilityRegistry()
-    capability_registry.register(
-        "stub_capability",
-        build_tool_schema(
+        capability_registry = ChatCapabilityRegistry()
+        capability_registry.register(
             "stub_capability",
-            "Stub capability tool used by tests.",
-            {
-                "type": "object",
-                "properties": {
-                    "value": {"type": "integer"},
+            build_tool_schema(
+                "stub_capability",
+                "Stub capability tool used by tests.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "value": {"type": "integer"},
+                    },
+                    "required": ["value"],
                 },
-                "required": ["value"],
-            },
-        ),
-        _stub_capability,
-        modes=["agent"],
-    )
+            ),
+            _stub_capability,
+            modes=["agent"],
+        )
 
     graph_store = SimpleNamespace(get_graph=lambda workflow_id: dict(MINIMAL_GRAPH))
     mgr = ChatManager(
@@ -154,6 +157,17 @@ def _tool_call(value: int = 1) -> dict[str, Any]:
         "function": {
             "name": "stub_capability",
             "arguments": json.dumps({"value": value}),
+        },
+    }
+
+
+def _named_tool_call(name: str, args: dict[str, Any], call_id: str) -> dict[str, Any]:
+    return {
+        "id": call_id,
+        "type": "function",
+        "function": {
+            "name": name,
+            "arguments": json.dumps(args),
         },
     }
 
@@ -263,6 +277,226 @@ async def test_send_message_with_tools_retries_transient_post_tool_followup_and_
     assert tool_call_log == [{"args": {"value": 7}, "workflow_id": "wf1"}]
     assert len(provider.requests) == 3
     assert complete_events[-1].content == "Recovered final answer from the completed tool results."
+
+
+@pytest.mark.asyncio
+async def test_chat_manager_preserves_structured_search_replay_metadata_between_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DAN_SHOW_COST", "0")
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="",
+                tool_calls=[
+                    _named_tool_call(
+                        "web_search",
+                        {"query": "latest dan", "fetch_content": True},
+                        "call_web",
+                    )
+                ],
+                raw_assistant_message={
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        _named_tool_call(
+                            "web_search",
+                            {"query": "latest dan", "fetch_content": True},
+                            "call_web",
+                        )
+                    ],
+                    "anthropic_content": [
+                        {
+                            "type": "tool_use",
+                            "id": "call_web",
+                            "name": "web_search",
+                            "input": {"query": "latest dan", "fetch_content": True},
+                        }
+                    ],
+                },
+            ),
+            CompletionResult(
+                text="Final grounded answer.",
+                tool_calls=[],
+            ),
+        ]
+    )
+    provider.assistant_replay_mode = "raw"
+
+    async def _web_search_capability(
+        args: dict[str, Any], context: CapabilityContext
+    ) -> CapabilityResult:
+        return CapabilityResult(
+            success=True,
+            message="Grounded result",
+            data={
+                "search_result_set": {
+                    "query": "latest dan",
+                    "results": [
+                        {
+                            "index": 1,
+                            "title": "DAN update",
+                            "url": "https://example.com/update",
+                            "snippet": "Latest DAN update",
+                            "provider": "serper",
+                        }
+                    ],
+                    "grounded_result_count": 1,
+                },
+                "anthropic_tool_result_content": [
+                    {
+                        "type": "search_result",
+                        "title": "DAN update",
+                        "url": "https://example.com/update",
+                        "source": {"type": "url", "url": "https://example.com/update"},
+                        "content": [{"type": "text", "text": "Latest DAN update"}],
+                        "citations": {"enabled": True},
+                    }
+                ],
+            },
+        )
+
+    capability_registry = ChatCapabilityRegistry()
+    capability_registry.register(
+        "web_search",
+        build_tool_schema(
+            "web_search",
+            "Structured search replay test tool.",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "fetch_content": {"type": "boolean"},
+                },
+                "required": ["query"],
+            },
+        ),
+        _web_search_capability,
+        modes=["agent"],
+    )
+
+    mgr = _make_manager(
+        provider,
+        tool_call_log=[],
+        capability_registry=capability_registry,
+    )
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="_scratch",
+            message="Search the web",
+            history=[],
+            mode="agent",
+            thread_id="thread-1",
+        )
+    )
+
+    assert any(isinstance(event, ChatCompleteEvent) for event in events)
+    assert len(provider.requests) >= 2
+    second_messages = provider.requests[1]["messages"]
+    assert any(
+        message.get("role") == "assistant"
+        and isinstance(message.get("anthropic_content"), list)
+        for message in second_messages
+    )
+    assert any(
+        message.get("role") == "tool"
+        and isinstance(message.get("anthropic_tool_result_content"), list)
+        and message["anthropic_tool_result_content"][0]["type"] == "search_result"
+        for message in second_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_chat_manager_emits_citation_warning_notice_for_unverified_numeric_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DAN_SHOW_COST", "0")
+    monkeypatch.setenv("DAN_VERIFY_CITATIONS", "1")
+
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Checking sources.",
+                tool_calls=[
+                    _named_tool_call(
+                        "web_search",
+                        {"query": "latest dan revenue", "fetch_content": True},
+                        "call_web",
+                    )
+                ],
+            ),
+            CompletionResult(
+                text="Revenue grew 25% in 2025 [1].",
+                tool_calls=[],
+            ),
+        ]
+    )
+
+    async def _web_search_capability(
+        args: dict[str, Any], context: CapabilityContext
+    ) -> CapabilityResult:
+        return CapabilityResult(
+            success=True,
+            message="Grounded result",
+            data={
+                "search_result_set": {
+                    "query": "latest dan revenue",
+                    "results": [
+                        {
+                            "index": 1,
+                            "title": "Report",
+                            "url": "https://example.com/report",
+                            "snippet": "Revenue grew 24% in 2025.",
+                            "fetched_content": "Revenue grew 24% in 2025.",
+                            "provider": "serper",
+                        }
+                    ],
+                    "grounded_result_count": 1,
+                }
+            },
+        )
+
+    capability_registry = ChatCapabilityRegistry()
+    capability_registry.register(
+        "web_search",
+        build_tool_schema(
+            "web_search",
+            "Citation warning test tool.",
+            {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "fetch_content": {"type": "boolean"},
+                },
+                "required": ["query"],
+            },
+        ),
+        _web_search_capability,
+        modes=["agent"],
+    )
+
+    mgr = _make_manager(
+        provider,
+        tool_call_log=[],
+        capability_registry=capability_registry,
+    )
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="_scratch",
+            message="Verify the latest DAN revenue growth",
+            history=[],
+            mode="agent",
+            thread_id="thread-1",
+        )
+    )
+
+    warning = next(event for event in events if getattr(event, "type", "") == "chat_notice")
+    assert "could not be verified" in warning.content
+    assert any(isinstance(event, ChatCompleteEvent) for event in events)
 
 
 @pytest.mark.asyncio
@@ -490,6 +724,190 @@ async def test_send_message_with_tools_normalizes_build_mode_for_capability_regi
 
 
 @pytest.mark.asyncio
+async def test_send_message_with_tools_labels_mutation_preview_as_proposed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text=json.dumps(
+                    {
+                        "description": "Add a new input node",
+                        "operations": [
+                            {"op": "add_node", "node_type": "input", "name": "Input"},
+                        ],
+                    }
+                ),
+                usage={"prompt_tokens": 6, "completion_tokens": 3},
+            ),
+        ]
+    )
+    mgr = _make_manager(provider, tool_call_log=[])
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Build the workflow.",
+            history=[],
+            allow_mutation_tool=True,
+        )
+    )
+
+    progress_events = [
+        event for event in events
+        if isinstance(event, ChatCompleteEvent)
+        and getattr(event, "detected_mode", None) == "progress_ack"
+    ]
+    mutation_event = next(
+        event for event in events if getattr(event, "type", "") == "chat_mutation"
+    )
+
+    assert any(event.phase_label == "Preparing workflow change preview" for event in progress_events)
+    assert "Prepared a workflow update preview." in mutation_event.content
+    assert "These changes are proposed, not applied yet." in mutation_event.content
+    assert "Planned changes: Add a new input node" in mutation_event.content
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_defers_delete_graph_until_after_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+
+    async def _list_graphs(args: dict[str, Any], context: CapabilityContext) -> CapabilityResult:
+        tool_call_log.append({
+            "tool_name": "list_graphs",
+            "args": dict(args),
+            "workflow_id": context.workflow_id,
+        })
+        return CapabilityResult(
+            success=True,
+            message="Found 2 workflow(s):\n- **g1** (0 nodes, 0 edges)\n- **g2** (0 nodes, 0 edges)",
+            data=[
+                {"graph_id": "g1", "name": "workflow one"},
+                {"graph_id": "g2", "name": "workflow two"},
+            ],
+            output_preview="Found 2 workflow(s): g1, g2",
+        )
+
+    async def _delete_graph(args: dict[str, Any], context: CapabilityContext) -> CapabilityResult:
+        tool_call_log.append({
+            "tool_name": "delete_graph",
+            "args": dict(args),
+            "workflow_id": context.workflow_id,
+        })
+        return CapabilityResult(
+            success=True,
+            message="Deleted workflow `g1`.",
+            data={"graph_id": "g1", "deleted": True},
+        )
+
+    capability_registry = ChatCapabilityRegistry()
+    capability_registry.register(
+        "list_graphs",
+        build_tool_schema("list_graphs", "List workflows.", {"type": "object", "properties": {}}),
+        _list_graphs,
+        modes=["agent"],
+    )
+    capability_registry.register(
+        "delete_graph",
+        build_tool_schema(
+            "delete_graph",
+            "Delete a workflow.",
+            {
+                "type": "object",
+                "properties": {"graph_id": {"type": "string"}},
+                "required": ["graph_id"],
+            },
+        ),
+        _delete_graph,
+        modes=["agent"],
+    )
+
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Let me check the current workflow inventory first.",
+                tool_calls=[
+                    _named_tool_call("list_graphs", {}, "call_list"),
+                    _named_tool_call("delete_graph", {"graph_id": "equity_report_orchestrator"}, "call_delete"),
+                ],
+                usage={"prompt_tokens": 12, "completion_tokens": 5},
+            ),
+            CompletionResult(
+                text="The stale workflow is already absent.",
+                tool_calls=[],
+                usage={"prompt_tokens": 8, "completion_tokens": 4},
+            ),
+        ]
+    )
+    mgr = _make_manager(
+        provider,
+        tool_call_log=[],
+        capability_registry=capability_registry,
+    )
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Delete the obsolete workflow after checking what exists.",
+            history=[],
+        )
+    )
+
+    result_events = [event for event in events if isinstance(event, ChatToolCallResultEvent)]
+
+    assert [entry["tool_name"] for entry in tool_call_log] == ["list_graphs"]
+    assert [event.tool_name for event in result_events] == ["list_graphs"]
+    assert len(provider.requests) == 2
+    followup_messages = provider.requests[1]["messages"]
+    assert any(
+        msg.get("role") == "user"
+        and "latest workflow inventory" in str(msg.get("content") or "")
+        for msg in followup_messages
+    )
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_unknown_model_cost_does_not_crash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_call_log: list[dict[str, Any]] = []
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="OK",
+                tool_calls=[],
+                usage={"prompt_tokens": 6, "completion_tokens": 2},
+            ),
+        ]
+    )
+    mgr = _make_manager(provider, tool_call_log=tool_call_log)
+    mgr._chat_model = "unknown-model"
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+    monkeypatch.setenv("DAN_SHOW_COST", "1")
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Reply with OK only.",
+            history=[],
+        )
+    )
+
+    complete_events = [event for event in events if isinstance(event, ChatCompleteEvent)]
+
+    assert complete_events
+    assert complete_events[-1].content == "OK"
+    assert complete_events[-1].estimated_cost is None
+
+
+@pytest.mark.asyncio
 async def test_tool_fallback_rebuilds_messages_without_prompt_detail_tool_hint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -522,3 +940,213 @@ async def test_tool_fallback_rebuilds_messages_without_prompt_detail_tool_hint(
     system_messages = [m for m in captured_messages if m.get("role") == "system"]
     assert system_messages
     assert "load_prompt_detail" not in system_messages[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_auto_apply_builds_and_continues_to_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """auto_apply=true on plan_graph_mutations applies the mutation server-side
+    and continues the tool loop so the model can call start_run."""
+    saved_graphs: list[tuple[str, dict[str, Any]]] = []
+
+    graph_store = SimpleNamespace(
+        get_graph=lambda workflow_id: dict(MINIMAL_GRAPH),
+        save_graph=lambda wid, g: saved_graphs.append((wid, g)),
+    )
+
+    mutation_args = json.dumps({
+        "description": "Add an input node",
+        "auto_apply": True,
+        "operations": [
+            {"op": "add_node", "node_type": "input", "name": "My Input"},
+        ],
+    })
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Building and running the workflow.",
+                tool_calls=[
+                    {
+                        "id": "call_mut",
+                        "type": "function",
+                        "function": {
+                            "name": "plan_graph_mutations",
+                            "arguments": mutation_args,
+                        },
+                    },
+                ],
+                usage={"prompt_tokens": 10, "completion_tokens": 5},
+            ),
+            CompletionResult(
+                text="Workflow is running now.",
+                tool_calls=[],
+                usage={"prompt_tokens": 15, "completion_tokens": 3},
+            ),
+        ]
+    )
+
+    tool_call_log: list[dict[str, Any]] = []
+    mgr = _make_manager(provider, tool_call_log=tool_call_log)
+    mgr._graph_store = graph_store
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Build the workflow and run it.",
+            history=[],
+            allow_mutation_tool=True,
+        )
+    )
+
+    mutation_events = [e for e in events if isinstance(e, ChatMutationEvent)]
+    assert len(mutation_events) == 1
+    mut = mutation_events[0]
+    assert mut.applied is True
+    assert "applied" in mut.content.lower()
+    assert "ready to run" in mut.content.lower()
+
+    assert saved_graphs, "graph_store.save_graph should have been called"
+    assert saved_graphs[0][0] == "wf1"
+
+    assert len(provider.requests) == 2, "A follow-up LLM call should have been made"
+    followup_req = provider.requests[1]
+    followup_messages = followup_req["messages"]
+    assert any(
+        msg.get("role") == "tool"
+        and "applied" in str(msg.get("content") or "")
+        for msg in followup_messages
+    ), "Follow-up messages should contain the apply tool result"
+
+    followup_tool_choice = followup_req.get("tool_choice")
+    assert followup_tool_choice == "auto", (
+        f"Follow-up should use tool_choice='auto' (got {followup_tool_choice!r}) "
+        "so the model can call start_run instead of being forced back to plan_graph_mutations"
+    )
+
+    complete_events = [e for e in events if isinstance(e, ChatCompleteEvent)
+                       and getattr(e, "detected_mode", None) != "progress_ack"]
+    assert complete_events, "Should end with a ChatCompleteEvent"
+    assert "running" in complete_events[-1].content.lower()
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_auto_apply_false_still_returns_proposed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without auto_apply, plan_graph_mutations stays proposed and the
+    generator terminates without a follow-up LLM call."""
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Here is the workflow preview.",
+                tool_calls=[
+                    {
+                        "id": "call_mut",
+                        "type": "function",
+                        "function": {
+                            "name": "plan_graph_mutations",
+                            "arguments": json.dumps({
+                                "description": "Add an input node",
+                                "operations": [
+                                    {"op": "add_node", "node_type": "input", "name": "My Input"},
+                                ],
+                            }),
+                        },
+                    },
+                ],
+                usage={"prompt_tokens": 10, "completion_tokens": 5},
+            ),
+        ]
+    )
+
+    mgr = _make_manager(provider, tool_call_log=[])
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Build the workflow.",
+            history=[],
+            allow_mutation_tool=True,
+        )
+    )
+
+    mutation_events = [e for e in events if isinstance(e, ChatMutationEvent)]
+    assert len(mutation_events) == 1
+    mut = mutation_events[0]
+    assert mut.applied is False
+    assert "proposed" in mut.content.lower()
+
+    assert len(provider.requests) == 1, "No follow-up LLM call when auto_apply is false"
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_auto_apply_text_based_mutation_uses_user_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When auto_apply comes from a text-based mutation (no native tool call),
+    the follow-up uses a user message instead of a tool result message to
+    avoid violating the provider API contract."""
+    saved_graphs: list[tuple[str, dict[str, Any]]] = []
+
+    graph_store = SimpleNamespace(
+        get_graph=lambda workflow_id: dict(MINIMAL_GRAPH),
+        save_graph=lambda wid, g: saved_graphs.append((wid, g)),
+    )
+
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text=json.dumps({
+                    "description": "Add an input node",
+                    "auto_apply": True,
+                    "operations": [
+                        {"op": "add_node", "node_type": "input", "name": "My Input"},
+                    ],
+                }),
+                tool_calls=[],
+                usage={"prompt_tokens": 10, "completion_tokens": 5},
+            ),
+            CompletionResult(
+                text="Workflow is running now.",
+                tool_calls=[],
+                usage={"prompt_tokens": 15, "completion_tokens": 3},
+            ),
+        ]
+    )
+
+    mgr = _make_manager(provider, tool_call_log=[])
+    mgr._graph_store = graph_store
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Build the workflow and run it.",
+            history=[],
+            allow_mutation_tool=True,
+        )
+    )
+
+    mutation_events = [e for e in events if isinstance(e, ChatMutationEvent)]
+    assert len(mutation_events) == 1
+    assert mutation_events[0].applied is True
+
+    assert saved_graphs, "graph_store.save_graph should have been called"
+    assert len(provider.requests) == 2
+
+    followup_messages = provider.requests[1]["messages"]
+    assert not any(
+        msg.get("role") == "tool"
+        for msg in followup_messages
+    ), "Text-based mutations must NOT use tool result messages (no matching tool_call)"
+    assert any(
+        msg.get("role") == "user"
+        and "applied automatically" in str(msg.get("content") or "")
+        for msg in followup_messages
+    ), "Text-based mutations should use a user message continuation"

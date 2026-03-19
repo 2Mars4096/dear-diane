@@ -9,19 +9,30 @@ from __future__ import annotations
 import asyncio
 import importlib
 import httpx
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from dan.server.chat.helpers import _missing_action_hints
+from dan.server.capability_registry import CapabilityContext, CapabilityResult, ChatCapabilityRegistry
+from dan.server.chat.helpers import (
+    _extract_cited_sources,
+    _missing_action_hints,
+    build_citation_records,
+    extract_inline_citations,
+    has_explicit_web_trigger,
+    should_require_web_grounding,
+    verify_response_citations,
+)
 from dan.server.concierge.actions import _NUMERIC_CLAIM_RE
-from dan.server.capability_registry import CapabilityResult, ChatCapabilityRegistry
 from dan.server.capability_handlers import (
     WEB_SEARCH_CAPABILITY_SCHEMA,
+    handle_delete_graph,
     handle_web_fetch,
     handle_web_search,
     register_base_capabilities,
 )
+from dan.server.capabilities.web import _extract_relevant_excerpt
 
 web_fetch_tool_mod = importlib.import_module("dan.tools.web_fetch")
 web_search_tool_mod = importlib.import_module("dan.tools.web_search")
@@ -80,6 +91,109 @@ class TestWebSearchCapabilityRegistration:
     def test_web_search_not_in_plan_mode(self):
         reg = self._registry()
         assert "web_search" not in reg.list_tool_names("plan")
+
+
+class TestDeleteGraphCapabilityRegistration:
+    def _registry(self) -> ChatCapabilityRegistry:
+        reg = ChatCapabilityRegistry()
+        register_base_capabilities(reg)
+        return reg
+
+    def test_delete_graph_registered_for_agent_mode(self):
+        reg = self._registry()
+        assert "delete_graph" in reg.list_tool_names("agent")
+
+    def test_delete_graph_not_in_ask_mode(self):
+        reg = self._registry()
+        assert "delete_graph" not in reg.list_tool_names("ask")
+
+    @pytest.mark.asyncio
+    async def test_delete_graph_handler_deletes_named_workflow(self):
+        deleted: list[str] = []
+
+        def _delete_graph(graph_id: str) -> bool:
+            deleted.append(graph_id)
+            return True
+
+        result = await handle_delete_graph(
+            {"graph_id": "equity_report_orchestrator"},
+            CapabilityContext(
+                workflow_id="_scratch",
+                graph_store=SimpleNamespace(delete_graph=_delete_graph),
+            ),
+        )
+
+        assert result.success is True
+        assert deleted == ["equity_report_orchestrator"]
+        assert result.data == {
+            "graph_id": "equity_report_orchestrator",
+            "requested_graph_id": "equity_report_orchestrator",
+            "deleted": True,
+        }
+
+    @pytest.mark.asyncio
+    async def test_delete_graph_handler_resolves_graph_name_to_graph_id(self):
+        deleted: list[str] = []
+
+        def _delete_graph(graph_id: str) -> bool:
+            deleted.append(graph_id)
+            return True
+
+        result = await handle_delete_graph(
+            {"graph_id": "Equity Report Orchestrator"},
+            CapabilityContext(
+                workflow_id="_scratch",
+                graph_store=SimpleNamespace(
+                    delete_graph=_delete_graph,
+                    list_graphs=lambda: [
+                        {
+                            "graph_id": "equity_report_orchestrator",
+                            "name": "Equity Report Orchestrator",
+                        },
+                    ],
+                ),
+            ),
+        )
+
+        assert result.success is True
+        assert deleted == ["equity_report_orchestrator"]
+        assert "Matched workflow name" in result.message
+
+    @pytest.mark.asyncio
+    async def test_delete_graph_handler_treats_missing_workflow_as_already_absent(self):
+        result = await handle_delete_graph(
+            {"graph_id": "equity_report_orchestrator"},
+            CapabilityContext(
+                workflow_id="_scratch",
+                graph_store=SimpleNamespace(
+                    delete_graph=lambda _graph_id: False,
+                    list_graphs=lambda: [],
+                ),
+            ),
+        )
+
+        assert result.success is True
+        assert result.data == {
+            "graph_id": "equity_report_orchestrator",
+            "requested_graph_id": "equity_report_orchestrator",
+            "deleted": False,
+            "already_absent": True,
+        }
+        assert "nothing to delete" in result.message
+
+    @pytest.mark.asyncio
+    async def test_delete_graph_handler_rejects_scratch_workflow(self):
+        result = await handle_delete_graph(
+            {},
+            CapabilityContext(
+                workflow_id="_scratch",
+                graph_store=SimpleNamespace(delete_graph=lambda _graph_id: True),
+            ),
+        )
+
+        assert result.success is False
+        assert result.error_type == "invalid_input"
+        assert "Cannot delete" in result.message
 
     @pytest.mark.asyncio
     async def test_web_search_handler_returns_results(self):
@@ -148,6 +262,8 @@ class TestWebSearchCapabilityRegistration:
         assert "[2] Fetched content from http://x2" in result.message
         assert result.data["grounded_result_count"] == 2
         assert len(result.data["fetched_results"]) == 2
+        assert "search_result_set" in result.data
+        assert result.data["search_result_set"]["grounded_result_count"] == 2
 
     @pytest.mark.asyncio
     async def test_web_search_handler_surfaces_fetch_failures(self):
@@ -177,6 +293,91 @@ class TestWebSearchCapabilityRegistration:
         assert result.success
         assert "Fetch failed for http://x2: boom" in result.message
         assert result.data["grounded_result_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_web_search_handler_auto_promotes_fetch_for_grounding_required(self):
+        from unittest.mock import AsyncMock, patch
+
+        fake_result = {
+            "results": [
+                {"title": "r1", "url": "http://x1", "snippet": "s1"},
+                {"title": "r2", "url": "http://x2", "snippet": "s2"},
+            ],
+            "provider": "tavily",
+        }
+
+        async def _fake_fetch(*, url: str):
+            return {"content": f"content for {url}"}
+
+        with (
+            patch("dan.tools.web_search.web_search", new_callable=AsyncMock, return_value=fake_result),
+            patch("dan.tools.web_fetch.web_fetch", new_callable=AsyncMock, side_effect=_fake_fetch) as mock_fetch,
+        ):
+            result = await handle_web_search(
+                {"query": "latest dan updates"},
+                CapabilityContext(workflow_id="_scratch", grounding_required=True),
+            )
+
+        assert result.success
+        assert result.data["fetch_content_requested"] is True
+        assert result.data["grounded_result_count"] == 2
+        assert mock_fetch.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_web_search_handler_honors_explicit_fetch_false(self):
+        from unittest.mock import AsyncMock, patch
+
+        fake_result = {
+            "results": [{"title": "r1", "url": "http://x1", "snippet": "s1"}],
+            "provider": "tavily",
+        }
+
+        with (
+            patch("dan.tools.web_search.web_search", new_callable=AsyncMock, return_value=fake_result),
+            patch("dan.tools.web_fetch.web_fetch", new_callable=AsyncMock) as mock_fetch,
+        ):
+            result = await handle_web_search(
+                {"query": "latest dan updates", "fetch_content": False},
+                CapabilityContext(workflow_id="_scratch", grounding_required=True),
+            )
+
+        assert result.success
+        assert result.data["fetch_content_requested"] is False
+        assert result.data["grounded_result_count"] == 0
+        assert mock_fetch.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_web_search_handler_walks_down_results_when_early_fetches_fail(self):
+        from unittest.mock import AsyncMock, patch
+
+        fake_result = {
+            "results": [
+                {"title": "r1", "url": "http://x1", "snippet": "s1"},
+                {"title": "r2", "url": "http://x2", "snippet": "s2"},
+                {"title": "r3", "url": "http://x3", "snippet": "s3"},
+                {"title": "r4", "url": "http://x4", "snippet": "s4"},
+            ],
+            "provider": "tavily",
+        }
+
+        async def _fake_fetch(*, url: str):
+            if url in {"http://x1", "http://x2"}:
+                raise RuntimeError("blocked")
+            return {"content": f"content for {url}"}
+
+        with (
+            patch("dan.tools.web_search.web_search", new_callable=AsyncMock, return_value=fake_result),
+            patch("dan.tools.web_fetch.web_fetch", new_callable=AsyncMock, side_effect=_fake_fetch) as mock_fetch,
+        ):
+            result = await handle_web_search(
+                {"query": "test", "num_results": 4, "fetch_content": True},
+                None,
+            )
+
+        assert result.success
+        assert mock_fetch.await_count == 4
+        assert "Fetched 2/2 target pages; 4 attempts made." in result.message
+        assert result.data["grounded_result_count"] == 2
 
     @pytest.mark.asyncio
     async def test_web_search_handler_empty_query(self):
@@ -441,6 +642,195 @@ class TestSearchWebGroundingGate:
         )
 
         assert missing == []
+
+
+class TestRelevantExcerptExtraction:
+    def test_extract_relevant_excerpt_prefers_matching_paragraph(self):
+        content = (
+            "Intro paragraph about navigation.\n\n"
+            "Revenue grew 24% in 2025 and operating margin expanded to 18%.\n\n"
+            "Footer links and unrelated content."
+        )
+        excerpt = _extract_relevant_excerpt(content, "revenue margin 2025", budget=160)
+        assert "Revenue grew 24% in 2025" in excerpt
+        assert "Footer links" not in excerpt
+
+
+class TestWebGroundingTriggers:
+    def test_has_explicit_web_trigger_matches_standalone_token(self):
+        assert has_explicit_web_trigger("Use @Web to verify the latest DAN release.")
+        assert not has_explicit_web_trigger("The @webcam driver is broken.")
+
+    def test_should_require_web_grounding_on_explicit_web_trigger(self):
+        assert should_require_web_grounding(
+            "Use @web to confirm the latest DAN release date.",
+            mode="conversation",
+        )
+
+
+class TestStructuredSearchSources:
+    def test_extract_cited_sources_prefers_structured_search_payload(self):
+        sources = _extract_cited_sources([{
+            "tool_name": "web_search",
+            "result_data": {
+                "search_result_set": {
+                    "query": "latest dan",
+                    "results": [
+                        {
+                            "index": 1,
+                            "title": "Update",
+                            "url": "https://example.com/report?utm_source=newsletter",
+                            "snippet": "Latest DAN update",
+                            "provider": "serper",
+                        }
+                    ],
+                }
+            },
+            "output_preview": "",
+        }])
+
+        assert sources == ["https://example.com/report"]
+
+
+class TestCitationVerification:
+    def test_extract_inline_citations_handles_ranges_and_adjacent_refs(self):
+        citations = extract_inline_citations(
+            "Revenue rose 24% in 2025 [1-2]. Margin improved too [3][4]."
+        )
+        assert [c.index for c in citations] == [1, 2, 3, 4]
+
+    def test_verify_response_citations_checks_numeric_claims(self):
+        from dan.server.search_models import SearchResult
+
+        search_results = [
+            SearchResult(
+                index=1,
+                title="Report",
+                url="https://example.com/report",
+                snippet="Revenue grew 24% in 2025.",
+                fetched_content="Revenue grew 24% in 2025. Margin was 18%.",
+                provider="tavily",
+                result_kind="organic",
+            )
+        ]
+        verifications = verify_response_citations(
+            "Revenue grew 24% in 2025 [1].",
+            search_results,
+        )
+        assert len(verifications) == 1
+        assert verifications[0].verified is True
+
+    def test_build_citation_records_uses_verification_metadata(self):
+        from dan.server.search_models import CitationVerification, SearchResult
+
+        results = [
+            SearchResult(
+                index=1,
+                title="Report",
+                url="https://example.com/report",
+                snippet="Revenue grew 24% in 2025.",
+                fetched_content="Revenue grew 24% in 2025.",
+                provider="tavily",
+            )
+        ]
+        records = build_citation_records(
+            "Revenue grew 24% in 2025 [1].",
+            results,
+            verifications=[
+                CitationVerification(
+                    citation_index=1,
+                    claim_text="Revenue grew 24% in 2025 [1]",
+                    source_url="https://example.com/report",
+                    source_excerpt_match="Revenue grew 24% in 2025.",
+                    verified=True,
+                    confidence=1.0,
+                    reason="matched claim terms in source",
+                )
+            ],
+        )
+        assert len(records) == 1
+        assert records[0].verified is True
+
+    def test_native_anthropic_citations_are_captured_without_bracket_markers(self):
+        from dan.server.search_models import SearchResult
+
+        results = [
+            SearchResult(
+                index=1,
+                title="Report",
+                url="https://example.com/report",
+                snippet="Revenue grew 24% in 2025.",
+                fetched_content="Revenue grew 24% in 2025. Margin was 18%.",
+                provider="serper",
+            )
+        ]
+        raw_assistant_message = {
+            "role": "assistant",
+            "anthropic_content": [
+                {
+                    "type": "text",
+                    "text": "The company reported stronger growth.",
+                    "citations": [
+                        {
+                            "cited_text": "Revenue grew 24% in 2025.",
+                            "url": "https://example.com/report",
+                        }
+                    ],
+                }
+            ],
+        }
+
+        verifications = verify_response_citations(
+            "The company reported stronger growth.",
+            results,
+            raw_assistant_message=raw_assistant_message,
+        )
+        records = build_citation_records(
+            "The company reported stronger growth.",
+            results,
+            verifications=verifications,
+            raw_assistant_message=raw_assistant_message,
+        )
+
+        assert len(verifications) == 1
+        assert verifications[0].verified is True
+        assert len(records) == 1
+        assert records[0].claim_text == "Revenue grew 24% in 2025."
+        assert records[0].source_url == "https://example.com/report"
+
+    def test_build_citation_records_does_not_reuse_verification_for_other_claims_same_source(self):
+        from dan.server.search_models import CitationVerification, SearchResult
+
+        results = [
+            SearchResult(
+                index=1,
+                title="Report",
+                url="https://example.com/report",
+                snippet="Revenue grew 24% in 2025.",
+                fetched_content="Revenue grew 24% in 2025. The company launched a new product.",
+                provider="serper",
+            )
+        ]
+        records = build_citation_records(
+            "Revenue grew 24% in 2025 [1]. The company launched a new product [1].",
+            results,
+            verifications=[
+                CitationVerification(
+                    citation_index=1,
+                    claim_text="Revenue grew 24% in 2025 [1].",
+                    source_url="https://example.com/report",
+                    source_excerpt_match="Revenue grew 24% in 2025.",
+                    verified=True,
+                    confidence=1.0,
+                    reason="matched claim terms in source",
+                )
+            ],
+        )
+
+        assert len(records) == 2
+        assert records[0].verified is True
+        assert records[1].claim_text.startswith("The company launched a new product [1]")
+        assert records[1].verified is None
 
     def test_search_web_satisfied_by_web_fetch(self):
         missing = _missing_action_hints(
