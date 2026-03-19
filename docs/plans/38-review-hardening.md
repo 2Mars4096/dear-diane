@@ -8,7 +8,7 @@
 Repository-wide code reviews and deep system reviews across two rounds identified issues spanning security, correctness, cross-platform support, and user experience:
 
 - **2026-03-17 round:** Furnace write safety, lifecycle correctness, startup/config robustness, domain learning fidelity, provider/tool/doc alignment. All addressed in 38-1 through 38-5.
-- **2026-03-19 round:** Security gaps (sandbox bypass, unsandboxed exec, XSS), workflow generation bugs, concierge triage correctness, cross-platform Development Mode breakage, UX/onboarding polish, packaged-LSP launching, and the progress-ack stream-label follow-up. Tracked in 38-6 through 38-12.
+- **2026-03-19 round:** Security gaps (sandbox bypass, unsandboxed exec, XSS), workflow generation bugs, concierge triage correctness, cross-platform Development Mode breakage, UX/onboarding polish, packaged-LSP launching, the progress-ack stream-label follow-up, and the next live-debugging reliability fixes. Tracked in 38-6 through 38-14.
 
 Review documents: `docs/reviews/2026-03-17-*.md` and `docs/reviews/2026-03-19-*.md`.
 
@@ -35,6 +35,8 @@ Review documents: `docs/reviews/2026-03-17-*.md` and `docs/reviews/2026-03-19-*.
 | [38-10](38-10-ux-onboarding-quick-wins.md) | UX & Onboarding Quick Wins | API key validation, error wrapping, cost visibility, coming-soon modes, reassurance delay, CLI progress, startup summary | P1/P2 | ✅ |
 | [38-11](38-11-packaged-lsp-launching.md) | Packaged LSP Launching | bundled Node-based language servers no longer depend on `npx`, cwd, or dev-only packaging | P1 | ✅ |
 | [38-12](38-12-chat-progress-ack-preservation.md) | Chat Progress-Ack Preservation | preserve backend `progress_ack` event labels so full-screen chat does not terminate live streams early | P1 | ✅ |
+| [38-13](38-13-live-debugging-followups.md) | Live Debugging Follow-Ups | zombie PID launcher hardening and unknown-model chat cost null-handling | P1 | ✅ |
+| [38-14](38-14-adapter-snapshot-and-cli-shutdown.md) | Adapter Snapshot and CLI Shutdown Hardening | sync/async adapter snapshot parity plus quiet `dan-chat` Ctrl-C exits | P1 | ✅ |
 
 ## Dependencies / Sequencing
 

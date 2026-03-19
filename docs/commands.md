@@ -7,11 +7,8 @@
 | Group | CLI | Editor | Telegram | WhatsApp |
 |-------|-----|--------|----------|----------|
 | Workflow | Yes | Yes | Yes | Yes |
-| Model & Config | Yes | Yes | Yes | Yes |
-| Memory | Yes | Yes | Yes | Yes |
 | Scheduling | Yes | Yes | Yes | Yes |
 | Safety | Yes | Yes | Yes | Yes |
-| Continuity | Yes | Yes | Yes | Yes |
 | Progress | Yes | Yes | Yes | Yes |
 | Learning | Yes | Yes | Yes | Yes |
 | Computer Use | Yes | Yes | Yes | Yes |
@@ -21,29 +18,28 @@
 
 ## Workflow Commands
 
-### `/build-logs`
+### `/build`
+
+- **Aliases:** `/workflow`
+- **Surfaces:** `CLI` `Editor` `TG` `WA`
+- **Kind:** chat
+- **Arguments:** `<goal>`
+- **Description:** Force workflow-build mode for the current task (creates a reusable artifact)
+
+**Examples:**
+- `/build Research X and summarize Y`
+- `/build Create a data pipeline`
+
+**Related:** `/goal`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/saveas`, `/show`, `/undo`
+
+### `/goal`
 
 - **Surfaces:** `CLI` `Editor` `TG` `WA`
 - **Kind:** chat
-- **Description:** Show build session logs
+- **Arguments:** `[<description>|list|clear]`
+- **Description:** Track a high-level goal (stored for context; autonomous execution not yet wired)
 
-**Related:** `/build-status`, `/build-stop`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/save`, `/saveas`, `/show`, `/undo`
-
-### `/build-status`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** Show build session status
-
-**Related:** `/build-logs`, `/build-stop`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/save`, `/saveas`, `/show`, `/undo`
-
-### `/build-stop`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** Stop active build session
-
-**Related:** `/build-logs`, `/build-status`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/save`, `/saveas`, `/show`, `/undo`
+**Related:** `/build`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/saveas`, `/show`, `/undo`
 
 ### `/list`
 
@@ -51,7 +47,7 @@
 - **Kind:** repl
 - **Description:** List saved workflows
 
-**Related:** `/build-logs`, `/build-status`, `/build-stop`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/save`, `/saveas`, `/show`, `/undo`
+**Related:** `/build`, `/goal`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/saveas`, `/show`, `/undo`
 
 ### `/new`
 
@@ -59,7 +55,7 @@
 - **Kind:** repl
 - **Description:** Start a new empty workflow
 
-**Related:** `/build-logs`, `/build-status`, `/build-stop`, `/list`, `/open`, `/rename`, `/run`, `/run-node`, `/save`, `/saveas`, `/show`, `/undo`
+**Related:** `/build`, `/goal`, `/list`, `/open`, `/rename`, `/run`, `/run-node`, `/saveas`, `/show`, `/undo`
 
 ### `/open`
 
@@ -68,7 +64,7 @@
 - **Arguments:** `<name>`
 - **Description:** Open a saved workflow
 
-**Related:** `/build-logs`, `/build-status`, `/build-stop`, `/list`, `/new`, `/rename`, `/run`, `/run-node`, `/save`, `/saveas`, `/show`, `/undo`
+**Related:** `/build`, `/goal`, `/list`, `/new`, `/rename`, `/run`, `/run-node`, `/saveas`, `/show`, `/undo`
 
 ### `/rename`
 
@@ -77,7 +73,7 @@
 - **Arguments:** `<new_name>`
 - **Description:** Rename current workflow
 
-**Related:** `/build-logs`, `/build-status`, `/build-stop`, `/list`, `/new`, `/open`, `/run`, `/run-node`, `/save`, `/saveas`, `/show`, `/undo`
+**Related:** `/build`, `/goal`, `/list`, `/new`, `/open`, `/run`, `/run-node`, `/saveas`, `/show`, `/undo`
 
 ### `/run`
 
@@ -86,7 +82,7 @@
 - **Arguments:** `[workflow_name] [--input key=value]`
 - **Description:** Run a workflow
 
-**Related:** `/build-logs`, `/build-status`, `/build-stop`, `/list`, `/new`, `/open`, `/rename`, `/run-node`, `/save`, `/saveas`, `/show`, `/undo`
+**Related:** `/build`, `/goal`, `/list`, `/new`, `/open`, `/rename`, `/run-node`, `/saveas`, `/show`, `/undo`
 
 ### `/run-node`
 
@@ -95,16 +91,7 @@
 - **Arguments:** `<node_id>`
 - **Description:** Run a single node from the current workflow
 
-**Related:** `/build-logs`, `/build-status`, `/build-stop`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/save`, `/saveas`, `/show`, `/undo`
-
-### `/save`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Arguments:** `[name]`
-- **Description:** Save the current workflow
-
-**Related:** `/build-logs`, `/build-status`, `/build-stop`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/saveas`, `/show`, `/undo`
+**Related:** `/build`, `/goal`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/saveas`, `/show`, `/undo`
 
 ### `/saveas`
 
@@ -113,7 +100,7 @@
 - **Arguments:** `<name>`
 - **Description:** Save workflow under a new name
 
-**Related:** `/build-logs`, `/build-status`, `/build-stop`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/save`, `/show`, `/undo`
+**Related:** `/build`, `/goal`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/show`, `/undo`
 
 ### `/show`
 
@@ -122,7 +109,7 @@
 - **Arguments:** `[--code|--json|--stats]`
 - **Description:** Show current workflow (ASCII DAG, code, JSON, or stats)
 
-**Related:** `/build-logs`, `/build-status`, `/build-stop`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/save`, `/saveas`, `/undo`
+**Related:** `/build`, `/goal`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/saveas`, `/undo`
 
 ### `/undo`
 
@@ -130,106 +117,18 @@
 - **Kind:** repl
 - **Description:** Undo last graph mutation
 
-**Related:** `/build-logs`, `/build-status`, `/build-stop`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/save`, `/saveas`, `/show`
-
-## Model & Config Commands
-
-### `/cost`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** Show session cost summary
-
-**Related:** `/model`, `/retry`, `/status`
-
-### `/model`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Arguments:** `[model_name]`
-- **Description:** Show or change the current LLM model
-
-**Related:** `/cost`, `/retry`, `/status`
-
-### `/retry`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** Retry the last failed request
-
-**Related:** `/cost`, `/model`, `/status`
-
-### `/status`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** Show system status and active runs
-
-**Related:** `/cost`, `/model`, `/retry`
-
-## Memory Commands
-
-### `/memory-delete`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Arguments:** `<memory_id>`
-- **Description:** Delete a specific memory item
-
-**Related:** `/memory-forget`, `/memory-search`, `/memory-stats`
-
-### `/memory-forget`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Arguments:** `<keyword>`
-- **Description:** Forget memories matching a keyword
-
-**Related:** `/memory-delete`, `/memory-search`, `/memory-stats`
-
-### `/memory-search`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Arguments:** `<query>`
-- **Description:** Search stored memories
-
-**Related:** `/memory-delete`, `/memory-forget`, `/memory-stats`
-
-### `/memory-stats`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** Show memory usage statistics
-
-**Related:** `/memory-delete`, `/memory-forget`, `/memory-search`
+**Related:** `/build`, `/goal`, `/list`, `/new`, `/open`, `/rename`, `/run`, `/run-node`, `/saveas`, `/show`
 
 ## Scheduling Commands
 
-### `/goal`
+### `/plan`
 
 - **Surfaces:** `CLI` `Editor` `TG` `WA`
 - **Kind:** chat
-- **Arguments:** `"<metric> <op> <target>" [--timeout <duration>] [--eval <mode>]`
-- **Description:** Start a goal-oriented loop: iterate until metric met or deadline expires
+- **Arguments:** `[--replan]`
+- **Description:** Show current plan schedule; --replan forces re-decomposition
 
-**Related:** `/goal-status`, `/goal-stop`, `/schedule`
-
-### `/goal-status`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** Show goal loop progress
-
-**Related:** `/goal`, `/goal-stop`, `/schedule`
-
-### `/goal-stop`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** Stop active goal loop and return best result
-
-**Related:** `/goal`, `/goal-status`, `/schedule`
+**Related:** `/schedule`
 
 ### `/schedule`
 
@@ -247,17 +146,9 @@
 | `/schedule resume` | `<id|name>` | Resume a paused schedule |
 | `/schedule history` | `<id|name>` | Show run history for a schedule |
 
-**Related:** `/goal`, `/goal-status`, `/goal-stop`
+**Related:** `/plan`
 
 ## Safety Commands
-
-### `/completion`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** Show completion check statistics
-
-**Related:** `/pii`
 
 ### `/pii`
 
@@ -274,42 +165,6 @@
 | `/pii remove` | `"<value>"` | Remove a sensitive word |
 | `/pii clear-session` | — | Clear current session mappings |
 
-**Related:** `/completion`
-
-## Continuity Commands
-
-### `/follow-ups`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Arguments:** `[on|off]`
-- **Description:** List or toggle proactive follow-ups
-
-| Subcommand | Arguments | Description |
-|------------|-----------|-------------|
-| `/follow-ups on` | — | Enable follow-ups |
-| `/follow-ups off` | — | Disable follow-ups |
-
-**Related:** `/resume`, `/sync`
-
-### `/resume`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Arguments:** `[task_name]`
-- **Description:** Resume a paused or previous task
-
-**Related:** `/follow-ups`, `/sync`
-
-### `/sync`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Arguments:** `[--allow-group]`
-- **Description:** Pull latest context from all surfaces for current project
-
-**Related:** `/follow-ups`, `/resume`
-
 ## Progress Commands
 
 ### `/progress`
@@ -320,22 +175,6 @@
 - **Description:** Set progress verbosity level
 
 ## Learning Commands
-
-### `/adaptations`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** List pending adaptations with confidence and approval status
-
-**Related:** `/corrections`, `/domains`
-
-### `/corrections`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Description:** List recent correction-driven learning events
-
-**Related:** `/adaptations`, `/domains`
 
 ### `/domains`
 
@@ -352,8 +191,6 @@
 | `/domains add` | `<domain or comma-separated domains>` | Add one or more saved common domains |
 | `/domains remove` | `<domain or comma-separated domains>` | Remove one or more saved common domains |
 | `/domains clear` | — | Clear all saved common domains |
-
-**Related:** `/adaptations`, `/corrections`
 
 ## Computer Use Commands
 
@@ -372,22 +209,6 @@
 
 ## Integration Commands
 
-### `/mcp`
-
-- **Surfaces:** `CLI` `Editor` `TG` `WA`
-- **Kind:** chat
-- **Arguments:** `<install|list|remove|tools> [args]`
-- **Description:** Manage MCP tool servers
-
-| Subcommand | Arguments | Description |
-|------------|-----------|-------------|
-| `/mcp install` | `<package_or_name>` | Install an MCP server package |
-| `/mcp list` | — | List connected MCP servers |
-| `/mcp remove` | `<server_name>` | Remove an MCP server |
-| `/mcp tools` | — | List tools from all MCP servers |
-
-**Related:** `/skill`
-
 ### `/skill`
 
 - **Surfaces:** `CLI` `Editor` `TG` `WA`
@@ -401,8 +222,6 @@
 | `/skill info` | `<name>` | Show skill details and content preview |
 | `/skill import` | `<path>` | Import skill from Cursor/Claude/Codex or any path |
 | `/skill scan` | — | Rescan all skill directories |
-
-**Related:** `/mcp`
 
 ## File & Navigation Commands
 
@@ -426,14 +245,22 @@
 
 ## Session Commands
 
-### `/cancel`
+### `/autonomy`
 
 - **Surfaces:** `CLI` `Editor` `TG` `WA`
 - **Kind:** chat
-- **Arguments:** `[run_id|latest|last_failed|paused]`
-- **Description:** Cancel the current run or task
+- **Arguments:** `[auto|careful|balanced|aggressive] [--project]`
+- **Description:** Show or change autonomy level for this session or project
 
-**Related:** `/exit`, `/help`
+**Related:** `/cost`, `/exit`, `/help`, `/retry`, `/search`
+
+### `/cost`
+
+- **Surfaces:** `CLI` `Editor` `TG` `WA`
+- **Kind:** chat
+- **Description:** Show session token usage and estimated cost per model
+
+**Related:** `/autonomy`, `/exit`, `/help`, `/retry`, `/search`
 
 ### `/exit`
 
@@ -442,7 +269,7 @@
 - **Kind:** repl
 - **Description:** Exit the chat session
 
-**Related:** `/cancel`, `/help`
+**Related:** `/autonomy`, `/cost`, `/help`, `/retry`, `/search`
 
 ### `/help`
 
@@ -451,7 +278,24 @@
 - **Arguments:** `[group]`
 - **Description:** Show available commands
 
-**Related:** `/cancel`, `/exit`
+**Related:** `/autonomy`, `/cost`, `/exit`, `/retry`, `/search`
+
+### `/retry`
+
+- **Surfaces:** `CLI` `Editor` `TG` `WA`
+- **Kind:** chat
+- **Description:** Resend the last user message in the current task
+
+**Related:** `/autonomy`, `/cost`, `/exit`, `/help`, `/search`
+
+### `/search`
+
+- **Surfaces:** `CLI` `Editor` `TG` `WA`
+- **Kind:** chat
+- **Arguments:** `<query>`
+- **Description:** Run an explicit grounded web search with fetched excerpts
+
+**Related:** `/autonomy`, `/cost`, `/exit`, `/help`, `/retry`
 
 ---
 

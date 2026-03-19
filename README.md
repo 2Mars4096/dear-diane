@@ -158,6 +158,7 @@ Inside the REPL, use slash commands to manage your session:
 - `/mcp list`, `/mcp tools`, `/mcp install` — manage MCP servers
 - `/undo` — revert the last graph mutation
 - `/retry` — retry the last prompt
+- `/search <query>` — force an explicit grounded web search with fetched excerpts
 - `/memory-delete`, `/memory-forget`, `/memory-confirm`, `/memory-reject` — manage learned memory
 - `/domains [list|known|add|remove|clear]` — inspect or edit saved common domains
 - `/help` — list all commands

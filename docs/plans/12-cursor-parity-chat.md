@@ -46,6 +46,10 @@ Phase 7 (plan 10) delivered a functional chat panel with NL→graph mutations, `
 | [12-6](12-6-chat-quality-harness.md) | Chat Quality Harness | Eval framework, regression tests, provider compatibility, latency benchmarks | new `tests/chat/`, `chat_manager.py`, CI config |
 | [12-7](12-7-chat-branching-tree.md) | Chat Branching & Tree View | Non-destructive edit/regenerate branching, lineage metadata, tree navigation for multi-path exploration | `ChatPanel.tsx`, `ChatMessage.tsx`, `chat_store.py`, thread/history UI |
 | [12-8](12-8-mode-chat-sidebar-parity.md) | Mode Chat Sidebar Parity | Bring the shared Research/Development sidebar much closer to full chat for modes, mentions, stream lifecycle, rich rendering, and handoff | `ModeChatSidebar.tsx`, `ChatMessage.tsx`, `editorChat.ts`, sidebar mode shells |
+| [12-9](12-9-workflow-build-feedback-honesty.md) | Workflow-Build Feedback Honesty | Distinguish proposed workflow previews from applied/tested state and surface clearer workflow-build progress labels | `chat_manager.py`, `prompts.py`, `ChatPanel.tsx`, `ModeChatSidebar.tsx`, `editorChat.ts` |
+| [12-10](12-10-workflow-capability-followups.md) | Workflow Capability Follow-Ups | Keep workflow mutation/delete capabilities exposed accurately on follow-up turns and remove stale equity workflow fixtures | `capability_handlers.py`, `tier_executors.py`, `tests/test_concierge/`, `graphs/` |
+| [12-11](12-11-workflow-delete-safety.md) | Workflow Delete Safety | Split workflow inventory/delete into a safe two-step tool loop and make already-absent deletes non-fatal | `chat_manager.py`, `capability_handlers.py`, `tests/test_post_tool_followup_recovery.py`, `tests/test_concierge/test_live_data.py` |
+| [12-12](12-12-auto-apply-build-and-run.md) | Auto-Apply Build & Run | `plan_graph_mutations(auto_apply=true)` applies mutation + continues tool loop for `start_run` in one turn | `chat_manager.py`, `prompts.py`, `events.py`, `tests/test_post_tool_followup_recovery.py` |
 
 ## Dependencies / Sequencing
 

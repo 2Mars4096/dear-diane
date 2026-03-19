@@ -175,6 +175,15 @@ Loading an existing workflow (`--workflow-id`) fetches the graph on startup and 
 
 All slash commands (REPL-local and chat commands like `/model`, `/cost`, `/memory-*`, `/domains`, `/mcp`, etc.) are documented in the [Command Reference](commands.md), which is auto-generated from the canonical command registry. Use `/help` inside `dan-chat` to see commands available on the CLI surface.
 
+`/search <query>` runs an explicit grounded web search with fetched excerpts, which is useful when you want live sources immediately instead of relying on the assistant to decide when to ground.
+
+**Live web-search config:**
+
+- `DAN_TAVILY_API_KEY`, `DAN_SERPER_API_KEY`, `DAN_BRAVE_API_KEY` — optional provider credentials
+- `DAN_SEARCH_PROVIDER_ORDER` — preferred search cascade (default `tavily,serper,brave,ddg`)
+- `DAN_MAX_WEB_SEARCH_CALLS_PER_TURN`, `DAN_MAX_WEB_FETCH_ATTEMPTS_PER_TURN` — per-turn grounding budgets
+- `DAN_WEB_FETCH_EXCERPT_MAX` — excerpt budget for fetched grounding windows (default `2400`)
+
 **Typical session:**
 
 ```

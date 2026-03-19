@@ -117,6 +117,8 @@
   - [x] Grounded web-search follow-up — numbered results, parallel top-result fetches, surfaced fetch failures, and stricter `search_web` completion gating
   - [x] Frontend stream-recovery follow-up — retry now reuses saved attachment metadata, premature clean closes surface explicit disconnect errors, and interrupted detached/tool-only turns persist a visible fallback instead of blank assistant bubbles
   - [x] OpenAI-compatible Kimi temperature follow-up — `OpenAIProvider` now coerces `kimi-*` requests to `temperature=1` so Moonshot/Kimi stops rejecting chat/triage/synthesis calls with `invalid temperature`
+  - [x] OpenAI-compatible Kimi thinking follow-up — low-budget non-tool `kimi-k2.5` calls now disable thinking via `extra_body`, use the documented non-thinking temperature, and fall back to regular completion text when Kimi streaming returns empty deltas
+  - [x] Watchlist workflow validation follow-up — `_scratch` now reruns cleanly against the live watchlist CSV and writes populated per-ticker plus aggregate markdown reports
   - [x] Tool-call rendering/stream follow-up — capability tool loops no longer leak raw pseudo-tool syntax into assistant text, shared tool-call upserts keep grouped pills visible across full chat/compact sidebars/detached streams even when result/start events arrive out of order, and stopping a tool-only turn now preserves the structured pill + fallback note instead of dumping the backend tool trace into the assistant bubble
 - [x] [12-2-multi-mode-chat](plans/12-2-multi-mode-chat.md) — B. Ask / Agent / Plan / Debug chat modes with mode-specific prompts and tool availability *(tasks 1–6 done; follow-up tuning now also makes the tool catalog request-time accurate, teaches Agent/auto chat that `plan_graph_mutations` is the workflow-building interface, canonicalizes `build`/`mutate` capability-tool routing back onto the Agent registry bucket, avoids Kimi/OpenAI-compatible explicit-tool-choice fallbacks that were knocking workflow-build turns into text-only mode, shortens workflow-build follow-up stalls by nudging auto-tool-choice turns back toward `plan_graph_mutations` while tolerating idempotent cleanup + single-output port alias drift in `GraphMutator`, and adds first-class control-flow body support so chat-generated `for_each` / `composite` mutations can create valid nested body graphs via `replace_body_graph` instead of failing on missing `body_graph` references; per-thread mode persistence, keyboard shortcuts, debug-fix tag, auto-mode detection deferred)*
   - [x] [12-3-rich-context-mentions](plans/12-3-rich-context-mentions.md) — C. @Files, @Code, @Docs, @Past Chats + server-side resolution + context budget *(tasks 1–5,7 done; @Web [task 6] and autocomplete UX polish [task 8] deferred)*
@@ -125,6 +127,10 @@
   - [x] [12-6-chat-quality-harness](plans/12-6-chat-quality-harness.md) — F. Regression tests, provider compatibility matrix, mutation metrics baseline (92 tests) *(latency benchmarks + E2E smoke tests deferred)*
   - [x] [12-7-chat-branching-tree](plans/12-7-chat-branching-tree.md) — G. Branch-based exploration in chat complete: thread rows now expose branch lineage/active-sibling cues and full-screen chat has a collapsible branch tree navigator
   - [x] [12-8-mode-chat-sidebar-parity](plans/12-8-mode-chat-sidebar-parity.md) — H. Research/Development sidebar chat now reuses most full-chat composer, stream-lifecycle, rendering, and handoff affordances, and the follow-up parity pass restores `_scratch` history/new-thread controls plus branch actions (`edit`, `regenerate`, `explore`) directly inside the compact rail instead of forcing a maximize handoff
+- [x] [12-9-workflow-build-feedback-honesty](plans/12-9-workflow-build-feedback-honesty.md) — I. Workflow-build chat now labels dry-run mutation previews as proposed vs applied/tested and surfaces clearer workflow-preview phase progress in full/compact chat
+- [x] [12-10-workflow-capability-followups](plans/12-10-workflow-capability-followups.md) — J. Workflow follow-up turns now keep the mutation tool visible when the conversation is clearly continuing a workflow build, chat can delete named workflows via `delete_graph`, and obsolete equity workflow JSONs were removed from the local graph catalog
+- [x] [12-11-workflow-delete-safety](plans/12-11-workflow-delete-safety.md) — K. Workflow inventory/delete turns now defer speculative `delete_graph` calls until after fresh inventory results, and already-absent workflow deletes are treated as safe no-ops instead of red errors
+- [x] [12-12-auto-apply-build-and-run](plans/12-12-auto-apply-build-and-run.md) — L. `plan_graph_mutations` now supports `auto_apply: true` to build, apply, and run a workflow in a single conversational turn
 
 ## Phase 8 — Observe & Recover
 > Execution persistence, debugging tools, and iterative refinement capabilities.
@@ -479,7 +485,7 @@
 
 > Address all actionable findings from the 2026-03-17 and 2026-03-19 code reviews, deep system
 > reviews, and module audits. Round 1 (38-1 through 38-5) is complete. Round 2 (38-6 through
-> 38-12) covers security, workflow gen bugs, concierge triage, cross-platform dev mode, UX, and
+> 38-14) covers security, workflow gen bugs, concierge triage, cross-platform dev mode, UX, and
 > chat stream-contract follow-ups.
 
 - [x] [38-review-hardening](plans/38-review-hardening.md) — umbrella plan for code review and deep system review follow-ups
@@ -495,6 +501,22 @@
   - [x] [38-10-ux-onboarding-quick-wins](plans/38-10-ux-onboarding-quick-wins.md) — P1/P2: API key validation, error wrapping, cost visibility default, hide coming-soon modes, reassurance delay, CLI progress, startup degradation summary
   - [x] [38-11-packaged-lsp-launching](plans/38-11-packaged-lsp-launching.md) — P1: packaged/CWD-independent launch for bundled TypeScript/Python/JSON/CSS/HTML language servers
   - [x] [38-12-chat-progress-ack-preservation](plans/38-12-chat-progress-ack-preservation.md) — P1: preserve backend `progress_ack` labels so full-screen chat does not terminate live streams early
+  - [x] [38-13-live-debugging-followups](plans/38-13-live-debugging-followups.md) — P1: zombie PID launcher hardening plus unknown-model chat cost null-handling
+  - [x] [38-14-adapter-snapshot-and-cli-shutdown](plans/38-14-adapter-snapshot-and-cli-shutdown.md) — P1: mixed sync/async adapter snapshot support plus quiet `dan-chat` Ctrl-C exits
+
+## Phase 28 — Web Search Hardening
+> Make web search powerful, convenient, and trustworthy within this dedicated
+> phase. Start with the highest-ROI search-quality wins (auto-grounding,
+> adaptive fetch quality, ranking/dedup, canonical URLs, budgets, and broader
+> provider coverage), then close the phase with the trust/citation hardening
+> that still provides clear value.
+
+- [x] [39-web-search-hardening](plans/39-web-search-hardening.md) — search quality wins first, followed by in-phase trust/citation hardening
+  - [x] [39-1-search-result-contract-and-citations](plans/39-1-search-result-contract-and-citations.md) — A. Canonical `search_result_set` payload, structured audit/source extraction, and Anthropic-native replay/citation capture
+  - [x] [39-2-grounding-policy-and-fetch-quality](plans/39-2-grounding-policy-and-fetch-quality.md) — B. Intent-aware auto-grounding, adaptive fetch fallback, query-relevant excerpt extraction, `/search` command, `@web` mention
+  - [x] [39-3-query-planning-ranking-and-dedup](plans/39-3-query-planning-ranking-and-dedup.md) — C. Multi-query decomposition, TF re-ranking, credibility tiers, canonical-URL dedup, thin-result reformulation
+  - [x] [39-4-provider-coverage-and-health](plans/39-4-provider-coverage-and-health.md) — D. Serper (Google) provider, configurable cascade, health tracking, domain/location controls, multi-provider mode, web budgets
+  - [x] [39-5-citation-verification](plans/39-5-citation-verification.md) — E. Numeric/date citation verification, native citation parsing, warning events, and `/cost` citation summary
 
 ## Backlog (unphased)
 
@@ -503,39 +525,15 @@
 ### strengthen workflow to make it more powerful and easier to use
 - [ ] **Finish native light-theme migration for legacy shell panels** — current settings/light-mode patch adds a scoped compatibility bridge in `editor/src/index.css` plus top-level shell updates, but older dark-only panel internals should still be converted to explicit light/dark classes component-by-component.
 - [ ] **Upgrade Research `WritingPane` preview math rendering beyond KaTeX (deferred)** — evaluate a `WritingPane`-only MathJax-style preview pipeline for manuscript authoring: richer TeX environment/macro support, debounced preview typesetting, and delimiter parity (`$...$`, `$$...$$`, `\(...\)`, `\[...\]`) while intentionally keeping compact/full chat surfaces on KaTeX for synchronous streaming-friendly rendering. Backlog only for now; do not broaden this into a chat-surface migration unless research-writing needs clearly justify it.
-- [x] **Add explicit retry action for failed Furnace pills** — failed session cards now expose a direct retry button that resumes the run from saved state, and the retry/delete fallback resolves backend sessions more reliably for older cards before acting.
-- [x] **Add convenient user-defined tags for Furnace pills** — session cards now support inline tag add/remove, click-to-filter tags, persistent backend-synced tag metadata, variant tag inheritance, and graceful tagging for older local-only cards so large pill libraries can be organized quickly without manual naming hacks.
-- [x] **Add Furnace session browser controls for large pill libraries** — Training Sessions now groups related variants into collapsible families and adds search, filter-tag chips, and sorting so large pill collections stay navigable after refresh.
-- [x] **Add Furnace “continue existing” and “create variant” UX** — session cards now expose `Continue` for resumable sessions and `Variant` for forks; true variant creation forks from the parent session, inherits its source set/metadata, and records parent lineage instead of starting as a blank new run. Completed sessions no longer show a duplicate Branch/Variant choice.
-- [x] **Make Furnace continue action status-aware** — continuation now dispatches the correct lifecycle call by status (`start` vs `resume` vs observe-only); completed sessions auto-switch into Variant prep without mutating the original completed run.
-- [x] **Upgrade Furnace session details into readable progress pills** — replaced dense status text rows with compact visual pills (phase, papers, progress, cost, update recency, extracted stats) for faster scanning during multi-session runs.
-- [x] **Enable deleting specific Furnace sessions from UI** — Research-mode session cards now call a real backend delete endpoint and remove deleted sessions from local state so they do not reappear after refresh.
-- [x] **Improve furnace training UX with progressive feedback + restore** — Furnace session cards now show current phase, live status text, and recent event lines; sessions are persisted locally, synced from backend on refresh, and active sessions auto-reconnect to SSE so progress resumes without manual restart.
-- [x] **Reduce furnace pipeline chrome density** — removed redundant numeric labels in Research/Furnace distillation pipeline and switched to compact ordered chips to reclaim space while preserving sequence clarity.
-- [x] **Make terminal honor light/dark appearance end-to-end** — terminal chrome and live xterm palette now update with the app appearance setting (`system`/light/dark), including tab strip, context menu, and text/background contrast.
-- [x] **Align full-screen chat history rail to right side + theme text contrast** — moved Chat history pane to the right in full-screen mode (aligned with shell/button orientation), and updated chat text tokens/classes so light/dark switching adjusts readable text colors alongside backgrounds.
-- [x] **Respect native chat clipboard shortcuts** — global graph `cmd/ctrl+c` and `cmd/ctrl+v` handlers now bypass chat message content zones so selecting text/code in chat blocks works with normal OS copy/paste behavior.
-- [x] **`dan-up` startup timeout hardening** — launcher health polling in `src/dan/cli/up.py` now uses a real deadline instead of a brittle 15s delay table, so slow local startups are not misclassified as failures and then killed. Added `tests/test_cli/test_up.py`.
-- [x] **IDE-compatible skill store** — `SkillStore` scans `~/.dan/skills/` (user) + `.dan/skills/` (project) + legacy `DAN_CUSTOM_SKILLS_DIR` for `SKILL.md` files. Frontmatter superset of Cursor/Claude/Codex format. `/skill list|info|import|scan` commands. 48 tests.
-- [x] ~~**Next deferred cleanup slice — Phase 21 live-wiring follow-ups**~~ — goal loop execution wiring (`GoalLoopExecutor` now spawns from `/goal`, tier-specific prompts, RepairClassifier inter-attempt diagnosis, intent recognition), proactive follow-up trigger emission (run-completion and schedule-result triggers wired in app.py, surface routing via PresenceTracker, per-task opt-out), progressive response pipeline (instant acknowledgment before LLM prep, phase transitions on capability execution, heartbeat enhancement), computer-use capability tools (7 browser + 5 desktop tools registered as chat capabilities, observe-act-verify loop, foreground-only enforcement, abort/fail-safe), and centered command reference (`docs/commands.md` + generation script)
-- [x] ~~**Optimize workflow generation quality**~~ → promoted to [Phase 22](#phase-22--workflow-generation-optimization) (Plan 32)
 
-### Messaging reliability, autonomy, and packaging
-- [x] **Backend-owned messaging autostart & reconnect** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 0
-- [x] **Messaging status honesty / offline semantics** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 1
-- [x] **Messaging progress + queue visibility unification** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 2
-- [x] **Telegram operator UX polish** → completed in [31-32](plans/31-32-messaging-lifecycle-and-feedback.md) task 3
-- [x] [31-33-autonomy-and-prompt-modules](plans/31-33-autonomy-and-prompt-modules.md) — completed: `auto/careful/balanced/aggressive` autonomy resolution, session-tree propagation, tool-budget/completion/synthesis behavior, layered `PromptModuleResolver`, and `load_prompt_detail`; aggressive synthesis review now uses deterministic checks with text-only LLM fallback for ambiguous regex/keyword edge cases, session-scoped autonomy state is isolated by `surface + external_id`, session/dispatch telemetry records `autonomy_resolution`, text-only review calls inherit the same resolved project/autonomy context as the tool-loop path, research guidance is split into compact inline hints plus expanded JIT detail, `exploration_specializer` is live with the same heuristic+LLM/JIT pattern, and aggressive root gathering now adds recent-turn/task/file/repo signals at the root only
-- [ ] **Self-contained desktop packaging** — bundle the DAN backend/runtime with the Electron app/DMG so the desktop app does not depend on a separately managed Python environment or external `dan-serve` process. *(deferred — orthogonal to messaging reliability)*
-- [ ] **Formal RL-style learning loop (deferred)** — once messaging/runtime stability is boringly reliable, evaluate a more explicit reward/feedback loop on top of existing experience/principle learning rather than layering RL onto an unstable control plane. *(deferred — premature until messaging is boringly reliable)*
+### Packaging & deferred learning
+- [ ] **Self-contained desktop packaging** — bundle the DAN backend/runtime with the Electron app/DMG so the desktop app does not depend on a separately managed Python environment or external `dan-serve` process.
+- [ ] **Formal RL-style learning loop (deferred)** — once messaging/runtime stability is boringly reliable, evaluate a more explicit reward/feedback loop on top of existing experience/principle learning rather than layering RL onto an unstable control plane.
 
 ### Messaging swarm ideas (deferred)
 - [ ] **Swarm-grade bot individuality / employee model** — promote bot identity from thin surface metadata to a first-class `BotContext` or durable employee actor boundary (`bot_id`, per-bot policy/tool permissions, memory namespace, ownership queue, delegation/team metadata, per-bot telemetry/reputation). Keep this in backlog until Telegram and WhatsApp are working reliably end-to-end; current priority is messaging stability/UX, not swarm expansion.
 
 ### Review-derived reliability, UX, and maintainability
-- [x] **Workflow retry routing guardrails** — generic retry language like `retry` / `try again` no longer unlocks workflow-edit routing solely because a project has a linked workflow; the bridging condition now requires recent workflow build/edit activity in the task's turn history. Fixed in [33-5](plans/33-5-analysis-and-fixes.md) Cycle 5 (task 23).
-- [ ] **Startup safe mode for optional user-home features** — add a startup path that skips nonessential `~/.dan` writes until the feature is actually used, and surface degraded-feature warnings instead of failing or half-enabling subsystems during boot.
-- [ ] **Memory-kernel startup fallback hardening** — if profile or conversation import fails during startup, leave `memory_kernel` disabled and visible as degraded rather than wiring a partially initialized kernel into chat/run flows.
 - [ ] **Clipboard write-path hardening** — keep clipboard copy as a write-only operation when possible; do not require a successful clipboard read before writes, and distinguish missing utility vs session-unavailable clipboard access clearly.
 - [ ] **Unified System Status / environment diagnostics** — one command or panel summarizing active model/provider, backend health, workspace roots, telemetry path, profile/memory status, Furnace state, MCP config, writable locations, and other degraded features.
 - [ ] **File-operation trust zones UX** — align docs/UI with the real absolute-path vs workspace-root contract and warn when a tool is about to read or write outside trusted roots.
@@ -562,15 +560,9 @@
 - [ ] **Dynamic hierarchical delegation tree (`DelegationNode`)** — new node type for recursive divide-and-conquer with depth-aware model tiering. Agent receives a task, decides whether to handle directly (base case) or decompose and delegate to lower-tier sub-agents (recursive case). Tree depth and branching factor are data-dependent, not design-time fixed. Fields: `agent_prompt`, `decompose_schema`, `max_depth`, `max_children`, `max_total_agents` (global budget), `tier_by_depth` (`{0: "critical", 1: "reasoning", 2: "routine", 3: "micro"}`), `self_handle_condition`, `reduce_strategy`, `timeout_per_depth`. Guardrails: `max_total_agents` across tree, per-depth budget/time caps, model tier degrades at leaf. Reuses existing infra: engine scheduling (sub-graph execution), TierPolicy (depth-to-tier mapping), FailurePolicy (timeout/stagnation), SharedContextStore (parent-child context). Parent can monitor children (like `OrchestratorNode`) and cancel/replace if stalled.
 - [ ] **Tree + swarm composability** — hierarchical delegation (vertical authority: who decides what to work on) and agent teams/swarms (horizontal collaboration: how peers work together) are orthogonal and composable. A node in the delegation tree can internally be an `AgentTeamNode` where peers debate before producing a result. A team of peers can escalate to a higher tier. Both patterns nest inside each other. Document this composability pattern and ensure `DelegationNode` + `AgentTeamNode` interop works cleanly.
 
-### Execution Intelligence follow-ups
-- [x] ~~**31-23 bridge wiring**~~ — obsolete: `boundary_handoff.py` deleted in Plan 34 concierge rewrite. Tiered dispatcher doesn't use `BoundaryHandoff`.
-- [x] ~~**31-23 streaming event**~~ — obsolete: `BoundaryHandoff.to_user_summary()` deleted in Plan 34.
-- [x] ~~**31-23 integration tests**~~ — obsolete: the code under test no longer exists.
-
 ### Infrastructure / CI
 - [ ] **Playwright E2E browser tests** (12-6 tasks 5-6) — mode transitions, mention autocomplete, stop generation, export. Requires Playwright setup + CI pipeline.
 - [ ] **CI regression job** (12-6 task 2-8, 3-6) — run NL→mutation golden suite and provider compat matrix on schedule. Requires CI runner.
-- [x] ~~**Snapshot/regression tests**~~ (8-2 task 6-7, 8-4 task 3-7) — `tests/test_snapshots/` with 8 golden snapshots (5 builder + 3 loader). `UPDATE_SNAPSHOTS=1` regenerates.
 - [ ] **Mutation metrics baseline** (12-6 tasks 4-5 through 4-7) — capture 3-5 day baseline on main, set sprint targets, end-of-phase report. Requires production deployment.
 
 ### Integration tests requiring real LLM
@@ -580,154 +572,36 @@
 
 ### Frontend polish
 - [ ] **Restore clean editor TypeScript build** — fix current `npm run build` failures in `ConfigPanel.tsx`, `GraphCanvas.tsx`, `LogPanel.tsx`, `ContextMenu.tsx`, `RunHistoryPanel.tsx`, `graphImporter.ts`, `nodeIcons.tsx`, and `useGraphStore.ts` discovered during chat persistence verification.
-- [x] ~~**Fuzzy search in mention autocomplete**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
-- [x] **Recently used mentions at top** (12-3 task 8-4)
-- [x] **Preview tooltip on mention hover** (12-3 task 8-5)
-- [x] ~~**Sortable log columns**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
-- [x] ~~**Token flow edge labels**~~ (18-4 task 3-4) → completed in [22-deferred-wave-2](plans/22-deferred-wave-2.md) S3
-- [x] ~~**Before/after token estimation**~~ (18-4 task 4-4) → completed in [22-deferred-wave-2](plans/22-deferred-wave-2.md) S3
-- [x] ~~**Per-thread mode persistence**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
-- [x] ~~**Keyboard shortcut to cycle chat modes**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
-- [x] ~~**Debug diff tag**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
-- [x] ~~**"Fix this" shortcut**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
-- [x] **Code syntax highlighting in mention context** (12-3 task 3-3)
-- [x] ~~**Frontend export buttons**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
-- [x] ~~**Collapse verbose run output**~~ → promoted to [20-2](plans/20-2-chat-editor-polish.md)
-- [x] ~~**Analytics rule dashboard**~~ (18-4 task 5-6) → completed in [22-deferred-wave-2](plans/22-deferred-wave-2.md) S3
-- [x] ~~**Run history checkpoint UI**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)
-- [x] ~~**Multi-tab checkpoint consistency**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)
-
-### Docs sync (batched)
-- [x] ~~**Runtime reliability docs**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
-- [x] ~~**Multi-provider docs**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
-- [x] ~~**Built-in tools docs**~~ → promoted to [20-1](plans/20-1-docs-quick-wins.md)
 
 ### Requires new architecture
 - [ ] **Per-operation approval gates** (12-4 task 5) — bidirectional WebSocket handshake for per-tool-call approve/reject
 - [ ] **@Web mentions** (12-3 task 6) — async network calls during mention resolution, loading UX, attribution
-- [ ] **Thread branching** (12-5 task 7) — "Branch from here", parent-child tree, branch indicator in thread list
-- [x] ~~**Message queuing**~~ (12-5 task 2) — CLI implemented: background `select.select` + queue during streaming, processed after response. Editor re-resolve mentions deferred.
 - [ ] **Sandbox execution display** (12-4 task 6) — terminal-like rendering, ANSI colors, file artifacts, resource usage
 
-### Deferred runtime features
-- [x] ~~**Loop compaction strategy runtime**~~ (18-3 tasks 3-3, 3-4, 3-5) → completed in [22-deferred-wave-1](plans/22-deferred-wave-1.md) S2
-- [x] ~~**Persistent cross-run cache**~~ (18-2 task 2-3) → completed in [22-deferred-wave-1](plans/22-deferred-wave-1.md) S2
-- [x] ~~**Memory-aware cache invalidation**~~ (18-2 task 2-5) → completed in [22-deferred-wave-1](plans/22-deferred-wave-1.md) S2
-- [x] **Automatic state externalization** (18-3 task 1-3) — scheduler/executor writes loop/foreach/team state to StateStore automatically
-- [x] **Run-level advisory token budget** (18-3 task 4-1) — `token_budget` on EngineConfig as global planning signal
-- [x] **Principle compaction** (17-2 task 3-4) — PrincipleStore.compact() merges similar principles at threshold
-- [x] ~~**ReflectionNode authoring surfaces**~~ (17-2 task 7) — builder DSL `wf.reflection()`, markdown `type: reflection`, both decompilers. Editor palette/config deferred (frontend).
-- [x] **Two-tier reference resolution** (18-1 task 4-4) — artifact store + threshold-based ref passing; memory mirroring deferred
-- [x] **Encode-to-memory pattern** (18-1 task 4-5) — large outputs stored as MemoryItems, downstream retrieves summary
-- [x] **Hyperedge JIT loading** (18-1 task 7-5) — inject hyperedge summaries, load full rules on demand
-- [x] ~~**Unified cross-source token budget**~~ (18-3 task 4-4) → completed in [22-deferred-wave-1](plans/22-deferred-wave-1.md) S2
-- [x] **Checkpoint/resume for parallel subagents** (7-9 task 3) — capture per-branch completion status, resume pending branches
-- [x] **Builder DSL for tools** (7-3 task 8-3) — `wf.tool("name", tool_id="file_read", config={...})` with `config` alias
-- [x] **RAG reranking** (9-1 task 6-4) — LLM-based re-scoring of top_k*3 candidates
-- [x] **Tier de-escalation telemetry** (18-5 task 4-2) — persist per-node tier success stats across runs, suggest cheaper tiers after repeated success
-- [x] ~~**Tier badge in editor** (18-5 task 7-2)~~ — completed (L0–L3 badges + hover tooltip in DanNode)
-- [x] ~~**Tier analytics panel** (18-5 task 7-3)~~ — completed (distribution, cost comparison, per-node table in TokenAnalyticsPanel)
-
 ### Stretch goals
-- [x] ~~**Auto-mode detection**~~ → promoted to [20-3](plans/20-3-checkpoint-ui-automode.md)
 - [ ] **Parallel subagent visualization** (7-9 task 5-3) — show parallel branches and fan-in in execution
-- [x] **ToolExecutor integration test** (7-3 task 9-4) — end-to-end built-in tool via ToolExecutor
-- [x] ~~**Cross-workflow error migration notes**~~ (17-1 task 6-3) — added to `docs/bugs.md`: collection naming, global vs workflow scope, cross-environment migration, principle dedup
 
-### Provider compatibility
-- [x] **Model behavior profiles** — `ModelBehaviorProfile` + `get_model_behavior()` for per-model tool_choice/replay quirks; Kimi `supports_required_tool_choice=False`; raw assistant replay; fallback tool-disable note
-- [x] **Anthropic/Google raw_assistant_message** — `AnthropicProvider` and `GoogleProvider` now populate `CompletionResult.raw_assistant_message` plus `provider_metadata`, preserving native block/part snapshots in provider-safe assistant replay payloads
+### Web search & grounding
+- [x] ~~**Improve web search quality**~~ → promoted to [Phase 28 — Web Search Hardening](#phase-28--web-search-hardening) with plans 39-1 through 39-5.
 
 ### Existing backlog items
 - [ ] **User system** — login, auth, per-user data isolation. Graph store, runs, checkpoints scoped to user. Multi-user/team/cloud deployments. (Low priority — revisit when cloud/SaaS deployment becomes a goal.)
 - [ ] **Hosted web-search gateway + fair-use model** — if DAN should feel ready-to-use for mainstream users (like Cursor/Claude/hosted copilots), add a DAN-managed search/fetch gateway so users are not forced to bring Tavily/Brave keys just to use live web grounding. Scope: server-owned provider credentials, auth + per-user quotas, caching/abuse controls, graceful quota UX, cost controls, and a hybrid fallback where self-hosted/power users can still bring their own keys.
 - [ ] **Manager vs worker node distinction** — manager nodes orchestrate and may spawn new nodes; worker nodes only execute and do not hire new nodes. Bottom-layer nodes are workers. Enables token/node budget caps.
-- [x] ~~Optimize token usage~~ → promoted to [Phase 10](#phase-10--token-optimization) (Plan 18)
-- [x] [7-8-workflow-node-api-hardening](plans/7-8-workflow-node-api-hardening.md) — Markdown round-trip lossless, ContextEdge validation, gate defaults, strict parse, mutator diagnostics
-- [x] ~~Async loop design~~ → promoted to [Phase 9C](#9c--execution-primitives) (Plan 16-5)
-- [ ] NL mutation quality tracking bundle — now tracked under [12-6-chat-quality-harness](plans/12-6-chat-quality-harness.md)
-- [x] Investigate React Flow for graph rendering — adopted in Phase 2, `@xyflow/react` v12
 - [ ] Thread timeline view — vertical timeline of graph evolution through conversation (stretch, from 10-5 task 5-3)
 - [ ] Canvas drag-to-mention — drag node from canvas onto chat input to create mention (stretch, from 10-2 task 6-4)
-- [x] ~~Self-evolving orchestrator~~ → promoted to [Phase 9D](#9d--self-evolving-orchestrator)
 - [ ] Survey EvoAgentX for reusable multi-agent patterns
 - [ ] Coding assistant proof-of-concept — build Cursor-like agent mode as a DAN graph (~15 node types, ReAct while-loop + tool operators). Validate Ask/Agent/Debug/Plan modes as graph templates.
 - [ ] science-cursor rebuild — extract scholar engines as DAN agents. Build PaperOrchestrator as a DAN network. VS Code extension as thin rendering client.
 - [ ] Copy selection to new workflow — lasso/shift-click, paste into new tab or blank template. Extract subgraph as standalone reusable workflow.
-- [x] Vibe research example (`examples/vibe_research_md/`) — multi-dept workflow, run_multi_dept.py. Design: WORKFLOW.md.
-  - [x] Debug run-input propagation in loop path (InputNode + while-gate continue scheduling)
-  - [x] Fix custom strategy `KeyError: ['ret']` by normalizing CRSP loader output contract
-  - [x] Remove obsolete legacy strategy-creation files from example folder
-  - [x] Fix checkpoint circular-reference crash in custom strategy tool output
-  - [x] Expand code sandbox builtins (`iter`/`next`) for generated strategy scripts
-  - [x] v2 rewrite: fixed 6 departments, state_schema loop state, orchestrator dynamic themes/halt
-  - [x] Normalize state_schema key convention (flat key→schema map)
-  - [x] Generate per-department plots inside the department pipeline (`bug_fixer`) immediately after backtest output is available
-  - [x] Harden FUND custom strategy execution (`run_strategy_script`): safe `merge_asof`, Compustat alias normalization, and factor parquet persistence for custom strategies
-  - [x] Serialize department execution one-by-one (MOM→REV→FUND) and update tracking results immediately after each backtest
-  - [x] Make `max_factors` cap attempts (not only successful results), align builtin `strategy_name` with department IDs, and persist immediate result JSON snapshots in `output/results/`
-  - [x] Align department composite output contract: `save_tracking.result` now passes through backtest/plot fields required by downstream `merge`/governor
-  - [x] Handle generated `merge_asof(tolerance=pd.DateOffset(...))` incompatibility in custom strategy runtime to avoid FUND build failures
-  - [x] Isolate `skip` branch from `bug_fixer` gate wiring so normal department runs still execute immediate plotting
-  - [x] Enforce CRSP formation-month minimum price filter (`|price| >= 1`) across builtin and custom backtests
-  - [x] Persist generated custom strategy scripts before execution (`output/scripts/{strategy}.py`) and pass script paths through department outputs
-  - [x] Capture generated `build_factor` stdout/stderr and fail fast on empty factor outputs to avoid silent “factor-only/no-plot” runs
-
-### Execution intelligence
-- [x] **Goal-oriented loop** — ~~set a target metric~~ → completed in [31-6](plans/31-6-goal-oriented-loop.md) (concierge loop + engine GoalLoopNode)
-- [x] **Timed / scheduled tasks** — ~~TaskScheduler~~ → completed in [31-7](plans/31-7-scheduled-tasks.md) (cron/interval, lease/lock, NL parsing, result delivery)
-- [x] **Plan dependency-graph optimization** — decompose goals into subtask DAG with time estimates, solve resource-constrained project scheduling (critical path + list scheduling heuristic) to minimize makespan under `DAN_MAX_CONCURRENT_LLM` constraint. Wire RCPSP schedule into ParallelSubagents/topological scheduler. Time estimation: heuristic classification + historical experience memory + LLM estimate with calibration.
 
 ### Safety & guardrails
-- [x] **Completion guard** — ~~pre-delivery validation~~ → completed in [31-9](plans/31-9-completion-guard.md) (response pipeline wiring, skip conditions)
-- [x] **PII / sensitive data tokenization** — ~~user-defined sensitive word list~~ → completed in [31-10](plans/31-10-pii-tokenization.md) (ContextVar, code-block skip, edge cases)
-- [x] [31-19-request-guard-pipeline](plans/31-19-request-guard-pipeline.md) — **Request Guard Pipeline**: inter-step guards (classification coherence, understanding coherence, response relevance), entity grounding (scan messages against ProjectStore to recognize known projects/tasks), system-prompt clarification rules, loop composition (understand → execute → verify phases). Fixes misinterpretation errors where DAN acts on wrong assumptions instead of asking.
-- [x] [31-20-unified-telemetry](plans/31-20-unified-telemetry.md) — **Unified Telemetry & Analytics**: single `TelemetryEvent` model + SQLite-backed `TelemetryStore` for all chat turns, workflow nodes, guard checks, classifications, tool calls. Per-turn timing, project-level cost rollup, cross-session analytics. `/analytics` command with grouping (model/surface/day/project) and JSONL/CSV export.
 - [ ] **Cost hard limits** — `max_cost` per workflow run and per concierge session. Budget enforcer intervenes before each LLM call: downgrade model / skip optional step / checkpoint and ask user. Composes with TierPolicy and model_policy cascade.
-
-### Workflow engine robustness (long-tail tasks)
-- [ ] **Node-level checkpointing** — checkpoint after every node completion (not just topological level). Critical for multi-hour workflows.
-- [ ] **Long-running workflow profile** — aggressive retry defaults for long-running mode: `max_retries=5`, `backoff=30s`, `backoff_max=1800s`, fallback model, `on_failure="skip"` (complete remaining branches, report partial results).
-- [ ] **Wall-clock and cost ceilings on workflow runs** — `max_duration` and `max_cost` on workflow run config. When hit: checkpoint, report partial results, explain what remains.
-- [ ] **Self-healing node execution** — on node failure, auto-diagnose via RepairClassifier and adjust (API timeout → retry with backoff, invalid JSON → re-prompt with stricter format, tool error → try alternative approach) before escalating.
-- [ ] **Mid-execution adaptation** — modify pending nodes' prompts/config in a running workflow without restarting completed stages. Concierge translates NL change requests into targeted node modifications.
-- [ ] **Human-readable workflow progress** — map engine events to natural language stage names and progress fractions. Concierge surfaces: "Completed literature review (3/7 stages). Writing methodology. ~2 hours remaining."
-- [ ] **Dynamic topology** — workflow can spawn new branches at runtime based on intermediate results (e.g. "found 4 clusters in data, creating 4 parallel analysis branches").
-- [ ] **Cross-workflow coordination** — output of one workflow becomes input of another, concierge as coordinator. "Run data pipeline, then start report workflow with its outputs."
-
-### Continuity & polish
-- [x] **Resumable cross-session work** — ~~structured task-level resume~~ → completed in [31-11](plans/31-11-cross-session-resume.md) (auto-populate, compact history, cross-surface resume)
-- [x] **Proactive follow-up** — ~~initiative layer~~ → completed in [31-12](plans/31-12-proactive-follow-up.md) (stale-task queue, delivery engine, quiet hours)
-- [x] **Multi-surface task continuity** — ~~start a task on desktop~~ → completed in [31-13](plans/31-13-multi-surface-continuity.md) (presence tracking, handoff injection, /sync)
-- [x] **Telegram project tracing** — compact `[Project]` header in all Telegram replies (converted from `[DAN - Project]`), combined with `reply_to_message_id` threading. `_format_for_telegram()` replaces `_strip_prefix_and_html()`.
-- [x] **Adaptive progress frequency** — exponential backoff for Telegram progress updates (10s → 20s → 30s → ... → max 5min). Configurable via `DAN_TELEGRAM_PROGRESS_MAX_INTERVAL` and `DAN_TELEGRAM_PROGRESS_BACKOFF`. Sends new message instead of editing when conversation has moved on.
-- [x] **Classifier: project-status intent fix** — "project review", "project progress", "how's the project going" now correctly route to `STATUS_CHECK` instead of `CONVERSATION`/`FILE_REQUEST`. Context-aware heuristic distinguishes DAN project queries from external topic queries ("Panama canal expansion project status"). Prevents eager file sends on status questions.
-- [x] **Classifier: LLM-first intent routing with deterministic fallback** — extracted the routing ontology into `src/dan/server/concierge/intent_catalog.py`, made `classify_intent_llm()` the primary semantic router, kept the scored heuristic as a fallback/sync helper, and preserved the direct-task/file-request/path-context regressions.
-- [x] **Classifier: removed legacy top-level intents** — collapsed concierge routing onto `ask` / `agent` / `plan`, moved the old intent detail into `route.target` + `action_hints`, and rewired handler dispatch through `AskHandler` / `AgentHandler` / `PlanHandler`.
-- [x] **Chat stream reconnect retention after terminal delivery** — keep `/api/chat/{channel}/events` mapped while a producer or replayable terminal snapshot still exists, and close missing channels as WebSocket `4004` instead of an HTTP 403 handshake rejection.
-- [x] **Project-scoped memory (31-18)** — Memories stored during a project conversation are tagged with `project_id` and `scope=PROJECT`. Retrieval filters by active project, keeping `USER`/`GLOBAL` items visible everywhere. Enables per-project file paths, style rules, and domain conventions that don't bleed across projects.
-- [x] **`/project` command** — Explicit project management via `/project list|info|set|memory|delete`. Replaces context-based project-status classifier heuristic. No more false-positive file sends on "any updates on the kaggle project".
 
 ### Custom UI — Workspace-Based Desktop App
 > Build an Electron desktop app with workspace-based layout modes (Chat, Code, Research, Analytics, Operations) that is as convenient as ChatGPT for chat, as powerful as Cursor/VS Code for coding, and leverages DAN's full orchestration for complex tasks. Modes = layout presets (which panels you see), NOT behavioral modes. Backend behavioral modes are auto-detected and invisible to the mode bar. Plans in `docs/UI-plans/`.
 
 - [ ] [1-ui-spec](UI-plans/1-ui-spec.md) — master specification: 5 layout modes, workspace model (two-layer tabs), marketplace architecture, phasing, design principles
-  - [x] **Phase 1: Shell + Chat + Code Core** ← complete
-    - [x] [1-1-app-shell-framework](UI-plans/1-1-app-shell-framework.md) — **100% complete (61/61).** All features done including auto-updater (electron-updater + UpdateNotification.tsx) and platform builds (electron-builder: macOS DMG+ZIP, Windows NSIS, Linux AppImage+deb).
-    - [x] [1-2-chat-mode](UI-plans/1-2-chat-mode.md) — **100% complete (50/50).** All features done: full-screen layout, workspace navigation (workspace tabs + open-thread tabs + persistence), rich output, conversation management, quick actions, progressive escalation, migration, workspace context bar (2-7), inline workspace preview (4-3), switch preference (4-4), voice input (6-4).
-    - [x] [1-4-code-mode](UI-plans/1-4-code-mode.md) — **Phase 1 complete (101/101).** Core IDE: Monaco, file explorer, terminal (node-pty), output, search, git, diff, chat integration, problems, settings, inline edit, command palette, crash recovery, local history.
-  - [x] **Phase 2: Code Mode Advanced + Marketplace**
-    - [x] [1-4-code-mode](UI-plans/1-4-code-mode.md) — **Phase 2 complete (79/79, total 180/180).** LSP, advanced editor, AI code, task runner, test explorer, DAP debugger, advanced git, workspace intelligence, extension marketplace UI, GitHub PR integration.
-    - [x] [1-5-marketplace-extensions](UI-plans/1-5-marketplace-extensions.md) — **100% (59/59).** Done: MarketplaceManager + types + Open VSX adapter (w/ configurable URL) + VSIX handling + Extensions Panel UI + theme/grammar/snippet/langconfig/iconTheme loaders + DAN Skills adapter (7/7) + MCP Server adapter (8/8, incl. auto-connect + chat integration) + trust model + safe mode + enable scope + update checking + extension host process + partial vscode API shim + activation events + curated essentials + compatibility tier + native-first fallback + marketplace settings UI + plugin architecture (7-1, 7-2) + Recipe Store adapter (6-1..6-6: recipe model, browser, install, marketplace, creation, versioning) + Skill Hub remote API (4-3) + ADAPTER_GUIDE.md extensibility docs (7-3, 7-4)
-  - [x] **Phase 3: Research Mode**
-    - [x] [1-3-research-mode](UI-plans/1-3-research-mode.md) — **100% complete (92/92).** All features done including: persistent PDF annotations (5 colors + notes + export), split PDF reader (dual-pane with independent nav), citation-linked navigation (clickable citations → PDF reader), per-page AI summaries (cached), tool integration for code cells (5 tools).
-  - [x] **Phase 4: Research Workbench Refinement**
-    - [x] [1-6-research-workbench-refinement](UI-plans/1-6-research-workbench-refinement.md) — configurable PDF/note roots, function-first surfaces (`Desk`, `Library`, `Plan`, `Training`), progressive disclosure, workspace naming
-    - [x] [1-7-research-simplification](UI-plans/1-7-research-simplification.md) — replaced bottom dock with terminal, added Furnace center-desk tab, fixed Scratch naming
-  - [x] **Phase 5: Code Mode Production Patch**
-    - [x] [1-8-code-mode-patch](UI-plans/1-8-code-mode-patch.md) — All 13 tasks plus both follow-up review-hardening passes are complete, and live smoke follow-up fixed the remaining compact-sidebar wedges: multi-file review now stores immutable per-message snapshots, workspace-symbol IPC preserves distinct locations, code-mode `surface_context` is wired end-to-end with a server-side budget, onboarding/tour mounts are live, multi-root `Apply & Test` avoids the wrong suite, `/retry` plus `/build` serialize on the real project without bogus bypass state, missing-stream stop responses no longer leave Code Mode stuck in a perpetual active turn, Vite-dev chat/run websockets now bypass the proxy path that caused silent compact-sidebar hangs, and both reducer-level plus mounted `happy-dom` regression coverage now lock the sidebar recovery follow-up in place.
-  - [x] **Phase 5.5: Shell Chrome Purge & Per-Mode Chat**
-    - [x] [1-9-shell-chrome-purge](UI-plans/1-9-shell-chrome-purge.md) — delete Breadcrumb/SidebarHost/PersistentChatBar, shared ModeChatSidebar with persistent history, Workflow + Furnace in CodeMode activity bar, Research right-drawer discoverability
   - [ ] **Phase 5.6: Messaging Onboarding & Controls**
     - [ ] [1-10-messaging-onboarding-and-controls](UI-plans/1-10-messaging-onboarding-and-controls.md) — Telegram + WhatsApp desktop controls in Settings, shell-wide messaging status button, provider-aware first-run onboarding, dependency-aware setup guidance, WhatsApp reset pairing, and shared toolbar/store state. Only broader UI coverage + manual smoke remain.
   - [ ] Phase 6: Analytics + Operations modes → (not yet planned)
@@ -755,21 +629,11 @@
 - [ ] **Cooking-themed identity** — rebrand around stove/pot metaphor: tokens burn to cook, workflows are recipes, knowledge distillation is flavor extraction. Consistent theming across CLI output, UI chrome, docs, and packaging.
 
 ### 100-Paper Domain Learning Experiment
-- [x] [36-recipe-distillation-spec](plans/36-recipe-distillation-spec.md) — backend spec: resumable recipe training, ingredient provenance, corpus memory schema, `recipe.md`/`skill.md` artifact contract, distillation pipeline
-  - [x] [36-1](plans/36-1-recipe-training-lifecycle.md) — resumable training lifecycle, checkpoints, resume semantics, benchmark history
-  - [x] [36-2](plans/36-2-ingredient-provenance.md) — ingredient ledger, version diffs, acquisition/source tracking, market-facing provenance
-  - [x] [36-3](plans/36-3-paper-corpus-memory.md) — corpus memory metadata, taxonomy, promotion rules, retrieval bundles
-  - [x] [36-4](plans/36-4-recipe-artifact-contract.md) — `recipe.md` / `skill.md` contract, required sections, projection rules, versioning
-  - [x] [36-5-paper-acquisition-workflow](plans/36-5-paper-acquisition-workflow.md) — university proxy download, bibtex-ID naming, summary, and note creation workflow
-  - [x] [36-7-furnace-end-to-end](plans/36-7-furnace-end-to-end.md) — API integration, session naming, recipe variants (pill-10/pill-20), PDF reading upgrade (hybrid text+vision, structure extraction), multi-source ingestion (notebooks, blogs)
-  - [x] [36-8-furnace-portal-cli](plans/36-8-furnace-portal-cli.md) — dedicated `dan-furnace` direct-control portal (ignite/add/start/resume/pause/cancel/list/status/watch/estimate/budget/recipe), bypassing concierge drift
-  - [ ] **Domain recipe distillation (100-paper experiment)** — ingest ~100 papers, measure writing quality before vs. after. Core question: does burning tokens on 100 papers yield measurably better output?
-  - [ ] **Domain-flavour memory architecture** — extract core "taste" per domain. Builds on memory kernel (29-1) + domain learning (31-21).
-  - [ ] **Recipe marketplace** — sell distilled domain knowledge. Differentiation from skills: recipes are empirically distilled from reading real papers, skills are authored procedural knowledge.
-  - [ ] **Paper quality scoring website (possibly separate project)** — structured multi-model review score. Before/after measurement for the 100-paper experiment.
-  - [ ] **Latent group subconsciousness extraction** — directional association vectors for field concepts, identifying high-salience-but-unexplored question zones.
+- [ ] **Domain recipe distillation (100-paper experiment)** — ingest ~100 papers, measure writing quality before vs. after. Core question: does burning tokens on 100 papers yield measurably better output?
+- [ ] **Domain-flavour memory architecture** — extract core "taste" per domain. Builds on memory kernel (29-1) + domain learning (31-21).
+- [ ] **Recipe marketplace** — sell distilled domain knowledge. Differentiation from skills: recipes are empirically distilled from reading real papers, skills are authored procedural knowledge.
+- [ ] **Paper quality scoring website (possibly separate project)** — structured multi-model review score. Before/after measurement for the 100-paper experiment.
+- [ ] **Latent group subconsciousness extraction** — directional association vectors for field concepts, identifying high-salience-but-unexplored question zones.
 
 ### Future vision
-- [x] ~~**Multi-agent group chat**~~ → promoted and completed in [Phase 20](#phase-20--telegram-multi-bot-platform) (Plan 30, Telegram-first). Discord adapter deferred to future phase.
-- [x] ~~**In-chat model switching**~~ → promoted to [31-1-model-control](plans/31-1-model-control.md) under Phase 21
 - [ ] **Project retrospective distillation** — auto-review completed projects and distill reusable artifacts: generate workflow templates from successful run patterns, extract skills/rules/hyperedges from repeated working patterns, and codify domain-specific conventions. Periodic or on-demand; feeds back into experience memory and planner few-shot examples.

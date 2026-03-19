@@ -1201,6 +1201,7 @@ ws://<host>/api/chat/<stream_channel_id>/events
 |---|---|---|
 | `chat_token` | Incremental text token | `delta: str`, `accumulated: str` |
 | `chat_complete` | Terminal event — final response | `content: str`, `detected_mode: str` |
+| `chat_notice` | Non-terminal advisory/notification | `content: str`, `level: str` |
 | `chat_queued` | Request queued; reconnect to new channel | `stream_channel_id: str`, `queue_position: int` |
 | `chat_error` | Terminal error | `error: str` |
 | `chat_interrupted` | Generation was cancelled | `content: str` (partial) |
@@ -1215,8 +1216,9 @@ ws://<host>/api/chat/<stream_channel_id>/events
 1. Open WebSocket to `/api/chat/<channel_id>/events`
 2. Receive `chat_token` events (if streaming) or go directly to terminal event
 3. On `chat_queued`: close current socket, reconnect to `stream_channel_id` from payload
-4. On `chat_complete` / `chat_error` / `chat_interrupted` / terminal `chat_mutation`: stream is done, close socket
-5. A `chat_complete` with `detected_mode: "progress_ack"` is a keepalive — continue listening
+4. On `chat_notice`: surface the warning/notice to the user, but keep listening
+5. On `chat_complete` / `chat_error` / `chat_interrupted` / terminal `chat_mutation`: stream is done, close socket
+6. A `chat_complete` with `detected_mode: "progress_ack"` is a keepalive — continue listening
 
 ---
 
@@ -1752,6 +1754,8 @@ Injects domain-specific prompt prefixes into targeted nodes:
 4. `GraphMutator.dry_run()` validates the plan; auto-retry on failure
 5. Client receives `ChatMutationEvent` with the plan and diff preview
 6. Client applies the mutation, switches to `mode="mutate"` for follow-up edits
+
+**Build-and-Run shortcut:** When the user asks to build AND run/test in one request, set `auto_apply: true` on `plan_graph_mutations`. If the dry-run passes, the server applies the mutation automatically, saves the graph, and continues the tool loop — the LLM can then call `start_run` immediately in the same turn. `ChatMutationEvent` will have `applied=true`. Omit `auto_apply` (default `false`) for preview-only requests.
 
 Use `strict=true` in `add_edge` operations when building from intent to fail fast on port typos.
 The backend now tolerates two common harmless mutation drifts during dry-run: `remove_node` on an already-missing id is treated as an idempotent no-op, and if a source node exposes exactly one output port the mutator may normalize a guessed source port onto that sole declared port (for example `for_each.item -> results` or `code_operator.output -> result`). Still prefer canonical port names in generated plans.
