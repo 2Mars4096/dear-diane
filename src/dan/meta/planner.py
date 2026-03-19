@@ -1137,12 +1137,18 @@ class WorkflowPlanner:
                         }
                         graph_data = self._compile_generate_spec(fallback_spec)
                         workflow_id = f"meta-fallback-{uuid.uuid4().hex[:10]}"
+                        warning = (
+                            "Workflow generation fell back to a simplified single-node workflow "
+                            "after builder code execution failed."
+                        )
                         return {
                             "workflow_id": workflow_id,
                             "graph": graph_data,
                             "description": plan.description,
                             "generated": True,
                             "legacy_fallback": True,
+                            "warning": warning,
+                            "legacy_fallback_message": warning,
                         }
                     except Exception:
                         logger.exception("Legacy GENERATE fallback also failed")

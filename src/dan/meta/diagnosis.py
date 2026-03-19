@@ -17,6 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from dan.executors.code import _ALLOWED_BUILTINS
 from dan.sandbox import SandboxResult
 
 logger = logging.getLogger(__name__)
@@ -1001,7 +1002,7 @@ class DiagnosisLoop:
             ]
 
         try:
-            ns: dict[str, Any] = {}
+            ns: dict[str, Any] = {"__builtins__": _ALLOWED_BUILTINS}
             exec(code, ns)  # noqa: S102
             graph_obj = None
             for var_name in ("graph", "wf", "workflow", "g"):
@@ -1080,7 +1081,7 @@ class DiagnosisLoop:
                 pass
 
         try:
-            ns: dict[str, Any] = {}
+            ns: dict[str, Any] = {"__builtins__": _ALLOWED_BUILTINS}
             exec(code, ns)  # noqa: S102
             for var_name in ("graph", "wf", "workflow", "g"):
                 if var_name in ns and hasattr(ns[var_name], "model_dump"):

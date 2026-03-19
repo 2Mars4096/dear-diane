@@ -5,9 +5,9 @@ executable Python code that uses the ``dan.builder`` DSL to construct a
 ``Graph``.  Alternatively, ``build_graph()`` constructs a ``Graph`` object
 directly in-process without emitting code strings (plan 32-7).
 
-A ``CoverageChecker`` pre-validates whether all stages can be compiled
-deterministically; when coverage is partial the caller can fall back to
-the LLM-based codegen path (plan 24-1).
+``IntentCompiler`` is the primary deterministic path. ``CoverageChecker`` remains
+only as a legacy compatibility shim; callers should attempt deterministic
+compilation directly and fall back to LLM codegen only if compilation fails.
 """
 
 from __future__ import annotations
@@ -328,49 +328,6 @@ DOMAIN_PATTERN_PREFERENCES: dict[str, list[str]] = {
     "data_analysis": ["data_pipeline", "tool_augmented", "linear_chain"],
     "code_generation": ["tool_augmented", "research_review", "linear_chain"],
 }
-
-
-# ---------------------------------------------------------------------------
-# Coverage checker
-# ---------------------------------------------------------------------------
-
-
-class CoverageResult(BaseModel):
-    """Result of checking whether a WorkflowIntent can be fully compiled."""
-
-    fully_covered: bool
-    supported_stages: list[str] = Field(default_factory=list)
-    unsupported_stages: list[str] = Field(default_factory=list)
-    recommendation: Literal["compile", "fallback", "partial", "compose"]
-    constituent_patterns: list[str] | None = None
-
-
-class CoverageChecker:
-    """Vestigial pass-through for compatibility. The real gate is IntentCompiler.compile()."""
-
-    SUPPORTED_TYPES: set[StageType] = set(StageType)
-
-    def check(self, intent: WorkflowIntent, *, try_compose: bool = True) -> CoverageResult:
-        """Always returns fully_covered=True. Kept for API compatibility; real gate is IntentCompiler.compile()."""
-        stage_names = [s.name for s in intent.stages]
-        return CoverageResult(
-            fully_covered=True,
-            supported_stages=stage_names,
-            unsupported_stages=[],
-            recommendation="compile",
-        )
-
-    def describe_coverage(self) -> str:
-        """Return a human-readable summary of supported patterns."""
-        lines = ["Supported workflow patterns:"]
-        for name, entry in COVERAGE_CATALOG.items():
-            types = ", ".join(st.value for st in entry["stage_types"])
-            lines.append(f"  - {name}: {entry['description']} (types: {types})")
-        lines.append("")
-        lines.append(
-            f"Supported stage types: {', '.join(st.value for st in sorted(self.SUPPORTED_TYPES, key=lambda s: s.value))}"
-        )
-        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

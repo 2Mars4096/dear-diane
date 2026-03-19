@@ -60,7 +60,7 @@ from dan.meta.graph_quality import (
     is_acceptable_simple_graph,
     tier_quality_threshold,
 )
-from dan.meta.intent_compiler import COVERAGE_CATALOG, CoverageChecker, CoverageResult, DOMAIN_PATTERN_PREFERENCES, IntentCompiler
+from dan.meta.intent_compiler import COVERAGE_CATALOG, DOMAIN_PATTERN_PREFERENCES, IntentCompiler
 from dan.meta.intent_extraction import (
     INTENT_EXTRACTION_SYSTEM_PROMPT,
     INTENT_FEW_SHOT_EXAMPLES,
@@ -95,8 +95,6 @@ __all__ = [
     "CorrectionStrategySelector",
     "CodegenDiagnostics",
     "COVERAGE_CATALOG",
-    "CoverageChecker",
-    "CoverageResult",
     "DOMAIN_PATTERN_PREFERENCES",
     "DefaultProfile",
     "DefaultsEnricher",

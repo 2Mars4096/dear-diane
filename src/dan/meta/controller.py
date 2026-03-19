@@ -458,6 +458,12 @@ class MetaController:
                         plan_output.plan, domain=None, user_text=spec.goal,
                     )
                     wf_id = graph_data.get("workflow_id", spec.name) if isinstance(graph_data, dict) else spec.name
+                    if isinstance(graph_data, dict) and graph_data.get("legacy_fallback"):
+                        logger.warning(
+                            "Workflow %s: %s",
+                            spec.name,
+                            graph_data.get("warning", "generation fell back to simplified workflow"),
+                        )
                     built_ids.append(wf_id)
                     session.workflow_ids.append(wf_id)
 
