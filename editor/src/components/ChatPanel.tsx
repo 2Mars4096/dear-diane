@@ -561,6 +561,13 @@ export default function ChatPanel({
 
   activeThreadIdRef.current = activeThreadId;
 
+  const setTrackedActiveChannelId = useCallback((nextChannelId: string | null) => {
+    // Keep the ref in sync immediately so reconnect checks still see the
+    // active channel if the socket closes before the next render commits.
+    activeChannelIdRef.current = nextChannelId;
+    setActiveChannelId(nextChannelId);
+  }, []);
+
   const detachCurrentStream = useCallback(() => {
     const ws = wsRef.current;
     const threadId = activeThreadIdRef.current;
@@ -1177,7 +1184,7 @@ export default function ChatPanel({
           api.buildApiWebSocketUrl(`/api/chat/${streamChannelId}/events`),
         );
         wsRef.current = runWs;
-        setActiveChannelId(null); // run streams are observational, not stoppable via chat stop route
+        setTrackedActiveChannelId(null); // run streams are observational, not stoppable via chat stop route
         setIsStreaming(false);
         setIsRunStreaming(true);
         let runWsClosedIntentionally = false;
@@ -1672,11 +1679,11 @@ export default function ChatPanel({
           if (!isReconnect && seenStreamChannels.has(channelId)) {
             setError("Chat stream redirect loop detected");
             setIsStreaming(false);
-            setActiveChannelId(null);
+            setTrackedActiveChannelId(null);
             return;
           }
           if (!isReconnect) seenStreamChannels.add(channelId);
-          setActiveChannelId(channelId);
+          setTrackedActiveChannelId(channelId);
 
           const ws = new WebSocket(
             api.buildApiWebSocketUrl(`/api/chat/${channelId}/events`),
@@ -1806,7 +1813,7 @@ export default function ChatPanel({
                 } else {
                   ws.close();
                   setIsStreaming(false);
-                  setActiveChannelId(null);
+                  setTrackedActiveChannelId(null);
                   if (capturedGraphId) void fetchThreads(capturedGraphId);
                 }
               }
@@ -1839,7 +1846,7 @@ export default function ChatPanel({
                 return updated;
               });
               setIsStreaming(false);
-              setActiveChannelId(null);
+              setTrackedActiveChannelId(null);
               wsHadTerminalEvent = true;
               wsClosedIntentionally = true;
               ws.close();
@@ -1875,7 +1882,7 @@ export default function ChatPanel({
                 return updated;
               });
               setIsStreaming(false);
-              setActiveChannelId(null);
+              setTrackedActiveChannelId(null);
               wsHadTerminalEvent = true;
               wsClosedIntentionally = true;
               ws.close();
@@ -2001,7 +2008,7 @@ export default function ChatPanel({
               );
               setError(evt.error ?? "Unknown error");
               setIsStreaming(false);
-              setActiveChannelId(null);
+              setTrackedActiveChannelId(null);
               wsHadTerminalEvent = true;
               wsClosedIntentionally = true;
               ws.close();
@@ -2061,11 +2068,11 @@ export default function ChatPanel({
               ((event.code === 1000 || event.code === 1005) && wsHadTerminalEvent)
             ) {
               setIsStreaming(false);
-              setActiveChannelId(null);
+              setTrackedActiveChannelId(null);
               return;
             }
             setIsStreaming(false);
-            setActiveChannelId(null);
+            setTrackedActiveChannelId(null);
             void (async () => {
               const activeThreadForRecovery =
                 threadId ?? activeThreadIdRef.current ?? null;
