@@ -24,13 +24,15 @@ export class LspClient extends EventEmitter {
   private serverCapabilities: any = null;
   private disposed = false;
 
-  constructor(
-    private command: string,
-    private args: string[],
-    private rootUri: string,
-    private languageId: string,
-  ) {
+  private command: string;
+  private args: string[];
+  private rootUri: string;
+
+  constructor(command: string, args: string[], rootUri: string, _languageId: string) {
     super();
+    this.command = command;
+    this.args = args;
+    this.rootUri = rootUri;
   }
 
   async start(): Promise<void> {
@@ -189,7 +191,7 @@ export class LspClient extends EventEmitter {
   }
 
   private rejectAllPending(reason: string) {
-    for (const [id, pending] of this.pendingRequests) {
+    for (const [, pending] of this.pendingRequests) {
       clearTimeout(pending.timer);
       pending.reject(new Error(reason));
     }

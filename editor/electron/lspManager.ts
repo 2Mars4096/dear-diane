@@ -82,15 +82,19 @@ export class LspManager {
   private expectedStops = new Set<string>();
   private mainWindow: BrowserWindow | null = null;
 
+  private readonly clientFactory: (
+    command: string,
+    args: string[],
+    rootUri: string,
+    serverId: string,
+  ) => LspClient;
+
   constructor(
-    private readonly clientFactory: (
-      command: string,
-      args: string[],
-      rootUri: string,
-      serverId: string,
-    ) => LspClient = (command, args, rootUri, serverId) =>
-      new LspClient(command, args, rootUri, serverId),
-  ) {}
+    clientFactory?: (command: string, args: string[], rootUri: string, serverId: string) => LspClient,
+  ) {
+    this.clientFactory = clientFactory ?? ((command, args, rootUri, serverId) =>
+      new LspClient(command, args, rootUri, serverId));
+  }
 
   setMainWindow(win: BrowserWindow) {
     this.mainWindow = win;
