@@ -103,6 +103,7 @@
     "@xyflow/react": "^12.10.1",
     "allotment": "^1.20.5",
     "chart.js": "^4.5.1",
+    "dompurify": "^3.3.3",
     "electron-updater": "^6.8.3",
     "highlight.js": "^11.11.1",
     "katex": "^0.16.38",

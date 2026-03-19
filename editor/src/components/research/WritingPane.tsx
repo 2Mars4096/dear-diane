@@ -29,6 +29,7 @@ import { useResearchStore, type ResearchPaper } from "../../store/useResearchSto
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 import { requestEditorChatText } from "../../lib/editorChat";
+import { sanitizeHtml } from "../../lib/sanitizeHtml";
 
 // ---------------------------------------------------------------------------
 // Markdown rendering with KaTeX math support
@@ -155,7 +156,7 @@ function MarkdownPreview({
   const papers = useResearchStore((s) => s.papers);
   const html = useMemo(() => {
     const rendered = renderMarkdownWithMath(content);
-    return makeCitationsClickable(rendered, papers);
+    return sanitizeHtml(makeCitationsClickable(rendered, papers));
   }, [content, papers]);
 
   const handleClick = useCallback(

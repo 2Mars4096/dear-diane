@@ -26,6 +26,7 @@ import {
   parseRichBlocks,
   type RichBlock,
 } from "./chat/RichOutputRenderers";
+import { sanitizeHtml } from "../lib/sanitizeHtml";
 
 // ---------------------------------------------------------------------------
 // Markdown → HTML  (marked + custom renderer)
@@ -267,7 +268,7 @@ function renderMarkdown(
     html = html.replaceAll(`\x00PH${i}\x00`, content);
   });
 
-  return html;
+  return sanitizeHtml(html);
 }
 
 // ---------------------------------------------------------------------------

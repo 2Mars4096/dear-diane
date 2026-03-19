@@ -38,6 +38,7 @@ import { marketplaceManager } from "../../lib/marketplace/marketplaceManager";
 import type { MarketplaceSettings } from "../../lib/marketplace/marketplaceManager";
 import { useCodeStore } from "../../store/useCodeStore";
 import { nativeDialog, nativeExtension, nativeSkills, nativeMcp } from "../../lib/electronBridge";
+import { sanitizeHtml } from "../../lib/sanitizeHtml";
 import type { SkillEntry } from "../../lib/electronBridge";
 import { detectProjectType } from "../../lib/workspaceIntelligence";
 import type { MarketplaceItem, MarketplaceItemDetail, InstalledItem } from "../../lib/marketplace/types";
@@ -416,7 +417,7 @@ function DetailView({
 }
 
 function basicMarkdownToHtml(md: string): string {
-  return md
+  return sanitizeHtml(md
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -434,7 +435,7 @@ function basicMarkdownToHtml(md: string): string {
       return line;
     })
     .replace(/^- (.+)$/gm, "<li>$1</li>")
-    .replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>");
+    .replace(/(<li>.*<\/li>\n?)+/g, "<ul>$&</ul>"));
 }
 
 function RecommendedSection({

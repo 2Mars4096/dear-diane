@@ -6,6 +6,7 @@ import { useState, useRef, useEffect, useCallback, type KeyboardEvent } from "re
 import { Sparkles, X, Loader2, Send, Copy, Check } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
 import { askCodebase } from "../../lib/aiCodeActions";
+import { sanitizeHtml } from "../../lib/sanitizeHtml";
 
 function SimpleMarkdown({ content }: { content: string }) {
   const html = content
@@ -20,10 +21,11 @@ function SimpleMarkdown({ content }: { content: string }) {
     .replace(/\n\n/g, "</p><p class='mt-1.5'>")
     .replace(/\n- /g, "</p><li class='ml-3 list-disc'>")
     .replace(/\n(\d+)\. /g, "</p><li class='ml-3 list-decimal'>");
+  const safeHtml = sanitizeHtml(`<p>${html}</p>`);
   return (
     <div
       className="text-xs text-gray-300 leading-relaxed [&_strong]:text-gray-100 [&_em]:text-gray-200"
-      dangerouslySetInnerHTML={{ __html: `<p>${html}</p>` }}
+      dangerouslySetInnerHTML={{ __html: safeHtml }}
     />
   );
 }

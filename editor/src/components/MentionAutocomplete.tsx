@@ -14,6 +14,7 @@ import { NodeIcon } from "../lib/nodeIcons";
 import { NODE_TYPE_CATALOG, NODE_DESCRIPTIONS } from "../types/graph";
 import type { MentionType } from "../lib/mentionParser";
 import * as api from "../lib/api";
+import { sanitizeHtml } from "../lib/sanitizeHtml";
 
 type MentionSection = MentionType;
 
@@ -344,13 +345,14 @@ function MentionPreviewTooltip({
     } catch {
       /* ignore */
     }
+    const safeHighlighted = sanitizeHtml(highlighted);
     content = (
       <>
         <div className="text-[10px] font-semibold text-gray-500 uppercase tracking-wider mb-1">
           Code Reference
         </div>
         <pre className="text-[11px] bg-gray-900 text-gray-100 rounded p-2 overflow-x-auto font-mono leading-relaxed">
-          <code dangerouslySetInnerHTML={{ __html: highlighted }} />
+          <code dangerouslySetInnerHTML={{ __html: safeHighlighted }} />
         </pre>
       </>
     );
