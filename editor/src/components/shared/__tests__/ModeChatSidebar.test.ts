@@ -8,10 +8,16 @@ const {
   startEditorChatMock,
   streamEditorChatResponseMock,
   getChatThreadMock,
+  listChatThreadsMock,
+  createChatThreadMock,
+  updateChatThreadMock,
 } = vi.hoisted(() => ({
   startEditorChatMock: vi.fn(),
   streamEditorChatResponseMock: vi.fn(),
   getChatThreadMock: vi.fn(),
+  listChatThreadsMock: vi.fn(),
+  createChatThreadMock: vi.fn(),
+  updateChatThreadMock: vi.fn(),
 }));
 
 vi.mock("../../../lib/editorChat", async () => {
@@ -32,6 +38,9 @@ vi.mock("../../../lib/api", async () => {
   return {
     ...actual,
     getChatThread: getChatThreadMock,
+    listChatThreads: listChatThreadsMock,
+    createChatThread: createChatThreadMock,
+    updateChatThread: updateChatThreadMock,
   };
 });
 
@@ -117,6 +126,13 @@ describe("ModeChatSidebar", () => {
       );
     }
     resetStores();
+    listChatThreadsMock.mockResolvedValue({ threads: [] });
+    createChatThreadMock.mockResolvedValue({
+      id: "branch-thread",
+      created_at: "2026-03-19T00:00:00.000Z",
+      updated_at: "2026-03-19T00:00:00.000Z",
+    });
+    updateChatThreadMock.mockResolvedValue({ status: "ok" });
     vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
     vi.stubGlobal(
       "requestAnimationFrame",
@@ -198,6 +214,115 @@ describe("ModeChatSidebar", () => {
     expect(
       vi.mocked(modeChatSidebarState.shouldStopSidebarThreadSnapshotPolling),
     ).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("shows history entries and loads a selected sidebar thread", async () => {
+    listChatThreadsMock.mockResolvedValue({
+      threads: [
+        {
+          id: "thread-a",
+          title: "First thread",
+          workflow_id: "_scratch",
+          message_count: 2,
+          created_at: "2026-03-19T00:00:00.000Z",
+          updated_at: "2026-03-19T00:00:00.000Z",
+        },
+      ],
+    });
+    getChatThreadMock.mockResolvedValue({
+      title: "First thread",
+      mode: "agent",
+      messages: [
+        {
+          id: "msg-1",
+          role: "user",
+          content: "hello",
+          timestamp: "2026-03-19T00:00:00.000Z",
+        },
+        {
+          id: "msg-2",
+          role: "assistant",
+          content: "loaded from history",
+          timestamp: "2026-03-19T00:00:01.000Z",
+        },
+      ],
+    });
+
+    const { container, root } = await renderSidebar();
+
+    await act(async () => {
+      (
+        container.querySelector('button[title="Chat history"]') as HTMLButtonElement
+      ).click();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain("First thread");
+
+    await act(async () => {
+      (
+        Array.from(container.querySelectorAll("button")).find((button) =>
+          button.textContent?.includes("First thread"),
+        ) as HTMLButtonElement
+      ).click();
+      await Promise.resolve();
+    });
+
+    expect(getChatThreadMock).toHaveBeenCalledWith("_scratch", "thread-a");
+    expect(container.textContent).toContain("loaded from history");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("renders edit and regenerate history actions for existing messages", async () => {
+    localStorage.setItem(
+      "dan-chat-ws-test-development",
+      JSON.stringify({
+        threadId: "thread-a",
+        chatMode: "agent",
+        messages: [
+          {
+            id: "user-1",
+            role: "user",
+            content: "Original request",
+            timestamp: Date.now(),
+          },
+          {
+            id: "assistant-1",
+            role: "assistant",
+            content: "Assistant answer",
+            timestamp: Date.now() + 1,
+          },
+        ],
+      }),
+    );
+
+    const { container, root } = await renderSidebar();
+
+    expect(
+      container.querySelector('button[title="Edit and resend in new branch"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('button[title="Regenerate in new branch"]'),
+    ).not.toBeNull();
+
+    await act(async () => {
+      (
+        container.querySelector(
+          'button[title="Edit and resend in new branch"]',
+        ) as HTMLButtonElement
+      ).click();
+      await Promise.resolve();
+    });
+
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    expect(textarea.value).toContain("Original request");
 
     await act(async () => {
       root.unmount();

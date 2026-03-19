@@ -19,21 +19,25 @@ import {
   Loader2,
   Sparkles,
   Maximize2,
+  History,
   Paperclip,
   FileText,
   ImageIcon,
   Square,
   ArrowUp,
+  ArrowLeft,
   GripVertical,
   PencilLine,
   HelpCircle,
   Bug,
+  Plus,
 } from "lucide-react";
 import { useAppStore, type AppMode } from "../../store/useAppStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { isElectron, nativeTerminal, nativeFs } from "../../lib/electronBridge";
 import { useCodeStore } from "../../store/useCodeStore";
 import type { ChatMessage, ReviewableFileEdit } from "../../types/chat";
+import type { ChatThreadSummary } from "../../lib/api";
 import * as api from "../../lib/api";
 import {
   type ComposerAttachmentDraft,
@@ -67,7 +71,16 @@ import {
   shouldStopSidebarThreadSnapshotPolling,
   upsertAssistantMessage,
 } from "./modeChatSidebarState";
-import { deriveDraftThreadTitleFromMessage } from "../../lib/chatThreadTitle";
+import {
+  deriveDraftThreadTitleFromMessage,
+  getDisplayThreadTitle,
+} from "../../lib/chatThreadTitle";
+import {
+  buildBranchedThreadTitle,
+  getEditBranchTarget,
+  getExploreBranchTarget,
+  getRegenerateBranchTarget,
+} from "../../lib/chatBranching";
 import { extractFileWritePaths } from "../../lib/toolCallPresentation";
 import { buildSurfaceContext } from "../../lib/contextBudget";
 import { extractImportPaths } from "../../lib/importResolver";
@@ -200,6 +213,14 @@ interface StoredModeChatSession {
   chatMode: SidebarChatMode;
 }
 
+type BranchType = "edit" | "regenerate" | "explore";
+
+type RewriteBranchState = {
+  sourceMessageId: string;
+  historyBefore: ChatMessage[];
+  branchType: BranchType;
+};
+
 /* ------------------------------------------------------------------ */
 /*  Persistence                                                        */
 /* ------------------------------------------------------------------ */
@@ -312,6 +333,25 @@ function trackCommand(cmd: string) {
   } catch {
     /* ignore */
   }
+}
+
+function relativeTimeShort(iso: string): string {
+  const diff = Date.now() - new Date(iso).getTime();
+  const sec = Math.floor(diff / 1000);
+  if (sec < 60) return "just now";
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}m ago`;
+  const hrs = Math.floor(min / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function summarizeThreadTitle(messages: ChatMessage[]): string {
+  const firstUser = messages.find(
+    (message) => message.role === "user" && message.content.trim(),
+  );
+  if (!firstUser) return "New Chat";
+  return deriveDraftThreadTitleFromMessage(firstUser.content, "New Chat");
 }
 
 function getRecentCommands(): string[] {
@@ -542,6 +582,12 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
   const [threadId, setThreadId] = useState<string | null>(
     initialSessionRef.current.threadId,
   );
+  const [threadTitle, setThreadTitle] = useState<string>(
+    summarizeThreadTitle(initialSessionRef.current.messages),
+  );
+  const [threads, setThreads] = useState<ChatThreadSummary[]>([]);
+  const [loadingThreads, setLoadingThreads] = useState(false);
+  const [showThreadList, setShowThreadList] = useState(false);
   const [detectedMode, setDetectedMode] = useState<SidebarChatMode | null>(null);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
@@ -559,6 +605,9 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     top: number;
     left: number;
   } | null>(null);
+  const [rewriteTarget, setRewriteTarget] = useState<RewriteBranchState | null>(
+    null,
+  );
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -597,6 +646,72 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     };
   }, [messages, workspaceId, mode, threadId, chatMode]);
 
+  const fetchThreads = useCallback(async () => {
+    setLoadingThreads(true);
+    try {
+      const data = await api.listChatThreads("_scratch");
+      const next = Array.isArray(data.threads)
+        ? [...data.threads].sort(
+            (a, b) =>
+              Date.parse(b.updated_at || "") - Date.parse(a.updated_at || ""),
+          )
+        : [];
+      setThreads(next);
+    } catch (error) {
+      console.warn("Failed to fetch sidebar chat threads:", error);
+    } finally {
+      setLoadingThreads(false);
+    }
+  }, []);
+
+  const createBranchedThread = useCallback(
+    async (
+      seedMessages: ChatMessage[],
+      nextUserContent: string,
+      lineage?: { branchType: BranchType; branchPointMessageId?: string },
+    ) => {
+      const nextMode = chatModeRef.current;
+      const branchTitle = buildBranchedThreadTitle(threadTitle, nextUserContent);
+      const parentThreadId = threadIdRef.current || undefined;
+
+      try {
+        const created = await api.createChatThread("_scratch", {
+          title: branchTitle,
+          mode: nextMode,
+          parent_thread_id: parentThreadId,
+          branch_point_message_id: lineage?.branchPointMessageId,
+          branch_type: lineage?.branchType,
+        });
+        const nextThreadId =
+          typeof created.id === "string" && created.id.trim() ? created.id : null;
+        if (!nextThreadId) {
+          throw new Error("Missing branched thread id");
+        }
+
+        await api.updateChatThread("_scratch", nextThreadId, {
+          title: branchTitle,
+          messages: seedMessages.map(toBackendMessage),
+          mode: nextMode,
+        });
+
+        setThreadId(nextThreadId);
+        threadIdRef.current = nextThreadId;
+        setThreadTitle(getDisplayThreadTitle(branchTitle, "New Chat"));
+        setMessages(seedMessages);
+        setPendingQueue([]);
+        setRewriteTarget(null);
+        setShowThreadList(false);
+        void fetchThreads();
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return nextThreadId;
+      } catch (error) {
+        console.warn("Failed to create branched sidebar chat thread:", error);
+        return null;
+      }
+    },
+    [fetchThreads, threadTitle],
+  );
+
   // Flush any pending debounced save when the sidebar unmounts
   useEffect(() => {
     return () => {
@@ -621,6 +736,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     setChatMode(session.chatMode);
     setThreadId(session.threadId);
     threadIdRef.current = session.threadId;
+    setThreadTitle(summarizeThreadTitle(session.messages));
     setDetectedMode(null);
     setInput("");
     setStreaming(false);
@@ -633,7 +749,14 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     setPasteHint(null);
     setMentionQuery(null);
     setMentionAnchor(null);
+    setShowThreadList(false);
+    void fetchThreads();
   }, [workspaceId, mode]);
+
+  useEffect(() => {
+    if (!showThreadList) return;
+    void fetchThreads();
+  }, [fetchThreads, showThreadList]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -950,6 +1073,71 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     return nextThreadId;
   }, []);
 
+  const loadThread = useCallback(async (targetThreadId: string) => {
+    try {
+      await persistThreadSnapshot();
+      const data = await api.getChatThread("_scratch", targetThreadId);
+      const backendMsgs = Array.isArray(data.messages)
+        ? (data.messages as Record<string, unknown>[])
+        : [];
+      const normalized = backendMsgs.map(fromBackendMessage);
+      const rawMode = typeof data.mode === "string" ? data.mode : "auto";
+      const nextMode = (
+        ["auto", "agent", "ask", "plan", "debug"].includes(rawMode)
+          ? rawMode
+          : "auto"
+      ) as SidebarChatMode;
+      setMessages(normalized);
+      setThreadId(targetThreadId);
+      threadIdRef.current = targetThreadId;
+      setThreadTitle(
+        getDisplayThreadTitle(
+          typeof data.title === "string" ? data.title : summarizeThreadTitle(normalized),
+          "New Chat",
+        ),
+      );
+      setChatMode(nextMode);
+      chatModeRef.current = nextMode;
+      setDetectedMode(null);
+      setInput("");
+      setUserAttachments([]);
+      setPendingQueue([]);
+      setRewriteTarget(null);
+      setShowThreadList(false);
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    } catch (error) {
+      console.warn("Failed to load sidebar chat thread:", error);
+    }
+  }, [persistThreadSnapshot]);
+
+  const handleNewChat = useCallback(async () => {
+    try {
+      await persistThreadSnapshot();
+    } catch (error) {
+      console.warn("Failed to persist sidebar chat before starting a new one:", error);
+    }
+    abortRef.current?.abort();
+    setMessages([]);
+    setThreadId(null);
+    threadIdRef.current = null;
+    setThreadTitle("New Chat");
+    setDetectedMode(null);
+    setInput("");
+    setStreaming(false);
+    setPendingQueue([]);
+    setPendingOpenFullChat(false);
+    setUserAttachments([]);
+    setActiveChannelId(null);
+    activeChannelIdRef.current = null;
+    activeRequestModeRef.current = null;
+    setPasteHint(null);
+    setMentionQuery(null);
+    setMentionAnchor(null);
+    setRewriteTarget(null);
+    setShowThreadList(false);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, [persistThreadSnapshot]);
+
   const completeOpenFullChat = useCallback(async () => {
     let targetThreadId = threadIdRef.current;
     try {
@@ -995,6 +1183,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     fileSnapshotLoadsRef.current.clear();
     setThreadId(null);
     threadIdRef.current = null;
+    setThreadTitle("New Chat");
     setActiveChannelId(null);
     activeChannelIdRef.current = null;
     activeRequestModeRef.current = null;
@@ -1002,6 +1191,8 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     setPasteHint(null);
     setMentionQuery(null);
     setMentionAnchor(null);
+    setRewriteTarget(null);
+    setShowThreadList(false);
     if (textareaRef.current) textareaRef.current.style.height = "auto";
     if (workspaceId) {
       try {
@@ -1101,10 +1292,32 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       rawText: string,
       attachmentDrafts: ComposerAttachmentDraft[],
       modeOverride?: SidebarChatMode,
+      historyOverride?: ChatMessage[],
+      threadIdOverride?: string | null,
     ) => {
       const trimmed = rawText.trim();
       if (!trimmed && attachmentDrafts.length === 0) return;
       const effectiveMode = modeOverride ?? chatModeRef.current;
+
+      if (rewriteTarget && !historyOverride) {
+        const branchedThreadId = await createBranchedThread(
+          rewriteTarget.historyBefore,
+          trimmed,
+          {
+            branchType: rewriteTarget.branchType,
+            branchPointMessageId: rewriteTarget.sourceMessageId,
+          },
+        );
+        if (!branchedThreadId) return;
+        await sendNow(
+          rawText,
+          attachmentDrafts.map(cloneAttachmentDraft),
+          modeOverride,
+          rewriteTarget.historyBefore,
+          branchedThreadId,
+        );
+        return;
+      }
 
       if (trimmed.startsWith("/")) {
         const parsed = parseLeadingCommand(trimmed);
@@ -1216,6 +1429,12 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             : undefined,
       };
 
+      if (!(threadIdOverride ?? threadIdRef.current)) {
+        setThreadTitle(
+          deriveDraftThreadTitleFromMessage(userMsg.content, "New Chat"),
+        );
+      }
+
       const assistantId = crypto.randomUUID();
       const assistantMsg: ChatMessage = {
         id: assistantId,
@@ -1224,9 +1443,11 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         timestamp: Date.now(),
       };
 
-      setMessages((prev) => [...prev, userMsg, assistantMsg]);
+      const baseHistory = historyOverride ?? messagesRef.current;
+      setMessages([...baseHistory, userMsg, assistantMsg]);
       setStreaming(true);
       setDetectedMode(null);
+      setRewriteTarget(null);
 
       const controller = new AbortController();
       abortRef.current = controller;
@@ -1236,13 +1457,13 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         const { threadId: nextThreadId, response } = await startEditorChat({
           message: fullMessage,
           history: sanitizeChatHistory(
-            messagesRef.current.flatMap((message) =>
+            baseHistory.flatMap((message) =>
               message.role === "user" || message.role === "assistant"
                 ? [{ role: message.role, content: message.content }]
                 : [],
             ),
           ),
-          threadId: threadIdRef.current,
+          threadId: threadIdOverride ?? threadIdRef.current,
           mode: effectiveMode,
           scope: `mode-chat:${mode}`,
           attachments,
@@ -1252,6 +1473,10 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         });
         setThreadId(nextThreadId);
         threadIdRef.current = nextThreadId;
+        setThreadTitle((prev) =>
+          getDisplayThreadTitle(prev, summarizeThreadTitle(baseHistory)),
+        );
+        void fetchThreads();
         const nextChatChannel =
           typeof response.stream_channel_id === "string" &&
           response.stream_channel_id.startsWith("chat-")
@@ -1503,10 +1728,13 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     },
     [
       capturePreWriteSnapshot,
+      createBranchedThread,
       contextProvider,
+      fetchThreads,
       finishStream,
       mode,
       persistReviewableEdits,
+      rewriteTarget,
       workspaceId,
     ],
   );
@@ -1563,6 +1791,56 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     },
     [processLocalCommand, queueMessage, sendNow, streaming],
   );
+
+  const handleEditAndResend = useCallback((message: ChatMessage) => {
+    const target = getEditBranchTarget(messagesRef.current, message.id);
+    if (!target) return;
+    setRewriteTarget({
+      sourceMessageId: message.id,
+      historyBefore: target.historyBefore,
+      branchType: "edit",
+    });
+    setInput(target.content);
+    setUserAttachments(target.attachments);
+    requestAnimationFrame(() => {
+      adjustTextarea(textareaRef.current);
+      textareaRef.current?.focus();
+    });
+  }, [adjustTextarea]);
+
+  const handleRegenerate = useCallback(
+    async (message: ChatMessage) => {
+      const target = getRegenerateBranchTarget(messagesRef.current, message.id);
+      if (!target) return;
+      const branchedThreadId = await createBranchedThread(
+        target.historyBefore,
+        target.content,
+        { branchType: "regenerate", branchPointMessageId: message.id },
+      );
+      if (!branchedThreadId) return;
+      await sendNow(
+        target.content,
+        target.attachments,
+        undefined,
+        target.historyBefore,
+        branchedThreadId,
+      );
+    },
+    [createBranchedThread, sendNow],
+  );
+
+  const handleExploreFromHere = useCallback((message: ChatMessage) => {
+    const target = getExploreBranchTarget(messagesRef.current, message.id);
+    if (!target) return;
+    setRewriteTarget({
+      sourceMessageId: message.id,
+      historyBefore: target.historyUpToHere,
+      branchType: "explore",
+    });
+    setInput("");
+    setUserAttachments([]);
+    requestAnimationFrame(() => textareaRef.current?.focus());
+  }, []);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1675,7 +1953,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       onDrop={handleDrop}
     >
       <div className="flex shrink-0 items-center justify-between border-b border-gray-200 px-3 py-2 dark:border-gray-800">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <span className="text-[11px] font-semibold uppercase tracking-widest text-gray-500 dark:text-gray-400">
             AI Chat
           </span>
@@ -1683,13 +1961,33 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
             <div className="truncate text-[10px] text-blue-500 dark:text-blue-400">
               Opening full Chat after the active response queue finishes
             </div>
+          ) : showThreadList ? (
+            <div className="truncate text-[10px] text-gray-400 dark:text-gray-500">
+              Chat history
+            </div>
           ) : threadId ? (
             <div className="truncate text-[10px] text-gray-400 dark:text-gray-500">
-              Scratch thread ready for full Chat handoff
+              {getDisplayThreadTitle(threadTitle, "Scratch chat")}
             </div>
           ) : null}
         </div>
         <div className="flex items-center gap-1">
+          <button
+            onClick={() => setShowThreadList((prev) => !prev)}
+            disabled={streaming}
+            title={showThreadList ? "Back to conversation" : "Chat history"}
+            className="rounded p-1 text-gray-500 transition-colors hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-gray-300"
+          >
+            {showThreadList ? <ArrowLeft size={14} /> : <History size={14} />}
+          </button>
+          <button
+            onClick={handleNewChat}
+            disabled={streaming}
+            title="New chat"
+            className="rounded p-1 text-gray-500 transition-colors hover:text-gray-800 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-gray-300"
+          >
+            <Plus size={14} />
+          </button>
           <button
             onClick={openFullChat}
             title={
@@ -1721,7 +2019,52 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       {modeSelector}
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-3 py-3">
-        {messages.length === 0 ? (
+        {showThreadList ? (
+          <div className="space-y-2">
+            <button
+              onClick={handleNewChat}
+              disabled={streaming}
+              className="flex w-full items-center justify-center gap-2 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs font-medium text-gray-700 transition-colors hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+            >
+              <Plus size={13} />
+              New chat
+            </button>
+            {loadingThreads ? (
+              <div className="flex items-center justify-center py-8 text-xs text-gray-500 dark:text-gray-400">
+                <Loader2 size={14} className="mr-2 animate-spin" />
+                Loading chat history…
+              </div>
+            ) : threads.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-gray-200 px-3 py-6 text-center text-xs text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                No saved chats yet.
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {threads.map((thread) => (
+                  <button
+                    key={thread.id}
+                    onClick={() => void loadThread(thread.id)}
+                    disabled={streaming}
+                    className={`flex w-full items-start gap-2 rounded-lg border px-3 py-2 text-left transition-colors ${
+                      thread.id === threadId
+                        ? "border-indigo-200 bg-indigo-50 text-indigo-900 dark:border-indigo-500/40 dark:bg-indigo-500/10 dark:text-indigo-100"
+                        : "border-gray-200 bg-white hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:bg-gray-700/70"
+                    } disabled:cursor-not-allowed disabled:opacity-50`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-xs font-medium">
+                        {getDisplayThreadTitle(thread.title, "Untitled chat")}
+                      </div>
+                      <div className="mt-0.5 text-[10px] text-gray-500 dark:text-gray-400">
+                        {relativeTimeShort(thread.updated_at)} · {thread.message_count} msgs
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        ) : messages.length === 0 ? (
           <div className="flex h-full select-none flex-col items-center justify-center gap-2 px-2 text-center text-xs text-gray-500 dark:text-gray-600">
             <Sparkles size={24} className="text-gray-400 dark:text-gray-700" />
             <span>
@@ -1733,10 +2076,10 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
               onClick={openFullChat}
               className="mt-1 text-[10px] text-gray-500 transition-colors hover:text-blue-600 dark:hover:text-blue-400"
             >
-              Open full Chat for history, branching, and thread controls
+              Open full Chat for the larger workspace view
             </button>
             <span className="text-[10px] text-gray-400 dark:text-gray-600">
-              Drag files here, paste files/images, use `@` mentions, or type `/` for commands
+              Use History to reopen saved chats, or drag files here, paste files/images, use `@` mentions, and type `/` for commands
             </span>
           </div>
         ) : (
@@ -1750,6 +2093,20 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
                   index === messages.length - 1 &&
                   message.role === "assistant"
                 }
+                onEditAndResend={
+                  message.role === "user" ? () => handleEditAndResend(message) : undefined
+                }
+                onRegenerate={
+                  message.role === "assistant"
+                    ? () => void handleRegenerate(message)
+                    : undefined
+                }
+                onExploreFromHere={
+                  message.role === "assistant"
+                    ? () => handleExploreFromHere(message)
+                    : undefined
+                }
+                disableHistoryActions={streaming}
                 onCopyMarkdown={
                   message.content ? () => handleCopyMessage(message) : undefined
                 }
@@ -1870,6 +2227,22 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       )}
 
       <div className="shrink-0 border-t border-gray-200 px-3 py-2 dark:border-gray-800">
+        {rewriteTarget && (
+          <div className="mb-2 flex items-start gap-3 rounded-xl border border-indigo-200 bg-indigo-50/80 px-3 py-2 text-xs text-indigo-700 dark:border-indigo-500/30 dark:bg-indigo-500/10 dark:text-indigo-200">
+            <span className="flex-1">
+              {rewriteTarget.branchType === "explore"
+                ? "Exploring from a previous result. Sending will start a new branched thread from that point."
+                : "Editing an earlier turn. Sending will create a new branched thread and keep the current thread unchanged."}
+            </span>
+            <button
+              onClick={() => setRewriteTarget(null)}
+              className="rounded p-0.5 text-indigo-500 transition-colors hover:text-indigo-700 dark:text-indigo-300 dark:hover:text-indigo-200"
+              title="Cancel branch edit"
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
         <input
           ref={fileInputRef}
           type="file"
