@@ -889,7 +889,7 @@ class ChatManager:
                     )
                 
                 cost = estimate_cost(effective_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
-                if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
+                if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost > 0:
                     final_content += f"\n\n[~${cost:.4f}]"
 
                 yield ChatCompleteEvent(
@@ -1891,7 +1891,7 @@ class ChatManager:
                     )
                     
                     cost = estimate_cost(effective_model, normalized_usage.get("prompt_tokens", 0), normalized_usage.get("completion_tokens", 0))
-                    if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
+                    if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost > 0:
                         content += f"\n\n[~${cost:.4f}]"
                         
                     yield ChatCompleteEvent(
@@ -2937,7 +2937,7 @@ class ChatManager:
             )
             token_usage = _normalize_usage(usage_totals or result.usage)
             cost = estimate_cost(effective_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
-            if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
+            if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost > 0:
                 final_content += f"\n\n[~${cost:.4f}]"
 
             yield ChatCompleteEvent(
@@ -3085,7 +3085,7 @@ class ChatManager:
         )
         
         cost = estimate_cost(_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
-        if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
+        if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost > 0:
             final_content += f"\n\n[~${cost:.4f}]"
 
         yield ChatCompleteEvent(
@@ -3645,7 +3645,7 @@ class ChatManager:
                     token_usage = _normalize_usage(chunk.usage)
 
             cost = estimate_cost(_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
-            if os.environ.get("DAN_SHOW_COST") == "1" and cost > 0:
+            if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost > 0:
                 final_content += f"\n\n[~${cost:.4f}]"
 
             yield ChatCompleteEvent(

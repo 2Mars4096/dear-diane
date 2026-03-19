@@ -99,7 +99,7 @@ class Session(BaseModel):
     autonomy_resolution: AutonomyResolution | None = None
 
     children: list[str] = Field(default_factory=list)
-    child_execution: Literal["parallel", "serial"] = "parallel"
+    child_execution: Literal["parallel", "serial", "mixed"] = "parallel"
 
     result: SessionResult | None = None
 

@@ -484,8 +484,18 @@ def _determine_stage(session: Any) -> str:
 
     action_hints = getattr(route, "action_hints", []) if route else []
     route_target = getattr(route, "target", "") if route else ""
+    workflow_query_only = (
+        route_target == "workflow"
+        and "workflow_query" in action_hints
+        and set(action_hints) <= {"workflow_query"}
+    )
 
-    if mode == "build" or "workflow_edit" in action_hints or route_target == "workflow":
+    if (
+        mode == "build"
+        or "workflow_edit" in action_hints
+        or "workflow_build" in action_hints
+        or (route_target == "workflow" and not workflow_query_only)
+    ):
         return "workflow_build"
     if intent == "plan" or mode == "plan":
         return "conversation_plan"
@@ -573,10 +583,16 @@ def _extract_chat_params(
     allow_mutation_tool = metadata.get("allow_mutation_tool")
     if not isinstance(allow_mutation_tool, bool):
         route_target = getattr(route, "target", "") if route is not None else ""
+        workflow_query_only = (
+            route_target == "workflow"
+            and "workflow_query" in required_action_hints
+            and set(required_action_hints) <= {"workflow_query"}
+        )
         allow_mutation_tool = (
             "workflow_edit" in required_action_hints
+            or "workflow_build" in required_action_hints
             or mode == "build"
-            or route_target == "workflow"
+            or (route_target == "workflow" and not workflow_query_only)
         )
 
     stream_channel_id = str(metadata.get("stream_channel_id") or "").strip() or None
@@ -999,6 +1015,12 @@ class MultiStepExecutor:
         manager.update_state(session.id, "waiting")
 
         child_execution = getattr(session, "child_execution", "serial")
+        if child_execution == "mixed":
+            logger.debug(
+                "Session %s requested mixed child execution; using serial fallback until hybrid scheduling lands",
+                session.id,
+            )
+            child_execution = "serial"
         child_results: dict[str, Any] = {}
         children: list[Any] = []
         interrupted = False

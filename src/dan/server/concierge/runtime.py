@@ -136,10 +136,10 @@ class AutonomyLevel(str, Enum):
 class Concierge:
 
     _REASSURANCE_INITIAL_DELAY: float = float(
-        os.environ.get("DAN_CONCIERGE_REASSURANCE_DELAY", "10")
+        os.environ.get("DAN_CONCIERGE_REASSURANCE_DELAY", "3")
     )
     _REASSURANCE_REPEAT_INTERVAL: float = float(
-        os.environ.get("DAN_CONCIERGE_REASSURANCE_INTERVAL", "20")
+        os.environ.get("DAN_CONCIERGE_REASSURANCE_INTERVAL", "5")
     )
     _MIN_PHASE_EVENT_INTERVAL: float = 1.0
 
@@ -406,7 +406,7 @@ class Concierge:
         model = self._resolve_triage_model()
         provider = providers.resolve(model)
         result = await provider.complete(
-            messages=messages, model=model, temperature=0.0, max_tokens=60,
+            messages=messages, model=model, temperature=0.0, max_tokens=256,
         )
         return result.text
 

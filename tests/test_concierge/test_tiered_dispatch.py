@@ -987,6 +987,12 @@ def test_determine_stage_workflow_target() -> None:
     assert _determine_stage(session) == "workflow_build"
 
 
+def test_determine_stage_workflow_query_only_stays_conversation() -> None:
+    route = _FakeRoute(target="workflow", action_hints=["workflow_query"])
+    session = _FakeSession(triage=_FakeTriage(route=route))
+    assert _determine_stage(session) == "conversation"
+
+
 def test_determine_stage_file_target() -> None:
     route = _FakeRoute(target="file")
     session = _FakeSession(triage=_FakeTriage(route=route))
@@ -1972,6 +1978,16 @@ def test_extract_chat_params_mutation_tool_true_for_workflow_route_without_edit_
     )
     params = _extract_chat_params(session, "system prompt")
     assert params["allow_mutation_tool"] is True
+
+
+def test_extract_chat_params_mutation_tool_false_for_workflow_query_only() -> None:
+    route = _FakeRoute(target="workflow", action_hints=["workflow_query"])
+    session = _FakeSession(
+        triage=_FakeTriage(intent="agent", route=route),
+        msg=_FakeMsg(metadata={"mode": "agent"}),
+    )
+    params = _extract_chat_params(session, "system prompt")
+    assert params["allow_mutation_tool"] is False
 
 
 def test_extract_chat_params_mutation_tool_true_for_build_mode_no_route() -> None:
