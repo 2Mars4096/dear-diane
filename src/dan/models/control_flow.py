@@ -35,6 +35,50 @@ def _normalize_state_schema(schema: dict[str, Any] | None) -> dict[str, Any] | N
     return schema
 
 
+class SpawnPolicy(BaseModel):
+    """Limits and budget metadata for runtime child workflow expansion."""
+
+    max_child_depth: int | None = Field(default=4, ge=1)
+    max_spawns_per_node: int | None = Field(default=8, ge=1)
+    max_total_children: int | None = Field(default=32, ge=1)
+    timeout_seconds: float | None = None
+    budget_share: float | None = Field(default=None, ge=0.0)
+
+
+class DynamicExpansionSpec(BaseModel):
+    """Validated runtime expansion request owned by the engine."""
+
+    mode: Literal["sub_graph", "template_branch", "workflow_ref"] = "sub_graph"
+    ref: str
+    boundary_contract: BoundaryContract | None = None
+    spawn_policy: SpawnPolicy = Field(default_factory=SpawnPolicy)
+
+
+class ChildWorkflowCall(BaseModel):
+    """Typed child-workflow invocation descriptor."""
+
+    spec: DynamicExpansionSpec
+    inputs: dict[str, Any] = Field(default_factory=dict)
+    parent_node_id: str
+    call_id: str
+    source: Literal["engine", "runtime_repair", "user", "concierge"] = "engine"
+
+
+class ChildResultEnvelope(BaseModel):
+    """Typed child result returned to the parent workflow."""
+
+    status: Literal["completed", "failed", "partial"] = "completed"
+    outputs: dict[str, Any] = Field(default_factory=dict)
+    signals: list[dict[str, Any]] = Field(default_factory=list)
+    artifacts: list[str] = Field(default_factory=list)
+    run_id: str = ""
+    parent_run_id: str = ""
+    parent_node_id: str = ""
+    template_key: str = ""
+    layer_path: list[str] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 # ---------------------------------------------------------------------------
 # Input node — pre-run configuration surface for workflow inputs
 # ---------------------------------------------------------------------------
@@ -416,6 +460,14 @@ class OrchestratorNode(NodeBase):
     team_inputs: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
         description="team_name → {port: value} per-team overrides",
+    )
+    team_expansions: dict[str, DynamicExpansionSpec] = Field(
+        default_factory=dict,
+        description=(
+            "Optional team_name → validated child-workflow expansion. "
+            "When present, the team dispatches through the engine-owned "
+            "child workflow primitive instead of a plain in-graph subgraph call."
+        ),
     )
 
     # Composite-node contract
