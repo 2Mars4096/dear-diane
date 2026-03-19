@@ -7,6 +7,8 @@ import sys
 import time
 from pathlib import Path
 
+from dan.cli.process_utils import is_process_alive
+
 DAN_DIR = Path.home() / ".dan"
 PID_FILE = DAN_DIR / "server.pid"
 
@@ -24,9 +26,7 @@ def main() -> None:
         PID_FILE.unlink(missing_ok=True)
         return
 
-    try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
+    if not is_process_alive(pid):
         print(f"Server process {pid} is not running (stale PID file).")
         PID_FILE.unlink(missing_ok=True)
         return
@@ -36,9 +36,7 @@ def main() -> None:
 
     for _ in range(20):
         time.sleep(0.5)
-        try:
-            os.kill(pid, 0)
-        except (OSError, ProcessLookupError):
+        if not is_process_alive(pid):
             print("Server stopped.")
             PID_FILE.unlink(missing_ok=True)
             return

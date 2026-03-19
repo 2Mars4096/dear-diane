@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import argparse
 import os
-import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import IO
+
+from dan.cli.process_utils import is_process_alive
 
 DAN_DIR = Path.home() / ".dan"
 PID_FILE = DAN_DIR / "server.pid"
@@ -27,15 +28,6 @@ def read_pid_file() -> tuple[int | None, int | None]:
         return pid, port
     except (ValueError, IndexError, OSError):
         return None, None
-
-
-def is_process_alive(pid: int) -> bool:
-    """Check if a process with the given PID is running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
 
 
 def write_pid_file(pid: int, port: int) -> None:
@@ -111,7 +103,7 @@ def start_server(port: int = 8000) -> int:
     return proc.pid
 
 
-def wait_for_health(port: int, max_wait: float = 25.0, poll_interval: float = 0.5) -> bool:
+def wait_for_health(port: int, max_wait: float = 60.0, poll_interval: float = 0.5) -> bool:
     """Poll ``/health`` until the server is ready or the deadline expires."""
     deadline = time.monotonic() + max_wait
     while True:
@@ -165,20 +157,17 @@ def main() -> None:
                 print(f"Server ready (PID {new_pid})")
                 server_url = f"http://127.0.0.1:{port}"
             else:
-                print("Server failed to start within timeout.", file=sys.stderr)
-                print(f"Check logs: {LOGS_DIR / 'server.log'}", file=sys.stderr)
                 if is_process_alive(new_pid):
-                    try:
-                        os.kill(new_pid, signal.SIGTERM)
-                        for _ in range(20):
-                            time.sleep(0.25)
-                            if not is_process_alive(new_pid):
-                                break
-                        if is_process_alive(new_pid):
-                            os.kill(new_pid, signal.SIGKILL)
-                    except OSError:
-                        pass
-                remove_pid_file()
+                    print(
+                        f"Server still starting (PID {new_pid}). "
+                        "Run dan-up again in a moment.",
+                        file=sys.stderr,
+                    )
+                    print(f"Logs: {LOGS_DIR / 'server.log'}", file=sys.stderr)
+                else:
+                    print("Server process exited before becoming healthy.", file=sys.stderr)
+                    print(f"Check logs: {LOGS_DIR / 'server.log'}", file=sys.stderr)
+                    remove_pid_file()
                 sys.exit(1)
     finally:
         release_start_lock(lock_handle)

@@ -10,6 +10,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from dan.cli.process_utils import is_process_alive
+
 DAN_DIR = Path.home() / ".dan"
 PID_FILE = DAN_DIR / "server.pid"
 LOGS_DIR = DAN_DIR / "logs"
@@ -169,11 +171,7 @@ def _read_pid() -> tuple[int | None, int | None]:
 
 
 def _is_alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
+    return is_process_alive(pid)
 
 
 # === Subcommands ===

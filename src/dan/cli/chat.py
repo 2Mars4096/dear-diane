@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import hashlib
 import json
 import logging
@@ -393,6 +394,12 @@ class ChatClient:
                     action="Save workflow",
                 )
             )
+
+
+async def _close_client_quietly(client: Any) -> None:
+    """Best-effort client shutdown for Ctrl-C driven CLI exits."""
+    with contextlib.suppress(asyncio.CancelledError):
+        await client.close()
 
 
 _MAX_HISTORY_MESSAGES = 40
@@ -1825,9 +1832,12 @@ def main() -> None:
             )
         finally:
             _save_readline_history()
-            await client.close()
+            await _close_client_quietly(client)
 
-    asyncio.run(_main())
+    try:
+        asyncio.run(_main())
+    except KeyboardInterrupt:
+        print()
 
 
 def main_ask() -> None:

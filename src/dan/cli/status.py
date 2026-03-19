@@ -14,14 +14,12 @@ import sys
 import time
 from pathlib import Path
 
+from dan.cli.process_utils import is_process_alive
+
 
 def _is_pid_alive(pid: int) -> bool:
     """Check if a process is still running."""
-    try:
-        os.kill(pid, 0)
-        return True
-    except (OSError, ProcessLookupError):
-        return False
+    return is_process_alive(pid)
 
 
 def _parse_events_summary(events_path: Path) -> dict:
