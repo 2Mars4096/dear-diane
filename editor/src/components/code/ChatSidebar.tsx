@@ -18,7 +18,8 @@ import hljs from "../../lib/hljs";
 import { useCodeStore } from "../../store/useCodeStore";
 import { useAppStore } from "../../store/useAppStore";
 import { buildApiWebSocketUrl } from "../../lib/api";
-import { nativeFs, nativeTerminal } from "../../lib/electronBridge";
+import { isElectron, nativeFs, nativeTerminal } from "../../lib/electronBridge";
+import { sanitizeHtml } from "../../lib/sanitizeHtml";
 
 /* ------------------------------------------------------------------ */
 /*  Chat sender registration (for cross-component message injection)   */
@@ -178,9 +179,9 @@ function renderMarkdown(src: string): string {
     });
 
     html = linkifyFilePaths(html);
-    return html;
+    return sanitizeHtml(html);
   } catch {
-    return escapeHtml(src);
+    return sanitizeHtml(escapeHtml(src));
   }
 }
 
@@ -445,12 +446,13 @@ export default function ChatSidebar({ onClose }: ChatSidebarProps) {
   }, []);
 
   const handleRunInTerminal = useCallback(async (command: string) => {
+    if (!isElectron()) return;
     const { pinnedRoots, setShowTerminal, addTerminal, setActiveTerminal } =
       useCodeStore.getState();
     setShowTerminal(true);
 
     const cwd = pinnedRoots[0] || undefined;
-    const id = await nativeTerminal.create({ shell: "/bin/zsh", cwd });
+    const id = await nativeTerminal.create({ cwd });
     if (id) {
       const shortCmd =
         command.length > 40 ? command.slice(0, 37) + "..." : command;

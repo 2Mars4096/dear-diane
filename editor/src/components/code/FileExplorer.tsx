@@ -19,7 +19,7 @@ import {
   X,
 } from "lucide-react";
 import { useCodeStore, type FileTreeEntry } from "../../store/useCodeStore";
-import { nativeDialog, nativeFs, nativeShell } from "../../lib/electronBridge";
+import { isElectron, nativeDialog, nativeFs, nativeShell } from "../../lib/electronBridge";
 import { parseGitignore } from "../../lib/gitignoreFilter";
 import { FileIcon } from "./FileIcon";
 
@@ -1012,9 +1012,11 @@ function RecentFilesSection() {
 // ─── Empty State ───────────────────────────────────────────────────────
 
 function EmptyState() {
+  const electron = isElectron();
   const addPinnedRoot = useCodeStore((s) => s.addPinnedRoot);
 
   const handleOpen = async () => {
+    if (!electron) return;
     const dir = await nativeDialog.openDirectory();
     if (dir) addPinnedRoot(dir);
   };
@@ -1024,11 +1026,17 @@ function EmptyState() {
       <Folder size={32} className="text-gray-600" />
       <p className="text-sm text-gray-400">No folder opened</p>
       <button
-        className="rounded-md bg-blue-600 px-4 py-1.5 text-xs font-medium text-white transition hover:bg-blue-500"
+        className="rounded-md bg-blue-600 px-4 py-1.5 text-xs font-medium text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
         onClick={handleOpen}
+        disabled={!electron}
       >
         Open Folder
       </button>
+      {!electron && (
+        <p className="max-w-[220px] text-[10px] text-gray-500">
+          Opening folders requires the desktop app. Browser preview stays browsable for demos only.
+        </p>
+      )}
       <p className="text-[10px] text-gray-600">
         <kbd className="rounded border border-gray-700 bg-gray-800 px-1 py-0.5 font-mono text-[10px]">
           ⌘O
@@ -1051,11 +1059,13 @@ function ExplorerHeader({
   showIgnored: boolean;
   onToggleIgnored: () => void;
 }) {
+  const electron = isElectron();
   const addPinnedRoot = useCodeStore((s) => s.addPinnedRoot);
   const expandedDirs = useCodeStore((s) => s.expandedDirs);
   const setDirExpanded = useCodeStore((s) => s.setDirExpanded);
 
   const handleAddFolder = async () => {
+    if (!electron) return;
     const dir = await nativeDialog.openDirectory();
     if (dir) addPinnedRoot(dir);
   };
@@ -1091,7 +1101,12 @@ function ExplorerHeader({
         <button className={btnClass} title="Collapse All" onClick={handleCollapseAll}>
           <ChevronsDownUp size={14} />
         </button>
-        <button className={btnClass} title="Add Folder to Workspace" onClick={handleAddFolder}>
+        <button
+          className={btnClass}
+          title={electron ? "Add Folder to Workspace" : "Desktop app required"}
+          onClick={handleAddFolder}
+          disabled={!electron}
+        >
           <FolderPlusIcon size={14} />
         </button>
       </div>

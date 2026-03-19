@@ -74,7 +74,7 @@ import { useWorkspaceMemory } from "../../hooks/useWorkspaceMemory";
 import { useFileChangeDetection } from "../../hooks/useFileChangeDetection";
 import { useSettingsStore } from "../../store/useSettingsStore";
 import { useDebugStore } from "../../store/useDebugStore";
-import { nativeGit, nativeFs, nativeDebug } from "../../lib/electronBridge";
+import { isElectron, nativeGit, nativeFs, nativeDebug } from "../../lib/electronBridge";
 import { goBack, goForward } from "../../hooks/useCursorHistory";
 import { activateAllInstalledExtensions } from "../../lib/extensions/extensionActivator";
 
@@ -465,6 +465,7 @@ function BottomPanelTabs({
 /* ------------------------------------------------------------------ */
 
 export default function CodeMode() {
+  const electron = isElectron();
   const showSidebar = useCodeStore((s) => s.showSidebar);
   const showTerminal = useCodeStore((s) => s.showTerminal);
   const showDiff = useCodeStore((s) => s.showDiff);
@@ -523,10 +524,11 @@ export default function CodeMode() {
   useDebugEvents();
 
   useEffect(() => {
+    if (!electron) return;
     activateAllInstalledExtensions().catch((err) =>
       console.warn("Extension activation failed:", err),
     );
-  }, []);
+  }, [electron]);
 
   // Listen for merge editor open events from GitPanel
   useEffect(() => {
@@ -632,11 +634,11 @@ export default function CodeMode() {
 
   useEffect(() => {
     const root = pinnedRoots[0];
-    if (!root) return;
+    if (!electron || !root) return;
     nativeGit.branch(root).then((r) => {
       if (r.code === 0) setCurrentBranch(r.stdout.trim());
     });
-  }, [pinnedRoots, setCurrentBranch]);
+  }, [electron, pinnedRoots, setCurrentBranch]);
 
   const handleActivityClick = (panel: typeof activeSidebarPanel) => {
     if (showSidebar && activeSidebarPanel === panel) {
@@ -826,6 +828,14 @@ export default function CodeMode() {
           fileCount={recoveredFileCount}
           onDismiss={dismissRecovery}
         />
+      )}
+      {!electron && (
+        <div className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+          <AlertTriangle size={14} className="shrink-0" />
+          <span>
+            Development mode requires the desktop app for folders, git, LSP, and terminal access. Browser preview stays available for demo and layout purposes only.
+          </span>
+        </div>
       )}
       <div className="flex-1 min-h-0 flex">
         {/* Activity bar */}

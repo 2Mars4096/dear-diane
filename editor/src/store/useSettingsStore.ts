@@ -1,6 +1,8 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+import { detectCurrentPlatform, getBuiltinTerminalProfiles } from "../lib/terminalProfiles";
+
 export interface TerminalProfile {
   id: string;
   name: string;
@@ -11,11 +13,51 @@ export interface TerminalProfile {
   isDefault?: boolean;
 }
 
-const DEFAULT_TERMINAL_PROFILES: TerminalProfile[] = [
-  { id: "zsh", name: "zsh", shell: "/bin/zsh", isDefault: true },
-  { id: "bash", name: "bash", shell: "/bin/bash" },
-  { id: "sh", name: "sh", shell: "/bin/sh" },
-];
+const DEFAULT_TERMINAL_PROFILES: TerminalProfile[] = getBuiltinTerminalProfiles(
+  detectCurrentPlatform(),
+);
+
+function _defaultTerminalProfileId(profiles: TerminalProfile[]): string {
+  return profiles.find((profile) => profile.isDefault)?.id || profiles[0]?.id || "default";
+}
+
+function _isLegacyUnixTerminalProfiles(profiles: TerminalProfile[]): boolean {
+  if (profiles.length !== 3) return false;
+  const expected = [
+    { id: "zsh", shell: "/bin/zsh" },
+    { id: "bash", shell: "/bin/bash" },
+    { id: "sh", shell: "/bin/sh" },
+  ];
+  return expected.every((entry, index) => {
+    const profile = profiles[index];
+    return (
+      profile?.id === entry.id
+      && profile?.shell === entry.shell
+      && !profile?.args?.length
+    );
+  });
+}
+
+export function normalizeTerminalSettings(
+  state: Pick<EditorSettings, "terminalProfiles" | "defaultTerminalProfile">,
+  rawPlatform = detectCurrentPlatform(),
+): Pick<EditorSettings, "terminalProfiles" | "defaultTerminalProfile"> {
+  const builtinProfiles = getBuiltinTerminalProfiles(rawPlatform);
+  const profiles = Array.isArray(state.terminalProfiles) ? state.terminalProfiles : [];
+  const replacedLegacyProfiles =
+    profiles.length === 0 || _isLegacyUnixTerminalProfiles(profiles);
+  const normalizedProfiles = replacedLegacyProfiles ? builtinProfiles : profiles;
+  const defaultTerminalProfile = replacedLegacyProfiles
+    ? _defaultTerminalProfileId(normalizedProfiles)
+    : normalizedProfiles.some((profile) => profile.id === state.defaultTerminalProfile)
+      ? state.defaultTerminalProfile
+      : _defaultTerminalProfileId(normalizedProfiles);
+
+  return {
+    terminalProfiles: normalizedProfiles,
+    defaultTerminalProfile,
+  };
+}
 
 export interface EditorSettings {
   theme: "system" | "vs-dark" | "vs" | "hc-black";
@@ -92,7 +134,7 @@ const DEFAULT_SETTINGS: EditorSettings = {
   indentGuides: true,
   bracketPairGuides: true,
   terminalProfiles: DEFAULT_TERMINAL_PROFILES,
-  defaultTerminalProfile: "zsh",
+  defaultTerminalProfile: _defaultTerminalProfileId(DEFAULT_TERMINAL_PROFILES),
   inlineCompletionEnabled: true,
   aiActionsEnabled: true,
   codeActionsOnSave: true,
@@ -148,16 +190,28 @@ export const useSettingsStore = create<SettingsState>()(
     }),
     {
       name: "dan-editor-settings",
-      version: 2,
+      version: 3,
       migrate: (persistedState, version) => {
         const state = persistedState as Partial<SettingsState> | undefined;
         if (!state) return persistedState as SettingsState;
 
-        if (version < 2 && (state.theme === undefined || state.theme === "vs-dark")) {
-          return { ...state, theme: "system" } as SettingsState;
+        let migrated = state;
+
+        if (version < 2 && (migrated.theme === undefined || migrated.theme === "vs-dark")) {
+          migrated = { ...migrated, theme: "system" };
         }
 
-        return state as SettingsState;
+        if (version < 3) {
+          migrated = {
+            ...migrated,
+            ...normalizeTerminalSettings({
+              terminalProfiles: migrated.terminalProfiles ?? [],
+              defaultTerminalProfile: migrated.defaultTerminalProfile ?? "",
+            }),
+          };
+        }
+
+        return migrated as SettingsState;
       },
     },
   ),

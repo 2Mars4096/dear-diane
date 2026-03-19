@@ -10,6 +10,7 @@ import net from "node:net";
 import os from "node:os";
 import * as pty from "node-pty";
 import { autoUpdater } from "electron-updater";
+import { commandExists } from "./commandExists";
 import { LspManager } from "./lspManager";
 import { DebugManager } from "./debugManager";
 import { ExtensionHost } from "./extensionHost";
@@ -37,6 +38,21 @@ function getPersistentGraphsDir(): string {
 
 function getPersistentChatAttachmentsDir(): string {
   return path.join(app.getPath("userData"), "chat-attachments");
+}
+
+function getDefaultTerminalShell(): string {
+  if (process.platform === "win32") {
+    return process.env.ComSpec || "powershell.exe";
+  }
+  const shellPath = (process.env.SHELL || "").trim();
+  if (shellPath) return shellPath;
+  return process.platform === "darwin" ? "/bin/zsh" : "/bin/bash";
+}
+
+function getDefaultTerminalArgs(shellPath: string): string[] {
+  if (process.platform === "win32") return [];
+  const shellName = shellPath.replace(/\\/g, "/").toLowerCase().split("/").pop() || "";
+  return ["zsh", "bash", "sh"].includes(shellName) ? ["-l"] : [];
 }
 
 function sanitizeAttachmentStem(name?: string): string {
@@ -382,6 +398,32 @@ function expandHome(p: string): string {
   return p;
 }
 
+function getWorkspaceRoot(): string {
+  return process.env.DAN_WORKSPACE_ROOT || process.cwd();
+}
+
+function isStrictSandbox(): boolean {
+  const val = (process.env.DAN_STRICT_SANDBOX || "").trim().toLowerCase();
+  return val === "1" || val === "true";
+}
+
+function resolvePath(p: string): string {
+  try { return fs.realpathSync(p); } catch { return path.resolve(p); }
+}
+
+function validateWritePath(filePath: string): string {
+  const resolved = resolvePath(expandHome(filePath));
+  if (!isStrictSandbox()) return resolved;
+  const root = resolvePath(getWorkspaceRoot());
+  const normalRoot = root.endsWith(path.sep) ? root : root + path.sep;
+  if (resolved !== root && !resolved.startsWith(normalRoot)) {
+    throw new Error(
+      `Write path '${filePath}' resolves outside workspace root '${root}' and DAN_STRICT_SANDBOX=1 is enabled.`,
+    );
+  }
+  return resolved;
+}
+
 ipcMain.handle("fs:readFile", async (_event, filePath: string) => {
   try {
     return await fs.promises.readFile(expandHome(filePath), "utf-8");
@@ -392,7 +434,8 @@ ipcMain.handle("fs:readFile", async (_event, filePath: string) => {
 });
 
 ipcMain.handle("fs:writeFile", async (_event, filePath: string, content: string) => {
-  await fs.promises.writeFile(expandHome(filePath), content, "utf-8");
+  const resolved = validateWritePath(filePath);
+  await fs.promises.writeFile(resolved, content, "utf-8");
 });
 
 ipcMain.handle(
@@ -428,15 +471,18 @@ ipcMain.handle("fs:stat", async (_event, filePath: string) => {
 });
 
 ipcMain.handle("fs:mkdir", async (_event, dirPath: string) => {
-  await fs.promises.mkdir(expandHome(dirPath), { recursive: true });
+  const resolved = validateWritePath(dirPath);
+  await fs.promises.mkdir(resolved, { recursive: true });
 });
 
 ipcMain.handle("fs:rename", async (_event, oldPath: string, newPath: string) => {
-  await fs.promises.rename(expandHome(oldPath), expandHome(newPath));
+  const resolvedOld = validateWritePath(oldPath);
+  const resolvedNew = validateWritePath(newPath);
+  await fs.promises.rename(resolvedOld, resolvedNew);
 });
 
 ipcMain.handle("fs:delete", async (_event, filePath: string) => {
-  const resolved = expandHome(filePath);
+  const resolved = validateWritePath(filePath);
   const stat = await fs.promises.stat(resolved);
   if (stat.isDirectory()) {
     await fs.promises.rm(resolved, { recursive: true, force: true });
@@ -504,9 +550,9 @@ let terminalCounter = 0;
 
 ipcMain.handle("terminal:create", async (_event, options: { cwd?: string; shell?: string; args?: string[]; env?: Record<string, string> }) => {
   const id = `term-${++terminalCounter}`;
-  const shellPath = options.shell || process.env.SHELL || (process.platform === "win32" ? "powershell.exe" : "/bin/zsh");
-  const shellArgs = options.args ?? (shellPath.includes("zsh") ? ["-l"] : []);
-  const cwd = options.cwd || process.env.HOME || "/";
+  const shellPath = options.shell || getDefaultTerminalShell();
+  const shellArgs = options.args ?? getDefaultTerminalArgs(shellPath);
+  const cwd = options.cwd || os.homedir() || "/";
   const env = { ...process.env, ...options.env, TERM: "xterm-256color", COLORTERM: "truecolor" };
 
   try {
@@ -580,7 +626,8 @@ ipcMain.handle("search:ripgrep", async (_event, opts: { query: string; cwd: stri
 
 ipcMain.handle("search:replaceInFile", async (_event, filePath: string, replacements: Array<{ lineNumber: number; matchStart: number; matchEnd: number; replacement: string }>) => {
   try {
-    let content = await fs.promises.readFile(filePath, "utf-8");
+    const resolved = validateWritePath(filePath);
+    let content = await fs.promises.readFile(resolved, "utf-8");
     const lines = content.split("\n");
 
     const sorted = [...replacements].sort((a, b) =>
@@ -596,7 +643,7 @@ ipcMain.handle("search:replaceInFile", async (_event, filePath: string, replacem
     }
 
     content = lines.join("\n");
-    await fs.promises.writeFile(filePath, content, "utf-8");
+    await fs.promises.writeFile(resolved, content, "utf-8");
     return { success: true };
   } catch (err) {
     return { success: false, error: String(err) };
@@ -1288,6 +1335,25 @@ ipcMain.handle("extensionHost:getCommands", async () => {
   }
 });
 
+ipcMain.handle("extensionHost:getLanguageProviders", async () => {
+  if (!extensionHost.running) return [];
+  try {
+    return await extensionHost.request("getLanguageProviders");
+  } catch {
+    return [];
+  }
+});
+
+ipcMain.handle("extensionHost:invokeLanguageProvider", async (_event, payload: any) => {
+  if (!extensionHost.running) return { error: "Extension host not running" };
+  try {
+    const result = await extensionHost.request("invokeLanguageProvider", payload);
+    return { result };
+  } catch (err: any) {
+    return { error: err.message };
+  }
+});
+
 extensionHost.on("extension:activated", (data) => {
   mainWindow?.webContents.send("extensionHost:event", { event: "activated", data });
 });
@@ -1298,6 +1364,14 @@ extensionHost.on("extension:error", (data) => {
 
 extensionHost.on("window:showMessage", (data) => {
   mainWindow?.webContents.send("extensionHost:event", { event: "showMessage", data });
+});
+
+extensionHost.on("languages:registerProvider", (data) => {
+  mainWindow?.webContents.send("extensionHost:event", { event: "languages:registerProvider", data });
+});
+
+extensionHost.on("languages:disposeProvider", (data) => {
+  mainWindow?.webContents.send("extensionHost:event", { event: "languages:disposeProvider", data });
 });
 
 extensionHost.on("statusBar:show", (data) => {
@@ -1692,7 +1766,7 @@ function runGh(args: string[], cwd: string): Promise<{ stdout: string; stderr: s
 
 ipcMain.handle("github:checkAvailable", async (_event, cwd: string) => {
   try {
-    await execAsync("which gh", { timeout: 5000 });
+    if (!commandExists("gh")) return false;
     const authRes = await runGh(["auth", "status"], cwd);
     return authRes.code === 0;
   } catch {

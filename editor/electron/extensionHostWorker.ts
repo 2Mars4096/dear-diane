@@ -21,6 +21,10 @@ interface PendingActivation {
 }
 
 const pendingActivations: PendingActivation[] = [];
+let nextLanguageProviderId = 1;
+const completionProviders = new Map<string, { provider: any; selector: any; triggers: string[] }>();
+const hoverProviders = new Map<string, { provider: any; selector: any }>();
+const definitionProviders = new Map<string, { provider: any; selector: any }>();
 
 function shouldActivate(events: string[], trigger: string): boolean {
   return events.some((e) => {
@@ -176,26 +180,50 @@ function createVSCodeApi() {
         provider: any,
         ...triggers: string[]
       ) {
+        const id = `completion-${nextLanguageProviderId++}`;
+        completionProviders.set(id, { provider, selector, triggers });
         sendEvent("languages:registerProvider", {
+          id,
           type: "completion",
           selector,
           triggers,
         });
-        return { dispose() {} };
+        return {
+          dispose() {
+            completionProviders.delete(id);
+            sendEvent("languages:disposeProvider", { id, type: "completion" });
+          },
+        };
       },
-      registerHoverProvider(selector: any, _provider: any) {
+      registerHoverProvider(selector: any, provider: any) {
+        const id = `hover-${nextLanguageProviderId++}`;
+        hoverProviders.set(id, { provider, selector });
         sendEvent("languages:registerProvider", {
+          id,
           type: "hover",
           selector,
         });
-        return { dispose() {} };
+        return {
+          dispose() {
+            hoverProviders.delete(id);
+            sendEvent("languages:disposeProvider", { id, type: "hover" });
+          },
+        };
       },
-      registerDefinitionProvider(selector: any, _provider: any) {
+      registerDefinitionProvider(selector: any, provider: any) {
+        const id = `definition-${nextLanguageProviderId++}`;
+        definitionProviders.set(id, { provider, selector });
         sendEvent("languages:registerProvider", {
+          id,
           type: "definition",
           selector,
         });
-        return { dispose() {} };
+        return {
+          dispose() {
+            definitionProviders.delete(id);
+            sendEvent("languages:disposeProvider", { id, type: "definition" });
+          },
+        };
       },
       createDiagnosticCollection(name?: string) {
         return {
@@ -344,6 +372,105 @@ function sendEvent(event: string, data: any) {
   process.send?.({ type: "event", event, data });
 }
 
+function createTextDocument(payload: any) {
+  const uriString = String(payload?.uri ?? "");
+  const text = String(payload?.text ?? "");
+  const languageId = String(payload?.languageId ?? "");
+  return {
+    uri: vscodeApi.Uri.parse(uriString),
+    fileName: String(payload?.filePath ?? payload?.fsPath ?? uriString),
+    languageId,
+    version: Number(payload?.version ?? 1),
+    isUntitled: false,
+    getText(_range?: any) {
+      return text;
+    },
+  };
+}
+
+function createPosition(payload: any) {
+  return new vscodeApi.Position(
+    Number(payload?.line ?? 0),
+    Number(payload?.character ?? 0),
+  );
+}
+
+function serializeProviderResult(result: any): any {
+  if (Array.isArray(result)) {
+    return result.map((item) => serializeProviderResult(item));
+  }
+  if (result && typeof result === "object") {
+    const plain: Record<string, any> = {};
+    for (const [key, value] of Object.entries(result)) {
+      plain[key] = serializeProviderResult(value);
+    }
+    return plain;
+  }
+  return result;
+}
+
+async function invokeLanguageProvider(args: any) {
+  const type = String(args?.type ?? "");
+  const providerId = String(args?.providerId ?? "");
+  const registry =
+    type === "completion"
+      ? completionProviders
+      : type === "hover"
+        ? hoverProviders
+        : definitionProviders;
+  const entry = registry.get(providerId);
+  if (!entry) {
+    throw new Error(`Unknown language provider: ${providerId}`);
+  }
+
+  const document = createTextDocument(args?.document);
+  const position = createPosition(args?.position);
+  const token = { isCancellationRequested: false };
+
+  let result = null;
+  switch (type) {
+    case "completion":
+      result = await entry.provider.provideCompletionItems(
+        document,
+        position,
+        token,
+        args?.context ?? { triggerKind: 1 },
+      );
+      break;
+    case "hover":
+      result = await entry.provider.provideHover(document, position, token);
+      break;
+    case "definition":
+      result = await entry.provider.provideDefinition(document, position, token);
+      break;
+    default:
+      throw new Error(`Unsupported language provider type: ${type}`);
+  }
+
+  return serializeProviderResult(result);
+}
+
+function listLanguageProviders() {
+  return [
+    ...Array.from(completionProviders.entries()).map(([id, entry]) => ({
+      id,
+      type: "completion",
+      selector: entry.selector,
+      triggers: entry.triggers,
+    })),
+    ...Array.from(hoverProviders.entries()).map(([id, entry]) => ({
+      id,
+      type: "hover",
+      selector: entry.selector,
+    })),
+    ...Array.from(definitionProviders.entries()).map(([id, entry]) => ({
+      id,
+      type: "definition",
+      selector: entry.selector,
+    })),
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Module interception — make `require("vscode")` return our shim
 // ---------------------------------------------------------------------------
@@ -430,11 +557,17 @@ process.on("message", async (msg: any) => {
         case "getCommands":
           result = vscodeApi.commands.getCommands();
           break;
+        case "getLanguageProviders":
+          result = listLanguageProviders();
+          break;
         case "executeCommand":
           result = await vscodeApi.commands.executeCommand(
             msg.args.id,
             ...(msg.args.args ?? []),
           );
+          break;
+        case "invokeLanguageProvider":
+          result = await invokeLanguageProvider(msg.args);
           break;
         case "activateByEvent":
           await activateByEvent(msg.args.event);

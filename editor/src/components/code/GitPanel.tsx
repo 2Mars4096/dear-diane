@@ -30,7 +30,7 @@ import {
   X,
 } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
-import { nativeGit, nativeFs } from "../../lib/electronBridge";
+import { isElectron, nativeGit, nativeFs } from "../../lib/electronBridge";
 import { generateCommitMessage } from "../../lib/aiCodeActions";
 import GitGraph from "./GitGraph";
 import GitHubPanel from "./GitHubPanel";
@@ -595,6 +595,7 @@ function BranchDropdown({
 // ─── Main Component ─────────────────────────────────────────────────────
 
 export default function GitPanel() {
+  const electron = isElectron();
   const pinnedRoots = useCodeStore((s) => s.pinnedRoots);
   const openDiff = useCodeStore((s) => s.openDiff);
   const cwd = pinnedRoots[0] ?? "";
@@ -638,7 +639,7 @@ export default function GitPanel() {
   }, []);
 
   const refreshAheadBehind = useCallback(async () => {
-    if (!cwd) return;
+    if (!electron || !cwd) return;
     try {
       const res = await nativeGit.aheadBehind(cwd);
       if (res.code === 0) {
@@ -653,10 +654,10 @@ export default function GitPanel() {
       setAhead(0);
       setBehind(0);
     }
-  }, [cwd]);
+  }, [cwd, electron]);
 
   const refreshConflicts = useCallback(async () => {
-    if (!cwd) return;
+    if (!electron || !cwd) return;
     try {
       const res = await nativeGit.conflictFiles(cwd);
       if (res.code === 0) {
@@ -667,17 +668,17 @@ export default function GitPanel() {
     } catch {
       setConflictedFiles([]);
     }
-  }, [cwd]);
+  }, [cwd, electron]);
 
   const refreshRebaseStatus = useCallback(async () => {
-    if (!cwd) return;
+    if (!electron || !cwd) return;
     try {
       const res = await nativeGit.rebaseStatus(cwd);
       setRebaseInProgress(res.code === 0 && res.stdout.trim() === "true");
     } catch {
       setRebaseInProgress(false);
     }
-  }, [cwd]);
+  }, [cwd, electron]);
 
   const handleOpenMergeEditor = useCallback((conflictPath: string) => {
     window.dispatchEvent(
@@ -696,7 +697,7 @@ export default function GitPanel() {
   }, [cwd]);
 
   const refresh = useCallback(async () => {
-    if (!cwd) return;
+    if (!electron || !cwd) return;
     setLoading(true);
     setError(null);
     try {
@@ -727,10 +728,10 @@ export default function GitPanel() {
     } finally {
       setLoading(false);
     }
-  }, [cwd, refreshAheadBehind, refreshConflicts, refreshRebaseStatus]);
+  }, [cwd, electron, refreshAheadBehind, refreshConflicts, refreshRebaseStatus]);
 
   const loadBranches = useCallback(async () => {
-    if (!cwd) return;
+    if (!electron || !cwd) return;
     try {
       const res = await nativeGit.branchList(cwd);
       if (res.code === 0) {
@@ -739,19 +740,21 @@ export default function GitPanel() {
     } catch {
       /* non-critical */
     }
-  }, [cwd]);
+  }, [cwd, electron]);
 
   useEffect(() => {
+    if (!electron) return;
     refresh();
-  }, [refresh]);
+  }, [electron, refresh]);
 
   useEffect(() => {
+    if (!electron) return;
     const handler = () => {
       if (document.visibilityState === "visible") refresh();
     };
     document.addEventListener("visibilitychange", handler);
     return () => document.removeEventListener("visibilitychange", handler);
-  }, [refresh]);
+  }, [electron, refresh]);
 
   const { staged, unstaged, untracked } = useMemo(() => {
     const staged: GitFileStatus[] = [];
@@ -965,8 +968,9 @@ export default function GitPanel() {
   }, [cwd]);
 
   useEffect(() => {
+    if (!electron) return;
     refreshStashes();
-  }, [refreshStashes]);
+  }, [electron, refreshStashes]);
 
   const handleStashPush = useCallback(async () => {
     if (stashing || !cwd) return;
@@ -1072,6 +1076,18 @@ export default function GitPanel() {
   }, [cwd, openDiff]);
 
   // ── Empty / not-a-repo states ──
+
+  if (!electron) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-gray-900 px-4 text-center">
+        <FolderGit2 size={32} className="text-gray-600" />
+        <p className="text-sm text-gray-400">Source control actions require the desktop app</p>
+        <p className="max-w-[240px] text-xs text-gray-500">
+          Browser preview keeps the panel available for layout and navigation, but git operations are disabled.
+        </p>
+      </div>
+    );
+  }
 
   if (!cwd) {
     return (

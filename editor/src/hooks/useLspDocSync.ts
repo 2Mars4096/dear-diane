@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { nativeLsp } from "../lib/electronBridge";
+import { isElectron, nativeLsp } from "../lib/electronBridge";
 import { useCodeStore } from "../store/useCodeStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 
@@ -39,6 +39,8 @@ export function useLspDocSync() {
   const debounceTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   useEffect(() => {
+    if (!isElectron()) return;
+
     const tracked = openFilesRef.current;
     const timers = debounceTimers.current;
 

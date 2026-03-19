@@ -149,6 +149,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
     status: () => ipcRenderer.invoke("extensionHost:status"),
     executeCommand: (commandId, args) => ipcRenderer.invoke("extensionHost:executeCommand", commandId, args),
     getCommands: () => ipcRenderer.invoke("extensionHost:getCommands"),
+    getLanguageProviders: () => ipcRenderer.invoke("extensionHost:getLanguageProviders"),
+    invokeLanguageProvider: (payload) => ipcRenderer.invoke("extensionHost:invokeLanguageProvider", payload),
     onEvent: (callback) => {
       const handler = (_event, data) => callback(data);
       ipcRenderer.on("extensionHost:event", handler);

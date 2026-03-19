@@ -1,7 +1,9 @@
 import { useEffect } from "react";
 import * as monaco from "monaco-editor";
-import { nativeLsp } from "../lib/electronBridge";
+import { isElectron, nativeExtensionHost, nativeLsp } from "../lib/electronBridge";
+import { createExtensionLanguageProviderRegistrar } from "../lib/extensionLanguageProviders";
 import { useCodeStore } from "../store/useCodeStore";
+import { useGraphStore } from "../store/useGraphStore";
 import { useSettingsStore } from "../store/useSettingsStore";
 
 // ---------------------------------------------------------------------------
@@ -169,7 +171,23 @@ function convertWorkspaceEdit(lspEdit: any): monaco.languages.WorkspaceEdit {
 
 export function useMonacoLsp() {
   useEffect(() => {
+    if (!isElectron()) return;
+
     const disposables: monaco.IDisposable[] = [];
+    let disposed = false;
+    const extensionRegistrar = createExtensionLanguageProviderRegistrar(
+      monaco,
+      (payload) => nativeExtensionHost.invokeLanguageProvider(payload),
+    );
+    const unsubscribeExtensionHost = nativeExtensionHost.onEvent(({ event, data }) => {
+      extensionRegistrar.handleEvent(event, data);
+    });
+    void nativeExtensionHost.getLanguageProviders().then((providers) => {
+      if (disposed) return;
+      for (const provider of providers) {
+        extensionRegistrar.registerProvider(provider);
+      }
+    }).catch(() => {});
 
     const roots = useCodeStore.getState().pinnedRoots;
     if (roots.length > 0) {
@@ -409,10 +427,26 @@ export function useMonacoLsp() {
         monaco.editor.setModelMarkers(model, "lsp", markers);
       }
     });
+    const unsubNotification = nativeLsp.onNotification((data: any) => {
+      if (data?.method !== "$/dan/serverStatus" || data?.params?.kind !== "restart") {
+        return;
+      }
+      const message = String(data?.params?.message ?? "").trim();
+      if (!message) return;
+      useGraphStore.getState().addToast({
+        type: data?.params?.exhausted ? "error" : "warning",
+        message,
+        durationMs: data?.params?.exhausted ? 10000 : 6000,
+      });
+    });
 
     return () => {
+      disposed = true;
+      unsubscribeExtensionHost();
+      extensionRegistrar.disposeAll();
       disposables.forEach((d) => d.dispose());
       unsubDiag();
+      unsubNotification();
     };
   }, []);
 }

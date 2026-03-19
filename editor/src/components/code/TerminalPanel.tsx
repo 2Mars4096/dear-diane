@@ -6,7 +6,7 @@ import "@xterm/xterm/css/xterm.css";
 import { Plus, X, Columns2, Copy, ClipboardPaste, Eraser, ScreenShare, CheckSquare, ChevronDown } from "lucide-react";
 import { useCodeStore } from "../../store/useCodeStore";
 import { useSettingsStore, type TerminalProfile } from "../../store/useSettingsStore";
-import { nativeTerminal } from "../../lib/electronBridge";
+import { isElectron, nativeTerminal } from "../../lib/electronBridge";
 import { resolveMonacoTheme } from "../../lib/appearanceTheme";
 
 interface TermContextMenu {
@@ -35,6 +35,7 @@ interface XtermInstance {
 }
 
 export default function TerminalPanel() {
+  const electron = isElectron();
   const {
     terminals,
     activeTerminalId,
@@ -81,6 +82,7 @@ export default function TerminalPanel() {
     : null;
 
   const attachTerminalInstance = useCallback((termId: string) => {
+    if (!electron) return;
     if (xtermMapRef.current.has(termId)) return;
 
     const container = document.createElement("div");
@@ -132,9 +134,10 @@ export default function TerminalPanel() {
     terminal.onData((data) => {
       nativeTerminal.write(termId, data);
     });
-  }, [terminalTheme]);
+  }, [electron, terminalTheme]);
 
   const createTerminalInstance = useCallback(async (profile?: TerminalProfile): Promise<string | null> => {
+    if (!electron) return null;
     const pinnedRoots = useCodeStore.getState().pinnedRoots;
     const settings = useSettingsStore.getState();
 
@@ -144,18 +147,20 @@ export default function TerminalPanel() {
       ?? settings.terminalProfiles[0];
 
     const cwd = resolvedProfile?.cwd || pinnedRoots[0] || undefined;
-    const shell = resolvedProfile?.shell || "/bin/zsh";
+    const shell = resolvedProfile?.shell || undefined;
+    const args = resolvedProfile?.args;
 
-    const termId = await nativeTerminal.create({ shell, cwd });
+    const termId = await nativeTerminal.create({ shell, args, cwd });
     if (!termId) return null;
 
     addTerminal(termId);
     attachTerminalInstance(termId);
 
     return termId;
-  }, [addTerminal, attachTerminalInstance]);
+  }, [addTerminal, attachTerminalInstance, electron]);
 
   useEffect(() => {
+    if (!electron) return;
     if (mountedRef.current) return;
     mountedRef.current = true;
 
@@ -172,10 +177,12 @@ export default function TerminalPanel() {
     activeTerminalId,
     createTerminalInstance,
     attachTerminalInstance,
+    electron,
     setActiveTerminal,
   ]);
 
   useEffect(() => {
+    if (!electron) return;
     terminals.forEach((term) => attachTerminalInstance(term.id));
 
     for (const [id, inst] of xtermMapRef.current) {
@@ -185,9 +192,10 @@ export default function TerminalPanel() {
         xtermMapRef.current.delete(id);
       }
     }
-  }, [terminals, attachTerminalInstance]);
+  }, [terminals, attachTerminalInstance, electron]);
 
   useEffect(() => {
+    if (!electron) return;
     const removeDataListener = nativeTerminal.onData((id, data) => {
       xtermMapRef.current.get(id)?.terminal.write(data);
     });
@@ -205,7 +213,7 @@ export default function TerminalPanel() {
       removeDataListener();
       removeExitListener();
     };
-  }, []);
+  }, [electron]);
 
   useEffect(() => {
     for (const [, inst] of xtermMapRef.current) {
@@ -403,13 +411,14 @@ export default function TerminalPanel() {
   }, [termCtxMenu]);
 
   useEffect(() => {
+    if (!electron) return;
     const handler = async (e: Event) => {
       const { command, cwd } = (e as CustomEvent<{ command: string; cwd?: string }>).detail;
       const { pinnedRoots, setShowTerminal } = useCodeStore.getState();
       setShowTerminal(true);
 
       const termCwd = cwd || pinnedRoots[0] || undefined;
-      const id = await nativeTerminal.create({ shell: "/bin/zsh", cwd: termCwd });
+      const id = await nativeTerminal.create({ cwd: termCwd });
       if (!id) return;
 
       const shortCmd = command.length > 40 ? command.slice(0, 37) + "..." : command;
@@ -470,7 +479,7 @@ export default function TerminalPanel() {
 
     window.addEventListener("chat:shellCommand", handler);
     return () => window.removeEventListener("chat:shellCommand", handler);
-  }, [addTerminal, setActiveTerminal, terminalTheme]);
+  }, [addTerminal, electron, setActiveTerminal, terminalTheme]);
 
   useEffect(() => {
     if (!showProfileMenu) return;
@@ -501,6 +510,14 @@ export default function TerminalPanel() {
     },
     [splitTerminalIds, activeSplitSide, setActiveTerminal],
   );
+
+  if (!electron) {
+    return (
+      <div className="flex h-full items-center justify-center bg-white px-4 text-center text-sm text-gray-500 dark:bg-gray-900 dark:text-gray-400">
+        Development mode terminal requires the desktop app. Browser preview keeps this panel visible for layout and demo only.
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full w-full flex-col bg-white dark:bg-[#1e1e1e]">

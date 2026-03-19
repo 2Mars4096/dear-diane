@@ -13,22 +13,13 @@ import { LspClient } from "./lspClient";
 import { type BrowserWindow } from "electron";
 import path from "node:path";
 import fs from "node:fs";
-import { execSync } from "node:child_process";
+import { commandExists } from "./commandExists";
 
 interface ServerConfig {
   command: string;
   args: string[];
   languages: string[];
   fileExtensions: string[];
-}
-
-function commandExists(cmd: string): boolean {
-  try {
-    execSync("which " + cmd, { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 const SERVER_CONFIGS: Record<string, ServerConfig> = {
@@ -85,7 +76,21 @@ const SERVER_CONFIGS: Record<string, ServerConfig> = {
 export class LspManager {
   private clients = new Map<string, LspClient>();
   private starting = new Map<string, Promise<void>>();
+  private rootUris = new Map<string, string>();
+  private restartAttempts = new Map<string, number>();
+  private restartTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private expectedStops = new Set<string>();
   private mainWindow: BrowserWindow | null = null;
+
+  constructor(
+    private readonly clientFactory: (
+      command: string,
+      args: string[],
+      rootUri: string,
+      serverId: string,
+    ) => LspClient = (command, args, rootUri, serverId) =>
+      new LspClient(command, args, rootUri, serverId),
+  ) {}
 
   setMainWindow(win: BrowserWindow) {
     this.mainWindow = win;
@@ -158,7 +163,54 @@ export class LspManager {
     await Promise.allSettled(promises);
   }
 
-  async startServer(serverId: string, rootUri: string) {
+  private notifyLifecycle(serverId: string, params: Record<string, unknown>) {
+    this.mainWindow?.webContents.send("lsp:notification", {
+      serverId,
+      method: "$/dan/serverStatus",
+      params,
+    });
+  }
+
+  private scheduleRestart(serverId: string, rootUri: string, code: number | null) {
+    if (this.expectedStops.delete(serverId)) return;
+    if (this.restartTimers.has(serverId)) return;
+
+    const attempt = (this.restartAttempts.get(serverId) ?? 0) + 1;
+    if (attempt > 3) {
+      this.notifyLifecycle(serverId, {
+        kind: "restart",
+        level: "error",
+        exhausted: true,
+        exitCode: code,
+        message: `${serverId} language server crashed too many times and will stay stopped until you reopen the workspace.`,
+      });
+      return;
+    }
+
+    this.restartAttempts.set(serverId, attempt);
+    const retryInMs = 1000 * 2 ** (attempt - 1);
+    this.notifyLifecycle(serverId, {
+      kind: "restart",
+      level: "warning",
+      exhausted: false,
+      exitCode: code,
+      attempt,
+      retryInMs,
+      message: `${serverId} language server crashed and is restarting (${attempt}/3).`,
+    });
+
+    const timer = setTimeout(() => {
+      this.restartTimers.delete(serverId);
+      void this.startServer(serverId, rootUri, { resetRetries: false });
+    }, retryInMs);
+    this.restartTimers.set(serverId, timer);
+  }
+
+  async startServer(
+    serverId: string,
+    rootUri: string,
+    options?: { resetRetries?: boolean },
+  ) {
     if (this.clients.has(serverId)) return;
     if (this.starting.has(serverId)) {
       await this.starting.get(serverId);
@@ -167,9 +219,13 @@ export class LspManager {
 
     const config = SERVER_CONFIGS[serverId];
     if (!config) return;
+    this.rootUris.set(serverId, rootUri);
+    if (options?.resetRetries !== false) {
+      this.restartAttempts.delete(serverId);
+    }
 
     const startPromise = (async () => {
-      const client = new LspClient(config.command, config.args, rootUri, serverId);
+      const client = this.clientFactory(config.command, config.args, rootUri, serverId);
 
       client.on("notification", (method: string, params: any) => {
         if (method === "textDocument/publishDiagnostics") {
@@ -189,6 +245,7 @@ export class LspManager {
       client.on("exit", (code: number | null) => {
         console.log(`LSP server ${serverId} exited with code ${code}`);
         this.clients.delete(serverId);
+        this.scheduleRestart(serverId, this.rootUris.get(serverId) ?? rootUri, code);
       });
 
       try {
@@ -229,8 +286,13 @@ export class LspManager {
   }
 
   async shutdownAll() {
+    for (const timer of this.restartTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.restartTimers.clear();
     const shutdowns = Array.from(this.clients.entries()).map(async ([id, client]) => {
       try {
+        this.expectedStops.add(id);
         await client.shutdown();
       } catch (err) {
         console.error(`Error shutting down LSP server ${id}:`, err);
@@ -238,5 +300,8 @@ export class LspManager {
     });
     await Promise.allSettled(shutdowns);
     this.clients.clear();
+    this.rootUris.clear();
+    this.restartAttempts.clear();
+    this.expectedStops.clear();
   }
 }

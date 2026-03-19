@@ -119,6 +119,8 @@ interface ElectronAPI {
     status: () => Promise<{ running: boolean }>;
     executeCommand: (commandId: string, args?: any[]) => Promise<{ result?: any; error?: string }>;
     getCommands: () => Promise<string[]>;
+    getLanguageProviders: () => Promise<any[]>;
+    invokeLanguageProvider: (payload: any) => Promise<{ result?: any; error?: string }>;
     onEvent: (callback: (data: { event: string; data: any }) => void) => () => void;
   };
   github: {
@@ -749,6 +751,18 @@ export const nativeExtensionHost = {
   async getCommands(): Promise<string[]> {
     if (window.electronAPI) return window.electronAPI.extensionHost.getCommands();
     return [];
+  },
+  async getLanguageProviders(): Promise<any[]> {
+    if (window.electronAPI) return window.electronAPI.extensionHost.getLanguageProviders();
+    return [];
+  },
+  async invokeLanguageProvider(payload: any): Promise<any> {
+    if (window.electronAPI) {
+      const response = await window.electronAPI.extensionHost.invokeLanguageProvider(payload);
+      if (response?.error) throw new Error(response.error);
+      return response?.result ?? null;
+    }
+    return null;
   },
   onEvent(callback: (data: { event: string; data: any }) => void): () => void {
     if (window.electronAPI) return window.electronAPI.extensionHost.onEvent(callback);

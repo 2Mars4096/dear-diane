@@ -31,7 +31,7 @@ import {
 } from "lucide-react";
 import { useAppStore, type AppMode } from "../../store/useAppStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
-import { nativeTerminal, nativeFs } from "../../lib/electronBridge";
+import { isElectron, nativeTerminal, nativeFs } from "../../lib/electronBridge";
 import { useCodeStore } from "../../store/useCodeStore";
 import type { ChatMessage, ReviewableFileEdit } from "../../types/chat";
 import * as api from "../../lib/api";
@@ -769,11 +769,12 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
   /* ------ Code block click handler ----------------------------------- */
 
   const handleRunInTerminal = useCallback(async (command: string) => {
+    if (!isElectron()) return;
     const { pinnedRoots, setShowTerminal, addTerminal, setActiveTerminal } =
       useCodeStore.getState();
     setShowTerminal(true);
     const cwd = pinnedRoots[0] || undefined;
-    const id = await nativeTerminal.create({ shell: "/bin/zsh", cwd });
+    const id = await nativeTerminal.create({ cwd });
     if (id) {
       const shortCmd = command.length > 40 ? command.slice(0, 37) + "..." : command;
       addTerminal(id, `\u26A1 ${shortCmd}`);
