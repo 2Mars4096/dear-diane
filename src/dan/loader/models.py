@@ -55,7 +55,7 @@ class AgentSpec:
     file_path: Path | None = None
 
     # Frontmatter fields
-    agent_type: Literal["llm", "tool", "code", "human", "router", "composite", "reflection", "goal_loop"] = "llm"
+    agent_type: Literal["llm", "tool", "code", "human", "router", "composite", "reflection", "goal_loop", "vote", "agent_team"] = "llm"
     model: str = ""
     temperature: float = 0.7
     max_tokens: int | None = None
@@ -78,7 +78,7 @@ class AgentSpec:
     # Body
     prompt_body: str = ""
 
-    # Composite internals (populated only for type: composite)
+    # Nested internal agent references (populated for node kinds that own named subgraphs)
     internal_agents: dict[str, str] = field(default_factory=dict)  # name -> path
     internal_flow_lines: list[str] = field(default_factory=list)
 

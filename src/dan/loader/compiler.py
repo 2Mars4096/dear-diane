@@ -31,16 +31,20 @@ from dan.loader.types import (
 )
 from dan.models.context import MergeStrategy, SharedContextDeclaration
 from dan.models.control_flow import (
+    AgentTeamNode,
     CompositeNode,
     ForEachNode,
     GateNode,
     GoalLoopNode,
+    HumanNode,
     HumanInTheLoopNode,
     InputNode,
     InputVariable,
     OrchestratorNode,
     ParallelSubagentsNode,
     RouterNode,
+    VoteConfig,
+    VoteNode,
 )
 from dan.models.edges import DataEdge
 from dan.models.graph import Graph, GraphMetadata
@@ -136,7 +140,10 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "parallel_subagents": "results",
     "orchestrator": "results",
     "router": "route",
+    "human": "response",
     "human_in_the_loop": "response",
+    "agent_team": "result",
+    "vote": "winner",
     "composite": "result",
     "reflection": "principles",
     "input": "output",
@@ -396,12 +403,19 @@ def _compile_agent(
             metadata=metadata,
         )
     elif spec.agent_type == "human":
-        node = HumanInTheLoopNode(
+        raw = spec.raw_frontmatter
+        node = HumanNode(
             id=name,
             name=name,
             prompt=spec.prompt_body,
             timeout_seconds=spec.timeout_seconds,
             default_action=spec.default_action,
+            input_schema=raw.get("input_schema"),
+            output_schema=spec.output_schema,
+            render_mode=raw.get("render_mode", "text"),
+            options=raw.get("options"),
+            instructions=raw.get("instructions", ""),
+            render_target=raw.get("render_target", "dialog"),
             input_ports=input_ports,
             output_ports=output_ports,
             metadata=metadata,
@@ -462,6 +476,16 @@ def _compile_agent(
         )
     elif spec.agent_type == "goal_loop":
         raw = spec.raw_frontmatter
+        sub_key = f"{name}_body"
+        sub_graph = _compile_composite_subgraph(
+            name,
+            spec,
+            diagnostics,
+            owner_label="Goal loop",
+            metadata_suffix="goal_loop",
+            strict=strict,
+        )
+        nested_sub_graphs[sub_key] = sub_graph
         node = GoalLoopNode(
             id=name,
             name=name,
@@ -472,7 +496,70 @@ def _compile_agent(
             max_iterations=int(raw.get("max_iterations", 10)),
             evaluator=raw.get("evaluator", "llm_judge"),
             success_criteria=raw.get("success_criteria"),
-            body_graph=f"{name}_body",
+            body_graph=sub_key,
+            input_ports=input_ports,
+            output_ports=output_ports,
+            metadata=metadata,
+        )
+    elif spec.agent_type == "vote":
+        raw = spec.raw_frontmatter
+        vote_cfg_raw: dict[str, Any] = {}
+        for key in (
+            "judge_model",
+            "judge_prompt",
+            "quality_metric",
+            "unanimity_threshold",
+            "consensus_mode",
+        ):
+            if key in raw:
+                vote_cfg_raw[key] = raw[key]
+
+        vote_config = VoteConfig(**vote_cfg_raw) if vote_cfg_raw else None
+        raw_candidates = raw.get("candidates") or []
+        if isinstance(raw_candidates, str):
+            candidates = [raw_candidates]
+        else:
+            candidates = [str(value) for value in raw_candidates]
+
+        node = VoteNode(
+            id=name,
+            name=name,
+            candidates=candidates,
+            num_votes=int(raw.get("num_votes", 3)),
+            prompt_template=spec.prompt_body,
+            system_prompt=spec.system_prompt,
+            temperature=spec.temperature,
+            output_json_schema=spec.output_schema,
+            vote_strategy=raw.get("vote_strategy", "majority"),
+            vote_config=vote_config,
+            parallelism=int(raw.get("parallelism", max(1, len(candidates) or 1))),
+            timeout_seconds=raw.get("timeout_seconds"),
+            input_ports=input_ports,
+            output_ports=output_ports,
+            metadata=metadata,
+        )
+    elif spec.agent_type == "agent_team":
+        raw = spec.raw_frontmatter
+        agents, nested_sub_graphs = _compile_named_member_subgraphs(
+            name,
+            spec,
+            diagnostics,
+            owner_label="Agent team",
+        )
+        node = AgentTeamNode(
+            id=name,
+            name=name,
+            agents=agents,
+            moderator_prompt=raw.get("moderator_prompt", spec.prompt_body or ""),
+            moderator_model=raw.get("moderator_model"),
+            turn_strategy=raw.get("turn_strategy", "round_robin"),
+            max_turns=int(raw.get("max_turns", 20)),
+            completion_condition=raw.get("completion_condition", "max_turns"),
+            timeout_seconds=raw.get("timeout_seconds"),
+            shared_context_keys=list(raw.get("shared_context_keys") or []),
+            handoff_policy=raw.get("handoff_policy", "explicit"),
+            input_mappings=dict(raw.get("input_mappings") or {}),
+            agent_inputs=dict(raw.get("agent_inputs") or {}),
             input_ports=input_ports,
             output_ports=output_ports,
             metadata=metadata,
@@ -1201,6 +1288,8 @@ def _compile_composite_subgraph(
     spec: AgentSpec,
     diagnostics: list[Diagnostic],
     *,
+    owner_label: str = "Composite",
+    metadata_suffix: str = "composite",
     strict: bool = False,
 ) -> Graph:
     base_dir = spec.file_path.parent if spec.file_path else Path.cwd()
@@ -1210,7 +1299,7 @@ def _compile_composite_subgraph(
         if not nested_path.exists():
             _emit_error(
                 diagnostics,
-                f"Composite '{parent_name}' references missing agent file: {nested_path}",
+                f"{owner_label} '{parent_name}' references missing agent file: {nested_path}",
                 source=spec.source,
             )
             continue
@@ -1221,7 +1310,7 @@ def _compile_composite_subgraph(
         except (ParseError, FileNotFoundError, OSError) as exc:
             _emit_error(
                 diagnostics,
-                f"Failed to parse composite internal agent '{alias}': {exc}",
+                f"Failed to parse {owner_label.lower()} internal agent '{alias}': {exc}",
                 source=spec.source,
             )
 
@@ -1236,7 +1325,7 @@ def _compile_composite_subgraph(
         except FlowParseError as exc:
             _emit_error(
                 diagnostics,
-                f"Failed to parse composite flow line '{flow_line}': {exc}",
+                f"Failed to parse {owner_label.lower()} flow line '{flow_line}': {exc}",
                 source=spec.source,
             )
 
@@ -1274,13 +1363,62 @@ def _compile_composite_subgraph(
         entry_points = [input_node.id]
     exit_points = _find_exit_points(nodes, edges)
     return Graph(
-        metadata=GraphMetadata(name=f"{parent_name}_composite"),
+        metadata=GraphMetadata(name=f"{parent_name}_{metadata_suffix}"),
         nodes=nodes,
         edges=edges,
         sub_graphs=sub_graphs,
         entry_points=entry_points,
         exit_points=exit_points,
     )
+
+
+def _compile_named_member_subgraphs(
+    parent_name: str,
+    spec: AgentSpec,
+    diagnostics: list[Diagnostic],
+    *,
+    owner_label: str,
+) -> tuple[dict[str, str], dict[str, Graph]]:
+    base_dir = spec.file_path.parent if spec.file_path else Path.cwd()
+    member_map: dict[str, str] = {}
+    nested_sub_graphs: dict[str, Graph] = {}
+
+    for alias, rel_path in spec.internal_agents.items():
+        nested_path = (base_dir / rel_path).resolve()
+        if not nested_path.exists():
+            _emit_error(
+                diagnostics,
+                f"{owner_label} '{parent_name}' references missing agent file: {nested_path}",
+                source=spec.source,
+            )
+            continue
+        try:
+            nested_spec = parse_agent_file(nested_path)
+            nested_spec.name = alias
+        except (ParseError, FileNotFoundError, OSError) as exc:
+            _emit_error(
+                diagnostics,
+                f"Failed to parse {owner_label.lower()} member agent '{alias}': {exc}",
+                source=spec.source,
+            )
+            continue
+
+        node, nested = _compile_agent(alias, nested_spec, diagnostics)
+        if node is None:
+            continue
+
+        sub_key = f"{parent_name}_{alias}"
+        nested_sub_graphs[sub_key] = Graph(
+            metadata=GraphMetadata(name=sub_key),
+            nodes=[node],
+            edges=[],
+            sub_graphs=nested,
+            entry_points=[node.id],
+            exit_points=[node.id],
+        )
+        member_map[alias] = sub_key
+
+    return member_map, nested_sub_graphs
 
 
 def _extract_workflow_sections(workflow_file: Path) -> dict[str, str]:

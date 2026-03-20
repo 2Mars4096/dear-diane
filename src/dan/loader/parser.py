@@ -278,12 +278,12 @@ def parse_agent_file(path: Path) -> AgentSpec:
 
     excluded: set[str] = {"system"}
 
-    if spec.agent_type == "composite":
+    if spec.agent_type in {"composite", "goal_loop", "agent_team"}:
         excluded |= {"agents", "flow"}
         if "agents" in sections:
             for m in _AGENT_LINK_RE.finditer(sections["agents"][0]):
                 spec.internal_agents[m.group(1)] = m.group(2)
-        if "flow" in sections:
+        if spec.agent_type in {"composite", "goal_loop"} and "flow" in sections:
             spec.internal_flow_lines = _extract_raw_flow_lines(
                 sections["flow"][0]
             )

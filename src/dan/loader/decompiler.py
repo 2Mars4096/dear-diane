@@ -12,24 +12,25 @@ import yaml
 
 from dan.loader.compiler import DEFAULT_INPUT_PORT, DEFAULT_OUTPUT_PORTS
 from dan.loader.diagnostics import DecompileResult, Diagnostic
+from dan.models.node_taxonomy import MARKDOWN_DECOMPILER_SUPPORTED_NODE_TYPES
 from dan.models.control_flow import (
+    AgentTeamNode,
     CompositeNode,
     ForEachNode,
     GateNode,
+    GoalLoopNode,
+    HumanNode,
     HumanInTheLoopNode,
     InputNode,
     RouterNode,
+    VoteNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
 from dan.models.graph import Graph
 from dan.models.hyperedges import Hyperedge
 from dan.models.nodes import CodeOperator, LLMOperator, NodeBase, ReflectionNode, ToolOperator
 
-_SUPPORTED_NODE_TYPES = frozenset({
-    "llm_operator", "tool_operator", "code_operator",
-    "human_in_the_loop", "router", "gate", "for_each",
-    "composite", "reflection", "input",
-})
+_SUPPORTED_NODE_TYPES = MARKDOWN_DECOMPILER_SUPPORTED_NODE_TYPES
 
 _SCHEMA_TO_TYPE: dict[str, str] = {
     "string": "string",
@@ -69,6 +70,7 @@ class _DecompileContext:
 
         self._assign_filenames()
         self._prepare_foreach_bodies()
+        self._warn_lossy_runtime_exports()
 
         for node in self.graph.nodes:
             if node.node_type in ("input", "gate", "for_each", "parallel_subagents", "orchestrator"):
@@ -77,6 +79,37 @@ class _DecompileContext:
 
         self._write_subgraph_agents()
         self._write_workflow_file()
+
+    def _warn_lossy_runtime_exports(self) -> None:
+        for node in self.graph.nodes:
+            if node.node_type != "orchestrator":
+                continue
+            omitted: list[str] = []
+            if getattr(node, "orchestrator_prompt", ""):
+                omitted.append("orchestrator_prompt")
+            if getattr(node, "orchestrator_model", None) is not None:
+                omitted.append("orchestrator_model")
+            if getattr(node, "completion_condition", "all_done") != "all_done":
+                omitted.append("completion_condition")
+            if getattr(node, "max_iterations", 100) != 100:
+                omitted.append("max_iterations")
+            if getattr(node, "timeout_seconds", None) is not None:
+                omitted.append("timeout_seconds")
+            if getattr(node, "input_mappings", None):
+                omitted.append("input_mappings")
+            if getattr(node, "team_inputs", None):
+                omitted.append("team_inputs")
+            if getattr(node, "team_expansions", None):
+                omitted.append("team_expansions")
+            if omitted:
+                self.diagnostics.append(Diagnostic(
+                    level="warning",
+                    message=(
+                        f"Orchestrator '{node.id}' markdown export is lossy; the current "
+                        f"markdown format omits {', '.join(omitted)} and preserves only "
+                        "team sub-graphs plus flow wiring"
+                    ),
+                ))
 
     def _assign_filenames(self) -> None:
         for node in self.graph.nodes:
@@ -125,6 +158,10 @@ class _DecompileContext:
                 sub = self.graph.sub_graphs.get(node.body_graph)
                 if sub:
                     self._write_subgraph_node_files(sub, written)
+            elif isinstance(node, GoalLoopNode):
+                sub = self.graph.sub_graphs.get(node.body_graph)
+                if sub:
+                    self._write_subgraph_node_files(sub, written)
             elif node.node_type == "for_each":
                 body_key = getattr(node, "body_graph", "")
                 sub = self.graph.sub_graphs.get(body_key)
@@ -142,6 +179,11 @@ class _DecompileContext:
                     sub = self.graph.sub_graphs.get(sub_key)
                     if sub:
                         self._write_subgraph_node_files(sub, written)
+            elif isinstance(node, AgentTeamNode):
+                for sub_key in getattr(node, "agents", {}).values():
+                    sub = self.graph.sub_graphs.get(sub_key)
+                    if sub:
+                        self._write_subgraph_node_files(sub, written)
 
     def _write_subgraph_node_files(self, sub_graph: Graph, written: set[str]) -> None:
         for sn in sub_graph.nodes:
@@ -150,7 +192,7 @@ class _DecompileContext:
             written.add(sn.id)
             self._allocate_filename(sn.id)
             self._write_agent_file(sn)
-            if isinstance(sn, CompositeNode):
+            if isinstance(sn, (CompositeNode, GoalLoopNode)):
                 inner = self.graph.sub_graphs.get(sn.body_graph)
                 if not inner:
                     inner = sub_graph.sub_graphs.get(sn.body_graph)
@@ -176,7 +218,7 @@ class _DecompileContext:
             parts.append(f"- [{sn.id}]({fname})")
         parts.append("")
 
-        flow_lines = _build_flow_lines(body_graph, set())
+        flow_lines = _build_flow_lines(body_graph, set(), diagnostics=self.diagnostics)
         if flow_lines:
             parts.append("## Flow")
             parts.append("")
@@ -249,6 +291,24 @@ class _DecompileContext:
                 fm["timeout_seconds"] = node.timeout_seconds
             if node.default_action is not None:
                 fm["default_action"] = node.default_action
+        elif isinstance(node, HumanNode):
+            fm["type"] = "human"
+            if node.timeout_seconds is not None:
+                fm["timeout_seconds"] = node.timeout_seconds
+            if node.default_action is not None:
+                fm["default_action"] = node.default_action
+            if node.input_schema is not None:
+                fm["input_schema"] = node.input_schema
+            if node.output_schema is not None:
+                fm["output_schema"] = node.output_schema
+            if node.render_mode != "text":
+                fm["render_mode"] = node.render_mode
+            if node.options is not None:
+                fm["options"] = list(node.options)
+            if node.instructions:
+                fm["instructions"] = node.instructions
+            if node.render_target != "dialog":
+                fm["render_target"] = node.render_target
         elif isinstance(node, RouterNode):
             fm["type"] = "router"
             fm["model"] = node.model
@@ -274,6 +334,58 @@ class _DecompileContext:
                 fm["min_confidence"] = node.min_confidence
             if node.dedup_strategy != "embedding_similarity":
                 fm["dedup_strategy"] = node.dedup_strategy
+        elif isinstance(node, GoalLoopNode):
+            fm["type"] = "goal_loop"
+            fm["goal_text"] = node.goal_text
+            if node.metric_name != "score":
+                fm["metric_name"] = node.metric_name
+            if node.target_value != 1.0:
+                fm["target_value"] = node.target_value
+            if node.comparison != ">=":
+                fm["comparison"] = node.comparison
+            if node.max_iterations != 10:
+                fm["max_iterations"] = node.max_iterations
+            if node.evaluator != "llm_judge":
+                fm["evaluator"] = node.evaluator
+            if node.success_criteria is not None:
+                fm["success_criteria"] = node.success_criteria
+        elif isinstance(node, VoteNode):
+            fm["type"] = "vote"
+            fm["candidates"] = list(node.candidates)
+            if node.num_votes != 3:
+                fm["num_votes"] = node.num_votes
+            if node.vote_strategy != "majority":
+                fm["vote_strategy"] = node.vote_strategy
+            if node.parallelism != 3:
+                fm["parallelism"] = node.parallelism
+            if node.timeout_seconds is not None:
+                fm["timeout_seconds"] = node.timeout_seconds
+            if node.vote_config is not None:
+                vc = node.vote_config.model_dump(mode="json", exclude_none=True)
+                for key, value in vc.items():
+                    fm[key] = value
+        elif isinstance(node, AgentTeamNode):
+            fm["type"] = "agent_team"
+            if node.moderator_prompt:
+                fm["moderator_prompt"] = node.moderator_prompt
+            if node.moderator_model:
+                fm["moderator_model"] = node.moderator_model
+            if node.turn_strategy != "round_robin":
+                fm["turn_strategy"] = node.turn_strategy
+            if node.max_turns != 20:
+                fm["max_turns"] = node.max_turns
+            if node.completion_condition != "max_turns":
+                fm["completion_condition"] = node.completion_condition
+            if node.timeout_seconds is not None:
+                fm["timeout_seconds"] = node.timeout_seconds
+            if node.shared_context_keys:
+                fm["shared_context_keys"] = list(node.shared_context_keys)
+            if node.handoff_policy != "explicit":
+                fm["handoff_policy"] = node.handoff_policy
+            if node.input_mappings:
+                fm["input_mappings"] = dict(node.input_mappings)
+            if node.agent_inputs:
+                fm["agent_inputs"] = dict(node.agent_inputs)
         else:
             fm["type"] = node.node_type
             self.diagnostics.append(Diagnostic(
@@ -333,12 +445,57 @@ class _DecompileContext:
             parts.append(f"```{lang}")
             parts.append(node.code)
             parts.append("```")
+        elif isinstance(node, ToolOperator):
+            parts.append(f"Tool `{node.tool_id}`.")
+            if node.tool_config:
+                parts.append("")
+                parts.append("```json")
+                parts.append(json.dumps(dict(node.tool_config), indent=2, default=str))
+                parts.append("```")
+        elif isinstance(node, RouterNode):
+            if node.route_descriptions:
+                parts.append("## Routes")
+                parts.append("")
+                for route_name, desc in node.route_descriptions.items():
+                    parts.append(f"- **{route_name}**: {desc}")
+                parts.append("")
         elif isinstance(node, HumanInTheLoopNode):
             if node.prompt:
                 parts.append(node.prompt)
         elif isinstance(node, ReflectionNode):
             if node.reflection_prompt:
                 parts.append(node.reflection_prompt)
+        elif isinstance(node, GoalLoopNode):
+            sub_graph = self.graph.sub_graphs.get(node.body_graph)
+            if sub_graph:
+                parts.extend(self._render_composite_body(sub_graph))
+            else:
+                parts.append(f"<!-- UNSUPPORTED: missing sub-graph '{node.body_graph}' -->")
+                self.diagnostics.append(Diagnostic(
+                    level="warning",
+                    message=f"Goal loop '{node.id}' references missing sub-graph '{node.body_graph}'",
+                ))
+        elif isinstance(node, VoteNode):
+            if node.prompt_template:
+                parts.append(node.prompt_template)
+        elif isinstance(node, AgentTeamNode):
+            if node.agents:
+                parts.append("## Agents")
+                parts.append("")
+                for agent_name, sub_key in node.agents.items():
+                    sub = self.graph.sub_graphs.get(sub_key)
+                    if sub and sub.nodes:
+                        member_nodes = [n for n in sub.nodes if n.node_type != "input"]
+                        if member_nodes:
+                            member = member_nodes[0]
+                            fname = self.agent_filenames.get(member.id, f"{_slugify(member.id)}.md")
+                            parts.append(f"- [{agent_name}]({fname})")
+                parts.append("")
+            elif node.moderator_prompt:
+                parts.append(node.moderator_prompt)
+        elif isinstance(node, HumanNode):
+            if node.prompt:
+                parts.append(node.prompt)
         elif isinstance(node, CompositeNode):
             sub_graph = self.graph.sub_graphs.get(node.body_graph)
             if sub_graph:
@@ -365,7 +522,7 @@ class _DecompileContext:
                 parts.append(f"- [{sn.id}]({fname})")
             parts.append("")
 
-        flow_lines = _build_flow_lines(sub_graph, set())
+        flow_lines = _build_flow_lines(sub_graph, set(), diagnostics=self.diagnostics)
         if flow_lines:
             parts.append("## Flow")
             parts.append("")
@@ -410,6 +567,7 @@ class _DecompileContext:
         flow_lines = _build_flow_lines(
             self.graph, gate_ids,
             foreach_body_agents=self._foreach_body_agents,
+            diagnostics=self.diagnostics,
         )
         if flow_lines:
             parts.append("## Flow")
@@ -451,6 +609,7 @@ def _build_flow_lines(
     gate_ids: set[str],
     *,
     foreach_body_agents: dict[str, str] | None = None,
+    diagnostics: list[Diagnostic] | None = None,
 ) -> list[str]:
     lines: list[str] = []
     node_map = {n.id: n for n in graph.nodes}
@@ -467,7 +626,7 @@ def _build_flow_lines(
 
     for node in graph.nodes:
         if node.node_type == "parallel_subagents":
-            line = _decompile_parallel(node, graph, data_edges, emitted_edges)
+            line = _decompile_parallel(node, graph, data_edges, emitted_edges, diagnostics)
             if line:
                 lines.append(line)
 
@@ -576,12 +735,14 @@ def _decompile_parallel(
     graph: Graph,
     data_edges: list[DataEdge],
     emitted: set[str],
+    diagnostics: list[Diagnostic] | None = None,
 ) -> str | None:
     branch_graphs = getattr(node, "branch_graphs", [])
     if not branch_graphs:
         return None
 
     branch_agents: list[str] = []
+    lossy_branches: list[str] = []
     for sub_key in branch_graphs:
         sub = graph.sub_graphs.get(sub_key)
         if not sub or not sub.nodes:
@@ -589,10 +750,22 @@ def _decompile_parallel(
         real_nodes = [n for n in sub.nodes if n.node_type != "input"]
         if not real_nodes:
             continue
+        if len(real_nodes) > 1:
+            lossy_branches.append(sub_key)
         branch_agents.append(real_nodes[0].id)
 
     if not branch_agents:
         return None
+
+    if lossy_branches and diagnostics is not None:
+        diagnostics.append(Diagnostic(
+            level="warning",
+            message=(
+                f"parallel_subagents '{node.id}' has multi-node branches {lossy_branches}; "
+                "markdown flow exports only the first non-input agent from each branch "
+                "in the `parallel(...)` line"
+            ),
+        ))
 
     parallel = getattr(node, "parallelism", 1)
     merge = getattr(node, "merge_strategy", "append")
