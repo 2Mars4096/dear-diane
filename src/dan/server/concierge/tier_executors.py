@@ -746,7 +746,7 @@ def _extract_chat_params(
     if cancel_event is not None and not hasattr(cancel_event, "is_set"):
         cancel_event = None
     thread_id: str | None = (
-        str(metadata.get("thread_id") or getattr(msg, "session_id", "") or "").strip() or None
+        str(getattr(msg, "session_id", "") or metadata.get("thread_id") or "").strip() or None
     )
     client_graph_revision: str | None = (
         str(metadata.get("client_graph_revision") or "").strip() or None

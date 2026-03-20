@@ -123,12 +123,10 @@ class ChatMessageRequest(BaseModel):
                 )
             surface = canonical_surface
 
-        if session_id and thread_id and session_id != thread_id:
-            raise ValueError(
-                "session_id conflicts with thread_id; provide matching values",
-            )
-        session_id = session_id or thread_id
-        thread_id = thread_id or session_id
+        if session_id is None:
+            session_id = thread_id
+        if thread_id is None:
+            thread_id = session_id
 
         self.surface = surface
         self.surface_type = surface_type
@@ -503,7 +501,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                     workflow_id=req.workflow_id,
                     message=req.message,
                     history=req.history,
-                    thread_id=req.thread_id,
+                    thread_id=req.session_id or req.thread_id,
                     client_graph_revision=req.client_graph_revision,
                     mode=effective_mode,
                     cancel_event=cancel_event,

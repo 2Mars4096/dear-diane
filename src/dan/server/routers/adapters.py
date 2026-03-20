@@ -73,11 +73,17 @@ class AdapterStopRequest(BaseModel):
 
 def _load_workflow_for_adapter(path: str):
     import importlib.util
+    from dan.migration.gate_migration import maybe_migrate_graph_dict
     from dan.models.graph import Graph
 
     gs = get_graph_store()
-    data = gs.get_graph(path)
+    data = None
+    try:
+        data = gs.get_graph(path)
+    except ValueError:
+        data = None
     if data is not None:
+        data = maybe_migrate_graph_dict(data)
         return Graph.model_validate(data)
 
     p = Path(path)
@@ -88,7 +94,7 @@ def _load_workflow_for_adapter(path: str):
 
     if p.suffix.lower() == ".json":
         with open(p) as f:
-            return Graph.model_validate(json.load(f))
+            return Graph.model_validate(maybe_migrate_graph_dict(json.load(f)))
     if p.suffix.lower() == ".md" or (p.is_dir() and p.exists()):
         from dan.loader import load
         return load(p)
@@ -476,12 +482,15 @@ def _publish_adapter_event(adapter_id: str, event: dict[str, Any]) -> None:
         )
     elif event_type == "status":
         patch: dict[str, Any] = {}
-        if payload.get("connection_state"):
-            patch["connection_state"] = str(payload["connection_state"])
+        connection_state = str(payload.get("connection_state") or "").strip().lower()
+        if connection_state:
+            patch["connection_state"] = connection_state
         if "paired" in payload:
             patch["paired"] = payload.get("paired")
         if payload.get("last_error") is not None:
             patch["last_error"] = payload.get("last_error")
+        elif connection_state in {"connected", "disconnected"}:
+            patch["last_error"] = None
         if patch:
             _merge_adapter_snapshot(adapter_id, patch)
 

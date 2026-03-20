@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import tempfile
 import logging
@@ -11,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from dan.migration.gate_migration import maybe_migrate_graph_dict
 from dan.server.routers.dependencies import get_graph_store, get_run_manager
 
 logger = logging.getLogger(__name__)
@@ -67,9 +67,6 @@ async def create_graph(req: CreateGraphRequest):
     }
 
 
-_gate_migration_enabled = os.environ.get("DAN_GATE_MIGRATION_ENABLED", "").lower() in (
-    "1", "true", "yes",
-)
 _layout_on_load = os.environ.get("DAN_LAYOUT_ON_LOAD", "").lower() in ("1", "true", "yes")
 
 
@@ -86,9 +83,8 @@ async def get_graph(graph_id: str, layout: bool = False):
     data = gs.get_graph(graph_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
-    if _gate_migration_enabled and isinstance(data, dict):
-        from dan.migration.gate_migration import migrate_graph
-        data = migrate_graph(data)
+    if isinstance(data, dict):
+        data = maybe_migrate_graph_dict(data)
     graph_revision = compute_graph_revision(data) if isinstance(data, dict) else None
     if (layout or _layout_on_load) and isinstance(data, dict):
         from dan.server.layout import apply_layout
@@ -155,9 +151,8 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
     data = gs.get_graph(graph_id)
     if data is None:
         raise HTTPException(status_code=404, detail=f"Graph '{graph_id}' not found")
-    if _gate_migration_enabled and isinstance(data, dict):
-        from dan.migration.gate_migration import migrate_graph
-        data = migrate_graph(data)
+    if isinstance(data, dict):
+        data = maybe_migrate_graph_dict(data)
 
     if req.idempotency_key:
         idem_key = (graph_id, req.idempotency_key)

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from dan.migration.gate_migration import maybe_migrate_graph_dict
 from dan.models.graph import Graph
 
 _GRAPH_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
@@ -93,6 +94,7 @@ class GraphStore:
         data = self.get_graph(graph_id)
         if data is None:
             return None
+        data = maybe_migrate_graph_dict(data)
         return Graph.model_validate(data)
 
     def get_last_opened(self) -> str | None:

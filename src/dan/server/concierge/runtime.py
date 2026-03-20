@@ -613,8 +613,11 @@ class Concierge:
                 )
             from dan.server.telemetry import TelemetryQuery as TQ
 
+            telemetry_session_id = str(
+                getattr(msg, "session_id", "") or msg.external_id or "",
+            ).strip()
             events = await self._telemetry_store.query(
-                TQ(session_id=msg.external_id),
+                TQ(session_id=telemetry_session_id),
             )
             if not events:
                 return self._complete_event(
@@ -654,8 +657,8 @@ class Concierge:
             chat_store = getattr(self.chat_manager, "_chat_store", None)
             metadata = msg.metadata if isinstance(getattr(msg, "metadata", None), dict) else {}
             thread_id = str(
-                metadata.get("thread_id")
-                or getattr(msg, "session_id", "")
+                getattr(msg, "session_id", "")
+                or metadata.get("thread_id")
                 or msg.external_id
                 or ""
             ).strip()

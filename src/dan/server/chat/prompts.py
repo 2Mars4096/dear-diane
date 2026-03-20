@@ -7,6 +7,7 @@ import logging
 import re
 from typing import Any, Awaitable, Callable, Literal
 
+from dan.models.node_taxonomy import MUTATION_NODE_TYPES
 from dan.server.graph_mutator import (
     _default_node_config,
     _default_ports,
@@ -35,22 +36,7 @@ def _normalize_autonomy_preference(
 # Node / edge type constants
 # ---------------------------------------------------------------------------
 
-NODE_TYPES: list[str] = [
-    "llm_operator",
-    "tool_operator",
-    "code_operator",
-    "rag_operator",
-    "input",
-    "gate",
-    "for_each",
-    "parallel_subagents",
-    "orchestrator",
-    "reduce",
-    "router",
-    "human_in_the_loop",
-    "validator",
-    "composite",
-]
+NODE_TYPES: list[str] = list(MUTATION_NODE_TYPES)
 
 EDGE_TYPES: list[str] = ["data", "control", "context"]
 
@@ -198,7 +184,7 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
                 "type": "string",
                 "description": (
                     "ID of a control-flow node whose body sub-graph should be replaced "
-                    "(for_each, while_loop, composite, goal_loop)."
+                    "(for_each, while_loop, goal_loop, composite)."
                 ),
             },
             "operations": {
@@ -315,12 +301,29 @@ def _build_node_type_reference() -> str:
                 f"- gate (while mode): in=[{', '.join(in_names)}] out=[{', '.join(out_w_names)}]"
                 f" config={{{', '.join(cfg_keys)}}}"
             )
-        elif nt == "for_each":
+        elif nt in {"for_each", "while_loop", "goal_loop"}:
+            body_note = (
+                " note=use replace_body_graph to define the nested body graph."
+            )
+            if nt == "for_each":
+                body_note += (
+                    " top-level for_each ports are items/results, while body entry "
+                    "nodes usually consume item/index."
+                )
+            elif nt == "while_loop":
+                body_note += (
+                    " top-level while_loop ports are typically input/result; "
+                    "loop progress exits through body outputs."
+                )
+            else:
+                body_note += (
+                    " goal_loop bodies should emit the tracked metric (for example "
+                    "score) and usually a result payload for downstream nodes."
+                )
             line = (
                 f"- {nt}: in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
                 f" config={{{', '.join(cfg_keys)}}}"
-                " note=use replace_body_graph to define the body sub-graph; top-level for_each "
-                "ports are items/results, while body entry nodes usually consume item/index."
+                f"{body_note}"
             )
         elif nt == "composite":
             line = (
@@ -441,7 +444,7 @@ Apply when user mentions a specific journal.
 - Produce a complete runnable workflow.
 - Prefer expand_pattern for known shapes; add_node/add_edge for custom.
 - strict=true on edges. Exact port names only.
-- For control-flow nodes like for_each and composite, add the node first and then use replace_body_graph to define the nested body graph.
+- For control-flow nodes like for_each, while_loop, goal_loop, and composite, add the node first and then use replace_body_graph to define the nested body graph.
 - `for_each` uses top-level ports `items` and `results`; `item` is a body-subgraph input, not a top-level for_each output port.
 - `plan_graph_mutations` prepares a proposed workflow preview/diff. It does not apply the changes or run the workflow by itself.
 - In user-facing status text, distinguish the real phase: inspect current workflow, prepare mutation plan, validate preview, apply changes, test run.
@@ -1276,7 +1279,7 @@ WORKFLOW_TEMPLATES: dict[str, list[dict]] = {
                         {"name": "input", "schema": {}, "required": False},
                         {"name": "context", "schema": {}, "required": False},
                     ]}},
-        {"op": "add_node", "node_type": "human_in_the_loop", "name": "Research Interview",
+        {"op": "add_node", "node_type": "human", "name": "Research Interview",
          "config": {"prompt": "Review the proposed outline and provide feedback on research positioning, methodology choices, and contribution framing. You can modify the outline or approve it."}},
         {"op": "expand_pattern", "pattern": "review_loop", "params": {
             "writer_name": "Section Drafter",

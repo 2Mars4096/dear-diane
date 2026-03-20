@@ -10,6 +10,7 @@ from typing import Annotated, Any, Literal, Union
 
 from pydantic import BaseModel, Field
 
+from dan.models.node_taxonomy import BODY_GRAPH_RUNTIME_NODE_TYPES
 from dan.models.graph import Graph
 from dan.validation.graph import validate_graph
 
@@ -260,7 +261,7 @@ def _default_ports(
         ),
         "if_else": (
             [{"name": "input", "schema": {}, "required": False}],
-            [{"name": "true", "schema": {}}, {"name": "false", "schema": {}}],
+            [{"name": "branch", "schema": {}}],
         ),
         "gate": (
             [{"name": "input", "schema": {}, "required": False}],
@@ -272,7 +273,16 @@ def _default_ports(
         ),
         "while_loop": (
             [{"name": "input", "schema": {}, "required": False}],
-            [{"name": "output", "schema": {}}],
+            [{"name": "result", "schema": {}}],
+        ),
+        "goal_loop": (
+            [{"name": "input", "schema": {}, "required": False}],
+            [
+                {"name": "result", "schema": {}},
+                {"name": "goal_met", "schema": {}},
+                {"name": "iterations", "schema": {}},
+                {"name": "best_score", "schema": {}},
+            ],
         ),
         "for_each": (
             [{"name": "items", "schema": {}, "required": False}],
@@ -292,11 +302,25 @@ def _default_ports(
         ),
         "router": (
             [{"name": "input", "schema": {}, "required": False}],
-            [{"name": "route", "schema": {}}, {"name": "output", "schema": {}}],
+            [{"name": "route", "schema": {}}],
+        ),
+        "human": (
+            [{"name": "input", "schema": {}, "required": False}],
+            [{"name": "response", "schema": {}}],
         ),
         "human_in_the_loop": (
             [{"name": "input", "schema": {}, "required": False}],
             [{"name": "response", "schema": {}}],
+        ),
+        "agent_team": (
+            [{"name": "input", "schema": {}, "required": False}],
+            [
+                {"name": "result", "schema": {}},
+                {"name": "agent_contributions", "schema": {}},
+                {"name": "consensus_reached", "schema": {}},
+                {"name": "total_turns", "schema": {}},
+                {"name": "conversation", "schema": {}},
+            ],
         ),
         "composite": (
             [{"name": "input", "schema": {}, "required": False}],
@@ -313,6 +337,28 @@ def _default_ports(
         "validator": (
             [{"name": "data", "schema": {}, "required": False}],
             [{"name": "valid", "schema": {}}, {"name": "invalid", "schema": {}}],
+        ),
+        "reflection": (
+            [{"name": "input", "schema": {}, "required": False}],
+            [
+                {"name": "principles", "schema": {}},
+                {"name": "principle_count", "schema": {}},
+                {"name": "source", "schema": {}},
+                {"name": "text", "schema": {}},
+            ],
+        ),
+        "vote": (
+            [{"name": "input", "schema": {}, "required": False}],
+            [
+                {"name": "winner", "schema": {}},
+                {"name": "winner_model", "schema": {}},
+                {"name": "winner_index", "schema": {}},
+                {"name": "all_votes", "schema": {}},
+                {"name": "consensus_reached", "schema": {}},
+                {"name": "vote_count", "schema": {}},
+                {"name": "total_cost", "schema": {}},
+                {"name": "strategy_used", "schema": {}},
+            ],
         ),
     }
     fallback: tuple[list[dict[str, Any]], list[dict[str, Any]]] = (
@@ -381,6 +427,16 @@ def _default_node_config(node_type: str) -> dict[str, Any]:
             "body_graph": "",
             "max_iterations": 10,
         },
+        "goal_loop": {
+            "goal_text": "Reach the target",
+            "metric_name": "score",
+            "target_value": 1.0,
+            "comparison": ">=",
+            "max_iterations": 10,
+            "evaluator": "llm_judge",
+            "success_criteria": None,
+            "body_graph": "",
+        },
         "for_each": {
             "body_graph": "",
             "parallelism": 1,
@@ -406,10 +462,26 @@ def _default_node_config(node_type: str) -> dict[str, Any]:
             "model": "claude-sonnet-4-6",
             "route_descriptions": {},
         },
+        "human": {
+            "prompt": "",
+            "timeout_seconds": None,
+            "default_action": None,
+        },
         "human_in_the_loop": {
             "prompt": "",
             "timeout_seconds": None,
             "default_action": None,
+        },
+        "agent_team": {
+            "agents": {},
+            "moderator_prompt": "",
+            "turn_strategy": "round_robin",
+            "max_turns": 20,
+            "completion_condition": "max_turns",
+            "shared_context_keys": [],
+            "handoff_policy": "explicit",
+            "input_mappings": {},
+            "agent_inputs": {},
         },
         "composite": {
             "body_graph": "",
@@ -427,6 +499,24 @@ def _default_node_config(node_type: str) -> dict[str, Any]:
             "validation_rules": [],
             "on_failure": "route",
             "strict_mode": False,
+        },
+        "reflection": {
+            "reflection_prompt": "",
+            "source": "last_run",
+            "source_config": {},
+            "output_format": "principles",
+            "max_principles": 10,
+            "min_confidence": 0.3,
+            "dedup_strategy": "embedding_similarity",
+        },
+        "vote": {
+            "candidates": ["claude-sonnet-4-6"],
+            "num_votes": 3,
+            "prompt_template": "",
+            "system_prompt": "",
+            "temperature": 0.7,
+            "vote_strategy": "majority",
+            "parallelism": 3,
         },
         "input": {
             "variables": [],
@@ -611,10 +701,7 @@ def _ensure_subgraph(graph: dict[str, Any], parent_id: str, body_nodes: list[dic
 
 
 def _node_uses_body_graph(node_type: str) -> bool:
-    try:
-        return "body_graph" in _default_node_config(node_type)
-    except KeyError:
-        return False
+    return node_type in BODY_GRAPH_RUNTIME_NODE_TYPES
 
 
 # ---------------------------------------------------------------------------
