@@ -456,6 +456,44 @@ class TestCostCommand:
             "request-thread",
         )
 
+    @pytest.mark.asyncio
+    async def test_cost_prefers_session_id_over_broader_thread_metadata(self, tmp_path):
+        store = InMemoryTelemetryStore()
+        await store.record(TelemetryEvent(
+            event_type="chat_turn",
+            session_id="lane-1",
+            model="gpt-4o",
+            prompt_tokens=100,
+            completion_tokens=50,
+            total_tokens=150,
+            estimated_cost=0.0008,
+        ))
+        c = _build_concierge(tmp_path, telemetry_store=store)
+        c.chat_manager._chat_store = MagicMock()
+        c.chat_manager._chat_store.get_thread_meta.side_effect = lambda workflow_id, thread_id: (
+            {
+                "latest_citation_summary": {
+                    "ran": True,
+                    "verified": 3,
+                    "unverified": 0,
+                }
+            }
+            if (workflow_id, thread_id) == ("request-workflow", "lane-1")
+            else {}
+        )
+
+        msg = _make_msg("/cost")
+        msg.session_id = "lane-1"
+        msg.metadata = {"workflow_id": "request-workflow", "thread_id": "conversation-1"}
+        events = await _collect(c, msg)
+
+        assert len(events) == 1
+        assert "3 verified, 0 unverified" in events[0].content
+        c.chat_manager._chat_store.get_thread_meta.assert_called_with(
+            "request-workflow",
+            "lane-1",
+        )
+
 
 # ---------------------------------------------------------------------------
 # /retry command

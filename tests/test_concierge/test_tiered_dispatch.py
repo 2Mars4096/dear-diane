@@ -2509,6 +2509,16 @@ def test_extract_chat_params_metadata_override_takes_precedence() -> None:
     assert params["allow_mutation_tool"] is False
 
 
+def test_extract_chat_params_prefers_session_id_over_metadata_thread_id() -> None:
+    msg = _FakeMsg(metadata={"thread_id": "conversation-1"})
+    msg.session_id = "lane-1"
+    session = _FakeSession(triage=_FakeTriage(), msg=msg)
+
+    params = _extract_chat_params(session, "system prompt")
+
+    assert params["thread_id"] == "lane-1"
+
+
 def test_format_surface_context_truncates_large_payloads() -> None:
     block = ChatManager._format_surface_context({
         "mode": "development",

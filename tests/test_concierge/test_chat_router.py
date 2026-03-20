@@ -151,3 +151,49 @@ async def test_chat_message_auto_mode_preserves_progress_ack_detected_mode(
     assert events[0]["content"] == ""
     assert events[1]["detected_mode"] == "agent"
     assert events[1]["content"] == "Built directly."
+
+
+def test_chat_message_request_allows_distinct_session_and_thread_ids() -> None:
+    req = chat_router.ChatMessageRequest(
+        workflow_id="wf-1",
+        message="hello",
+        session_id="lane-1",
+        thread_id="conversation-1",
+    )
+
+    assert req.session_id == "lane-1"
+    assert req.thread_id == "conversation-1"
+
+
+@pytest.mark.asyncio
+async def test_chat_message_non_concierge_prefers_session_id_for_chat_manager_thread_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _FakeChatManager()
+    graph_store = _FakeGraphStore()
+    chat_router._chat_streams.clear()
+
+    monkeypatch.setattr(chat_router, "get_chat_manager", lambda: manager)
+    monkeypatch.setattr(chat_router, "get_graph_store", lambda: graph_store)
+    monkeypatch.setattr(chat_router, "get_concierge", lambda: None)
+    monkeypatch.setattr(chat_router, "get_dispatcher", lambda: None)
+
+    req = chat_router.ChatMessageRequest(
+        workflow_id="wf-1",
+        message="Build a simple chain",
+        mode="build",
+        session_id="lane-1",
+        thread_id="conversation-1",
+    )
+
+    response = await chat_router.chat_message(req, concierge=False)
+    channel_id = response["stream_channel_id"]
+
+    queue = chat_router._chat_streams[channel_id][0]
+    while True:
+        item = await asyncio.wait_for(queue.get(), timeout=1.0)
+        if item is None:
+            break
+
+    assert manager.calls
+    assert manager.calls[0]["thread_id"] == "lane-1"
