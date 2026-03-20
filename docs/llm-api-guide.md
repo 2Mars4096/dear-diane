@@ -204,14 +204,32 @@ node = wf.router(
 
 **Default output port:** `route`.
 
-### 3j. Human-in-the-Loop
+### 3j. Input Node
 
-Pauses execution for human input.
+Explicit workflow entry variables. Each declared variable becomes an output port, and the node also exposes an aggregate `input` output for convenient whole-payload wiring.
 
 ```python
-node = wf.human_in_the_loop(
+node = wf.input_node(
+    "workflow_inputs",
+    variables=[
+        {"name": "topic", "type": "string", "description": "Research topic"},
+        {"name": "max_rounds", "type": "number", "default": 3},
+    ],
+)
+```
+
+**Default output port:** `input` (aggregate payload). Variable-specific ports are also available, e.g. `workflow_inputs["topic"]`.
+
+### 3k. Human
+
+Canonical human interaction node. Use this for richer render modes and typed I/O. `wf.human_in_the_loop()` remains available as a legacy/simple alias.
+
+```python
+node = wf.human(
     "approve_draft",
     prompt="Review and approve this draft:",
+    render_mode="approval",
+    instructions="Approve or request changes.",
     timeout_seconds=3600,                   # optional timeout
     default_action="approve",               # fallback on timeout (optional)
 )
@@ -219,7 +237,87 @@ node = wf.human_in_the_loop(
 
 **Default output port:** `response`.
 
-### 3k. Parallel Subagents
+Markdown agent format:
+
+```yaml
+type: human
+timeout_seconds: 3600
+default_action: approve
+render_mode: approval
+render_target: both
+instructions: Approve or reject the draft.
+input_schema:
+  type: object
+output_schema:
+  type: object
+  properties:
+    approved:
+      type: boolean
+```
+
+Legacy alias:
+
+```python
+node = wf.human_in_the_loop(
+    "approve_draft",
+    prompt="Review and approve this draft:",
+)
+```
+
+Convenience aliases:
+
+```python
+node = wf.approval("approve_draft", prompt="Review and approve this draft:")
+node = wf.form(
+    "intake_form",
+    schema={
+        "type": "object",
+        "properties": {"name": {"type": "string"}},
+        "required": ["name"],
+    },
+    prompt="Fill out the intake form.",
+)
+```
+
+### 3l. Vote
+
+Runs the same task through multiple candidates and chooses a winner using a configured voting strategy.
+
+```python
+node = wf.vote(
+    "choose_best",
+    prompt="Pick the best answer for the user.",
+    candidates=["claude-sonnet-4-6", "gpt-4o"],
+    num_votes=2,
+    strategy="judge",
+)
+```
+
+**Default output port:** `winner`.
+
+Alias:
+
+```python
+node = wf.ensemble(
+    "choose_best",
+    prompt="Pick the best answer for the user.",
+    models=["claude-sonnet-4-6", "gpt-4o"],
+)
+```
+
+Markdown agent format:
+
+```yaml
+type: vote
+candidates:
+  - claude-sonnet-4-6
+  - gpt-4o
+vote_strategy: judge
+judge_model: claude-opus-4
+parallelism: 2
+```
+
+### 3m. Parallel Subagents
 
 Runs multiple heterogeneous sub-graphs concurrently and merges results at fan-in. Unlike ForEach (same body over a list), each branch is a distinct sub-graph with its own logic. See [Sub-Graph Context Managers](#5-sub-graph-context-managers) for builder syntax.
 
@@ -239,7 +337,7 @@ Runs multiple heterogeneous sub-graphs concurrently and merges results at fan-in
 
 **Default output port:** `results`.
 
-### 3l. Orchestrator
+### 3n. Orchestrator
 
 Async runtime orchestrator that runs concurrently with subgraph teams. Unlike ParallelSubagents (fire-and-forget fan-out), the orchestrator actively monitors events from teams and can communicate back via shared context — like a real-world manager coordinating parallel teams.
 
@@ -259,6 +357,49 @@ Async runtime orchestrator that runs concurrently with subgraph teams. Unlike Pa
 **Events emitted:** `parallel_branch_started` (with `team_name` in data), `parallel_fan_in_completed`.
 
 **Default output port:** `results`.
+
+### 3o. Agent Team
+
+Group-chat style multi-agent coordination. Unlike `orchestrator`, team members address each other as peers and the runtime manages turn-taking, handoffs, and shared conversation state.
+
+```python
+with wf.team(
+    "review_team",
+    moderator_prompt="Coordinate the specialists.",
+    turn_strategy="free_form",
+    shared_context_keys=["conversation_history"],
+) as team:
+    with team.agent("researcher") as sub:
+        sub.llm("research", prompt="Research the topic.")
+    with team.agent("writer") as sub:
+        sub.llm("write", prompt="Draft the answer.")
+```
+
+Alias:
+
+```python
+with wf.group_chat("review_team") as team:
+    ...
+```
+
+**Default output port:** `result`.
+
+Markdown agent format:
+
+```yaml
+type: agent_team
+moderator_prompt: Coordinate the specialists.
+turn_strategy: free_form
+shared_context_keys:
+  - conversation_history
+```
+
+```markdown
+## Agents
+
+- [researcher](researcher.md)
+- [writer](writer.md)
+```
 
 ---
 
@@ -1224,6 +1365,23 @@ ws://<host>/api/chat/<stream_channel_id>/events
 
 ## 10. Type Reference
 
+### Taxonomy Policy
+
+For LLM callers, the important distinction is:
+
+- **Canonical runtime node kinds** are the `node_type` values stored in `dan_graph_v1` and supported by the runtime graph union in `src/dan/models/graph.py`.
+- **Deprecated aliases** are still accepted for compatibility, but new authored graphs should prefer the canonical spelling.
+- **Authoring pseudo-types** are surface-level conveniences and should not be emitted as `node_type` values in final graph JSON.
+- **Macros/templates** are higher-level authoring constructs that lower into one or more canonical runtime primitives.
+
+Current policy highlights:
+
+- Prefer **`gate`** over legacy **`if_else`** for new branching nodes.
+- Prefer **`human`** over legacy **`human_in_the_loop`** for new human-interaction nodes when richer human-node semantics are desired.
+- Treat editor palette labels like **`gate_if_else`** / **`gate_while`** as authoring-only pseudo-types that lower to canonical `gate` nodes.
+- Planner **`GENERATE`** is intentionally the lightweight path: it only targets the reduced simple subset (`llm_operator`, `tool_operator`, `code_operator`, `gate`) instead of the full runtime union.
+- Chat mutation operates on canonical runtime node kinds, while markdown import/export remains an explicitly narrower surface that warns when a runtime shape cannot be represented faithfully.
+
 ### Node Types
 
 | `node_type` string | Builder method | Default output port | Purpose |
@@ -1231,19 +1389,25 @@ ws://<host>/api/chat/<stream_channel_id>/events
 | `llm_operator` | `wf.llm()` | `text` | LLM call |
 | `code_operator` | `wf.code()` | `result` | Python execution |
 | `tool_operator` | `wf.tool()` | `result` | Registered function call |
+| `if_else` | `wf.if_else()` | `branch` | Legacy branch node; prefer `gate` for new graphs |
 | `gate` (if_else mode) | `wf.gate()` | `true`, `false` | Conditional routing (replaces `if_else`) |
 | `gate` (while mode) | `wf.gate()` | `continue`, `done` | Iterative loop (replaces `while_loop`) |
+| `while_loop` | `wf.while_loop()` | `result` | Body-subgraph loop container; still runtime-supported alongside `gate` (while mode) |
 | `for_each` | `wf.for_each()` | `results` | Parallel fan-out over list |
 | `parallel_subagents` | `wf.parallel_subagents()` | `results` | Heterogeneous parallel branches |
 | `orchestrator` | `wf.orchestrator()` | `results` | Async orchestrator with concurrent teams |
+| `goal_loop` | `wf.goal_loop()` | `result` | Goal-oriented loop over a body sub-graph |
 | `composite` | `wf.composite()` | *(declared)* | Sub-graph |
 | `reduce` | `wf.reduce()` | `result` | Fan-in aggregation |
 | `router` | `wf.router()` | `route` | LLM-powered routing |
-| `human_in_the_loop` | `wf.human_in_the_loop()` | `response` | Human input |
+| `human` | `wf.human()` | `response` | Canonical human interaction node |
+| `human_in_the_loop` | `wf.human_in_the_loop()` | `response` | Legacy/simple human alias |
+| `vote` | `wf.vote()` | `winner` | Voting / ensemble selection |
 | `rag_operator` | `wf.rag()` | `chunks` | Vector-store retrieval |
 | `validator` | `wf.validator()` | `valid` | Data validation with rule routing |
 | `reflection` | `wf.reflection()` | `principles` | Post-run analysis, distills errors into causal principles |
-| `input` | *(loader/scoped_run only)* | *(variable-based)* | Workflow entry variables — created by loader or scoped_run, not by builder |
+| `input` | `wf.input_node()` | `input` | Explicit workflow entry variables (plus variable-specific output ports) |
+| `agent_team` | `wf.team()` / `wf.group_chat()` | `result` | Group-chat style multi-agent coordination |
 
 ### Edge Types
 
@@ -1690,7 +1854,7 @@ Build-from-intent creates workflows from natural language. It can be triggered t
 }
 ```
 
-Legacy clients may still send `surface` and `thread_id`, but new frontends should prefer `surface_type` / `surface_id` / `session_id` and keep `history` limited to `user` / `assistant` turns.
+Legacy clients may still send `surface` and `thread_id`, but new frontends should prefer `surface_type` / `surface_id` / `session_id` and keep `history` limited to `user` / `assistant` turns. When both `session_id` and `thread_id` are present, they may intentionally differ: `session_id` is the narrower execution/session lane, while `thread_id` can carry a broader conversation identity. If one is omitted, the server fills it from the other for backward compatibility.
 
 When `mode="build"`, the LLM receives `BUILD_FROM_INTENT_PROMPT` with:
 - **Task decomposition guidance** — break intent into stages, map to node types and data flow; dual-branch composition (`data_ingest` + `data_analysis` + drafting/review/compile)

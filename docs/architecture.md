@@ -184,9 +184,9 @@
 - `policy.py`, `progress.py`, `progress_ux.py`, `resources.py`, `identity.py`, `scheduler.py`, `computer_policy.py`, `computer_use.py`, `domain_learning.py`, and `domain_preferences.py` are the kept support modules. `domain_preferences.py` implements `/domains` for inspecting/editing `UserProfile.common_domains` with canonical alias normalization and live `MemoryKernel` resync. Deleted legacy modules include `classifier.py`, `handlers.py`, `solver.py`, `context_resolver.py`, `resume.py`, `follow_up.py`, `promotion.py`, and `queue.py`.
 - `identity.py` is the single source of truth for bot name and prefix formatting. `get_bot_name()` reads `DAN_BOT_NAME` env var (default `"DAN"`). `extract_label_from_prefix()` parses `[DAN - Project / Task]` → `("Project / Task", "remaining text")`. `format_compact_label()` produces Telegram-friendly `[Project]` headers without the bot name.
 - `telegram_router.py` uses a signal-based routing architecture. `MessageRouter` evaluates a configurable chain of `RoutingSignal` instances in priority order; the first non-None result wins. Default signal chain: `MentionSignal` (confidence 1.0) → `ReplyOwnershipSignal` (0.9, new: replying to a bot's message routes to that bot) → `TopicMappingSignal` (0.85, forum topic → project) → `ProjectKeywordSignal` (0.7) → `DefaultBotSignal` (0.1). Signals are pluggable: `add_signal()`, `remove_signal()`, `set_signals()`. `RoutingContext` carries all routing inputs including `reply_to_bot` (extracted from the fleet's outbound message tracking). A failing signal is caught and skipped.
-- **Portal contract (31-25):** `ChatMessageRequest` has unified identifiers: `surface_type` (platform kind), `surface_id` (instance within type), `session_id` (conversation continuity key). A model validator syncs `surface` ↔ `surface_type:surface_id` and `session_id` ↔ `thread_id` bidirectionally, rejects conflicting/partial aliases, and keeps `history` to `user`/`assistant` roles only. `SurfaceMessage` has matching `surface_type`/`surface_id`/`session_id` fields. All adapters must send `surface_context` with at minimum `{"identity": {"name": ..., "role": ...}}` — the concierge renders this via `_surface_identity_instructions`. Streaming protocol documented in `docs/llm-api-guide.md`: 11 WS event types (`chat_token`, `chat_complete`, `chat_notice`, `chat_queued`, `chat_error`, `chat_interrupted`, `chat_tool_call_start`, `chat_tool_call_result`, `chat_file_attachment`, `chat_poll_request`, `chat_mutation`).
+- **Portal contract (31-25):** `ChatMessageRequest` has unified identifiers: `surface_type` (platform kind), `surface_id` (instance within type), `session_id` (execution/session continuity key), and optional `thread_id` (broader conversation/thread identity). The model validator still syncs `surface` ↔ `surface_type:surface_id`, fills whichever of `session_id` / `thread_id` is missing, and keeps `history` to `user` / `assistant` roles only, but callers may now intentionally send distinct `session_id` and `thread_id` values when they need a narrower execution lane inside a broader thread. `SurfaceMessage` has matching `surface_type`/`surface_id`/`session_id` fields. All adapters must send `surface_context` with at minimum `{"identity": {"name": ..., "role": ...}}` — the concierge renders this via `_surface_identity_instructions`. Streaming protocol documented in `docs/llm-api-guide.md`: 11 WS event types (`chat_token`, `chat_complete`, `chat_notice`, `chat_queued`, `chat_error`, `chat_interrupted`, `chat_tool_call_start`, `chat_tool_call_result`, `chat_file_attachment`, `chat_poll_request`, `chat_mutation`).
 - `telegram_fleet.py` converts the concierge's `[DAN - Project]` prefix to a compact `[Project]` header via `_format_for_telegram()` (replacing the old `_strip_prefix_and_html()` which stripped prefixes entirely). Combined with Telegram's native `reply_to_message_id`, this gives users both project context and conversational threading. The Telegram adapter keeps replied-to text in `MessageContext.reply_to_text`, but no longer prepends quoted reply text into the primary user message body sent upstream; lane keys and history preserve continuity without polluting classification, task labels, or file-search queries with historical quoted text. The fleet now also sends raw conversation history plus structured `surface_context` (`identity` + `peers`) to `/api/chat/message` instead of injecting adapter-authored system messages into `history`; concierge handlers turn that metadata into the final prompt instructions so persona/project-focus rules live in one place. Telegram adapter send methods (`send_or_edit`, `_send_text`, `_try_send_markdown`, `send_poll`) all accept `thread_id: int | None = None` for forum-topic threading; the fleet passes `ctx.thread_id` to all 15+ call sites. Error visibility: `_dispatch` sends a user-visible error message on HTTP non-200 and on dispatch exceptions (not just ❌ reaction). The fleet's `_lookup_reply_to_bot()` extracts the bot name from `_message_lanes` (keyed by `(chat_id, message_id)`) and passes it to the router for reply-sticky ownership. Progress updates use exponential backoff: 10s initial → 20s → 30s → ... up to `DAN_TELEGRAM_PROGRESS_MAX_INTERVAL` (default 300s), configurable via `DAN_TELEGRAM_PROGRESS_BACKOFF` (default 1.5). When conversation has moved on (other messages sent since last progress edit), the adapter sends a new message instead of editing the stale one.
-- `telegram_fleet.py` keeps two different Telegram notions of continuity on purpose. The broad conversation key (`chat_id:thread_id-or-main:bot`) is still sent to the server as `thread_id` so concierge/project continuity survives across turns. But the fleet's local history lock is narrower in private chats: replies reuse the earlier lane, while unrelated private messages get per-message lanes. This mirrors the WhatsApp Web adapter's "no adapter-wide execution lock" behavior and prevents one long-running DM turn from blocking an unrelated one before the shared dispatcher has a chance to classify and queue it properly.
+- `telegram_fleet.py` keeps two different Telegram notions of continuity on purpose. The broad conversation key (`chat_id:thread_id-or-main:bot`) still anchors the scratch workflow and request `thread_id`, while the narrower lane key is sent as `session_id` so concierge dispatcher/session ownership follows the actual reply lane. Replies reuse the earlier lane, while non-reply messages now get per-message lanes in private chats, groups, and forum topics; that lets unrelated Telegram turns run concurrently even inside the same chat/topic unless the user explicitly replies into an existing lane. Progress-edit ownership is also tracked per lane now, so activity in one lane/topic no longer suppresses another lane's progress updates just because both share a `chat_id`.
 - `telegram_fleet.py` also has to follow dispatcher queue handoffs explicitly. When `/api/chat/message` emits `chat_queued`, the payload can contain a replacement `stream_channel_id`; the fleet's direct WebSocket client now transparently reconnects to that redirected channel in both streaming and non-streaming paths so queued Telegram turns still receive their eventual terminal reply.
 - **CLI/WhatsApp adapter reliability (31-25):** The generic adapter (`cli/adapter.py`) now sends clean history (no system messages) and moves `_ADAPTER_CONTEXT` into `surface_context.adapter_instructions` with structured identity envelope, matching the Telegram fleet pattern. The WS event loop handles `chat_queued` redirects with cycle detection (ported from fleet). A background task sends "Working on it..." after 5s of silence (once per turn). Poll text fallback renders polls as numbered lists for adapters without `send_poll_for_session`. WhatsApp `_send_text` retries once with 2s backoff. `_connect_with_retry()` adds exponential backoff reconnection (2s base, 300s max, 10 attempts). WhatsApp Web `allowed_jids` is now an exact inbound/outbound allowlist for live-safety controls: it accepts bare phone numbers or full JIDs, strips `:device` suffixes on `s.whatsapp.net` JIDs, and blocks disallowed text/file/fallback sends before recipient resolution.
 - **Clarification UX (31-25):** `_format_clarification_text()` in `runtime.py` renders `ClarificationRequest` options as numbered lists (`1. Option A\n2. Option B`) so messaging users can reply with a number.
@@ -909,6 +909,96 @@ The frontmatter schema is a superset: `name` + `description` (shared with all ID
 #### Why Hyperedges, Not Context Edges
 
 Context edges (Layer 3) carry *data* — key-value pairs that nodes read/write. Hyperedges carry *behavior modifiers* — they change how nodes execute, not what data they consume. A skill doesn't add a key to the shared context store; it modifies the prompt of every node it's attached to. This is a fundamentally different concern.
+
+### Canonical Node Taxonomy (Plan 40)
+
+The authoritative runtime node taxonomy is the discriminated `Node` union in `src/dan/models/graph.py`. A node kind is not considered part of the runtime contract just because some surface can name it; it must exist in that union, be registered for discovery, and have matching executor/validation support.
+
+When classifying node forms, DAN uses four buckets:
+
+| Bucket | Meaning | Examples |
+|---|---|---|
+| **Runtime primitive** | Canonical `node_type` stored in `dan_graph_v1`, deserialized by the `Graph` union, and supported by runtime/executor paths | `llm_operator`, `tool_operator`, `code_operator`, `rag_operator`, `input`, `gate`, `for_each`, `parallel_subagents`, `orchestrator`, `composite`, `goal_loop`, `vote`, `reflection`, `human`, `validator`, `router`, `reduce`, `agent_team` |
+| **Deprecated JSON alias** | Still deserialized for compatibility, but new authored graphs should prefer another canonical runtime spelling | `if_else` (prefer `gate`), `human_in_the_loop` (prefer `human`) |
+| **Authoring pseudo-type** | Surface-specific label that never persists as `node_type` in graph JSON | editor palette `gate_if_else`, `gate_while`; React Flow `loopGroup` |
+| **Macro / template only** | Builder, mutator, or authoring convenience that lowers into runtime primitives | `branch()`, `review_loop()`, `map_reduce()`, `tool_chain()`, workflow templates / `expand_pattern` shapes |
+
+#### Branching and Looping
+
+- **`gate`** is the general branch/loop control primitive. `gate_mode="if_else"` gives `true` / `false` ports; `gate_mode="while"` gives `continue` / `done` ports and integrates with cycle-aware scheduler logic.
+- **`if_else`** remains supported as a narrower legacy branch node, but new surfaces should prefer `gate`.
+- **`while_loop`** remains a real runtime primitive distinct from `gate(while)`: it is a body-subgraph container with composite-node semantics rather than an on-graph back-edge controller.
+- **`goal_loop`** is also a real runtime primitive: a body-subgraph loop with explicit goal/metric semantics, not just a macro over `while_loop`.
+
+#### Runtime Contract Matrix
+
+| Runtime kind | Bucket | Primary builder surface | Key config / invariant | Primary output(s) | Composite / owned subgraphs | Notes |
+|---|---|---|---|---|---|---|
+| `llm_operator` | primitive | `wf.llm()` | `model`, `prompt_template`; optional structured output/tool loop fields | `text` | No | Core LLM call |
+| `tool_operator` | primitive | `wf.tool()` | `tool_id` must resolve at runtime | `result` | No | Registered tool invocation |
+| `code_operator` | primitive | `wf.code()` | `code`, `language`; executor expects code to set `result` | `result` | No | Sandboxed code |
+| `rag_operator` | primitive | `wf.rag()` | `collection`, retrieval config | `chunks` | No | Retrieval operator |
+| `input` | primitive | `wf.input_node()` | `variables` define workflow entry contract | `input` + variable ports | No | Explicit workflow entry variables |
+| `gate` | primitive | `wf.gate()` | `condition`, `gate_mode`; `gate_mode` controls port contract | `true/false` or `continue/done` | No | Preferred branch/while control primitive |
+| `while_loop` | primitive | `wf.while_loop()` | `condition`, `body_graph`, `max_iterations` | `result` | Yes (`body_graph`) | Body-subgraph loop container |
+| `for_each` | primitive | `wf.for_each()` | `body_graph`, `parallelism`, `merge_strategy` | `results` | Yes (`body_graph`) | Fan-out over items |
+| `parallel_subagents` | primitive | `wf.parallel_subagents()` | `branch_graphs`, `merge_strategy`, `parallelism` | `results` | Yes (`branch_graphs`) | Heterogeneous parallel branches |
+| `orchestrator` | primitive | `wf.orchestrator()` | `teams`, orchestration prompt/model, completion policy | `results` | Yes (`teams`) | Async runtime supervisor over team subgraphs |
+| `composite` | primitive | `wf.composite()` | `body_graph`, optional input/output mappings | declared / mapped | Yes (`body_graph`) | Reusable sub-graph boundary |
+| `goal_loop` | primitive | `wf.goal_loop()` | `goal_text`, `metric_name`, `target_value`, `comparison`, `body_graph` | `result` (+ goal metadata) | Yes (`body_graph`) | Goal/metric-oriented iterative primitive |
+| `reduce` | primitive | `wf.reduce()` | `reducer` strategy/expression | `result` | No | Fan-in aggregation |
+| `router` | primitive | `wf.router()` | `model`, `route_descriptions` | `route` | No | LLM-powered route choice |
+| `human` | primitive | `wf.human()` | `prompt`; richer `render_mode` / schema contract optional | `response` | No | Canonical rich human-interaction node |
+| `validator` | primitive | `wf.validator()` | `validation_rules`, `on_failure`, `strict_mode` | `valid` / `invalid` | No | Data validation boundary |
+| `agent_team` | primitive | `wf.team()` / `wf.group_chat()` | `agents`, turn strategy, completion policy | `result` (+ conversation metadata) | Yes (`agents`) | Group-chat style multi-agent collaboration |
+| `vote` | primitive | `wf.vote()` | `candidates`, `num_votes`, `vote_strategy` | `winner` | No | Ensemble / winner-selection primitive |
+| `reflection` | primitive | `wf.reflection()` | `source`, `output_format`, reflection prompt/model options | `principles` | No | Post-run analysis / learning primitive |
+| `if_else` | deprecated alias | `wf.if_else()` | `condition`; prefer `gate` for new authored graphs | `branch` | No | Runtime-supported legacy alias |
+| `human_in_the_loop` | deprecated alias | `wf.human_in_the_loop()` | simple human prompt / timeout path; prefer `human` | `response` | No | Runtime-supported legacy alias |
+
+#### Source-of-Truth Policy
+
+- `src/dan/models/graph.py` is the authoritative runtime taxonomy source.
+- `src/dan/models/node_taxonomy.py` is the canonical policy layer derived from that runtime union. It centralizes ordered runtime kinds, deprecated aliases, mutation-surface kinds, subgraph-bearing kinds, and authoring-only pseudo-type policy.
+- `src/dan/registry.py`, `src/dan/validation/graph.py`, `src/dan/server/chat/prompts.py`, `src/dan/server/graph_mutator.py`, `editor/src/types/graph.ts`, and decompiler/materializer tables must either derive from that source or be protected by explicit regression tests.
+- Adding a new runtime node kind requires an explicit schema/runtime decision. Discovery-only registration is not enough.
+
+#### Versioning and Deprecation
+
+- Runtime node kinds are part of the `dan_graph_v1` contract. Adding or removing a true runtime primitive is a schema/runtime change, not a casual surface tweak.
+- Deprecated aliases may remain in the runtime union for compatibility, but new authoring surfaces should stop emitting them before they are considered removable.
+- Removing a deprecated runtime alias requires either:
+  - a guaranteed migration path over stored assets and authoring surfaces, or
+  - a future graph-contract/version bump.
+- Any new runtime primitive must justify why it cannot be represented as:
+  - a builder/chat/editor macro,
+  - an authoring-only pseudo-type,
+  - or a composition of existing primitives.
+
+#### Current Migration Strategy
+
+- **Canonical authoring, tolerant loading.** New builder/editor/chat authoring surfaces should emit canonical runtime kinds (`gate`, `human`, etc.) wherever the canonical policy already exists.
+- **Deprecated aliases continue to deserialize.** Runtime JSON still accepts supported legacy discriminants such as `if_else`, `while_loop`, and `human_in_the_loop` where they remain in the `Graph` union.
+- **Targeted migration, not blind rewrite.** Legacy gate-related normalization is opt-in via `DAN_GATE_MIGRATION_ENABLED` and is applied on model-based load paths through the shared migration helper rather than by rewriting every saved graph unconditionally.
+- **Canonical corpus stays canonical.** Files under `graphs/` are expected to be valid `dan_graph_v1`. Older pre-IR shapes belong in explicit migration fixtures under `tests/fixtures/migration/`, not in the main graph corpus.
+- **Future contract bumps are explicit.** If a deprecated alias is ever removed from the runtime union, that requires a deliberate migration path or a future graph-version transition rather than an incidental refactor.
+
+#### Authoring and Decompilation Policy
+
+- **Pure ergonomic aliases** lower to the same canonical runtime node with no semantic ambiguity. Examples:
+  - palette `gate_if_else` / `gate_while` → runtime `gate`
+  - builder `approval()` / `form()` → runtime `human`
+  - builder `ensemble()` → runtime `vote`
+  - builder `group_chat()` → runtime `agent_team`
+- **Pattern macros** intentionally lower into multiple runtime nodes and therefore do not correspond to a single `node_type`. Examples:
+  - `branch()` → `gate` + branch nodes
+  - `review_loop()` → loop subgraph structure
+  - `map_reduce()` → `for_each` + reduce/fan-in pattern
+  - `tool_chain()` → a sequence of tool/LLM primitives
+- **Python builder decompile favors canonical runtime forms.** Decompiler output should prefer stable canonical APIs such as `wf.human()`, `wf.vote()`, `wf.team()`, and `wf.goal_loop()` over convenience aliases when re-emitting a graph.
+- **Planner `GENERATE` is deliberately narrower than the runtime catalog.** The lightweight plan-generation surface only emits a reduced simple subset (`llm_operator`, `tool_operator`, `code_operator`, `gate`) and should not pretend to cover expert-only runtime primitives.
+- **Markdown decompile is allowed to be narrower than runtime.** When the markdown surface cannot faithfully express a runtime shape, it should emit explicit diagnostics or stubs rather than inventing unofficial syntax.
+- **`graph_materializer` may annotate, not reinterpret.** Readability hints like `wf.chain()` / `wf.review_loop()` suggestions are acceptable as comments layered over canonical builder output, but should not silently change the represented runtime semantics.
 
 ### HumanNode (Generalized)
 
