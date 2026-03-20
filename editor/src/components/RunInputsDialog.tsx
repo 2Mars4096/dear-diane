@@ -1,43 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useGraphStore } from "../store/useGraphStore";
-import type { DanGraph, DanNode } from "../types/graph";
+import { detectRunInputVariables } from "../lib/runInputs";
 
 interface RunInputsDialogProps {
   open: boolean;
   onClose: () => void;
-}
-
-/**
- * Extract {variable} placeholders from LLM prompt templates on entry nodes.
- * Skips escaped braces ({{ or }}) and known internal patterns.
- */
-function detectInputVariables(graph: DanGraph): string[] {
-  const vars = new Set<string>();
-  const entryIds = new Set(graph.entry_points);
-
-  for (const node of graph.nodes) {
-    if (!entryIds.has(node.id)) continue;
-
-    if (node.node_type === "llm_operator") {
-      const llm = node as DanNode & { prompt_template?: string };
-      const prompt = llm.prompt_template ?? "";
-      const matches = prompt.matchAll(/(?<!\{)\{([a-zA-Z_][a-zA-Z0-9_]*)\}(?!\})/g);
-      for (const m of matches) {
-        vars.add(m[1]);
-      }
-    }
-
-    for (const port of node.input_ports) {
-      const hasIncomingEdge = graph.edges.some(
-        (e) => e.target_node_id === node.id && e.target_port === port.name,
-      );
-      if (!hasIncomingEdge) {
-        vars.add(port.name);
-      }
-    }
-  }
-
-  return [...vars].sort();
 }
 
 export default function RunInputsDialog({ open, onClose }: RunInputsDialogProps) {
@@ -45,7 +12,7 @@ export default function RunInputsDialog({ open, onClose }: RunInputsDialogProps)
   const startRun = useGraphStore((s) => s.startRun);
 
   const variables = useMemo(
-    () => (danGraph ? detectInputVariables(danGraph) : []),
+    () => (danGraph ? detectRunInputVariables(danGraph) : []),
     [danGraph],
   );
 

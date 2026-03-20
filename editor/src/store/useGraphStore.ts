@@ -34,6 +34,7 @@ import {
 import { PREDEFINED_AGENT_TEMPLATES } from "../lib/paletteTemplates";
 import { layoutGraph, needsAutoLayout } from "../lib/layout";
 import * as api from "../lib/api";
+import { useAppStore } from "./useAppStore";
 
 // -- 6-1: History & multi-select -----------------------------------------------
 interface GraphSnapshot {
@@ -910,12 +911,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
     let finalInputs = inputs;
     if (!finalInputs && danGraph) {
-      const inputNode = danGraph.nodes.find((n) => n.node_type === "input");
-      if (inputNode) {
-        const vals = inputNodeValues[inputNode.id];
-        if (vals && Object.keys(vals).length > 0) {
-          finalInputs = vals;
-        }
+      const mergedInputs = danGraph.nodes
+        .filter((n) => n.node_type === "input")
+        .reduce<Record<string, unknown>>((acc, node) => {
+          const vals = inputNodeValues[node.id];
+          if (vals && Object.keys(vals).length > 0) {
+            Object.assign(acc, vals);
+          }
+          return acc;
+        }, {});
+      if (Object.keys(mergedInputs).length > 0) {
+        finalInputs = mergedInputs;
       }
     }
 
@@ -1746,11 +1752,17 @@ export const useGraphStore = create<GraphState>((set, get) => {
     chatPrefill: errorContext,
     chatFocusTrigger: (s.chatFocusTrigger ?? 0) + 1,
   })),
-  focusLogPanel: () => set((s) => ({ logFocusCounter: s.logFocusCounter + 1 })),
-  focusHistoryPanel: (runId) => set((s) => ({
-    historyFocusCounter: s.historyFocusCounter + 1,
-    historyFocusRunId: runId ?? null,
-  })),
+  focusLogPanel: () => {
+    useAppStore.getState().setMode("operations");
+    set((s) => ({ logFocusCounter: s.logFocusCounter + 1 }));
+  },
+  focusHistoryPanel: (runId) => {
+    useAppStore.getState().setMode("operations");
+    set((s) => ({
+      historyFocusCounter: s.historyFocusCounter + 1,
+      historyFocusRunId: runId ?? null,
+    }));
+  },
 
   // -- 18-4: Token analytics actions -------------------------------------------
 
