@@ -18,10 +18,15 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from typing import TYPE_CHECKING
 
+from dan.models.node_taxonomy import RUNTIME_NODE_TYPES, SUBGRAPH_BEARING_RUNTIME_NODE_TYPES
 from dan.models.context import ContextMode
 from dan.models.control_flow import (
+    AgentTeamNode,
     CompositeNode,
     ForEachNode,
+    GoalLoopNode,
+    OrchestratorNode,
+    ParallelSubagentsNode,
     WhileLoopNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
@@ -39,16 +44,8 @@ if TYPE_CHECKING:
 
 _LOOP_NODE_TYPES = frozenset({"while_loop", "for_each"})
 _GATE_LOOP_TYPES = frozenset({"gate"})
-_COMPOSITE_NODE_TYPES = frozenset({
-    "composite", "while_loop", "for_each", "parallel_subagents", "orchestrator",
-    "agent_team",
-})
-_KNOWN_NODE_TYPES = frozenset({
-    "llm_operator", "tool_operator", "code_operator", "rag_operator", "input",
-    "if_else", "gate", "while_loop", "for_each", "parallel_subagents",
-    "orchestrator", "reduce", "router", "human_in_the_loop", "human",
-    "validator", "composite", "agent_team", "vote",
-})
+_COMPOSITE_NODE_TYPES = SUBGRAPH_BEARING_RUNTIME_NODE_TYPES
+_KNOWN_NODE_TYPES = RUNTIME_NODE_TYPES
 
 
 def validate_graph(graph: "Graph") -> list[str]:
@@ -136,14 +133,41 @@ def _check_required_ports(graph: "Graph") -> list[str]:
 
 def _check_sub_graph_refs(graph: "Graph") -> list[str]:
     errors: list[str] = []
+
+    def _missing_ref_error(node_id: str, ref: str, label: str) -> str:
+        return (
+            f"Node '{node_id}' {label} references sub-graph '{ref}' "
+            f"which is not in Graph.sub_graphs"
+        )
+
     for node in graph.nodes:
-        ref: str | None = None
-        if isinstance(node, (WhileLoopNode, ForEachNode, CompositeNode)):
-            ref = node.body_graph
-        if ref is not None and ref not in graph.sub_graphs:
-            errors.append(
-                f"Node '{node.id}' references sub-graph '{ref}' which is not in Graph.sub_graphs"
-            )
+        if isinstance(node, (WhileLoopNode, ForEachNode, CompositeNode, GoalLoopNode)):
+            if node.body_graph not in graph.sub_graphs:
+                errors.append(_missing_ref_error(node.id, node.body_graph, "body_graph"))
+            continue
+
+        if isinstance(node, ParallelSubagentsNode):
+            for idx, ref in enumerate(node.branch_graphs):
+                if ref not in graph.sub_graphs:
+                    errors.append(
+                        _missing_ref_error(node.id, ref, f"branch_graphs[{idx}]")
+                    )
+            continue
+
+        if isinstance(node, OrchestratorNode):
+            for team_name, ref in sorted(node.teams.items()):
+                if ref not in graph.sub_graphs:
+                    errors.append(
+                        _missing_ref_error(node.id, ref, f"team '{team_name}'")
+                    )
+            continue
+
+        if isinstance(node, AgentTeamNode):
+            for agent_name, ref in sorted(node.agents.items()):
+                if ref not in graph.sub_graphs:
+                    errors.append(
+                        _missing_ref_error(node.id, ref, f"agent '{agent_name}'")
+                    )
     return errors
 
 

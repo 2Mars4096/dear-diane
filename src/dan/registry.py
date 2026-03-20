@@ -11,29 +11,8 @@ from __future__ import annotations
 
 from typing import Type
 
-from dan.models.nodes import (
-    CodeOperator,
-    LLMOperator,
-    NodeBase,
-    RAGOperator,
-    ReflectionNode,
-    ToolOperator,
-)
-from dan.models.control_flow import (
-    CompositeNode,
-    ForEachNode,
-    GateNode,
-    GoalLoopNode,
-    HumanInTheLoopNode,
-    IfElseNode,
-    InputNode,
-    OrchestratorNode,
-    ParallelSubagentsNode,
-    ReduceNode,
-    RouterNode,
-    ValidatorNode,
-    WhileLoopNode,
-)
+from dan.models.node_taxonomy import RUNTIME_NODE_TYPE_MAP
+from dan.models.nodes import NodeBase
 
 
 class NodeTypeRegistry:
@@ -74,27 +53,6 @@ class NodeTypeRegistry:
         return node_type in cls._registry
 
 
-# Auto-register built-in types on import.
-_BUILTINS: list[tuple[str, Type[NodeBase]]] = [
-    ("llm_operator", LLMOperator),
-    ("tool_operator", ToolOperator),
-    ("code_operator", CodeOperator),
-    ("rag_operator", RAGOperator),
-    ("input", InputNode),
-    ("if_else", IfElseNode),
-    ("gate", GateNode),
-    ("while_loop", WhileLoopNode),
-    ("for_each", ForEachNode),
-    ("parallel_subagents", ParallelSubagentsNode),
-    ("orchestrator", OrchestratorNode),
-    ("reduce", ReduceNode),
-    ("router", RouterNode),
-    ("human_in_the_loop", HumanInTheLoopNode),
-    ("validator", ValidatorNode),
-    ("composite", CompositeNode),
-    ("reflection", ReflectionNode),
-    ("goal_loop", GoalLoopNode),
-]
-
-for _type_name, _cls in _BUILTINS:
+# Auto-register built-in runtime types on import from the canonical taxonomy.
+for _type_name, _cls in RUNTIME_NODE_TYPE_MAP.items():
     NodeTypeRegistry.register(_type_name, _cls)
