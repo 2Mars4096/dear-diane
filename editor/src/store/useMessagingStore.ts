@@ -36,6 +36,7 @@ type MessagingStateUpdater = (
 
 const PROVIDER_IDS = ["telegram", "whatsapp"] as const;
 const POLL_INTERVAL_MS = 10_000;
+const STALE_ERROR_RECOVERY_DELAY_MS = 1_500;
 
 const CONNECTION_STATE_PRIORITY: Record<MessagingConnectionState, number> = {
   error: 5,
@@ -49,6 +50,8 @@ const CONNECTION_STATE_PRIORITY: Record<MessagingConnectionState, number> = {
 
 let pollTimer: number | null = null;
 let bootPromise: Promise<void> | null = null;
+let staleErrorRecoveryTimer: number | null = null;
+let staleErrorRecoveryArmed = false;
 const eventSources = new Map<
   MessagingProviderId,
   { adapterId: string; source: EventSource }
@@ -361,9 +364,7 @@ export function buildMessagingSummary(
     ["starting", "pairing", "reconnecting"].includes(provider.connectionState),
   ).length;
   const errorCount = entries.filter(
-    (provider) =>
-      provider.connectionState === "error" ||
-      Boolean(provider.lastError?.trim()),
+    (provider) => provider.connectionState === "error",
   ).length;
 
   const tone =
@@ -391,6 +392,43 @@ export function buildMessagingSummary(
   }).join(" · ");
 
   return { activeCount, errorCount, tone, label, tooltip };
+}
+
+export function shouldAutoRefreshMessagingHealth(
+  providers: Record<MessagingProviderId, MessagingProviderState>,
+): boolean {
+  const summary = buildMessagingSummary(providers);
+  const hasPendingAction = Object.values(providers).some(
+    (provider) => provider.pendingAction != null,
+  );
+  return summary.tone === "error" && summary.activeCount > 0 && !hasPendingAction;
+}
+
+function reconcileMessagingHealthAutoRefresh(
+  providers: Record<MessagingProviderId, MessagingProviderState>,
+) {
+  if (typeof window === "undefined") {
+    return;
+  }
+  if (!shouldAutoRefreshMessagingHealth(providers)) {
+    staleErrorRecoveryArmed = false;
+    if (staleErrorRecoveryTimer !== null) {
+      window.clearTimeout(staleErrorRecoveryTimer);
+      staleErrorRecoveryTimer = null;
+    }
+    return;
+  }
+  if (staleErrorRecoveryArmed) {
+    return;
+  }
+  staleErrorRecoveryArmed = true;
+  staleErrorRecoveryTimer = window.setTimeout(() => {
+    staleErrorRecoveryTimer = null;
+    void useMessagingStore
+      .getState()
+      .refreshStatus({ silent: true })
+      .catch(() => {});
+  }, STALE_ERROR_RECOVERY_DELAY_MS);
 }
 
 export function getSessionLabel(
@@ -538,6 +576,10 @@ function attachProviderEvents(
     (event) => {
       sawEvent = true;
       const eventType = String(event.type ?? event.event ?? "").toLowerCase();
+      let nextProvidersSnapshot: Record<
+        MessagingProviderId,
+        MessagingProviderState
+      > | null = null;
       applyUpdate((state) => {
         const provider = state.providers[providerId];
         const patch: Partial<MessagingProviderState> = {
@@ -610,15 +652,18 @@ function attachProviderEvents(
         }
 
         return {
-          providers: {
+          providers: (nextProvidersSnapshot = {
             ...state.providers,
             [providerId]: {
               ...provider,
               ...patch,
             },
-          },
+          }),
         };
       });
+      if (nextProvidersSnapshot) {
+        reconcileMessagingHealthAutoRefresh(nextProvidersSnapshot);
+      }
     },
     () => {
       const currentEntry = eventSources.get(providerId);
@@ -705,6 +750,11 @@ export const useMessagingStore = create<MessagingState>()(
           window.clearInterval(pollTimer);
           pollTimer = null;
         }
+        if (staleErrorRecoveryTimer !== null) {
+          window.clearTimeout(staleErrorRecoveryTimer);
+          staleErrorRecoveryTimer = null;
+        }
+        staleErrorRecoveryArmed = false;
         for (const providerId of PROVIDER_IDS) {
           closeProviderEvents(providerId);
         }
@@ -726,6 +776,10 @@ export const useMessagingStore = create<MessagingState>()(
             MessagingProviderId,
             ReturnType<typeof summarizeMessagingStatus>
           >;
+          let nextProvidersSnapshot: Record<
+            MessagingProviderId,
+            MessagingProviderState
+          > | null = null;
           set((state) => {
             const nextProviders = { ...state.providers };
             for (const providerId of PROVIDER_IDS) {
@@ -749,12 +803,16 @@ export const useMessagingStore = create<MessagingState>()(
                         : current.pendingAction,
               };
             }
+            nextProvidersSnapshot = nextProviders;
             return {
               providers: nextProviders,
               refreshing: false,
               lastRefreshError: null,
             };
           });
+          if (nextProvidersSnapshot) {
+            reconcileMessagingHealthAutoRefresh(nextProvidersSnapshot);
+          }
 
           const whatsappSummary = summaries.whatsapp;
           const currentEventEntry = eventSources.get("whatsapp");
@@ -773,6 +831,11 @@ export const useMessagingStore = create<MessagingState>()(
             closeProviderEvents("whatsapp");
           }
         } catch (error) {
+          staleErrorRecoveryArmed = false;
+          if (staleErrorRecoveryTimer !== null) {
+            window.clearTimeout(staleErrorRecoveryTimer);
+            staleErrorRecoveryTimer = null;
+          }
           set((state) => {
             const nextProviders = { ...state.providers };
             for (const providerId of PROVIDER_IDS) {

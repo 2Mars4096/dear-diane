@@ -25,6 +25,72 @@ const PARALLEL_SUBAGENTS_DEDICATED_FIELDS = new Set([
   "branch_graphs", "input_mappings", "branch_inputs", "merge_strategy", "reducer", "parallelism", "failure_policy",
 ]);
 
+const BODY_GRAPH_DEDICATED_TYPES = new Set(["while_loop", "goal_loop", "for_each", "composite"]);
+
+const GOAL_LOOP_DEDICATED_FIELDS = new Set([
+  "body_graph",
+  "goal_text",
+  "metric_name",
+  "target_value",
+  "comparison",
+  "max_iterations",
+  "evaluator",
+  "success_criteria",
+]);
+
+const VOTE_DEDICATED_FIELDS = new Set([
+  "candidates",
+  "num_votes",
+  "prompt_template",
+  "system_prompt",
+  "temperature",
+  "vote_strategy",
+  "parallelism",
+  "timeout_seconds",
+  "vote_config",
+]);
+
+const REFLECTION_DEDICATED_FIELDS = new Set([
+  "reflection_prompt",
+  "reflection_model",
+  "source",
+  "source_config",
+  "output_format",
+  "max_principles",
+  "min_confidence",
+  "dedup_strategy",
+]);
+
+const ORCHESTRATOR_DEDICATED_FIELDS = new Set([
+  "teams",
+  "orchestrator_prompt",
+  "orchestrator_model",
+  "completion_condition",
+  "max_iterations",
+  "timeout_seconds",
+]);
+
+const AGENT_TEAM_DEDICATED_FIELDS = new Set([
+  "agents",
+  "moderator_prompt",
+  "moderator_model",
+  "turn_strategy",
+  "max_turns",
+  "completion_condition",
+  "timeout_seconds",
+  "shared_context_keys",
+  "handoff_policy",
+]);
+
+const HUMAN_DEDICATED_FIELDS = new Set([
+  "prompt",
+  "timeout_seconds",
+  "default_action",
+  "render_mode",
+  "render_target",
+  "instructions",
+]);
+
 const SCHEMA_TYPES = ["string", "number", "boolean", "array", "object"] as const;
 
 // -- Port Editor Row ---------------------------------------------------------
@@ -286,6 +352,845 @@ function SchemaEditor({
           Not an object schema. Use JSON mode to edit.
         </p>
       )}
+    </div>
+  );
+}
+
+// -- Human Config Section ----------------------------------------------------
+
+function HumanConfigSection({
+  nodeId,
+  data,
+  includeAdvanced,
+}: {
+  nodeId: string;
+  data: Record<string, unknown>;
+  includeAdvanced: boolean;
+}) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+
+  const prompt = (data.prompt as string) ?? "";
+  const timeout = data.timeout_seconds as number | null | undefined;
+  const defaultAction = (data.default_action as string | null | undefined) ?? "";
+  const renderMode = ((data.render_mode as string | undefined) ?? "text") as
+    "text" | "approval" | "form" | "selection" | "file_upload" | "rich";
+  const renderTarget = ((data.render_target as string | undefined) ?? "dialog") as
+    "dialog" | "chat" | "both";
+  const instructions = (data.instructions as string) ?? "";
+
+  return (
+    <div className="mt-3">
+      <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Human Config</h3>
+      <div className="flex flex-col gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">prompt</span>
+          <textarea
+            value={prompt}
+            onChange={(e) =>
+              updateNodeData(nodeId, { prompt: e.target.value } as unknown as Partial<DanNode>)
+            }
+            className="border rounded px-2 py-1 text-xs min-h-20 resize-y"
+            placeholder="Describe the human interaction..."
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">timeout_seconds</span>
+          <input
+            type="number"
+            value={timeout ?? ""}
+            onChange={(e) =>
+              updateNodeData(
+                nodeId,
+                { timeout_seconds: e.target.value ? parseFloat(e.target.value) : null } as unknown as Partial<DanNode>,
+              )
+            }
+            className="border rounded px-2 py-1 text-xs"
+            min={0}
+            placeholder="No timeout"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">default_action</span>
+          <input
+            type="text"
+            value={defaultAction}
+            onChange={(e) =>
+              updateNodeData(
+                nodeId,
+                { default_action: e.target.value || null } as unknown as Partial<DanNode>,
+              )
+            }
+            className="border rounded px-2 py-1 text-xs"
+            placeholder="Optional fallback action"
+          />
+        </label>
+
+        {includeAdvanced && (
+          <>
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[11px] font-medium text-gray-500">render_mode</span>
+              <select
+                value={renderMode}
+                onChange={(e) =>
+                  updateNodeData(
+                    nodeId,
+                    { render_mode: e.target.value } as unknown as Partial<DanNode>,
+                  )
+                }
+                className="border rounded px-2 py-1 text-xs"
+              >
+                <option value="text">text</option>
+                <option value="approval">approval</option>
+                <option value="form">form</option>
+                <option value="selection">selection</option>
+                <option value="file_upload">file_upload</option>
+                <option value="rich">rich</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[11px] font-medium text-gray-500">render_target</span>
+              <select
+                value={renderTarget}
+                onChange={(e) =>
+                  updateNodeData(
+                    nodeId,
+                    { render_target: e.target.value } as unknown as Partial<DanNode>,
+                  )
+                }
+                className="border rounded px-2 py-1 text-xs"
+              >
+                <option value="dialog">dialog</option>
+                <option value="chat">chat</option>
+                <option value="both">both</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-0.5">
+              <span className="text-[11px] font-medium text-gray-500">instructions</span>
+              <textarea
+                value={instructions}
+                onChange={(e) =>
+                  updateNodeData(
+                    nodeId,
+                    { instructions: e.target.value } as unknown as Partial<DanNode>,
+                  )
+                }
+                className="border rounded px-2 py-1 text-xs min-h-16 resize-y"
+                placeholder="Additional guidance shown to the human..."
+              />
+            </label>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// -- Shared Named Sub-graph Editor -------------------------------------------
+
+function NamedSubgraphListEditor({
+  nodeId,
+  itemLabel,
+  mappings,
+  availableSubGraphKeys,
+  setMappings,
+}: {
+  nodeId: string;
+  itemLabel: string;
+  mappings: Record<string, string>;
+  availableSubGraphKeys: string[];
+  setMappings: (mappings: Record<string, string>) => void;
+}) {
+  const createEmptySubGraph = useGraphStore((s) => s.createEmptySubGraph);
+  const drillIn = useGraphStore((s) => s.drillIn);
+
+  const renameEntry = (oldName: string, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed || trimmed === oldName) return;
+    if (trimmed in mappings) return;
+    const next: Record<string, string> = {};
+    for (const [key, value] of Object.entries(mappings)) {
+      next[key === oldName ? trimmed : key] = value;
+    }
+    setMappings(next);
+  };
+
+  const updateGraphKey = (name: string, graphKey: string) => {
+    setMappings({ ...mappings, [name]: graphKey });
+  };
+
+  const removeEntry = (name: string) => {
+    const next = { ...mappings };
+    delete next[name];
+    setMappings(next);
+  };
+
+  const addEntry = () => {
+    const base = itemLabel.toLowerCase();
+    let idx = Object.keys(mappings).length + 1;
+    let name = `${base}_${idx}`;
+    while (name in mappings) {
+      idx += 1;
+      name = `${base}_${idx}`;
+    }
+    const graphKey = `${nodeId}_${name}`;
+    createEmptySubGraph(graphKey);
+    setMappings({ ...mappings, [name]: graphKey });
+  };
+
+  return (
+    <div>
+      <span className="text-[11px] font-medium text-gray-500">{itemLabel.toLowerCase()}s</span>
+      <div className="flex flex-col gap-1 mt-0.5">
+        {Object.entries(mappings).map(([name, graphKey]) => (
+          <div key={name} className="flex items-center gap-1">
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => renameEntry(name, e.target.value)}
+              className="w-24 border rounded px-1.5 py-0.5 text-xs font-mono"
+              placeholder={`${itemLabel.toLowerCase()} name`}
+            />
+            <input
+              type="text"
+              list={`${itemLabel.toLowerCase()}-subgraph-list-${nodeId}`}
+              value={graphKey}
+              onChange={(e) => updateGraphKey(name, e.target.value)}
+              className="flex-1 min-w-0 border rounded px-1.5 py-0.5 text-xs font-mono"
+              placeholder="sub_graph key"
+            />
+            <datalist id={`${itemLabel.toLowerCase()}-subgraph-list-${nodeId}`}>
+              {availableSubGraphKeys.map((key) => (
+                <option key={key} value={key} />
+              ))}
+            </datalist>
+            <button
+              onClick={() => drillIn(nodeId, graphKey)}
+              disabled={!graphKey || !availableSubGraphKeys.includes(graphKey)}
+              className="text-[10px] px-1.5 py-0.5 border rounded text-blue-600 disabled:text-gray-300 disabled:border-gray-200"
+              title="Open subgraph"
+            >
+              Open
+            </button>
+            <button
+              onClick={() => removeEntry(name)}
+              className="text-gray-400 hover:text-red-500 text-sm leading-none px-0.5 shrink-0"
+              title={`Remove ${itemLabel.toLowerCase()}`}
+            >
+              ×
+            </button>
+          </div>
+        ))}
+        <button onClick={addEntry} className="text-xs text-blue-500 hover:text-blue-700 mt-0.5">
+          + Add {itemLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// -- Body Graph Config Section -----------------------------------------------
+
+function BodyGraphConfigSection({
+  nodeId,
+  data,
+}: {
+  nodeId: string;
+  data: Record<string, unknown>;
+}) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const createEmptySubGraph = useGraphStore((s) => s.createEmptySubGraph);
+  const drillIn = useGraphStore((s) => s.drillIn);
+  const danGraph = useGraphStore((s) => s.danGraph);
+  const layerStack = useGraphStore((s) => s.layerStack);
+
+  const bodyGraphKey = (data.body_graph as string | undefined) ?? "";
+  const currentGraph = useMemo(() => {
+    if (!danGraph) return null;
+    return resolveGraphAtStack(danGraph, layerStack);
+  }, [danGraph, layerStack]);
+  const availableSubGraphKeys = Object.keys(currentGraph?.sub_graphs ?? {});
+
+  const createBodyGraph = () => {
+    if (bodyGraphKey.trim()) return;
+    const key = `${nodeId}_body`;
+    createEmptySubGraph(key);
+    updateNodeData(nodeId, { body_graph: key } as unknown as Partial<DanNode>);
+  };
+
+  return (
+    <div className="mt-3">
+      <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Body Graph</h3>
+      <div className="flex flex-col gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">body_graph</span>
+          <div className="flex items-center gap-1">
+            <input
+              type="text"
+              list={`body-graph-list-${nodeId}`}
+              value={bodyGraphKey}
+              onChange={(e) =>
+                updateNodeData(nodeId, { body_graph: e.target.value } as unknown as Partial<DanNode>)
+              }
+              className="flex-1 min-w-0 border rounded px-2 py-1 text-xs font-mono"
+              placeholder="sub_graph key"
+            />
+            <datalist id={`body-graph-list-${nodeId}`}>
+              {availableSubGraphKeys.map((key) => (
+                <option key={key} value={key} />
+              ))}
+            </datalist>
+            <button
+              onClick={() => drillIn(nodeId, bodyGraphKey)}
+              disabled={!bodyGraphKey || !availableSubGraphKeys.includes(bodyGraphKey)}
+              className="text-[10px] px-1.5 py-0.5 border rounded text-blue-600 disabled:text-gray-300 disabled:border-gray-200"
+            >
+              Open
+            </button>
+          </div>
+        </label>
+        {!bodyGraphKey && (
+          <button onClick={createBodyGraph} className="text-xs text-blue-500 hover:text-blue-700 self-start">
+            + Create Body Graph
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// -- Orchestrator Config Section ---------------------------------------------
+
+function OrchestratorConfigSection({ nodeId, data }: { nodeId: string; data: Record<string, unknown> }) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const danGraph = useGraphStore((s) => s.danGraph);
+  const layerStack = useGraphStore((s) => s.layerStack);
+
+  const teams = (data.teams ?? {}) as Record<string, string>;
+  const prompt = (data.orchestrator_prompt as string) ?? "";
+  const model = (data.orchestrator_model as string | null | undefined) ?? "";
+  const completionCondition = (data.completion_condition as string) ?? "all_done";
+  const maxIterations = (data.max_iterations as number) ?? 100;
+  const timeout = data.timeout_seconds as number | null | undefined;
+
+  const currentGraph = useMemo(() => {
+    if (!danGraph) return null;
+    return resolveGraphAtStack(danGraph, layerStack);
+  }, [danGraph, layerStack]);
+  const availableSubGraphKeys = Object.keys(currentGraph?.sub_graphs ?? {});
+
+  const update = (patch: Record<string, unknown>) => {
+    updateNodeData(nodeId, patch as unknown as Partial<DanNode>);
+  };
+
+  return (
+    <div className="mt-3">
+      <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Orchestrator</h3>
+      <div className="flex flex-col gap-2 pl-2 border-l border-fuchsia-200">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">orchestrator_prompt</span>
+          <textarea
+            value={prompt}
+            onChange={(e) => update({ orchestrator_prompt: e.target.value })}
+            className="border rounded px-2 py-1 text-xs min-h-16 resize-y"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">orchestrator_model</span>
+          <input
+            type="text"
+            value={model}
+            onChange={(e) => update({ orchestrator_model: e.target.value || null })}
+            className="border rounded px-2 py-1 text-xs"
+            placeholder="Use engine default"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">completion_condition</span>
+          <select
+            value={completionCondition}
+            onChange={(e) => update({ completion_condition: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            <option value="all_done">all_done</option>
+            <option value="any_done">any_done</option>
+            <option value="orchestrator_halt">orchestrator_halt</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">max_iterations</span>
+          <input
+            type="number"
+            value={maxIterations}
+            onChange={(e) => update({ max_iterations: parseInt(e.target.value) || 1 })}
+            className="border rounded px-2 py-1 text-xs"
+            min={1}
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">timeout_seconds</span>
+          <input
+            type="number"
+            value={timeout ?? ""}
+            onChange={(e) => update({ timeout_seconds: e.target.value ? parseFloat(e.target.value) : null })}
+            className="border rounded px-2 py-1 text-xs"
+            min={0}
+            placeholder="No timeout"
+          />
+        </label>
+        <NamedSubgraphListEditor
+          nodeId={nodeId}
+          itemLabel="Team"
+          mappings={teams}
+          availableSubGraphKeys={availableSubGraphKeys}
+          setMappings={(mappings) => update({ teams: mappings })}
+        />
+      </div>
+    </div>
+  );
+}
+
+// -- Agent Team Config Section -----------------------------------------------
+
+function AgentTeamConfigSection({ nodeId, data }: { nodeId: string; data: Record<string, unknown> }) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const danGraph = useGraphStore((s) => s.danGraph);
+  const layerStack = useGraphStore((s) => s.layerStack);
+
+  const agents = (data.agents ?? {}) as Record<string, string>;
+  const prompt = (data.moderator_prompt as string) ?? "";
+  const model = (data.moderator_model as string | null | undefined) ?? "";
+  const turnStrategy = (data.turn_strategy as string) ?? "round_robin";
+  const maxTurns = (data.max_turns as number) ?? 20;
+  const completionCondition = (data.completion_condition as string) ?? "max_turns";
+  const timeout = data.timeout_seconds as number | null | undefined;
+  const handoffPolicy = (data.handoff_policy as string) ?? "explicit";
+  const sharedContextKeys = ((data.shared_context_keys as string[] | undefined) ?? []).join(", ");
+
+  const currentGraph = useMemo(() => {
+    if (!danGraph) return null;
+    return resolveGraphAtStack(danGraph, layerStack);
+  }, [danGraph, layerStack]);
+  const availableSubGraphKeys = Object.keys(currentGraph?.sub_graphs ?? {});
+
+  const update = (patch: Record<string, unknown>) => {
+    updateNodeData(nodeId, patch as unknown as Partial<DanNode>);
+  };
+
+  return (
+    <div className="mt-3">
+      <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Agent Team</h3>
+      <div className="flex flex-col gap-2 pl-2 border-l border-teal-200">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">moderator_prompt</span>
+          <textarea
+            value={prompt}
+            onChange={(e) => update({ moderator_prompt: e.target.value })}
+            className="border rounded px-2 py-1 text-xs min-h-16 resize-y"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">moderator_model</span>
+          <input
+            type="text"
+            value={model}
+            onChange={(e) => update({ moderator_model: e.target.value || null })}
+            className="border rounded px-2 py-1 text-xs"
+            placeholder="Use engine default"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">turn_strategy</span>
+          <select
+            value={turnStrategy}
+            onChange={(e) => update({ turn_strategy: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            <option value="round_robin">round_robin</option>
+            <option value="moderator">moderator</option>
+            <option value="free_form">free_form</option>
+            <option value="sequential">sequential</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">max_turns</span>
+          <input
+            type="number"
+            value={maxTurns}
+            onChange={(e) => update({ max_turns: parseInt(e.target.value) || 1 })}
+            className="border rounded px-2 py-1 text-xs"
+            min={1}
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">completion_condition</span>
+          <select
+            value={completionCondition}
+            onChange={(e) => update({ completion_condition: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            <option value="consensus">consensus</option>
+            <option value="moderator_halt">moderator_halt</option>
+            <option value="max_turns">max_turns</option>
+            <option value="all_responded">all_responded</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">timeout_seconds</span>
+          <input
+            type="number"
+            value={timeout ?? ""}
+            onChange={(e) => update({ timeout_seconds: e.target.value ? parseFloat(e.target.value) : null })}
+            className="border rounded px-2 py-1 text-xs"
+            min={0}
+            placeholder="No timeout"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">handoff_policy</span>
+          <select
+            value={handoffPolicy}
+            onChange={(e) => update({ handoff_policy: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            <option value="explicit">explicit</option>
+            <option value="any">any</option>
+            <option value="moderator_only">moderator_only</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">shared_context_keys</span>
+          <input
+            type="text"
+            value={sharedContextKeys}
+            onChange={(e) =>
+              update({
+                shared_context_keys: e.target.value
+                  .split(",")
+                  .map((value) => value.trim())
+                  .filter(Boolean),
+              })
+            }
+            className="border rounded px-2 py-1 text-xs"
+            placeholder="conversation_history, shared_artifacts"
+          />
+        </label>
+        <NamedSubgraphListEditor
+          nodeId={nodeId}
+          itemLabel="Agent"
+          mappings={agents}
+          availableSubGraphKeys={availableSubGraphKeys}
+          setMappings={(mappings) => update({ agents: mappings })}
+        />
+      </div>
+    </div>
+  );
+}
+
+// -- Goal Loop Config Section ------------------------------------------------
+
+function GoalLoopConfigSection({ nodeId, data }: { nodeId: string; data: Record<string, unknown> }) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const goalText = (data.goal_text as string) ?? "";
+  const metricName = (data.metric_name as string) ?? "score";
+  const targetValue = (data.target_value as number) ?? 1.0;
+  const comparison = (data.comparison as string) ?? ">=";
+  const maxIterations = (data.max_iterations as number) ?? 10;
+  const evaluator = (data.evaluator as string) ?? "llm_judge";
+  const successCriteria = (data.success_criteria as string | null | undefined) ?? "";
+
+  const update = (patch: Record<string, unknown>) => {
+    updateNodeData(nodeId, patch as unknown as Partial<DanNode>);
+  };
+
+  return (
+    <>
+      <BodyGraphConfigSection nodeId={nodeId} data={data} />
+      <div className="mt-3">
+        <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Goal Loop</h3>
+        <div className="flex flex-col gap-2">
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">goal_text</span>
+            <textarea
+              value={goalText}
+              onChange={(e) => update({ goal_text: e.target.value })}
+              className="border rounded px-2 py-1 text-xs min-h-16 resize-y"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">metric_name</span>
+            <input
+              type="text"
+              value={metricName}
+              onChange={(e) => update({ metric_name: e.target.value })}
+              className="border rounded px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">target_value</span>
+            <input
+              type="number"
+              value={targetValue}
+              onChange={(e) => update({ target_value: parseFloat(e.target.value) || 0 })}
+              className="border rounded px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">comparison</span>
+            <select
+              value={comparison}
+              onChange={(e) => update({ comparison: e.target.value })}
+              className="border rounded px-2 py-1 text-xs"
+            >
+              <option value=">=">{">="}</option>
+              <option value="<=">{"<="}</option>
+              <option value="==">{"=="}</option>
+              <option value=">">{">"}</option>
+              <option value="<">{"<"}</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">max_iterations</span>
+            <input
+              type="number"
+              value={maxIterations}
+              onChange={(e) => update({ max_iterations: parseInt(e.target.value) || 1 })}
+              className="border rounded px-2 py-1 text-xs"
+              min={1}
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">evaluator</span>
+            <input
+              type="text"
+              value={evaluator}
+              onChange={(e) => update({ evaluator: e.target.value })}
+              className="border rounded px-2 py-1 text-xs"
+            />
+          </label>
+          <label className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-medium text-gray-500">success_criteria</span>
+            <input
+              type="text"
+              value={successCriteria}
+              onChange={(e) => update({ success_criteria: e.target.value || null })}
+              className="border rounded px-2 py-1 text-xs"
+              placeholder="Optional expression"
+            />
+          </label>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// -- Vote Config Section -----------------------------------------------------
+
+function VoteConfigSection({ nodeId, data }: { nodeId: string; data: Record<string, unknown> }) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const candidates = ((data.candidates as string[] | undefined) ?? []).join(", ");
+  const numVotes = (data.num_votes as number) ?? 3;
+  const promptTemplate = (data.prompt_template as string) ?? "";
+  const systemPrompt = (data.system_prompt as string) ?? "";
+  const temperature = (data.temperature as number) ?? 0.7;
+  const voteStrategy = (data.vote_strategy as string) ?? "majority";
+  const parallelism = (data.parallelism as number) ?? 3;
+  const timeout = (data.timeout_seconds as number | null | undefined) ?? "";
+
+  const update = (patch: Record<string, unknown>) => {
+    updateNodeData(nodeId, patch as unknown as Partial<DanNode>);
+  };
+
+  return (
+    <div className="mt-3">
+      <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Vote</h3>
+      <div className="flex flex-col gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">candidates</span>
+          <input
+            type="text"
+            value={candidates}
+            onChange={(e) =>
+              update({
+                candidates: e.target.value.split(",").map((value) => value.trim()).filter(Boolean),
+              })
+            }
+            className="border rounded px-2 py-1 text-xs"
+            placeholder="claude-sonnet-4-6, gpt-4o"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">num_votes</span>
+          <input
+            type="number"
+            value={numVotes}
+            onChange={(e) => update({ num_votes: parseInt(e.target.value) || 1 })}
+            className="border rounded px-2 py-1 text-xs"
+            min={1}
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">vote_strategy</span>
+          <select
+            value={voteStrategy}
+            onChange={(e) => update({ vote_strategy: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            <option value="majority">majority</option>
+            <option value="weighted">weighted</option>
+            <option value="best_of_n">best_of_n</option>
+            <option value="judge">judge</option>
+            <option value="unanimous">unanimous</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">parallelism</span>
+          <input
+            type="number"
+            value={parallelism}
+            onChange={(e) => update({ parallelism: parseInt(e.target.value) || 1 })}
+            className="border rounded px-2 py-1 text-xs"
+            min={1}
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">timeout_seconds</span>
+          <input
+            type="number"
+            value={timeout}
+            onChange={(e) => update({ timeout_seconds: e.target.value ? parseFloat(e.target.value) : null })}
+            className="border rounded px-2 py-1 text-xs"
+            min={0}
+            placeholder="No timeout"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">prompt_template</span>
+          <textarea
+            value={promptTemplate}
+            onChange={(e) => update({ prompt_template: e.target.value })}
+            className="border rounded px-2 py-1 text-xs min-h-16 resize-y"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">system_prompt</span>
+          <textarea
+            value={systemPrompt}
+            onChange={(e) => update({ system_prompt: e.target.value })}
+            className="border rounded px-2 py-1 text-xs min-h-16 resize-y"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">temperature</span>
+          <input
+            type="number"
+            step="0.1"
+            value={temperature}
+            onChange={(e) => update({ temperature: parseFloat(e.target.value) || 0 })}
+            className="border rounded px-2 py-1 text-xs"
+          />
+        </label>
+      </div>
+    </div>
+  );
+}
+
+// -- Reflection Config Section -----------------------------------------------
+
+function ReflectionConfigSection({ nodeId, data }: { nodeId: string; data: Record<string, unknown> }) {
+  const updateNodeData = useGraphStore((s) => s.updateNodeData);
+  const reflectionPrompt = (data.reflection_prompt as string) ?? "";
+  const reflectionModel = (data.reflection_model as string | null | undefined) ?? "";
+  const source = (data.source as string) ?? "last_run";
+  const outputFormat = (data.output_format as string) ?? "principles";
+  const maxPrinciples = (data.max_principles as number) ?? 10;
+  const minConfidence = (data.min_confidence as number) ?? 0.3;
+  const dedupStrategy = (data.dedup_strategy as string) ?? "embedding_similarity";
+
+  const update = (patch: Record<string, unknown>) => {
+    updateNodeData(nodeId, patch as unknown as Partial<DanNode>);
+  };
+
+  return (
+    <div className="mt-3">
+      <h3 className="text-[11px] font-semibold text-gray-400 uppercase mb-1">Reflection</h3>
+      <div className="flex flex-col gap-2">
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">reflection_prompt</span>
+          <textarea
+            value={reflectionPrompt}
+            onChange={(e) => update({ reflection_prompt: e.target.value })}
+            className="border rounded px-2 py-1 text-xs min-h-16 resize-y"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">reflection_model</span>
+          <input
+            type="text"
+            value={reflectionModel}
+            onChange={(e) => update({ reflection_model: e.target.value || null })}
+            className="border rounded px-2 py-1 text-xs"
+            placeholder="Use engine default"
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">source</span>
+          <select
+            value={source}
+            onChange={(e) => update({ source: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            <option value="last_run">last_run</option>
+            <option value="last_n_runs">last_n_runs</option>
+            <option value="error_index">error_index</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">output_format</span>
+          <select
+            value={outputFormat}
+            onChange={(e) => update({ output_format: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            <option value="principles">principles</option>
+            <option value="rules">rules</option>
+            <option value="summary">summary</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">max_principles</span>
+          <input
+            type="number"
+            value={maxPrinciples}
+            onChange={(e) => update({ max_principles: parseInt(e.target.value) || 1 })}
+            className="border rounded px-2 py-1 text-xs"
+            min={1}
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">min_confidence</span>
+          <input
+            type="number"
+            step="0.05"
+            value={minConfidence}
+            onChange={(e) => update({ min_confidence: parseFloat(e.target.value) || 0 })}
+            className="border rounded px-2 py-1 text-xs"
+            min={0}
+            max={1}
+          />
+        </label>
+        <label className="flex flex-col gap-0.5">
+          <span className="text-[11px] font-medium text-gray-500">dedup_strategy</span>
+          <select
+            value={dedupStrategy}
+            onChange={(e) => update({ dedup_strategy: e.target.value })}
+            className="border rounded px-2 py-1 text-xs"
+          >
+            <option value="embedding_similarity">embedding_similarity</option>
+            <option value="exact_key">exact_key</option>
+            <option value="none">none</option>
+          </select>
+        </label>
+      </div>
     </div>
   );
 }
@@ -1156,8 +2061,15 @@ export default function ConfigPanel() {
     const editableFields = Object.entries(d).filter(
       ([k]) =>
         !SKIP_FIELDS.has(k) &&
+        !(BODY_GRAPH_DEDICATED_TYPES.has(d.node_type) && k === "body_graph") &&
+        !(d.node_type === "goal_loop" && GOAL_LOOP_DEDICATED_FIELDS.has(k)) &&
+        !(d.node_type === "vote" && VOTE_DEDICATED_FIELDS.has(k)) &&
+        !(d.node_type === "reflection" && REFLECTION_DEDICATED_FIELDS.has(k)) &&
         !(d.node_type === "gate" && GATE_DEDICATED_FIELDS.has(k)) &&
-        !(d.node_type === "parallel_subagents" && PARALLEL_SUBAGENTS_DEDICATED_FIELDS.has(k)),
+        !(d.node_type === "parallel_subagents" && PARALLEL_SUBAGENTS_DEDICATED_FIELDS.has(k)) &&
+        !(d.node_type === "orchestrator" && ORCHESTRATOR_DEDICATED_FIELDS.has(k)) &&
+        !(d.node_type === "agent_team" && AGENT_TEAM_DEDICATED_FIELDS.has(k)) &&
+        ((d.node_type !== "human" && d.node_type !== "human_in_the_loop") || !HUMAN_DEDICATED_FIELDS.has(k)),
     );
 
     return (
@@ -1378,6 +2290,38 @@ export default function ConfigPanel() {
         {/* 7-9: Parallel Subagents config — branch_graphs, input_mappings, merge_strategy, parallelism, failure_policy */}
         {d.node_type === "parallel_subagents" && (
           <ParallelSubagentsConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
+        )}
+
+        {d.node_type === "orchestrator" && (
+          <OrchestratorConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
+        )}
+
+        {d.node_type === "agent_team" && (
+          <AgentTeamConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
+        )}
+
+        {(d.node_type === "while_loop" || d.node_type === "for_each" || d.node_type === "composite") && (
+          <BodyGraphConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
+        )}
+
+        {d.node_type === "goal_loop" && (
+          <GoalLoopConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
+        )}
+
+        {(d.node_type === "human" || d.node_type === "human_in_the_loop") && (
+          <HumanConfigSection
+            nodeId={d.id}
+            data={d as unknown as Record<string, unknown>}
+            includeAdvanced={d.node_type === "human"}
+          />
+        )}
+
+        {d.node_type === "vote" && (
+          <VoteConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
+        )}
+
+        {d.node_type === "reflection" && (
+          <ReflectionConfigSection nodeId={d.id} data={d as unknown as Record<string, unknown>} />
         )}
 
         {/* 7-1: Retry policy — configurable for all node types */}

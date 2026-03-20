@@ -7,7 +7,7 @@
  */
 
 import { type Node, type Edge, MarkerType } from "@xyflow/react";
-import type { DanGraph, DanNode, DanEdge, NodeTypeString, LoopGroup } from "../types/graph";
+import type { DanGraph, DanNode, DanEdge, PaletteNodeType, LoopGroup } from "../types/graph";
 
 // -- Handle ID helpers -------------------------------------------------------
 
@@ -285,7 +285,51 @@ export function stripLoopGroups(
 
 export type LayerStackEntry = { graphKey: string; nodeId: string; nodeName?: string };
 
+export interface DrillTarget {
+  label: string;
+  graphKey: string;
+}
+
 export const MAX_DRILL_DEPTH = 3;
+
+export function getDrillTargets(node: DanNode): DrillTarget[] {
+  const dr = node as unknown as Record<string, unknown>;
+  const targets: DrillTarget[] = [];
+  const seen = new Set<string>();
+
+  const push = (label: string, graphKey: string | undefined) => {
+    if (!graphKey || seen.has(graphKey)) return;
+    seen.add(graphKey);
+    targets.push({ label, graphKey });
+  };
+
+  if (typeof dr.body_graph === "string" && dr.body_graph) {
+    push("body", dr.body_graph);
+  }
+
+  if (node.node_type === "parallel_subagents" && Array.isArray(dr.branch_graphs)) {
+    const prefix = `${node.id}_`;
+    for (const rawKey of dr.branch_graphs as string[]) {
+      const graphKey = String(rawKey || "");
+      const label = graphKey.startsWith(prefix) ? graphKey.slice(prefix.length) : graphKey;
+      push(label || "branch", graphKey);
+    }
+  }
+
+  if (node.node_type === "orchestrator" && dr.teams && typeof dr.teams === "object") {
+    for (const [teamName, rawKey] of Object.entries(dr.teams as Record<string, unknown>)) {
+      push(teamName, typeof rawKey === "string" ? rawKey : undefined);
+    }
+  }
+
+  if (node.node_type === "agent_team" && dr.agents && typeof dr.agents === "object") {
+    for (const [agentName, rawKey] of Object.entries(dr.agents as Record<string, unknown>)) {
+      push(agentName, typeof rawKey === "string" ? rawKey : undefined);
+    }
+  }
+
+  return targets;
+}
 
 /**
  * Walk the layer stack to resolve the graph at a given depth.
@@ -335,7 +379,7 @@ export function deepSetSubGraph(
 // -- Default node factory ----------------------------------------------------
 
 export function createDefaultNode(
-  nodeType: NodeTypeString,
+  nodeType: PaletteNodeType,
   position: { x: number; y: number },
 ): DanNode {
   const id = `${nodeType}_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
@@ -363,6 +407,25 @@ export function createDefaultNode(
       return { ...base, node_type: "gate", gate_mode: "while", condition: "", max_iterations: 10, output_ports: [{ name: "continue", schema: {} }, { name: "done", schema: {} }] };
     case "for_each":
       return { ...base, node_type: "for_each", body_graph: "", parallelism: 1, merge_strategy: "append" };
+    case "goal_loop":
+      return {
+        ...base,
+        node_type: "goal_loop",
+        body_graph: "",
+        goal_text: "",
+        metric_name: "score",
+        target_value: 1.0,
+        comparison: ">=",
+        max_iterations: 10,
+        evaluator: "llm_judge",
+        success_criteria: null,
+        output_ports: [
+          { name: "result", schema: {} },
+          { name: "goal_met", schema: {} },
+          { name: "iterations", schema: {} },
+          { name: "best_score", schema: {} },
+        ],
+      };
     case "parallel_subagents":
       return {
         ...base,
@@ -375,12 +438,63 @@ export function createDefaultNode(
         parallelism: 1,
         failure_policy: {},
       };
+    case "orchestrator":
+      return {
+        ...base,
+        node_type: "orchestrator",
+        teams: {},
+        orchestrator_prompt: "",
+        orchestrator_model: null,
+        completion_condition: "all_done",
+        max_iterations: 100,
+        max_llm_calls: 50,
+        timeout_seconds: null,
+        input_mappings: {},
+        team_inputs: {},
+        output_ports: [{ name: "results", schema: {} }],
+      };
+    case "agent_team":
+      return {
+        ...base,
+        node_type: "agent_team",
+        agents: {},
+        moderator_prompt: "",
+        moderator_model: null,
+        turn_strategy: "round_robin",
+        max_turns: 20,
+        completion_condition: "max_turns",
+        timeout_seconds: null,
+        shared_context_keys: [],
+        handoff_policy: "explicit",
+        input_mappings: {},
+        agent_inputs: {},
+        output_ports: [
+          { name: "result", schema: {} },
+          { name: "agent_contributions", schema: {} },
+          { name: "consensus_reached", schema: {} },
+          { name: "total_turns", schema: {} },
+          { name: "conversation", schema: {} },
+        ],
+      };
     case "reduce":
       return { ...base, node_type: "reduce", reducer: "" };
     case "router":
       return { ...base, node_type: "router", model: "", route_descriptions: {} };
-    case "human_in_the_loop":
-      return { ...base, node_type: "human_in_the_loop", prompt: "", timeout_seconds: null, default_action: null };
+    case "human":
+      return {
+        ...base,
+        node_type: "human",
+        output_ports: [{ name: "response", schema: {} }],
+        prompt: "",
+        timeout_seconds: null,
+        default_action: null,
+        input_schema: null,
+        output_schema: null,
+        render_mode: "text",
+        options: null,
+        instructions: "",
+        render_target: "dialog",
+      };
     case "rag_operator":
       return {
         ...base,
@@ -405,6 +519,50 @@ export function createDefaultNode(
         validation_rules: [],
         on_failure: "route",
         strict_mode: false,
+      };
+    case "vote":
+      return {
+        ...base,
+        node_type: "vote",
+        candidates: ["claude-sonnet-4-6"],
+        num_votes: 3,
+        prompt_template: "",
+        system_prompt: "",
+        temperature: 0.7,
+        output_json_schema: null,
+        vote_strategy: "majority",
+        vote_config: null,
+        parallelism: 3,
+        timeout_seconds: null,
+        output_ports: [
+          { name: "winner", schema: {} },
+          { name: "winner_model", schema: {} },
+          { name: "winner_index", schema: {} },
+          { name: "all_votes", schema: {} },
+          { name: "consensus_reached", schema: {} },
+          { name: "vote_count", schema: {} },
+          { name: "total_cost", schema: {} },
+          { name: "strategy_used", schema: {} },
+        ],
+      };
+    case "reflection":
+      return {
+        ...base,
+        node_type: "reflection",
+        reflection_prompt: "",
+        reflection_model: null,
+        source: "last_run",
+        source_config: {},
+        output_format: "principles",
+        max_principles: 10,
+        min_confidence: 0.3,
+        dedup_strategy: "embedding_similarity",
+        output_ports: [
+          { name: "principles", schema: {} },
+          { name: "principle_count", schema: {} },
+          { name: "source", schema: {} },
+          { name: "text", schema: {} },
+        ],
       };
     case "composite":
       return { ...base, node_type: "composite", body_graph: "", input_mappings: {}, output_mappings: {}, is_blackbox: false };

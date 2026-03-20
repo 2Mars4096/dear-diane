@@ -24,6 +24,7 @@ import {
   danEdgeToReactFlow,
   reactFlowToDanGraph,
   EDGE_COLORS,
+  getDrillTargets,
   injectLoopGroups,
   stripLoopGroups,
   resolveGraphAtStack,
@@ -185,7 +186,7 @@ interface GraphState {
 
   // -- 5-1: Layer navigation
   layerStack: Array<{ graphKey: string; nodeId: string; nodeName?: string }>;
-  drillIn: (nodeId: string) => void;
+  drillIn: (nodeId: string, graphKey?: string) => void;
   drillOut: () => void;
   jumpToLayer: (index: number) => void;
 
@@ -1240,17 +1241,19 @@ export const useGraphStore = create<GraphState>((set, get) => {
 
   // -- 5-1: Layer navigation ---------------------------------------------------
 
-  drillIn: (nodeId) => {
+  drillIn: (nodeId, requestedGraphKey) => {
     const { danGraph, nodes, layerStack } = get();
     if (!danGraph) return;
     const rfNode = nodes.find((n) => n.id === nodeId);
     if (!rfNode) return;
     const d = rfNode.data as unknown as DanNode;
     const dr = d as unknown as Record<string, unknown>;
-    const bodyGraphKey = dr.body_graph as string | undefined;
-    const branchGraphs = dr.branch_graphs as string[] | undefined;
     const isBlackbox = dr.is_blackbox as boolean | undefined;
-    const graphKey = bodyGraphKey ?? (d.node_type === "parallel_subagents" && branchGraphs?.length ? branchGraphs[0] : undefined);
+    const targets = getDrillTargets(d);
+    const graphKey = requestedGraphKey ?? targets[0]?.graphKey;
+    if (requestedGraphKey && !targets.some((target) => target.graphKey === requestedGraphKey)) {
+      return;
+    }
     if (!graphKey || isBlackbox) return;
     if (layerStack.length >= MAX_DRILL_DEPTH) {
       get().addToast({ type: "info", message: "Maximum drill-in depth reached" });

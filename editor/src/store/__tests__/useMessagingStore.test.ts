@@ -6,6 +6,7 @@ import {
   hasConfiguredMessagingProviders,
   mergePersistedMessagingProviders,
   normalizeMessagingProvider,
+  shouldAutoRefreshMessagingHealth,
   summarizeMessagingStatus,
   type MessagingProviderState,
 } from "../useMessagingStore";
@@ -90,6 +91,51 @@ describe("useMessagingStore helpers", () => {
     expect(summary.tone).toBe("error");
     expect(summary.tooltip).toContain("Telegram: connected");
     expect(summary.tooltip).toContain("WhatsApp: error");
+  });
+
+  it("ignores stale lastError when the provider is currently connected", () => {
+    const summary = buildMessagingSummary({
+      telegram: makeProvider({
+        running: true,
+        connectionState: "connected",
+        lastError: "temporary polling failure",
+      }),
+      whatsapp: makeProvider(),
+    });
+
+    expect(summary.activeCount).toBe(1);
+    expect(summary.errorCount).toBe(0);
+    expect(summary.tone).toBe("active");
+  });
+
+  it("auto-refreshes once when an active provider surface looks errored", () => {
+    expect(
+      shouldAutoRefreshMessagingHealth({
+        telegram: makeProvider({
+          running: true,
+          connectionState: "connected",
+        }),
+        whatsapp: makeProvider({
+          connectionState: "error",
+          lastError: "temporary event-stream failure",
+        }),
+      }),
+    ).toBe(true);
+  });
+
+  it("does not auto-refresh while a messaging action is already in progress", () => {
+    expect(
+      shouldAutoRefreshMessagingHealth({
+        telegram: makeProvider({
+          running: true,
+          connectionState: "connected",
+          pendingAction: "reconnect",
+        }),
+        whatsapp: makeProvider({
+          connectionState: "error",
+        }),
+      }),
+    ).toBe(false);
   });
 
   it("detects whether any messaging provider is already configured", () => {

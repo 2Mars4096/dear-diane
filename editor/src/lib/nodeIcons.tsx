@@ -46,6 +46,15 @@ const icons: Record<string, React.JSX.Element> = {
       <path d="M6 8v4h4V8" stroke="currentColor" strokeWidth={1.3} fill="none" />
     </svg>
   ),
+  orchestrator: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <circle cx="8" cy="8" r="2.2" stroke="currentColor" strokeWidth={1.3} />
+      <circle cx="3" cy="4" r="1.5" stroke="currentColor" strokeWidth={1.2} />
+      <circle cx="13" cy="4" r="1.5" stroke="currentColor" strokeWidth={1.2} />
+      <circle cx="8" cy="13" r="1.5" stroke="currentColor" strokeWidth={1.2} />
+      <path d="M4.3 4.8L6.3 6.7M11.7 4.8L9.7 6.7M8 10.2v1.3" stroke="currentColor" strokeWidth={1.1} strokeLinecap="round" />
+    </svg>
+  ),
   reduce: (
     <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
       <path d="M3 3l5 5M13 3L8 8M8 8v6" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
@@ -59,6 +68,12 @@ const icons: Record<string, React.JSX.Element> = {
     </svg>
   ),
   human_in_the_loop: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <circle cx="8" cy="5" r="2.5" stroke="currentColor" strokeWidth={1.3} />
+      <path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5" stroke="currentColor" strokeWidth={1.3} strokeLinecap="round" />
+    </svg>
+  ),
+  human: (
     <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
       <circle cx="8" cy="5" r="2.5" stroke="currentColor" strokeWidth={1.3} />
       <path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5" stroke="currentColor" strokeWidth={1.3} strokeLinecap="round" />
@@ -80,6 +95,34 @@ const icons: Record<string, React.JSX.Element> = {
     <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
       <path d="M8 1L2 4v4c0 3.3 2.6 6.4 6 7 3.4-.6 6-3.7 6-7V4L8 1z" stroke="currentColor" strokeWidth={1.3} strokeLinejoin="round" />
       <path d="M5.5 8l2 2 3.5-4" stroke="currentColor" strokeWidth={1.5} strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ),
+  reflection: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <path d="M6 3.5a3 3 0 015 2.3c0 1-.4 1.6-1.1 2.2-.5.4-.9.8-.9 1.5H7.9c0-1 .5-1.7 1.2-2.3.5-.4.9-.8.9-1.5A1.8 1.8 0 006 5.5" stroke="currentColor" strokeWidth={1.3} strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M7.7 11.5h1.6M7.5 13h2" stroke="currentColor" strokeWidth={1.3} strokeLinecap="round" />
+      <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth={1.1} opacity={0.35} />
+    </svg>
+  ),
+  goal_loop: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <circle cx="8" cy="8" r="5.5" stroke="currentColor" strokeWidth={1.3} />
+      <path d="M8 4.2v3.8l2.6 1.6" stroke="currentColor" strokeWidth={1.3} strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M12 4.5l1 2.7H10.3" fill="currentColor" />
+    </svg>
+  ),
+  vote: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <path d="M4 5.5l1.2 2.3L7.7 8 6 9.6l.4 2.4L4 10.8 1.6 12l.4-2.4L.3 8l2.5-.2L4 5.5z" fill="currentColor" opacity={0.85} />
+      <path d="M11.5 3.5l.9 1.8 2 .2-1.4 1.3.3 1.9-1.8-.9-1.8.9.3-1.9-1.4-1.3 2-.2.9-1.8z" fill="currentColor" opacity={0.55} />
+    </svg>
+  ),
+  agent_team: (
+    <svg width={S} height={S} viewBox="0 0 16 16" fill="none">
+      <circle cx="5" cy="5.2" r="1.6" stroke="currentColor" strokeWidth={1.2} />
+      <circle cx="11" cy="5.2" r="1.6" stroke="currentColor" strokeWidth={1.2} />
+      <circle cx="8" cy="10.8" r="1.6" stroke="currentColor" strokeWidth={1.2} />
+      <path d="M6.2 6.2L7.1 8M9.8 6.2L8.9 8M6.7 11h2.6" stroke="currentColor" strokeWidth={1.1} strokeLinecap="round" />
     </svg>
   ),
   composite: (

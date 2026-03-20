@@ -1,6 +1,6 @@
 import { memo, useState, useRef, useEffect, useMemo } from "react";
 import { Handle, Position, type NodeProps } from "@xyflow/react";
-import { portHandleId } from "../lib/graphAdapter";
+import { getDrillTargets, portHandleId } from "../lib/graphAdapter";
 import { orderPorts } from "../lib/portOrdering";
 import { computePortReorder } from "../lib/layout";
 import { useGraphStore } from "../store/useGraphStore";
@@ -16,12 +16,18 @@ const TYPE_COLORS: Record<string, string> = {
   while_loop: "#f97316",
   for_each: "#ef4444",
   parallel_subagents: "#d946ef",
+  orchestrator: "#a855f7",
   reduce: "#ec4899",
   router: "#14b8a6",
+  human: "#0891b2",
   human_in_the_loop: "#06b6d4",
   gate: "#eab308",
   rag_operator: "#7c3aed",
   validator: "#059669",
+  reflection: "#7c3aed",
+  goal_loop: "#f97316",
+  vote: "#db2777",
+  agent_team: "#0f766e",
   composite: "#10b981",
 };
 
@@ -282,12 +288,11 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
   const blockName = metadata?.block_name as string | undefined;
   const blockVersion = metadata?.block_version as string | undefined;
   const isBlackbox = !!dRecord.is_blackbox;
-  const hasBodyGraph =
-    (d.node_type === "while_loop" ||
-      d.node_type === "for_each" ||
-      d.node_type === "composite") &&
-    !!dRecord.body_graph;
-  const hasBranchGraphs =
+  const drillTargets = useMemo(() => getDrillTargets(d), [d]);
+  const drillTargetCount = !isBlackbox ? drillTargets.length : 0;
+  const hasSingleDrillTarget = drillTargetCount === 1;
+  const hasMultipleDrillTargets = drillTargetCount > 1;
+  const hasParallelBranches =
     d.node_type === "parallel_subagents" &&
     Array.isArray(dRecord.branch_graphs) &&
     (dRecord.branch_graphs as string[]).length > 0;
@@ -335,13 +340,21 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
           </span>
         )}
         {/* 5-1: show lock for blackbox, play icon for drillable */}
-        {hasBodyGraph && isBlackbox && (
+        {drillTargetCount > 0 && isBlackbox && (
           <span className="ml-1 text-[10px] opacity-80" title="Blackbox — no drill-in">&#x1F512;</span>
         )}
-        {(hasBodyGraph || hasBranchGraphs) && !isBlackbox && (
+        {hasSingleDrillTarget && (
           <span className="ml-1 text-[10px] opacity-80" title="Double-click to drill in">&#x25B6;</span>
         )}
-        {(d.node_type === "while_loop" || d.node_type === "for_each") && (
+        {hasMultipleDrillTargets && (
+          <span
+            className="ml-1 text-[10px] opacity-80"
+            title="Select this node and use the Config Panel to open member subgraphs"
+          >
+            &#x25B6;{drillTargetCount}
+          </span>
+        )}
+        {(d.node_type === "while_loop" || d.node_type === "goal_loop" || d.node_type === "for_each") && (
           <span className="ml-auto text-[10px] opacity-80" title="Loop node">&#x21BB;</span>
         )}
         {d.node_type === "gate" && (
@@ -352,17 +365,22 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
       </div>
 
       {/* 6-6: Loop badges */}
-      {d.node_type === "while_loop" && (
+      {(d.node_type === "while_loop" || d.node_type === "goal_loop") && (
         <div className="px-2 py-0.5 text-[10px] text-orange-600 bg-orange-50 flex items-center gap-1.5">
           <span className="opacity-70">&#x21BB;</span>
-          {!!(d as unknown as Record<string, unknown>).condition && (
+          {d.node_type === "while_loop" && !!(d as unknown as Record<string, unknown>).condition && (
             <span className="truncate" title={String((d as unknown as Record<string, unknown>).condition)}>
               while: {String((d as unknown as Record<string, unknown>).condition).slice(0, 30)}
             </span>
           )}
+          {d.node_type === "goal_loop" && !!(d as unknown as Record<string, unknown>).goal_text && (
+            <span className="truncate" title={String((d as unknown as Record<string, unknown>).goal_text)}>
+              goal: {String((d as unknown as Record<string, unknown>).goal_text).slice(0, 30)}
+            </span>
+          )}
           {iteration && (
             <span className="ml-auto font-mono bg-orange-100 px-1 rounded">
-              iter {iteration.current}/{iteration.total ?? "?"}
+              {d.node_type === "goal_loop" ? iteration.current : `iter ${iteration.current}`}/{iteration.total ?? "?"}
             </span>
           )}
         </div>
@@ -383,7 +401,7 @@ function DanNodeComponent({ id, data, selected }: NodeProps) {
         <div className="px-2 py-0.5 text-[10px] text-purple-600 bg-purple-50 flex items-center gap-1.5">
           <span className="opacity-70">&#x2225;</span>
           <span>parallel</span>
-          {hasBranchGraphs && (
+          {hasParallelBranches && (
             <span className="ml-auto font-mono bg-purple-100 px-1 rounded">
               {(dRecord.branch_graphs as string[])?.length ?? 0} branches
             </span>

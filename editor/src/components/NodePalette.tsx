@@ -4,7 +4,7 @@ import { useState, useEffect } from "react";
 import {
   NODE_TYPE_CATALOG,
   NODE_DESCRIPTIONS,
-  type NodeTypeString,
+  type PaletteNodeType,
 } from "../types/graph";
 import { createDefaultNode, EDGE_COLORS } from "../lib/graphAdapter";
 import { useGraphStore } from "../store/useGraphStore";
@@ -73,7 +73,7 @@ export default function NodePalette() {
   const toggleCategory = (cat: string) =>
     setCollapsed((prev) => ({ ...prev, [cat]: !prev[cat] }));
 
-  const handleDragStart = (e: React.DragEvent, nodeType: NodeTypeString) => {
+  const handleDragStart = (e: React.DragEvent, nodeType: PaletteNodeType) => {
     e.dataTransfer.setData("application/dan-node-type", nodeType);
     e.dataTransfer.effectAllowed = "move";
   };

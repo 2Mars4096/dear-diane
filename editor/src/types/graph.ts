@@ -123,6 +123,19 @@ export interface HumanInTheLoopNode extends NodeBase {
   default_action?: string | null;
 }
 
+export interface HumanNodeType extends NodeBase {
+  node_type: "human";
+  prompt?: string;
+  timeout_seconds?: number | null;
+  default_action?: string | null;
+  input_schema?: Record<string, unknown> | null;
+  output_schema?: Record<string, unknown> | null;
+  render_mode?: "text" | "approval" | "form" | "selection" | "file_upload" | "rich";
+  options?: string[] | null;
+  instructions?: string;
+  render_target?: "dialog" | "chat" | "both";
+}
+
 export interface CompositeNode extends NodeBase {
   node_type: "composite";
   body_graph: string;
@@ -142,6 +155,19 @@ export interface ParallelSubagentsNode extends NodeBase {
   reducer?: string | null;
   parallelism?: number;
   failure_policy?: { max_iterations?: number | null; timeout_seconds?: number | null; stagnation_threshold?: number | null };
+}
+
+export interface OrchestratorNodeType extends NodeBase {
+  node_type: "orchestrator";
+  teams: Record<string, string>;
+  orchestrator_prompt?: string;
+  orchestrator_model?: string | null;
+  completion_condition?: "all_done" | "any_done" | "orchestrator_halt";
+  max_iterations?: number;
+  max_llm_calls?: number;
+  timeout_seconds?: number | null;
+  input_mappings?: Record<string, string>;
+  team_inputs?: Record<string, Record<string, unknown>>;
 }
 
 export interface RagOperator extends NodeBase {
@@ -168,6 +194,69 @@ export interface ValidatorNode extends NodeBase {
   strict_mode: boolean;
 }
 
+export interface ReflectionNodeType extends NodeBase {
+  node_type: "reflection";
+  reflection_prompt?: string;
+  reflection_model?: string | null;
+  source?: "last_run" | "last_n_runs" | "error_index";
+  source_config?: Record<string, unknown>;
+  output_format?: "principles" | "rules" | "summary";
+  max_principles?: number;
+  min_confidence?: number;
+  dedup_strategy?: "embedding_similarity" | "exact_key" | "none";
+}
+
+export interface GoalLoopNodeType extends NodeBase {
+  node_type: "goal_loop";
+  goal_text: string;
+  metric_name?: string;
+  target_value?: number;
+  comparison?: ">=" | "<=" | "==" | ">" | "<";
+  max_iterations?: number;
+  evaluator?: string;
+  success_criteria?: string | null;
+  body_graph: string;
+  external_input_schema?: Record<string, unknown> | null;
+  external_output_schema?: Record<string, unknown> | null;
+}
+
+export interface VoteConfig {
+  judge_model?: string | null;
+  judge_prompt?: string | null;
+  quality_metric?: string | null;
+  unanimity_threshold?: number;
+  consensus_mode?: "whole" | "field";
+}
+
+export interface VoteNodeType extends NodeBase {
+  node_type: "vote";
+  candidates: string[];
+  num_votes: number;
+  prompt_template: string;
+  system_prompt?: string;
+  temperature?: number;
+  output_json_schema?: Record<string, unknown> | null;
+  vote_strategy?: "majority" | "weighted" | "best_of_n" | "judge" | "unanimous";
+  vote_config?: VoteConfig | null;
+  parallelism?: number;
+  timeout_seconds?: number | null;
+}
+
+export interface AgentTeamNodeType extends NodeBase {
+  node_type: "agent_team";
+  agents: Record<string, string>;
+  moderator_prompt?: string;
+  moderator_model?: string | null;
+  turn_strategy?: "round_robin" | "moderator" | "free_form" | "sequential";
+  max_turns?: number;
+  completion_condition?: "consensus" | "moderator_halt" | "max_turns" | "all_responded";
+  timeout_seconds?: number | null;
+  shared_context_keys?: string[];
+  handoff_policy?: "explicit" | "any" | "moderator_only";
+  input_mappings?: Record<string, string>;
+  agent_inputs?: Record<string, Record<string, unknown>>;
+}
+
 export interface InputVariable {
   name: string;
   type: "string" | "number" | "boolean";
@@ -190,11 +279,17 @@ export type DanNode =
   | ForEachNode
   | ReduceNode
   | RouterNode
+  | HumanNodeType
   | HumanInTheLoopNode
   | CompositeNode
   | ParallelSubagentsNode
+  | OrchestratorNodeType
   | RagOperator
   | ValidatorNode
+  | ReflectionNodeType
+  | GoalLoopNodeType
+  | VoteNodeType
+  | AgentTeamNodeType
   | InputNodeType;
 
 // -- Edges -------------------------------------------------------------------
@@ -277,16 +372,52 @@ export const NODE_TYPE_CATALOG = [
   { type: "gate_if_else", label: "If/Else Gate", category: "control" },
   { type: "gate_while", label: "While Gate", category: "control" },
   { type: "for_each", label: "For Each", category: "control" },
+  { type: "goal_loop", label: "Goal Loop", category: "control" },
   { type: "parallel_subagents", label: "Parallel Subagents", category: "control" },
+  { type: "orchestrator", label: "Orchestrator", category: "control" },
+  { type: "agent_team", label: "Agent Team", category: "control" },
   { type: "reduce", label: "Reduce", category: "control" },
   { type: "router", label: "Router", category: "control" },
-  { type: "human_in_the_loop", label: "Human in the Loop", category: "control" },
+  { type: "human", label: "Human", category: "control" },
+  { type: "vote", label: "Vote", category: "control" },
   { type: "rag_operator", label: "RAG Operator", category: "operator" },
+  { type: "reflection", label: "Reflection", category: "operator" },
   { type: "validator", label: "Validator", category: "control" },
   { type: "composite", label: "Composite", category: "composite" },
 ] as const;
 
-export type NodeTypeString = (typeof NODE_TYPE_CATALOG)[number]["type"];
+// Palette node types are authoring-surface labels. Some are runtime `node_type`
+// strings directly, while others lower to canonical runtime nodes
+// (e.g. `gate_if_else` -> `gate` + `gate_mode="if_else"`).
+export type PaletteNodeType = (typeof NODE_TYPE_CATALOG)[number]["type"];
+
+// Backward-compatible alias kept while the editor transitions to the more
+// explicit `PaletteNodeType` name.
+export type NodeTypeString = PaletteNodeType;
+
+export type RuntimeNodeType = DanNode["node_type"];
+
+export const PALETTE_NODE_TO_RUNTIME_NODE_TYPE: Record<PaletteNodeType, RuntimeNodeType> = {
+  llm_operator: "llm_operator",
+  tool_operator: "tool_operator",
+  code_operator: "code_operator",
+  input: "input",
+  gate_if_else: "gate",
+  gate_while: "gate",
+  for_each: "for_each",
+  goal_loop: "goal_loop",
+  parallel_subagents: "parallel_subagents",
+  orchestrator: "orchestrator",
+  agent_team: "agent_team",
+  reduce: "reduce",
+  router: "router",
+  human: "human",
+  rag_operator: "rag_operator",
+  vote: "vote",
+  reflection: "reflection",
+  validator: "validator",
+  composite: "composite",
+};
 
 // -- 5-4: Build palette — node descriptions for hover previews ----------------
 
@@ -324,10 +455,25 @@ export const NODE_DESCRIPTIONS: Record<
     inputs: ["items"],
     outputs: ["results"],
   },
+  goal_loop: {
+    description: "Iterate a body sub-graph until a goal metric reaches a target",
+    inputs: ["input"],
+    outputs: ["result", "goal_met", "iterations", "best_score"],
+  },
   parallel_subagents: {
     description: "Run multiple sub-graphs concurrently; merge at fan-in",
     inputs: ["input"],
     outputs: ["results"],
+  },
+  orchestrator: {
+    description: "Coordinate multiple team sub-graphs concurrently",
+    inputs: ["input"],
+    outputs: ["results"],
+  },
+  agent_team: {
+    description: "Group-chat style multi-agent collaboration with turn routing",
+    inputs: ["input"],
+    outputs: ["result", "conversation"],
   },
   reduce: {
     description: "Aggregate outputs from parallel branches",
@@ -339,8 +485,13 @@ export const NODE_DESCRIPTIONS: Record<
     inputs: ["input"],
     outputs: ["route", "output"],
   },
-  human_in_the_loop: {
+  human: {
     description: "Pause for human input",
+    inputs: ["input"],
+    outputs: ["response"],
+  },
+  human_in_the_loop: {
+    description: "Legacy alias for human input",
     inputs: ["input"],
     outputs: ["response"],
   },
@@ -353,6 +504,16 @@ export const NODE_DESCRIPTIONS: Record<
     description: "Validate data with configurable rules (valid/invalid routing)",
     inputs: ["data"],
     outputs: ["valid", "invalid"],
+  },
+  vote: {
+    description: "Run multiple candidates and choose the best result",
+    inputs: ["input"],
+    outputs: ["winner", "winner_model"],
+  },
+  reflection: {
+    description: "Analyze prior runs and extract reusable principles",
+    inputs: ["input"],
+    outputs: ["principles", "text"],
   },
   composite: {
     description: "Reusable sub-graph block",

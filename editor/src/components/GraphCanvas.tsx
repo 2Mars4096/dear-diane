@@ -17,9 +17,9 @@ import LoopGroupNode from "./LoopGroupNode";
 import AnimatedEdge from "./AnimatedEdge";
 import ContextMenu from "./ContextMenu";
 import { useGraphStore } from "../store/useGraphStore";
-import { createDefaultNode, handleToPortName } from "../lib/graphAdapter";
+import { createDefaultNode, getDrillTargets, handleToPortName } from "../lib/graphAdapter";
 import { isValidConnection } from "../lib/connectionValidation";
-import type { DanNode as DanNodeType, NodeTypeString } from "../types/graph";
+import type { DanNode as DanNodeType, PaletteNodeType } from "../types/graph";
 import type { Block } from "../lib/api";
 
 const nodeTypes: NodeTypes = {
@@ -172,7 +172,7 @@ export default function GraphCanvas() {
         const store = useGraphStore.getState();
         store.addGraphAsNode(rawType.slice("workflow:".length), position);
       } else {
-        addNode(createDefaultNode(rawType as NodeTypeString, position));
+        addNode(createDefaultNode(rawType as PaletteNodeType, position));
       }
     },
     [addNode, addTemplateNode, screenToFlowPosition],
@@ -200,15 +200,18 @@ export default function GraphCanvas() {
         onNodeDoubleClick={(_, node) => {
           const d = node.data as unknown as DanNodeType;
           const dr = d as unknown as Record<string, unknown>;
-          const hasBody =
-            (d.node_type === "while_loop" || d.node_type === "for_each" || d.node_type === "composite") &&
-            !!dr.body_graph &&
-            !dr.is_blackbox;
-          const hasBranches =
-            d.node_type === "parallel_subagents" &&
-            Array.isArray(dr.branch_graphs) &&
-            (dr.branch_graphs as string[]).length > 0;
-          if (hasBody || hasBranches) drillIn(node.id);
+          if (dr.is_blackbox) return;
+          const drillTargets = getDrillTargets(d);
+          if (drillTargets.length === 1) {
+            drillIn(node.id, drillTargets[0].graphKey);
+            return;
+          }
+          if (drillTargets.length > 1) {
+            useGraphStore.getState().addToast({
+              type: "info",
+              message: "Use the Config Panel to open team/agent subgraphs",
+            });
+          }
         }}
         onPaneContextMenu={(e) => {
           e.preventDefault();
