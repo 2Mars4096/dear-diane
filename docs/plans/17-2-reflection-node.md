@@ -74,9 +74,9 @@
   - [x] 6-5. Tests: verify reflection output includes `repair_level`, verify classification heuristics in few-shot examples produce correct levels, verify `suggested_parameter_changes` is populated for parameter_fix principles.
 
 - [ ] 7. Authoring surfaces *(deferred — authoring surfaces not yet prioritized; Phase 10 stretch)*
-  - [ ] 7-1. Builder API: `wf.reflection(name, source="last_run", reflection_model=None, max_principles=10, ...)` → creates `ReflectionNode` with configured source and output format. *(deferred — authoring surfaces not yet prioritized; Phase 10 stretch)*
-  - [ ] 7-2. Markdown format: `type: reflection` agent file with optional `## Source` section for source config and `## Reflection Prompt` section for custom system prompt. *(deferred — authoring surfaces not yet prioritized; Phase 10 stretch)*
-  - [ ] 7-3. Editor integration: `ReflectionNode` in palette under a new "Learning" or "Advanced" category. Config panel shows source selector, model override, max_principles slider. Output preview shows generated principles in a table. *(deferred — frontend visualization; Phase 10 stretch)*
+  - [x] 7-1. Builder API: `wf.reflection(name, source="last_run", reflection_model=None, max_principles=10, ...)` → creates `ReflectionNode` with configured source and output format. *(Implemented 2026-03-20 via Plan 40 builder/runtime parity.)*
+  - [x] 7-2. Markdown format: `type: reflection` agent file with optional `## Source` section for source config and `## Reflection Prompt` section for custom system prompt. *(Implemented 2026-03-20 for current frontmatter/body contract; richer `## Source` section syntax remains optional polish.)*
+  - [x] 7-3. Editor integration: `ReflectionNode` in palette under a new "Learning" or "Advanced" category. Config panel shows source selector, model override, max_principles slider. Output preview shows generated principles in a table. *(Partially implemented 2026-03-20: palette entry and dedicated config fields landed; richer output preview remains open.)*
 
 - [x] 8. Testing
   - [x] 8-1. Unit tests: `CausalPrinciple` model validation, `ReflectionExecutor` prompt construction, source gathering methods (mock `RunStore`/`ErrorMemoryIndex`), deduplication logic.

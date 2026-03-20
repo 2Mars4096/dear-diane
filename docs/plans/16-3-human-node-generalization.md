@@ -70,13 +70,13 @@
   - [ ] 6-4. Add `human_renderer` parameter to `Engine.__init__()` and `EngineConfig` (deferred — context-level support landed).
 
 - [ ] 7. Extend builder API
-  - [ ] 7-1. Add `wf.human(name, render_mode="text", prompt="", instructions="", output_schema=None, ...)` to `WorkflowBuilder`. Returns `NodeRef`.
-  - [ ] 7-2. Add `wf.approval(name, prompt="Review and approve:", ...)` as shorthand for `wf.human(render_mode="approval")`.
-  - [ ] 7-3. Add `wf.form(name, schema={...}, ...)` as shorthand for `wf.human(render_mode="form", output_schema=schema)`.
-  - [ ] 7-4. Extend builder compiler/decompiler for `HumanNode`.
+  - [x] 7-1. Add `wf.human(name, render_mode="text", prompt="", instructions="", output_schema=None, ...)` to `WorkflowBuilder`. Returns `NodeRef`. *(Implemented 2026-03-20 via Plan 40 builder/runtime parity.)*
+  - [x] 7-2. Add `wf.approval(name, prompt="Review and approve:", ...)` as shorthand for `wf.human(render_mode="approval")`. *(Implemented 2026-03-20.)*
+  - [x] 7-3. Add `wf.form(name, schema={...}, ...)` as shorthand for `wf.human(render_mode="form", output_schema=schema)`. *(Implemented 2026-03-20.)*
+  - [x] 7-4. Extend builder compiler/decompiler for `HumanNode`. *(Implemented 2026-03-20.)*
 
 - [ ] 8. Extend markdown loader
-  - [ ] 8-1. Support `type: human` in agent markdown. Frontmatter fields: `render_mode`, `output_schema`, `options`, `timeout_seconds`, `default_action`, `instructions` (or body as instructions). Example:
+  - [x] 8-1. Support `type: human` in agent markdown. Frontmatter fields: `render_mode`, `output_schema`, `options`, `timeout_seconds`, `default_action`, `instructions` (or body as instructions). Example:
     ```
     ---
     type: human
@@ -88,7 +88,7 @@
     Please review the following draft and approve or reject it.
     Pay attention to factual accuracy and citation completeness.
     ```
-  - [ ] 8-2. Extend loader/compiler and decompiler for `HumanNode` markdown format.
+  - [x] 8-2. Extend loader/compiler and decompiler for `HumanNode` markdown format. *(Implemented 2026-03-20; canonical `human` now round-trips through markdown instead of degrading to the legacy alias.)*
 
 - [ ] 9. Migration and backward compatibility
   - [ ] 9-1. `node_type: "human_in_the_loop"` in existing graph JSON auto-migrates to `"human"` on load. Emit deprecation warning. *(Deferred — both types coexist in Node union for now.)*
@@ -105,10 +105,10 @@
   - [x] 11-1. Unit tests: 40 tests in `tests/test_engine/test_human_node.py` — model serialization (4), backward compat (7), render models (4), LegacyCallbackRenderer (2), AutoRenderer (2), ProgrammaticRenderer (3), executor integration (14), scheduler registration (1), context auto-wrap (3).
   - [x] 11-2. Integration tests: text mode, approval (approve + reject), form (valid + invalid + no-default), selection, timeout (with/without default), no-renderer fallback, legacy callback, events, dynamic prompt.
   - [x] 11-3. Migration tests: discriminated union for both `"human"` and `"human_in_the_loop"`, `HumanInTheLoopNode` isinstance check, executor alias.
-  - [ ] 11-4. Builder round-trip tests: `wf.human()` / `wf.approval()` / `wf.form()` → build → decompile → compare. *(Deferred — builder API not yet extended.)*
-  - [ ] 11-5. Markdown round-trip tests: human agent `.md` → compile → decompile → compare. *(Deferred — loader not yet extended.)*
-  - [ ] 11-6. Update `docs/architecture.md` §HumanNode. *(Deferred.)*
-  - [ ] 11-7. Update `docs/llm-api-guide.md`. *(Deferred.)*
+  - [x] 11-4. Builder round-trip tests: `wf.human()` / `wf.approval()` / `wf.form()` → build → decompile → compare. *(Implemented via `tests/test_builder_runtime_node_parity.py`; `approval` / `form` now exist as authoring aliases and decompile back to canonical `wf.human()`.)*
+  - [x] 11-5. Markdown round-trip tests: human agent `.md` → compile → decompile → compare. *(Implemented 2026-03-20 via `tests/test_loader/test_human_markdown_roundtrip.py`.)*
+  - [x] 11-6. Update `docs/architecture.md` §HumanNode. *(Covered by Plan 40 runtime contract matrix and HumanNode architecture section.)*
+  - [x] 11-7. Update `docs/llm-api-guide.md`. *(Implemented 2026-03-20.)*
   - [x] 11-8. Update `docs/changelog.md`, `docs/todo.md`, and this plan.
 
 ## Primary Files

@@ -1,8 +1,8 @@
 # 29-5: Concierge Parallelism
 
 **Parent:** [29-concierge-memory-evolvement](29-concierge-memory-evolvement.md)
-**Status:** completed
-**Goal:** Apply one universal rule throughout the concierge stack: **if sub-tasks are independent, fan them out; if they depend on prior results, serialize them.** This applies to concierge preparation, tool execution, diagnosis, memory extraction, build session steps, and information gathering. Also: replace hard project caps with resource-based concurrency, add priority queuing, and ensure independent work starts immediately.
+**Status:** in-progress
+**Goal:** Apply one universal rule throughout the concierge stack: **if sub-tasks are independent, fan them out; if they depend on prior results, serialize them.** This applies to concierge preparation, tool execution, diagnosis, memory extraction, build session steps, and information gathering. Also: replace hard project caps with resource-based concurrency, add priority queuing, and ensure independent work starts immediately. The original rollout is complete; the remaining follow-up in this same plan is to tighten concierge throughput where the current implementation is still too coarse.
 
 ## Context
 
@@ -108,6 +108,12 @@ This applies at every level: message dispatch, turn preparation, tool execution,
 - [x] 11-9. Integration test: same-project messages serialize correctly even under parallelism
 All 22 tests in `tests/test_concierge/test_parallelism_integration.py`.
 
+### 12. Post-rollout efficiency follow-up
+- [ ] 12-1. Refine `ConcurrentDispatcher` capacity accounting so advisory `"llm"` slots are not held for the full lifetime of a live concierge task when the turn is mostly waiting on tools or queue plumbing.
+- [ ] 12-2. Preserve the existing same-project serialization and backpressure rules while separating project/run concurrency from actual model-call concurrency, so unrelated tool-heavy chats do not starve each other between `provider.complete()` calls.
+- [ ] 12-3. Replace the current `child_execution="mixed"` serial fallback in `tier_executors.py` with real hybrid scheduling: preserve dependency order where required, but still fan out independent child groups.
+- [ ] 12-4. Add focused regressions or benchmarks covering (a) two simultaneous tool-heavy chats that should share LLM capacity fairly and (b) a mixed dependency tree that proves hybrid execution beats full serialization without breaking cancellation or event ordering.
+
 ## Decisions
 
 - `MemoryKernel._save_index()` is now protected by a `threading.Lock` to prevent concurrent worker threads from racing on the temp-file write/rename during fan-out operations.
@@ -124,6 +130,7 @@ All 22 tests in `tests/test_concierge/test_parallelism_integration.py`.
 - Build-session diagnosis now uses `fan_out_dict()` plus `asyncio.to_thread(...)` so memory repair lookup, failure-pattern lookup, principle retrieval, similar-workflow lookup, and optional DiagnosisLoop classification run independently and degrade gracefully per source.
 - Build-session validation now fans out `validate_draft()` and `generate_smoke_inputs()` before entering `TESTING`; validation still gates the smoke run, and smoke-input failures surface only if validation passes.
 - Post-build follow-up work is best-effort fan-out: memory extraction/storage, workflow linking, and adapted-workflow asset persistence run independently so one failing branch does not fail the completed turn.
+- 2026-03-20 follow-up decision: keep the remaining concierge-throughput work inside this existing `29-5` plan instead of creating a nested `29-5-*` follow-up plan. The unresolved items are implementation refinements, not a separate architecture track.
 
 ## Notes
 
@@ -133,3 +140,4 @@ All 22 tests in `tests/test_concierge/test_parallelism_integration.py`.
 - The `fan_out` utility is deliberately simple — just `asyncio.gather` with error handling and timeout. No task framework, no scheduler. The complexity is in identifying which operations are independent at each call site, not in the parallelism mechanism.
 - Tasks 3-6 (tool/diagnosis/memory/build parallelism) are integration points with 29-3, 29-4, and 29-6. Those plans define the operations; this plan ensures they run concurrently where possible. The sub-task items in 3-6 should be implemented when the corresponding plan is being built.
 - Focused diagnosis tests now live in `tests/test_concierge/test_build_session_diagnosis.py` and cover combined aggregation plus partial-source failure fallback.
+- Remaining gap after the original rollout: concierge already has the right parallel primitives, but dispatcher-level LLM capacity is still tracked too coarsely and `mixed` child execution still collapses to serial. The follow-up is about making the existing architecture more efficient, not about broadening scope.

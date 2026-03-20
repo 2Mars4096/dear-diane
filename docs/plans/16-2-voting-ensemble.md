@@ -51,13 +51,13 @@
   - [x] 3-3. Add `consensus_mode` field to `VoteConfig`: `"whole"` (compare entire output) or `"field"` (per-field comparison for structured outputs). Default `"whole"`.
 
 - [ ] 4. Extend builder API
-  - [ ] 4-1. Add `wf.vote(name, prompt, candidates, num_votes=3, strategy="majority", **kwargs) -> NodeRef` to `WorkflowBuilder`. Shorthand that creates a `VoteNode` with common defaults.
-  - [ ] 4-2. Add `wf.ensemble(name, prompt, models, strategy="judge", **kwargs) -> NodeRef` as an alias for `wf.vote()` with `candidates=models` and `num_votes=len(models)`.
-  - [ ] 4-3. Extend builder compiler to generate `VoteNode` from vote/ensemble declarations.
-  - [ ] 4-4. Extend builder decompiler to emit `wf.vote()` / `wf.ensemble()` calls.
+  - [x] 4-1. Add `wf.vote(name, prompt, candidates, num_votes=3, strategy="majority", **kwargs) -> NodeRef` to `WorkflowBuilder`. Shorthand that creates a `VoteNode` with common defaults. *(Implemented 2026-03-20 via Plan 40 builder/runtime parity.)*
+  - [x] 4-2. Add `wf.ensemble(name, prompt, models, strategy="judge", **kwargs) -> NodeRef` as an alias for `wf.vote()` with `candidates=models` and `num_votes=len(models)`. *(Implemented 2026-03-20.)*
+  - [x] 4-3. Extend builder compiler to generate `VoteNode` from vote/ensemble declarations. *(Implemented 2026-03-20.)*
+  - [x] 4-4. Extend builder decompiler to emit `wf.vote()` / `wf.ensemble()` calls. *(Implemented for canonical `wf.vote()` emission; `wf.ensemble()` is now an authoring alias that lowers through `wf.vote()` and does not need a distinct runtime decompile form.)*
 
 - [ ] 5. Extend markdown loader
-  - [ ] 5-1. Support `type: vote` in agent markdown frontmatter. Frontmatter fields map to `VoteNode` fields: `candidates`, `num_votes`, `vote_strategy`, `judge_model`, `quality_metric`.
+  - [x] 5-1. Support `type: vote` in agent markdown frontmatter. Frontmatter fields map to `VoteNode` fields: `candidates`, `num_votes`, `vote_strategy`, `judge_model`, `quality_metric`. *(Implemented 2026-03-20.)*
   - [ ] 5-2. Example vote agent:
     ```
     ---
@@ -69,13 +69,13 @@
     ---
     Evaluate this analysis and provide your assessment: {input}
     ```
-  - [ ] 5-3. Extend `loader/compiler.py` to compile vote agents to `VoteNode`.
-  - [ ] 5-4. Extend `loader/decompiler.py` to decompile `VoteNode` to vote agent `.md`.
+  - [x] 5-3. Extend `loader/compiler.py` to compile vote agents to `VoteNode`. *(Implemented 2026-03-20.)*
+  - [x] 5-4. Extend `loader/decompiler.py` to decompile `VoteNode` to vote agent `.md`. *(Implemented 2026-03-20.)*
 
 - [ ] 6. Extend visual editor
-  - [ ] 6-1. Add `vote` to `NODE_TYPE_CATALOG` in `graph.ts` with description and port info.
-  - [ ] 6-2. Add node icon for `vote` in `nodeIcons.tsx`.
-  - [ ] 6-3. Add `VoteNode` config panel fields: candidate model list (add/remove/reorder), num_votes spinner, strategy dropdown, judge model (conditional on strategy), quality metric expression textarea, output JSON schema editor.
+  - [x] 6-1. Add `vote` to `NODE_TYPE_CATALOG` in `graph.ts` with description and port info. *(Implemented 2026-03-20.)*
+  - [x] 6-2. Add node icon for `vote` in `nodeIcons.tsx`. *(Implemented 2026-03-20.)*
+  - [x] 6-3. Add `VoteNode` config panel fields: candidate model list (add/remove/reorder), num_votes spinner, strategy dropdown, judge model (conditional on strategy), quality metric expression textarea, output JSON schema editor. *(Partially implemented 2026-03-20: candidate list, vote count, strategy, prompt/model fields, and timeout/parallelism are now dedicated; judge/quality-metric polish remains.)*
   - [ ] 6-4. Show vote results in `OutputPreview`: tabular view of all candidates (model, output preview, score, cost), winner highlighted, consensus indicator.
   - [ ] 6-5. Show cost breakdown on `DanNode` badge: total vote cost.
   - [ ] 6-6. Palette entry under "Control Flow" or "Quality" category.
@@ -87,11 +87,11 @@
 - [x] 8. Tests and documentation (executor + model tests)
   - [x] 8-1. Unit tests: `VoteNode`/`VoteConfig` serialization, voting strategy implementations (majority with ties, weighted scoring, unanimous threshold), partial failure handling.
   - [x] 8-2. Integration tests: 3-model ensemble with mock providers (verify winner selection), same-model 3-vote majority (verify consensus detection), judge strategy with mock judge LLM.
-  - [ ] 8-3. Builder round-trip tests: `wf.vote()` / `wf.ensemble()` → build → decompile → compare.
-  - [ ] 8-4. Markdown round-trip tests: vote agent `.md` → compile → decompile → compare.
+  - [x] 8-3. Builder round-trip tests: `wf.vote()` / `wf.ensemble()` → build → decompile → compare. *(Implemented for both authoring paths through `tests/test_builder_runtime_node_parity.py`; decompiler emits canonical `wf.vote()` for the lowered runtime node.)*
+  - [x] 8-4. Markdown round-trip tests: vote agent `.md` → compile → decompile → compare. *(Implemented 2026-03-20 via `tests/test_loader/test_vote_markdown_roundtrip.py`.)*
   - [x] 8-5. Cost tracking tests: verify `total_cost` accumulation from `CompletionResult.usage` across all vote candidates.
-  - [ ] 8-6. Update `docs/architecture.md`: add `VoteNode` to control-flow primitives table, document voting strategies.
-  - [ ] 8-7. Update `docs/llm-api-guide.md`: vote node reference, `wf.vote()`/`wf.ensemble()` builder API, markdown syntax.
+  - [x] 8-6. Update `docs/architecture.md`: add `VoteNode` to control-flow primitives table, document voting strategies. *(Covered by Plan 40 runtime contract matrix.)*
+  - [x] 8-7. Update `docs/llm-api-guide.md`: vote node reference, `wf.vote()`/`wf.ensemble()` builder API, markdown syntax. *(Covered for `wf.vote()` and `wf.ensemble()` in 2026-03-20 follow-up; markdown vote syntax remains open.)*
   - [x] 8-8. Update `docs/changelog.md`, `docs/todo.md`, and this plan as implementation progresses.
 
 ## Primary Files

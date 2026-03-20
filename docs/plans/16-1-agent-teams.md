@@ -60,13 +60,13 @@
   - [x] 4-5. Add event types to `engine/events.py` (already present).
 
 - [ ] 5. Extend builder API
-  - [ ] 5-1. Add `wf.team(name, agents: dict[str, NodeRef], turn_strategy, moderator_prompt, ...)` to `WorkflowBuilder`. Returns a `NodeRef` wrapping the `AgentTeamNode`. Each agent value is a `NodeRef` to a composite sub-graph.
-  - [ ] 5-2. Add `wf.group_chat(name, agents, ...)` as an alias for `wf.team()` with `turn_strategy="free_form"` default.
-  - [ ] 5-3. Extend builder compiler to generate `AgentTeamNode` + sub-graph wiring from team declarations.
-  - [ ] 5-4. Extend builder decompiler to emit `wf.team()` calls for `AgentTeamNode` instances.
+  - [x] 5-1. Add `wf.team(name, agents: dict[str, NodeRef], turn_strategy, moderator_prompt, ...)` to `WorkflowBuilder`. Returns a `NodeRef` wrapping the `AgentTeamNode`. Each agent value is a `NodeRef` to a composite sub-graph. *(2026-03-20 follow-up: implemented as `with wf.team("id", ...) as team: with team.agent("name") as sub: ...` so sub-graphs are authored inline like `parallel_subagents` / `orchestrator`.)*
+  - [x] 5-2. Add `wf.group_chat(name, agents, ...)` as an alias for `wf.team()` with `turn_strategy="free_form"` default. *(implemented 2026-03-20)*
+  - [x] 5-3. Extend builder compiler to generate `AgentTeamNode` + sub-graph wiring from team declarations. *(implemented 2026-03-20)*
+  - [x] 5-4. Extend builder decompiler to emit `wf.team()` calls for `AgentTeamNode` instances. *(implemented 2026-03-20)*
 
 - [ ] 6. Extend markdown loader
-  - [ ] 6-1. Support `type: agent_team` in workflow markdown frontmatter (alternative to declaring as a node in `## Flow`).
+  - [x] 6-1. Support `type: agent_team` in workflow markdown frontmatter (alternative to declaring as a node in `## Flow`). *(Implemented 2026-03-20 via the minimal `type: agent_team` + `## Agents` authoring surface.)*
   - [ ] 6-2. Add `## Team` section to workflow format: declares agent members, turn strategy, moderator config. Example:
     ```
     ## Team
@@ -78,8 +78,8 @@
     - writer.md -> drafts content
     - reviewer.md -> reviews and critiques
     ```
-  - [ ] 6-3. Extend `loader/compiler.py` to parse `## Team` section → `AgentTeamNode` with sub-graph wiring.
-  - [ ] 6-4. Extend `loader/decompiler.py` to emit `## Team` section for `AgentTeamNode`.
+  - [ ] 6-3. Extend `loader/compiler.py` to parse `## Team` section → `AgentTeamNode` with sub-graph wiring. *(Current implementation uses `## Agents` membership inside a `type: agent_team` file; dedicated `## Team` syntax is still open.)*
+  - [ ] 6-4. Extend `loader/decompiler.py` to emit `## Team` section for `AgentTeamNode`. *(Current implementation emits the minimal `type: agent_team` + `## Agents` form.)*
 
 - [ ] 7. Extend visual editor
   - [ ] 7-1. Add `agent_team` to `NODE_TYPE_CATALOG` in `graph.ts` with description and port info.
@@ -98,11 +98,11 @@
   - [x] 9-1. Unit tests: `AgentTeamNode` serialization, `TeamMessage`/`HandoffRequest` models, `@`-routing regex parsing, turn strategy selection logic.
   - [x] 9-2. Integration tests (41 total): round-robin 3-agent turn order + conversation accumulation + contributions (3), sequential one-pass + max_turns boundary (2), handoff routing + moderator_only blocking + handoff context passthrough + self-handoff rejection (4), max_turns safety (2), all_responded early-stop (2), event data verification (3), edge cases — <2 agents, error recovery, shared context persistence, conversation output (4), static helpers for _parse_handoff/_extract_content/_parse_mentions (7), model serialization round-trips (4), @-mention regex (10).
   - [ ] 9-3. Backward compat tests: existing `OrchestratorNode` workflows unchanged, `ParallelSubagentsNode` workflows unchanged.
-  - [ ] 9-4. Builder round-trip tests: `wf.team()` → build → decompile → compare.
-  - [ ] 9-5. Markdown round-trip tests: `## Team` section → compile → decompile → compare.
-  - [ ] 9-6. Update `docs/architecture.md`: add `AgentTeamNode` to control-flow primitives table, document turn strategies, `@`-routing syntax, handoff protocol.
-  - [ ] 9-7. Update `docs/llm-api-guide.md`: agent team builder API, markdown syntax, node type reference.
-  - [ ] 9-8. Update `docs/changelog.md`, `docs/todo.md`, and this plan as implementation progresses.
+  - [x] 9-4. Builder round-trip tests: `wf.team()` → build → decompile → compare. *(implemented 2026-03-20 via `tests/test_builder_agent_team.py`)*
+  - [ ] 9-5. Markdown round-trip tests: `## Team` section → compile → decompile → compare. *(Current minimal `type: agent_team` + `## Agents` round-trip is covered by `tests/test_loader/test_agent_team_markdown_roundtrip.py`; dedicated `## Team` syntax remains open.)*
+  - [x] 9-6. Update `docs/architecture.md`: add `AgentTeamNode` to control-flow primitives table, document turn strategies, `@`-routing syntax, handoff protocol. *(follow-up 2026-03-20: runtime contract matrix now lists `agent_team` with `wf.team()` / `wf.group_chat()` builder surfaces.)*
+  - [x] 9-7. Update `docs/llm-api-guide.md`: agent team builder API, markdown syntax, node type reference. *(follow-up 2026-03-20: builder API and node table updated for `wf.team()` / `wf.group_chat()`; markdown syntax still deferred to task 9-5 / section 6.)*
+  - [x] 9-8. Update `docs/changelog.md`, `docs/todo.md`, and this plan as implementation progresses. *(updated through 2026-03-20 follow-up slices)*
 
 ## Primary Files
 
