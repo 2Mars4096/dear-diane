@@ -5785,8 +5785,14 @@
       "artifact_refs": []
     }
   },
-  "entry_points": [],
-  "exit_points": [],
+  "entry_points": [
+    "input_1771932104108_n6nt"
+  ],
+  "exit_points": [
+    "60141e0d-4134-4d94-b413-06de1e7eacf5",
+    "b6beb9ab-da03-47d4-b5a0-dfaa7bdc7671",
+    "wf_node_paper_writing_1771932095074"
+  ],
   "shared_context": [],
   "artifact_refs": []
 }

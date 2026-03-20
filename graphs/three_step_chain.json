@@ -1,246 +1,263 @@
 {
-  "name": "3-Step Chain: Research → Analyze → Summarize",
-  "description": "A sequential workflow that researches a topic, analyzes findings, and generates a summary report",
-  "version": "1.0.0",
+  "version": "dan_graph_v1",
+  "metadata": {
+    "name": "three_step_chain",
+    "description": "A sequential workflow that researches a topic, analyzes findings, and generates a summary report",
+    "tags": [
+      "example",
+      "simple_chain"
+    ]
+  },
   "nodes": [
     {
-      "id": "input_topic",
-      "type": "input",
-      "name": "Topic Input",
-      "description": "Enter the research topic",
-      "config": {
-        "variable_name": "topic",
-        "type": "string",
-        "required": true,
-        "placeholder": "e.g., Artificial Intelligence in Healthcare"
+      "id": "workflow_inputs",
+      "node_type": "input",
+      "name": "Workflow Inputs",
+      "description": "Input variables for the three-step chain",
+      "input_ports": [],
+      "output_ports": [
+        {
+          "name": "input",
+          "schema": {
+            "type": "object"
+          }
+        },
+        {
+          "name": "topic",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "research_depth",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "output_format",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "position": {
+        "x": 100,
+        "y": 100
       },
-      "position": {"x": 100, "y": 100}
+      "ui": {},
+      "metadata": {},
+      "variables": [
+        {
+          "name": "topic",
+          "type": "string",
+          "description": "The topic to research and summarize"
+        },
+        {
+          "name": "research_depth",
+          "type": "string",
+          "default": "standard",
+          "description": "Depth of research (brief|standard|comprehensive)"
+        },
+        {
+          "name": "output_format",
+          "type": "string",
+          "default": "structured",
+          "description": "Format for the summary (bullet|paragraph|structured)"
+        }
+      ]
     },
     {
       "id": "research_step",
-      "type": "tool",
+      "node_type": "llm_operator",
       "name": "Research",
       "description": "Search for information on the topic",
-      "tool": "web_search",
-      "config": {
-        "query": "{{topic}}",
-        "num_results": 5,
-        "fetch_content": true
+      "input_ports": [
+        {
+          "name": "topic",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        },
+        {
+          "name": "research_depth",
+          "schema": {
+            "type": "string"
+          },
+          "required": false
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "position": {
+        "x": 100,
+        "y": 250
       },
-      "inputs": {
-        "query": {"from": "input_topic", "variable": "topic"}
-      },
-      "outputs": {
-        "research_data": "search_results"
-      },
-      "position": {"x": 100, "y": 250}
+      "ui": {},
+      "metadata": {},
+      "model": "claude-sonnet-4-6",
+      "prompt_template": "You are a research assistant. Research the following topic comprehensively.\n\nTopic: {topic}\nDepth: {research_depth}\n\nProvide detailed findings including key facts, relevant context, and multiple perspectives where useful.",
+      "system_prompt": "",
+      "temperature": 0.3
     },
     {
       "id": "analysis_step",
-      "type": "code",
-      "name": "Analysis",
+      "node_type": "llm_operator",
+      "name": "Analyze",
       "description": "Analyze and extract insights from research data",
-      "code": "
-import json
-from typing import List, Dict, Any
-
-# Input: research_data from web_search
-findings = research_data if isinstance(research_data, list) else []
-
-# Calculate metrics
-relevance_scores = [f.get('relevance_score', 0.5) for f in findings]
-avg_relevance = sum(relevance_scores) / len(relevance_scores) if relevance_scores else 0
-
-# Count source types
-source_types = {}
-for finding in findings:
-    st = finding.get('source_type', finding.get('type', 'Unknown'))
-    source_types[st] = source_types.get(st, 0) + 1
-
-# Identify top sources
-top_sources = sorted(findings, key=lambda x: x.get('relevance_score', 0), reverse=True)[:3]
-
-# Extract themes from content
-themes = []
-all_content = ' '.join([f.get('content', f.get('snippet', '')) for f in findings]).lower()
-
-if any(word in all_content for word in ['trend', 'growth', 'market']):
-    themes.append('Market Trends & Dynamics')
-if any(word in all_content for word in ['challenge', 'risk', 'problem']):
-    themes.append('Key Challenges & Risks')
-if any(word in all_content for word in ['opportunity', 'potential']):
-    themes.append('Strategic Opportunities')
-if any(word in all_content for word in ['future', 'predict', 'forecast']):
-    themes.append('Future Outlook & Predictions')
-if any(word in all_content for word in ['impact', 'effect']):
-    themes.append('Industry Impact')
-if not themes:
-    themes = ['General Overview', 'Key Findings', 'Important Considerations']
-
-# Determine data quality
-if avg_relevance > 0.85:
-    data_quality = 'High'
-elif avg_relevance > 0.7:
-    data_quality = 'Medium'
-else:
-    data_quality = 'Low'
-
-analysis_results = {
-    'source_count': len(findings),
-    'average_relevance': round(avg_relevance, 3),
-    'data_quality': data_quality,
-    'source_type_breakdown': source_types,
-    'top_sources': [
+      "input_ports": [
         {
-            'title': s.get('title', 'Unknown'),
-            'url': s.get('url', ''),
-            'relevance': s.get('relevance_score', 0),
-            'type': s.get('source_type', s.get('type', 'Unknown'))
+          "name": "research_findings",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
         }
-        for s in top_sources
-    ],
-    'themes_identified': themes,
-    'themes_count': len(themes),
-    'confidence_score': round(avg_relevance * 0.9, 3)
-}
-
-print(f'Analysis complete: {len(findings)} sources, {len(themes)} themes, {data_quality} quality')
-",
-      "inputs": {
-        "research_data": {"from": "research_step", "variable": "search_results"}
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "position": {
+        "x": 100,
+        "y": 400
       },
-      "outputs": {
-        "analysis_results": "analysis_results"
-      },
-      "position": {"x": 100, "y": 400}
+      "ui": {},
+      "metadata": {},
+      "model": "claude-sonnet-4-6",
+      "prompt_template": "Analyze the following research findings and identify the key patterns, trade-offs, uncertainties, and strategic implications.\n\nResearch Findings:\n{research_findings}",
+      "system_prompt": "",
+      "temperature": 0.3
     },
     {
       "id": "summary_step",
-      "type": "code",
+      "node_type": "llm_operator",
       "name": "Summarize",
-      "description": "Generate final markdown summary",
-      "code": "
-import json
-
-# Build markdown summary
-topic_str = topic if isinstance(topic, str) else 'Research Topic'
-analysis = analysis_results if isinstance(analysis_results, dict) else {}
-
-quality = analysis.get('data_quality', 'Unknown')
-avg_rel = analysis.get('average_relevance', 0)
-source_count = analysis.get('source_count', 0)
-themes = analysis.get('themes_identified', [])
-top_sources = analysis.get('top_sources', [])
-confidence = analysis.get('confidence_score', 0)
-
-quality_emoji = '🟢' if quality == 'High' else '🟡' if quality == 'Medium' else '🔴'
-
-summary = f'''# Research Summary: {topic_str}
-
-## Executive Overview
-{quality_emoji} **Data Quality:** {quality} | **Confidence:** {confidence:.0%}
-
-This report synthesizes findings from **{source_count} sources** on *{topic_str}*.
-The research data quality is rated as **{quality}** with an average
-source relevance of **{avg_rel:.1%}**.
-
----
-
-## Key Metrics
-
-| Metric | Value |
-|--------|-------|
-| Sources Analyzed | {source_count} |
-| Average Relevance | {avg_rel:.1%} |
-| Data Quality | {quality} |
-| Confidence Score | {confidence:.1%} |
-| Themes Identified | {len(themes)} |
-
----
-
-## Key Themes Identified
-
-'''
-
-for theme in themes:
-    summary += f'- {theme}\\n'
-
-summary += '\\n---\\n\\n## Top Sources\\n\\n'
-
-for i, source in enumerate(top_sources, 1):
-    summary += f'{i}. **{source.get(\"title\", \"Unknown\")}**\\n'
-    summary += f'   - Type: {source.get(\"type\", \"Unknown\")}\\n'
-    summary += f'   - Relevance: {source.get(\"relevance\", 0):.0%}\\n'
-    summary += f'   - URL: {source.get(\"url\", \"\")}\\n\\n'
-
-summary += f'''---
-
-## Conclusion
-
-Analysis of *{topic_str}* reveals **{len(themes)} major thematic areas** warranting
-further attention. The source material demonstrates **{quality.lower()} reliability**,
-suggesting this research provides a {confidence:.0%} confidence foundation
-for decision-making.
-
----
-
-*Generated by 3-Step Chain Workflow (Research → Analyze → Summarize)*
-'''
-
-final_summary = summary
-print(f'Summary generated: {len(summary)} characters')
-",
-      "inputs": {
-        "topic": {"from": "input_topic", "variable": "topic"},
-        "analysis_results": {"from": "analysis_step", "variable": "analysis_results"}
+      "description": "Generate a concise summary report",
+      "input_ports": [
+        {
+          "name": "topic",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        },
+        {
+          "name": "output_format",
+          "schema": {
+            "type": "string"
+          },
+          "required": false
+        },
+        {
+          "name": "analysis",
+          "schema": {
+            "type": "string"
+          },
+          "required": true
+        }
+      ],
+      "output_ports": [
+        {
+          "name": "text",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "position": {
+        "x": 100,
+        "y": 550
       },
-      "outputs": {
-        "final_summary": "final_summary"
-      },
-      "position": {"x": 100, "y": 550}
-    },
-    {
-      "id": "output_summary",
-      "type": "output",
-      "name": "Final Output",
-      "description": "Markdown summary report",
-      "config": {
-        "format": "markdown",
-        "filename": "research_summary.md"
-      },
-      "inputs": {
-        "content": {"from": "summary_step", "variable": "final_summary"}
-      },
-      "position": {"x": 100, "y": 700}
+      "ui": {},
+      "metadata": {},
+      "model": "claude-sonnet-4-6",
+      "prompt_template": "Create a concise summary for the topic below.\n\nTopic: {topic}\nRequested format: {output_format}\n\nAnalysis:\n{analysis}",
+      "system_prompt": "",
+      "temperature": 0.3
     }
   ],
   "edges": [
-    {"from": "input_topic", "to": "research_step"},
-    {"from": "research_step", "to": "analysis_step"},
-    {"from": "input_topic", "to": "summary_step"},
-    {"from": "analysis_step", "to": "summary_step"},
-    {"from": "summary_step", "to": "output_summary"}
-  ],
-  "inputs": [
     {
-      "name": "topic",
-      "type": "string",
-      "description": "Research topic to investigate",
-      "required": true
+      "id": "e1",
+      "edge_type": "data",
+      "source_node_id": "workflow_inputs",
+      "source_port": "topic",
+      "target_node_id": "research_step",
+      "target_port": "topic",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "e2",
+      "edge_type": "data",
+      "source_node_id": "workflow_inputs",
+      "source_port": "research_depth",
+      "target_node_id": "research_step",
+      "target_port": "research_depth",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "e3",
+      "edge_type": "data",
+      "source_node_id": "research_step",
+      "source_port": "text",
+      "target_node_id": "analysis_step",
+      "target_port": "research_findings",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "e4",
+      "edge_type": "data",
+      "source_node_id": "workflow_inputs",
+      "source_port": "topic",
+      "target_node_id": "summary_step",
+      "target_port": "topic",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "e5",
+      "edge_type": "data",
+      "source_node_id": "workflow_inputs",
+      "source_port": "output_format",
+      "target_node_id": "summary_step",
+      "target_port": "output_format",
+      "ui": {},
+      "metadata": {}
+    },
+    {
+      "id": "e6",
+      "edge_type": "data",
+      "source_node_id": "analysis_step",
+      "source_port": "text",
+      "target_node_id": "summary_step",
+      "target_port": "analysis",
+      "ui": {},
+      "metadata": {}
     }
   ],
-  "outputs": [
-    {
-      "name": "final_summary",
-      "type": "string",
-      "description": "Markdown formatted research summary"
-    }
+  "sub_graphs": {},
+  "entry_points": [
+    "workflow_inputs"
   ],
-  "metadata": {
-    "author": "DAN Workflow Builder",
-    "category": "Research",
-    "tags": ["research", "analysis", "summary", "chain"],
-    "created": "2026-03-18",
-    "updated": "2026-03-18"
-  }
+  "exit_points": [
+    "summary_step"
+  ],
+  "shared_context": [],
+  "artifact_refs": [],
+  "hyperedges": []
 }
