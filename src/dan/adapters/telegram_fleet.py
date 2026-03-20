@@ -112,11 +112,32 @@ class BotFleet:
         self._history_locks: dict[str, asyncio.Lock] = {}
         self._message_lanes: dict[tuple[int, int], tuple[str, float]] = {}
         self._last_outbound: dict[int, tuple[int, float]] = {}
+        self._last_outbound_by_lane: dict[str, tuple[int, float]] = {}
+        self._active_conversations: dict[str, int] = {}
 
-    def _latest_outbound_id(self, chat_id: int) -> int | None:
-        """Most recent outbound message id we sent in *chat_id*."""
+    def _latest_outbound_id(self, chat_id: int, lane_key: str | None = None) -> int | None:
+        """Most recent outbound message id we sent in the active lane/chat."""
+        if lane_key:
+            entry = self._last_outbound_by_lane.get(lane_key)
+            if entry is not None:
+                return entry[0]
         entry = self._last_outbound.get(chat_id)
         return entry[0] if entry else None
+
+    def _conversation_has_active_dispatch(self, conversation_key: str) -> bool:
+        return self._active_conversations.get(conversation_key, 0) > 0
+
+    def _mark_conversation_dispatch_started(self, conversation_key: str) -> None:
+        self._active_conversations[conversation_key] = (
+            self._active_conversations.get(conversation_key, 0) + 1
+        )
+
+    def _mark_conversation_dispatch_finished(self, conversation_key: str) -> None:
+        remaining = self._active_conversations.get(conversation_key, 0) - 1
+        if remaining > 0:
+            self._active_conversations[conversation_key] = remaining
+        else:
+            self._active_conversations.pop(conversation_key, None)
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -255,6 +276,18 @@ class BotFleet:
         ]
         for k in expired_lane_keys:
             del self._message_lanes[k]
+        expired_outbound = [
+            k for k, (_message_id, ts) in self._last_outbound.items() if ts < cutoff
+        ]
+        for k in expired_outbound:
+            del self._last_outbound[k]
+        expired_lane_outbound = [
+            k
+            for k, (_message_id, ts) in self._last_outbound_by_lane.items()
+            if ts < cutoff
+        ]
+        for k in expired_lane_outbound:
+            del self._last_outbound_by_lane[k]
     def _remember_message_lane(
         self,
         chat_id: int,
@@ -324,6 +357,7 @@ class BotFleet:
         self._last_outbound[chat_id] = (message_id, now)
         if lane_key:
             self._message_lanes[(chat_id, message_id)] = (lane_key, now)
+            self._last_outbound_by_lane[lane_key] = (message_id, now)
 
     @staticmethod
     def _format_elapsed_seconds(elapsed_seconds: float) -> str:
@@ -404,15 +438,25 @@ class BotFleet:
         self,
         lane_key: str,
         turn: dict[str, str],
+        *,
+        seed_history: list[dict[str, str]] | None = None,
     ) -> list[dict[str, str]]:
         history_lock = self._history_locks.setdefault(lane_key, asyncio.Lock())
         async with history_lock:
-            history = list(self._conversation_history.get(lane_key, []))
+            if lane_key in self._conversation_history:
+                history = list(self._conversation_history.get(lane_key, []))
+            else:
+                history = list(seed_history or [])
             history.append(turn)
             if len(history) > 40:
                 history = history[-40:]
             self._conversation_history[lane_key] = history
             return list(history)
+
+    async def _history_snapshot(self, lane_key: str) -> list[dict[str, str]]:
+        history_lock = self._history_locks.setdefault(lane_key, asyncio.Lock())
+        async with history_lock:
+            return list(self._conversation_history.get(lane_key, []))
 
     async def _remove_history_turn(
         self,
@@ -428,13 +472,52 @@ class BotFleet:
                     break
             self._conversation_history[lane_key] = history
 
-    async def _append_assistant_turn(self, lane_key: str, content: str) -> None:
+    async def _record_user_turn(
+        self,
+        conversation_key: str,
+        lane_key: str,
+        turn: dict[str, str],
+    ) -> list[dict[str, str]]:
+        if lane_key == conversation_key:
+            return await self._append_history_turn(conversation_key, turn)
+
+        seed_history = await self._history_snapshot(conversation_key)
+        lane_history = await self._append_history_turn(
+            lane_key,
+            turn,
+            seed_history=seed_history,
+        )
+        await self._append_history_turn(conversation_key, turn)
+        return lane_history
+
+    async def _rollback_user_turn(
+        self,
+        conversation_key: str,
+        lane_key: str,
+        turn: dict[str, str],
+    ) -> None:
+        await self._remove_history_turn(lane_key, turn)
+        if lane_key != conversation_key:
+            await self._remove_history_turn(conversation_key, turn)
+
+    async def _append_assistant_turn(
+        self,
+        lane_key: str,
+        content: str,
+        *,
+        conversation_key: str | None = None,
+    ) -> None:
         if not content:
             return
         await self._append_history_turn(
             lane_key,
             {"role": "assistant", "content": content},
         )
+        if conversation_key and conversation_key != lane_key:
+            await self._append_history_turn(
+                conversation_key,
+                {"role": "assistant", "content": content},
+            )
 
     def _start_cleanup_task(self) -> None:
         async def _cleanup_loop() -> None:
@@ -515,8 +598,32 @@ class BotFleet:
             ):
                 return
 
+            conversation_key = _conversation_thread_key(ctx, selected.name)
+            reply_lane_key = self._lookup_message_lane(
+                ctx.chat_id,
+                ctx.reply_to_message_id,
+            )
+            lane_key = _conversation_lane_key(
+                ctx,
+                selected.name,
+                reply_lane_key=reply_lane_key,
+                fork_for_parallel=(
+                    reply_lane_key is None
+                    and self._conversation_has_active_dispatch(conversation_key)
+                ),
+            )
+            self._remember_message_lane(ctx.chat_id, ctx.message_id, lane_key)
+            self._mark_conversation_dispatch_started(conversation_key)
+
             task = asyncio.create_task(
-                self._dispatch(selected, ext_id, text, ctx),
+                self._dispatch(
+                    selected,
+                    ext_id,
+                    text,
+                    ctx,
+                    conversation_key=conversation_key,
+                    lane_key=lane_key,
+                ),
             )
             self._bg_tasks.add(task)
             task.add_done_callback(self._bg_tasks.discard)
@@ -542,8 +649,12 @@ class BotFleet:
         ext_id: str,
         text: str,
         ctx: MessageContext,
+        *,
+        conversation_key: str,
+        lane_key: str,
     ) -> None:
         if bot.adapter is None or self._http is None:
+            self._mark_conversation_dispatch_finished(conversation_key)
             return
 
         settings = self._config.settings
@@ -551,16 +662,6 @@ class BotFleet:
         if settings.use_reactions:
             await bot.adapter.set_reaction(ctx.chat_id, ctx.message_id, "⏳")
 
-        conversation_key = _conversation_thread_key(ctx, bot.name)
-        lane_key = _conversation_lane_key(
-            ctx,
-            bot.name,
-            reply_lane_key=self._lookup_message_lane(
-                ctx.chat_id,
-                ctx.reply_to_message_id,
-            ),
-        )
-        self._remember_message_lane(ctx.chat_id, ctx.message_id, lane_key)
         surface = f"telegram:{bot.name}"
         user_turn: dict[str, str] | None = None
 
@@ -603,12 +704,17 @@ class BotFleet:
                 )
 
             user_turn = {"role": "user", "content": msg_text}
-            history = await self._append_history_turn(lane_key, user_turn)
+            history = await self._record_user_turn(
+                conversation_key,
+                lane_key,
+                user_turn,
+            )
             body: dict[str, Any] = {
                 "workflow_id": wf_id,
                 "message": msg_text,
                 "history": history,
                 "thread_id": conversation_key,
+                "session_id": lane_key,
                 "mode": "auto",
                 "surface": surface,
                 "surface_context": self._build_surface_context(bot),
@@ -618,7 +724,7 @@ class BotFleet:
 
             resp = await self._http.post("/api/chat/message", json=body)
             if resp.status_code != 200:
-                await self._remove_history_turn(lane_key, user_turn)
+                await self._rollback_user_turn(conversation_key, lane_key, user_turn)
                 if settings.use_reactions:
                     await bot.adapter.set_reaction(
                         ctx.chat_id, ctx.message_id, "❌",
@@ -649,7 +755,11 @@ class BotFleet:
                         already_cleaned=True,
                         thread_id=ctx.thread_id,
                     )
-                    await self._append_assistant_turn(lane_key, content)
+                    await self._append_assistant_turn(
+                        lane_key,
+                        content,
+                        conversation_key=conversation_key,
+                    )
                 if settings.use_reactions:
                     await bot.adapter.set_reaction(
                         ctx.chat_id, ctx.message_id, "✅",
@@ -672,7 +782,11 @@ class BotFleet:
                 )
 
             if full_reply:
-                await self._append_assistant_turn(lane_key, full_reply)
+                await self._append_assistant_turn(
+                    lane_key,
+                    full_reply,
+                    conversation_key=conversation_key,
+                )
 
             if settings.use_reactions:
                 await bot.adapter.set_reaction(
@@ -682,7 +796,7 @@ class BotFleet:
         except Exception as exc:
             logger.exception("Fleet dispatch failed for %s: %s", bot.name, exc)
             if user_turn is not None:
-                await self._remove_history_turn(lane_key, user_turn)
+                await self._rollback_user_turn(conversation_key, lane_key, user_turn)
             try:
                 await bot.adapter._send_text(
                     ctx.chat_id,
@@ -696,6 +810,8 @@ class BotFleet:
                 await bot.adapter.set_reaction(
                     ctx.chat_id, ctx.message_id, "❌",
                 )
+        finally:
+            self._mark_conversation_dispatch_finished(conversation_key)
 
     async def _stream_with_edits(
         self,
@@ -744,7 +860,7 @@ class BotFleet:
                 f"({self._format_elapsed_seconds(elapsed)})"
             )
 
-            latest = self._latest_outbound_id(ctx.chat_id)
+            latest = self._latest_outbound_id(ctx.chat_id, lane_key=lane_key)
             chat_has_moved_on = (
                 progress_msg_id is not None
                 and latest is not None
@@ -1500,12 +1616,14 @@ def _conversation_lane_key(
     ctx: MessageContext,
     bot_name: str,
     reply_lane_key: str | None = None,
+    *,
+    fork_for_parallel: bool = False,
 ) -> str:
     conversation_key = _conversation_thread_key(ctx, bot_name)
-    if ctx.thread_id is not None or ctx.chat_type != "private":
-        return conversation_key
     if reply_lane_key:
         return reply_lane_key
+    if not fork_for_parallel or ctx.message_id is None:
+        return conversation_key
     return f"{conversation_key}:m{ctx.message_id}"
 
 

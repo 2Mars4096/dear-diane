@@ -11,6 +11,7 @@ import pytest
 from dan.adapters.telegram_adapter import (
     TelegramAdapter,
     TelegramAdapterConfig,
+    MessageContext,
     _split_message,
 )
 
@@ -296,3 +297,114 @@ class TestTelegramStreamErrorFormatting:
 
         result = _format_telegram_stream_error("")
         assert "Please try again" in result
+
+
+class TestTelegramFleetLaneBehavior:
+    def test_non_reply_uses_shared_lane_until_parallel_fork_is_needed(self):
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import (
+            BotFleet,
+            _conversation_lane_key,
+            _conversation_thread_key,
+        )
+
+        fleet = BotFleet(TelegramFleetConfig())
+        ctx1 = MessageContext(chat_id=111, message_id=10, chat_type="private")
+        conversation_key = _conversation_thread_key(ctx1, "dan")
+
+        lane1 = _conversation_lane_key(
+            ctx1,
+            "dan",
+            fork_for_parallel=fleet._conversation_has_active_dispatch(conversation_key),
+        )
+        assert lane1 == conversation_key
+
+        fleet._mark_conversation_dispatch_started(conversation_key)
+        ctx2 = MessageContext(chat_id=111, message_id=11, chat_type="private")
+        lane2 = _conversation_lane_key(
+            ctx2,
+            "dan",
+            fork_for_parallel=fleet._conversation_has_active_dispatch(conversation_key),
+        )
+        assert lane2 == f"{conversation_key}:m11"
+
+        fleet._mark_conversation_dispatch_finished(conversation_key)
+        ctx3 = MessageContext(chat_id=111, message_id=12, chat_type="private")
+        lane3 = _conversation_lane_key(
+            ctx3,
+            "dan",
+            fork_for_parallel=fleet._conversation_has_active_dispatch(conversation_key),
+        )
+        assert lane3 == conversation_key
+
+    def test_reply_lane_wins_over_parallel_fork(self):
+        from dan.adapters.telegram_fleet import _conversation_lane_key
+
+        ctx = MessageContext(
+            chat_id=111,
+            message_id=12,
+            reply_to_message_id=99,
+            chat_type="private",
+        )
+        lane = _conversation_lane_key(
+            ctx,
+            "dan",
+            reply_lane_key="111:main:dan:m99",
+            fork_for_parallel=True,
+        )
+        assert lane == "111:main:dan:m99"
+
+    @pytest.mark.asyncio
+    async def test_forked_lane_keeps_broad_follow_up_continuity(self):
+        from dan.adapters.telegram_config import TelegramFleetConfig
+        from dan.adapters.telegram_fleet import BotFleet, _conversation_thread_key
+
+        fleet = BotFleet(TelegramFleetConfig())
+        conversation_key = _conversation_thread_key(
+            MessageContext(chat_id=111, message_id=10, chat_type="private"),
+            "dan",
+        )
+
+        first_history = await fleet._record_user_turn(
+            conversation_key,
+            conversation_key,
+            {"role": "user", "content": "Build a workflow"},
+        )
+        assert [turn["content"] for turn in first_history] == ["Build a workflow"]
+
+        await fleet._append_assistant_turn(
+            conversation_key,
+            "Sure, I can do that.",
+            conversation_key=conversation_key,
+        )
+
+        forked_lane = f"{conversation_key}:m11"
+        forked_history = await fleet._record_user_turn(
+            conversation_key,
+            forked_lane,
+            {"role": "user", "content": "Also summarize this file"},
+        )
+        assert [turn["content"] for turn in forked_history] == [
+            "Build a workflow",
+            "Sure, I can do that.",
+            "Also summarize this file",
+        ]
+
+        await fleet._append_assistant_turn(
+            forked_lane,
+            "Summary ready.",
+            conversation_key=conversation_key,
+        )
+
+        follow_up_history = await fleet._record_user_turn(
+            conversation_key,
+            conversation_key,
+            {"role": "user", "content": "Now run the workflow"},
+        )
+        assert [turn["content"] for turn in follow_up_history][-5:] == [
+            "Build a workflow",
+            "Sure, I can do that.",
+            "Also summarize this file",
+            "Summary ready.",
+            "Now run the workflow",
+        ]
