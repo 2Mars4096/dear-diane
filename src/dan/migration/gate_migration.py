@@ -8,9 +8,24 @@ from __future__ import annotations
 
 import copy
 import logging
+import os
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+_GATE_MIGRATION_ENABLED_VALUES = {"1", "true", "yes"}
+
+
+def is_gate_migration_enabled() -> bool:
+    """Return whether legacy gate migration should be applied on load."""
+    return os.environ.get("DAN_GATE_MIGRATION_ENABLED", "").lower() in _GATE_MIGRATION_ENABLED_VALUES
+
+
+def maybe_migrate_graph_dict(graph_dict: dict[str, Any]) -> dict[str, Any]:
+    """Conditionally apply graph migrations based on the runtime flag."""
+    if not is_gate_migration_enabled():
+        return graph_dict
+    return migrate_graph(graph_dict)
 
 
 def migrate_if_else_to_gate(graph_dict: dict[str, Any]) -> dict[str, Any]:
