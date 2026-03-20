@@ -14,12 +14,11 @@ import re
 import uuid
 from dataclasses import dataclass, field as dc_field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Literal
-
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal
 
 from pydantic import BaseModel, Field
 
+from dan.models.node_taxonomy import GENERATE_SPEC_NODE_TYPES
 from dan.meta.discovery import DiscoveryResult, DiscoveryService
 from dan.meta.goal_contract import render_goal_contract_section
 from dan.meta.tool_catalog import render_tool_catalog_markdown
@@ -108,6 +107,8 @@ __all__ = [
     "WorkflowPlanner",
     "validate_codegen_output",
 ]
+
+_GENERATE_SPEC_NODE_TYPES_LITERAL = '"|"'.join(GENERATE_SPEC_NODE_TYPES)
 
 
 # ---------------------------------------------------------------------------
@@ -325,13 +326,16 @@ Your job is to take a user's goal and produce ONE of three actions as a JSON obj
    - {"op": "add_node", "node_type": "llm_operator", "name": "...", "config": {...}}
    - {"op": "edit_node", "node_id": "...", "updates": {...}}
    - {"op": "remove_node", "node_id": "..."}
-   - {"op": "add_edge", "edge_type": "data", "source_id": "...", "source_port": "output", "target_id": "...", "target_port": "input"}
-   - {"op": "remove_edge", "edge_id": "..."}
+   - {"op": "add_edge", "edge_type": "data", "source_id": "...", "source_port": "<real source port>", "target_id": "...", "target_port": "<real target port>"}
+   - {"op": "remove_edge", "source_id": "...", "source_port": "...", "target_id": "...", "target_port": "..."}
+   Common output ports: `llm_operator.text`, `tool_operator.result`, `code_operator.result`, `router.route`.
+   For branching/control-flow edges, always specify explicit ports instead of assuming defaults.
 
 3. GENERATE — create a new workflow from scratch:
    {"action": "GENERATE", "description": "...", "spec": {"nodes": [...], "edges": [...]}}
-   Each node: {"node_type": "llm_operator"|"tool_operator"|"code_operator"|"gate"|"for_each", "name": "...", "config": {...}}
-   Each edge: {"source": "<node_name>", "target": "<node_name>"}
+   Each node: {"node_type": "__GENERATE_SPEC_NODE_TYPES__", "name": "...", "config": {...}}
+   Each edge: {"source": "<node_name>", "target": "<node_name>"} for simple linear flows, or {"source": "<node_name>", "source_port": "...", "target": "<node_name>", "target_port": "..."} when a control-flow node or non-default port is involved.
+   GENERATE is intentionally the lightweight/simple path. Do not invent advanced runtime primitives such as `goal_loop`, `vote`, `reflection`, `agent_team`, or `orchestrator` inside this spec.
 
 Decision policy:
 - If a similar workflow exists with reuse_fit_score >= 0.8, prefer REUSE.
@@ -350,19 +354,22 @@ Output:
 Goal: "Analyze quarterly earnings and produce a beamer presentation"
 Similar workflows: equity_research (fit=0.55, success_rate=75%)
 Output:
-{"action": "ADAPT", "workflow_id": "equity_research", "mutations": [{"op": "add_node", "node_type": "llm_operator", "name": "beamer_formatter", "config": {"system_prompt": "Convert analysis into beamer LaTeX slides"}}, {"op": "add_edge", "edge_type": "data", "source_id": "analysis", "source_port": "output", "target_id": "beamer_formatter", "target_port": "input"}], "input_mapping": {"ticker": "AAPL"}}
+{"action": "ADAPT", "workflow_id": "equity_research", "mutations": [{"op": "add_node", "node_type": "llm_operator", "name": "beamer_formatter", "config": {"system_prompt": "Convert analysis into beamer LaTeX slides"}}, {"op": "add_edge", "edge_type": "data", "source_id": "analysis", "source_port": "text", "target_id": "beamer_formatter", "target_port": "input"}], "input_mapping": {"ticker": "AAPL"}}
 
 ### Example 3 — GENERATE
 Goal: "Build a RAG QA system for internal docs"
 Similar workflows: none
 Output:
-{"action": "GENERATE", "description": "RAG-based question answering pipeline", "spec": {"nodes": [{"node_type": "tool_operator", "name": "doc_indexer", "config": {"tool_name": "index_documents"}}, {"node_type": "llm_operator", "name": "retriever", "config": {"system_prompt": "Retrieve relevant passages for the question"}}, {"node_type": "llm_operator", "name": "answerer", "config": {"system_prompt": "Answer the question using retrieved passages"}}], "edges": [{"source": "doc_indexer", "target": "retriever"}, {"source": "retriever", "target": "answerer"}]}}
+{"action": "GENERATE", "description": "RAG-based question answering pipeline", "spec": {"nodes": [{"node_type": "tool_operator", "name": "doc_indexer", "config": {"tool_id": "index_documents"}}, {"node_type": "llm_operator", "name": "retriever", "config": {"system_prompt": "Retrieve relevant passages for the question"}}, {"node_type": "llm_operator", "name": "answerer", "config": {"system_prompt": "Answer the question using retrieved passages"}}], "edges": [{"source": "doc_indexer", "target": "retriever"}, {"source": "retriever", "target": "answerer"}]}}
 
 Output ONLY a single valid JSON object. No markdown, no explanation."""
 
     def build_system_prompt(self) -> str:
         """Return the base planning system prompt."""
-        return self.SYSTEM_TEMPLATE
+        return self.SYSTEM_TEMPLATE.replace(
+            "__GENERATE_SPEC_NODE_TYPES__",
+            _GENERATE_SPEC_NODE_TYPES_LITERAL,
+        )
 
     def build_user_prompt(
         self,
@@ -507,7 +514,8 @@ wf = workflow("name", description="...", tags=[...])
 | `wf.validator(id, rules=[...], on_invalid=...)` | Data validation with rule routing. Output: `valid`. |
 | `wf.reduce(id, reducer=...)` | Fan-in aggregation. |
 | `wf.router(id, route_descriptions={...})` | LLM-powered routing. |
-| `wf.human_in_the_loop(id, prompt=...)` | Human approval/input. |
+| `wf.human(id, prompt=..., render_mode=..., output_schema=...)` | Canonical human interaction node. Legacy alias: `wf.human_in_the_loop(...)`. |
+| `wf.vote(id, prompt=..., candidates=[...], strategy=...)` | Ensemble / winner-selection node. Alias: `wf.ensemble(...)`. |
 
 ### Sub-graph context managers
 
@@ -540,6 +548,13 @@ with wf.parallel_subagents("id", parallelism=2,
 with wf.orchestrator("id", completion_condition="all_done") as orch:
     with orch.team("t1") as sub:
         sub.llm("s1", prompt="...")
+
+# Agent Team — peer conversation with named member sub-graphs
+with wf.team("id", moderator_prompt="Coordinate the specialists") as team:
+    with team.agent("researcher") as sub:
+        sub.llm("s1", prompt="...")
+    with team.agent("writer") as sub:
+        sub.llm("s2", prompt="...")
 ```
 
 ### Convenience methods (prefer these for common patterns)
@@ -1605,7 +1620,17 @@ class WorkflowPlanner:
         def _slug(text: str) -> str:
             return re.sub(r"[^a-z0-9_]+", "_", text.lower()).strip("_") or "node"
 
+        def _default_source_port(node_type: str) -> str | None:
+            if node_type == "llm_operator":
+                return "text"
+            if node_type in {"tool_operator", "code_operator"}:
+                return "result"
+            if node_type == "gate":
+                return None
+            return "output"
+
         node_id_by_name: dict[str, str] = {}
+        node_type_by_id: dict[str, str] = {}
         compiled_nodes: list[dict[str, Any]] = []
         for idx, node in enumerate(raw_nodes):
             if not isinstance(node, dict):
@@ -1627,7 +1652,7 @@ class WorkflowPlanner:
                 })
             elif node_type == "tool_operator":
                 base.update({
-                    "tool_id": config.get("tool_id", "run_python"),
+                    "tool_id": config.get("tool_id", config.get("tool_name", "run_python")),
                     "tool_config": config.get("tool_config", {}),
                 })
             elif node_type == "code_operator":
@@ -1643,10 +1668,15 @@ class WorkflowPlanner:
                     "max_iterations": config.get("max_iterations", 10),
                 })
             else:
-                raise ValueError(f"Unsupported generated node_type: {node_type}")
+                raise ValueError(
+                    "Unsupported generated node_type: "
+                    f"{node_type}. Supported generated types: "
+                    + ", ".join(GENERATE_SPEC_NODE_TYPES)
+                )
 
             compiled_nodes.append(base)
             node_id_by_name[name] = node_id
+            node_type_by_id[node_id] = node_type
 
         compiled_edges: list[dict[str, Any]] = []
         for idx, edge in enumerate(raw_edges):
@@ -1658,11 +1688,20 @@ class WorkflowPlanner:
             target_id = node_id_by_name.get(target, target)
             if not source_id or not target_id:
                 continue
+            source_port = edge.get("source_port")
+            if not source_port:
+                source_node_type = node_type_by_id.get(source_id, "")
+                source_port = _default_source_port(source_node_type)
+                if source_port is None:
+                    raise ValueError(
+                        f"Edges from generated node type '{source_node_type}' "
+                        "must specify source_port explicitly"
+                    )
             compiled_edges.append({
                 "id": edge.get("id", f"e{idx+1}"),
                 "edge_type": edge.get("edge_type", "data"),
                 "source_node_id": source_id,
-                "source_port": edge.get("source_port", "output"),
+                "source_port": source_port,
                 "target_node_id": target_id,
                 "target_port": edge.get("target_port", "input"),
             })

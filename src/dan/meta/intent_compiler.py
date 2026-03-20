@@ -72,7 +72,7 @@ _TOOL_KEYWORD_MAP: dict[str, str] = {
 }
 
 
-def _infer_tool_id(name: str, description: str) -> str:
+def _infer_tool_id(name: str, description: str) -> str | None:
     """Infer a tool_id from stage name/description using conservative keyword matching."""
     text = re.sub(r"[_\-]+", " ", f"{name} {description}".lower())
     for keyword, tool_id in sorted(
@@ -84,10 +84,10 @@ def _infer_tool_id(name: str, description: str) -> str:
         if re.search(pattern, text):
             return tool_id
     logger.warning(
-        "No tool keyword match for stage '%s'; falling back to llm_operator",
+        "No tool keyword match for stage '%s'; falling back to llm stage",
         name or description,
     )
-    return "llm_operator"
+    return None
 
 
 def _mask_string_literals(text: str) -> tuple[str, list[str]]:
@@ -491,6 +491,10 @@ class IntentCompiler:
             stage.name,
             stage.description or "",
         )
+        if not tool_id:
+            prompt = _escape(stage.description or f"Process: {stage.name}")
+            lines = [f'{var} = wf.llm("{stage.name}", prompt="{prompt}")']
+            return var, var, lines
         lines = [f'{var} = wf.tool("{stage.name}", tool_id="{_escape(tool_id)}")']
         return var, var, lines
 
@@ -680,6 +684,10 @@ class IntentCompiler:
             stage.name,
             stage.description or "",
         )
+        if not tool_id:
+            prompt = stage.description or f"Process: {stage.name}"
+            ref = wf.llm(stage.name, prompt=prompt)
+            return ref, ref
         ref = wf.tool(stage.name, tool_id=tool_id)
         return ref, ref
 
