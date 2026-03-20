@@ -87,9 +87,15 @@ def estimate_tokens(text: str, model: str = "") -> int:
     if _tiktoken_available:
         try:
             enc = tiktoken.encoding_for_model(model)
+            return len(enc.encode(text))
         except KeyError:
-            enc = tiktoken.get_encoding("cl100k_base")
-        return len(enc.encode(text))
+            try:
+                enc = tiktoken.get_encoding("cl100k_base")
+                return len(enc.encode(text))
+            except Exception:
+                pass
+        except Exception:
+            pass
     return len(text) // 4
 
 
