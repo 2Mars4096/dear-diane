@@ -1,0 +1,18 @@
+{
+  "intent": "Write a research paper with literature review, methodology, and results sections",
+  "family": "paper_writing",
+  "variant": "standard",
+  "expected": {
+    "min_nodes": 6,
+    "node_types": ["llm_operator", "gate"],
+    "topology": {
+      "has_loops": true,
+      "has_fan_out": false,
+      "has_tools": false,
+      "has_human_in_loop": false,
+      "has_rag": false
+    },
+    "required_ports": ["text", "feedback"]
+  },
+  "notes": "Multi-section paper with a review loop to iteratively refine each section until quality threshold met."
+}

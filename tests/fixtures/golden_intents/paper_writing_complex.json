@@ -1,0 +1,18 @@
+{
+  "intent": "Write an INFORMS-style paper on supply chain optimization with parallel section drafting, multi-reviewer loop, and LaTeX compilation",
+  "family": "paper_writing",
+  "variant": "complex",
+  "expected": {
+    "min_nodes": 10,
+    "node_types": ["llm_operator", "gate", "for_each", "tool_operator", "code_operator"],
+    "topology": {
+      "has_loops": true,
+      "has_fan_out": true,
+      "has_tools": true,
+      "has_human_in_loop": false,
+      "has_rag": false
+    },
+    "required_ports": ["text", "feedback", "latex_source", "pdf"]
+  },
+  "notes": "Full academic workflow: parallel section drafting via ForEach, multi-reviewer while-loop, LaTeX compile tool, PDF packaging."
+}

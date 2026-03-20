@@ -1,0 +1,13 @@
+{
+  "codegen": {
+    "total": 18,
+    "min_pass": 15,
+    "max_fail": 3
+  },
+  "intent": {
+    "total": 18,
+    "min_pass": 12,
+    "max_fail": 6,
+    "min_covered": 10
+  }
+}

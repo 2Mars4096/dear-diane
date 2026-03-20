@@ -1,0 +1,18 @@
+{
+  "intent": "Analyze customer reviews: categorize each review, extract sentiment, and aggregate into a summary report",
+  "family": "fan_out_fan_in",
+  "variant": "standard",
+  "expected": {
+    "min_nodes": 5,
+    "node_types": ["llm_operator", "for_each", "reduce", "code_operator"],
+    "topology": {
+      "has_loops": false,
+      "has_fan_out": true,
+      "has_tools": false,
+      "has_human_in_loop": false,
+      "has_rag": false
+    },
+    "required_ports": ["text", "category", "sentiment", "results"]
+  },
+  "notes": "Fan-out per review: categorize + extract sentiment in parallel branches, reduce aggregates statistics, LLM synthesizes summary report."
+}

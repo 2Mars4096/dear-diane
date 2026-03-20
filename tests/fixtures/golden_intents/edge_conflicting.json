@@ -1,0 +1,18 @@
+{
+  "intent": "Build a real-time streaming pipeline that also does batch processing",
+  "family": "multi_step_analysis",
+  "variant": "standard",
+  "expected": {
+    "min_nodes": 4,
+    "node_types": ["llm_operator", "code_operator"],
+    "topology": {
+      "has_loops": false,
+      "has_fan_out": true,
+      "has_tools": false,
+      "has_human_in_loop": false,
+      "has_rag": false
+    }
+  },
+  "edge_case": true,
+  "notes": "Conflicting requirements: real-time streaming and batch processing are different paradigms. Tests whether the generator reconciles or flags the contradiction."
+}

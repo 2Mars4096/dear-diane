@@ -1,0 +1,18 @@
+{
+  "intent": "Write a short blog post about climate change",
+  "family": "paper_writing",
+  "variant": "simple",
+  "expected": {
+    "min_nodes": 3,
+    "node_types": ["llm_operator"],
+    "topology": {
+      "has_loops": false,
+      "has_fan_out": false,
+      "has_tools": false,
+      "has_human_in_loop": false,
+      "has_rag": false
+    },
+    "required_ports": ["text"]
+  },
+  "notes": "Minimal linear chain: outline -> draft -> review. No iteration needed for a short blog post."
+}

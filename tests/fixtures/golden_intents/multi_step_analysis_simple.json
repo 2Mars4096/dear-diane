@@ -1,0 +1,18 @@
+{
+  "intent": "Analyze a dataset and produce a summary",
+  "family": "multi_step_analysis",
+  "variant": "simple",
+  "expected": {
+    "min_nodes": 3,
+    "node_types": ["llm_operator", "code_operator"],
+    "topology": {
+      "has_loops": false,
+      "has_fan_out": false,
+      "has_tools": false,
+      "has_human_in_loop": false,
+      "has_rag": false
+    },
+    "required_ports": ["data", "text"]
+  },
+  "notes": "Linear chain: data ingestion -> analysis computation -> natural language summary."
+}

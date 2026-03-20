@@ -1,0 +1,18 @@
+{
+  "intent": "Build a workflow",
+  "family": "multi_step_analysis",
+  "variant": "simple",
+  "expected": {
+    "min_nodes": 1,
+    "node_types": ["llm_operator"],
+    "topology": {
+      "has_loops": false,
+      "has_fan_out": false,
+      "has_tools": false,
+      "has_human_in_loop": false,
+      "has_rag": false
+    }
+  },
+  "edge_case": true,
+  "notes": "Vague intent with no specifics. Tests graceful handling of underspecified requests — generator should either ask for clarification or produce a minimal viable workflow."
+}

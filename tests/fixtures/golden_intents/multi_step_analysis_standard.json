@@ -1,0 +1,18 @@
+{
+  "intent": "Load financial data, compute key metrics, run statistical tests, and generate a report with charts",
+  "family": "multi_step_analysis",
+  "variant": "standard",
+  "expected": {
+    "min_nodes": 5,
+    "node_types": ["llm_operator", "code_operator", "tool_operator"],
+    "topology": {
+      "has_loops": false,
+      "has_fan_out": false,
+      "has_tools": true,
+      "has_human_in_loop": false,
+      "has_rag": false
+    },
+    "required_ports": ["data", "metrics", "text", "charts"]
+  },
+  "notes": "Multi-stage financial analysis: data load, metric computation, statistical testing, chart generation, report assembly."
+}

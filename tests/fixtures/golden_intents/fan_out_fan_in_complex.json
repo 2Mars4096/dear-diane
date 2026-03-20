@@ -1,0 +1,18 @@
+{
+  "intent": "Process a batch of research papers: extract key findings from each, cross-reference between papers, identify contradictions, and synthesize a literature review",
+  "family": "fan_out_fan_in",
+  "variant": "complex",
+  "expected": {
+    "min_nodes": 8,
+    "node_types": ["llm_operator", "for_each", "reduce", "rag_operator", "gate"],
+    "topology": {
+      "has_loops": true,
+      "has_fan_out": true,
+      "has_tools": false,
+      "has_human_in_loop": false,
+      "has_rag": true
+    },
+    "required_ports": ["text", "findings", "contradictions", "results"]
+  },
+  "notes": "Per-paper extraction via ForEach, RAG for cross-referencing findings, contradiction detection with iterative resolution loop, final literature review synthesis."
+}

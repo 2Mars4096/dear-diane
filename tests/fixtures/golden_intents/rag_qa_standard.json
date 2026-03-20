@@ -1,0 +1,18 @@
+{
+  "intent": "Build a Q&A system that searches documents, retrieves relevant passages, and synthesizes an answer with citations",
+  "family": "rag_qa",
+  "variant": "standard",
+  "expected": {
+    "min_nodes": 4,
+    "node_types": ["rag_operator", "llm_operator", "tool_operator"],
+    "topology": {
+      "has_loops": false,
+      "has_fan_out": false,
+      "has_tools": true,
+      "has_human_in_loop": false,
+      "has_rag": true
+    },
+    "required_ports": ["query", "chunks", "text", "citations"]
+  },
+  "notes": "RAG with search tool for document retrieval, passage extraction, answer synthesis with inline citations."
+}

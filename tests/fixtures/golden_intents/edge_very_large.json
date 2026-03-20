@@ -1,0 +1,18 @@
+{
+  "intent": "Create a 20-department research organization with each department having its own analysis pipeline, review loop, and reporting chain",
+  "family": "fan_out_fan_in",
+  "variant": "complex",
+  "expected": {
+    "min_nodes": 30,
+    "node_types": ["llm_operator", "for_each", "gate", "reduce", "composite"],
+    "topology": {
+      "has_loops": true,
+      "has_fan_out": true,
+      "has_tools": true,
+      "has_human_in_loop": false,
+      "has_rag": false
+    }
+  },
+  "edge_case": true,
+  "notes": "Extremely large workflow specification. Tests generator behavior at scale — may require hierarchical decomposition into composite nodes rather than a flat graph."
+}
