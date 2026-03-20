@@ -87,7 +87,7 @@ _NODE_SLOT_BYPASS_TYPES = frozenset({
     "router",
     "vote",
     "reflection",
-    "rag",
+    "rag_operator",
 })
 
 _VALIDATION_WARNING_PATTERNS = (

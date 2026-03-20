@@ -19,17 +19,21 @@ from typing import Any
 from dan.builder.refs import MARKER_PATTERN, PortRef, _sanitize_alias
 from dan.models.context import ArtifactRef, ContextMode, SharedContextDeclaration
 from dan.models.control_flow import (
+    AgentTeamNode,
     CompositeNode,
     ForEachNode,
     GateNode,
     GoalLoopNode,
+    HumanNode,
     HumanInTheLoopNode,
     IfElseNode,
+    InputNode,
     OrchestratorNode,
     ParallelSubagentsNode,
     ReduceNode,
     RouterNode,
     ValidatorNode,
+    VoteNode,
     WhileLoopNode,
 )
 from dan.models.edges import ContextEdge, ControlEdge, DataEdge
@@ -61,12 +65,16 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "for_each": "results",
     "parallel_subagents": "results",
     "orchestrator": "results",
+    "agent_team": "result",
     "reduce": "result",
     "router": "route",
     "human_in_the_loop": "response",
     "validator": "valid",
     "reflection": "principles",
     "composite": "result",
+    "input": "input",
+    "human": "response",
+    "vote": "winner",
 }
 
 DEFAULT_INPUT_PORT = "input"
@@ -368,6 +376,8 @@ def _build_node(pn: _PendingNode) -> NodeBase:
         return ReduceNode(**common, **kwargs)
     elif pn.node_type == "router":
         return RouterNode(**common, **kwargs)
+    elif pn.node_type == "human":
+        return HumanNode(**common, **kwargs)
     elif pn.node_type == "human_in_the_loop":
         return HumanInTheLoopNode(**common, **kwargs)
     elif pn.node_type == "rag_operator":
@@ -376,14 +386,20 @@ def _build_node(pn: _PendingNode) -> NodeBase:
         return ValidatorNode(**common, **kwargs)
     elif pn.node_type == "reflection":
         return ReflectionNode(**common, **kwargs)
+    elif pn.node_type == "vote":
+        return VoteNode(**common, **kwargs)
     elif pn.node_type == "composite":
         return CompositeNode(**common, **kwargs)
     elif pn.node_type == "parallel_subagents":
         return ParallelSubagentsNode(**common, **kwargs)
     elif pn.node_type == "orchestrator":
         return OrchestratorNode(**common, **kwargs)
+    elif pn.node_type == "agent_team":
+        return AgentTeamNode(**common, **kwargs)
     elif pn.node_type == "goal_loop":
         return GoalLoopNode(**common, **kwargs)
+    elif pn.node_type == "input":
+        return InputNode(**common, **kwargs)
     else:
         raise BuildError([f"Unknown node_type: {pn.node_type!r}"])
 

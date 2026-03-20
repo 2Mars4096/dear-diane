@@ -18,9 +18,11 @@ from typing import Any
 
 from dan.builder.compiler import default_input_port, default_output_port
 from dan.models.control_flow import (
+    AgentTeamNode,
     CompositeNode,
     ForEachNode,
     GateNode,
+    GoalLoopNode,
     OrchestratorNode,
     ParallelSubagentsNode,
     ValidatorNode,
@@ -123,7 +125,7 @@ class _Decompiler:
             node = self.node_map[node_id]
             var = self.var_names[node_id]
 
-            if isinstance(node, (WhileLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode)):
+            if isinstance(node, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode)):
                 body_var = f"_{var}_body"
                 node_lines = self._emit_subgraph_node(node, body_var)
                 lines.extend(node_lines)
@@ -138,7 +140,7 @@ class _Decompiler:
         # Emit >> chains (only for non-subgraph nodes)
         subgraph_node_ids = {
             n.id for n in self.graph.nodes
-            if isinstance(n, (WhileLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode))
+            if isinstance(n, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode))
         }
         emitted_chain_pairs: set[tuple[str, str]] = set()
         for chain in chains:
@@ -262,6 +264,31 @@ class _Decompiler:
             method = "wf.router"
             kwargs.append(f"model={node.model!r}")
             kwargs.append(f"route_descriptions={node.route_descriptions!r}")
+        elif nt == "input":
+            method = "wf.input_node"
+            if getattr(node, "variables", None):
+                variables = [v.model_dump(mode="json", exclude_none=True) for v in node.variables]
+                kwargs.append(f"variables={variables!r}")
+        elif nt == "human":
+            method = "wf.human"
+            if node.prompt:
+                kwargs.append(f"prompt={node.prompt!r}")
+            if node.timeout_seconds is not None:
+                kwargs.append(f"timeout_seconds={node.timeout_seconds!r}")
+            if node.default_action is not None:
+                kwargs.append(f"default_action={node.default_action!r}")
+            if getattr(node, "input_schema", None) is not None:
+                kwargs.append(f"input_schema={node.input_schema!r}")
+            if getattr(node, "output_schema", None) is not None:
+                kwargs.append(f"output_schema={node.output_schema!r}")
+            if getattr(node, "render_mode", "text") != "text":
+                kwargs.append(f"render_mode={node.render_mode!r}")
+            if getattr(node, "options", None):
+                kwargs.append(f"options={node.options!r}")
+            if getattr(node, "instructions", ""):
+                kwargs.append(f"instructions={node.instructions!r}")
+            if getattr(node, "render_target", "dialog") != "dialog":
+                kwargs.append(f"render_target={node.render_target!r}")
         elif nt == "human_in_the_loop":
             method = "wf.human_in_the_loop"
             if node.prompt:
@@ -314,6 +341,26 @@ class _Decompiler:
                 kwargs.append(f"min_confidence={node.min_confidence!r}")
             if node.dedup_strategy != "embedding_similarity":
                 kwargs.append(f"dedup_strategy={node.dedup_strategy!r}")
+        elif nt == "vote":
+            method = "wf.vote"
+            kwargs.append(f"prompt={node.prompt_template!r}")
+            kwargs.append(f"candidates={node.candidates!r}")
+            if node.num_votes != 3:
+                kwargs.append(f"num_votes={node.num_votes!r}")
+            if node.vote_strategy != "majority":
+                kwargs.append(f"strategy={node.vote_strategy!r}")
+            if node.system_prompt:
+                kwargs.append(f"system_prompt={node.system_prompt!r}")
+            if node.temperature != 0.7:
+                kwargs.append(f"temperature={node.temperature!r}")
+            if node.output_json_schema is not None:
+                kwargs.append(f"output_schema={node.output_json_schema!r}")
+            if getattr(node, "vote_config", None) is not None:
+                kwargs.append(f"vote_config={node.vote_config.model_dump(mode='json', exclude_none=True)!r}")
+            if getattr(node, "parallelism", 3) != 3:
+                kwargs.append(f"parallelism={node.parallelism!r}")
+            if getattr(node, "timeout_seconds", None) is not None:
+                kwargs.append(f"timeout_seconds={node.timeout_seconds!r}")
         else:
             method = f"wf.llm"  # fallback
 
@@ -378,6 +425,46 @@ class _Decompiler:
                     f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
                 )
             lines.append(f"{pad}with wf.while_loop({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
+
+        elif nt == "goal_loop":
+            kwargs_parts = [
+                f"goal_text={node.goal_text!r}",
+                f"metric_name={node.metric_name!r}",
+                f"target_value={node.target_value!r}",
+                f"comparison={node.comparison!r}",
+                f"max_iterations={node.max_iterations!r}",
+                f"evaluator={node.evaluator!r}",
+            ]
+            if node.name and node.name != node.id:
+                kwargs_parts.insert(0, f"name={node.name!r}")
+            if node.description:
+                kwargs_parts.append(f"description={node.description!r}")
+            if node.success_criteria is not None:
+                kwargs_parts.append(f"success_criteria={node.success_criteria!r}")
+            if node.compaction_rule is not None:
+                kwargs_parts.append(
+                    f"compaction={node.compaction_rule.model_dump(mode='json', exclude_none=True)!r}"
+                )
+            fp = node.failure_policy.model_dump(mode="json", exclude_none=True)
+            if fp:
+                kwargs_parts.append(f"failure_policy={fp!r}")
+            if node.read_set:
+                kwargs_parts.append(
+                    f"read_set={[self._serialize_context_decl(d) for d in node.read_set]!r}"
+                )
+            if node.write_set:
+                kwargs_parts.append(
+                    f"write_set={[self._serialize_context_decl(d) for d in node.write_set]!r}"
+                )
+            if node.input_ports:
+                kwargs_parts.append(
+                    f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+                )
+            if node.output_ports:
+                kwargs_parts.append(
+                    f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+                )
+            lines.append(f"{pad}with wf.goal_loop({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
 
         elif nt == "for_each":
             kwargs_parts = [
@@ -485,14 +572,57 @@ class _Decompiler:
             kw_str = f", {', '.join(kwargs_parts)}" if kwargs_parts else ""
             lines.append(f"{pad}with wf.orchestrator({node.id!r}{kw_str}) as {body_var}:")
 
+        elif nt == "agent_team":
+            kwargs_parts = []
+            if node.name and node.name != node.id:
+                kwargs_parts.append(f"name={node.name!r}")
+            if node.moderator_prompt:
+                kwargs_parts.append(f"moderator_prompt={node.moderator_prompt!r}")
+            if node.moderator_model:
+                kwargs_parts.append(f"moderator_model={node.moderator_model!r}")
+            if node.turn_strategy != "round_robin":
+                kwargs_parts.append(f"turn_strategy={node.turn_strategy!r}")
+            if node.max_turns != 20:
+                kwargs_parts.append(f"max_turns={node.max_turns!r}")
+            if node.completion_condition != "max_turns":
+                kwargs_parts.append(f"completion_condition={node.completion_condition!r}")
+            if node.timeout_seconds is not None:
+                kwargs_parts.append(f"timeout_seconds={node.timeout_seconds!r}")
+            if node.shared_context_keys:
+                kwargs_parts.append(f"shared_context_keys={node.shared_context_keys!r}")
+            if node.handoff_policy != "explicit":
+                kwargs_parts.append(f"handoff_policy={node.handoff_policy!r}")
+            if node.input_mappings:
+                kwargs_parts.append(f"input_mappings={node.input_mappings!r}")
+            if node.agent_inputs:
+                kwargs_parts.append(f"agent_inputs={node.agent_inputs!r}")
+            fp = node.failure_policy.model_dump(mode="json", exclude_none=True)
+            if fp:
+                kwargs_parts.append(f"failure_policy={fp!r}")
+            if node.description:
+                kwargs_parts.append(f"description={node.description!r}")
+            if node.input_ports:
+                kwargs_parts.append(
+                    f"input_ports={[self._serialize_input_port(p) for p in node.input_ports]!r}"
+                )
+            if node.output_ports:
+                kwargs_parts.append(
+                    f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
+                )
+            kw_str = f", {', '.join(kwargs_parts)}" if kwargs_parts else ""
+            lines.append(f"{pad}with wf.team({node.id!r}{kw_str}) as {body_var}:")
+
         # Resolve the body sub-graph from the root graph (handles nested graphs)
         body_graph_key = getattr(node, "body_graph", None)
         branch_graphs = getattr(node, "branch_graphs", None)
         teams = getattr(node, "teams", None)
+        agents = getattr(node, "agents", None)
         if nt == "parallel_subagents" and branch_graphs:
             sub_graph = None  # Handled below per-branch
         elif nt == "orchestrator" and teams:
             sub_graph = None  # Handled below per-team
+        elif nt == "agent_team" and agents:
+            sub_graph = None  # Handled below per-agent
         else:
             sub_graph = self._resolve_sub_graph(body_graph_key) if body_graph_key else None
 
@@ -530,6 +660,21 @@ class _Decompiler:
                     lines.append(f"{inner_pad}    pass")
             return lines
 
+        if nt == "agent_team" and agents:
+            for agent_name, sub_key in agents.items():
+                agent_sub = self._resolve_sub_graph(sub_key)
+                agent_var = f"_{body_var}_{agent_name}"
+                if agent_sub and agent_sub.nodes:
+                    lines.append(f"{inner_pad}with {body_var}.agent({agent_name!r}) as {agent_var}:")
+                    agent_lines = self._emit_parallel_branch_content(
+                        agent_sub, agent_var, indent + 2
+                    )
+                    lines.extend(agent_lines)
+                else:
+                    lines.append(f"{inner_pad}with {body_var}.agent({agent_name!r}) as {agent_var}:")
+                    lines.append(f"{inner_pad}    pass")
+            return lines
+
         if sub_graph and sub_graph.nodes:
             sub_ordered = self._topological_sort_graph(sub_graph)
             emitted_in_chain: set[str] = set()
@@ -540,7 +685,7 @@ class _Decompiler:
                 if sub_node is None:
                     continue
                 sub_var = _to_var_name(sub_nid)
-                if isinstance(sub_node, (WhileLoopNode, ForEachNode, CompositeNode)):
+                if isinstance(sub_node, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, AgentTeamNode)):
                     nested_body_var = f"_{sub_var}_body"
                     nested_lines = self._emit_subgraph_node(sub_node, nested_body_var, indent=indent + 1)
                     lines.extend(nested_lines)
@@ -554,7 +699,7 @@ class _Decompiler:
             sub_node_map = {n.id: n for n in sub_graph.nodes}
             subgraph_node_ids = {
                 n.id for n in sub_graph.nodes
-                if isinstance(n, (WhileLoopNode, ForEachNode, CompositeNode))
+                if isinstance(n, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, AgentTeamNode))
             }
             for chain in sub_chains:
                 filtered = [nid for nid in chain if nid not in subgraph_node_ids]
@@ -611,7 +756,7 @@ class _Decompiler:
             sub_var = _to_var_name(sub_nid)
             if isinstance(
                 sub_node,
-                (WhileLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode),
+                (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode),
             ):
                 nested_body_var = f"_{sub_var}_body"
                 nested_lines = self._emit_subgraph_node(sub_node, nested_body_var, indent=indent)
@@ -629,7 +774,7 @@ class _Decompiler:
         sub_node_map = {n.id: n for n in sub_graph.nodes}
         subgraph_node_ids = {
             n.id for n in sub_graph.nodes
-            if isinstance(n, (WhileLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode))
+            if isinstance(n, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode))
         }
         for chain in sub_chains:
             filtered = [nid for nid in chain if nid not in subgraph_node_ids]

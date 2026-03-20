@@ -454,6 +454,145 @@ class WorkflowBuilder:
         self._add_node(pn)
         return NodeRef(node_id, "router", self)
 
+    def input_node(
+        self,
+        node_id: str,
+        *,
+        variables: list[dict[str, Any]] | None = None,
+        name: str | None = None,
+        description: str = "",
+    ) -> NodeRef:
+        """Add an explicit workflow input node."""
+        from dan.models.control_flow import InputVariable
+        from dan.models.ports import OutputPort
+
+        variable_models = [InputVariable(**v) for v in (variables or [])]
+        output_ports: list[OutputPort] = []
+        names = {var.name for var in variable_models}
+        if "input" not in names:
+            output_ports.append(OutputPort(name="input"))
+        for var in variable_models:
+            output_ports.append(OutputPort(name=var.name))
+
+        pn = _PendingNode(
+            id=node_id,
+            node_type="input",
+            kwargs={
+                "name": name or node_id,
+                "description": description,
+                "variables": variable_models,
+            },
+            explicit_output_ports=output_ports,
+        )
+        self._add_node(pn)
+        return NodeRef(node_id, "input", self)
+
+    def human(
+        self,
+        node_id: str,
+        *,
+        prompt: str = "",
+        timeout_seconds: float | None = None,
+        default_action: str | None = None,
+        input_schema: dict[str, Any] | None = None,
+        output_schema: dict[str, Any] | None = None,
+        render_mode: str = "text",
+        options: list[str] | None = None,
+        instructions: str = "",
+        render_target: str = "dialog",
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Add a canonical human interaction node."""
+        from dan.models.ports import InputPort, OutputPort
+
+        kwargs: dict[str, Any] = {
+            "name": name or node_id,
+            "description": description,
+            "prompt": prompt,
+            "render_mode": render_mode,
+            "instructions": instructions,
+            "render_target": render_target,
+        }
+        if timeout_seconds is not None:
+            kwargs["timeout_seconds"] = timeout_seconds
+        if default_action is not None:
+            kwargs["default_action"] = default_action
+        if input_schema is not None:
+            kwargs["input_schema"] = input_schema
+        if output_schema is not None:
+            kwargs["output_schema"] = output_schema
+        if options is not None:
+            kwargs["options"] = options
+
+        pn = _PendingNode(
+            id=node_id,
+            node_type="human",
+            kwargs=kwargs,
+            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
+            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
+        )
+        self._add_node(pn)
+        return NodeRef(node_id, "human", self)
+
+    def approval(
+        self,
+        node_id: str,
+        *,
+        prompt: str = "Review and approve:",
+        timeout_seconds: float | None = None,
+        default_action: str | None = None,
+        instructions: str = "",
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Shorthand for a human approval node."""
+        return self.human(
+            node_id,
+            prompt=prompt,
+            timeout_seconds=timeout_seconds,
+            default_action=default_action,
+            instructions=instructions,
+            render_mode="approval",
+            name=name,
+            description=description,
+            input_ports=input_ports,
+            output_ports=output_ports,
+        )
+
+    def form(
+        self,
+        node_id: str,
+        *,
+        schema: dict[str, Any],
+        prompt: str = "",
+        timeout_seconds: float | None = None,
+        default_action: str | None = None,
+        instructions: str = "",
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Shorthand for a human form node."""
+        return self.human(
+            node_id,
+            prompt=prompt,
+            timeout_seconds=timeout_seconds,
+            default_action=default_action,
+            output_schema=schema,
+            instructions=instructions,
+            render_mode="form",
+            name=name,
+            description=description,
+            input_ports=input_ports,
+            output_ports=output_ports,
+        )
+
     def human_in_the_loop(
         self,
         node_id: str,
@@ -488,6 +627,94 @@ class WorkflowBuilder:
         )
         self._add_node(pn)
         return NodeRef(node_id, "human_in_the_loop", self)
+
+    def vote(
+        self,
+        node_id: str,
+        *,
+        prompt: str,
+        candidates: list[str],
+        num_votes: int = 3,
+        strategy: str = "majority",
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        output_schema: dict[str, Any] | None = None,
+        vote_config: dict[str, Any] | None = None,
+        parallelism: int = 3,
+        timeout_seconds: float | None = None,
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Add a vote/ensemble node."""
+        from dan.models.ports import InputPort, OutputPort
+
+        kwargs: dict[str, Any] = {
+            "name": name or node_id,
+            "description": description,
+            "candidates": candidates,
+            "num_votes": num_votes,
+            "prompt_template": prompt,
+            "system_prompt": system_prompt,
+            "temperature": temperature,
+            "vote_strategy": strategy,
+            "parallelism": parallelism,
+        }
+        if output_schema is not None:
+            kwargs["output_json_schema"] = output_schema
+        if vote_config is not None:
+            kwargs["vote_config"] = vote_config
+        if timeout_seconds is not None:
+            kwargs["timeout_seconds"] = timeout_seconds
+
+        pn = _PendingNode(
+            id=node_id,
+            node_type="vote",
+            kwargs=kwargs,
+            explicit_input_ports=[InputPort(**p) for p in (input_ports or [])],
+            explicit_output_ports=[OutputPort(**p) for p in (output_ports or [])],
+        )
+        self._add_node(pn)
+        return NodeRef(node_id, "vote", self)
+
+    def ensemble(
+        self,
+        node_id: str,
+        *,
+        prompt: str,
+        models: list[str],
+        strategy: str = "judge",
+        system_prompt: str = "",
+        temperature: float = 0.7,
+        output_schema: dict[str, Any] | None = None,
+        vote_config: dict[str, Any] | None = None,
+        parallelism: int | None = None,
+        timeout_seconds: float | None = None,
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> NodeRef:
+        """Alias for `vote()` using one vote per listed model."""
+        resolved_parallelism = parallelism if parallelism is not None else max(1, len(models))
+        return self.vote(
+            node_id,
+            prompt=prompt,
+            candidates=models,
+            num_votes=max(1, len(models)),
+            strategy=strategy,
+            system_prompt=system_prompt,
+            temperature=temperature,
+            output_schema=output_schema,
+            vote_config=vote_config,
+            parallelism=resolved_parallelism,
+            timeout_seconds=timeout_seconds,
+            name=name,
+            description=description,
+            input_ports=input_ports,
+            output_ports=output_ports,
+        )
 
     # ── Hyperedge creation methods ───────────────────────────────
 
@@ -1140,6 +1367,93 @@ class WorkflowBuilder:
         ctx._finalize()
 
     @contextmanager
+    def team(
+        self,
+        node_id: str,
+        *,
+        moderator_prompt: str = "",
+        moderator_model: str | None = None,
+        turn_strategy: str = "round_robin",
+        max_turns: int = 20,
+        completion_condition: str = "max_turns",
+        timeout_seconds: float | None = None,
+        shared_context_keys: list[str] | None = None,
+        handoff_policy: str = "explicit",
+        input_mappings: dict[str, str] | None = None,
+        agent_inputs: dict[str, dict[str, Any]] | None = None,
+        failure_policy: FailurePolicy | None = None,
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> Generator["_AgentTeamContext", None, None]:
+        """Context manager for a group-chat style agent team."""
+        from dan.models.ports import InputPort, OutputPort
+
+        ctx = _AgentTeamContext(
+            self,
+            node_id,
+            moderator_prompt=moderator_prompt,
+            moderator_model=moderator_model,
+            turn_strategy=turn_strategy,
+            max_turns=max_turns,
+            completion_condition=completion_condition,
+            timeout_seconds=timeout_seconds,
+            shared_context_keys=shared_context_keys or [],
+            handoff_policy=handoff_policy,
+            input_mappings=input_mappings or {},
+            agent_inputs=agent_inputs or {},
+            failure_policy=failure_policy,
+            name=name,
+            description=description,
+            input_ports=input_ports,
+            output_ports=output_ports,
+        )
+        yield ctx
+        ctx._finalize()
+
+    @contextmanager
+    def group_chat(
+        self,
+        node_id: str,
+        *,
+        moderator_prompt: str = "",
+        moderator_model: str | None = None,
+        max_turns: int = 20,
+        completion_condition: str = "max_turns",
+        timeout_seconds: float | None = None,
+        shared_context_keys: list[str] | None = None,
+        handoff_policy: str = "explicit",
+        input_mappings: dict[str, str] | None = None,
+        agent_inputs: dict[str, dict[str, Any]] | None = None,
+        failure_policy: FailurePolicy | None = None,
+        name: str | None = None,
+        description: str = "",
+        input_ports: list[dict[str, Any]] | None = None,
+        output_ports: list[dict[str, Any]] | None = None,
+    ) -> Generator["_AgentTeamContext", None, None]:
+        """Alias for `team()` with `turn_strategy="free_form"`."""
+        with self.team(
+            node_id,
+            moderator_prompt=moderator_prompt,
+            moderator_model=moderator_model,
+            turn_strategy="free_form",
+            max_turns=max_turns,
+            completion_condition=completion_condition,
+            timeout_seconds=timeout_seconds,
+            shared_context_keys=shared_context_keys,
+            handoff_policy=handoff_policy,
+            input_mappings=input_mappings,
+            agent_inputs=agent_inputs,
+            failure_policy=failure_policy,
+            name=name,
+            description=description,
+            input_ports=input_ports,
+            output_ports=output_ports,
+        ) as ctx:
+            yield ctx
+
+    @contextmanager
     def composite(
         self,
         node_id: str,
@@ -1655,6 +1969,104 @@ class _OrchestratorContext:
         pn = _PendingNode(
             id=self._node_id,
             node_type="orchestrator",
+            kwargs=kwargs,
+            explicit_input_ports=[InputPort(**p) for p in (self._input_ports or [])],
+            explicit_output_ports=[OutputPort(**p) for p in (self._output_ports or [])],
+        )
+        self._builder._add_node(pn)
+        for sub_key, sub_graph in self._sub_graphs:
+            self._builder._sub_graphs.append(_PendingSubGraph(
+                parent_node_id=self._node_id,
+                sub_graph_key=sub_key,
+                graph=sub_graph,
+            ))
+
+
+class _AgentTeamContext:
+    """Context object for defining agent-team member sub-graphs."""
+
+    def __init__(
+        self,
+        builder: WorkflowBuilder,
+        node_id: str,
+        *,
+        moderator_prompt: str,
+        moderator_model: str | None,
+        turn_strategy: str,
+        max_turns: int,
+        completion_condition: str,
+        timeout_seconds: float | None,
+        shared_context_keys: list[str],
+        handoff_policy: str,
+        input_mappings: dict[str, str],
+        agent_inputs: dict[str, dict[str, Any]],
+        failure_policy: FailurePolicy | None,
+        name: str | None,
+        description: str,
+        input_ports: list[dict[str, Any]] | None,
+        output_ports: list[dict[str, Any]] | None,
+    ) -> None:
+        self._builder = builder
+        self._node_id = node_id
+        self._moderator_prompt = moderator_prompt
+        self._moderator_model = moderator_model
+        self._turn_strategy = turn_strategy
+        self._max_turns = max_turns
+        self._completion_condition = completion_condition
+        self._timeout_seconds = timeout_seconds
+        self._shared_context_keys = shared_context_keys
+        self._handoff_policy = handoff_policy
+        self._input_mappings = input_mappings
+        self._agent_inputs = agent_inputs
+        self._failure_policy = failure_policy
+        self._name = name
+        self._description = description
+        self._input_ports = input_ports
+        self._output_ports = output_ports
+        self._agents: dict[str, str] = {}
+        self._sub_graphs: list[tuple[str, Graph]] = []
+
+    @contextmanager
+    def agent(self, agent_name: str) -> Generator[WorkflowBuilder, None, None]:
+        """Define an agent sub-graph. Yields a WorkflowBuilder for the agent."""
+        sub_key = f"{self._node_id}_{agent_name}"
+        sub = WorkflowBuilder(sub_key, _parent=self._builder, _scope_type="agent_team_member")
+        sub._entry_input_ref = PortRef("__entry__", "input", sub)
+        yield sub
+        sub_graph = sub._compile_as_subgraph()
+        self._agents[agent_name] = sub_key
+        self._sub_graphs.append((sub_key, sub_graph))
+
+    def _finalize(self) -> None:
+        """Create the agent_team node and register subgraphs."""
+        from dan.models.ports import InputPort, OutputPort
+
+        if len(self._agents) < 2:
+            raise BuildError([f"team({self._node_id!r}) requires at least 2 agents"])
+
+        kwargs: dict[str, Any] = {
+            "name": self._name or self._node_id,
+            "description": self._description,
+            "agents": dict(self._agents),
+            "moderator_prompt": self._moderator_prompt,
+            "turn_strategy": self._turn_strategy,
+            "max_turns": self._max_turns,
+            "completion_condition": self._completion_condition,
+            "shared_context_keys": list(self._shared_context_keys),
+            "handoff_policy": self._handoff_policy,
+            "input_mappings": dict(self._input_mappings),
+            "agent_inputs": dict(self._agent_inputs),
+        }
+        if self._moderator_model is not None:
+            kwargs["moderator_model"] = self._moderator_model
+        if self._timeout_seconds is not None:
+            kwargs["timeout_seconds"] = self._timeout_seconds
+        if self._failure_policy is not None:
+            kwargs["failure_policy"] = self._failure_policy
+
+        pn = _PendingNode(
+            id=self._node_id,
+            node_type="agent_team",
             kwargs=kwargs,
             explicit_input_ports=[InputPort(**p) for p in (self._input_ports or [])],
             explicit_output_ports=[OutputPort(**p) for p in (self._output_ports or [])],
