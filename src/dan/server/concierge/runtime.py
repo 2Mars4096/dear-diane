@@ -744,8 +744,24 @@ class Concierge:
                 return self._complete_event(content="Scheduling is unavailable.")
             from .scheduler import DeliveryTarget, TriggerContext
 
-            resolved_project_id = str(msg.metadata.get("resolved_project_id") or "").strip() or None
-            resolved_task_id = str(msg.metadata.get("resolved_task_id") or "").strip() or None
+            metadata = (
+                msg.metadata
+                if isinstance(getattr(msg, "metadata", None), dict)
+                else {}
+            )
+            resolved_project_id = str(metadata.get("resolved_project_id") or "").strip() or None
+            resolved_task_id = str(metadata.get("resolved_task_id") or "").strip() or None
+            default_workflow_id = str(metadata.get("workflow_id") or "").strip() or None
+            if not default_workflow_id:
+                active_projects = self.project_store.list_active(msg.external_id)
+                if active_projects:
+                    linked = list(active_projects[0].linked_workflow_ids or [])
+                    if linked:
+                        default_workflow_id = str(linked[-1] or "").strip() or None
+            if not default_workflow_id:
+                default_workflow_id = str(
+                    getattr(self.capability_context, "workflow_id", "") or ""
+                ).strip() or None
             trigger_context = TriggerContext(
                 source_surface=msg.surface or "schedule",
                 project_id=resolved_project_id,
@@ -767,6 +783,7 @@ class Concierge:
                     self._schedule_history_store,
                     default_trigger_context=trigger_context,
                     default_delivery_target=delivery_target,
+                    default_workflow_id=default_workflow_id,
                 ),
             )
 

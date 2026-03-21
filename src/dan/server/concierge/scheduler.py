@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import shlex
 import tempfile
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -241,6 +242,9 @@ class ScheduleEntry(BaseModel):
     trigger_context: TriggerContext = Field(default_factory=TriggerContext)
     delivery_target: DeliveryTarget = Field(default_factory=DeliveryTarget)
     on_missed: Literal["run_once", "skip"] = "run_once"
+    workflow_id: str | None = None
+    workflow_inputs: dict[str, Any] = Field(default_factory=dict)
+    workflow_run_policy: dict[str, Any] | None = None
 
 
 class ScheduleRunRecord(BaseModel):
@@ -252,6 +256,16 @@ class ScheduleRunRecord(BaseModel):
     status: Literal["success", "error", "running"] = "running"
     result_summary: str = ""
     error: str | None = None
+
+
+def _dispatch_result_is_inflight_workflow(result: str) -> bool:
+    """Return True when a schedule dispatch only started a workflow run.
+
+    The scheduler should not record these as completed successes because the
+    underlying workflow may still fail or be cancelled later.
+    """
+    text = (result or "").strip()
+    return text.startswith("Started workflow `") and " as run `" in text
 
 
 # ---------------------------------------------------------------------------
@@ -583,6 +597,7 @@ class TaskScheduler:
         The schedule store to poll.
     dispatch_fn : Callable
         ``async dispatch_fn(action, trigger_context, delivery_target)``
+        or ``async dispatch_fn(action, trigger_context, delivery_target, *, entry=...)``
         — dispatches the scheduled action through the concierge pipeline.
     history_store : ScheduleHistoryStore | None
         Optional history store for recording run results.
@@ -628,6 +643,28 @@ class TaskScheduler:
     @property
     def owner_id(self) -> str:
         return self._owner_id
+
+    async def _dispatch_entry(
+        self,
+        entry: ScheduleEntry,
+        trigger_context: TriggerContext,
+        delivery_target: DeliveryTarget,
+    ) -> str:
+        try:
+            return await self._dispatch_fn(
+                entry.action,
+                trigger_context,
+                delivery_target,
+                entry=entry,
+            )
+        except TypeError as exc:
+            if "unexpected keyword argument 'entry'" not in str(exc):
+                raise
+        return await self._dispatch_fn(
+            entry.action,
+            trigger_context,
+            delivery_target,
+        )
 
     def _holds_lease(self) -> bool:
         """Return True if this scheduler holds the lease (or no lease is required)."""
@@ -729,13 +766,17 @@ class TaskScheduler:
 
         try:
             dispatch_context = entry.trigger_context
-            result = await self._dispatch_fn(
-                entry.action,
+            result = await self._dispatch_entry(
+                entry,
                 dispatch_context,
                 entry.delivery_target,
             )
-            record.status = "success"
             record.result_summary = str(result)[:500] if result else ""
+            record.status = (
+                "running"
+                if _dispatch_result_is_inflight_workflow(record.result_summary)
+                else "success"
+            )
             await deliver_result(
                 entry, record.result_summary, event_bus=self._event_bus
             )
@@ -749,7 +790,8 @@ class TaskScheduler:
                 event_bus=self._event_bus,
             )
         finally:
-            record.completed_at = datetime.now(timezone.utc)
+            if record.status != "running":
+                record.completed_at = datetime.now(timezone.utc)
             if self._history:
                 self._history.add_record(record)
 
@@ -1094,6 +1136,7 @@ def handle_schedule_command(
     *,
     default_trigger_context: TriggerContext | None = None,
     default_delivery_target: DeliveryTarget | None = None,
+    default_workflow_id: str | None = None,
 ) -> str:
     """Dispatch ``/schedule`` subcommands.
 
@@ -1113,6 +1156,14 @@ def handle_schedule_command(
             store,
             trigger_context=default_trigger_context,
             delivery_target=default_delivery_target,
+        )
+    if sub == "workflow":
+        return _cmd_workflow(
+            rest,
+            store,
+            trigger_context=default_trigger_context,
+            delivery_target=default_delivery_target,
+            default_workflow_id=default_workflow_id,
         )
     if sub == "list":
         return _cmd_list(store)
@@ -1136,8 +1187,9 @@ def handle_schedule_command(
         )
 
     return (
-        "Usage: /schedule <add|list|remove|pause|resume|history> [args]\n"
+        "Usage: /schedule <add|workflow|list|remove|pause|resume|history> [args]\n"
         "  add \"<action>\" <trigger>\n"
+        "  workflow <workflow_id|current> <trigger> [--input key=value ...] [--profile <name>]\n"
         "  list\n"
         "  remove <id|name>\n"
         "  pause <id|name>\n"
@@ -1187,6 +1239,168 @@ def _cmd_add(
         f"Next run: {next_str}\n"
         f"ID: `{entry.id}`"
     )
+
+
+def _cmd_workflow(
+    text: str,
+    store: ScheduleStore,
+    *,
+    trigger_context: TriggerContext | None = None,
+    delivery_target: DeliveryTarget | None = None,
+    default_workflow_id: str | None = None,
+) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return (
+            "Usage: /schedule workflow <workflow_id|current> <trigger> "
+            "[--input key=value ...] [--profile <name>]"
+        )
+
+    try:
+        tokens = shlex.split(raw)
+    except ValueError as exc:
+        return f"Invalid workflow schedule command: {exc}"
+    if len(tokens) < 2:
+        return (
+            "Usage: /schedule workflow <workflow_id|current> <trigger> "
+            "[--input key=value ...] [--profile <name>]"
+        )
+
+    workflow_ref = tokens[0].strip()
+    trigger_tokens: list[str] = []
+    workflow_inputs: dict[str, Any] = {}
+    workflow_run_policy: dict[str, Any] | None = None
+    index = 1
+    while index < len(tokens):
+        token = tokens[index]
+        if token in {"--input", "--profile"} or token.startswith("--input=") or token.startswith("--profile="):
+            break
+        trigger_tokens.append(token)
+        index += 1
+
+    trigger = " ".join(trigger_tokens).strip()
+    if not trigger:
+        return (
+            "Usage: /schedule workflow <workflow_id|current> <trigger> "
+            "[--input key=value ...] [--profile <name>]"
+        )
+
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--input":
+            index += 1
+            if index >= len(tokens):
+                return "Missing value after `--input`; expected `key=value`."
+            assignment = tokens[index]
+            index += 1
+            error = _apply_workflow_input_assignment(workflow_inputs, assignment)
+            if error:
+                return error
+            continue
+        if token.startswith("--input="):
+            index += 1
+            error = _apply_workflow_input_assignment(
+                workflow_inputs,
+                token.split("=", 1)[1],
+            )
+            if error:
+                return error
+            continue
+        if token == "--profile":
+            index += 1
+            if index >= len(tokens):
+                return "Missing value after `--profile`."
+            profile = tokens[index].strip()
+            index += 1
+        elif token.startswith("--profile="):
+            profile = token.split("=", 1)[1].strip()
+            index += 1
+        else:
+            return f"Unknown workflow schedule option: `{token}`"
+        if not profile:
+            return "Run profile cannot be empty."
+        workflow_run_policy = {"profile": profile}
+
+    workflow_id = workflow_ref
+    if workflow_ref.lower() in {"current", "this"}:
+        workflow_id = str(default_workflow_id or "").strip()
+        if not workflow_id:
+            return "No current workflow is available. Use `/schedule workflow <workflow_id> <trigger>`."
+
+    if not workflow_id:
+        return "Workflow ID is required."
+
+    try:
+        cron_expr = parse_trigger(trigger)
+    except Exception as exc:
+        return f"Invalid trigger: {exc}"
+
+    now = datetime.now(timezone.utc)
+    try:
+        next_run = compute_next_run(cron_expr, now)
+    except Exception:
+        next_run = None
+
+    entry = ScheduleEntry(
+        name=f"Run workflow {workflow_id}",
+        trigger=trigger,
+        action=f"run workflow {workflow_id}",
+        next_run=next_run,
+        trigger_context=trigger_context or TriggerContext(),
+        delivery_target=delivery_target or DeliveryTarget(),
+        workflow_id=workflow_id,
+        workflow_inputs=workflow_inputs,
+        workflow_run_policy=workflow_run_policy,
+    )
+    store.add(entry)
+    next_str = next_run.strftime("%Y-%m-%d %H:%M UTC") if next_run else "unknown"
+    summary = (
+        f"Scheduled workflow: **{workflow_id}**\n"
+        f"Trigger: `{trigger}` → `{cron_expr}`\n"
+        f"Next run: {next_str}\n"
+        f"ID: `{entry.id}`"
+    )
+    if workflow_inputs:
+        summary += f"\nInputs: {', '.join(sorted(workflow_inputs))}"
+    if workflow_run_policy and workflow_run_policy.get("profile"):
+        summary += f"\nRun profile: `{workflow_run_policy['profile']}`"
+    return summary
+
+
+def _coerce_schedule_input_value(raw_value: str) -> Any:
+    value = raw_value.strip()
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+    if lowered == "null":
+        return None
+    if re.fullmatch(r"-?\d+", value):
+        try:
+            return int(value)
+        except ValueError:
+            return value
+    if re.fullmatch(r"-?\d+\.\d+", value):
+        try:
+            return float(value)
+        except ValueError:
+            return value
+    if value[:1] in {"{", "["}:
+        try:
+            return json.loads(value)
+        except Exception:
+            return raw_value
+    return raw_value
+
+
+def _apply_workflow_input_assignment(target: dict[str, Any], assignment: str) -> str | None:
+    key, sep, raw_value = assignment.partition("=")
+    key = key.strip()
+    if not sep or not key:
+        return "Workflow inputs must use `key=value` syntax."
+    target[key] = _coerce_schedule_input_value(raw_value)
+    return None
 
 
 def _cmd_list(store: ScheduleStore) -> str:

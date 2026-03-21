@@ -419,7 +419,8 @@ async def test_tier1_path_emits_phase_events(tmp_path: Path) -> None:
     ]
     assert any("Understanding your request" in content for content in progress_messages)
     assert any("Gathering relevant context" in content for content in progress_messages)
-    assert any("Executing" in content for content in progress_messages)
+    # Execution phase uses triage goal as progress detail (not the bare word "Executing").
+    assert any("Answer the user directly" in content for content in progress_messages)
     assert concierge.chat_manager.call_log == ["What is the status?"]
 
 
@@ -1422,6 +1423,26 @@ def test_build_prompt_includes_aggressive_recent_turn_context() -> None:
     assert "Relevant file content:" in prompt
 
 
+def test_extract_chat_params_includes_stage_overlay_and_audit_metadata() -> None:
+    route = _FakeRoute(target="workflow", action_hints=["workflow_edit"])
+    triage = _FakeTriage(intent="agent", route=route)
+    triage.route_source = "fast_lexical"
+    triage.scenario_id = "workflow_followup_apply"
+    triage.scenario_confidence = 0.96
+    session = _FakeSession(
+        triage=triage,
+        msg=_FakeMsg(metadata={"mode": "build"}),
+    )
+
+    params = _extract_chat_params(session, "system prompt")
+
+    assert "## Concierge stage: workflow_build" in params["extra_system_instructions"]
+    assert params["audit_metadata"]["concierge_stage"] == "workflow_build"
+    assert params["audit_metadata"]["concierge_prompt_overlay"] == "concierge_stage:workflow_build"
+    assert params["audit_metadata"]["route_source"] == "fast_lexical"
+    assert params["audit_metadata"]["scenario_id"] == "workflow_followup_apply"
+
+
 def test_should_decompose_aggressive_single_subtask() -> None:
     executor = MultiStepExecutor(concierge=SimpleNamespace(), dispatcher=None)
     session = SimpleNamespace(
@@ -2126,6 +2147,8 @@ async def test_telemetry_events_include_autonomy_resolution_metadata(
     assert dispatch_complete
     assert session_complete[-1].metadata["autonomy_resolution"]["effective_level"] == "aggressive"
     assert dispatch_complete[-1].metadata["autonomy_resolution"]["effective_level"] == "aggressive"
+    assert session_complete[-1].metadata["concierge_stage"] == "conversation"
+    assert dispatch_complete[-1].metadata["prompt_overlay"] == "concierge_stage:conversation"
 
 
 # ---------------------------------------------------------------------------
@@ -2388,6 +2411,7 @@ def test_extract_chat_params_mutation_tool_true_for_workflow_followup_history() 
     params = _extract_chat_params(session, "system prompt")
     assert params["allow_mutation_tool"] is True
     assert "workflow_run" in params["required_action_hints"]
+    assert "workflow_edit" not in params["required_action_hints"]
     assert "run_control" not in params["required_action_hints"]
 
 
@@ -2442,6 +2466,7 @@ def test_extract_chat_params_promotes_ask_mode_for_workflow_action_followup() ->
     assert params["mode"] == "agent"
     assert params["allow_mutation_tool"] is True
     assert "workflow_run" in params["required_action_hints"]
+    assert "workflow_edit" not in params["required_action_hints"]
     assert "run_control" not in params["required_action_hints"]
 
 

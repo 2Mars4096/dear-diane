@@ -22,6 +22,7 @@ from dan.server.concierge.dispatcher import _is_bypass_command
 from dan.server.concierge.models import SurfaceMessage, TaskTurn
 from dan.server.concierge.project_store import ProjectStore
 from dan.server.concierge.runtime import Concierge
+from dan.server.concierge.scheduler import ScheduleHistoryStore, ScheduleStore
 from dan.server.telemetry import InMemoryTelemetryStore, TelemetryEvent
 
 
@@ -135,6 +136,28 @@ class TestFastCommandSkipsPrep:
 
         assert len(events) == 1
         assert events[0].content == "registry handled: /registry-test hello"
+
+    @pytest.mark.asyncio
+    async def test_schedule_workflow_current_uses_linked_project_workflow_without_metadata(
+        self,
+        tmp_path,
+    ):
+        c = _build_concierge(tmp_path)
+        c._schedule_store = ScheduleStore(path=str(tmp_path / "schedules.json"))
+        c._schedule_history_store = ScheduleHistoryStore(path=str(tmp_path / "schedule-history.json"))
+        project = c.project_store.create_project("demo", "user-a")
+        c.project_store.link_workflow(project.project_id, "wf-current", "user-a")
+
+        events = await _collect(
+            c,
+            _make_msg("/schedule workflow current daily at 9am", external_id="user-a"),
+        )
+
+        assert len(events) == 1
+        assert "Scheduled workflow" in events[0].content
+        entries = c._schedule_store.list_all()
+        assert len(entries) == 1
+        assert entries[0].workflow_id == "wf-current"
 
     @pytest.mark.asyncio
     async def test_progress_override_is_scoped_to_request_surface(self, tmp_path):

@@ -86,6 +86,40 @@ _FURNACE_CONTROL_RE = re.compile(
     re.IGNORECASE,
 )
 _ANAPHORA_RE = re.compile(r"\b(?:it|that|this|those|them)\b", re.IGNORECASE)
+_STAGE_PROMPT_OVERLAYS: dict[str, str] = {
+    "conversation": (
+        "## Concierge stage: conversation\n"
+        "Act as a concise generalist. Answer directly, avoid unnecessary orchestration, "
+        "and do not assume workflow editing unless the request is explicit."
+    ),
+    "conversation_plan": (
+        "## Concierge stage: conversation_plan\n"
+        "Act as an orchestrator. Clarify scope, decompose carefully, state assumptions, "
+        "and decide whether the request should remain conversational or become workflow work."
+    ),
+    "conversation_debug": (
+        "## Concierge stage: conversation_debug\n"
+        "Act as a debugger. Focus on failures, validation gaps, and the shortest reliable path to diagnosis."
+    ),
+    "workflow_build": (
+        "## Concierge stage: workflow_build\n"
+        "Act as a contract-first workflow builder. Keep workflow identity explicit, use canonical node kinds, "
+        "respect exact port and schema compatibility, distinguish proposed vs applied changes, "
+        "and do not claim success before validation."
+    ),
+    "file_review": (
+        "## Concierge stage: file_review\n"
+        "Act as an execution-focused reviewer. Inspect the file/task directly and summarize concrete findings."
+    ),
+    "direct_task": (
+        "## Concierge stage: direct_task\n"
+        "Act as a practical executor. Prefer concrete actions and concise results over meta-planning."
+    ),
+    "experience_fallback": (
+        "## Concierge stage: experience_fallback\n"
+        "Act as a lightweight retrieval/synthesis surface. Reuse relevant prior work without over-committing to mutation."
+    ),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -611,6 +645,8 @@ def _mark_session_cancelled(
 
 def _build_prompt(session: Any) -> str:
     parts: list[str] = []
+    stage = _determine_stage(session)
+    parts.append(f"Concierge stage: {stage}")
     triage = getattr(session, "triage", None)
     autonomy_resolution = getattr(session, "autonomy_resolution", None)
     if autonomy_resolution is not None:
@@ -676,6 +712,14 @@ def _build_prompt(session: Any) -> str:
     return "\n".join(parts) if parts else ""
 
 
+def _stage_prompt_overlay(stage: str) -> str:
+    return _STAGE_PROMPT_OVERLAYS.get(stage, _STAGE_PROMPT_OVERLAYS["conversation"])
+
+
+def _stage_prompt_overlay_id(stage: str) -> str:
+    return f"concierge_stage:{stage}"
+
+
 def _determine_stage(session: Any) -> str:
     """Map session triage/mode to a concierge stage name for tier resolution."""
     triage = getattr(session, "triage", None)
@@ -724,6 +768,9 @@ def _extract_chat_params(
         metadata = {}
     triage = getattr(session, "triage", None)
     route = getattr(triage, "route", None)
+    stage = _determine_stage(session)
+    stage_overlay = _stage_prompt_overlay(stage)
+    stage_overlay_id = _stage_prompt_overlay_id(stage)
 
     workflow_id = _workflow_id_for_session(session)
 
@@ -771,7 +818,9 @@ def _extract_chat_params(
 
     if _should_prefer_workflow_run_followup(message, history):
         required_action_hints = [
-            hint for hint in required_action_hints if hint != "run_control"
+            hint
+            for hint in required_action_hints
+            if hint not in {"run_control", "workflow_edit"}
         ]
         if "workflow_run" not in required_action_hints:
             required_action_hints.append("workflow_run")
@@ -814,18 +863,16 @@ def _extract_chat_params(
     attachment_prompt_context = str(metadata.get("attachment_prompt_context") or "").strip()
     autonomy_resolution = getattr(session, "autonomy_resolution", None)
     prompt_context = system_prompt
+    extra_system_sections = [stage_overlay]
     if attachment_prompt_context:
-        prompt_context = (
-            f"{system_prompt}\n\n{attachment_prompt_context}"
-            if system_prompt
-            else attachment_prompt_context
-        )
+        extra_system_sections.append(attachment_prompt_context)
     if run_control_instruction:
-        prompt_context = (
-            f"{prompt_context}\n\n{run_control_instruction}"
-            if prompt_context
-            else run_control_instruction
-        )
+        extra_system_sections.append(run_control_instruction)
+    extra_system_instructions = "\n\n".join(
+        section.strip()
+        for section in extra_system_sections
+        if section and section.strip()
+    )
 
     result = {
         "workflow_id": workflow_id,
@@ -841,7 +888,7 @@ def _extract_chat_params(
         "surface_context": surface_context,
         "allow_mutation_tool": allow_mutation_tool,
         "surface": surface,
-        "extra_system_instructions": attachment_prompt_context,
+        "extra_system_instructions": extra_system_instructions,
         "required_action_hints": required_action_hints,
         "stream_channel_id": stream_channel_id,
         "memory_project_id": memory_project_id,
@@ -851,9 +898,16 @@ def _extract_chat_params(
         ),
         "autonomy_resolution": autonomy_resolution,
     }
+    audit = result.get("audit_metadata") or {}
+    audit["concierge_stage"] = stage
+    audit["concierge_prompt_overlay"] = stage_overlay_id
+    audit["session_tier"] = int(getattr(session, "tier", 1))
+    audit["route_source"] = str(getattr(triage, "route_source", "") or "")
+    audit["scenario_id"] = getattr(triage, "scenario_id", None)
+    audit["scenario_confidence"] = getattr(triage, "scenario_confidence", None)
+    result["audit_metadata"] = audit
     if model_override:
         result["model_override"] = model_override
-        audit = result.get("audit_metadata") or {}
         audit["concierge_model_override"] = model_override
         result["audit_metadata"] = audit
     return result

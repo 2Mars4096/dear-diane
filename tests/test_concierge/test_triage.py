@@ -231,6 +231,67 @@ async def test_triage_fallback_infers_write_file_for_short_resume_edit():
 
 
 @pytest.mark.asyncio
+async def test_triage_uses_workflow_apply_lexical_scenario_with_recent_context():
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+    llm_calls = 0
+
+    async def _should_not_run(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return "{}"
+
+    result = await triage("apply it", context, _should_not_run)
+
+    assert result.route_source == "fast_lexical"
+    assert result.scenario_id == "workflow_followup_apply"
+    assert result.route is not None
+    assert result.route.target == "workflow"
+    assert result.route.action_hints == ["workflow_edit"]
+    assert llm_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_triage_escalates_ambiguous_workflow_and_file_followup_to_llm():
+    context, _project, _task = _make_context(turns=_workflow_activity_turns())
+    llm_calls = 0
+
+    async def _complete(_messages):
+        nonlocal llm_calls
+        llm_calls += 1
+        return json.dumps(
+            {
+                "tier": 1,
+                "intent": "agent",
+                "route": {
+                    "mode": "agent",
+                    "target": "workflow",
+                    "action_hints": ["workflow_query"],
+                },
+                "confidence": 0.9,
+                "goal": "Clarify the current workflow status",
+                "deliverable": "Workflow status",
+                "entities": [],
+                "is_resume": False,
+                "resume_task_id": None,
+                "is_social": False,
+                "social_response": None,
+                "context_needs": [],
+                "subtasks": [],
+                "execution_order": "parallel",
+                "rationale": "Ambiguous lexical cues were resolved by the LLM",
+            }
+        )
+
+    result = await triage("check this file and workflow status", context, _complete)
+
+    assert llm_calls == 1
+    assert result.route_source == "llm"
+    assert result.route is not None
+    assert result.route.target == "workflow"
+    assert result.route.action_hints == ["workflow_query"]
+
+
+@pytest.mark.asyncio
 async def test_triage_forces_furnace_prompt_to_run_control_when_llm_misroutes():
     context, _project, _task = _make_context(task_label="General task")
 

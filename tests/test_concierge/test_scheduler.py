@@ -469,6 +469,51 @@ class TestTaskScheduler:
         assert dispatch_context.task_id is None
 
     @pytest.mark.asyncio
+    async def test_fire_passes_entry_when_dispatch_accepts_it(self, store):
+        entry = ScheduleEntry(
+            name="run-workflow",
+            trigger="every 30m",
+            action="run workflow wf-1",
+            workflow_id="wf-1",
+        )
+        store.add(entry)
+
+        captured: dict[str, object] = {}
+
+        async def dispatch(action, trigger_context, delivery_target, *, entry=None):
+            captured["action"] = action
+            captured["entry"] = entry
+            return "ok"
+
+        scheduler = TaskScheduler(store, dispatch, poll_interval=0.05)
+        await scheduler._fire(entry)
+
+        assert captured["action"] == "run workflow wf-1"
+        assert captured["entry"] == entry
+
+    @pytest.mark.asyncio
+    async def test_fire_marks_started_workflow_as_running(self, store):
+        entry = ScheduleEntry(
+            name="run-workflow",
+            trigger="every 30m",
+            action="run workflow wf-1",
+            workflow_id="wf-1",
+        )
+        store.add(entry)
+        history = ScheduleHistoryStore(path=str(Path(store.path).with_name("history.json")))
+        dispatch = AsyncMock(return_value="Started workflow `wf-1` as run `run-123`.")
+        scheduler = TaskScheduler(store, dispatch, poll_interval=0.05, history_store=history)
+
+        await scheduler._fire(entry)
+
+        records = history.get_history(entry.id)
+        assert records
+        latest = records[-1]
+        assert latest.status == "running"
+        assert latest.completed_at is None
+        assert "Started workflow" in latest.result_summary
+
+    @pytest.mark.asyncio
     async def test_does_not_refire_while_schedule_is_inflight(self, store):
         now = datetime.now(timezone.utc)
         entry = ScheduleEntry(
@@ -696,6 +741,49 @@ class TestScheduleCommand:
         result = handle_schedule_command("/schedule add", store)
         assert "Usage" in result
 
+    def test_workflow_command(self, store):
+        result = handle_schedule_command(
+            "/schedule workflow equity-report daily at 9am",
+            store,
+        )
+        assert "Scheduled workflow" in result
+        entry = store.list_all()[0]
+        assert entry.workflow_id == "equity-report"
+        assert entry.action == "run workflow equity-report"
+
+    def test_workflow_command_uses_current_workflow(self, store):
+        result = handle_schedule_command(
+            "/schedule workflow current weekdays at 8am",
+            store,
+            default_workflow_id="wf-current",
+        )
+        assert "Scheduled workflow" in result
+        entry = store.list_all()[0]
+        assert entry.workflow_id == "wf-current"
+
+    def test_workflow_command_accepts_inputs_and_profile(self, store):
+        result = handle_schedule_command(
+            "/schedule workflow equity-report daily at 9am --input watchlist_path=/tmp/watchlist.csv --input max_items=25 --profile long_running",
+            store,
+        )
+        assert "Scheduled workflow" in result
+        assert "Inputs: max_items, watchlist_path" in result
+        assert "Run profile: `long_running`" in result
+        entry = store.list_all()[0]
+        assert entry.workflow_id == "equity-report"
+        assert entry.workflow_inputs == {
+            "watchlist_path": "/tmp/watchlist.csv",
+            "max_items": 25,
+        }
+        assert entry.workflow_run_policy == {"profile": "long_running"}
+
+    def test_workflow_command_requires_current_context_when_requested(self, store):
+        result = handle_schedule_command(
+            "/schedule workflow current daily at 9am",
+            store,
+        )
+        assert "No current workflow is available" in result
+
     def test_list_empty(self, store):
         result = handle_schedule_command("/schedule list", store)
         assert "No scheduled" in result
@@ -858,6 +946,21 @@ class TestDeliveryTargetParsing:
         restored = ScheduleEntry.model_validate(data)
         assert restored.delivery_target.surface == "telegram"
         assert restored.delivery_target.fallback_policy == "private_surface"
+
+    def test_schedule_entry_with_workflow_binding(self):
+        entry = ScheduleEntry(
+            name="run workflow equity-report",
+            trigger="daily at 9am",
+            action="run workflow equity-report",
+            workflow_id="equity-report",
+            workflow_inputs={"watchlist_path": "/tmp/watchlist.csv"},
+            workflow_run_policy={"profile": "long_running"},
+        )
+        data = entry.model_dump(mode="json")
+        restored = ScheduleEntry.model_validate(data)
+        assert restored.workflow_id == "equity-report"
+        assert restored.workflow_inputs == {"watchlist_path": "/tmp/watchlist.csv"}
+        assert restored.workflow_run_policy == {"profile": "long_running"}
 
     def test_schedule_entry_with_trigger_context(self):
         entry = ScheduleEntry(

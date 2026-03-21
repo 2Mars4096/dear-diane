@@ -525,6 +525,11 @@ def _populate_default_commands(registry: CommandRegistry) -> None:
                 args_schema='"<action>" <cron_or_interval>',
                 help_text="Add a new scheduled task",
             ),
+            "workflow": SubcommandDescriptor(
+                name="workflow",
+                args_schema="<workflow_id|current> <cron_or_interval> [--input key=value ...] [--profile <name>]",
+                help_text="Schedule a specific workflow run",
+            ),
             "list": SubcommandDescriptor(name="list", help_text="List all schedules"),
             "remove": SubcommandDescriptor(
                 name="remove", args_schema="<id|name>",

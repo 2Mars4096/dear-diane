@@ -11,6 +11,28 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_PROGRESS_DETAIL_MAX_LEN = 160
+
+
+def _user_task_progress_detail(triage: Any, msg: SurfaceMessage) -> str | None:
+    """Human-readable hint for concierge progress (phase events + reassurance).
+
+    Without this, long runs only show the generic phase name "Executing".
+    """
+    goal = str(getattr(triage, "goal", "") or "").strip()
+    deliverable = str(getattr(triage, "deliverable", "") or "").strip()
+    text = goal or deliverable
+    if not text:
+        raw = str(getattr(msg, "text", "") or "").strip()
+        if raw:
+            text = raw.split("\n", 1)[0].strip()
+    if not text:
+        return None
+    if len(text) > _PROGRESS_DETAIL_MAX_LEN:
+        return f"{text[: _PROGRESS_DETAIL_MAX_LEN - 1].rstrip()}…"
+    return text
+
+
 _USER_TURN_METADATA_KEYS = frozenset({
     "workflow_id",
     "thread_id",
@@ -23,6 +45,12 @@ _USER_TURN_METADATA_KEYS = frozenset({
     "attachment_prompt_context",
     "surface_context",
     "allow_mutation_tool",
+    "route_target",
+    "route_source",
+    "scenario_id",
+    "scenario_confidence",
+    "concierge_stage",
+    "session_tier",
 })
 
 
@@ -403,6 +431,21 @@ class TieredDispatcher:
             triage.tier,
             autonomy_resolution=autonomy_resolution,
         )
+        if isinstance(msg_metadata, dict):
+            route_obj = getattr(triage, "route", None)
+            msg_metadata["route_target"] = getattr(route_obj, "target", "")
+            msg_metadata["route_source"] = str(getattr(triage, "route_source", "") or "")
+            if getattr(triage, "scenario_id", None):
+                msg_metadata["scenario_id"] = triage.scenario_id
+            if getattr(triage, "scenario_confidence", None) is not None:
+                msg_metadata["scenario_confidence"] = triage.scenario_confidence
+            try:
+                from .tier_executors import _determine_stage
+
+                msg_metadata["concierge_stage"] = _determine_stage(session)
+            except Exception:
+                logger.debug("Failed to resolve concierge stage for user-turn metadata", exc_info=True)
+            msg_metadata["session_tier"] = int(session.tier)
         execution_order = getattr(triage, "execution_order", "")
         if execution_order == "serial":
             session.child_execution = "serial"
@@ -420,6 +463,7 @@ class TieredDispatcher:
                     msg.external_id,
                     "execution",
                     "Executing",
+                    _user_task_progress_detail(triage, msg),
                 )
                 if execution_event is not None:
                     yield execution_event
@@ -448,6 +492,7 @@ class TieredDispatcher:
             msg.external_id,
             "execution",
             "Executing",
+            _user_task_progress_detail(triage, msg),
         )
         if execution_event is not None:
             yield execution_event
@@ -509,6 +554,9 @@ class TieredDispatcher:
 
     async def _on_any_session_complete(self, session: Any) -> None:
         try:
+            from .tier_executors import _determine_stage, _stage_prompt_overlay_id
+
+            stage = _determine_stage(session)
             await self._concierge._emit_telemetry_event(
                 "session_complete",
                 metadata={
@@ -525,6 +573,11 @@ class TieredDispatcher:
                     "model_used": session.result.model_used if session.result else None,
                     "children_count": len(session.children),
                     "error": session.result.error if session.result else None,
+                    "concierge_stage": stage,
+                    "prompt_overlay": _stage_prompt_overlay_id(stage),
+                    "route_source": str(getattr(session.triage, "route_source", "") or ""),
+                    "scenario_id": getattr(session.triage, "scenario_id", None),
+                    "scenario_confidence": getattr(session.triage, "scenario_confidence", None),
                     "autonomy_resolution": (
                         session.autonomy_resolution.model_dump()
                         if getattr(session, "autonomy_resolution", None) is not None
@@ -633,6 +686,9 @@ class TieredDispatcher:
                 for k, v in t.token_usage.items():
                     total_tokens[k] = total_tokens.get(k, 0) + v
 
+            from .tier_executors import _determine_stage, _stage_prompt_overlay_id
+
+            stage = _determine_stage(session)
             await self._concierge._emit_telemetry_event(
                 "tiered_dispatch_complete",
                 metadata={
@@ -640,6 +696,11 @@ class TieredDispatcher:
                     "session_tree_size": len(tree_trace),
                     "total_tokens": total_tokens,
                     "session_tree": trace_data,
+                    "concierge_stage": stage,
+                    "prompt_overlay": _stage_prompt_overlay_id(stage),
+                    "route_source": str(getattr(session.triage, "route_source", "") or ""),
+                    "scenario_id": getattr(session.triage, "scenario_id", None),
+                    "scenario_confidence": getattr(session.triage, "scenario_confidence", None),
                     "autonomy_resolution": (
                         session.autonomy_resolution.model_dump()
                         if getattr(session, "autonomy_resolution", None) is not None

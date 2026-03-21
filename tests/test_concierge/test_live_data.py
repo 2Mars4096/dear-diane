@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import httpx
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -24,6 +25,7 @@ from dan.server.chat.helpers import (
     should_require_web_grounding,
     verify_response_citations,
 )
+from dan.server.chat_manager import compute_graph_revision
 from dan.server.concierge.actions import _NUMERIC_CLAIM_RE
 from dan.server.capability_handlers import (
     APPLY_LAST_MUTATION_SCHEMA,
@@ -307,6 +309,98 @@ class TestApplyLastMutationCapabilityRegistration:
         assert result.success is False
         assert result.error_type == "not_found"
         assert "No proposed workflow preview" in result.message
+
+    @pytest.mark.asyncio
+    async def test_apply_last_mutation_ignores_timestamp_only_graph_changes(self):
+        saved_graphs: list[dict[str, object]] = []
+        base_graph = {
+            "version": "dan_graph_v1",
+            "metadata": {
+                "name": "test",
+                "description": "",
+                "created_at": "2026-03-20T08:00:00Z",
+                "updated_at": "2026-03-20T08:00:00Z",
+            },
+            "nodes": [
+                {
+                    "id": "n1",
+                    "name": "Node 1",
+                    "node_type": "llm_operator",
+                    "model": "test-model",
+                    "prompt_template": "Hello",
+                    "input_ports": [{"name": "input", "schema": {}}],
+                    "output_ports": [{"name": "text", "schema": {}}],
+                }
+            ],
+            "edges": [],
+            "sub_graphs": {},
+            "entry_points": ["n1"],
+            "exit_points": ["n1"],
+            "shared_context": [],
+            "artifact_refs": [],
+        }
+        mutation_plan = {
+            "description": "Add a second node",
+            "base_graph_revision": compute_graph_revision(base_graph),
+            "operations": [
+                {
+                    "op": "add_node",
+                    "id": "n2",
+                    "node_type": "llm_operator",
+                    "name": "Node 2",
+                    "config": {
+                        "model": "test-model",
+                        "prompt_template": "World",
+                        "input_ports": [{"name": "input", "schema": {}}],
+                        "output_ports": [{"name": "text", "schema": {}}],
+                    },
+                }
+            ],
+        }
+        thread = SimpleNamespace(
+            messages=[
+                SimpleNamespace(
+                    id="mut-ts",
+                    mutation_plan=mutation_plan,
+                    dry_run_result={"success": True},
+                    mutation_status="proposed",
+                )
+            ],
+            updated_at=None,
+        )
+        current_graph = json.loads(json.dumps(base_graph))
+        current_graph["metadata"]["updated_at"] = "2026-03-20T08:05:00Z"
+        chat_store = SimpleNamespace(
+            get_thread=lambda workflow_id, thread_id: thread,
+            save_thread=lambda thread_obj: None,
+            get_thread_meta=lambda workflow_id, thread_id: {
+                "latest_mutation_preview": {
+                    "message_id": "mut-ts",
+                    "mutation_plan": mutation_plan,
+                    "dry_run_result": {"success": True},
+                }
+            },
+            set_thread_meta=lambda workflow_id, thread_id, meta: None,
+        )
+        graph_store = SimpleNamespace(
+            get_graph=lambda workflow_id: current_graph,
+            save_graph=lambda workflow_id, graph: saved_graphs.append(graph) or graph,
+        )
+
+        result = await handle_apply_last_mutation(
+            {},
+            CapabilityContext(
+                workflow_id="wf1",
+                graph_store=graph_store,
+                thread_id="thread-1",
+                chat_manager=SimpleNamespace(_chat_store=chat_store),
+            ),
+        )
+
+        assert result.success is True
+        assert result.error_type is None
+        assert saved_graphs
+        assert any(node["id"] == "n2" for node in saved_graphs[0]["nodes"])
 
     @pytest.mark.asyncio
     async def test_web_search_handler_returns_results(self):
@@ -778,6 +872,13 @@ class TestWebGroundingTriggers:
         assert should_require_web_grounding(
             "Use @web to confirm the latest DAN release date.",
             mode="conversation",
+        )
+
+    def test_should_not_require_web_grounding_for_local_workflow_run_question(self):
+        assert not should_require_web_grounding(
+            "Can you test run this workflow?",
+            mode="conversation",
+            required_action_hints=["workflow_run"],
         )
 
 

@@ -944,8 +944,64 @@ async def init_background(state: AppState, app: FastAPI) -> None:
         )
 
     async def _dispatch_scheduled_action(
-        action: str, trigger_context: Any, delivery_target: Any
+        action: str,
+        trigger_context: Any,
+        delivery_target: Any,
+        *,
+        entry: Any | None = None,
     ) -> str:
+        scheduled_workflow_id = str(
+            getattr(entry, "workflow_id", "") or ""
+        ).strip()
+        if scheduled_workflow_id:
+            if state.run_manager is None or state.graph_store is None:
+                raise RuntimeError("Workflow scheduling is unavailable.")
+
+            graph = state.graph_store.load_as_model(scheduled_workflow_id)
+            if graph is None:
+                raise RuntimeError(
+                    f"Workflow '{scheduled_workflow_id}' not found."
+                )
+            if not getattr(graph, "nodes", None):
+                raise RuntimeError(
+                    f"Workflow '{scheduled_workflow_id}' has no nodes to run."
+                )
+
+            inputs = getattr(entry, "workflow_inputs", None) or None
+            run_policy = getattr(entry, "workflow_run_policy", None) or None
+            record = await state.run_manager.start_run(
+                graph,
+                graph_id=scheduled_workflow_id,
+                inputs=inputs,
+                run_policy=run_policy,
+            )
+
+            event_bus = getattr(state.capability_context, "event_bus", None)
+            if event_bus is not None:
+                from dan.server.run_relay import relay_run_events_to_bus
+
+                asyncio.create_task(
+                    relay_run_events_to_bus(
+                        rm=state.run_manager,
+                        run_id=record.run_id,
+                        workflow_name=scheduled_workflow_id,
+                        surface_id=(
+                            delivery_target.conversation_key
+                            or delivery_target.user_id
+                            or trigger_context.thread_key
+                        ),
+                        bus=event_bus,
+                    )
+                )
+
+            input_keys = sorted((inputs or {}).keys())
+            if input_keys:
+                return (
+                    f"Started workflow `{scheduled_workflow_id}` as run `{record.run_id}` "
+                    f"with inputs: {', '.join(input_keys)}."
+                )
+            return f"Started workflow `{scheduled_workflow_id}` as run `{record.run_id}`."
+
         from dan.server.concierge.models import SurfaceMessage
 
         surface_msg = SurfaceMessage(

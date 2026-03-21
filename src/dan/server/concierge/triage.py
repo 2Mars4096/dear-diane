@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from .intent_catalog import build_classifier_prompt
 from .models import ConciergeState, IntentCategory, ResolvedContext, RouteDecision, RouteMode
+from .triage_scenarios import LexicalScenario, evaluate_lexical_scenarios
 
 if TYPE_CHECKING:
     from dan.engine.behavior_store import BehaviorStore
@@ -246,6 +247,39 @@ class TriageResult(BaseModel):
     context_needs: list[str] = Field(default_factory=list)
     subtasks: list[str] = Field(default_factory=list)
     execution_order: Literal["parallel", "serial", "mixed"] = "parallel"
+    route_source: str = "llm"
+    scenario_id: str | None = None
+    scenario_confidence: float | None = None
+
+
+def _triage_result_from_lexical_scenario(
+    scenario: LexicalScenario,
+    text: str,
+    context: ResolvedContext,
+) -> TriageResult:
+    goal = _fallback_goal(text, context)
+    route = RouteDecision(
+        mode=RouteMode(scenario.intent),
+        target=scenario.target,
+        action_hints=list(scenario.action_hints),
+        rationale=scenario.description,
+    )
+    is_social = scenario.id == "social_ack"
+    social_response = _SOCIAL_REPLIES.get(text.strip().lower().rstrip("!.?").strip()) if is_social else None
+    return TriageResult(
+        tier=scenario.tier,
+        intent=scenario.intent,
+        route=route,
+        confidence=scenario.confidence,
+        goal=goal,
+        deliverable=goal,
+        rationale=scenario.description,
+        is_social=is_social,
+        social_response=social_response,
+        route_source="fast_lexical",
+        scenario_id=scenario.id,
+        scenario_confidence=scenario.confidence,
+    )
 
 
 def fast_classify_text(text: str) -> TriageResult | None:
@@ -270,6 +304,9 @@ def fast_classify_text(text: str) -> TriageResult | None:
         is_social=True,
         social_response=response,
         rationale="Fast lexical social classification",
+        route_source="fast_lexical",
+        scenario_id="social_ack",
+        scenario_confidence=0.99,
     )
 
 
@@ -444,6 +481,7 @@ async def _embedding_triage_result(text: str, context: ResolvedContext) -> Triag
         goal=goal,
         deliverable=goal,
         rationale="Embedding-first routing",
+        route_source="embedding",
     )
 
 
@@ -954,6 +992,12 @@ def _has_recent_workflow_activity(context: ResolvedContext, lookback: int = 4) -
 
 
 def _infer_fallback_action_hints(text: str, context: ResolvedContext) -> list[str]:
+    lexical = evaluate_lexical_scenarios(text, context)
+    if lexical.status == "matched_single" and lexical.scenario is not None:
+        return list(lexical.scenario.action_hints)
+    if lexical.status == "ambiguous":
+        return []
+
     lower = text.lower()
     context_text = _context_text(context)
     has_anaphora = bool(_ANAPHORA_RE.search(text))
@@ -1012,6 +1056,7 @@ def _fallback_triage_result(text: str, context: ResolvedContext) -> TriageResult
             is_social=True,
             social_response=response,
             rationale="Heuristic fallback for simple social turn",
+            route_source="heuristic_fallback",
         )
 
     action_hints = _infer_fallback_action_hints(text, context)
@@ -1054,6 +1099,7 @@ def _fallback_triage_result(text: str, context: ResolvedContext) -> TriageResult
         deliverable=goal,
         is_resume=_strongly_suggests_resume(text) or has_resume_pronoun,
         rationale="Heuristic fallback after triage LLM failure or unparseable output",
+        route_source="heuristic_fallback",
     )
 
 
@@ -1112,6 +1158,7 @@ def _parse_triage_response(raw_text: str) -> TriageResult | None:
         context_needs=normalize_context_needs(_coerce_string_list(obj.get("context_needs"))),
         subtasks=_coerce_string_list(obj.get("subtasks")),
         execution_order=exec_order,  # type: ignore[arg-type]
+        route_source="llm",
     )
 
 
@@ -1138,15 +1185,27 @@ async def triage(
             project_store=project_store,
         )
 
+    lexical = evaluate_lexical_scenarios(text, context)
+    if lexical.status == "matched_single" and lexical.scenario is not None:
+        return _post_process_triage_result(
+            _triage_result_from_lexical_scenario(lexical.scenario, text, context),
+            text,
+            context,
+            project_store=project_store,
+        )
+
+    skip_embedding = lexical.status == "ambiguous"
+
     try:
-        embedded = await _embedding_triage_result(text, context)
-        if embedded is not None:
-            return _post_process_triage_result(
-                embedded,
-                text,
-                context,
-                project_store=project_store,
-            )
+        if not skip_embedding:
+            embedded = await _embedding_triage_result(text, context)
+            if embedded is not None:
+                return _post_process_triage_result(
+                    embedded,
+                    text,
+                    context,
+                    project_store=project_store,
+                )
     except Exception:
         logger.debug("Embedding triage stage failed; falling through to LLM triage", exc_info=True)
 
