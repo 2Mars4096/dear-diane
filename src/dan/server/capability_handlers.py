@@ -927,8 +927,8 @@ def _apply_mutation_plan_via_graph_store(
             )
 
     mutation_metrics.record_apply(True)
-    graph_store.save_graph(workflow_id, result.new_graph)
-    new_revision = compute_graph_revision(result.new_graph)
+    saved_graph = graph_store.save_graph(workflow_id, result.new_graph)
+    new_revision = compute_graph_revision(saved_graph)
     text = "Applied the workflow preview successfully."
     if warnings:
         text += f" Validation warnings: {warnings[0]}"
@@ -1030,7 +1030,7 @@ RUN_POLICY_SCHEMA = {
     },
 }
 
-START_RUN_SCHEMA = build_tool_schema(name="start_run", description="Start a workflow run. Use when the user says 'run it', 'execute', or 'start the workflow'.", parameters={"type": "object", "properties": {"workflow_id": {"type": "string", "description": "Workflow/graph ID to run (default: current chat workflow)"}, "inputs": {"type": "object", "description": "Optional input values for the workflow"}, "run_id": {"type": "string", "description": "Optional custom run ID"}, "session_id": {"type": "string", "description": "Optional session ID"}, "run_policy": RUN_POLICY_SCHEMA}})
+START_RUN_SCHEMA = build_tool_schema(name="start_run", description="Start a workflow run. Use when the user says 'run it', 'execute', or 'start the workflow'. This starts execution only; use get_run_status or get_run_logs to inspect the actual outcome.", parameters={"type": "object", "properties": {"workflow_id": {"type": "string", "description": "Workflow/graph ID to run (default: current chat workflow)"}, "inputs": {"type": "object", "description": "Optional input values for the workflow"}, "run_id": {"type": "string", "description": "Optional custom run ID"}, "session_id": {"type": "string", "description": "Optional session ID"}, "run_policy": RUN_POLICY_SCHEMA}})
 GET_RUN_STATUS_SCHEMA = build_tool_schema(name="get_run_status", description="Get status of a run. Supports run_id or 'latest', 'last_failed', 'paused'. Use when the user asks 'status of the run', 'how did it go?', or 'what's running?'.", parameters={"type": "object", "properties": {"run_id": {"type": "string", "description": "Run ID or 'latest'|'last_failed'|'paused'"}}, "required": ["run_id"]})
 LIST_ACTIVE_RUNS_SCHEMA = build_tool_schema(name="list_active_runs", description="List active and recent runs. Use when the user asks 'what's running?', 'show active runs', or 'list runs'.", parameters={"type": "object", "properties": {}})
 CANCEL_RUN_SCHEMA = build_tool_schema(name="cancel_run", description="Cancel a running workflow. Use when the user says 'cancel run X' or 'stop the run'.", parameters={"type": "object", "properties": {"run_id": {"type": "string", "description": "Run ID to cancel"}}, "required": ["run_id"]})

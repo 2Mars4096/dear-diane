@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import tempfile
 import logging
@@ -99,7 +100,7 @@ async def get_graph(graph_id: str, layout: bool = False):
 
 @router.put("/api/graphs/{graph_id}")
 async def update_graph(graph_id: str, body: dict[str, Any]):
-    from dan.server.graph_store import _validate_graph_id
+    from dan.server.graph_store import GraphSaveValidationError, _validate_graph_id
     from dan.server.chat_manager import compute_graph_revision
 
     gs = get_graph_store()
@@ -107,11 +108,14 @@ async def update_graph(graph_id: str, body: dict[str, Any]):
         _validate_graph_id(graph_id)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
-    gs.save_graph(graph_id, body)
+    try:
+        saved = gs.save_graph(graph_id, body)
+    except GraphSaveValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
     return {
         "graph_id": graph_id,
         "status": "saved",
-        "graph_revision": compute_graph_revision(body),
+        "graph_revision": compute_graph_revision(saved),
     }
 
 
@@ -225,8 +229,8 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
             }
 
         mutation_metrics.record_apply(True)
-        gs.save_graph(graph_id, result.new_graph)
-        new_revision = compute_graph_revision(result.new_graph)
+        saved_graph = gs.save_graph(graph_id, result.new_graph)
+        new_revision = compute_graph_revision(saved_graph)
 
         if req.idempotency_key:
             _applied_mutation_keys.add((graph_id, req.idempotency_key))
@@ -243,7 +247,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
 
         return {
             "success": True,
-            "new_graph": result.new_graph,
+            "new_graph": saved_graph,
             "graph_revision": new_revision,
             "errors": [],
             "warnings": warnings,
@@ -252,8 +256,8 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
         }
     else:
         mutation_metrics.record_apply(True)
-        gs.save_graph(graph_id, result.new_graph)
-        new_revision = compute_graph_revision(result.new_graph)
+        saved_graph = gs.save_graph(graph_id, result.new_graph)
+        new_revision = compute_graph_revision(saved_graph)
 
         if req.idempotency_key:
             _applied_mutation_keys.add((graph_id, req.idempotency_key))
@@ -270,7 +274,7 @@ async def apply_mutation(graph_id: str, req: ApplyMutationRequest):
 
         return {
             "success": True,
-            "new_graph": result.new_graph,
+            "new_graph": saved_graph,
             "graph_revision": new_revision,
             "errors": [],
             "warnings": [],

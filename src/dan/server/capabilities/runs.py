@@ -131,7 +131,10 @@ async def handle_start_run(
         return CapabilityResult(success=False, message=f"Start run failed: {exc}")
     return CapabilityResult(
         success=True,
-        message=f"Run started: {record.run_id}",
+        message=(
+            f"Run started: {record.run_id}. "
+            "This only starts execution; call get_run_status to inspect the current outcome."
+        ),
         data={"run_id": record.run_id, "status": record.status.value},
         output_preview=f"Run {record.run_id} started.",
         stream_channel_id=f"run-{record.run_id}",

@@ -261,7 +261,10 @@ def _default_ports(
         ),
         "if_else": (
             [{"name": "input", "schema": {}, "required": False}],
-            [{"name": "branch", "schema": {}}],
+            [
+                {"name": "true", "schema": {}},
+                {"name": "false", "schema": {}},
+            ],
         ),
         "gate": (
             [{"name": "input", "schema": {}, "required": False}],
@@ -530,9 +533,41 @@ def _default_node_config(node_type: str) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 TOOL_PORT_MANIFESTS: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {
+    "csv_read": (
+        [
+            {"name": "path", "schema": {}, "required": True},
+            {"name": "delimiter", "schema": {}, "required": False},
+            {"name": "max_rows", "schema": {}, "required": False},
+            {"name": "columns", "schema": {}, "required": False},
+            {"name": "encoding", "schema": {}, "required": False},
+        ],
+        [
+            {"name": "headers", "schema": {}},
+            {"name": "rows", "schema": {}},
+            {"name": "row_count", "schema": {}},
+            {"name": "total_rows", "schema": {}},
+            {"name": "column_count", "schema": {}},
+            {"name": "truncated", "schema": {}},
+            {"name": "result", "schema": {}},
+        ],
+    ),
     "file_read": (
         [{"name": "path", "schema": {}, "required": True}],
         [{"name": "content", "schema": {}}, {"name": "result", "schema": {}}],
+    ),
+    "file_write": (
+        [
+            {"name": "path", "schema": {}, "required": True},
+            {"name": "content", "schema": {}, "required": True},
+            {"name": "mode", "schema": {}, "required": False},
+            {"name": "encoding", "schema": {}, "required": False},
+        ],
+        [
+            {"name": "bytes_written", "schema": {}},
+            {"name": "path", "schema": {}},
+            {"name": "mode", "schema": {}},
+            {"name": "result", "schema": {}},
+        ],
     ),
     "list_directory": (
         [{"name": "path", "schema": {}, "required": False}],
@@ -541,6 +576,55 @@ TOOL_PORT_MANIFESTS: dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]
     "pdf_read": (
         [{"name": "path", "schema": {}, "required": True}],
         [{"name": "text", "schema": {}}, {"name": "result", "schema": {}}],
+    ),
+    "http_request": (
+        [
+            {"name": "url", "schema": {}, "required": True},
+            {"name": "method", "schema": {}, "required": False},
+            {"name": "headers", "schema": {}, "required": False},
+            {"name": "body", "schema": {}, "required": False},
+            {"name": "timeout", "schema": {}, "required": False},
+        ],
+        [
+            {"name": "status_code", "schema": {}},
+            {"name": "headers", "schema": {}},
+            {"name": "body", "schema": {}},
+            {"name": "result", "schema": {}},
+        ],
+    ),
+    "web_fetch": (
+        [
+            {"name": "url", "schema": {}, "required": True},
+            {"name": "timeout", "schema": {}, "required": False},
+            {"name": "max_length", "schema": {}, "required": False},
+        ],
+        [
+            {"name": "url", "schema": {}},
+            {"name": "text", "schema": {}},
+            {"name": "status_code", "schema": {}},
+            {"name": "content_type", "schema": {}},
+            {"name": "result", "schema": {}},
+        ],
+    ),
+    "web_search": (
+        [
+            {"name": "query", "schema": {}, "required": True},
+            {"name": "num_results", "schema": {}, "required": False},
+            {"name": "search_depth", "schema": {}, "required": False},
+            {"name": "allowed_domains", "schema": {}, "required": False},
+            {"name": "blocked_domains", "schema": {}, "required": False},
+            {"name": "location", "schema": {}, "required": False},
+            {"name": "max_provider_searches", "schema": {}, "required": False},
+            {"name": "multi_provider", "schema": {}, "required": False},
+        ],
+        [
+            {"name": "results", "schema": {}},
+            {"name": "count", "schema": {}},
+            {"name": "provider", "schema": {}},
+            {"name": "providers", "schema": {}},
+            {"name": "provider_failures", "schema": {}},
+            {"name": "result", "schema": {}},
+        ],
     ),
     "compile_latex": (
         [{"name": "content", "schema": {}, "required": True},
@@ -1297,11 +1381,7 @@ class GraphMutator:
         diagnostics: list[str] | None = None,
     ) -> str | None:
         if _find_node(graph, op.node_id) is None:
-            msg = f"Skipped remove_node for missing node '{op.node_id}'"
-            if diagnostics is not None:
-                diagnostics.append(msg)
-            logger.debug(msg)
-            return None
+            return f"Node '{op.node_id}' not found"
 
         graph["nodes"] = [n for n in graph["nodes"] if n["id"] != op.node_id]
         _remove_edges_for_node(graph, op.node_id)
@@ -1317,7 +1397,17 @@ class GraphMutator:
         node = _find_node(graph, op.node_id)
         if node is None:
             return f"Node '{op.node_id}' not found"
-        node.update(op.updates)
+        updates = dict(op.updates)
+        config_updates = updates.pop("config", None)
+        if isinstance(config_updates, dict):
+            existing_config = node.get("config")
+            if isinstance(existing_config, dict):
+                merged_config = dict(existing_config)
+                merged_config.update(config_updates)
+                node["config"] = merged_config
+            else:
+                node.update(config_updates)
+        node.update(updates)
         return None
 
     def _op_add_edge(
@@ -1362,11 +1452,10 @@ class GraphMutator:
                     "for_each": {"item": "results"},
                     "parallel_subagents": {"item": "results"},
                     "orchestrator": {"item": "results"},
+                    "if_else": {"branch": "true"},
                 }
                 node_type = str(source_node.get("node_type") or "")
                 aliased_port = alias_map.get(node_type, {}).get(resolved_source_port)
-                if aliased_port is None and len(source_ports) == 1:
-                    aliased_port = source_ports[0]
                 if aliased_port and aliased_port in source_ports:
                     if diagnostics is not None:
                         diagnostics.append(

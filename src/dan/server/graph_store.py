@@ -2,16 +2,39 @@
 
 from __future__ import annotations
 
+import copy
 import json
+import os
 import re
 import time
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from dan.migration.gate_migration import maybe_migrate_graph_dict
 from dan.models.graph import Graph
+from dan.validation.graph import validate_graph
 
 _GRAPH_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,63}$")
+
+
+class GraphSaveValidationError(Exception):
+    """Raised when ``save_graph`` rejects invalid JSON under strict validation."""
+
+
+def _strict_graph_save_enabled() -> bool:
+    return os.environ.get("DAN_STRICT_GRAPH_SAVE", "true").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _is_graph_validation_warning(msg: str) -> bool:
+    lower = msg.lower()
+    return any(p in lower for p in ("warning", "deprecated", "untyped"))
 
 
 def _validate_graph_id(graph_id: str) -> None:
@@ -62,12 +85,29 @@ class GraphStore:
             return None
         return json.loads(path.read_text(encoding="utf-8"))
 
-    def save_graph(self, graph_id: str, data: dict[str, Any]) -> None:
+    def save_graph(self, graph_id: str, data: dict[str, Any]) -> dict[str, Any]:
         _validate_graph_id(graph_id)
-        data.setdefault("metadata", {})
-        data["metadata"]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
+        payload = copy.deepcopy(data)
+        if _strict_graph_save_enabled():
+            try:
+                migrated = maybe_migrate_graph_dict(payload)
+                model = Graph.model_validate(migrated)
+            except ValidationError as exc:
+                raise GraphSaveValidationError(
+                    f"Graph schema validation failed: {exc}",
+                ) from exc
+            raw_errs = validate_graph(model)
+            fatal = [e for e in raw_errs if not _is_graph_validation_warning(e)]
+            if fatal:
+                raise GraphSaveValidationError(
+                    "Graph semantic validation failed: " + "; ".join(fatal[:8]),
+                )
+            payload = json.loads(model.model_dump_json())
+        payload.setdefault("metadata", {})
+        payload["metadata"]["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
         path = self._graph_path(graph_id)
-        path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return payload
 
     def create_graph(self, graph_id: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
         _validate_graph_id(graph_id)
@@ -78,8 +118,7 @@ class GraphStore:
         data.setdefault("metadata", {})
         data["metadata"]["created_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
         data["metadata"]["updated_at"] = data["metadata"]["created_at"]
-        self.save_graph(graph_id, data)
-        return data
+        return self.save_graph(graph_id, data)
 
     def delete_graph(self, graph_id: str) -> bool:
         _validate_graph_id(graph_id)
