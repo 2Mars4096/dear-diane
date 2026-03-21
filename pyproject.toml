@@ -67,6 +67,7 @@ embeddings = ["sentence-transformers>=3.0"]
 jsonschema = ["jsonschema>=4.0"]
 all-rag = ["faiss-cpu>=1.7", "chromadb>=0.5", "sentence-transformers>=3.0"]
 quant = ["pandas>=2.0", "matplotlib>=3.7"]
+equity = ["yfinance>=0.2.40"]
 cli = ["rich>=13.0"]
 mcp = ["mcp>=1.0"]
 messaging = [
