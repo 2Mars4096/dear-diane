@@ -1,6 +1,6 @@
 # 38: Review Hardening
 
-**Status:** completed
+**Status:** completed *(original review scope)* with follow-up backlog
 **Goal:** Address all actionable findings from the 2026-03-17 and 2026-03-19 code reviews, module audits, and deep system reviews, prioritized by risk.
 
 ## Motivation
@@ -38,6 +38,14 @@ Review documents: `docs/reviews/2026-03-17-*.md` and `docs/reviews/2026-03-19-*.
 | [38-13](38-13-live-debugging-followups.md) | Live Debugging Follow-Ups | zombie PID launcher hardening and unknown-model chat cost null-handling | P1 | ✅ |
 | [38-14](38-14-adapter-snapshot-and-cli-shutdown.md) | Adapter Snapshot and CLI Shutdown Hardening | sync/async adapter snapshot parity plus quiet `dan-chat` Ctrl-C exits | P1 | ✅ |
 
+### Post-Round Follow-Up
+
+| # | Sub-Plan | Scope | Priority | Status |
+|---|----------|-------|----------|--------|
+| [38-15](38-15-lexical-triage-scenario-catalog.md) | Lexical Triage Scenario Catalog | replace ad-hoc regex/keyword routing with named lexical scenarios plus mandatory LLM fallback on ambiguity | P1 | planned |
+| [38-16](38-16-workflow-build-contract-and-repair.md) | Workflow Build Contract & Repair Hardening | unify build-boundary validation, run-readiness checks, and bounded mechanical repair before save/apply/run | P1 | planned |
+| [38-17](38-17-trace-to-workflow-distillation.md) | Trace-to-Workflow Distillation | let DAN execute a task first, then generalize the audited action trace into a reusable workflow draft that is compiled and contract-validated | P2 | in_progress |
+
 ## Dependencies / Sequencing
 
 Round 2 recommended execution order:
@@ -50,6 +58,14 @@ Round 2 recommended execution order:
 ```
 
 All Round 2 sub-plans are independent and can run in any order.
+
+Follow-up recommended execution order:
+```
+38-15 (workflow lexical follow-up routing)
+38-8 follow-up (tiered concierge scope and stage overlays)
+38-16 (workflow build contract, repair, and run-readiness)
+38-17 (trace-to-workflow distillation from audited successful runs)
+```
 
 ## Success Criteria
 
@@ -73,6 +89,10 @@ All Round 2 sub-plans are independent and can run in any order.
 
 - Execute the five Round 2 sub-plans in parallel tracks.
 - Round 2 was triggered by a second wave of reviews on 2026-03-19 covering general project health, concierge triage, chat dispatch, workflow generation, development mode, and user experience.
+- `38-15` is a follow-up extracted from the 38-8 triage hardening discussion after the original review wave was closed: the current lexical routing layer still needs a smaller, more explicit contract.
+- `38-16` is a follow-up extracted from the workflow-generation trust gap after 38-7/24/33: generation paths exist, but the build artifact still lacks one explicit contract-and-repair boundary.
+- `38-17` extends the same reliability track for harder tasks: when one-shot build is not the best seed, distill a successful audited execution trace into a reusable workflow draft and validate it against the same build contract.
+- Together, `38-15`, the 38-8 follow-up scope, `38-16`, and `38-17` form one workflow-reliability track: route the turn correctly, keep the concierge role narrow, enforce the artifact contract before save/apply/run, and learn reusable workflows from successful task traces.
 
 ## Notes
 

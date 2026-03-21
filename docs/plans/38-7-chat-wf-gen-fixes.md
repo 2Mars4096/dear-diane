@@ -66,6 +66,7 @@
 
 - `planner.py` now returns explicit `warning` / `legacy_fallback_message` metadata when generate-code execution falls back to a simplified single-node workflow, but surfacing that warning all the way to end-user chat responses is still open.
 - `tests/test_meta/test_generation_defaults.py` now gives `generation_defaults.py` real regression coverage, including the robust profile's validation-gate / review / tiering path plus the corrected flat-edge topology expectations.
+- Follow-up work on the remaining workflow trust gap is tracked separately in [38-16](38-16-workflow-build-contract-and-repair.md): the system still needs one explicit build-boundary contract, run-readiness distinction, and bounded mechanical repair pass.
 
 ## Estimate
 
