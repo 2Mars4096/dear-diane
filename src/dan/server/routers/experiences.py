@@ -21,6 +21,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _serialize_contract_issues(issues: list[Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "category": str(getattr(issue, "category", "")),
+            "message": str(getattr(issue, "message", "")),
+            "severity": str(getattr(issue, "severity", "")),
+            "artifact_id": getattr(issue, "artifact_id", None),
+        }
+        for issue in issues
+    ]
+
+
 @router.get("/api/experiences")
 async def list_experiences():
     try:
@@ -70,6 +82,77 @@ async def search_experiences(body: dict[str, Any]):
             "experience": exp.model_dump() if exp is not None else None,
         })
     return {"query": query, "results": results}
+
+
+@router.post("/api/experiences/trace-draft")
+async def distill_trace_draft(body: dict[str, Any]):
+    turn_id = str(body.get("turn_id", "")).strip()
+    compile_graph = bool(body.get("compile", True))
+    if not turn_id:
+        raise HTTPException(status_code=422, detail="turn_id is required")
+
+    try:
+        from dan.meta.intent_compiler import IntentCompiler
+        from dan.meta.workflow_contract import validate_workflow_build_contract
+        from dan.server.audit import ChatAuditStore
+        from dan.server.trace_workflow_distiller import (
+            distill_workflow_trace_from_audit,
+        )
+    except Exception as exc:
+        logger.exception("Trace draft dependencies unavailable")
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    record = ChatAuditStore().load_by_turn(turn_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"No audit turn '{turn_id}'")
+
+    draft = distill_workflow_trace_from_audit(record)
+    if draft is None:
+        return {
+            "status": "no_draft",
+            "reason": "Not enough meaningful audited tool activity to distill a workflow.",
+        }
+
+    response: dict[str, Any] = {
+        "status": "draft_only",
+        "draft": draft.model_dump(mode="json"),
+    }
+    if not compile_graph:
+        return response
+
+    try:
+        graph = IntentCompiler().build_graph(draft.workflow_intent)
+        graph_dict = graph.model_dump(mode="json")
+        report = validate_workflow_build_contract(graph_dict, apply_repairs=True)
+        response["compiled"] = {
+            "validated": report.validated,
+            "run_ready": report.run_ready,
+            "graph": report.graph.model_dump(mode="json") if report.graph is not None else graph_dict,
+            "warnings": list(report.warnings),
+            "errors": _serialize_contract_issues(report.errors),
+            "auto_fixes_applied": list(report.auto_fixes_applied),
+            "run_readiness_issues": list(report.run_readiness_issues),
+        }
+        if report.run_ready:
+            response["status"] = "run_ready_draft"
+        elif report.validated:
+            response["status"] = "validated_draft"
+    except Exception as exc:
+        response["compiled"] = {
+            "validated": False,
+            "run_ready": False,
+            "graph": None,
+            "warnings": [],
+            "errors": [{
+                "category": "compile",
+                "message": str(exc),
+                "severity": "fatal",
+                "artifact_id": None,
+            }],
+            "auto_fixes_applied": [],
+            "run_readiness_issues": [],
+        }
+    return response
 
 
 @router.post("/api/experiences/{workflow_id}/refresh")
