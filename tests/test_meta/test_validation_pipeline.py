@@ -237,6 +237,7 @@ class TestEmptyGraph:
         result = validate_codegen_output(_build_empty_graph_dict())
         assert result.success is True
         assert result.graph is not None
+        assert result.run_ready is False
 
     def test_empty_graph_has_no_nodes(self):
         result = validate_codegen_output(_build_empty_graph_dict())

@@ -85,6 +85,7 @@ async def _dispatch_text(
 ) -> DispatchResult:
     """Route text goal through MetaController planner, optionally gate on approval."""
     from dan.models.graph import Graph
+    from dan.meta.workflow_contract import validate_workflow_build_contract
     from pydantic import ValidationError
 
     try:
@@ -113,11 +114,25 @@ async def _dispatch_text(
     if not isinstance(graph_data, dict):
         raise HTTPException(422, "Planner produced invalid graph payload")
 
+    contract_report = validate_workflow_build_contract(
+        graph_data,
+        workflow_id=workflow_id,
+        apply_repairs=True,
+    )
+    if not contract_report.validated or contract_report.graph is None:
+        details = "; ".join(issue.message for issue in contract_report.errors[:5]) or "unknown validation failure"
+        raise HTTPException(422, f"Planner produced invalid graph: {details}")
+
+    if not contract_report.run_ready:
+        details = "; ".join(contract_report.run_readiness_issues[:5]) or "workflow is not run-ready"
+        raise HTTPException(422, f"Planner produced a non-runnable workflow: {details}")
+
+    workflow_id = contract_report.normalized_workflow_id or workflow_id
     try:
-        graph = Graph.model_validate(graph_data)
+        graph = Graph.model_validate(contract_report.graph_dict or graph_data)
     except ValidationError as exc:
         raise HTTPException(422, f"Planner produced invalid graph: {exc}") from exc
-    workflow_name = workflow_id
+    workflow_name = contract_report.display_name or workflow_id
 
     plan_event: dict[str, Any] = {
         "event_type": "plan_created",

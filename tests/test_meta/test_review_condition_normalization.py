@@ -96,8 +96,8 @@ def test_tool_inference_matches_explicit_file_phrase():
     assert _infer_tool_id("", "read file contents from disk") == "file_read"
 
 
-def test_tool_inference_does_not_match_profile_as_file():
-    assert _infer_tool_id("", "profile customer behavior") == "web_search"
+def test_tool_inference_does_not_match_profile_as_file_or_default_to_web_search():
+    assert _infer_tool_id("", "profile customer behavior") == "llm_operator"
 
 
 def test_malformed_stop_condition_falls_back_to_default(caplog):

@@ -397,3 +397,30 @@ class TestCompileGenerateSpec:
         result = WorkflowPlanner._compile_generate_spec(spec)
         node = result["nodes"][0]
         assert node["gate_mode"] == "if_else"
+
+    def test_llm_defaults_follow_configured_provider(self, monkeypatch):
+        monkeypatch.delenv("DAN_LLM_MODEL", raising=False)
+        monkeypatch.delenv("DAN_ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DAN_GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv("DAN_OPENAI_API_KEY", "test-key")
+
+        spec = {"nodes": [{"node_type": "llm_operator", "name": "Writer"}]}
+        result = WorkflowPlanner._compile_generate_spec(spec)
+
+        assert result["nodes"][0]["model"] == "gpt-4o"
+
+    def test_model_tier_config_maps_to_runtime_policy(self):
+        spec = {
+            "nodes": [
+                {
+                    "node_type": "llm_operator",
+                    "name": "Review",
+                    "config": {"model_tier": "premium"},
+                }
+            ]
+        }
+
+        result = WorkflowPlanner._compile_generate_spec(spec)
+
+        assert result["nodes"][0]["task_tier"] == "critical"
+        assert result["nodes"][0]["model_policy"] == {"strategy": "tier"}

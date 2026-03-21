@@ -106,6 +106,16 @@ def test_robust_profile_enriches_graph_end_to_end() -> None:
         "standard",
         "premium",
     ]
+    assert [node["config"].get("task_tier") for node in original_llm_nodes] == [
+        "routine",
+        "reasoning",
+        "reasoning",
+        "critical",
+    ]
+    assert all(
+        node["config"].get("model_policy") == {"strategy": "tier"}
+        for node in original_llm_nodes
+    )
     assert len(validator_nodes) == 1
     assert len(reviewer_nodes) == 1
     assert isinstance(enriched["edges"], list)
@@ -117,6 +127,125 @@ def test_robust_profile_enriches_graph_end_to_end() -> None:
         edge["target_node_id"] == reviewer_nodes[0]["id"]
         for edge in enriched["edges"]
     )
+
+
+def test_robust_profile_enriches_flat_compiled_graph() -> None:
+    graph = {
+        "nodes": [
+            {
+                "id": "fetch",
+                "name": "Fetch",
+                "node_type": "tool_operator",
+                "tool_id": "web_search",
+                "tool_config": {},
+            },
+            {
+                "id": "draft",
+                "name": "Draft",
+                "node_type": "llm_operator",
+                "model": "claude-sonnet-4-6",
+                "prompt_template": "Write a first draft of the article",
+                "system_prompt": "",
+                "temperature": 0.3,
+            },
+            {
+                "id": "revise",
+                "name": "Revise",
+                "node_type": "llm_operator",
+                "model": "claude-sonnet-4-6",
+                "prompt_template": "Refine the article draft",
+                "system_prompt": "",
+                "temperature": 0.3,
+            },
+            {
+                "id": "summarize",
+                "name": "Summarize",
+                "node_type": "llm_operator",
+                "model": "claude-sonnet-4-6",
+                "prompt_template": "Summarize the refined article",
+                "system_prompt": "",
+                "temperature": 0.3,
+            },
+            {
+                "id": "final",
+                "name": "Final",
+                "node_type": "llm_operator",
+                "model": "claude-sonnet-4-6",
+                "prompt_template": "Write the final article for publication",
+                "system_prompt": "",
+                "temperature": 0.3,
+            },
+        ],
+        "edges": [
+            {
+                "source_node_id": "fetch",
+                "source_port": "results",
+                "target_node_id": "draft",
+                "target_port": "context",
+            },
+            {
+                "source_node_id": "draft",
+                "source_port": "text",
+                "target_node_id": "revise",
+                "target_port": "text",
+            },
+            {
+                "source_node_id": "revise",
+                "source_port": "text",
+                "target_node_id": "summarize",
+                "target_port": "text",
+            },
+            {
+                "source_node_id": "summarize",
+                "source_port": "text",
+                "target_node_id": "final",
+                "target_port": "text",
+            },
+        ],
+    }
+
+    enricher = DefaultsEnricher(GenerationDefaults.from_profile(DefaultProfile.robust))
+    enriched = enricher.enrich(deepcopy(graph))
+
+    assert all("config" not in node for node in enriched["nodes"])
+
+    tool_node = next(node for node in enriched["nodes"] if node["id"] == "fetch")
+    llm_nodes = [
+        node for node in enriched["nodes"] if node["node_type"] == "llm_operator"
+        and node["id"] in {"draft", "revise", "summarize", "final"}
+    ]
+    validator_nodes = [
+        node for node in enriched["nodes"] if node["node_type"] == "validator"
+    ]
+    reviewer_nodes = [
+        node
+        for node in enriched["nodes"]
+        if node["node_type"] == "llm_operator" and str(node.get("name", "")).startswith("review_")
+    ]
+
+    assert tool_node["retry_policy"]["max_retries"] == 3
+    assert [node["retry_policy"]["max_retries"] for node in llm_nodes] == [2, 2, 2, 2]
+    assert [node["model_tier"] for node in llm_nodes] == [
+        "routine",
+        "standard",
+        "standard",
+        "premium",
+    ]
+    assert [node["task_tier"] for node in llm_nodes] == [
+        "routine",
+        "reasoning",
+        "reasoning",
+        "critical",
+    ]
+    assert all(node["model_policy"] == {"strategy": "tier"} for node in llm_nodes)
+    assert len(validator_nodes) == 1
+    assert validator_nodes[0]["name"] == "validate_before_final"
+    assert validator_nodes[0]["validation_rules"][0]["rule_type"] == "format_check"
+    assert len(reviewer_nodes) == 1
+    assert reviewer_nodes[0]["model"] == "claude-sonnet-4-6"
+    assert reviewer_nodes[0]["task_tier"] == "critical"
+    assert reviewer_nodes[0]["model_policy"] == {"strategy": "tier"}
+    assert reviewer_nodes[0]["prompt_template"].startswith("Review the following content")
 
 
 class TestDefaultProfile:
@@ -200,8 +329,54 @@ class TestDefaultsEnricher:
         graph = self._make_graph(nodes)
         result = enricher.enrich(graph)
         tiers = [n["config"].get("model_tier") for n in result["nodes"]]
+        task_tiers = [n["config"].get("task_tier") for n in result["nodes"]]
         assert "routine" in tiers
         assert "premium" in tiers
+        assert "routine" in task_tiers
+        assert "critical" in task_tiers
+        assert all(n["config"].get("model_policy") == {"strategy": "tier"} for n in result["nodes"])
+
+    def test_reviewer_uses_provider_aware_default_model(self, monkeypatch):
+        monkeypatch.delenv("DAN_LLM_MODEL", raising=False)
+        monkeypatch.delenv("DAN_ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("DAN_GOOGLE_API_KEY", raising=False)
+        monkeypatch.setenv("DAN_OPENAI_API_KEY", "test-key")
+
+        enricher = DefaultsEnricher(GenerationDefaults.from_profile(DefaultProfile.robust))
+        graph = self._make_graph([
+            {
+                "id": "draft",
+                "node_type": "llm_operator",
+                "config": {"prompt_template": "Write a detailed report about the market"},
+            },
+            {
+                "id": "revise",
+                "node_type": "llm_operator",
+                "config": {"prompt_template": "Revise the report for publication"},
+            },
+            {
+                "id": "summarize",
+                "node_type": "llm_operator",
+                "config": {"prompt_template": "Summarize the report findings"},
+            },
+            {
+                "id": "final",
+                "node_type": "llm_operator",
+                "config": {"prompt_template": "Write the final article for publication"},
+            },
+        ])
+
+        result = enricher.enrich(graph)
+        reviewer = next(
+            node
+            for node in result["nodes"]
+            if node["node_type"] == "llm_operator"
+            and str(node["config"].get("name", "")).startswith("review_")
+        )
+
+        assert reviewer["config"]["model"] == "o3"
+        assert reviewer["config"]["task_tier"] == "critical"
+        assert reviewer["config"]["model_policy"] == {"strategy": "tier"}
 
     def test_has_content_workflow(self):
         nodes = [{"node_type": "llm_operator", "config": {"prompt_template": "Write a report about X"}}]

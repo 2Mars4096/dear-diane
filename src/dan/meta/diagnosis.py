@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import difflib
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -21,6 +22,16 @@ from dan.executors.code import _ALLOWED_BUILTINS
 from dan.sandbox import SandboxResult
 
 logger = logging.getLogger(__name__)
+
+
+def generation_repair_attempt_budget(default: int = 4) -> int:
+    """Return the bounded repair budget for workflow generation retries."""
+    raw = os.environ.get("DAN_GENERATION_REPAIR_ATTEMPTS", str(default)).strip()
+    try:
+        parsed = int(raw)
+    except ValueError:
+        return default
+    return max(1, min(parsed, 5))
 
 
 # ---------------------------------------------------------------------------
@@ -649,17 +660,25 @@ class RePromptComposer:
         artifact: ErrorArtifact | None,
         original_code: str,
         goal: str,
+        *,
+        prior_attempts: list["DiagnosisAttempt"] | None = None,
+        learning_points: list[str] | None = None,
+        attempt_number: int | None = None,
+        max_attempts: int | None = None,
     ) -> str:
         """Return a focused error message for the LLM.
 
         Includes: error type, message, relevant code snippet (not full
         code), and fix guidance.
         """
-        parts: list[str] = [
+        parts: list[str] = []
+        if attempt_number is not None and max_attempts is not None:
+            parts.append(f"## Repair attempt {attempt_number}/{max_attempts}")
+        parts.extend([
             f"## Error during {error.stage.value}",
             f"**Type:** {error.error_type.value}",
             f"**Message:** {error.message}",
-        ]
+        ])
 
         if artifact and artifact.context:
             parts.append(
@@ -675,10 +694,29 @@ class RePromptComposer:
                     f"```\n{snippet}\n```"
                 )
 
+        if learning_points:
+            parts.append(
+                "\n### Lessons from prior failed attempts\n"
+                + "\n".join(f"- {point}" for point in learning_points[:6])
+            )
+
+        if prior_attempts:
+            prior_lines: list[str] = []
+            for attempt in prior_attempts[-3:]:
+                strategy = attempt.strategy_used.value if attempt.strategy_used else "unknown"
+                corrections = ", ".join(attempt.corrections_applied) or "no patch landed"
+                prior_lines.append(
+                    f"- Attempt {attempt.attempt_number}: strategy={strategy}, "
+                    f"result={attempt.result}, corrections={corrections}"
+                )
+            if prior_lines:
+                parts.append("\n### Prior attempts\n" + "\n".join(prior_lines))
+
         parts.append(f"\n### Goal\n{goal}")
         parts.append(
             "\nFix the error above and regenerate the code.  "
-            "Only fix the error — do not change unrelated parts."
+            "Only fix the error — do not change unrelated parts. "
+            "Return only executable Python builder code with no markdown fences."
         )
         return "\n".join(parts)
 
@@ -693,6 +731,7 @@ class DiagnosisAttempt:
     attempt_number: int
     errors_found: list[GenerationError]
     corrections_applied: list[str]
+    learning_points: list[str] = field(default_factory=list)
     strategy_used: CorrectionStrategy | None = None
     result: str = "pending"  # "fixed" | "failed" | "partial"
 
@@ -714,12 +753,16 @@ class DiagnosisResult:
 class DiagnosisLoop:
     """Bounded repair loop for failed workflow generation.
 
-    Runs only at generation time.  Tries auto-fixes first, then one LLM
-    re-prompt if needed.  Max attempts configurable (default 2).
+    Runs only at generation time.  Tries auto-fixes first, then bounded
+    LLM re-prompts with accumulated failure context.
     """
 
-    def __init__(self, max_attempts: int = 2):
-        self.max_attempts = max_attempts
+    def __init__(self, max_attempts: int | None = None):
+        self.max_attempts = (
+            max_attempts
+            if max_attempts is not None
+            else generation_repair_attempt_budget()
+        )
         self.classifier = ErrorClassifier()
         self.mapper = ArtifactMapper()
         self.selector = CorrectionStrategySelector()
@@ -733,11 +776,13 @@ class DiagnosisLoop:
         errors: list[GenerationError],
         sandbox_runner: Any = None,
         llm_complete: Any = None,
+        graph_validator: Any = None,
     ) -> DiagnosisResult:
         """Run bounded diagnosis.  Returns :class:`DiagnosisResult`."""
         attempts: list[DiagnosisAttempt] = []
         current_code = generated_code
         current_errors = errors
+        learned_points: list[str] = []
 
         for attempt_num in range(1, self.max_attempts + 1):
             attempt = DiagnosisAttempt(
@@ -747,15 +792,26 @@ class DiagnosisLoop:
             )
 
             if not current_errors:
-                attempt.result = "fixed"
-                attempts.append(attempt)
                 graph_dict = await self._try_build(current_code, sandbox_runner)
-                return DiagnosisResult(
-                    success=True,
-                    final_graph=graph_dict,
-                    final_code=current_code,
-                    attempts=attempts,
+                current_errors = self._validate_candidate_graph(
+                    graph_dict,
+                    graph_validator,
                 )
+                if not current_errors:
+                    attempt.result = "fixed"
+                    attempts.append(attempt)
+                    return DiagnosisResult(
+                        success=True,
+                        final_graph=graph_dict,
+                        final_code=current_code,
+                        attempts=attempts,
+                    )
+                attempt.errors_found = list(current_errors)
+
+            attempt.learning_points = self._extract_learning_points(current_errors)
+            for point in attempt.learning_points:
+                if point not in learned_points:
+                    learned_points.append(point)
 
             _STRATEGY_PRIORITY = {
                 CorrectionStrategy.auto_fix: 0,
@@ -787,13 +843,21 @@ class DiagnosisLoop:
                     attempt.corrections_applied.append("auto-fix applied")
                     current_code = fixed_code
                     new_errors = await self._revalidate(current_code, sandbox_runner)
+                    candidate_graph = None
+                    if not new_errors:
+                        candidate_graph = await self._try_build(
+                            current_code, sandbox_runner
+                        )
+                        new_errors = self._validate_candidate_graph(
+                            candidate_graph,
+                            graph_validator,
+                        )
                     if not new_errors:
                         attempt.result = "fixed"
                         attempts.append(attempt)
-                        graph_dict = await self._try_build(current_code, sandbox_runner)
                         return DiagnosisResult(
                             success=True,
-                            final_graph=graph_dict,
+                            final_graph=candidate_graph,
                             final_code=current_code,
                             attempts=attempts,
                         )
@@ -818,6 +882,10 @@ class DiagnosisLoop:
                     self.mapper.map_to_artifact(current_errors[0], code=current_code),
                     current_code,
                     goal,
+                    prior_attempts=attempts,
+                    learning_points=learned_points,
+                    attempt_number=attempt_num,
+                    max_attempts=self.max_attempts,
                 )
                 try:
                     new_code = await llm_complete(
@@ -827,19 +895,25 @@ class DiagnosisLoop:
                     )
                     if new_code and new_code.strip():
                         attempt.corrections_applied.append("LLM re-prompt fix")
-                        current_code = new_code.strip()
+                        current_code = self._normalize_llm_code(new_code)
                         new_errors = await self._revalidate(
                             current_code, sandbox_runner
                         )
+                        candidate_graph = None
+                        if not new_errors:
+                            candidate_graph = await self._try_build(
+                                current_code, sandbox_runner
+                            )
+                            new_errors = self._validate_candidate_graph(
+                                candidate_graph,
+                                graph_validator,
+                            )
                         if not new_errors:
                             attempt.result = "fixed"
                             attempts.append(attempt)
-                            graph_dict = await self._try_build(
-                                current_code, sandbox_runner
-                            )
                             return DiagnosisResult(
                                 success=True,
-                                final_graph=graph_dict,
+                                final_graph=candidate_graph,
                                 final_code=current_code,
                                 attempts=attempts,
                             )
@@ -862,6 +936,79 @@ class DiagnosisLoop:
             attempts=attempts,
             final_errors=current_errors,
         )
+
+    @staticmethod
+    def _normalize_llm_code(text: str) -> str:
+        """Strip markdown fences from repaired code when models add them."""
+        match = re.search(r"```(?:python)?\s*(.*?)```", text, re.DOTALL)
+        return (match.group(1) if match else text).strip()
+
+    @staticmethod
+    def _extract_learning_points(
+        errors: list[GenerationError],
+    ) -> list[str]:
+        """Convert repeated failures into compact constraints for the next retry."""
+        points: list[str] = []
+        for error in errors:
+            if error.error_type == GenerationErrorType.syntax_error:
+                points.append("Return executable Python builder code that parses cleanly.")
+            elif error.error_type == GenerationErrorType.import_error:
+                points.append("Use only supported DAN builder/runtime imports available in this repo.")
+            elif error.error_type == GenerationErrorType.name_error:
+                if "no graph variable found" in error.message.lower():
+                    points.append("Assign the final .build() result to graph, wf, workflow, or g.")
+                else:
+                    points.append("Define every referenced symbol before it is used.")
+            elif error.error_type in (
+                GenerationErrorType.port_conflict,
+                GenerationErrorType.missing_port,
+                GenerationErrorType.edge_endpoint,
+            ):
+                points.append("Use declared port names only and connect matching input/output ports.")
+            elif error.error_type == GenerationErrorType.duplicate_node:
+                points.append("Keep every node id unique and update references consistently.")
+            elif error.error_type == GenerationErrorType.reachability:
+                points.append("Ensure every node is reachable from an entry point and contributes to an exit path.")
+            elif error.error_type == GenerationErrorType.cycle:
+                points.append("Avoid cycles unless using explicit loop constructs supported by DAN.")
+            elif error.error_type in (
+                GenerationErrorType.schema_mismatch,
+                GenerationErrorType.build_error,
+            ):
+                points.append("Produce a workflow that compiles to a valid DAN graph schema.")
+            elif error.error_type == GenerationErrorType.no_output:
+                points.append("Make sure the code actually builds a workflow graph and returns it via graph/wf/workflow/g.")
+        return list(dict.fromkeys(points))
+
+    @staticmethod
+    def _validate_candidate_graph(
+        graph_dict: dict | None,
+        graph_validator: Any = None,
+    ) -> list[GenerationError]:
+        """Run optional structural validation on a built graph candidate."""
+        if graph_dict is None:
+            return [
+                GenerationError(
+                    stage=GenerationStage.build,
+                    error_type=GenerationErrorType.no_output,
+                    message="Code executed but no workflow graph was produced",
+                    recoverable=True,
+                )
+            ]
+        if graph_validator is None:
+            return []
+        try:
+            return list(graph_validator(graph_dict))
+        except Exception as exc:
+            logger.exception("Graph validator callback failed during diagnosis")
+            return [
+                GenerationError(
+                    stage=GenerationStage.validation,
+                    error_type=GenerationErrorType.unknown,
+                    message=f"Graph validator callback failed: {exc}",
+                    recoverable=False,
+                )
+            ]
 
     def _apply_auto_fixes(
         self, code: str, errors: list[GenerationError]

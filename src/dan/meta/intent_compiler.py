@@ -18,7 +18,7 @@ import logging
 import re
 import tokenize
 from io import StringIO
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -87,7 +87,7 @@ def _infer_tool_id(name: str, description: str) -> str | None:
         "No tool keyword match for stage '%s'; falling back to llm stage",
         name or description,
     )
-    return None
+    return "llm_operator"
 
 
 def _mask_string_literals(text: str) -> tuple[str, list[str]]:
@@ -321,6 +321,49 @@ COVERAGE_CATALOG: dict[str, dict] = {
     },
 }
 
+
+class CoverageResult(BaseModel):
+    """Legacy API for tests and quality suite; compile path is ``IntentCompiler``."""
+
+    fully_covered: bool = True
+    recommendation: Literal["compile", "compose", "fallback", "partial"] = "compile"
+    supported_stages: list[str] = Field(default_factory=list)
+    unsupported_stages: list[str] = Field(default_factory=list)
+    constituent_patterns: list[str] | None = None
+
+
+class CoverageChecker:
+    """Pass-through shim: ``IntentCompiler.compile()`` is the real coverage gate."""
+
+    SUPPORTED_TYPES: ClassVar[set[StageType]] = set(StageType)
+
+    def check(
+        self,
+        intent: WorkflowIntent,
+        *,
+        try_compose: bool = True,
+    ) -> CoverageResult:
+        _ = try_compose
+        return CoverageResult(
+            fully_covered=True,
+            recommendation="compile",
+            supported_stages=[s.name for s in intent.stages],
+            unsupported_stages=[],
+        )
+
+    def describe_coverage(self) -> str:
+        lines: list[str] = ["Intent pattern catalog (deterministic compiler targets):"]
+        for name in sorted(COVERAGE_CATALOG):
+            entry = COVERAGE_CATALOG[name]
+            desc = str(entry.get("description", ""))
+            st_vals = [st.value for st in entry.get("stage_types", [])]
+            lines.append(f"  {name}: {desc}  [{', '.join(st_vals)}]")
+        lines.append("Stage types:")
+        for st in StageType:
+            lines.append(f"  {st.value}")
+        return "\n".join(lines)
+
+
 DOMAIN_PATTERN_PREFERENCES: dict[str, list[str]] = {
     "paper_rendering": ["research_review", "fan_out_fan_in", "rag_qa", "linear_chain"],
     "literature_review": ["research_review", "fan_out_fan_in", "rag_qa", "linear_chain"],
@@ -491,7 +534,7 @@ class IntentCompiler:
             stage.name,
             stage.description or "",
         )
-        if not tool_id:
+        if not tool_id or tool_id == "llm_operator":
             prompt = _escape(stage.description or f"Process: {stage.name}")
             lines = [f'{var} = wf.llm("{stage.name}", prompt="{prompt}")']
             return var, var, lines
@@ -684,7 +727,7 @@ class IntentCompiler:
             stage.name,
             stage.description or "",
         )
-        if not tool_id:
+        if not tool_id or tool_id == "llm_operator":
             prompt = stage.description or f"Process: {stage.name}"
             ref = wf.llm(stage.name, prompt=prompt)
             return ref, ref

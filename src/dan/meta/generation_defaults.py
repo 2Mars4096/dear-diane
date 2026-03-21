@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid as _uuid
 from enum import Enum
 from pathlib import Path
@@ -20,6 +21,22 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
+
+_LEGACY_MODEL_TIER_TO_TASK_TIER: dict[str, str] = {
+    "micro": "micro",
+    "routine": "routine",
+    "standard": "reasoning",
+    "reasoning": "reasoning",
+    "premium": "critical",
+    "critical": "critical",
+}
+
+_TASK_TIER_TO_LEGACY_MODEL_TIER: dict[str, str] = {
+    "micro": "micro",
+    "routine": "routine",
+    "reasoning": "standard",
+    "critical": "premium",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +129,52 @@ _EXTERNAL_TOOLS = frozenset({
 })
 
 
+def normalize_task_tier(value: Any) -> str | None:
+    """Normalize legacy generation tier labels to runtime task tiers."""
+    if value is None:
+        return None
+    tier = str(value).strip().lower()
+    return _LEGACY_MODEL_TIER_TO_TASK_TIER.get(tier)
+
+
+def legacy_model_tier_label(task_tier: Any) -> str | None:
+    """Map runtime task tiers back to the legacy generation labels."""
+    normalized = normalize_task_tier(task_tier)
+    if normalized is None:
+        return None
+    return _TASK_TIER_TO_LEGACY_MODEL_TIER.get(normalized, normalized)
+
+
+def _configured_llm_providers() -> list[str]:
+    providers: list[str] = []
+    if os.environ.get("DAN_ANTHROPIC_API_KEY", "").strip():
+        providers.append("anthropic")
+    if os.environ.get("DAN_OPENAI_API_KEY", "").strip():
+        providers.append("openai")
+    if os.environ.get("DAN_GOOGLE_API_KEY", "").strip():
+        providers.append("google")
+    return providers
+
+
+def resolve_default_llm_model(*, tier: str = "routine") -> str:
+    """Resolve a provider-aware default LLM model for generated workflows."""
+    explicit = os.environ.get("DAN_LLM_MODEL", "").strip()
+    if explicit:
+        return explicit
+
+    try:
+        from dan.providers.tier_defaults import resolve_tier_map
+
+        tier_map = resolve_tier_map(_configured_llm_providers())
+        model = tier_map.get(tier) or tier_map.get("routine")
+        if model:
+            return model
+    except Exception:
+        logger.debug("Falling back to static default LLM model", exc_info=True)
+
+    return "claude-sonnet-4-6"
+
+
 class DefaultsEnricher:
     """Post-generation graph enrichment — adds missing defaults non-destructively.
 
@@ -146,6 +209,23 @@ class DefaultsEnricher:
 
         return graph_dict
 
+    @staticmethod
+    def _node_payload(node: dict[str, Any]) -> dict[str, Any]:
+        config = node.get("config")
+        return config if isinstance(config, dict) else node
+
+    @classmethod
+    def _get_node_value(cls, node: dict[str, Any], key: str, default: Any = None) -> Any:
+        return cls._node_payload(node).get(key, default)
+
+    @classmethod
+    def _set_node_value(cls, node: dict[str, Any], key: str, value: Any) -> None:
+        cls._node_payload(node)[key] = value
+
+    @classmethod
+    def _node_uses_nested_config(cls, node: dict[str, Any]) -> bool:
+        return isinstance(node.get("config"), dict)
+
     def _add_llm_retry(self, nodes: list[dict]) -> None:
         rc = self.defaults.retry_config
         policy = {
@@ -155,10 +235,9 @@ class DefaultsEnricher:
         }
         for node in nodes:
             if node.get("node_type") == "llm_operator":
-                config = node.get("config", {})
-                if "retry_policy" not in config:
-                    config["retry_policy"] = policy
-                    node["config"] = config
+                payload = self._node_payload(node)
+                if "retry_policy" not in payload:
+                    self._set_node_value(node, "retry_policy", dict(policy))
 
     def _add_tool_retry(self, nodes: list[dict]) -> None:
         rc = self.defaults.retry_config
@@ -169,12 +248,11 @@ class DefaultsEnricher:
         }
         for node in nodes:
             if node.get("node_type") == "tool_operator":
-                tool_id = node.get("config", {}).get("tool_id", "")
+                tool_id = str(self._get_node_value(node, "tool_id", ""))
                 if tool_id in _EXTERNAL_TOOLS:
-                    config = node.get("config", {})
-                    if "retry_policy" not in config:
-                        config["retry_policy"] = policy
-                        node["config"] = config
+                    payload = self._node_payload(node)
+                    if "retry_policy" not in payload:
+                        self._set_node_value(node, "retry_policy", dict(policy))
 
     def _apply_model_tiering(self, nodes: list[dict]) -> None:
         """Assign model tiers based on node position heuristics."""
@@ -183,16 +261,30 @@ class DefaultsEnricher:
             return
 
         for i, node in enumerate(llm_nodes):
-            config = node.get("config", {})
-            if config.get("model_tier"):
-                continue
+            payload = self._node_payload(node)
             if i == len(llm_nodes) - 1:
-                config["model_tier"] = "premium"
+                legacy_tier = "premium"
             elif i == 0:
-                config["model_tier"] = "routine"
+                legacy_tier = "routine"
             else:
-                config["model_tier"] = "standard"
-            node["config"] = config
+                legacy_tier = "standard"
+
+            task_tier = normalize_task_tier(payload.get("task_tier") or payload.get("model_tier"))
+            if task_tier is None:
+                task_tier = normalize_task_tier(legacy_tier)
+
+            if not payload.get("model_tier"):
+                self._set_node_value(node, "model_tier", legacy_tier)
+            if task_tier and not payload.get("task_tier"):
+                self._set_node_value(node, "task_tier", task_tier)
+            if task_tier and not payload.get("model_policy"):
+                self._set_node_value(node, "model_policy", {"strategy": "tier"})
+            if task_tier and not payload.get("model"):
+                self._set_node_value(
+                    node,
+                    "model",
+                    resolve_default_llm_model(tier=task_tier),
+                )
 
     @staticmethod
     def _llm_nodes(nodes: list[dict]) -> list[dict]:
@@ -235,16 +327,11 @@ class DefaultsEnricher:
                 continue
 
             val_id = f"auto_validator_{_uuid.uuid4().hex[:6]}"
-            validator = {
-                "id": val_id,
-                "node_type": "validator",
-                "config": {
-                    "name": f"validate_before_{tid}",
-                    "validation_rules": [{"rule_type": "format_check", "config": {}}],
-                    "on_failure": "route",
-                    "strict_mode": False,
-                },
-            }
+            validator = self._make_validator_node(
+                val_id=val_id,
+                target_id=tid,
+                target_node=terminal_node,
+            )
             nodes.append(validator)
 
             for edge in incoming:
@@ -268,7 +355,7 @@ class DefaultsEnricher:
         nodes = graph_dict.get("nodes", [])
         has_review = any(
             n.get("node_type") in ("while_loop", "goal_loop")
-            or "review" in n.get("config", {}).get("name", "").lower()
+            or "review" in str(self._get_node_value(n, "name", "")).lower()
             for n in nodes
         )
         if has_review:
@@ -278,7 +365,7 @@ class DefaultsEnricher:
         for n in reversed(nodes):
             if n.get("node_type") != "llm_operator":
                 continue
-            prompt = n.get("config", {}).get("prompt_template", "").lower()
+            prompt = str(self._get_node_value(n, "prompt_template", "")).lower()
             if any(kw in prompt for kw in _CONTENT_KEYWORDS):
                 content_node = n
                 break
@@ -290,19 +377,7 @@ class DefaultsEnricher:
             return
 
         rev_id = f"auto_reviewer_{_uuid.uuid4().hex[:6]}"
-        reviewer = {
-            "id": rev_id,
-            "node_type": "llm_operator",
-            "config": {
-                "name": f"review_{cid}",
-                "prompt_template": (
-                    "Review the following content for quality, accuracy, and completeness. "
-                    "Provide a quality score (1-10) and specific feedback."
-                ),
-                "system_prompt": "",
-                "temperature": 0.3,
-            },
-        }
+        reviewer = self._make_reviewer_node(rev_id=rev_id, content_node=content_node)
         nodes.append(reviewer)
 
         edges = graph_dict.get("edges")
@@ -322,10 +397,102 @@ class DefaultsEnricher:
         for node in nodes:
             if node.get("node_type") != "llm_operator":
                 continue
-            prompt = node.get("config", {}).get("prompt_template", "").lower()
+            payload = node.get("config", {}) if isinstance(node.get("config"), dict) else node
+            prompt = str(payload.get("prompt_template", "")).lower()
             if any(kw in prompt for kw in _CONTENT_KEYWORDS):
                 return True
         return False
+
+    def _make_validator_node(
+        self,
+        *,
+        val_id: str,
+        target_id: str,
+        target_node: dict[str, Any],
+    ) -> dict[str, Any]:
+        if self._node_uses_nested_config(target_node):
+            return {
+                "id": val_id,
+                "node_type": "validator",
+                "config": {
+                    "name": f"validate_before_{target_id}",
+                    "validation_rules": [{"rule_type": "format_check", "config": {}}],
+                    "on_failure": "route",
+                    "strict_mode": False,
+                },
+            }
+
+        return {
+            "id": val_id,
+            "name": f"validate_before_{target_id}",
+            "node_type": "validator",
+            "validation_rules": [{"rule_type": "format_check", "config": {}}],
+            "on_failure": "route",
+            "strict_mode": False,
+        }
+
+    def _make_reviewer_node(
+        self,
+        *,
+        rev_id: str,
+        content_node: dict[str, Any],
+    ) -> dict[str, Any]:
+        reviewer_task_tier = normalize_task_tier(
+            self._get_node_value(content_node, "task_tier")
+            or self._get_node_value(content_node, "model_tier")
+        )
+        reviewer_model = str(
+            self._get_node_value(
+                content_node,
+                "model",
+                resolve_default_llm_model(tier=reviewer_task_tier or "routine"),
+            )
+        )
+        reviewer_model_policy = self._get_node_value(content_node, "model_policy")
+        reviewer_legacy_tier = self._get_node_value(content_node, "model_tier")
+        if reviewer_legacy_tier is None and reviewer_task_tier is not None:
+            reviewer_legacy_tier = legacy_model_tier_label(reviewer_task_tier)
+        reviewer_prompt = (
+            "Review the following content for quality, accuracy, and completeness. "
+            "Provide a quality score (1-10) and specific feedback."
+        )
+        if self._node_uses_nested_config(content_node):
+            reviewer = {
+                "id": rev_id,
+                "node_type": "llm_operator",
+                "config": {
+                    "name": f"review_{content_node.get('id')}",
+                    "model": reviewer_model,
+                    "prompt_template": reviewer_prompt,
+                    "system_prompt": "",
+                    "temperature": 0.3,
+                },
+            }
+            reviewer_config = reviewer["config"]
+            if reviewer_model_policy is not None:
+                reviewer_config["model_policy"] = reviewer_model_policy
+            if reviewer_task_tier is not None:
+                reviewer_config["task_tier"] = reviewer_task_tier
+            if reviewer_legacy_tier is not None:
+                reviewer_config["model_tier"] = reviewer_legacy_tier
+            return reviewer
+
+        reviewer = {
+            "id": rev_id,
+            "name": f"review_{content_node.get('id')}",
+            "node_type": "llm_operator",
+            "model": reviewer_model,
+            "prompt_template": reviewer_prompt,
+            "system_prompt": "",
+            "temperature": 0.3,
+        }
+        if reviewer_model_policy is not None:
+            reviewer["model_policy"] = reviewer_model_policy
+        if reviewer_task_tier is not None:
+            reviewer["task_tier"] = reviewer_task_tier
+        if reviewer_legacy_tier is not None:
+            reviewer["model_tier"] = reviewer_legacy_tier
+        return reviewer
 
 
 # ---------------------------------------------------------------------------

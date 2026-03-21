@@ -15,7 +15,12 @@ from dan.meta.diagnosis import (
     GenerationStage,
 )
 
-VALID_CODE = "x = 1 + 2\n"
+VALID_CODE = (
+    "from dan.builder import workflow\n"
+    "wf = workflow('ok')\n"
+    "wf.llm('a', prompt='hello')\n"
+    "graph = wf.build()\n"
+)
 SYNTAX_ERROR_CODE = "def f(\n"
 IMPORT_ERROR_CODE = "from dan.builder import workflow\nx = 1\n"
 
@@ -244,6 +249,70 @@ async def test_partial_then_success():
 
     assert len(result.attempts) >= 1
     assert result.final_code != code_with_both_issues
+
+
+@pytest.mark.asyncio
+async def test_graph_validator_allows_multi_round_structural_repair():
+    """Executable-but-invalid graphs should feed back into later repair rounds."""
+    syntax_err = _make_error(
+        error_type=GenerationErrorType.syntax_error,
+        message="SyntaxError: invalid syntax",
+    )
+    prompts: list[str] = []
+    llm_calls = 0
+
+    first_fix = (
+        "from dan.builder import workflow\n"
+        "wf = workflow('round-one')\n"
+        "wf.llm('a', prompt='hello')\n"
+        "graph = wf.build()\n"
+    )
+    second_fix = (
+        "```python\n"
+        "from dan.builder import workflow\n"
+        "wf = workflow('round-two')\n"
+        "wf.llm('a', prompt='hello')\n"
+        "graph = wf.build()\n"
+        "```\n"
+    )
+
+    async def mock_llm(system: str, user: str) -> str:
+        nonlocal llm_calls
+        llm_calls += 1
+        prompts.append(user)
+        return first_fix if llm_calls == 1 else second_fix
+
+    def graph_validator(graph_dict: dict) -> list[GenerationError]:
+        if graph_dict["metadata"]["name"] == "round-one":
+            return [
+                GenerationError(
+                    stage=GenerationStage.validation,
+                    error_type=GenerationErrorType.reachability,
+                    message="Node 'review' is unreachable",
+                    recoverable=True,
+                )
+            ]
+        return []
+
+    loop = DiagnosisLoop(max_attempts=3)
+    result = await loop.diagnose_and_repair(
+        goal="build a reviewable workflow",
+        generated_code=SYNTAX_ERROR_CODE,
+        errors=[syntax_err],
+        llm_complete=mock_llm,
+        graph_validator=graph_validator,
+    )
+
+    assert result.success is True
+    assert llm_calls == 2
+    assert len(result.attempts) == 2
+    assert result.attempts[0].result == "partial"
+    assert result.attempts[1].result == "fixed"
+    assert result.final_graph is not None
+    assert result.final_graph["metadata"]["name"] == "round-two"
+    assert result.final_code.startswith("from dan.builder import workflow")
+    assert "Lessons from prior failed attempts" in prompts[-1]
+    assert "Prior attempts" in prompts[-1]
 
 
 # ── Unresolvable auto-fix should fall back to re-prompt ───────────────────

@@ -22,6 +22,10 @@ from dan.models.node_taxonomy import GENERATE_SPEC_NODE_TYPES
 from dan.meta.discovery import DiscoveryResult, DiscoveryService
 from dan.meta.goal_contract import render_goal_contract_section
 from dan.meta.tool_catalog import render_tool_catalog_markdown
+from dan.meta.workflow_contract import (
+    WorkflowBuildContractReport,
+    validate_workflow_build_contract,
+)
 
 if TYPE_CHECKING:
     from dan.meta.diagnosis import DiagnosisResult, GenerationError
@@ -95,6 +99,7 @@ __all__ = [
     "CodegenDiagnostics",
     "CodegenPromptBuilder",
     "CodegenResult",
+    "ExecutionReadinessError",
     "GenerateCodePlan",
     "GeneratePlan",
     "PlanAction",
@@ -138,6 +143,8 @@ class ValidationResult:
     warnings: list[str] = dc_field(default_factory=list)
     recoverable_errors: list[GenerationError] = dc_field(default_factory=list)
     fatal_errors: list[GenerationError] = dc_field(default_factory=list)
+    run_ready: bool = True
+    contract_report: WorkflowBuildContractReport | None = None
 
 
 @dataclass
@@ -153,6 +160,10 @@ class CodegenDiagnostics:
     final_code: str = ""
     validation_result: ValidationResult | None = None
     diagnosis_result: DiagnosisResult | None = None
+
+
+class ExecutionReadinessError(ValueError):
+    """Raised when a graph is structurally valid but still not safe to execute."""
 
 
 _LEGACY_GENERATE_FALLBACK = True
@@ -180,58 +191,56 @@ def validate_codegen_output(graph_dict: dict) -> ValidationResult:
     3. Classify errors as recoverable vs fatal
     4. Return structured ValidationResult
     """
-    from dan.models.graph import Graph
-    from dan.validation.graph import validate_graph
-
     from dan.meta.diagnosis import (
-        ErrorClassifier,
         GenerationError,
         GenerationErrorType,
         GenerationStage,
     )
 
-    classifier = ErrorClassifier()
+    contract_report = validate_workflow_build_contract(graph_dict, apply_repairs=True)
     errors: list[GenerationError] = []
-    warnings: list[str] = []
-
-    # Step 1: Schema validation
-    try:
-        graph = Graph.model_validate(graph_dict)
-    except Exception as e:
+    for issue in contract_report.errors:
+        error_type = GenerationErrorType.build_error
+        if issue.category == "schema":
+            error_type = GenerationErrorType.schema_mismatch
+        elif issue.category == "port_endpoint":
+            error_type = GenerationErrorType.edge_endpoint
+        elif issue.category == "node_identity":
+            error_type = (
+                GenerationErrorType.duplicate_node
+                if "duplicate node id" in issue.message.lower()
+                else GenerationErrorType.build_error
+            )
+        elif issue.category in {"entry_exit", "run_readiness"}:
+            error_type = (
+                GenerationErrorType.cycle
+                if "cycle" in issue.message.lower()
+                else GenerationErrorType.reachability
+            )
+        elif issue.category == "subgraph":
+            error_type = GenerationErrorType.missing_edge_target
         errors.append(
             GenerationError(
                 stage=GenerationStage.validation,
-                error_type=GenerationErrorType.schema_mismatch,
-                message=str(e),
-                recoverable=False,
+                error_type=error_type,
+                message=issue.message,
+                artifact_id=issue.artifact_id,
+                recoverable=issue.severity != "fatal",
             )
         )
-        return ValidationResult(
-            success=False,
-            errors=errors,
-            fatal_errors=list(errors),
-        )
 
-    # Step 2: Design-time validation
-    raw_issues = validate_graph(graph)
-    for msg in raw_issues:
-        if any(kw in msg.lower() for kw in ("warning", "deprecated", "untyped")):
-            warnings.append(msg)
-        else:
-            gen_errors = classifier.classify_validation_errors([msg])
-            errors.extend(gen_errors)
-
-    # Step 3: Classify recoverable vs fatal
     recoverable = [e for e in errors if e.recoverable]
     fatal = [e for e in errors if not e.recoverable]
 
     return ValidationResult(
         success=len(fatal) == 0 and len(recoverable) == 0,
-        graph=graph if len(fatal) == 0 else None,
+        graph=contract_report.graph if len(fatal) == 0 else None,
         errors=errors,
-        warnings=warnings,
+        warnings=list(contract_report.warnings),
         recoverable_errors=recoverable,
         fatal_errors=fatal,
+        run_ready=contract_report.run_ready,
+        contract_report=contract_report,
     )
 
 
@@ -1130,6 +1139,8 @@ class WorkflowPlanner:
         if isinstance(plan, GenerateCodePlan):
             try:
                 return await self._execute_generate_code(plan, domain=domain, user_text=user_text)
+            except ExecutionReadinessError:
+                raise
             except (ValueError, RuntimeError) as exc:
                 if _LEGACY_GENERATE_FALLBACK:
                     logger.warning(
@@ -1200,6 +1211,11 @@ class WorkflowPlanner:
             )
 
         graph_data = self._enrich_graph(graph_data, domain, user_text)
+        graph_data = self._ensure_execution_ready_graph(
+            graph_data,
+            failure_message="Enriched direct-build graph failed execution-readiness validation",
+            direct_build=True,
+        )
 
         return {
             "workflow_id": f"direct-{uuid.uuid4().hex[:10]}",
@@ -1243,6 +1259,47 @@ class WorkflowPlanner:
         except Exception:
             logger.warning("DefaultsEnricher failed", exc_info=True)
         return graph_data
+
+    @staticmethod
+    def _ensure_execution_ready_graph(
+        graph_data: dict[str, Any],
+        *,
+        failure_message: str,
+        direct_build: bool = False,
+    ) -> dict[str, Any]:
+        """Re-validate post-enrichment graphs before returning them to callers."""
+        validation = validate_codegen_output(graph_data)
+        if validation.success and validation.run_ready:
+            return (
+                validation.graph.model_dump(mode="json")
+                if validation.graph is not None
+                else graph_data
+            )
+
+        readiness_details: list[str] = []
+        if validation.contract_report is not None:
+            readiness_details.extend(validation.contract_report.run_readiness_issues[:5])
+        details = "; ".join(
+            [*(error.message for error in validation.errors[:5]), *readiness_details]
+        ) or "unknown validation failure"
+        if direct_build:
+            from dan.meta.intent_compiler import DirectBuildError
+
+            raise DirectBuildError(
+                f"{failure_message}: {details}",
+                stage_name="post_enrichment_validation",
+                stage_type="validate",
+                underlying=ValueError(f"{failure_message}: {details}"),
+            )
+        raise ExecutionReadinessError(f"{failure_message}: {details}")
+
+    @staticmethod
+    def _diagnosis_validation_errors(graph_data: dict[str, Any]) -> list["GenerationError"]:
+        """Return generation-style errors for a repaired graph candidate."""
+        validation = validate_codegen_output(graph_data)
+        if validation.success and validation.run_ready:
+            return []
+        return list(validation.errors)
 
     async def _call_llm(self, system_prompt: str, user_prompt: str) -> str:
         if self._llm_call is None:
@@ -1356,15 +1413,23 @@ class WorkflowPlanner:
         if not result.success or result.new_graph is None:
             error_msgs = [e.message for e in result.errors]
             raise ValueError(f"Mutation failed: {error_msgs}")
+        adapted_graph = self._ensure_execution_ready_graph(
+            result.new_graph,
+            failure_message="Adapted workflow failed execution-readiness validation",
+        )
         return {
             "workflow_id": plan.workflow_id,
-            "graph": result.new_graph,
+            "graph": adapted_graph,
             "mutations_applied": len(plan.mutations),
         }
 
     def _execute_generate(self, plan: GeneratePlan) -> dict[str, Any]:
         """Compile a generate spec into a runnable graph dict."""
         graph_data = self._compile_generate_spec(plan.spec)
+        graph_data = self._ensure_execution_ready_graph(
+            graph_data,
+            failure_message="Generated workflow failed execution-readiness validation",
+        )
         workflow_id = f"meta-{uuid.uuid4().hex[:10]}"
         return {
             "workflow_id": workflow_id,
@@ -1419,6 +1484,7 @@ class WorkflowPlanner:
                 GenerationError,
                 GenerationErrorType,
                 GenerationStage,
+                generation_repair_attempt_budget,
             )
 
             sandbox_errors = [
@@ -1435,27 +1501,42 @@ class WorkflowPlanner:
 
             recoverable = any(e.recoverable for e in sandbox_errors)
             if recoverable:
-                diagnosis = DiagnosisLoop(max_attempts=2)
+                diagnosis = DiagnosisLoop(
+                    max_attempts=generation_repair_attempt_budget()
+                )
                 diag_result = await diagnosis.diagnose_and_repair(
                     goal=plan.description,
                     generated_code=plan.code,
                     errors=sandbox_errors,
                     llm_complete=self._llm_complete_for_repair,
+                    graph_validator=self._diagnosis_validation_errors,
                 )
                 if diag_result.success and diag_result.final_graph:
-                    graph = Graph.model_validate(diag_result.final_graph)
+                    graph_data = self._enrich_graph(
+                        diag_result.final_graph,
+                        domain,
+                        user_text,
+                    )
+                    graph_data = self._ensure_execution_ready_graph(
+                        graph_data,
+                        failure_message=(
+                            "Diagnosis-repaired codegen graph failed "
+                            "execution-readiness validation"
+                        ),
+                    )
                     workflow_id = f"meta-code-{uuid.uuid4().hex[:10]}"
                     return {
                         "workflow_id": workflow_id,
-                        "graph": graph.model_dump(mode="json"),
+                        "graph": graph_data,
                         "description": plan.description,
                         "generated": True,
                         "code_generated": True,
                         "source_code": diag_result.final_code,
+                        "repair_attempts": len(diag_result.attempts),
                     }
 
                 diagnostics = CodegenDiagnostics(
-                    attempts=1,
+                    attempts=max(1, len(diag_result.attempts)),
                     errors=sandbox_errors,
                     final_code=plan.code,
                     diagnosis_result=diag_result,
@@ -1491,6 +1572,10 @@ class WorkflowPlanner:
 
             # 32-3: Post-generation enrichment (safety net for missing defaults)
             graph_data = self._enrich_graph(graph_data, domain, user_text)
+            graph_data = self._ensure_execution_ready_graph(
+                graph_data,
+                failure_message="Enriched codegen graph failed execution-readiness validation",
+            )
 
             workflow_id = f"meta-code-{uuid.uuid4().hex[:10]}"
             return {
@@ -1504,29 +1589,47 @@ class WorkflowPlanner:
 
         # Validation failed — try diagnosis if errors are recoverable
         if validation.recoverable_errors and not validation.fatal_errors:
-            from dan.meta.diagnosis import DiagnosisLoop
+            from dan.meta.diagnosis import (
+                DiagnosisLoop,
+                generation_repair_attempt_budget,
+            )
 
-            diagnosis = DiagnosisLoop(max_attempts=2)
+            diagnosis = DiagnosisLoop(
+                max_attempts=generation_repair_attempt_budget()
+            )
             diag_result = await diagnosis.diagnose_and_repair(
                 goal=plan.description,
                 generated_code=codegen.source_code,
                 errors=validation.recoverable_errors,
                 llm_complete=self._llm_complete_for_repair,
+                graph_validator=self._diagnosis_validation_errors,
             )
             if diag_result.success and diag_result.final_graph:
-                repaired = Graph.model_validate(diag_result.final_graph)
+                graph_data = self._enrich_graph(
+                    diag_result.final_graph,
+                    domain,
+                    user_text,
+                )
+                graph_data = self._ensure_execution_ready_graph(
+                    graph_data,
+                    failure_message=(
+                        "Diagnosis-repaired codegen graph failed "
+                        "execution-readiness validation"
+                    ),
+                )
                 workflow_id = f"meta-code-{uuid.uuid4().hex[:10]}"
                 return {
                     "workflow_id": workflow_id,
-                    "graph": repaired.model_dump(mode="json"),
+                    "graph": graph_data,
                     "description": plan.description,
                     "generated": True,
                     "code_generated": True,
                     "source_code": diag_result.final_code,
+                    "repair_attempts": len(diag_result.attempts),
                 }
 
             diagnostics = CodegenDiagnostics(
-                attempts=1,
+                attempts=max(1, len(diag_result.attempts)),
                 errors=list(validation.errors),
                 final_code=codegen.source_code,
                 validation_result=validation,
@@ -1609,6 +1712,8 @@ class WorkflowPlanner:
     @staticmethod
     def _compile_generate_spec(spec: dict[str, Any]) -> dict[str, Any]:
         """Compile a lightweight PlanIR spec to dan_graph_v1 JSON."""
+        from dan.meta.generation_defaults import normalize_task_tier, resolve_default_llm_model
+
         if "version" in spec and "nodes" in spec and "edges" in spec:
             return spec
 
@@ -1644,12 +1749,25 @@ class WorkflowPlanner:
 
             base: dict[str, Any] = {"id": node_id, "name": name, "node_type": node_type}
             if node_type == "llm_operator":
+                task_tier = normalize_task_tier(
+                    config.get("task_tier", config.get("model_tier"))
+                )
+                model_policy = config.get("model_policy")
                 base.update({
-                    "model": config.get("model", "claude-sonnet-4-6"),
+                    "model": config.get(
+                        "model",
+                        resolve_default_llm_model(tier=task_tier or "routine"),
+                    ),
                     "prompt_template": config.get("prompt_template", config.get("prompt", "")),
                     "system_prompt": config.get("system_prompt", ""),
                     "temperature": config.get("temperature", 0.3),
                 })
+                if task_tier is not None:
+                    base["task_tier"] = task_tier
+                if model_policy is not None:
+                    base["model_policy"] = model_policy
+                elif task_tier is not None:
+                    base["model_policy"] = {"strategy": "tier"}
             elif node_type == "tool_operator":
                 base.update({
                     "tool_id": config.get("tool_id", config.get("tool_name", "run_python")),

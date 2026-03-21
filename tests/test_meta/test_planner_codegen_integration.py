@@ -8,11 +8,14 @@ population, and _llm_complete_for_repair helper.
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from dan.builder import workflow
+import dan.meta.diagnosis as diagnosis_module
 from dan.meta.diagnosis import (
     DiagnosisResult,
     GenerationError,
@@ -20,13 +23,18 @@ from dan.meta.diagnosis import (
     GenerationStage,
 )
 from dan.meta.planner import (
+    AdaptPlan,
     CodegenDiagnostics,
     CodegenResult,
+    ExecutionReadinessError,
+    GeneratePlan,
     GenerateCodePlan,
     ValidationResult,
     WorkflowPlanner,
     _LEGACY_GENERATE_FALLBACK,
 )
+from dan.meta.intent_compiler import DirectBuildError
+from dan.meta.intent_schema import StageIntent, StageType, WorkflowIntent
 from dan.sandbox import SandboxResult
 
 
@@ -34,27 +42,24 @@ from dan.sandbox import SandboxResult
 # Fixtures
 # ---------------------------------------------------------------------------
 
-VALID_GRAPH_DICT = {
-    "version": "dan_graph_v1",
-    "metadata": {"name": "test", "description": ""},
-    "nodes": [
+def _build_valid_graph_dict() -> dict[str, Any]:
+    wf = workflow("test_codegen")
+    wf.llm("n1", prompt="Hello")
+    return wf.build().model_dump(mode="json")
+
+
+VALID_GRAPH_DICT = _build_valid_graph_dict()
+
+INVALID_ENRICHED_GRAPH_DICT = {
+    **VALID_GRAPH_DICT,
+    "edges": [
         {
-            "id": "n1",
-            "name": "Node 1",
-            "node_type": "llm_operator",
-            "model": "claude-sonnet-4-6",
-            "prompt_template": "Hello",
-            "system_prompt": "",
-            "temperature": 0.3,
-        }
+            "source_node_id": "n1",
+            "source_port": "text",
+            "target_node_id": "ghost",
+            "target_port": "text",
+        },
     ],
-    "edges": [],
-    "entry_points": ["n1"],
-    "exit_points": ["n1"],
-    "hyperedges": [],
-    "sub_graphs": {},
-    "shared_context": [],
-    "artifact_refs": [],
 }
 
 VALID_BUILDER_CODE = '''\
@@ -111,6 +116,63 @@ async def test_valid_code_returns_graph():
     assert result["generated"] is True
     assert "workflow_id" in result
     assert result["graph"]["version"] == "dan_graph_v1"
+
+
+@pytest.mark.asyncio
+async def test_codegen_revalidates_after_enrichment():
+    """A graph invalidated by enrichment should not be returned as runnable."""
+    planner = _make_planner()
+    plan = GenerateCodePlan(code=VALID_BUILDER_CODE, description="test workflow")
+
+    sandbox_result = SandboxResult(exit_code=0)
+    structured = {"graph": VALID_GRAPH_DICT, "source_code": VALID_BUILDER_CODE}
+
+    with patch("dan.sandbox.runner.SandboxRunner.run", new_callable=AsyncMock) as mock_run:
+        mock_run.return_value = (sandbox_result, structured)
+        with patch.object(
+            planner,
+            "_enrich_graph",
+            return_value=INVALID_ENRICHED_GRAPH_DICT,
+        ):
+            with patch("dan.meta.planner._LEGACY_GENERATE_FALLBACK", False):
+                with pytest.raises(
+                    ValueError,
+                    match="Enriched codegen graph failed execution-readiness validation",
+                ):
+                    await planner.execute_plan(plan)
+
+
+@pytest.mark.asyncio
+async def test_direct_build_revalidates_after_enrichment():
+    """Direct-build graphs are revalidated after enrichment before being returned."""
+    planner = _make_planner()
+    plan = GenerateCodePlan(
+        code="",
+        description="direct build",
+        intent=WorkflowIntent(
+            goal="Build a simple transform",
+            stages=[
+                StageIntent(
+                    name="step",
+                    stage_type=StageType.transform,
+                    description="Transform the input",
+                ),
+            ],
+            global_inputs=[],
+            global_outputs=[],
+        ),
+    )
+
+    with patch.object(
+        planner,
+        "_enrich_graph",
+        return_value=INVALID_ENRICHED_GRAPH_DICT,
+    ):
+        with pytest.raises(
+            DirectBuildError,
+            match="Enriched direct-build graph failed execution-readiness validation",
+        ):
+            await planner.execute_plan_direct(plan)
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +252,15 @@ async def test_validation_failure_triggers_diagnosis():
         mock_run.return_value = (sandbox_result, structured)
 
         with patch("dan.meta.planner.validate_codegen_output") as mock_validate:
-            mock_validate.return_value = failed_validation
+            from dan.models.graph import Graph
+
+            mock_validate.side_effect = [
+                failed_validation,
+                ValidationResult(
+                    success=True,
+                    graph=Graph.model_validate(VALID_GRAPH_DICT),
+                ),
+            ]
 
             with patch("dan.meta.diagnosis.DiagnosisLoop.diagnose_and_repair", new_callable=AsyncMock) as mock_diag:
                 mock_diag.return_value = diag_result
@@ -201,6 +271,59 @@ async def test_validation_failure_triggers_diagnosis():
     mock_diag.assert_awaited_once()
     call_kwargs = mock_diag.call_args
     assert call_kwargs[1]["errors"] == [recoverable_error] or call_kwargs[0][2] == [recoverable_error]
+
+
+@pytest.mark.asyncio
+async def test_validation_failure_diagnosis_uses_extended_budget_and_graph_validator(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Planner should pass structural validation into multi-round diagnosis."""
+    planner = _make_planner()
+    plan = GenerateCodePlan(code=VALID_BUILDER_CODE, description="test")
+
+    sandbox_result = SandboxResult(exit_code=0)
+    structured = {"graph": VALID_GRAPH_DICT, "source_code": VALID_BUILDER_CODE}
+
+    recoverable_error = GenerationError(
+        stage=GenerationStage.validation,
+        error_type=GenerationErrorType.reachability,
+        message="Node 'orphan' is unreachable",
+        recoverable=True,
+    )
+    failed_validation = ValidationResult(
+        success=False,
+        errors=[recoverable_error],
+        recoverable_errors=[recoverable_error],
+        fatal_errors=[],
+    )
+
+    seen: dict[str, Any] = {}
+
+    class FakeDiagnosisLoop:
+        def __init__(self, max_attempts: int) -> None:
+            seen["max_attempts"] = max_attempts
+
+        async def diagnose_and_repair(self, **kwargs: Any) -> DiagnosisResult:
+            seen["graph_validator_present"] = kwargs.get("graph_validator") is not None
+            return DiagnosisResult(success=False, final_code=VALID_BUILDER_CODE, attempts=[])
+
+    monkeypatch.setattr(diagnosis_module, "DiagnosisLoop", FakeDiagnosisLoop)
+    monkeypatch.setattr(
+        diagnosis_module,
+        "generation_repair_attempt_budget",
+        lambda default=4: 4,
+    )
+
+    with patch("dan.sandbox.runner.SandboxRunner.run", new_callable=AsyncMock) as mock_run:
+        mock_run.return_value = (sandbox_result, structured)
+
+        with patch("dan.meta.planner.validate_codegen_output", return_value=failed_validation):
+            with patch("dan.meta.planner._LEGACY_GENERATE_FALLBACK", False):
+                with pytest.raises(ValueError, match="diagnosis repair unsuccessful"):
+                    await planner.execute_plan(plan)
+
+    assert seen["max_attempts"] == 4
+    assert seen["graph_validator_present"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -405,3 +528,132 @@ async def test_execute_plan_routes_generate_code():
 
     assert result["code_generated"] is True
     assert result["workflow_id"].startswith("meta-code-")
+
+
+@pytest.mark.asyncio
+async def test_execute_generate_requires_run_ready_graph() -> None:
+    """GENERATE must reject graphs that validate structurally but are not runnable."""
+    planner = _make_planner()
+    plan = GeneratePlan(
+        spec={
+            **VALID_GRAPH_DICT,
+            "nodes": [],
+            "entry_points": [],
+            "exit_points": [],
+        },
+        description="empty workflow",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Generated workflow failed execution-readiness validation",
+    ):
+        await planner.execute_plan(plan)
+
+
+@pytest.mark.asyncio
+async def test_execute_adapt_requires_run_ready_graph() -> None:
+    """ADAPT must reject mutation outputs that are not run-ready."""
+    graph_store = MagicMock()
+    graph_store.get_graph.return_value = VALID_GRAPH_DICT
+    planner = _make_planner(graph_store=graph_store)
+    plan = AdaptPlan(
+        workflow_id="base-workflow",
+        mutations=[{"op": "add_node", "node_type": "input", "name": "My Input"}],
+    )
+
+    invalid_graph = {
+        **VALID_GRAPH_DICT,
+        "nodes": [],
+        "entry_points": [],
+        "exit_points": [],
+    }
+
+    with patch("dan.server.graph_mutator.GraphMutator.apply") as mock_apply:
+        mock_apply.return_value = SimpleNamespace(
+            success=True,
+            new_graph=invalid_graph,
+            errors=[],
+        )
+        with pytest.raises(
+            ValueError,
+            match="Adapted workflow failed execution-readiness validation",
+        ):
+            await planner.execute_plan(plan)
+
+
+@pytest.mark.asyncio
+async def test_diagnosis_repaired_graph_must_be_run_ready() -> None:
+    """Diagnosis success should still fail when the repaired graph is not runnable."""
+    planner = _make_planner()
+    plan = GenerateCodePlan(code="def f(\n", description="test")
+
+    sandbox_result = SandboxResult(exit_code=0)
+    structured = {
+        "error": {"type": "SyntaxError", "message": "invalid syntax", "line": 1}
+    }
+
+    invalid_graph = {
+        **VALID_GRAPH_DICT,
+        "nodes": [],
+        "entry_points": [],
+        "exit_points": [],
+    }
+    diag_result = DiagnosisResult(
+        success=True,
+        final_graph=invalid_graph,
+        final_code=VALID_BUILDER_CODE,
+    )
+
+    with patch("dan.sandbox.runner.SandboxRunner.run", new_callable=AsyncMock) as mock_run:
+        mock_run.return_value = (sandbox_result, structured)
+        with patch(
+            "dan.meta.diagnosis.DiagnosisLoop.diagnose_and_repair",
+            new_callable=AsyncMock,
+        ) as mock_diag:
+            mock_diag.return_value = diag_result
+            with patch("dan.meta.planner._LEGACY_GENERATE_FALLBACK", False):
+                with pytest.raises(
+                    ValueError,
+                    match="Diagnosis-repaired codegen graph failed execution-readiness validation",
+                ):
+                    await planner.execute_plan(plan)
+
+    mock_diag.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_execution_readiness_failure_does_not_trigger_legacy_fallback() -> None:
+    """Execution-readiness failures must surface instead of silently degrading."""
+    planner = _make_planner()
+    plan = GenerateCodePlan(code="def f(\n", description="test")
+
+    sandbox_result = SandboxResult(exit_code=0)
+    structured = {
+        "error": {"type": "SyntaxError", "message": "invalid syntax", "line": 1}
+    }
+
+    invalid_graph = {
+        **VALID_GRAPH_DICT,
+        "nodes": [],
+        "entry_points": [],
+        "exit_points": [],
+    }
+    diag_result = DiagnosisResult(
+        success=True,
+        final_graph=invalid_graph,
+        final_code=VALID_BUILDER_CODE,
+    )
+
+    with patch("dan.sandbox.runner.SandboxRunner.run", new_callable=AsyncMock) as mock_run:
+        mock_run.return_value = (sandbox_result, structured)
+        with patch(
+            "dan.meta.diagnosis.DiagnosisLoop.diagnose_and_repair",
+            new_callable=AsyncMock,
+        ) as mock_diag:
+            mock_diag.return_value = diag_result
+            with patch("dan.meta.planner._LEGACY_GENERATE_FALLBACK", True):
+                with pytest.raises(ExecutionReadinessError):
+                    await planner.execute_plan(plan)
+
+    mock_diag.assert_awaited_once()
