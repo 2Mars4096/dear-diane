@@ -37,6 +37,7 @@ from dan.server.chat.helpers import (
 from dan.server.chat.mutation_parser import (
     _coerce_strict_edges,
     _normalize_generated_mutation_ops,
+    normalize_mutation_ops_for_chat,
 )
 from dan.server.chat.prompts import (
     BUILD_FROM_INTENT_PROMPT,
@@ -88,6 +89,7 @@ __all__ = [
     "build_debug_context",
     "_coerce_strict_edges",
     "_normalize_generated_mutation_ops",
+    "normalize_mutation_ops_for_chat",
     "estimate_tokens",
     "context_pressure_hint",
     "compact_history",

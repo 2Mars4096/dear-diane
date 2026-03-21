@@ -77,6 +77,20 @@ _TOOL_HISTORY_COMPAT_MARKERS = (
     "tool-call transcript",
     "tool call transcript",
 )
+_APPLY_PREVIEW_CONFIRMATION_RE = re.compile(
+    r"\b(?:apply(?:\s+(?:it|that|the\s+preview|the\s+changes))?"
+    r"|go\s+ahead"
+    r"|looks\s+good"
+    r"|approved?"
+    r"|ship\s+it"
+    r"|proceed"
+    r"|do\s+it)\b",
+    re.IGNORECASE,
+)
+_WORKFLOW_MODIFICATION_CUE_RE = re.compile(
+    r"\b(?:fix|repair|modify|edit|update|change|build|create|add|remove|rewire|replace|review|patch|debug|adjust|refactor)\b",
+    re.IGNORECASE,
+)
 
 _LIVE_DATA_PHRASES = (
     "what happened",
@@ -209,6 +223,33 @@ def _tool_choice_for_action_hints(
     if allow_required_tool_choice:
         return "required"
     return "auto"
+
+
+def _preferred_workflow_edit_tool(
+    required_action_hints: list[str] | None,
+    user_message: str | None,
+    *,
+    preview_available: bool,
+    allow_plan_graph_mutations: bool,
+    allow_apply_last_mutation: bool,
+) -> str | None:
+    if "workflow_edit" not in _dedupe_action_hints(required_action_hints):
+        return None
+
+    message = str(user_message or "").strip()
+    if (
+        preview_available
+        and allow_apply_last_mutation
+        and _APPLY_PREVIEW_CONFIRMATION_RE.search(message)
+        and not _WORKFLOW_MODIFICATION_CUE_RE.search(message)
+    ):
+        return "apply_last_mutation"
+
+    if allow_plan_graph_mutations:
+        return "plan_graph_mutations"
+    if preview_available and allow_apply_last_mutation:
+        return "apply_last_mutation"
+    return None
 
 
 def _tool_retry_prompt_for_missing_actions(missing_action_hints: list[str]) -> str:
@@ -796,12 +837,24 @@ def should_require_web_grounding(
 ) -> bool:
     text = str(message or "").strip()
     text_lower = text.lower()
+    action_hints = set(required_action_hints or [])
     if "search_web" in (required_action_hints or []):
         return True
     if has_explicit_web_trigger(text, mentions):
         return True
     if any(phrase in text_lower for phrase in _LIVE_DATA_PHRASES):
         return True
+    # Local workflow control/query turns are often phrased as questions, but they
+    # should not trigger generic web-grounding unless the user explicitly asked
+    # for web/current information above.
+    if action_hints.intersection({
+        "workflow_build",
+        "workflow_edit",
+        "workflow_query",
+        "workflow_run",
+        "run_control",
+    }):
+        return False
     if mode not in {"agent", "conversation"}:
         return False
     return (

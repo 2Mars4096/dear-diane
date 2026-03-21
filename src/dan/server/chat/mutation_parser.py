@@ -11,6 +11,7 @@ from dan.server.chat.helpers import _extract_cited_sources
 from dan.server.search_models import CitationRecord, CitationVerification, SearchResult
 
 logger = logging.getLogger(__name__)
+_CHAT_NODE_ID_RE = re.compile(r"[^A-Za-z0-9_]+")
 
 
 def _normalize_usage(raw: dict[str, int] | None) -> dict[str, int]:
@@ -108,33 +109,62 @@ def _normalize_generated_mutation_ops(
     shape mismatches so dry-run can proceed and auto-repair has a chance to
     converge.
     """
-    normalized: list[dict[str, Any]] = []
-    for op in operations:
-        if not isinstance(op, dict):
-            continue
-        op_norm = dict(op)
-        if op_norm.get("op") == "add_edge":
+    def normalize_one(raw: dict[str, Any]) -> dict[str, Any]:
+        op_norm = dict(raw)
+        kind = str(op_norm.get("op") or "").strip()
+
+        # Body-graph plans sometimes emit bare node specs instead of explicit add_node ops.
+        if not kind and (
+            op_norm.get("node_type")
+            or op_norm.get("type")
+        ) and (op_norm.get("id") or op_norm.get("name")):
+            kind = "add_node"
+            op_norm["op"] = kind
+
+        if kind == "replace_body_graph":
+            inner = op_norm.get("operations")
+            if isinstance(inner, list):
+                op_norm["operations"] = [
+                    normalize_one(item)
+                    for item in inner
+                    if isinstance(item, dict)
+                ]
+            return op_norm
+
+        if kind == "add_edge":
             cfg = op_norm.get("config")
             if isinstance(cfg, dict):
                 for key in ("source_id", "source_port", "target_id", "target_port"):
                     if key not in op_norm and key in cfg:
                         op_norm[key] = cfg[key]
                 op_norm.pop("config", None)
-            normalized.append(op_norm)
-            continue
+            return op_norm
 
-        if op_norm.get("op") != "add_node":
-            normalized.append(op_norm)
-            continue
+        if kind != "add_node":
+            return op_norm
+
+        if "node_type" not in op_norm and isinstance(op_norm.get("type"), str):
+            op_norm["node_type"] = op_norm["type"]
+        op_norm.pop("type", None)
 
         config = op_norm.get("config")
         if not isinstance(config, dict):
-            normalized.append(op_norm)
-            continue
+            return op_norm
         cfg = dict(config)
-        node_type = op_norm.get("node_type")
+        node_type = str(op_norm.get("node_type") or "")
 
-        if node_type == "parallel_subagents":
+        if node_type == "tool_operator":
+            tool_id = cfg.get("tool_id")
+            if not tool_id and isinstance(cfg.get("tool"), str):
+                cfg["tool_id"] = cfg.pop("tool")
+            elif "tool" in cfg:
+                cfg.pop("tool", None)
+            nested_tool_cfg = cfg.get("config")
+            if "tool_config" not in cfg and isinstance(nested_tool_cfg, dict):
+                cfg["tool_config"] = nested_tool_cfg
+                cfg.pop("config", None)
+
+        elif node_type == "parallel_subagents":
             branch_graphs = cfg.get("branch_graphs")
             if isinstance(branch_graphs, dict):
                 cfg["branch_graphs"] = list(branch_graphs.keys())
@@ -196,9 +226,217 @@ def _normalize_generated_mutation_ops(
                 cfg["validation_rules"] = fixed_rules
 
         op_norm["config"] = cfg
-        normalized.append(op_norm)
+        return op_norm
 
+    normalized: list[dict[str, Any]] = []
+    for op in operations:
+        if not isinstance(op, dict):
+            continue
+        normalized.append(normalize_one(op))
     return normalized
+
+
+def _suggest_chat_node_id(name: str) -> str:
+    raw = str(name or "").strip()
+    if not raw:
+        return ""
+    candidate = _CHAT_NODE_ID_RE.sub("_", raw).strip("_")
+    if not candidate:
+        return ""
+    if candidate[0].isdigit():
+        candidate = f"node_{candidate}"
+    return candidate
+
+
+def _repair_missing_node_ids(
+    operations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    diagnostics: list[str] = []
+
+    def walk(ops: list[Any]) -> list[dict[str, Any]]:
+        alias_map: dict[str, str] = {}
+        used_ids: set[str] = set()
+        normalized: list[dict[str, Any]] = []
+
+        for raw in ops:
+            if not isinstance(raw, dict):
+                continue
+            op = dict(raw)
+            kind = str(op.get("op") or "").strip()
+
+            if kind == "replace_body_graph":
+                inner = op.get("operations")
+                if isinstance(inner, list):
+                    op["operations"] = walk(inner)
+                normalized.append(op)
+                continue
+
+            if kind == "add_node":
+                current_id = str(op.get("id") or "").strip()
+                name = str(op.get("name") or "").strip()
+                if not current_id and name:
+                    suggested = _suggest_chat_node_id(name)
+                    if suggested:
+                        candidate = suggested
+                        suffix = 2
+                        while candidate in used_ids:
+                            candidate = f"{suggested}_{suffix}"
+                            suffix += 1
+                        op["id"] = candidate
+                        current_id = candidate
+                        diagnostics.append(
+                            f"Filled missing add_node id for '{name}' with '{candidate}'."
+                        )
+                        logger.info(
+                            "Mutation self-repair: filled missing add_node id for %r with %r",
+                            name,
+                            candidate,
+                        )
+                if current_id:
+                    used_ids.add(current_id)
+                    alias_map[current_id] = current_id
+                if name and current_id:
+                    alias_map[name] = current_id
+                normalized.append(op)
+                continue
+
+            normalized.append(op)
+
+        repaired: list[dict[str, Any]] = []
+        for raw in normalized:
+            op = dict(raw)
+            if str(op.get("op") or "").strip() == "add_edge":
+                for field in ("source_id", "target_id"):
+                    ref = str(op.get(field) or "").strip()
+                    replacement = alias_map.get(ref)
+                    if replacement and replacement != ref:
+                        op[field] = replacement
+                        diagnostics.append(
+                            f"Rewrote {field} reference '{ref}' to '{replacement}'."
+                        )
+                        logger.info(
+                            "Mutation self-repair: rewrote %s reference %r to %r",
+                            field,
+                            ref,
+                            replacement,
+                        )
+            repaired.append(op)
+        return repaired
+
+    return walk(operations), diagnostics
+
+
+def _graph_node_id_types(graph: dict[str, Any]) -> dict[str, str]:
+    """Map node id -> node_type for duplicate-id repair."""
+    out: dict[str, str] = {}
+    for n in graph.get("nodes") or []:
+        if isinstance(n, dict) and n.get("id"):
+            out[str(n["id"])] = str(n.get("node_type") or "")
+    return out
+
+
+def _repair_duplicate_add_node_operations(
+    graph: dict[str, Any],
+    operations: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Turn duplicate ``add_node`` ops into ``edit_node`` (id already in graph or earlier in plan).
+
+    Covers LLM plans that re-specify existing nodes (e.g. ``read_watchlist``) instead of editing them.
+    Nested ``replace_body_graph.operations`` get a fresh id namespace (empty body build).
+    """
+    diagnostics: list[str] = []
+
+    def walk(
+        ops: list[Any],
+        seen: set[str],
+        types: dict[str, str],
+    ) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for raw in ops:
+            if not isinstance(raw, dict):
+                continue
+            op = dict(raw)
+            kind = op.get("op")
+
+            if kind == "replace_body_graph":
+                inner = op.get("operations")
+                if isinstance(inner, list):
+                    op["operations"] = walk(inner, set(), {})
+                out.append(op)
+                continue
+
+            if kind == "remove_node":
+                nid = str(op.get("node_id") or "").strip()
+                if nid:
+                    seen.discard(nid)
+                    types.pop(nid, None)
+                out.append(op)
+                continue
+
+            if kind == "add_node":
+                nid = str(op.get("id") or "").strip()
+                nt = str(op.get("node_type") or "")
+                if nid and nid in seen:
+                    ex = types.get(nid, "")
+                    if ex and nt and ex != nt:
+                        msg = (
+                            f"Rejected duplicate add_node self-repair for '{nid}' because "
+                            f"node_type would change from {ex!r} to {nt!r}; leaving the "
+                            "operation unchanged so dry-run can fail and trigger re-planning."
+                        )
+                        diagnostics.append(msg)
+                        logger.info("Mutation self-repair: %s", msg)
+                        out.append(op)
+                        continue
+                    updates: dict[str, Any] = {}
+                    if op.get("name"):
+                        updates["name"] = op["name"]
+                    cfg = op.get("config")
+                    if isinstance(cfg, dict) and cfg:
+                        updates["config"] = cfg
+                    msg = (
+                        f"Coerced add_node '{nid}' to edit_node (id already exists in workflow "
+                        f"or earlier in this plan)."
+                    )
+                    diagnostics.append(msg)
+                    logger.info("Mutation self-repair: %s", msg)
+                    out.append({
+                        "op": "edit_node",
+                        "node_id": nid,
+                        "updates": updates,
+                    })
+                    continue
+                if nid:
+                    seen.add(nid)
+                    types[nid] = nt
+                out.append(op)
+                continue
+
+            out.append(op)
+        return out
+
+    id_types = _graph_node_id_types(graph)
+    repaired = walk(operations, set(id_types.keys()), dict(id_types))
+    return repaired, diagnostics
+
+
+def normalize_mutation_ops_for_chat(
+    graph: dict[str, Any] | None,
+    operations: list[dict[str, Any]],
+    *,
+    is_empty_graph: bool = False,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Normalize LLM mutation ops, apply duplicate-id self-repair, optional strict edges."""
+    ops = _normalize_generated_mutation_ops(operations)
+    ops, id_repairs = _repair_missing_node_ids(ops)
+    all_repairs = list(id_repairs)
+    duplicate_repairs: list[str] = []
+    if graph is not None:
+        ops, duplicate_repairs = _repair_duplicate_add_node_operations(graph, ops)
+        all_repairs.extend(duplicate_repairs)
+    if is_empty_graph:
+        ops = _coerce_strict_edges(ops)
+    return ops, all_repairs
 
 
 def _build_args_preview(mutation_data: dict[str, Any]) -> str:
@@ -218,7 +456,10 @@ def _build_args_preview(mutation_data: dict[str, Any]) -> str:
 def _build_dry_run_preview(dry_result: Any) -> tuple[str, str]:
     """Build (status, output_preview) from a dry-run result."""
     if dry_result.success:
-        n_ops = len(dry_result.applied_operations) if hasattr(dry_result, "applied_operations") else 0
+        applied_ops = getattr(dry_result, "applied_ops", None)
+        if applied_ops is None:
+            applied_ops = getattr(dry_result, "applied_operations", [])
+        n_ops = len(applied_ops or [])
         return "success", f"Dry run passed ({n_ops} operations applied)"
     errors = [e.message for e in dry_result.errors] if dry_result.errors else ["Unknown error"]
     return "error", f"Dry run failed: {errors[0]}"

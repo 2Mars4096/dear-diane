@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import asyncio
+import copy
 import dataclasses
 import datetime as _dt
 import hashlib
@@ -93,6 +94,7 @@ from dan.server.chat.helpers import (  # noqa: F401
     _PARALLEL_TOOL_FAMILY_MAP,
     _dedupe_action_hints,
     _missing_action_hints,
+    _preferred_workflow_edit_tool,
     _tool_choice_for_action_hints,
     _tool_retry_prompt_for_missing_actions,
     _tool_schema_name,
@@ -146,7 +148,12 @@ from dan.server.chat.prompts import (  # noqa: F401
     UNIFIED_SYSTEM_PROMPT,
     EMPTY_GRAPH_SUMMARY_PLACEHOLDER,
     WORKFLOW_TEMPLATES,
+    resolve_surface_hints,
 )
+
+# Tests and older call sites expect this private alias.
+_resolve_surface_hints = resolve_surface_hints
+
 from dan.server.chat.tokens import (  # noqa: F401
     MODEL_CONTEXT_WINDOWS,
     _DEFAULT_CONTEXT_WINDOW,
@@ -175,6 +182,7 @@ from dan.server.chat.mutation_parser import (  # noqa: F401
     _try_parse_mutation_json,
     _coerce_strict_edges,
     _normalize_generated_mutation_ops,
+    normalize_mutation_ops_for_chat,
     _build_args_preview,
     _build_dry_run_preview,
     _try_persist_audit,
@@ -431,6 +439,32 @@ def _clear_latest_mutation_preview(
         logger.debug("Failed to clear latest mutation preview", exc_info=True)
 
 
+def _has_latest_mutation_preview(
+    chat_store: Any,
+    workflow_id: str,
+    thread_id: str | None,
+) -> bool:
+    if chat_store is None or not thread_id:
+        return False
+    try:
+        thread = chat_store.get_thread(workflow_id, thread_id)
+    except Exception:
+        thread = None
+    if thread is not None:
+        for msg in reversed(getattr(thread, "messages", []) or []):
+            mutation_plan = getattr(msg, "mutation_plan", None)
+            if not isinstance(mutation_plan, dict) or not mutation_plan:
+                continue
+            if getattr(msg, "mutation_status", None) in (None, "proposed"):
+                return True
+    try:
+        meta = chat_store.get_thread_meta(workflow_id, thread_id)
+    except Exception:
+        meta = {}
+    preview = meta.get("latest_mutation_preview") if isinstance(meta, dict) else None
+    return isinstance(preview, dict) and isinstance(preview.get("mutation_plan"), dict)
+
+
 def _citation_warning_text(verifications: list[Any]) -> str | None:
     flagged = [item for item in verifications if not getattr(item, "verified", True)]
     if not flagged:
@@ -475,7 +509,7 @@ def _format_mutation_preview_content(
     if applied and getattr(dry_result, "success", False):
         action = "Built" if is_empty_graph else "Updated"
         lead = f"{action} and applied the workflow. Dry-run validation passed."
-        tail = "The workflow is saved and ready to run."
+        tail = "The workflow is saved, validated, and ready to run."
     elif getattr(dry_result, "success", False):
         lead = f"Prepared a {preview_kind}. Dry-run validation passed."
         tail = "These changes are proposed, not applied yet."
@@ -489,6 +523,25 @@ def _format_mutation_preview_content(
     if summary:
         return f"{lead} {tail}\n\nPlanned changes: {summary}"
     return f"{lead} {tail}"
+
+
+def _workflow_contract_errors(
+    contract_report: Any,
+    *,
+    default_message: str,
+) -> list[str]:
+    errors: list[str] = []
+    for issue in getattr(contract_report, "errors", [])[:5]:
+        message = str(getattr(issue, "message", "") or "").strip()
+        if message:
+            errors.append(message)
+    for issue in getattr(contract_report, "run_readiness_issues", [])[:5]:
+        message = str(issue or "").strip()
+        if message and message not in errors:
+            errors.append(message)
+    if errors:
+        return errors
+    return [default_message]
 
 
 def _capability_registry_mode(mode: str) -> str:
@@ -1226,8 +1279,8 @@ class ChatManager:
                     yield evt
 
                 if graph_result is not None:
-                    self._graph_store.save_graph(workflow_id, graph_result)
-                    new_graph = Graph.model_validate(graph_result)
+                    saved_graph = self._graph_store.save_graph(workflow_id, graph_result)
+                    new_graph = Graph.model_validate(saved_graph)
                     new_summary = build_graph_summary(new_graph, workflow_id)
                     yield ChatGraphCreatedEvent(
                         workflow_id=workflow_id,
@@ -1271,6 +1324,7 @@ class ChatManager:
                             f"and {new_summary.edge_count} edges."
                         )
                         + node_preview
+                        + " Validated and run-ready."
                         + _path_suffix
                     )
                     self._record_conversation_summary(
@@ -1307,23 +1361,41 @@ class ChatManager:
                         summarize_graph as _summarize_graph,
                     )
 
-                    dispatch = dispatch_compound_mutations(graph_dict, message)
-                    _mutation_results = dispatch.results or ([dispatch.result] if dispatch.result else [])
-                    if dispatch.matched and _mutation_results and all(r.success for r in _mutation_results):
+                    structural_graph = copy.deepcopy(graph_dict)
+                    dispatch = dispatch_compound_mutations(structural_graph, message)
+                    if dispatch.matched and dispatch.results and all(
+                        r.success for r in dispatch.results
+                    ):
                         # Task 12: validate mutated graph before save; rollback = don't save
-                        from dan.validation.graph import validate_graph
+                        from dan.meta.workflow_contract import validate_workflow_build_contract
                         validation_passed = False
                         try:
-                            mutated_graph = Graph.model_validate(graph_dict)
-                            raw_errors = validate_graph(mutated_graph)
-                            if raw_errors:
+                            contract_report = validate_workflow_build_contract(
+                                structural_graph,
+                                workflow_id=workflow_id,
+                                apply_repairs=True,
+                            )
+                            if not (contract_report.validated and contract_report.run_ready):
                                 yield ChatValidationResultEvent(
                                     success=False,
-                                    error_count=len(raw_errors),
-                                    errors=raw_errors[:5],
+                                    error_count=len(_workflow_contract_errors(
+                                        contract_report,
+                                        default_message=(
+                                            "Structural macro changes were not run-ready."
+                                        ),
+                                    )),
+                                    errors=_workflow_contract_errors(
+                                        contract_report,
+                                        default_message=(
+                                            "Structural macro changes were not run-ready."
+                                        ),
+                                    ),
                                 )
                             else:
-                                self._graph_store.save_graph(workflow_id, graph_dict)
+                                graph_dict = self._graph_store.save_graph(
+                                    workflow_id,
+                                    contract_report.graph_dict or structural_graph,
+                                )
                                 validation_passed = True
                         except Exception as val_exc:
                             yield ChatValidationResultEvent(
@@ -1349,7 +1421,8 @@ class ChatManager:
                                 macro_msg = (
                                     f"Applied `{dispatch.macro_names[0]}`: "
                                     f"{r.edges_added} edges added, "
-                                    f"{len(r.nodes_added)} nodes added."
+                                    f"{len(r.nodes_added)} nodes added. "
+                                    "Validated and run-ready."
                                 )
                             else:
                                 parts = []
@@ -1357,7 +1430,10 @@ class ChatManager:
                                     parts.append(
                                         f"`{name}` ({len(r.nodes_added)} nodes, {r.edges_added} edges)"
                                     )
-                                macro_msg = f"Applied {len(dispatch.results)} macros: {', '.join(parts)}."
+                                macro_msg = (
+                                    f"Applied {len(dispatch.results)} macros: {', '.join(parts)}. "
+                                    "Validated and run-ready."
+                                )
                             message_id = uuid.uuid4().hex[:12]
                             yield ChatGraphCreatedEvent(
                                 workflow_id=workflow_id,
@@ -1381,19 +1457,35 @@ class ChatManager:
                             )
                             return
                     elif dispatch.matched and dispatch.result and dispatch.result.success:
-                        from dan.validation.graph import validate_graph
+                        from dan.meta.workflow_contract import validate_workflow_build_contract
                         single_validation_passed = False
                         try:
-                            mutated_graph = Graph.model_validate(graph_dict)
-                            raw_errors = validate_graph(mutated_graph)
-                            if not raw_errors:
-                                self._graph_store.save_graph(workflow_id, graph_dict)
+                            contract_report = validate_workflow_build_contract(
+                                structural_graph,
+                                workflow_id=workflow_id,
+                                apply_repairs=True,
+                            )
+                            if contract_report.validated and contract_report.run_ready:
+                                graph_dict = self._graph_store.save_graph(
+                                    workflow_id,
+                                    contract_report.graph_dict or structural_graph,
+                                )
                                 single_validation_passed = True
                             else:
                                 yield ChatValidationResultEvent(
                                     success=False,
-                                    error_count=len(raw_errors),
-                                    errors=raw_errors[:5],
+                                    error_count=len(_workflow_contract_errors(
+                                        contract_report,
+                                        default_message=(
+                                            "Structural macro changes were not run-ready."
+                                        ),
+                                    )),
+                                    errors=_workflow_contract_errors(
+                                        contract_report,
+                                        default_message=(
+                                            "Structural macro changes were not run-ready."
+                                        ),
+                                    ),
                                 )
                         except Exception as val_exc:
                             yield ChatValidationResultEvent(
@@ -1417,7 +1509,8 @@ class ChatManager:
                             macro_msg = (
                                 f"Applied `{dispatch.macro_name}`: "
                                 f"{dispatch.result.edges_added} edges added, "
-                                f"{len(dispatch.result.nodes_added)} nodes added."
+                                f"{len(dispatch.result.nodes_added)} nodes added. "
+                                "Validated and run-ready."
                             )
                             message_id = uuid.uuid4().hex[:12]
                             yield ChatGraphCreatedEvent(
@@ -1520,11 +1613,39 @@ class ChatManager:
             satisfied_tool_names: set[str] = set()
             successful_tool_results: list[dict[str, Any]] = []
             force_file_write_next_turn = False
+            pending_run_status_check_id: str | None = None
+            latest_mutation_preview_available = _has_latest_mutation_preview(
+                self._chat_store,
+                workflow_id,
+                thread_id,
+            )
+            preferred_workflow_edit_tool = _preferred_workflow_edit_tool(
+                required_action_hints,
+                message,
+                preview_available=latest_mutation_preview_available,
+                allow_plan_graph_mutations=(
+                    allow_mutation_tool and capability_mode not in READ_ONLY_MODES
+                ),
+                allow_apply_last_mutation=(
+                    self._capability_registry is not None
+                    and self._capability_registry.is_available(
+                        "apply_last_mutation",
+                        capability_mode,
+                    )
+                ),
+            )
 
             def _tool_request_config(
                 *,
                 force_file_write_now: bool = False,
             ) -> tuple[list[dict[str, Any]], str | dict[str, Any]]:
+                if pending_run_status_check_id:
+                    return _force_single_tool_request(
+                        all_tools,
+                        "get_run_status",
+                        allow_exact_tool_choice=allow_exact_tool_choice,
+                        allow_required_tool_choice=allow_required_tool_choice,
+                    )
                 should_force_file_write = (
                     force_file_write_now
                     and "write_file" in required_action_hints
@@ -1534,6 +1655,22 @@ class ChatManager:
                     return _force_single_tool_request(
                         all_tools,
                         "file_write",
+                        allow_exact_tool_choice=allow_exact_tool_choice,
+                        allow_required_tool_choice=allow_required_tool_choice,
+                    )
+                available_tool_names = {
+                    _tool_schema_name(tool)
+                    for tool in all_tools
+                    if isinstance(tool, dict)
+                }
+                if (
+                    preferred_workflow_edit_tool
+                    and preferred_workflow_edit_tool in available_tool_names
+                    and preferred_workflow_edit_tool not in satisfied_tool_names
+                ):
+                    return _force_single_tool_request(
+                        all_tools,
+                        preferred_workflow_edit_tool,
                         allow_exact_tool_choice=allow_exact_tool_choice,
                         allow_required_tool_choice=allow_required_tool_choice,
                     )
@@ -1547,6 +1684,18 @@ class ChatManager:
                         allow_required_tool_choice=allow_required_tool_choice,
                     ),
                 )
+
+            def _initial_tool_request_max_tokens(
+                request_tools: list[dict[str, Any]],
+                request_tool_choice: str | dict[str, Any],
+            ) -> int:
+                if (
+                    isinstance(request_tools, list)
+                    and len(request_tools) == 1
+                    and request_tool_choice != "auto"
+                ):
+                    return min(completion_max_tokens, 4096)
+                return completion_max_tokens
 
             async def _iter_guarded_complete(
                 *,
@@ -1662,13 +1811,16 @@ class ChatManager:
                     "base_graph_revision": base_revision,
                 }
                 try:
-                    ops = _normalize_generated_mutation_ops(
+                    ops, mechanical_repairs = normalize_mutation_ops_for_chat(
+                        graph_snapshot,
                         mutation_payload.get("operations", []),
+                        is_empty_graph=is_empty_graph,
                     )
-                    if is_empty_graph:
-                        ops = _coerce_strict_edges(ops)
+                    for line in mechanical_repairs:
+                        logger.info("%s", line)
                     plan_payload = {
                         "operations": ops,
+                        "mechanical_repairs": mechanical_repairs,
                         "description": mutation_payload.get("description", ""),
                         "reasoning": mutation_payload.get("reasoning", ""),
                         "base_graph_revision": base_revision,
@@ -1739,8 +1891,14 @@ class ChatManager:
                             "behavior and only fix mechanical graph-compilation, schema, or validation issues "
                             "in the plan. Do not broaden scope, do not ask the user for clarification, and "
                             "do not change the requested outcome unless a minimal structural adjustment is "
-                            "strictly required for a valid graph. Return ONLY a `plan_graph_mutations` tool "
-                            "call or a JSON object matching that tool."
+                            "strictly required for a valid graph. Use only schema-supported mutation ops "
+                            "(for example add_node, edit_node, add_edge, replace_body_graph). Never invent "
+                            "pseudo-ops such as dry_run, validate, inspect, repair, or connect. Inside "
+                            "replace_body_graph operations, edges may reference only nodes that exist inside "
+                            "that body graph; never reference the enclosing loop/composite node ID from "
+                            "inside the body. For for_each bodies, pass loop values through body-node input "
+                            "ports like item/index and return results through body exit nodes. Return ONLY "
+                            "a `plan_graph_mutations` tool call or a JSON object matching that tool."
                         ),
                     },
                     {
@@ -1771,7 +1929,10 @@ class ChatManager:
                                 "messages": messages,
                                 "model": effective_model,
                                 "temperature": 0.7,
-                                "max_tokens": completion_max_tokens,
+                                "max_tokens": _initial_tool_request_max_tokens(
+                                    request_tools,
+                                    request_tool_choice,
+                                ),
                                 "tools": request_tools,
                                 "tool_choice": request_tool_choice,
                             },
@@ -2577,6 +2738,9 @@ class ChatManager:
                         if plan is not None
                         else dict(plan_payload)
                     )
+                    _mr = (plan_payload or {}).get("mechanical_repairs") or []
+                    if _mr:
+                        plan_dump["mechanical_repairs"] = _mr
                     if mode == "debug":
                         plan_dump.setdefault("metadata", {})["source"] = "debug-fix"
 
@@ -2590,21 +2754,59 @@ class ChatManager:
                         and dry_result.new_graph is not None
                         and self._graph_store is not None
                     ):
+                        from dan.meta.workflow_contract import validate_workflow_build_contract
+
                         apply_result = GraphMutator().apply(
                             graph_dict, plan, current_revision=revision,
                         )
                         if apply_result.success and apply_result.new_graph is not None:
-                            self._graph_store.save_graph(workflow_id, apply_result.new_graph)
-                            new_revision = compute_graph_revision(apply_result.new_graph)
-                            graph_dict = apply_result.new_graph
-                            revision = new_revision
-                            did_apply = True
-                            logger.info(
-                                "Auto-applied mutation plan %s for workflow %s (new rev %s)",
-                                plan.plan_id, workflow_id, new_revision,
-                            )
-                            from dan.server.mutation_metrics import mutation_metrics as _apply_metrics
-                            _apply_metrics.record_apply(True)
+                            try:
+                                contract_report = validate_workflow_build_contract(
+                                    apply_result.new_graph,
+                                    workflow_id=workflow_id,
+                                    apply_repairs=True,
+                                )
+                            except Exception as val_exc:
+                                yield ChatValidationResultEvent(
+                                    success=False,
+                                    error_count=1,
+                                    errors=[str(val_exc)],
+                                )
+                                mutation_metrics.record_apply(False)
+                            else:
+                                if contract_report.validated and contract_report.run_ready:
+                                    graph_dict = self._graph_store.save_graph(
+                                        workflow_id,
+                                        contract_report.graph_dict or apply_result.new_graph,
+                                    )
+                                    new_revision = compute_graph_revision(graph_dict)
+                                    revision = new_revision
+                                    did_apply = True
+                                    logger.info(
+                                        "Auto-applied mutation plan %s for workflow %s (new rev %s)",
+                                        plan.plan_id, workflow_id, new_revision,
+                                    )
+                                    from dan.server.mutation_metrics import mutation_metrics as _apply_metrics
+                                    _apply_metrics.record_apply(True)
+                                else:
+                                    yield ChatValidationResultEvent(
+                                        success=False,
+                                        error_count=len(_workflow_contract_errors(
+                                            contract_report,
+                                            default_message=(
+                                                "Auto-apply was blocked because the workflow "
+                                                "is not run-ready."
+                                            ),
+                                        )),
+                                        errors=_workflow_contract_errors(
+                                            contract_report,
+                                            default_message=(
+                                                "Auto-apply was blocked because the workflow "
+                                                "is not run-ready."
+                                            ),
+                                        ),
+                                    )
+                                    mutation_metrics.record_apply(False)
 
                     preview_content = _format_mutation_preview_content(
                         description=mutation_data.get("description", ""),
@@ -2661,7 +2863,7 @@ class ChatManager:
                         "graph_revision": new_revision,
                         "message": (
                             "Workflow built and applied successfully. "
-                            "The workflow is saved and ready to run. "
+                            "The workflow is saved, validated, and ready to run. "
                             "Call `start_run` to execute it."
                         ),
                     })
@@ -2964,6 +3166,23 @@ class ChatManager:
                             "status": pending["status"],
                             "cap_result": cap_result,
                         })
+                        cap_data = cap_result.data if isinstance(cap_result.data, dict) else {}
+                        if cap_name == "start_run":
+                            started_run_id = str(cap_data.get("run_id") or "").strip()
+                            if started_run_id:
+                                pending_run_status_check_id = started_run_id
+                        elif cap_name == "get_run_status":
+                            observed_run_id = str(cap_data.get("run_id") or "").strip()
+                            requested_run_id = (
+                                str(cap_args.get("run_id") or "").strip()
+                                if isinstance(cap_args, dict)
+                                else ""
+                            )
+                            if pending_run_status_check_id and (
+                                observed_run_id == pending_run_status_check_id
+                                or requested_run_id in {"latest", pending_run_status_check_id}
+                            ):
+                                pending_run_status_check_id = None
                     yield ChatToolCallResultEvent(
                         tool_call_id=pending["event_tool_call_id"],
                         tool_name=cap_name,
@@ -3071,6 +3290,16 @@ class ChatManager:
                     messages.append({
                         "role": "user",
                         "content": deferred_capability_prompt,
+                    })
+                if pending_run_status_check_id:
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"The workflow run `{pending_run_status_check_id}` has only been started so far. "
+                            "Before giving a final answer, call `get_run_status` for that run_id and report the "
+                            "actual current status. Do not describe the run as completed, successful, or failed "
+                            "unless `get_run_status` confirms that terminal status."
+                        ),
                     })
                 if any(
                     pending["status"] == "success"
@@ -3689,9 +3918,14 @@ class ChatManager:
         if mutation_data is not None:
             try:
                 try:
-                    ops = _normalize_generated_mutation_ops(
+                    is_empty_fb = not bool(graph_dict.get("nodes"))
+                    ops, mechanical_repairs = normalize_mutation_ops_for_chat(
+                        graph_dict,
                         mutation_data.get("operations", []),
+                        is_empty_graph=is_empty_fb,
                     )
+                    for line in mechanical_repairs:
+                        logger.info("%s", line)
                     plan = MutationPlan.model_validate({
                         "operations": ops,
                         "description": mutation_data.get("description", ""),
@@ -4142,7 +4376,11 @@ class ChatManager:
                 "or replace obsolete workflow structure. For control-flow nodes like `for_each` or "
                 "`composite`, add the node first and then use `replace_body_graph` to define its body "
                 "sub-graph. `for_each` uses top-level ports `items` and `results`; `item` belongs inside "
-                "the body sub-graph entry nodes. Do not claim you need primitive `create_node`, "
+                "the body sub-graph entry nodes. Inside a body graph, edges may only connect body-graph "
+                "nodes to other body-graph nodes; do not wire back to the enclosing `for_each`/`composite` "
+                "node ID from inside `replace_body_graph`. Use only schema-supported mutation operations "
+                "from the tool definition and never invent pseudo-operations like `dry_run`, `validate`, "
+                "`inspect`, `repair`, or `connect`. Do not claim you need primitive `create_node`, "
                 "`add_edge`, or similar workflow-edit tools."
             )
         system_content = "\n\n".join(
@@ -4367,7 +4605,7 @@ class ChatManager:
         5. Return validated graph dict or None
         """
         from dan.meta.diagnosis import GenerationError, GenerationErrorType, GenerationStage
-        from dan.meta.intent_compiler import IntentCompiler
+        from dan.meta.intent_compiler import CoverageChecker, IntentCompiler
         from dan.meta.intent_extraction import (
             INTENT_EXTRACTION_SYSTEM_PROMPT,
             build_intent_tool_schema,
@@ -4447,6 +4685,17 @@ class ChatManager:
                 pre_generation_ms=_pre_generation_ms,  # TODO: populate from intent extraction timing
             )
 
+        def _validation_event(validation: Any) -> ChatValidationResultEvent:
+            errors = [e.message for e in validation.errors[:5]]
+            contract_report = getattr(validation, "contract_report", None)
+            if contract_report is not None and not getattr(validation, "run_ready", True):
+                errors.extend(contract_report.run_readiness_issues[:5])
+            return ChatValidationResultEvent(
+                success=bool(validation.success and getattr(validation, "run_ready", True)),
+                error_count=len(errors),
+                errors=errors,
+            )
+
         def _fit_check(graph_dict: dict) -> None:
             """C.6: Post-generation fit check — flag underspecified graphs."""
             nonlocal _result_node_count
@@ -4490,6 +4739,17 @@ class ChatManager:
                     recoverable=True,
                 )
             return None
+
+        def _diagnosis_graph_validator(graph_dict: dict) -> list[GenerationError]:
+            """Validate repaired graph candidates before accepting a diagnosis round."""
+            validation = validate_codegen_output(graph_dict)
+            if not (validation.success and validation.run_ready):
+                return list(validation.errors)
+            quality_error = _quality_error_for_graph(
+                graph_dict,
+                warning_message="Graph quality %d below threshold %d, retrying diagnosis",
+            )
+            return [quality_error] if quality_error is not None else []
 
         def _sandbox_failure_error(codegen_result: Any) -> GenerationError:
             err_msg = ""
@@ -4581,8 +4841,13 @@ class ChatManager:
         coverage_recommendation = None
         coverage_patterns: list[str] | None = None
         if intent is not None:
-            coverage_fully_covered = True
-            coverage_recommendation = "compile"
+            try:
+                coverage = CoverageChecker().check(intent)
+                coverage_fully_covered = coverage.fully_covered
+                coverage_recommendation = coverage.recommendation
+                coverage_patterns = coverage.constituent_patterns
+            except Exception as exc:
+                logger.info("Intent coverage check failed: %s", exc)
             logger.info(
                 "Intent compiler readiness: fully_covered=%s, recommendation=%s, constituent_patterns=%s",
                 coverage_fully_covered,
@@ -4652,12 +4917,8 @@ class ChatManager:
 
                 if graph_dict is not None:
                     validation = validate_codegen_output(graph_dict)
-                    events.append(ChatValidationResultEvent(
-                        success=validation.success,
-                        error_count=len(validation.errors),
-                        errors=[e.message for e in validation.errors[:5]],
-                    ))
-                    if validation.success and validation.graph is not None:
+                    events.append(_validation_event(validation))
+                    if validation.success and validation.run_ready and validation.graph is not None:
                         quality_error = _quality_error_for_graph(
                             graph_dict,
                             warning_message="Graph quality %d below threshold %d, falling back to codegen",
@@ -4674,7 +4935,7 @@ class ChatManager:
                                 )
                             self._record_gen_outcome("intent_compiler", success=True, pattern=workflow_id)
                             events.append(_build_summary_event())
-                            return graph_dict, events
+                            return validation.graph.model_dump(mode="json"), events
                     self._record_gen_outcome(
                         "intent_compiler", success=False,
                         error_type=validation.errors[0].error_type.value if validation.errors else "validation",
@@ -4901,12 +5162,8 @@ class ChatManager:
                 graph_dict, sandbox_codegen = await self._sandbox_exec_builder_code(builder_code)
                 if graph_dict is not None:
                     validation = validate_codegen_output(graph_dict)
-                    events.append(ChatValidationResultEvent(
-                        success=validation.success,
-                        error_count=len(validation.errors),
-                        errors=[e.message for e in validation.errors[:5]],
-                    ))
-                    if validation.success and validation.graph is not None:
+                    events.append(_validation_event(validation))
+                    if validation.success and validation.run_ready and validation.graph is not None:
                         quality_error = _quality_error_for_graph(
                             graph_dict,
                             warning_message="Graph quality %d below threshold %d, falling back to diagnosis",
@@ -4916,7 +5173,7 @@ class ChatManager:
                             _fit_check(graph_dict)
                             self._record_gen_outcome("codegen", success=True, pattern=workflow_id)
                             events.append(_build_summary_event())
-                            return graph_dict, events
+                            return validation.graph.model_dump(mode="json"), events
                         codegen_errors = [quality_error]
                     self._record_gen_outcome(
                         "codegen", success=False,
@@ -4963,12 +5220,8 @@ class ChatManager:
                             graph_dict, sandbox_codegen = await self._sandbox_exec_builder_code(builder_code)
                             if graph_dict is not None:
                                 validation = validate_codegen_output(graph_dict)
-                                events.append(ChatValidationResultEvent(
-                                    success=validation.success,
-                                    error_count=len(validation.errors),
-                                    errors=[e.message for e in validation.errors[:5]],
-                                ))
-                                if validation.success and validation.graph is not None:
+                                events.append(_validation_event(validation))
+                                if validation.success and validation.run_ready and validation.graph is not None:
                                     quality_error = _quality_error_for_graph(
                                         graph_dict,
                                         warning_message="Graph quality %d below threshold %d, falling back to diagnosis",
@@ -4978,7 +5231,7 @@ class ChatManager:
                                         _fit_check(graph_dict)
                                         self._record_gen_outcome("codegen", success=True, pattern=workflow_id)
                                         events.append(_build_summary_event())
-                                        return graph_dict, events
+                                        return validation.graph.model_dump(mode="json"), events
                                     codegen_errors = [quality_error]
                                 else:
                                     codegen_errors = validation.errors
@@ -5034,9 +5287,15 @@ class ChatManager:
             _emit_progress("diagnosis repair")
 
             try:
-                from dan.meta.diagnosis import DiagnosisLoop, GenerationError
+                from dan.meta.diagnosis import (
+                    DiagnosisLoop,
+                    GenerationError,
+                    generation_repair_attempt_budget,
+                )
 
-                diagnosis = DiagnosisLoop(max_attempts=2)
+                diagnosis = DiagnosisLoop(
+                    max_attempts=generation_repair_attempt_budget()
+                )
                 gen_errors = [
                     GenerationError(
                         stage=e.stage,
@@ -5064,15 +5323,12 @@ class ChatManager:
                     generated_code=builder_code,
                     errors=gen_errors,
                     llm_complete=_llm_complete,
+                    graph_validator=_diagnosis_graph_validator,
                 )
                 if diag_result.success and diag_result.final_graph:
                     validation = validate_codegen_output(diag_result.final_graph)
-                    events.append(ChatValidationResultEvent(
-                        success=validation.success,
-                        error_count=len(validation.errors),
-                        errors=[e.message for e in validation.errors[:5]],
-                    ))
-                    if validation.success and validation.graph is not None:
+                    events.append(_validation_event(validation))
+                    if validation.success and validation.run_ready and validation.graph is not None:
                         try:
                             quality_error = _quality_error_for_graph(
                                 diag_result.final_graph,
@@ -5110,7 +5366,7 @@ class ChatManager:
                         _fit_check(diag_result.final_graph)
                         self._record_gen_outcome("diagnosis", success=True, fix_needed=True, pattern=workflow_id)
                         events.append(_build_summary_event())
-                        return diag_result.final_graph, events
+                        return validation.graph.model_dump(mode="json"), events
                 self._record_gen_outcome("diagnosis", success=False, error_type="repair_failed", fix_needed=True, pattern=workflow_id)
             except Exception as exc:
                 logger.debug("Diagnosis loop failed: %s", exc)

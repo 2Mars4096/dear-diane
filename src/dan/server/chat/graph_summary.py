@@ -12,19 +12,50 @@ from dan.server.chat.events import EdgeSummary, GraphSummary, NodeSummary
 logger = logging.getLogger(__name__)
 
 
+def _strip_revision_noise(value: object) -> object:
+    """Remove non-semantic graph fields from revision hashing.
+
+    Graph saves always refresh ``metadata.created_at`` / ``metadata.updated_at``.
+    Those timestamps should not invalidate mutation previews or concurrency checks
+    when the workflow structure itself is unchanged.
+    """
+    if isinstance(value, list):
+        return [_strip_revision_noise(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+
+    is_graph_like = "nodes" in value and "edges" in value
+    cleaned: dict[str, object] = {}
+    for key, item in value.items():
+        if key == "metadata" and is_graph_like and isinstance(item, dict):
+            cleaned[key] = {
+                meta_key: _strip_revision_noise(meta_val)
+                for meta_key, meta_val in item.items()
+                if meta_key not in {"created_at", "updated_at"}
+            }
+            continue
+        cleaned[key] = _strip_revision_noise(item)
+    return cleaned
+
+
 def compute_graph_revision(graph_dict: dict) -> str:
     """Stable SHA-256 hash of the graph for concurrency checks.
 
     Normalizes through the Pydantic ``Graph`` model so that missing default
     fields (``version``, ``sub_graphs``, ``entry_points``, …) do not cause
     a revision mismatch between callers that round-trip through Pydantic and
-    those that hash the raw dict read from disk.
+    those that hash the raw dict read from disk. Save-time timestamps are
+    stripped so noop autosaves do not spuriously invalidate previews.
     """
     try:
         normalized = json.loads(Graph.model_validate(graph_dict).model_dump_json())
     except Exception:
         normalized = graph_dict
-    canonical = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(
+        _strip_revision_noise(normalized),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(canonical.encode()).hexdigest()[:16]
 
 

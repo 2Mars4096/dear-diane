@@ -170,16 +170,23 @@ async def test_non_timeout_sandbox_failure_preserves_error_for_diagnosis(
     monkeypatch.setattr(manager, "_sandbox_exec_builder_code", fake_sandbox)
 
     diagnosis_errors: list[Any] = []
+    diagnosis_meta: dict[str, Any] = {}
 
     class FakeDiagnosisLoop:
         def __init__(self, max_attempts: int) -> None:
-            self.max_attempts = max_attempts
+            diagnosis_meta["max_attempts"] = max_attempts
 
         async def diagnose_and_repair(self, **kwargs: Any) -> Any:
             diagnosis_errors.extend(kwargs["errors"])
+            diagnosis_meta["graph_validator_present"] = kwargs.get("graph_validator") is not None
             return SimpleNamespace(success=False, final_graph=None)
 
     monkeypatch.setattr(diagnosis_module, "DiagnosisLoop", FakeDiagnosisLoop)
+    monkeypatch.setattr(
+        diagnosis_module,
+        "generation_repair_attempt_budget",
+        lambda default=4: 4,
+    )
 
     graph, _events = await manager._generate_workflow_from_intent("Build a chain", "wf-3", "ch-3")
 
@@ -187,6 +194,8 @@ async def test_non_timeout_sandbox_failure_preserves_error_for_diagnosis(
     assert diagnosis_errors
     assert diagnosis_errors[0].message == "NameError: missing symbol"
     assert diagnosis_errors[0].error_type.value == "runtime_error"
+    assert diagnosis_meta["max_attempts"] == 4
+    assert diagnosis_meta["graph_validator_present"] is True
 
 
 @pytest.mark.asyncio

@@ -451,7 +451,7 @@ async def chat_message(req: ChatMessageRequest, concierge: bool = True):
                     _run_manager.list_runs(), req.workflow_id,
                 )
 
-            if concierge and _concierge is not None:
+            if concierge and (_dispatcher is not None or _concierge is not None):
                 from dan.server.concierge import SurfaceMessage
 
                 _surface_msg = SurfaceMessage(

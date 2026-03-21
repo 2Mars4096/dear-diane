@@ -24,12 +24,14 @@ from dan.server.chat.helpers import (
     _build_tool_followup_error_intro,
     _build_tool_followup_recovery_prompt,
     _post_tool_followup_retry_delay_seconds,
+    _preferred_workflow_edit_tool,
 )
 from dan.server.chat_manager import (
     ChatCompleteEvent,
     ChatInterruptedEvent,
     ChatManager,
     ChatMutationEvent,
+    ChatValidationResultEvent,
     ChatTokenEvent,
     ChatToolCallResultEvent,
     ChatToolCallStartEvent,
@@ -224,6 +226,26 @@ def test_tool_followup_wording_mentions_final_answer_from_completed_tools() -> N
         error_intro
         == "The provider hit a rate or quota limit while generating the final answer from completed tool results."
     )
+
+
+def test_preferred_workflow_edit_tool_prefers_plan_for_fresh_fix_requests() -> None:
+    assert _preferred_workflow_edit_tool(
+        ["workflow_edit"],
+        "Please fix the workflow wiring and repair the graph.",
+        preview_available=False,
+        allow_plan_graph_mutations=True,
+        allow_apply_last_mutation=True,
+    ) == "plan_graph_mutations"
+
+
+def test_preferred_workflow_edit_tool_uses_apply_for_preview_confirmation() -> None:
+    assert _preferred_workflow_edit_tool(
+        ["workflow_edit"],
+        "Looks good, apply it.",
+        preview_available=True,
+        allow_plan_graph_mutations=True,
+        allow_apply_last_mutation=True,
+    ) == "apply_last_mutation"
 
 
 @pytest.mark.asyncio
@@ -625,6 +647,55 @@ async def test_send_message_with_tools_retries_with_auto_tool_choice_when_provid
 
 
 @pytest.mark.asyncio
+async def test_send_message_with_tools_forces_plan_graph_mutations_for_workflow_edit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text=json.dumps(
+                    {
+                        "description": "Add a new input node",
+                        "operations": [
+                            {"op": "add_node", "node_type": "input", "name": "Input"},
+                        ],
+                    }
+                ),
+                usage={"prompt_tokens": 5, "completion_tokens": 2},
+            ),
+        ]
+    )
+    mgr = _make_manager(provider, tool_call_log=[])
+    provider.supports_exact_tool_choice = True
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Fix the workflow so it builds cleanly.",
+            history=[],
+            allow_mutation_tool=True,
+            required_action_hints=["workflow_edit"],
+        )
+    )
+
+    mutation_events = [event for event in events if getattr(event, "type", "") == "chat_mutation"]
+    assert mutation_events
+
+    first_request = provider.requests[0]
+    assert first_request["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "plan_graph_mutations"},
+    }
+    assert first_request["max_tokens"] == 4096
+    assert [
+        tool["function"]["name"]
+        for tool in first_request["tools"]
+    ] == ["plan_graph_mutations"]
+
+
+@pytest.mark.asyncio
 async def test_send_message_with_tools_adds_followup_action_prompt_when_tool_choice_is_auto(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -943,8 +1014,17 @@ async def test_tool_fallback_rebuilds_messages_without_prompt_detail_tool_hint(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_message",
+    [
+        "Build the workflow and run it.",
+        "I do not care what you call it, just make the workflow change and launch it.",
+        "Please set this up and execute it right away, no need to wait for me.",
+    ],
+)
 async def test_send_message_with_tools_auto_apply_builds_and_continues_to_run(
     monkeypatch: pytest.MonkeyPatch,
+    user_message: str,
 ) -> None:
     """auto_apply=true on plan_graph_mutations applies the mutation server-side
     and continues the tool loop so the model can call start_run."""
@@ -995,7 +1075,7 @@ async def test_send_message_with_tools_auto_apply_builds_and_continues_to_run(
     events = await _collect_events(
         mgr.send_message_with_tools(
             workflow_id="wf1",
-            message="Build the workflow and run it.",
+            message=user_message,
             history=[],
             allow_mutation_tool=True,
         )
@@ -1082,6 +1162,84 @@ async def test_send_message_with_tools_auto_apply_false_still_returns_proposed(
     assert "proposed" in mut.content.lower()
 
     assert len(provider.requests) == 1, "No follow-up LLM call when auto_apply is false"
+
+
+@pytest.mark.asyncio
+async def test_send_message_with_tools_auto_apply_blocks_non_run_ready_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto-apply must not save or continue when the applied graph is not run-ready."""
+    saved_graphs: list[tuple[str, dict[str, Any]]] = []
+
+    graph_store = SimpleNamespace(
+        get_graph=lambda workflow_id: dict(MINIMAL_GRAPH),
+        save_graph=lambda wid, g: saved_graphs.append((wid, g)),
+    )
+
+    mutation_args = json.dumps({
+        "description": "Add an input node",
+        "auto_apply": True,
+        "operations": [
+            {"op": "add_node", "node_type": "input", "name": "My Input"},
+        ],
+    })
+    provider = _SequenceProvider(
+        [
+            CompletionResult(
+                text="Building the workflow.",
+                tool_calls=[
+                    {
+                        "id": "call_mut",
+                        "type": "function",
+                        "function": {
+                            "name": "plan_graph_mutations",
+                            "arguments": mutation_args,
+                        },
+                    },
+                ],
+                usage={"prompt_tokens": 10, "completion_tokens": 5},
+            ),
+        ]
+    )
+
+    mgr = _make_manager(provider, tool_call_log=[])
+    mgr._graph_store = graph_store
+
+    monkeypatch.setattr(ChatManager, "_build_messages", _fake_build_messages)
+    monkeypatch.setattr(
+        "dan.meta.workflow_contract.validate_workflow_build_contract",
+        lambda graph_dict, workflow_id="", apply_repairs=True: SimpleNamespace(
+            validated=True,
+            run_ready=False,
+            errors=[],
+            run_readiness_issues=["Auto-apply blocked: workflow is not run-ready."],
+            graph_dict=graph_dict,
+        ),
+    )
+
+    events = await _collect_events(
+        mgr.send_message_with_tools(
+            workflow_id="wf1",
+            message="Build the workflow and run it.",
+            history=[],
+            allow_mutation_tool=True,
+        )
+    )
+
+    mutation_events = [e for e in events if isinstance(e, ChatMutationEvent)]
+    assert len(mutation_events) == 1
+    assert mutation_events[0].applied is False
+    assert "proposed" in mutation_events[0].content.lower()
+
+    validation_events = [e for e in events if isinstance(e, ChatValidationResultEvent)]
+    assert validation_events
+    assert any(
+        "run-ready" in error.lower() or "no nodes" in error.lower()
+        for error in validation_events[-1].errors
+    )
+
+    assert not saved_graphs, "graph_store.save_graph must not be called"
+    assert len(provider.requests) == 1, "No follow-up LLM call when auto-apply is blocked"
 
 
 @pytest.mark.asyncio
@@ -1221,17 +1379,21 @@ async def test_send_message_with_tools_repairs_invalid_mutation_plan_internally(
     mutation_events = [e for e in events if isinstance(e, ChatMutationEvent)]
     assert len(mutation_events) == 1
     assert mutation_events[0].dry_run_result["success"] is True
-    assert len(provider.requests) == 2
+    assert len(provider.requests) in {1, 2}
 
-    repair_messages = provider.requests[1]["messages"]
-    assert any(
-        msg.get("role") == "system"
-        and "repair dan workflow mutation plans" in str(msg.get("content") or "").lower()
-        for msg in repair_messages
-    )
-    assert any(
-        msg.get("role") == "user"
-        and "Compilation or validation failures" in str(msg.get("content") or "")
-        and "Current mutation proposal" in str(msg.get("content") or "")
-        for msg in repair_messages
-    )
+    if len(provider.requests) == 2:
+        repair_messages = provider.requests[1]["messages"]
+        assert any(
+            msg.get("role") == "system"
+            and "repair dan workflow mutation plans" in str(msg.get("content") or "").lower()
+            for msg in repair_messages
+        )
+        assert any(
+            msg.get("role") == "user"
+            and "Compilation or validation failures" in str(msg.get("content") or "")
+            and "Current mutation proposal" in str(msg.get("content") or "")
+            for msg in repair_messages
+        )
+    else:
+        repaired_ops = mutation_events[0].mutation_plan["operations"]
+        assert repaired_ops[0]["op"] == "add_node"

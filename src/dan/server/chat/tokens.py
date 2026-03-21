@@ -12,8 +12,12 @@ logger = logging.getLogger(__name__)
 
 try:
     import tiktoken
+    from tiktoken.model import MODEL_PREFIX_TO_ENCODING, MODEL_TO_ENCODING
     _tiktoken_available = True
 except ImportError:
+    tiktoken = None
+    MODEL_PREFIX_TO_ENCODING = {}
+    MODEL_TO_ENCODING = {}
     _tiktoken_available = False
 
 _RECENT_MESSAGES_COUNT = int(os.environ.get("DAN_CHAT_RECENT_MESSAGES", "10"))
@@ -49,6 +53,7 @@ MODEL_CONTEXT_WINDOWS: dict[str, int] = {
 }
 
 _DEFAULT_CONTEXT_WINDOW = 128_000
+_DEFAULT_ENCODING_NAME = "cl100k_base"
 _NORMALIZED_CONTEXT_WINDOWS: list[tuple[str, int]] = sorted(
     (
         (re.sub(r"[^a-z0-9]+", "", key.lower()), window)
@@ -82,18 +87,36 @@ def _completion_max_tokens(model: str, *, target_ratio: float = 0.5) -> int:
     return min(soft_cap, int(context_window * target_ratio))
 
 
+def _encoding_name_for_model(model: str) -> str:
+    if not model:
+        return _DEFAULT_ENCODING_NAME
+    model_module = getattr(tiktoken, "model", None) if tiktoken is not None else None
+    resolver = getattr(model_module, "encoding_name_for_model", None)
+    if resolver is not None:
+        try:
+            return resolver(model)
+        except KeyError:
+            pass
+        except Exception:
+            pass
+    normalized = model.lower()
+    encoding_name = MODEL_TO_ENCODING.get(normalized)
+    if encoding_name:
+        return encoding_name
+    for prefix, candidate in sorted(
+        MODEL_PREFIX_TO_ENCODING.items(), key=lambda item: len(item[0]), reverse=True
+    ):
+        if normalized.startswith(prefix):
+            return candidate
+    return _DEFAULT_ENCODING_NAME
+
+
 def estimate_tokens(text: str, model: str = "") -> int:
     """Estimate token count. Uses tiktoken when available, character approximation otherwise."""
-    if _tiktoken_available:
+    if _tiktoken_available and tiktoken is not None:
         try:
-            enc = tiktoken.encoding_for_model(model)
+            enc = tiktoken.get_encoding(_encoding_name_for_model(model))
             return len(enc.encode(text))
-        except KeyError:
-            try:
-                enc = tiktoken.get_encoding("cl100k_base")
-                return len(enc.encode(text))
-            except Exception:
-                pass
         except Exception:
             pass
     return len(text) // 4

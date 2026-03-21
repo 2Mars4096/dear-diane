@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Literal
 
 from dan.models.node_taxonomy import MUTATION_NODE_TYPES
 from dan.server.graph_mutator import (
+    TOOL_PORT_MANIFESTS,
     _default_node_config,
     _default_ports,
 )
@@ -48,11 +49,10 @@ EDGE_TYPES: list[str] = ["data", "control", "context"]
 def _build_mutation_tool_schema() -> dict[str, Any]:
     """Generate the mutation tool schema from source-of-truth tables.
 
-    Uses ``oneOf`` discriminated by ``op`` so each operation carries only the
+    Uses ``anyOf`` discriminated by ``op`` so each operation carries only the
     fields it needs, with correct ``required`` constraints.
-    NOTE: some LLM providers don't handle ``oneOf`` well.  If needed, the
-    flat-schema approach (single object with all fields, only ``op`` required)
-    can be substituted here as a fallback.
+    ``anyOf`` is used instead of ``oneOf`` because some OpenAI-compatible
+    providers reject ``oneOf`` inside tool parameter schemas.
     """
     add_node_schema = {
         "type": "object",
@@ -194,7 +194,7 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
                     "here just like the top-level graph."
                 ),
                 "items": {
-                    "oneOf": [
+                    "anyOf": [
                         add_node_schema,
                         remove_node_schema,
                         edit_node_schema,
@@ -260,7 +260,7 @@ def _build_mutation_tool_schema() -> dict[str, Any]:
                             # Lower-level ops like rename_node, set_metadata, reorder_edges,
                             # batch_set_positions, and duplicate_node stay hidden until the
                             # chat planner has stronger invariants for using them correctly.
-                            "oneOf": [
+                            "anyOf": [
                                 add_node_schema,
                                 remove_node_schema,
                                 edit_node_schema,
@@ -330,6 +330,28 @@ def _build_node_type_reference() -> str:
                 f"- {nt}: in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
                 f" config={{{', '.join(cfg_keys)}}}"
                 " note=use replace_body_graph to define the composite body when building from chat."
+            )
+        elif nt == "tool_operator":
+            line = f"- {nt}: in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
+            if cfg_keys:
+                line += f" config={{{', '.join(cfg_keys)}}}"
+            common_tool_notes: list[str] = []
+            for tool_id in (
+                "csv_read",
+                "file_read",
+                "file_write",
+                "http_request",
+                "web_fetch",
+                "web_search",
+            ):
+                tool_in, tool_out = TOOL_PORT_MANIFESTS.get(tool_id, ([], []))
+                common_tool_notes.append(
+                    f"  - {tool_id}: in=[{', '.join(p['name'] for p in tool_in)}] "
+                    f"out=[{', '.join(p['name'] for p in tool_out)}]"
+                )
+            line += (
+                " note=ports depend on tool_id; common manifests:\n"
+                + "\n".join(common_tool_notes)
             )
         else:
             line = f"- {nt}: in=[{', '.join(in_names)}] out=[{', '.join(out_names)}]"
@@ -836,7 +858,7 @@ SURFACE_HINTS = {
 }
 
 
-def _resolve_surface_hints(surface: str | None, model_name: str) -> str:
+def resolve_surface_hints(surface: str | None, model_name: str) -> str:
     """Resolve exact or family surface hints, including `telegram:<bot>`."""
     surface_key = surface or "server"
     base_key = surface_key.split(":", 1)[0]
@@ -1044,7 +1066,7 @@ async def _resolve_surface_presentation_module(
         module_id="surface_presentation",
         layer="surface_presentation",
         priority=10,
-        content=_resolve_surface_hints(context.surface, context.model),
+        content=resolve_surface_hints(context.surface, context.model),
     )
 
 
@@ -1222,7 +1244,7 @@ This applies to all tools — web_fetch pages, file_read contents, list_director
 shell_command output, pdf_read text. Present clean, structured answers, not raw data.
 8. NEVER include image markdown (![alt](url)), navigation link blocks, or raw HTML in your response. \
 Summarize the information from web pages; do not reproduce their markup.
-9. Work autonomously. After each action, silently assess:
+9. Work autonomously by default. After each action, silently assess:
    (a) Did the last step succeed or fail?
    (b) If it failed, what specifically went wrong? Do not retry the identical action without changing something.
    (c) What is still needed to fully satisfy the user's request?
