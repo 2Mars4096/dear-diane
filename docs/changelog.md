@@ -1,5 +1,8 @@
 # Changelog
 
+## 2026-03-17
+- [fix] **Concierge progress UX: show task summary during long execution.** `tiered_dispatch.py` now supplies execution-phase `progress_ack` detail from triage `goal`/`deliverable` (truncated) or the first line of the user message, so the chat “Still working…” strip reflects the actual task instead of only the generic label `Executing`. Validation: `pytest tests/test_concierge/test_tiered_dispatch.py::test_tier1_path_emits_phase_events -q`.
+
 ## 2026-03-20
 - [refactor] **Removed committed equity workflow placeholder.** Deleted `graphs/daily-equity-research-v3.json` and `tests/test_daily_equity_placeholder.py`. Equity/watchlist graphs are not tracked in git until you create them in DAN (Agent → `plan_graph_mutations` → Apply → save/export). Cookbook now describes **new empty workflow → master prompt → run**.
 - [infra] **Purged committed scratch graphs.** Removed 40 `graphs/*.json` files (inspect/test/rerun/debug/temp); kept corpus samples (`paper_writing`, `batch_paper_writing`, `three_step_chain`, `vibe_research_multi_dept`, etc.).

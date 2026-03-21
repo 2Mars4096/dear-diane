@@ -70,6 +70,8 @@ cd editor && npm run dev
 
 Open `http://localhost:5173`. The editor connects to the backend at `localhost:8000`.
 
+**Chat: build + run a workflow** — Open a workflow tab, set chat to **Agent**, use `plan_graph_mutations` to edit, then ask the model to **`start_run`** with any `inputs` (e.g. `watchlist_path`). **Author equity/watchlist workflows in DAN (Agent chat), not by pasting large generated graphs/code from outside.** Prompts: [`docs/chat-equity-workflow-cookbook.md`](docs/chat-equity-workflow-cookbook.md).
+
 ### Run a Workflow from Python
 
 ```python
