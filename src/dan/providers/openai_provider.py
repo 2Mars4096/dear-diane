@@ -95,21 +95,28 @@ class OpenAIProvider:
     ) -> dict[str, Any]:
         """Apply provider-specific request defaults for compatible backends.
 
-        Moonshot documents that ``kimi-k2.5`` enables thinking by default and
-        counts both ``reasoning_content`` and final ``content`` against
-        ``max_tokens``. For ordinary low-budget text generations, that can
-        exhaust the whole allowance before any visible answer is returned.
-        When callers have *not* explicitly opted into thinking, and this is a
-        plain text call without tools, disable thinking automatically so the
-        output budget is reserved for the final answer.
+        Moonshot/Kimi models may enable thinking by default. That can either
+        consume the entire output budget before visible text is returned or
+        delay explicit tool calls unnecessarily. When callers have *not*
+        explicitly opted into thinking:
+
+        - For low-budget plain-text ``kimi-k2.5`` calls, disable thinking so
+          the output budget is reserved for final content.
+        - For Moonshot/Kimi exact/required tool requests, disable thinking so
+          the model can emit the requested tool call promptly.
         """
         normalized = str(model or "").strip().lower()
-        if not normalized.startswith("kimi-k2.5"):
+        is_moonshot_family = normalized.startswith("moonshot-") or normalized.startswith("kimi-")
+        if not is_moonshot_family:
             return call_kwargs
-        if "thinking" not in call_kwargs and not call_kwargs.get("tools"):
-            max_tokens = call_kwargs.get("max_tokens")
-            if isinstance(max_tokens, int) and 0 < max_tokens < 16000:
+        if "thinking" not in call_kwargs:
+            tool_choice = call_kwargs.get("tool_choice")
+            if call_kwargs.get("tools") and tool_choice not in (None, "", "auto"):
                 call_kwargs["thinking"] = {"type": "disabled"}
+            elif normalized.startswith("kimi-k2.5") and not call_kwargs.get("tools"):
+                max_tokens = call_kwargs.get("max_tokens")
+                if isinstance(max_tokens, int) and 0 < max_tokens < 16000:
+                    call_kwargs["thinking"] = {"type": "disabled"}
         thinking = call_kwargs.get("thinking")
         if isinstance(thinking, dict) and thinking.get("type") == "disabled":
             call_kwargs["temperature"] = 0.6
