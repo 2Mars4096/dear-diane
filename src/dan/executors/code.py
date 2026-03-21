@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_BUILTINS: dict[str, Any] = {
     "__import__": builtins.__import__,
+    "open": builtins.open,
     "NameError": NameError,
     "Exception": Exception,
     "ValueError": ValueError,
@@ -25,6 +26,10 @@ _ALLOWED_BUILTINS: dict[str, Any] = {
     "KeyError": KeyError,
     "IndexError": IndexError,
     "AttributeError": AttributeError,
+    "ImportError": ImportError,
+    "ModuleNotFoundError": ModuleNotFoundError,
+    "hasattr": hasattr,
+    "getattr": getattr,
     "json": __import__("json"),
     "Path": __import__("pathlib").Path,
     "len": len,

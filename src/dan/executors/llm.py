@@ -1257,6 +1257,9 @@ class LLMExecutor:
                     effective_temperature = v
                 elif k == "max_tokens":
                     effective_max_tokens = v
+                elif k == "extended_thinking":
+                    # Legacy tier flag; providers should not receive it verbatim.
+                    continue
                 else:
                     tier_extra[k] = v
 

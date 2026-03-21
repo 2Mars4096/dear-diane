@@ -13,7 +13,12 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from dan.engine.conditions import ConditionError, evaluate_condition, evaluate_expression
+from dan.engine.conditions import (
+    ConditionError,
+    evaluate_condition,
+    evaluate_expression,
+    evaluate_reducer,
+)
 from dan.engine.executor import ExecutionContext, NodeResult
 from dan.engine.state import NodeStatus
 from dan.engine.events import EventType
@@ -573,7 +578,7 @@ class ParallelSubagentsExecutor:
                 raise ConditionError(
                     "merge_strategy is REDUCER but no reducer expression provided"
                 )
-            return evaluate_expression(reducer, {"inputs": results})
+            return evaluate_reducer(reducer, results)
         return results
 
 
@@ -869,7 +874,7 @@ class ReduceExecutor:
         assert isinstance(node, ReduceNode)
 
         try:
-            result = evaluate_expression(node.reducer, {"inputs": inputs})
+            result = evaluate_reducer(node.reducer, inputs)
         except ConditionError as exc:
             return NodeResult(
                 outputs={},

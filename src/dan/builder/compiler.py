@@ -58,7 +58,7 @@ DEFAULT_OUTPUT_PORTS: dict[str, str] = {
     "tool_operator": "result",
     "code_operator": "result",
     "rag_operator": "chunks",
-    "if_else": "branch",
+    "if_else": "true",
     "gate": "true",
     "while_loop": "result",
     "goal_loop": "result",
