@@ -77,6 +77,7 @@ export function resolveAttachmentName(name?: string, mimeType?: string): string 
 
 export interface StartEditorChatOptions {
   message: string;
+  workflowId?: string | null;
   history?: Array<{ role: "user" | "assistant"; content: string }>;
   threadId?: string | null;
   mode?: EditorChatMode;
@@ -449,6 +450,7 @@ export async function startEditorChat(
 ): Promise<{ threadId: string; response: ChatMessageResponse }> {
   const threadId = options.threadId?.trim() || crypto.randomUUID();
   const message = options.message.trim();
+  const workflowId = options.workflowId?.trim() || "_scratch";
   const normalizedAttachments = await normalizeAttachmentDrafts(options.attachments ?? []);
   const attachmentContext = await buildAttachmentContext(normalizedAttachments);
   const fullMessage = attachmentContext
@@ -463,7 +465,7 @@ export async function startEditorChat(
     normalizedAttachments.find((attachment) => typeof attachment.path === "string" && attachment.path)?.path ??
     null;
   const response = await postChatMessage({
-    workflow_id: "_scratch",
+    workflow_id: workflowId,
     message: fullMessage,
     history: sanitizeChatHistory(options.history ?? []),
     thread_id: threadId,

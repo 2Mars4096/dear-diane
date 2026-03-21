@@ -38,8 +38,13 @@ export function writeMutationConfirmPreference(
 export function shouldAutoApplyMutation(
   dryRunResult: Record<string, unknown> | null | undefined,
   confirmMode: boolean,
+  mutationStatus?: ChatMessage["mutationStatus"] | null,
 ): boolean {
-  return !confirmMode && dryRunResult?.success === true;
+  return (
+    !confirmMode
+    && mutationStatus !== "applied"
+    && dryRunResult?.success === true
+  );
 }
 
 export function summarizeMutationPlan(
@@ -107,6 +112,7 @@ export function buildAutoApplyPreviewMessage(
   mutationPlan: Record<string, unknown> | null,
   dryRunResult: Record<string, unknown> | null,
   mutationId: string | null,
+  mutationStatus: ChatMessage["mutationStatus"] | null,
   content?: string,
   tokenUsage?: { prompt: number; completion: number } | null,
 ): ChatMessage {
@@ -116,7 +122,7 @@ export function buildAutoApplyPreviewMessage(
     tokenUsage: tokenUsage ?? base.tokenUsage ?? null,
     mutationPlan,
     dryRunResult,
-    mutationStatus: "proposed",
+    mutationStatus: mutationStatus ?? "proposed",
     mutationId,
   };
 }

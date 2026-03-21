@@ -101,7 +101,7 @@ function handleEvent(stream: BackgroundStream, evt: ChatStreamEvent) {
             mutationPlan: evt.mutation_plan ?? null,
             dryRunResult: evt.dry_run_result ?? null,
             mutationId: evt.message_id ?? m.mutationId ?? null,
-            mutationStatus: "proposed",
+            mutationStatus: evt.applied ? "applied" : "proposed",
             progressStatus: undefined,
             tokenUsage: safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
           }

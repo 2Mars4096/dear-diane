@@ -61,6 +61,7 @@ import ModeChatSidebar, { sendToModeChat } from "../ModeChatSidebar";
 import * as modeChatSidebarState from "../modeChatSidebarState";
 import { useAppStore } from "../../../store/useAppStore";
 import { useCodeStore } from "../../../store/useCodeStore";
+import { useGraphStore } from "../../../store/useGraphStore";
 import { useWorkspaceStore } from "../../../store/useWorkspaceStore";
 
 function resetStores() {
@@ -94,6 +95,7 @@ function resetStores() {
     multiFileEdits: [],
     showMultiFileReview: false,
   });
+  useGraphStore.setState({ graphId: null });
 }
 
 async function renderSidebar() {
@@ -214,6 +216,42 @@ describe("ModeChatSidebar", () => {
     expect(
       vi.mocked(modeChatSidebarState.shouldStopSidebarThreadSnapshotPolling),
     ).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("uses the active graph workflow instead of forcing _scratch", async () => {
+    useGraphStore.setState({ graphId: "daily_equity_research" });
+    startEditorChatMock.mockResolvedValue({
+      threadId: "thread-test",
+      response: {
+        message_id: "message-test",
+        stream_channel_id: "chat-test",
+      },
+    });
+    streamEditorChatResponseMock.mockImplementation(
+      (_response: unknown, handlers: { onComplete?: (content: string, event: Record<string, unknown>) => void }) => {
+        handlers.onComplete?.("done", { type: "chat_complete", content: "done" });
+        return { close: vi.fn() } as unknown as WebSocket;
+      },
+    );
+
+    const { root } = await renderSidebar();
+
+    expect(listChatThreadsMock).toHaveBeenCalledWith("daily_equity_research");
+
+    await act(async () => {
+      sendToModeChat("development", "Build daily equity research workflow");
+      await Promise.resolve();
+    });
+
+    expect(startEditorChatMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflowId: "daily_equity_research",
+      }),
+    );
 
     await act(async () => {
       root.unmount();

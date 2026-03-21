@@ -111,6 +111,7 @@ export interface ChatStreamEvent {
   correlation_id?: string;
   queue_position?: number;
   success?: boolean;
+  applied?: boolean;
   errors?: string[];
   path?: string;
   filename?: string;

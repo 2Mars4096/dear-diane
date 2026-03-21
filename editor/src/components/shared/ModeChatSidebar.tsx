@@ -33,6 +33,7 @@ import {
   Plus,
 } from "lucide-react";
 import { useAppStore, type AppMode } from "../../store/useAppStore";
+import { useGraphStore } from "../../store/useGraphStore";
 import { useWorkspaceStore } from "../../store/useWorkspaceStore";
 import { isElectron, nativeTerminal, nativeFs } from "../../lib/electronBridge";
 import { useCodeStore } from "../../store/useCodeStore";
@@ -573,6 +574,12 @@ function SmartPasteHint({
 
 export default function ModeChatSidebar({ mode, onClose, contextProvider }: ModeChatSidebarProps) {
   const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const graphWorkflowId = useGraphStore((s) => s.graphId);
+  const activeChatWorkflowId = useAppStore((s) => s.activeChatWorkflowId);
+  const workflowId = useMemo(() => {
+    const candidate = (graphWorkflowId || activeChatWorkflowId || "").trim();
+    return candidate || "_scratch";
+  }, [activeChatWorkflowId, graphWorkflowId]);
   const initialSessionRef = useRef<StoredModeChatSession>(
     loadChatSession(workspaceId, mode),
   );
@@ -653,7 +660,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
   const fetchThreads = useCallback(async () => {
     setLoadingThreads(true);
     try {
-      const data = await api.listChatThreads("_scratch");
+      const data = await api.listChatThreads(workflowId);
       const next = Array.isArray(data.threads)
         ? [...data.threads].sort(
             (a, b) =>
@@ -666,7 +673,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     } finally {
       setLoadingThreads(false);
     }
-  }, []);
+  }, [workflowId]);
 
   const createBranchedThread = useCallback(
     async (
@@ -679,7 +686,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       const parentThreadId = threadIdRef.current || undefined;
 
       try {
-        const created = await api.createChatThread("_scratch", {
+        const created = await api.createChatThread(workflowId, {
           title: branchTitle,
           mode: nextMode,
           parent_thread_id: parentThreadId,
@@ -692,7 +699,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
           throw new Error("Missing branched thread id");
         }
 
-        await api.updateChatThread("_scratch", nextThreadId, {
+        await api.updateChatThread(workflowId, nextThreadId, {
           title: branchTitle,
           messages: seedMessages.map(toBackendMessage),
           mode: nextMode,
@@ -713,7 +720,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
         return null;
       }
     },
-    [fetchThreads, threadTitle],
+    [fetchThreads, threadTitle, workflowId],
   );
 
   // Flush any pending debounced save when the sidebar unmounts
@@ -1039,7 +1046,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     if (snapshot.length === 0) {
       if (existingThreadId) {
         try {
-          await api.updateChatThread("_scratch", existingThreadId, {
+          await api.updateChatThread(workflowId, existingThreadId, {
             mode: currentMode,
           });
         } catch {
@@ -1049,7 +1056,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       if (!forceCreate) {
         return existingThreadId;
       }
-      const created = await api.createChatThread("_scratch", {
+      const created = await api.createChatThread(workflowId, {
         title: "New Chat",
         mode: currentMode,
       });
@@ -1068,7 +1075,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
 
     if (existingThreadId) {
       try {
-        await api.updateChatThread("_scratch", existingThreadId, payload);
+        await api.updateChatThread(workflowId, existingThreadId, payload);
         return existingThreadId;
       } catch (error) {
         console.warn("Failed to sync mode chat thread, creating a fresh one:", error);
@@ -1078,7 +1085,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     const firstUserMessage =
       snapshot.find((message) => message.role === "user" && message.content.trim())?.content ??
       "New Chat";
-    const created = await api.createChatThread("_scratch", {
+    const created = await api.createChatThread(workflowId, {
       title: deriveDraftThreadTitleFromMessage(firstUserMessage),
       mode: currentMode,
     });
@@ -1086,16 +1093,16 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       typeof created.id === "string" && created.id.trim() ? created.id : null;
     if (!nextThreadId) return null;
 
-    await api.updateChatThread("_scratch", nextThreadId, payload);
+    await api.updateChatThread(workflowId, nextThreadId, payload);
     setThreadId(nextThreadId);
     threadIdRef.current = nextThreadId;
     return nextThreadId;
-  }, []);
+  }, [workflowId]);
 
   const loadThread = useCallback(async (targetThreadId: string) => {
     try {
       await persistThreadSnapshot();
-      const data = await api.getChatThread("_scratch", targetThreadId);
+      const data = await api.getChatThread(workflowId, targetThreadId);
       const backendMsgs = Array.isArray(data.messages)
         ? (data.messages as Record<string, unknown>[])
         : [];
@@ -1127,7 +1134,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
     } catch (error) {
       console.warn("Failed to load sidebar chat thread:", error);
     }
-  }, [persistThreadSnapshot]);
+  }, [persistThreadSnapshot, workflowId]);
 
   const handleNewChat = useCallback(async () => {
     try {
@@ -1168,13 +1175,13 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
 
     if (targetThreadId) {
       useWorkspaceStore.getState().setActiveThread(targetThreadId);
-      useAppStore.getState().setActiveChatThread(targetThreadId, "_scratch");
+      useAppStore.getState().setActiveChatThread(targetThreadId, workflowId);
     } else {
-      useAppStore.getState().setActiveChatThread(null, "_scratch");
+      useAppStore.getState().setActiveChatThread(null, workflowId);
     }
     useAppStore.getState().setMode("chat");
     onClose();
-  }, [onClose, persistThreadSnapshot]);
+  }, [onClose, persistThreadSnapshot, workflowId]);
 
   const openFullChat = useCallback(() => {
     if (streaming || abortRef.current || pendingQueue.length > 0) {
@@ -1475,6 +1482,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       try {
         const { threadId: nextThreadId, response } = await startEditorChat({
           message: fullMessage,
+          workflowId,
           history: sanitizeChatHistory(
             baseHistory.flatMap((message) =>
               message.role === "user" || message.role === "assistant"
@@ -1734,7 +1742,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
               if (controller.signal.aborted) return;
               if (activeChannelIdRef.current !== nextChatChannel) return;
               try {
-                const data = await api.getChatThread("_scratch", nextThreadId);
+                const data = await api.getChatThread(workflowId, nextThreadId);
                 const backendMsgs = Array.isArray(data.messages)
                   ? (data.messages as Record<string, unknown>[])
                   : [];
@@ -1776,6 +1784,7 @@ export default function ModeChatSidebar({ mode, onClose, contextProvider }: Mode
       mode,
       persistReviewableEdits,
       rewriteTarget,
+      workflowId,
       workspaceId,
     ],
   );

@@ -28,6 +28,7 @@ describe("chatMutation helpers", () => {
     expect(shouldAutoApplyMutation({ success: true }, false)).toBe(true);
     expect(shouldAutoApplyMutation({ success: false }, false)).toBe(false);
     expect(shouldAutoApplyMutation({ success: true }, true)).toBe(false);
+    expect(shouldAutoApplyMutation({ success: true }, false, "applied")).toBe(false);
   });
 
   it("summarizes mutation plan", () => {
@@ -61,6 +62,7 @@ describe("chatMutation helpers", () => {
       { operations: [{ op: "add_node" }] },
       { success: true },
       "mid-1",
+      "proposed",
       "reasoning",
       { prompt: 1, completion: 2 },
     );
@@ -68,5 +70,25 @@ describe("chatMutation helpers", () => {
     expect(msg.mutationId).toBe("mid-1");
     expect(msg.content).toBe("reasoning");
     expect(msg.dryRunResult?.success).toBe(true);
+  });
+
+  it("preserves applied mutation status from the stream event", () => {
+    const base: ChatMessage = {
+      id: "a1",
+      role: "assistant",
+      content: "",
+      timestamp: 1,
+    };
+    const msg = buildAutoApplyPreviewMessage(
+      base,
+      { operations: [{ op: "add_node" }] },
+      { success: true },
+      "mid-2",
+      "applied",
+      "applied content",
+      { prompt: 1, completion: 2 },
+    );
+    expect(msg.mutationStatus).toBe("applied");
+    expect(msg.content).toBe("applied content");
   });
 });

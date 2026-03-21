@@ -434,7 +434,8 @@ export default function ChatPanel({
   onThreadTitleUpdate,
 }: ChatPanelProps) {
   const rawGraphId = useGraphStore((s) => s.graphId);
-  const graphId = rawGraphId || (fullScreen ? "_scratch" : null);
+  const activeChatWorkflowId = useAppStore((s) => s.activeChatWorkflowId);
+  const graphId = rawGraphId || activeChatWorkflowId || (fullScreen ? "_scratch" : null);
   const danGraph = useGraphStore((s) => s.danGraph);
   const graphRevision = useGraphStore((s) => s.graphRevision);
   const isGraphDirty = useGraphStore((s) => s.dirty);
@@ -1891,6 +1892,7 @@ export default function ChatPanel({
                           evt.mutation_plan ?? null,
                           evt.dry_run_result ?? null,
                           evt.message_id ?? null,
+                          evt.applied ? "applied" : "proposed",
                           evt.content ?? m.content,
                           safeTokenUsage(evt.token_usage) ?? m.tokenUsage ?? null,
                         );
@@ -1917,6 +1919,7 @@ export default function ChatPanel({
                 shouldAutoApplyMutation(
                   (nextMutationMessage as ChatMessage).dryRunResult ?? null,
                   mutationConfirmMode,
+                  (nextMutationMessage as ChatMessage).mutationStatus ?? null,
                 )
               ) {
                 const autoMessage = nextMutationMessage;
@@ -4938,4 +4941,3 @@ function groupThreadsByDate(threads: ChatThreadSummary[]): Array<{ label: string
 
   return order.map((label) => ({ label, threads: groups[label] }));
 }
-
