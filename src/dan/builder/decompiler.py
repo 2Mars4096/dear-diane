@@ -127,7 +127,7 @@ class _Decompiler:
 
             if isinstance(node, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode)):
                 body_var = f"_{var}_body"
-                node_lines = self._emit_subgraph_node(node, body_var)
+                node_lines = self._emit_subgraph_node(node, body_var, builder_var="wf")
                 lines.extend(node_lines)
                 # Create a NodeRef for wiring edges to/from this sub-graph node
                 lines.append(
@@ -144,22 +144,28 @@ class _Decompiler:
         }
         emitted_chain_pairs: set[tuple[str, str]] = set()
         for chain in chains:
-            filtered = [nid for nid in chain if nid not in subgraph_node_ids]
-            if len(filtered) < 2:
-                continue
-            current_segment: list[str] = [filtered[0]]
-            for nxt in filtered[1:]:
+            current_segment: list[str] = []
+            for nid in chain:
+                if nid in subgraph_node_ids:
+                    if len(current_segment) >= 2:
+                        chain_str = " >> ".join(self.var_names[nid_] for nid_ in current_segment)
+                        lines.append(chain_str)
+                    current_segment = []
+                    continue
+                if not current_segment:
+                    current_segment = [nid]
+                    continue
                 prev = current_segment[-1]
-                if self._is_default_chain_edge(prev, nxt):
-                    current_segment.append(nxt)
-                    emitted_chain_pairs.add((prev, nxt))
+                if self._is_default_chain_edge(prev, nid):
+                    current_segment.append(nid)
+                    emitted_chain_pairs.add((prev, nid))
                 else:
                     if len(current_segment) >= 2:
-                        chain_str = " >> ".join(self.var_names[nid] for nid in current_segment)
+                        chain_str = " >> ".join(self.var_names[nid_] for nid_ in current_segment)
                         lines.append(chain_str)
-                    current_segment = [nxt]
+                    current_segment = [nid]
             if len(current_segment) >= 2:
-                chain_str = " >> ".join(self.var_names[nid] for nid in current_segment)
+                chain_str = " >> ".join(self.var_names[nid_] for nid_ in current_segment)
                 lines.append(chain_str)
         if chains:
             lines.append("")
@@ -365,11 +371,11 @@ class _Decompiler:
             method = f"wf.llm"  # fallback
 
         # Explicit ports
-        if node.input_ports:
+        if nt != "input" and node.input_ports:
             port_dicts = [self._serialize_input_port(p) for p in node.input_ports]
             if port_dicts:
                 kwargs.append(f"input_ports={port_dicts!r}")
-        if node.output_ports:
+        if nt != "input" and node.output_ports:
             port_dicts = [self._serialize_output_port(p) for p in node.output_ports]
             if port_dicts:
                 kwargs.append(f"output_ports={port_dicts!r}")
@@ -386,7 +392,14 @@ class _Decompiler:
         all_args = ", ".join(args + kwargs)
         return f"{method}({all_args})"
 
-    def _emit_subgraph_node(self, node: Any, body_var: str, indent: int = 0) -> list[str]:
+    def _emit_subgraph_node(
+        self,
+        node: Any,
+        body_var: str,
+        indent: int = 0,
+        *,
+        builder_var: str = "wf",
+    ) -> list[str]:
         """Generate a context-manager block for a sub-graph node."""
         lines: list[str] = []
         nt = node.node_type
@@ -424,7 +437,9 @@ class _Decompiler:
                 kwargs_parts.append(
                     f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
                 )
-            lines.append(f"{pad}with wf.while_loop({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
+            lines.append(
+                f"{pad}with {builder_var}.while_loop({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:"
+            )
 
         elif nt == "goal_loop":
             kwargs_parts = [
@@ -464,7 +479,9 @@ class _Decompiler:
                 kwargs_parts.append(
                     f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
                 )
-            lines.append(f"{pad}with wf.goal_loop({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
+            lines.append(
+                f"{pad}with {builder_var}.goal_loop({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:"
+            )
 
         elif nt == "for_each":
             kwargs_parts = [
@@ -491,7 +508,9 @@ class _Decompiler:
                 kwargs_parts.append(
                     f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
                 )
-            lines.append(f"{pad}with wf.for_each({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
+            lines.append(
+                f"{pad}with {builder_var}.for_each({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:"
+            )
 
         elif nt == "composite":
             kwargs_parts = []
@@ -520,7 +539,9 @@ class _Decompiler:
                     f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
                 )
             kw_str = f", {', '.join(kwargs_parts)}" if kwargs_parts else ""
-            lines.append(f"{pad}with wf.composite({node.id!r}{kw_str}) as {body_var}:")
+            lines.append(
+                f"{pad}with {builder_var}.composite({node.id!r}{kw_str}) as {body_var}:"
+            )
 
         elif nt == "parallel_subagents":
             kwargs_parts = [
@@ -549,7 +570,9 @@ class _Decompiler:
                 kwargs_parts.append(
                     f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
                 )
-            lines.append(f"{pad}with wf.parallel_subagents({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:")
+            lines.append(
+                f"{pad}with {builder_var}.parallel_subagents({node.id!r}, {', '.join(kwargs_parts)}) as {body_var}:"
+            )
 
         elif nt == "orchestrator":
             kwargs_parts = []
@@ -570,7 +593,9 @@ class _Decompiler:
             if node.description:
                 kwargs_parts.append(f"description={node.description!r}")
             kw_str = f", {', '.join(kwargs_parts)}" if kwargs_parts else ""
-            lines.append(f"{pad}with wf.orchestrator({node.id!r}{kw_str}) as {body_var}:")
+            lines.append(
+                f"{pad}with {builder_var}.orchestrator({node.id!r}{kw_str}) as {body_var}:"
+            )
 
         elif nt == "agent_team":
             kwargs_parts = []
@@ -610,7 +635,7 @@ class _Decompiler:
                     f"output_ports={[self._serialize_output_port(p) for p in node.output_ports]!r}"
                 )
             kw_str = f", {', '.join(kwargs_parts)}" if kwargs_parts else ""
-            lines.append(f"{pad}with wf.team({node.id!r}{kw_str}) as {body_var}:")
+            lines.append(f"{pad}with {builder_var}.team({node.id!r}{kw_str}) as {body_var}:")
 
         # Resolve the body sub-graph from the root graph (handles nested graphs)
         body_graph_key = getattr(node, "body_graph", None)
@@ -687,9 +712,16 @@ class _Decompiler:
                 sub_var = _to_var_name(sub_nid)
                 if isinstance(sub_node, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, AgentTeamNode)):
                     nested_body_var = f"_{sub_var}_body"
-                    nested_lines = self._emit_subgraph_node(sub_node, nested_body_var, indent=indent + 1)
+                    nested_lines = self._emit_subgraph_node(
+                        sub_node,
+                        nested_body_var,
+                        indent=indent + 1,
+                        builder_var=body_var,
+                    )
                     lines.extend(nested_lines)
-                    lines.append(f"{inner_pad}{sub_var} = NodeRef({sub_node.id!r}, {sub_node.node_type!r}, {body_var})")
+                    lines.append(
+                        f"{inner_pad}{sub_var} = NodeRef({sub_node.id!r}, {sub_node.node_type!r}, {body_var})"
+                    )
                 else:
                     call = self._emit_node_call_scoped(sub_node, body_var)
                     lines.append(f"{inner_pad}{sub_var} = {call}")
@@ -702,12 +734,34 @@ class _Decompiler:
                 if isinstance(n, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, AgentTeamNode))
             }
             for chain in sub_chains:
-                filtered = [nid for nid in chain if nid not in subgraph_node_ids]
-                if len(filtered) >= 2:
-                    chain_str = " >> ".join(_to_var_name(nid) for nid in filtered)
+                current_segment = []
+                for nid in chain:
+                    if nid in subgraph_node_ids:
+                        if len(current_segment) >= 2:
+                            chain_str = " >> ".join(_to_var_name(nid_) for nid_ in current_segment)
+                            lines.append(f"{inner_pad}{chain_str}")
+                            for i in range(len(current_segment) - 1):
+                                emitted_chain_pairs.add((current_segment[i], current_segment[i + 1]))
+                        current_segment = []
+                        continue
+                    if not current_segment:
+                        current_segment = [nid]
+                        continue
+                    prev = current_segment[-1]
+                    if self._is_default_chain_edge(prev, nid):
+                        current_segment.append(nid)
+                    else:
+                        if len(current_segment) >= 2:
+                            chain_str = " >> ".join(_to_var_name(nid_) for nid_ in current_segment)
+                            lines.append(f"{inner_pad}{chain_str}")
+                            for i in range(len(current_segment) - 1):
+                                emitted_chain_pairs.add((current_segment[i], current_segment[i + 1]))
+                        current_segment = [nid]
+                if len(current_segment) >= 2:
+                    chain_str = " >> ".join(_to_var_name(nid_) for nid_ in current_segment)
                     lines.append(f"{inner_pad}{chain_str}")
-                    for i in range(len(filtered) - 1):
-                        emitted_chain_pairs.add((filtered[i], filtered[i + 1]))
+                    for i in range(len(current_segment) - 1):
+                        emitted_chain_pairs.add((current_segment[i], current_segment[i + 1]))
 
             for edge in sub_graph.edges:
                 if isinstance(edge, DataEdge):
@@ -759,7 +813,12 @@ class _Decompiler:
                 (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode),
             ):
                 nested_body_var = f"_{sub_var}_body"
-                nested_lines = self._emit_subgraph_node(sub_node, nested_body_var, indent=indent)
+                nested_lines = self._emit_subgraph_node(
+                    sub_node,
+                    nested_body_var,
+                    indent=indent,
+                    builder_var=scope_var,
+                )
                 lines.extend(nested_lines)
                 lines.append(
                     f"{inner_pad}{sub_var} = NodeRef({sub_node.id!r}, {sub_node.node_type!r}, {scope_var})"
@@ -777,12 +836,34 @@ class _Decompiler:
             if isinstance(n, (WhileLoopNode, GoalLoopNode, ForEachNode, CompositeNode, ParallelSubagentsNode, OrchestratorNode, AgentTeamNode))
         }
         for chain in sub_chains:
-            filtered = [nid for nid in chain if nid not in subgraph_node_ids]
-            if len(filtered) >= 2:
-                chain_str = " >> ".join(_to_var_name(nid) for nid in filtered)
+            current_segment: list[str] = []
+            for nid in chain:
+                if nid in subgraph_node_ids:
+                    if len(current_segment) >= 2:
+                        chain_str = " >> ".join(_to_var_name(nid_) for nid_ in current_segment)
+                        lines.append(f"{inner_pad}{chain_str}")
+                        for i in range(len(current_segment) - 1):
+                            emitted_chain_pairs.add((current_segment[i], current_segment[i + 1]))
+                    current_segment = []
+                    continue
+                if not current_segment:
+                    current_segment = [nid]
+                    continue
+                prev = current_segment[-1]
+                if self._is_default_chain_edge(prev, nid):
+                    current_segment.append(nid)
+                else:
+                    if len(current_segment) >= 2:
+                        chain_str = " >> ".join(_to_var_name(nid_) for nid_ in current_segment)
+                        lines.append(f"{inner_pad}{chain_str}")
+                        for i in range(len(current_segment) - 1):
+                            emitted_chain_pairs.add((current_segment[i], current_segment[i + 1]))
+                    current_segment = [nid]
+            if len(current_segment) >= 2:
+                chain_str = " >> ".join(_to_var_name(nid_) for nid_ in current_segment)
                 lines.append(f"{inner_pad}{chain_str}")
-                for i in range(len(filtered) - 1):
-                    emitted_chain_pairs.add((filtered[i], filtered[i + 1]))
+                for i in range(len(current_segment) - 1):
+                    emitted_chain_pairs.add((current_segment[i], current_segment[i + 1]))
 
         for edge in sub_graph.edges:
             if isinstance(edge, DataEdge):
