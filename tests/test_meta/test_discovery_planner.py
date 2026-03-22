@@ -191,6 +191,13 @@ class TestPlanningPromptBuilder:
         assert '"action": "ADAPT"' in prompt
         assert '"action": "GENERATE"' in prompt
 
+    def test_system_prompt_includes_workflow_contract(self):
+        builder = PlanningPromptBuilder()
+        prompt = builder.build_system_prompt()
+        assert "Workflow Generation Contract" in prompt
+        assert "replace_body_graph" in prompt
+        assert "Do not introduce new `{{variable}}` placeholders" in prompt
+
 
 # ---------------------------------------------------------------------------
 # Tests: WorkflowPlanner

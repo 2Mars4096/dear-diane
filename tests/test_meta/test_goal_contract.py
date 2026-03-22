@@ -7,7 +7,7 @@ import pytest
 
 from dan.meta.controller import MetaController, MetaControllerConfig, MetaSession, MetaSessionStatus
 from dan.meta.discovery import DiscoveryResult
-from dan.meta.intent_extraction import extract_workflow_intent
+from dan.meta.intent_extraction import build_intent_extraction_system_prompt, extract_workflow_intent
 from dan.meta.planner import GeneratePlan, PlannerOutput, PlanningPromptBuilder, PlanReview
 
 
@@ -54,6 +54,15 @@ def test_planning_prompt_builder_renders_goal_contract():
     assert "- Goal: Automate a weekly market scan." in prompt
     assert "- Deliverable: A written summary saved to disk." in prompt
     assert "- Completion checks:" in prompt
+
+
+def test_planning_prompt_builder_includes_workflow_contract() -> None:
+    builder = PlanningPromptBuilder()
+    prompt = builder.build_system_prompt()
+
+    assert "Workflow Generation Contract" in prompt
+    assert "replace_body_graph" in prompt
+    assert "Do not introduce new `{{variable}}` placeholders" in prompt
 
 
 @pytest.mark.asyncio
@@ -107,8 +116,17 @@ async def test_extract_workflow_intent_includes_goal_contract_in_prompt():
     )
 
     assert intent is not None
+    assert "Workflow Generation Contract" in captured["system_prompt"]
+    assert "Do NOT invent tool_ids not in this list" in captured["system_prompt"]
     assert "## Goal Contract" in captured["user_prompt"]
     assert "Deliverable: A written summary saved to disk." in captured["user_prompt"]
     assert "Completion checks:" in captured["user_prompt"]
 
+
+def test_build_intent_extraction_system_prompt_includes_contract() -> None:
+    prompt = build_intent_extraction_system_prompt()
+
+    assert "Workflow Generation Contract" in prompt
+    assert "Do NOT invent tool_ids not in this list" in prompt
+    assert "smallest complete runnable workflow" in prompt
 

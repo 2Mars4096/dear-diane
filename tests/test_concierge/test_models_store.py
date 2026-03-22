@@ -56,6 +56,56 @@ def test_project_store_append_turn_updates_task(tmp_path: Path):
     assert loaded.tasks[0].turns[0].intent == "workflow_build"
 
 
+def test_project_store_append_turn_replays_from_journal(tmp_path: Path):
+    store = ProjectStore(base_dir=tmp_path)
+    project = store.create_project("lit-review", "cli-user")
+    task = store.add_task(project.project_id, "outline", "cli-user")
+
+    store.append_turn(
+        project.project_id,
+        task.task_id,
+        TaskTurn(role="assistant", content="done"),
+        "cli-user",
+    )
+
+    snapshot = Project.model_validate_json(
+        (tmp_path / "cli-user" / f"{project.project_id}.json").read_text(encoding="utf-8")
+    )
+    assert snapshot.tasks[0].turns == []
+
+    loaded = store.get_project(project.project_id, "cli-user")
+    assert loaded is not None
+    assert loaded.tasks[0].turns[0].content == "done"
+
+
+def test_project_store_update_task_progress_replays_from_journal(tmp_path: Path):
+    store = ProjectStore(base_dir=tmp_path)
+    project = store.create_project("lit-review", "cli-user")
+    task = store.add_task(project.project_id, "outline", "cli-user")
+
+    store.update_task_progress(
+        project.project_id,
+        task.task_id,
+        "cli-user",
+        completed_steps=["write tests"],
+        pending_steps=["update docs"],
+        current_blocker="Waiting on CI",
+        artifacts={"notes": "/tmp/notes.md"},
+        goal_id="goal-1",
+        progress_updated_at=123.0,
+    )
+
+    loaded = store.get_project(project.project_id, "cli-user")
+    assert loaded is not None
+    stored_task = loaded.tasks[0]
+    assert stored_task.completed_steps == ["write tests"]
+    assert stored_task.pending_steps == ["update docs"]
+    assert stored_task.current_blocker == "Waiting on CI"
+    assert stored_task.artifacts == {"notes": "/tmp/notes.md"}
+    assert stored_task.goal_id == "goal-1"
+    assert stored_task.progress_updated_at == 123.0
+
+
 def test_project_store_search_projects_uses_label_summary_and_task_labels(tmp_path: Path):
     store = ProjectStore(base_dir=tmp_path)
     project = store.create_project("late-payment-analysis", "cli-user")

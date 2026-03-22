@@ -91,6 +91,7 @@ async def test_syntax_error_reprompt_success():
         message="SyntaxError: unexpected EOF while parsing",
         source_line=1,
     )
+    captured: dict[str, str] = {}
 
     fixed_code = (
         "from dan.builder import workflow\n"
@@ -100,6 +101,8 @@ async def test_syntax_error_reprompt_success():
     )
 
     async def mock_llm(system: str, user: str) -> str:
+        captured["system"] = system
+        captured["user"] = user
         return fixed_code
 
     loop = DiagnosisLoop(max_attempts=2)
@@ -112,6 +115,8 @@ async def test_syntax_error_reprompt_success():
 
     assert result.success is True
     assert result.final_code == fixed_code.strip()
+    assert "Workflow Generation Contract" in captured["system"]
+    assert "registered tool ids" in captured["system"]
     assert any(
         "LLM re-prompt" in c for a in result.attempts for c in a.corrections_applied
     )

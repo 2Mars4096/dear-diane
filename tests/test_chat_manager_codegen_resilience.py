@@ -23,8 +23,10 @@ class SequenceProvider:
 
     def __init__(self, responses: list[Any]) -> None:
         self._responses = list(responses)
+        self.requests: list[dict[str, Any]] = []
 
     async def complete(self, *args: Any, **kwargs: Any) -> CompletionResult:
+        self.requests.append(kwargs)
         if not self._responses:
             raise AssertionError("Unexpected provider.complete() call")
         item = self._responses.pop(0)
@@ -48,6 +50,12 @@ def _make_manager(responses: list[Any]) -> ChatManager:
 
 def _validation_success() -> ValidationResult:
     return ValidationResult(success=True, graph=SimpleNamespace())
+
+
+def _default_provider(manager: ChatManager) -> SequenceProvider:
+    provider = manager._providers.get("default")
+    assert isinstance(provider, SequenceProvider)
+    return provider
 
 
 @pytest.mark.asyncio
@@ -105,6 +113,50 @@ async def test_sandbox_retry_success_runs_quality_gate_and_threshold(monkeypatch
     assert graph is None
     assert any(event.type == "chat_graph_quality" for event in events)
     assert diagnosis_calls
+
+
+@pytest.mark.asyncio
+async def test_intent_extraction_uses_canonical_system_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = _make_manager([
+        CompletionResult(text="not json"),
+        CompletionResult(text="graph = {}"),
+    ])
+    provider = _default_provider(manager)
+    monkeypatch.setattr(chat_manager_module.asyncio, "sleep", _fast_sleep)
+    monkeypatch.setattr(manager, "_emit_intent_extraction_telemetry", lambda **kwargs: None)
+
+    async def fake_sandbox(_code: str) -> tuple[dict | None, Any]:
+        return (
+            None,
+            CodegenResult(
+                success=False,
+                source_code="graph = {}",
+                error_type="runtime_error",
+                error_message="boom",
+            ),
+        )
+
+    monkeypatch.setattr(manager, "_sandbox_exec_builder_code", fake_sandbox)
+
+    class FakeDiagnosisLoop:
+        def __init__(self, max_attempts: int) -> None:
+            self.max_attempts = max_attempts
+
+        async def diagnose_and_repair(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(success=False, final_graph=None)
+
+    monkeypatch.setattr(diagnosis_module, "DiagnosisLoop", FakeDiagnosisLoop)
+
+    graph, _events = await manager._generate_workflow_from_intent("Build a chain", "wf-intent", "ch-intent")
+
+    assert graph is None
+    assert provider.requests
+    system_prompt = provider.requests[0]["messages"][0]["content"]
+    assert "Workflow Generation Contract" in system_prompt
+    assert "Do NOT invent tool_ids not in this list" in system_prompt
+    assert "smallest complete runnable workflow" in system_prompt
 
 
 @pytest.mark.asyncio

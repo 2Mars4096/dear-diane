@@ -19,7 +19,7 @@ from dan.server.capability_registry import CapabilityResult
 from dan.server.chat_manager import ChatCompleteEvent
 from dan.server.concierge.command_registry import CommandDescriptor, CommandRegistry
 from dan.server.concierge.dispatcher import _is_bypass_command
-from dan.server.concierge.models import SurfaceMessage, TaskTurn
+from dan.server.concierge.models import ResolvedContext, SurfaceMessage, TaskTurn
 from dan.server.concierge.project_store import ProjectStore
 from dan.server.concierge.runtime import Concierge
 from dan.server.concierge.scheduler import ScheduleHistoryStore, ScheduleStore
@@ -102,6 +102,61 @@ class TestIsFastCommand:
         c = _build_concierge(tmp_path)
         c._current_surface_id = "s1"
         assert not c._is_fast_command("confirm")
+
+
+def test_goal_command_binds_goal_to_current_task(tmp_path):
+    c = _build_concierge(tmp_path)
+    project = c.project_store.create_project("lit-review", "cli-user")
+    c.project_store.add_task(project.project_id, "outline", "cli-user")
+
+    response = c.handle_goal_command(_make_msg("/goal finish the rollout", external_id="cli-user"))
+
+    assert "Goal stored" in response
+    assert len(c._concierge_state.active_goals) == 1
+    goal = c._concierge_state.active_goals[0]
+    assert goal.project_id == project.project_id
+
+    loaded = c.project_store.get_project(project.project_id, "cli-user")
+    assert loaded is not None
+    assert loaded.tasks[0].goal_id == goal.id
+
+
+def test_assistant_progress_projects_from_goal_ledger(tmp_path):
+    c = _build_concierge(tmp_path)
+    project = c.project_store.create_project("lit-review", "cli-user")
+    c.project_store.add_task(project.project_id, "outline", "cli-user")
+    c.handle_goal_command(_make_msg("/goal finish the rollout", external_id="cli-user"))
+
+    refreshed_project = c.project_store.get_project(project.project_id, "cli-user")
+    assert refreshed_project is not None
+    context = ResolvedContext(
+        project=refreshed_project,
+        task=refreshed_project.tasks[0],
+        is_new_project=False,
+        is_new_task=False,
+        confidence=1.0,
+        domain=refreshed_project.domain,
+    )
+
+    c._record_assistant_turn(
+        context,
+        _make_msg("continue", external_id="cli-user"),
+        "[x] write tests\n[ ] update docs\nblocked by CI\nArtifact: /tmp/report.md",
+    )
+
+    goal = c._concierge_state.active_goals[0]
+    assert goal.progress.completed_steps == ["write tests"]
+    assert goal.progress.pending_steps == ["update docs"]
+    assert goal.progress.current_blocker == "blocked by CI"
+    assert goal.progress.artifacts["report.md"] == "/tmp/report.md"
+
+    loaded = c.project_store.get_project(project.project_id, "cli-user")
+    assert loaded is not None
+    stored_task = loaded.tasks[0]
+    assert stored_task.goal_id == goal.id
+    assert stored_task.completed_steps == ["write tests"]
+    assert stored_task.pending_steps == ["update docs"]
+    assert stored_task.current_blocker == "blocked by CI"
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +382,89 @@ class TestCorrectionFiltering:
         )
 
         assert c._correction_store.count() == 0
+
+    @pytest.mark.asyncio
+    async def test_correction_creates_pending_prompt_adaptation_and_approve_applies_it(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        prompt_key = "prompts/runtime.unified_system"
+        monkeypatch.setenv("DAN_BEHAVIOR_DIR", str(tmp_path / "behavior"))
+        monkeypatch.setenv("DAN_LEARNING_TIER", "1")
+        monkeypatch.setenv("DAN_PROMPT_PROPOSAL_MIN_NEGATIVE", "1")
+
+        kernel = MemoryKernel(base_dir=str(tmp_path / "memory"))
+        c = _build_concierge(tmp_path, memory_kernel=kernel)
+
+        await _collect(c, _make_msg("Explain the rollout"))
+        await _collect(c, _make_msg("Too long, keep it short"))
+
+        assert c._correction_store.count() == 1
+        pending = c._adaptation_registry.list_pending()
+        assert len(pending) == 1
+        candidate = pending[0]
+        assert candidate.parameter_key == prompt_key
+        assert isinstance(candidate.before_value, str) and candidate.before_value
+        assert isinstance(candidate.after_value, str) and candidate.after_value != candidate.before_value
+        assert "learned response adjustments" in candidate.after_value.lower()
+
+        events = await _collect(c, _make_msg(f"/approve {candidate.id}"))
+
+        assert len(events) == 1
+        assert "approved and applied" in events[0].content.lower()
+        applied = c._adaptation_registry.get(candidate.id)
+        assert applied is not None
+        assert applied.status == "applied"
+        assert c._behavior_store.get(prompt_key) == candidate.after_value
+
+        c_restarted = _build_concierge(
+            tmp_path,
+            memory_kernel=MemoryKernel(base_dir=str(tmp_path / "memory")),
+        )
+        assert c_restarted._behavior_store.get(prompt_key) == candidate.after_value
+        restarted_candidate = c_restarted._adaptation_registry.get(candidate.id)
+        assert restarted_candidate is not None
+        assert restarted_candidate.status == "applied"
+        assert c_restarted._correction_store.count() == 1
+
+    @pytest.mark.asyncio
+    async def test_prompt_auto_apply_rolls_back_after_measured_regression(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        prompt_key = "prompts/runtime.unified_system"
+        monkeypatch.setenv("DAN_BEHAVIOR_DIR", str(tmp_path / "behavior"))
+        monkeypatch.setenv("DAN_LEARNING_TIER", "2")
+        monkeypatch.setenv("DAN_PROMPT_PROPOSAL_MIN_NEGATIVE", "1")
+
+        kernel = MemoryKernel(base_dir=str(tmp_path / "memory"))
+        c = _build_concierge(tmp_path, memory_kernel=kernel)
+        param = c._param_registry.get_by_key(prompt_key)
+        assert param is not None
+        param.min_evidence_count = 2
+
+        await _collect(c, _make_msg("First request"))
+        await _collect(c, _make_msg("Second request"))
+        await _collect(c, _make_msg("Too long, keep it short"))
+
+        applied = c._adaptation_registry.list_applied()
+        assert len(applied) == 1
+        candidate = applied[0]
+        assert c._behavior_store.get(prompt_key) == candidate.after_value
+
+        await _collect(c, _make_msg("No, that's still wrong"))
+        c_restarted = _build_concierge(
+            tmp_path,
+            memory_kernel=MemoryKernel(base_dir=str(tmp_path / "memory")),
+        )
+        await _collect(c_restarted, _make_msg("No, do it again"))
+
+        rolled_back = c_restarted._adaptation_registry.get(candidate.id)
+        assert rolled_back is not None
+        assert rolled_back.status == "rolled_back"
+        assert c_restarted._behavior_store.get(prompt_key) == candidate.before_value
 
 
 # ---------------------------------------------------------------------------

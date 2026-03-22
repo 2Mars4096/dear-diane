@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from dan.meta.planner import CodegenPromptBuilder
+from dan.workflow_generation_guidance import workflow_generation_contract_override
 
 
 @pytest.fixture
@@ -41,6 +42,23 @@ class TestSystemPrompt:
     def test_instructs_code_only_output(self, builder: CodegenPromptBuilder) -> None:
         prompt = builder.build_system_prompt()
         assert "ONLY Python code" in prompt
+
+    def test_contains_workflow_generation_contract(self, builder: CodegenPromptBuilder) -> None:
+        prompt = builder.build_system_prompt()
+        assert "Workflow Generation Contract" in prompt
+        assert "single-brace `{variable}` placeholders" in prompt
+        assert "assign outputs through `result = ...`" in prompt
+        assert "registered tool ids" in prompt
+
+    def test_omits_workflow_generation_contract_when_override_disabled(
+        self,
+        builder: CodegenPromptBuilder,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("DAN_WORKFLOW_GENERATION_CONTRACT_ENABLED", "1")
+        with workflow_generation_contract_override(False):
+            prompt = builder.build_system_prompt()
+        assert "Workflow Generation Contract" not in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -206,16 +224,22 @@ class TestFullPrompt:
         assert "Build a research pipeline" in user
 
     def test_passes_through_all_params(self, builder: CodegenPromptBuilder) -> None:
-        _, user = builder.build_full_prompt(
+        system, user = builder.build_full_prompt(
             "Research",
             tools=["web_search"],
             skills=["writing"],
             error_context="SyntaxError on line 3",
             constraints={"inputs": ["query"]},
             self_knowledge_chunks="API chunk text",
+            graph_summary="Existing nodes: search -> summarize",
         )
+        assert "Workflow Generation Contract" in system
+        assert "single-brace `{variable}` placeholders" in system
+        assert "assign outputs through `result = ...`" in system
         assert "web_search" in user
         assert "writing" in user
         assert "SyntaxError" in user
         assert "query" in user
         assert "API chunk text" in user
+        assert "Existing Workflow (modify, don't rebuild from scratch)" in user
+        assert "Existing nodes: search -> summarize" in user

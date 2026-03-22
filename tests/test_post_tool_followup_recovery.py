@@ -1388,6 +1388,17 @@ async def test_send_message_with_tools_repairs_invalid_mutation_plan_internally(
             and "repair dan workflow mutation plans" in str(msg.get("content") or "").lower()
             for msg in repair_messages
         )
+        system_messages = [
+            str(msg.get("content") or "")
+            for msg in repair_messages
+            if msg.get("role") == "system"
+        ]
+        assert any("Workflow Generation Contract" in content for content in system_messages)
+        assert any("replace_body_graph" in content for content in system_messages)
+        assert any("items` and `results" in content for content in system_messages)
+        assert any("item` and `index" in content for content in system_messages)
+        assert any("Never invent pseudo-ops" in content for content in system_messages)
+        assert any("Keep the requested outcome intact" in content for content in system_messages)
         assert any(
             msg.get("role") == "user"
             and "Compilation or validation failures" in str(msg.get("content") or "")

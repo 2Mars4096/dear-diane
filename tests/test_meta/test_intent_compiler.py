@@ -8,6 +8,7 @@ from dan.meta.intent_compiler import (
     COVERAGE_CATALOG,
     DOMAIN_PATTERN_PREFERENCES,
     IntentCompiler,
+    MissingCodeStageError,
     _infer_tool_id,
 )
 from dan.meta.intent_schema import (
@@ -183,6 +184,19 @@ class TestIntentCompiler:
         assert len(result) == 2
         assert result[0][0] == "linear_chain"
         assert result[1][0] == "review_loop"
+
+    def test_compile_missing_code_stage_raises_for_codegen_fallback(self):
+        compiler = IntentCompiler()
+        intent = _make_intent([
+            _make_stage(
+                "compute",
+                StageType.code_execution,
+                description="Calculate the summary statistics",
+            ),
+        ])
+
+        with pytest.raises(MissingCodeStageError, match="has no runnable code"):
+            compiler.compile(intent)
 
 
 # ---------------------------------------------------------------------------

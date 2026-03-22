@@ -60,3 +60,22 @@ def test_workflow_contract_distinguishes_validated_from_run_ready() -> None:
     assert report.validated is True
     assert report.run_ready is False
     assert any("no nodes" in issue.lower() for issue in report.run_readiness_issues)
+
+
+def test_workflow_contract_rejects_placeholder_code_nodes_as_not_run_ready() -> None:
+    wf = workflow("placeholder_contract")
+    wf.code(
+        "compute",
+        code='result = {"status": "placeholder", "task": "compute metrics"}',
+    )
+    graph_dict = wf.build().model_dump(mode="json")
+
+    report = validate_workflow_build_contract(
+        graph_dict,
+        workflow_id="placeholder-contract",
+        apply_repairs=True,
+    )
+
+    assert report.validated is True
+    assert report.run_ready is False
+    assert any("placeholder" in issue.lower() for issue in report.run_readiness_issues)

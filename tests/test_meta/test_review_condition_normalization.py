@@ -1,12 +1,10 @@
 """Tests for review-loop condition normalization (plan 33-10, task A)."""
 
-import json
 import logging
 
 from dan.meta.intent_compiler import (
     _infer_tool_id,
     _normalize_review_condition,
-    _placeholder_code,
 )
 
 
@@ -78,18 +76,6 @@ def test_embedded_comparison_inside_string_literal_preserved():
 def test_string_literal_placeholder_collision_preserved():
     result = _normalize_review_condition("feedback == '__STR1__' and quality_score < 8")
     assert result == "feedback == '__STR1__' and quality_score < 8"
-
-
-def test_placeholder_code_escapes_quotes_and_newlines():
-    code = _placeholder_code('Analyze the "revenue" column\nand summarize it')
-    namespace: dict[str, object] = {}
-    exec(code, namespace)
-
-    assert namespace["result"] == {
-        "status": "placeholder",
-        "task": 'Analyze the "revenue" column\nand summarize it',
-    }
-    assert json.loads(code.removeprefix("result = "))["task"].startswith("Analyze the")
 
 
 def test_tool_inference_matches_explicit_file_phrase():

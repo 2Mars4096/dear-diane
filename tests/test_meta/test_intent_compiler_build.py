@@ -1,6 +1,6 @@
 """Tests for IntentCompiler.build_graph() — direct in-process Graph construction.
 
-Covers all 8 StageType values, multi-pattern composition, edge wiring,
+Covers all StageType values, multi-pattern composition, edge wiring,
 conditional branching, domain-aware selection, and parity with compile().
 """
 
@@ -11,9 +11,11 @@ import pytest
 from dan.meta.intent_compiler import (
     DirectBuildError,
     IntentCompiler,
+    MissingCodeStageError,
 )
 from dan.meta.intent_schema import (
     ConditionalRequirement,
+    LoopRequirement,
     ReviewRequirement,
     StageIntent,
     StageType,
@@ -81,6 +83,20 @@ class TestBuildGraphSingleStage:
         assert len(graph.nodes) >= 1
         _assert_valid_graph(graph)
 
+    def test_fan_out_with_code_body(self) -> None:
+        intent = _make_intent([
+            StageIntent(
+                name="triple_each",
+                stage_type=StageType.fan_out,
+                config={"body_code": "result = item * 3"},
+            ),
+        ])
+        graph = self.compiler.build_graph(intent)
+        _assert_valid_graph(graph)
+        assert any(n.node_type == "for_each" for n in graph.nodes)
+        body_graph = graph.sub_graphs["triple_each_body"]
+        assert any(n.node_type == "code_operator" for n in body_graph.nodes)
+
     def test_rag_retrieval(self) -> None:
         intent = _make_intent([
             StageIntent(
@@ -123,6 +139,17 @@ class TestBuildGraphSingleStage:
         assert any(n.node_type == "code_operator" for n in graph.nodes)
         _assert_valid_graph(graph)
 
+    def test_code_execution_without_code_raises(self) -> None:
+        intent = _make_intent([
+            StageIntent(
+                name="compute",
+                stage_type=StageType.code_execution,
+                description="Compute the aggregate metrics",
+            ),
+        ])
+        with pytest.raises(MissingCodeStageError, match="has no runnable code"):
+            self.compiler.build_graph(intent)
+
     def test_human_approval(self) -> None:
         intent = _make_intent([
             StageIntent(
@@ -149,6 +176,20 @@ class TestBuildGraphSingleStage:
         ])
         graph = self.compiler.build_graph(intent)
         assert len(graph.nodes) >= 3
+        _assert_valid_graph(graph)
+
+    def test_loop(self) -> None:
+        intent = _make_intent([
+            StageIntent(
+                name="count_to_three",
+                stage_type=StageType.loop,
+                loop=LoopRequirement(condition="counter < 3"),
+            ),
+        ])
+        graph = self.compiler.build_graph(intent)
+        node_types = {n.node_type for n in graph.nodes}
+        assert "gate" in node_types
+        assert "code_operator" in node_types
         _assert_valid_graph(graph)
 
 

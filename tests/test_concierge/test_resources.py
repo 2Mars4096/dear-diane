@@ -167,6 +167,26 @@ class TestResourceTracker:
         assert tracker.available is True
         await tracker.try_acquire("llm")
         assert tracker.available is False
+        assert tracker.run_available is True
+
+    @pytest.mark.asyncio
+    async def test_wait_acquire_unblocks_after_release(self):
+        tracker = ResourceTracker(ResourceBudget(max_concurrent_llm_calls=1))
+        assert await tracker.try_acquire("llm") is True
+
+        started = asyncio.Event()
+
+        async def _waiter() -> bool:
+            started.set()
+            return await tracker.wait_acquire("llm", timeout=1.0)
+
+        waiter_task = asyncio.create_task(_waiter())
+        await started.wait()
+        await asyncio.sleep(0.01)
+        assert not waiter_task.done()
+
+        await tracker.release("llm")
+        assert await waiter_task is True
 
     @pytest.mark.asyncio
     async def test_snapshot(self):
@@ -429,8 +449,8 @@ class TestDispatcherResourceConcurrency:
         assert overflow_seen, "Legacy hard cap should still trigger overflow"
 
     @pytest.mark.asyncio
-    async def test_dispatcher_honors_llm_budget(self):
-        """With max_llm_calls=1, a second project should overflow even if runs are available."""
+    async def test_dispatcher_does_not_reserve_llm_budget_for_whole_turn(self):
+        """Dispatcher should admit another run when only the advisory LLM budget is saturated."""
         tracker = ResourceTracker(ResourceBudget(max_concurrent_runs=5, max_concurrent_llm_calls=1))
         concierge = _FakeConcierge(delay=0.1)
         ctx_a = _make_context("proj-a", "A")
@@ -461,7 +481,7 @@ class TestDispatcherResourceConcurrency:
             _dispatch_b(),
         )
 
-        assert overflow_seen, "LLM budget should trigger overflow when saturated"
+        assert not overflow_seen, "Dispatcher should gate on run slots, not reserve llm for the full turn"
 
     @pytest.mark.asyncio
     async def test_resource_released_after_completion(self):

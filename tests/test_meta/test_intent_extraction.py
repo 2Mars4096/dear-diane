@@ -12,7 +12,12 @@ from dan.meta.intent_extraction import (
     INTENT_EXTRACTION_SYSTEM_PROMPT,
     INTENT_FEW_SHOT_EXAMPLES,
     _STAGE_TYPE_DESCRIPTIONS,
+    _infer_conditional_config,
+    _infer_deterministic_code_config,
+    _infer_loop_config,
+    build_intent_extraction_system_prompt,
     build_intent_tool_schema,
+    validate_and_expand_intent,
 )
 from dan.meta.intent_schema import StageType, WorkflowIntent
 
@@ -25,7 +30,7 @@ from dan.meta.intent_schema import StageType, WorkflowIntent
 class TestSystemPrompt:
     """Verify that the system prompt is well-formed and covers all stage types."""
 
-    def test_contains_all_seven_stage_type_names(self):
+    def test_contains_all_stage_type_names(self):
         for st in StageType:
             assert st.value in INTENT_EXTRACTION_SYSTEM_PROMPT, (
                 f"Stage type '{st.value}' missing from system prompt"
@@ -45,6 +50,12 @@ class TestSystemPrompt:
         assert len(INTENT_EXTRACTION_SYSTEM_PROMPT) > 100
         words = INTENT_EXTRACTION_SYSTEM_PROMPT.split()
         assert len(words) < 600, f"System prompt too long: {len(words)} words"
+
+    def test_built_prompt_includes_workflow_contract_and_exact_tool_ids(self):
+        prompt = build_intent_extraction_system_prompt()
+        assert "Workflow Generation Contract" in prompt
+        assert "Do NOT invent tool_ids not in this list" in prompt
+        assert "smallest complete runnable workflow" in prompt
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +226,148 @@ class TestFailFastFallback:
         result = checker.check(intent, try_compose=False)
         assert result.fully_covered is True
         assert result.recommendation == "compile"
+
+
+class TestHeuristicExpansion:
+    def test_slugify_smoke_phrase_gets_code_execution_stage(self):
+        intent = WorkflowIntent(
+            goal="slugify",
+            stages=[{"name": "draft", "stage_type": "transform"}],
+        )
+        expanded = validate_and_expand_intent(
+            intent,
+            "pls set up something small that turns Deep Agent Network into deep-agent-network and execute it",
+        )
+        code_stage = next(
+            s for s in expanded.stages if s.stage_type == StageType.code_execution
+        )
+        assert code_stage.config["code"]
+        assert 'text = "Deep Agent Network"' in code_stage.config["code"]
+        assert '"-".join' in code_stage.config["code"]
+
+    def test_slugify_smoke_phrase_overrides_bad_llm_code(self):
+        intent = WorkflowIntent(
+            goal="slugify",
+            stages=[
+                {
+                    "name": "convert_to_kebab_case",
+                    "stage_type": "code_execution",
+                    "config": {"code": "result = input_text.lower().replace(' ', '-')"},
+                }
+            ],
+        )
+        expanded = validate_and_expand_intent(
+            intent,
+            "pls set up something small that turns Deep Agent Network into deep-agent-network and execute it",
+        )
+        code_stage = expanded.stages[0]
+        assert code_stage.stage_type == StageType.code_execution
+        assert 'text = "Deep Agent Network"' in code_stage.config["code"]
+        assert "input_text" not in code_stage.config["code"]
+
+    def test_conditional_smoke_phrase_gets_conditional_payload(self):
+        intent = WorkflowIntent(
+            goal="branch",
+            stages=[{"name": "draft", "stage_type": "transform"}],
+        )
+        expanded = validate_and_expand_intent(
+            intent,
+            "uh can you do a tiny branch thing, if 7 is bigger than 5 say BIG otherwise SMALL, then run it",
+        )
+        conditional_stage = next(
+            s for s in expanded.stages if s.stage_type == StageType.conditional
+        )
+        assert conditional_stage.conditional is not None
+        assert conditional_stage.conditional.condition == "7 > 5"
+        assert conditional_stage.conditional.then_description == "BIG"
+        assert conditional_stage.conditional.else_description == "SMALL"
+
+    def test_loop_smoke_phrase_gets_loop_stage(self):
+        intent = WorkflowIntent(
+            goal="loop",
+            stages=[{"name": "draft", "stage_type": "transform"}],
+        )
+        expanded = validate_and_expand_intent(
+            intent,
+            "i want some tiny loop thing that counts up till 3 and then runs and gives me the final value",
+        )
+        loop_stage = next(s for s in expanded.stages if s.stage_type == StageType.loop)
+        assert loop_stage.loop is not None
+        assert loop_stage.loop.condition == "counter < 3"
+
+    def test_loop_smoke_phrase_repairs_multi_stage_transform_extraction(self):
+        intent = WorkflowIntent(
+            goal="loop",
+            stages=[
+                {
+                    "name": "i_want_some_tiny_loop_thing_th",
+                    "description": "I want some tiny loop thing that counts up till 3",
+                    "stage_type": "transform",
+                },
+                {
+                    "name": "runs_and_gives_me_the_final_va",
+                    "description": "Runs and gives me the final value",
+                    "stage_type": "transform",
+                },
+            ],
+        )
+        expanded = validate_and_expand_intent(
+            intent,
+            "i want some tiny loop thing that counts up till 3 and then runs and gives me the final value",
+        )
+        assert expanded.stages[0].stage_type == StageType.loop
+        assert expanded.stages[0].loop is not None
+        assert expanded.stages[0].loop.condition == "counter < 3"
+
+    def test_direct_conditional_inference_handles_comparison_language(self):
+        conditional = _infer_conditional_config(
+            "if 7 is bigger than 5 say BIG otherwise SMALL"
+        )
+        assert conditional.condition == "7 > 5"
+        assert conditional.then_description == "BIG"
+        assert conditional.else_description == "SMALL"
+
+    def test_direct_loop_inference_parses_count_target(self):
+        loop = _infer_loop_config("count up till 3")
+        assert loop.condition == "counter < 3"
+        assert loop.max_iterations >= 5
+
+    def test_direct_deterministic_code_inference_uses_source_target_example(self):
+        config = _infer_deterministic_code_config(
+            "pls set up something small that turns Deep Agent Network into deep-agent-network and execute it"
+        )
+        assert config is not None
+        assert 'text = "Deep Agent Network"' in config["code"]
+        assert 'result = "-".join' in config["code"]
+
+    def test_numeric_batch_prompt_rewrites_to_seed_fanout_and_reduce(self):
+        intent = WorkflowIntent(
+            goal="batch",
+            stages=[
+                {
+                    "name": "triple_each",
+                    "description": "Triple each number in the input list",
+                    "stage_type": "fan_out",
+                },
+                {
+                    "name": "sum_results",
+                    "stage_type": "code_execution",
+                    "config": {"code": "total = sum(tripled)"},
+                },
+            ],
+        )
+        expanded = validate_and_expand_intent(
+            intent,
+            "do a little batch thing over 1 2 3, triple each one, sum it to 18, and run it",
+        )
+        assert [stage.stage_type for stage in expanded.stages] == [
+            StageType.code_execution,
+            StageType.fan_out,
+            StageType.code_execution,
+        ]
+        assert expanded.stages[0].config["code"] == "result = [1, 2, 3]"
+        assert expanded.stages[1].config["body_code"] == "result = item * 3"
+        assert 'entry["result"]' in expanded.stages[2].config["code"]
 
     def test_all_unsupported_returns_compile_passthrough(self):
         """CoverageChecker is now a pass-through — always returns fully_covered=True."""

@@ -6,6 +6,7 @@ from pydantic import ValidationError
 from dan.meta.intent_schema import (
     DataSource,
     DataSourceType,
+    LoopRequirement,
     ReviewRequirement,
     StageIntent,
     StageType,
@@ -37,7 +38,7 @@ def _make_intent(stages: list[dict] | None = None, **kw) -> dict:
 
 
 class TestStageType:
-    def test_has_all_eight_values(self):
+    def test_has_all_nine_values(self):
         expected = {
             "transform",
             "review_loop",
@@ -47,6 +48,7 @@ class TestStageType:
             "code_execution",
             "human_approval",
             "conditional",
+            "loop",
         }
         assert {e.value for e in StageType} == expected
 
@@ -97,6 +99,14 @@ class TestReviewRequirement:
             ReviewRequirement(max_iterations=21)
 
 
+class TestLoopRequirement:
+    def test_defaults(self):
+        loop = LoopRequirement()
+        assert loop.condition == "counter < 3"
+        assert loop.max_iterations == 10
+        assert loop.state_defaults == {"counter": 0}
+
+
 # ---------------------------------------------------------------------------
 # StageIntent
 # ---------------------------------------------------------------------------
@@ -109,6 +119,7 @@ class TestStageIntent:
         assert s.inputs == []
         assert s.outputs == []
         assert s.review is None
+        assert s.loop is None
         assert s.parallelism == 1
 
     def test_review_loop_requires_review(self):
@@ -130,6 +141,18 @@ class TestStageIntent:
             review=ReviewRequirement(),
         )
         assert s.review is not None
+
+    def test_loop_requires_loop_config(self):
+        with pytest.raises(ValidationError, match="loop.*LoopRequirement"):
+            StageIntent(name="counter", stage_type=StageType.loop)
+
+    def test_loop_with_loop_config_passes(self):
+        s = StageIntent(
+            name="counter",
+            stage_type=StageType.loop,
+            loop=LoopRequirement(),
+        )
+        assert s.loop is not None
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +262,7 @@ class TestJsonSchema:
         assert "StageType" in defs
         stage_type_def = defs["StageType"]
         enum_vals = stage_type_def.get("enum", [])
-        assert len(enum_vals) == 8
+        assert len(enum_vals) == 9
         assert "transform" in enum_vals
 
     def test_round_trip_via_schema(self):

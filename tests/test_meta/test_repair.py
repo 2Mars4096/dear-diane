@@ -204,7 +204,10 @@ class TestStructuralRepairPlanner:
 
     @pytest.mark.asyncio
     async def test_valid_plan_from_llm(self):
+        calls: list[tuple[Any, ...]] = []
+
         async def fake_llm(*args):
+            calls.append(args)
             return json.dumps({
                 "operations": [
                     {"op": "add_node", "node_type": "llm_operator", "name": "Validator",
@@ -218,6 +221,11 @@ class TestStructuralRepairPlanner:
         plan = await planner.plan_repair(FakePrinciple(), Graph())
         assert plan is not None
         assert len(plan.operations) == 1
+        assert calls
+        assert "Workflow Generation Contract" in str(calls[0][0])
+        assert "replace_body_graph" in str(calls[0][0])
+        assert '"remove_edge", "source_id"' in str(calls[0][0])
+        assert '"edge_id"' not in str(calls[0][0])
 
 
 # ---------------------------------------------------------------------------

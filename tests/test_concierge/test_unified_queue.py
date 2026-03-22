@@ -39,6 +39,19 @@ def _complete_event(content: str = "ok") -> ChatCompleteEvent:
     )
 
 
+async def _drain_response_bus(dispatcher: ConcurrentDispatcher, channel_id: str) -> list[Any]:
+    bus = dispatcher.get_response_bus(channel_id)
+    assert bus is not None
+    events: list[Any] = []
+    while True:
+        item = await asyncio.wait_for(bus.get(), timeout=1.0)
+        if item is None:
+            break
+        events.append(item)
+    dispatcher.cleanup_response_bus(channel_id)
+    return events
+
+
 class FakeContextResolver:
     """Returns deterministic ResolvedContext keyed by message text."""
 
@@ -528,6 +541,52 @@ class TestStatusCancelBypass:
         assert any(isinstance(e, ChatCompleteEvent) for e in results["status"])
         status_event = next(e for e in results["status"] if isinstance(e, ChatCompleteEvent))
         assert "reply to: /status" in status_event.content
+
+
+class TestSameProjectSupersede:
+    @pytest.mark.asyncio
+    async def test_superseding_instruction_collapses_stale_same_project_queue(self):
+        concierge = FakeConcierge(delay=0.3)
+        dispatcher = ConcurrentDispatcher(concierge, max_concurrent_projects=5)
+
+        queue_channels: dict[str, str] = {}
+
+        async def run_first() -> None:
+            async for _event in dispatcher.dispatch(_msg("do work")):
+                pass
+
+        async def enqueue(name: str, text: str, delay: float) -> list[Any]:
+            events: list[Any] = []
+            await asyncio.sleep(delay)
+            async for event in dispatcher.dispatch(_msg(text)):
+                events.append(event)
+                if isinstance(event, ChatQueuedEvent):
+                    queue_channels[name] = event.stream_channel_id
+            return events
+
+        first_task = asyncio.create_task(run_first())
+        second_task = asyncio.create_task(enqueue("second", "draft the summary", 0.05))
+        third_task = asyncio.create_task(enqueue("third", "actually fix the tests instead", 0.1))
+        second_events, third_events = await asyncio.gather(second_task, third_task)
+        await first_task
+
+        assert any(isinstance(event, ChatQueuedEvent) for event in second_events)
+        assert any(isinstance(event, ChatQueuedEvent) for event in third_events)
+
+        second_bus_events = await _drain_response_bus(dispatcher, queue_channels["second"])
+        third_bus_events = await _drain_response_bus(dispatcher, queue_channels["third"])
+
+        assert len(second_bus_events) == 1
+        assert isinstance(second_bus_events[0], ChatCompleteEvent)
+        assert "Superseded by newer instruction" in second_bus_events[0].content
+
+        assert len(third_bus_events) == 1
+        assert isinstance(third_bus_events[0], ChatCompleteEvent)
+        assert "reply to: actually fix the tests instead" in third_bus_events[0].content
+        assert [msg.text for msg in concierge.process_calls] == [
+            "do work",
+            "actually fix the tests instead",
+        ]
 
 
 class TestQueuePositionInfo:

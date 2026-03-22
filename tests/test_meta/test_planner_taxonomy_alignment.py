@@ -20,7 +20,8 @@ def test_planning_prompt_builder_uses_honest_mutation_and_generate_contract() ->
         in template
     )
     assert '{"op": "remove_edge", "source_id": "...", "source_port": "...", "target_id": "...", "target_port": "..."}' in template
-    assert '"tool_id": "index_documents"' in template
+    assert '"tool_id": "file_read"' in template
+    assert '"tool_id": "index_documents"' not in template
     assert "For branching/control-flow edges, always specify explicit ports" in template
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Callable
@@ -683,7 +684,8 @@ def test_build_child_session_drops_workflow_route_hints_for_non_workflow_subtask
             surface="cli",
             external_id="cli-user",
             text="Investigate and summarize",
-            metadata={"mode": "agent", "workflow_id": "wf-123"},
+            session_id="thread-42",
+            metadata={"mode": "agent", "workflow_id": "wf-123", "thread_id": "thread-42"},
         ),
         triage=TriageResult(
             tier=2,
@@ -700,6 +702,7 @@ def test_build_child_session_drops_workflow_route_hints_for_non_workflow_subtask
         ),
         tier=SessionTier.MULTI,
     )
+    session.task_context = {"mutable": {"a": 1}}
 
     child = executor._build_child_session(session, manager, "search docs")
 
@@ -708,6 +711,13 @@ def test_build_child_session_drops_workflow_route_hints_for_non_workflow_subtask
     assert child.triage.route.target == "general"
     assert child.triage.route.action_hints == ["search_web"]
     assert child.msg.metadata["allow_mutation_tool"] is False
+    assert child.msg.session_id != session.msg.session_id
+    assert child.msg.metadata["thread_id"] != session.msg.metadata["thread_id"]
+    assert child.msg.metadata["parent_thread_id"] == "thread-42"
+    assert child.msg.metadata["tiered_child_session_id"] == child.id
+    assert child.task_context["handoff"]["parent_thread_id"] == "thread-42"
+    child.task_context["parent_context"]["mutable"]["a"] = 2
+    assert session.task_context["mutable"]["a"] == 1
 
 
 @pytest.mark.asyncio
@@ -1146,6 +1156,55 @@ async def test_mixed_execution_order_preserved_on_root_session(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_mixed_execution_runs_independent_group_in_parallel(tmp_path: Path) -> None:
+    concierge = _make_concierge(tmp_path)
+
+    async def triage_fn(*args: Any, **kwargs: Any) -> TriageResult:
+        return TriageResult(
+            tier=2,
+            intent="agent",
+            goal="Run mixed plan",
+            deliverable="Run mixed plan",
+            subtasks=["search docs", "inspect repo", "summarize findings"],
+            execution_order="mixed",
+        )
+
+    def _delayed_stream(content: str, delay: float) -> Callable[[], AsyncIterator[Any]]:
+        async def _stream() -> AsyncIterator[Any]:
+            await asyncio.sleep(delay)
+            yield ChatCompleteEvent(
+                message_id=f"complete-{content[:8]}",
+                content=content,
+                graph_revision="",
+            )
+
+        return _stream
+
+    dispatcher = _install_dispatcher(concierge, triage_fn=triage_fn)
+    concierge.chat_manager._responses["search docs"] = _delayed_stream("Search complete.", 0.15)
+    concierge.chat_manager._responses["inspect repo"] = _delayed_stream("Repo complete.", 0.15)
+    concierge.chat_manager._responses["summarize findings"] = _complete_stream("Summary complete.")
+
+    start = time.monotonic()
+    async for _event in concierge.process(
+        SurfaceMessage(surface="cli", external_id="cli-user", text="Run mixed plan")
+    ):
+        pass
+    elapsed = time.monotonic() - start
+
+    root = dispatcher._session_manager.get_root("cli-user")
+    assert root is not None
+    assert root.child_execution == "mixed"
+    assert elapsed < 0.26, f"expected hybrid grouping, got {elapsed:.3f}s"
+
+    summary_child = dispatcher._session_manager.get(root.children[-1])
+    assert summary_child is not None
+    previous_result = summary_child.task_context.get("previous_result", "")
+    assert "Search complete." in previous_result
+    assert "Repo complete." in previous_result
+
+
+@pytest.mark.asyncio
 async def test_root_assistant_turn_persists_session_tree_metadata(tmp_path: Path) -> None:
     concierge = _make_concierge(tmp_path)
 
@@ -1437,6 +1496,7 @@ def test_extract_chat_params_includes_stage_overlay_and_audit_metadata() -> None
     params = _extract_chat_params(session, "system prompt")
 
     assert "## Concierge stage: workflow_build" in params["extra_system_instructions"]
+    assert "canonical node kinds" not in params["extra_system_instructions"]
     assert params["audit_metadata"]["concierge_stage"] == "workflow_build"
     assert params["audit_metadata"]["concierge_prompt_overlay"] == "concierge_stage:workflow_build"
     assert params["audit_metadata"]["route_source"] == "fast_lexical"
