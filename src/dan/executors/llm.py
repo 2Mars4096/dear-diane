@@ -7,7 +7,6 @@ import inspect
 import json
 import logging
 import os
-import string
 import time
 from typing import Any
 
@@ -31,6 +30,7 @@ from dan.engine.token_optimization import (
 from dan.models.nodes import LLMOperator, NodeBase, RetryPolicy
 from dan.providers import CompletionResult
 from dan.providers.cost_tracker import TokenSaving
+from dan.utils.template_render import render_runtime_template
 from dan.utils.tokens import estimate_tokens
 
 logger = logging.getLogger(__name__)
@@ -39,15 +39,8 @@ _LLM_DEFAULT_RETRY = RetryPolicy(max_retries=3)
 
 
 def _render_template(template: str, variables: dict[str, Any]) -> str:
-    """Render a prompt template with Python str.format_map.
-
-    Uses safe_substitute semantics: missing keys are left as-is rather
-    than raising KeyError.
-    """
-    try:
-        return template.format_map(variables)
-    except (KeyError, IndexError, ValueError):
-        return string.Template(template).safe_substitute(variables)
+    """Render a prompt template with DAN's runtime placeholder rules."""
+    return render_runtime_template(template, variables)
 
 
 def _escalate_tier(tier: Any) -> Any:
@@ -501,6 +494,11 @@ class LLMExecutor:
             node, inputs, context, model,
         )
         rendered_prompt = _render_template(node.prompt_template, assembled_inputs)
+        rendered_system_prompt = (
+            _render_template(node.system_prompt, assembled_inputs)
+            if node.system_prompt
+            else ""
+        )
 
         await context.emit_event(
             event_type="llm_thinking",
@@ -514,14 +512,14 @@ class LLMExecutor:
             tracker = SystemPromptTracker()
             context._system_prompt_tracker = tracker
         dedup_metrics = (
-            tracker.track(node.system_prompt)
-            if node.system_prompt
+            tracker.track(rendered_system_prompt)
+            if rendered_system_prompt
             else {"is_duplicate": False}
         )
 
         messages: list[dict[str, Any]] = []
-        if node.system_prompt:
-            messages.append({"role": "system", "content": node.system_prompt})
+        if rendered_system_prompt:
+            messages.append({"role": "system", "content": rendered_system_prompt})
         messages.append({"role": "user", "content": rendered_prompt})
 
         # -- 17-1: Error memory context injection ------------------------------
@@ -531,7 +529,7 @@ class LLMExecutor:
             )
             if error_ctx:
                 messages.insert(
-                    1 if node.system_prompt else 0,
+                    1 if rendered_system_prompt else 0,
                     {"role": "system", "content": error_ctx},
                 )
                 await context.emit_event(

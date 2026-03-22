@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import string
 import time
 from typing import Any
 
@@ -12,6 +11,7 @@ from dan.engine.state import NodeStatus
 from dan.models.nodes import NodeBase, RAGOperator
 from dan.rag import DEFAULT_EMBEDDING_MODEL, EmbeddingProvider, EmbeddingRegistry
 from dan.rag.stores import QueryResult, VectorStore, VectorStoreConfig, VectorStoreFactory
+from dan.utils.template_render import render_runtime_template
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +19,7 @@ _store_cache: dict[str, VectorStore] = {}
 
 
 def _render_template(template: str, variables: dict[str, Any]) -> str:
-    try:
-        return template.format_map(variables)
-    except (KeyError, IndexError, ValueError):
-        return string.Template(template).safe_substitute(variables)
+    return render_runtime_template(template, variables)
 
 
 def _get_or_create_store(config: dict[str, Any], collection: str) -> VectorStore:

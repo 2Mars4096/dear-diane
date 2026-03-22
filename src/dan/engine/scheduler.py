@@ -9,7 +9,6 @@ import hashlib
 import json
 import logging
 import os
-import string
 import time as _time
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -64,6 +63,7 @@ from dan.engine.state_store import FileSystemStateStore, NodeExecutionSummary, N
 from dan.engine.token_optimization import TokenBudgetAdvisor
 from dan.models.edges import ControlEdge, ContextEdge, DataEdge
 from dan.models.graph import Graph
+from dan.utils.template_render import render_runtime_template
 from dan.utils.tokens import estimate_tokens
 
 try:
@@ -106,10 +106,7 @@ def _is_validation_warning(msg: str) -> bool:
 
 def _render_template_for_cache(template: str, variables: dict[str, Any]) -> str:
     """Render prompt templates with safe fallback semantics for cache keys."""
-    try:
-        return template.format_map(variables)
-    except (KeyError, IndexError, ValueError):
-        return string.Template(template).safe_substitute(variables)
+    return render_runtime_template(template, variables)
 
 
 def _stable_input_hash(payload: dict[str, Any]) -> str:
