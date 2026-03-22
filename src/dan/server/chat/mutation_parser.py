@@ -555,6 +555,13 @@ def _try_persist_audit(
                 }
                 for msg in prompt_messages
             ],
+            prompt_module_ids=[
+                str(module_id)
+                for module_id in (audit_metadata.get("prompt_module_ids") or [])
+                if str(module_id or "").strip()
+            ],
+            workflow_guidance_injected=bool(audit_metadata.get("workflow_guidance_injected", False)),
+            workflow_guidance_surface=str(audit_metadata.get("workflow_guidance_surface") or ""),
             model=model,
             tool_calls=tc_records,
             cited_sources=cited,

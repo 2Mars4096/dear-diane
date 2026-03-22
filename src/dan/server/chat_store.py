@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -80,6 +81,11 @@ class ChatStore:
 
     def __init__(self, base_dir: str = "./graphs") -> None:
         self.base_dir = Path(base_dir)
+        self._journal_compact_every = max(
+            0,
+            int(os.environ.get("DAN_CHAT_STORE_COMPACT_EVERY", "100")),
+        )
+        self._journal_counts: dict[Path, int] = {}
 
     def _chats_dir(self, workflow_id: str) -> Path:
         d = self.base_dir / "chats" / workflow_id
@@ -89,18 +95,125 @@ class ChatStore:
     def _thread_path(self, workflow_id: str, thread_id: str) -> Path:
         return self._chats_dir(workflow_id) / f"{thread_id}.json"
 
+    def _journal_path(self, workflow_id: str, thread_id: str) -> Path:
+        return self._chats_dir(workflow_id) / f"{thread_id}.journal.jsonl"
+
+    def _write_snapshot(self, thread: ChatThread) -> None:
+        path = self._thread_path(thread.workflow_id, thread.id)
+        path.write_text(
+            thread.model_dump_json(indent=2), encoding="utf-8"
+        )
+        journal_path = self._journal_path(thread.workflow_id, thread.id)
+        if journal_path.exists():
+            journal_path.unlink()
+        self._journal_counts[journal_path] = 0
+
+    def _append_journal_entry(
+        self,
+        workflow_id: str,
+        thread_id: str,
+        entry: dict[str, Any],
+    ) -> None:
+        journal_path = self._journal_path(workflow_id, thread_id)
+        with journal_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry) + "\n")
+        current = self._journal_counts.get(journal_path)
+        if current is None:
+            try:
+                with journal_path.open("r", encoding="utf-8") as handle:
+                    current = sum(1 for _ in handle)
+            except OSError:
+                current = 1
+        else:
+            current += 1
+        self._journal_counts[journal_path] = current
+        self._maybe_compact_thread(workflow_id, thread_id, current)
+
+    def _maybe_compact_thread(
+        self,
+        workflow_id: str,
+        thread_id: str,
+        journal_count: int | None = None,
+    ) -> None:
+        if self._journal_compact_every <= 0:
+            return
+        if journal_count is None:
+            journal_count = self._journal_counts.get(
+                self._journal_path(workflow_id, thread_id), 0,
+            )
+        if journal_count < self._journal_compact_every:
+            return
+        thread = self.get_thread(workflow_id, thread_id)
+        if thread is not None:
+            self._write_snapshot(thread)
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> datetime:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            return datetime.fromisoformat(value)
+        return datetime.now(timezone.utc)
+
+    def _apply_thread_journal_entry(
+        self,
+        thread: ChatThread,
+        entry: dict[str, Any],
+    ) -> None:
+        op = str(entry.get("op") or "").strip()
+        if op == "append_message":
+            payload = entry.get("message")
+            if isinstance(payload, dict):
+                thread.messages.append(ChatMessage.model_validate(payload))
+            thread.updated_at = self._parse_datetime(entry.get("updated_at"))
+            return
+        if op == "update_thread":
+            fields = entry.get("fields")
+            if not isinstance(fields, dict):
+                return
+            for key, value in fields.items():
+                if key in {"created_at", "updated_at"}:
+                    setattr(thread, key, self._parse_datetime(value))
+                elif key == "messages":
+                    thread.messages = [
+                        ChatMessage.model_validate(item)
+                        for item in list(value or [])
+                        if isinstance(item, dict)
+                    ]
+                else:
+                    setattr(thread, key, value)
+            return
+
+    def _load_thread_from_path(self, path: Path) -> ChatThread | None:
+        try:
+            thread = ChatThread.model_validate_json(
+                path.read_text(encoding="utf-8")
+            )
+        except (ValueError, OSError):
+            return None
+        journal_path = path.with_suffix(".journal.jsonl")
+        if journal_path.exists():
+            try:
+                with journal_path.open("r", encoding="utf-8") as handle:
+                    line_count = 0
+                    for raw in handle:
+                        raw = raw.strip()
+                        if not raw:
+                            continue
+                        line_count += 1
+                        self._apply_thread_journal_entry(thread, json.loads(raw))
+                    self._journal_counts[journal_path] = line_count
+            except (ValueError, OSError):
+                logger.debug("Failed to replay chat journal %s", journal_path, exc_info=True)
+        return thread
+
     def get_thread(
         self, workflow_id: str, thread_id: str
     ) -> ChatThread | None:
         path = self._thread_path(workflow_id, thread_id)
         if not path.exists():
             return None
-        try:
-            return ChatThread.model_validate_json(
-                path.read_text(encoding="utf-8")
-            )
-        except (ValueError, OSError):
-            return None
+        return self._load_thread_from_path(path)
 
     def create_thread(
         self, workflow_id: str, title: str = ""
@@ -110,10 +223,7 @@ class ChatStore:
         return thread
 
     def save_thread(self, thread: ChatThread) -> None:
-        path = self._thread_path(thread.workflow_id, thread.id)
-        path.write_text(
-            thread.model_dump_json(indent=2), encoding="utf-8"
-        )
+        self._write_snapshot(thread)
 
     def append_message(
         self, workflow_id: str, thread_id: str, message: ChatMessage
@@ -121,9 +231,18 @@ class ChatStore:
         thread = self.get_thread(workflow_id, thread_id)
         if thread is None:
             return None
+        updated_at = datetime.now(timezone.utc)
+        self._append_journal_entry(
+            workflow_id,
+            thread_id,
+            {
+                "op": "append_message",
+                "message": message.model_dump(mode="json"),
+                "updated_at": updated_at.isoformat(),
+            },
+        )
         thread.messages.append(message)
-        thread.updated_at = datetime.now(timezone.utc)
-        self.save_thread(thread)
+        thread.updated_at = updated_at
         return thread
 
     def update_thread_title(
@@ -132,15 +251,27 @@ class ChatStore:
         thread = self.get_thread(workflow_id, thread_id)
         if thread is None:
             return False
-        thread.title = title
-        thread.updated_at = datetime.now(timezone.utc)
-        self.save_thread(thread)
+        updated_at = datetime.now(timezone.utc)
+        self._append_journal_entry(
+            workflow_id,
+            thread_id,
+            {
+                "op": "update_thread",
+                "fields": {
+                    "title": title,
+                    "updated_at": updated_at.isoformat(),
+                },
+            },
+        )
         return True
 
     def delete_thread(self, workflow_id: str, thread_id: str) -> bool:
         path = self._thread_path(workflow_id, thread_id)
         if path.exists():
             path.unlink()
+            journal = self._journal_path(workflow_id, thread_id)
+            if journal.exists():
+                journal.unlink()
             meta = self._meta_path(workflow_id, thread_id)
             if meta.exists():
                 meta.unlink()
@@ -155,6 +286,8 @@ class ChatStore:
         for p in chats_dir.glob("*.json"):
             p.unlink()
             count += 1
+        for p in chats_dir.glob("*.journal.jsonl"):
+            p.unlink()
         if not any(chats_dir.iterdir()):
             chats_dir.rmdir()
         return count
@@ -260,11 +393,13 @@ class ChatStore:
             )
         for wf_dir in search_dirs:
             for p in wf_dir.glob("*.json"):
+                if p.name.endswith(".meta.json"):
+                    continue
                 try:
-                    thread = ChatThread.model_validate_json(
-                        p.read_text(encoding="utf-8")
-                    )
+                    thread = self._load_thread_from_path(p)
                 except (ValueError, OSError):
+                    continue
+                if thread is None:
                     continue
                 for msg in thread.messages:
                     if query_lower in msg.content.lower():
@@ -379,9 +514,9 @@ class ChatStore:
             if p.name.endswith(".meta.json"):
                 continue
             try:
-                thread = ChatThread.model_validate_json(
-                    p.read_text(encoding="utf-8")
-                )
+                thread = self._load_thread_from_path(p)
+                if thread is None:
+                    continue
                 meta = self.get_thread_meta(workflow_id, thread.id)
                 results.append({
                     "id": thread.id,

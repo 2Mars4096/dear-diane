@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import logging
 import re
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Literal
 
 from dan.models.node_taxonomy import MUTATION_NODE_TYPES
@@ -12,6 +12,14 @@ from dan.server.graph_mutator import (
     TOOL_PORT_MANIFESTS,
     _default_node_config,
     _default_ports,
+)
+from dan.workflow_generation_guidance import (
+    WORKFLOW_GENERATION_CONTRACT_DETAIL_ID,
+    infer_workflow_generation_surface,
+    render_workflow_generation_contract,
+    render_workflow_generation_contract_detail,
+    render_workflow_mutation_tool_guidance,
+    workflow_generation_contract_enabled,
 )
 
 logger = logging.getLogger(__name__)
@@ -580,38 +588,7 @@ def generate_capability_reference(
 
     if include_mutation_tool:
         lines.append("")
-        lines.append(
-            "When the user wants to create or modify the current workflow, use `plan_graph_mutations`. "
-            "It is the workflow-building/editing tool for the current graph, including build-from-scratch on empty workflows. "
-            "Do not claim you need primitive `create_node`, `add_edge`, or similar workflow-edit tools."
-        )
-        lines.append(
-            "When the user asks to build AND run/test the workflow in the same request, set `auto_apply: true` "
-            "on `plan_graph_mutations`. This applies the mutation automatically after a successful dry-run "
-            "and lets you call `start_run` immediately in the same turn. "
-            "If the user only asks to build or preview, omit `auto_apply` (the default is false) "
-            "so the changes stay proposed until the user explicitly applies them."
-        )
-        lines.append(
-            "When the user later says to apply a previously proposed workflow preview from this chat, "
-            "use `apply_last_mutation` instead of re-planning the same mutation. "
-            "Do NOT use `apply_pending_overlay` for workflow previews; that tool only patches live runs."
-        )
-        lines.append(
-            "When the user wants to run or test the workflow itself, use `start_run`. "
-            "For the current workflow you usually do not need to guess a workflow_id; "
-            "the current workflow context will be used by default. "
-            "Do NOT use `http_request` or Furnace endpoints for ordinary workflow execution."
-        )
-        lines.append(
-            "Be explicit about workflow status: `plan_graph_mutations` prepares a proposed preview/diff. "
-            "Say whether the workflow is only proposed, already applied, or actually tested."
-        )
-        lines.append(
-            "For workflow deletion, first inspect the current inventory (`list_graphs` / `search_workflows`), "
-            "then call `delete_graph` only for exact `graph_id` values from that fresh result. "
-            "Do not batch speculative `delete_graph` calls with the inventory request."
-        )
+        lines.extend(render_workflow_mutation_tool_guidance().splitlines())
 
     lines.append("")
     lines.append(
@@ -953,6 +930,9 @@ class PromptContext:
     workflow_id: str
     autonomy_resolution: Any | None = None
     tools_available: bool = True
+    allow_mutation_tool: bool = False
+    required_action_hints: tuple[str, ...] = ()
+    graph_is_empty: bool = False
     project_metadata: dict[str, Any] = field(default_factory=dict)
     precomputed_hint_flags: dict[str, bool] = field(default_factory=dict)
 
@@ -965,6 +945,7 @@ class ResolvedPromptModule:
     content: str
     detail_id: str | None = None
     detail_body: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 PromptModuleResolverFn = Callable[[PromptContext], Awaitable[ResolvedPromptModule | None]]
@@ -1129,6 +1110,34 @@ async def _resolve_exploration_specializer_module(
     )
 
 
+async def _resolve_workflow_generation_contract_module(
+    context: PromptContext,
+) -> ResolvedPromptModule | None:
+    if not workflow_generation_contract_enabled():
+        return None
+    surface = infer_workflow_generation_surface(
+        mode=context.mode,
+        user_message=context.user_message,
+        allow_mutation_tool=context.allow_mutation_tool,
+        required_action_hints=context.required_action_hints,
+        graph_is_empty=context.graph_is_empty,
+    )
+    if surface is None:
+        return None
+    return ResolvedPromptModule(
+        module_id="workflow_generation_contract",
+        layer="task_specializer",
+        priority=15,
+        content=render_workflow_generation_contract(
+            surface,
+            tools_available=context.tools_available,
+        ),
+        detail_id=WORKFLOW_GENERATION_CONTRACT_DETAIL_ID,
+        detail_body=render_workflow_generation_contract_detail(),
+        metadata={"workflow_guidance_surface": surface},
+    )
+
+
 def build_default_prompt_module_resolver() -> PromptModuleResolver:
     resolver = PromptModuleResolver()
     resolver.register(PromptModule(
@@ -1142,6 +1151,12 @@ def build_default_prompt_module_resolver() -> PromptModuleResolver:
         layer="surface_presentation",
         priority=10,
         resolver=_resolve_surface_presentation_module,
+    ))
+    resolver.register(PromptModule(
+        module_id="workflow_generation_contract",
+        layer="task_specializer",
+        priority=15,
+        resolver=_resolve_workflow_generation_contract_module,
     ))
     resolver.register(PromptModule(
         module_id="research_specializer",
@@ -1170,6 +1185,7 @@ _PROMPT_DETAIL_BODIES = {
         "4. For \"where is X handled?\" or \"how does Y work?\" questions, answer from inspected evidence instead of intuition.\n"
         "5. If a fix or refactor is eventually needed, summarize the current structure first so later edits are grounded in the real design."
     ),
+    WORKFLOW_GENERATION_CONTRACT_DETAIL_ID: render_workflow_generation_contract_detail(),
 }
 
 
@@ -1264,7 +1280,7 @@ Do not dump an entire long file in one tool call.
 19. Prefer fetched page content over search snippets. If you only have snippets, say the answer is tentative or fetch more before concluding.
 20. When web search results are numbered, cite them inline as [1], [2] and include markdown links to the source URLs when helpful.
 21. If `list_directory` says a listing is partial/truncated, do NOT infer absence from the cutoff. Continue with `start_after` or narrow the listing with `glob_pattern` before concluding a file or directory is missing.
-22. Separate proposed work from completed work. If a workflow change is only dry-run validated or waiting for apply/confirmation, say that clearly instead of implying it already happened. When `auto_apply: true` was used and the tool result confirms the apply succeeded, the workflow IS applied and you can proceed to `start_run`. If the user later asks to apply an existing preview, prefer `apply_last_mutation` rather than rebuilding the same plan.
+22. Separate proposed work from completed work. If a change is only proposed, previewed, dry-run validated, or waiting for confirmation, say that clearly instead of implying it already happened.
 
 {module_hints}
 

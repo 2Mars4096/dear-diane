@@ -187,6 +187,14 @@ from dan.server.chat.mutation_parser import (  # noqa: F401
     _build_dry_run_preview,
     _try_persist_audit,
 )
+from dan.workflow_generation_guidance import (
+    coerce_workflow_generation_contract_override,
+    render_workflow_clarification_guidance,
+    render_workflow_generation_contract,
+    render_workflow_mutation_tool_guidance,
+    workflow_generation_contract_enabled,
+    workflow_generation_contract_override,
+)
 
 # ---------------------------------------------------------------------------
 # Module-level configuration
@@ -225,6 +233,16 @@ def _friendly_chat_error(exc: Exception) -> str:
     if len(msg) > 200:
         msg = msg[:200] + "…"
     return f"An error occurred: {msg}"
+
+
+def _workflow_generation_contract_override_from_surface_context(
+    surface_context: dict[str, Any] | None,
+) -> bool | None:
+    if not isinstance(surface_context, dict):
+        return None
+    return coerce_workflow_generation_contract_override(
+        surface_context.get("workflow_generation_contract_enabled"),
+    )
 
 __all__ = [
     "NodeSummary",
@@ -651,6 +669,30 @@ class ChatManager:
     def set_behavior_store(self, store: Any) -> None:
         """Inject a BehaviorStore for domain detection and parameter resolution."""
         self._behavior_store = store
+        if store is None:
+            return
+        try:
+            store.register_seed("prompts/runtime.unified_system", UNIFIED_SYSTEM_PROMPT)
+        except Exception:
+            logger.debug("Failed to register runtime prompt seeds", exc_info=True)
+
+    def _resolve_behavior_prompt(
+        self,
+        key: str,
+        default: str,
+    ) -> tuple[str, int | None]:
+        store = self._behavior_store
+        if store is None:
+            return default, None
+        try:
+            value = store.get(key, default)
+            artifact = store.get_artifact(key)
+            version = artifact.version if artifact is not None else None
+            if isinstance(value, str) and value.strip():
+                return value, version
+        except Exception:
+            logger.debug("Failed to resolve prompt override for %s", key, exc_info=True)
+        return default, None
 
     def _emit_intent_extraction_telemetry(
         self,
@@ -1034,128 +1076,213 @@ class ChatManager:
         record_summary: bool = True,
     ) -> AsyncIterator[ChatStreamEvent]:
         """Stream a text-only LLM response (no function calling)."""
-        try:
-            effective_model = model_override or self._chat_model
-            graph_dict = self._graph_store.get_graph(workflow_id)
-            if graph_dict is None:
-                yield ChatErrorEvent(error=f"Workflow '{workflow_id}' not found")
-                return
-
-            graph = Graph.model_validate(graph_dict)
-            summary = build_graph_summary(graph, workflow_id)
-
-            revision_mismatch = (
-                client_graph_revision is not None
-                and client_graph_revision != summary.revision
-            )
-            if revision_mismatch:
-                logger.warning(
-                    "Graph revision mismatch for %s: client=%s current=%s",
-                    workflow_id,
-                    client_graph_revision,
-                    summary.revision,
-                )
-
-            messages = await self._build_messages(
-                summary, message, history, mode=mode, debug_context=debug_context,
-                prompt_context=prompt_context,
-                mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
-                surface_context=surface_context,
-                surface=surface,
-                extra_system_instructions=extra_system_instructions,
-                memory_project_id=memory_project_id,
-                include_memory_kernel_context=include_memory_kernel_context,
-                tools_available=False,
-                model=effective_model,
-                autonomy_resolution=autonomy_resolution,
-            )
-
-            provider = self._resolve_provider(
-                pii_session_key=thread_id or workflow_id,
-                model=effective_model,
-            )
-            raw_provider = getattr(provider, "_provider", provider)
-            if not supports_tool_calls(provider):
-                default_provider = self._providers.get("default")
-                if (
-                    default_provider is not None
-                    and default_provider is not raw_provider
-                    and supports_tool_calls(default_provider)
-                ):
-                    logger.warning(
-                        "Resolved provider %s for model %s does not support tool-calling; "
-                        "falling back to default provider for tool loop",
-                        type(raw_provider).__name__,
-                        effective_model,
-                    )
-                    provider = self._wrap_provider_for_pii(
-                        default_provider,
-                        pii_session_key=thread_id or workflow_id,
-                    )
-                else:
-                    logger.warning(
-                        "Resolved provider %s for model %s does not support tool-calling "
-                        "and no tool-capable default provider is available",
-                        type(raw_provider).__name__,
-                        effective_model,
-                    )
-            message_id = uuid.uuid4().hex[:12]
-            final_content = ""
-            token_usage: dict[str, int] = {}
-            interrupted = False
-
-            async for chunk in provider.stream(
-                messages=messages,
-                model=effective_model,
-                temperature=0.7,
-            ):
-                if cancel_event and cancel_event.is_set():
-                    final_content = chunk.accumulated
-                    token_usage = _normalize_usage(chunk.usage)
-                    interrupted = True
-                    break
-                yield ChatTokenEvent(
-                    delta=chunk.delta,
-                    accumulated=chunk.accumulated,
-                )
-                if chunk.done:
-                    final_content = chunk.accumulated
-                    token_usage = _normalize_usage(chunk.usage)
-
-            if interrupted:
-                yield ChatInterruptedEvent(
-                    message_id=message_id,
-                    content=final_content,
-                    token_usage=token_usage,
-                )
-            else:
-                if record_summary:
-                    self._record_conversation_summary(
+        contract_override = _workflow_generation_contract_override_from_surface_context(
+            surface_context,
+        )
+        with workflow_generation_contract_override(contract_override):
+            try:
+                prompt_metadata: dict[str, Any] = {}
+                effective_model = model_override or self._chat_model
+                graph_dict = self._graph_store.get_graph(workflow_id)
+                if graph_dict is None:
+                    _try_persist_audit(
                         workflow_id=workflow_id,
+                        message_id=uuid.uuid4().hex[:12],
+                        user_message=message,
+                        assistant_message="",
+                        mode=mode,
+                        model=effective_model,
+                        audit_tool_records=[],
+                        prompt_messages=[],
+                        surface=surface,
+                        error=f"Workflow '{workflow_id}' not found",
+                        audit_metadata=prompt_metadata,
+                    )
+                    yield ChatErrorEvent(error=f"Workflow '{workflow_id}' not found")
+                    return
+
+                graph = Graph.model_validate(graph_dict)
+                summary = build_graph_summary(graph, workflow_id)
+
+                revision_mismatch = (
+                    client_graph_revision is not None
+                    and client_graph_revision != summary.revision
+                )
+                if revision_mismatch:
+                    logger.warning(
+                        "Graph revision mismatch for %s: client=%s current=%s",
+                        workflow_id,
+                        client_graph_revision,
+                        summary.revision,
+                    )
+
+                text_required_action_hints = (
+                    ["workflow_edit"] if mode in {"build", "mutate"} else None
+                )
+                messages = await self._build_messages(
+                    summary, message, history, mode=mode, debug_context=debug_context,
+                    prompt_context=prompt_context,
+                    mentions=mentions, workflow_id=workflow_id, graph_dict=graph_dict,
+                    surface_context=surface_context,
+                    surface=surface,
+                    extra_system_instructions=extra_system_instructions,
+                    memory_project_id=memory_project_id,
+                    include_memory_kernel_context=include_memory_kernel_context,
+                    tools_available=False,
+                    required_action_hints=text_required_action_hints,
+                    prompt_metadata_sink=prompt_metadata,
+                    model=effective_model,
+                    autonomy_resolution=autonomy_resolution,
+                )
+
+                provider = self._resolve_provider(
+                    pii_session_key=thread_id or workflow_id,
+                    model=effective_model,
+                )
+                raw_provider = getattr(provider, "_provider", provider)
+                if not supports_tool_calls(provider):
+                    default_provider = self._providers.get("default")
+                    if (
+                        default_provider is not None
+                        and default_provider is not raw_provider
+                        and supports_tool_calls(default_provider)
+                    ):
+                        logger.warning(
+                            "Resolved provider %s for model %s does not support tool-calling; "
+                            "falling back to default provider for tool loop",
+                            type(raw_provider).__name__,
+                            effective_model,
+                        )
+                        provider = self._wrap_provider_for_pii(
+                            default_provider,
+                            pii_session_key=thread_id or workflow_id,
+                        )
+                    else:
+                        logger.warning(
+                            "Resolved provider %s for model %s does not support tool-calling "
+                            "and no tool-capable default provider is available",
+                            type(raw_provider).__name__,
+                            effective_model,
+                        )
+
+                message_id = uuid.uuid4().hex[:12]
+                final_content = ""
+                token_usage: dict[str, int] = {}
+                interrupted = False
+                tracker = getattr(self, "_resource_tracker", None)
+                if tracker is not None:
+                    await tracker.wait_acquire("llm")
+                try:
+                    async for chunk in provider.stream(
+                        messages=messages,
+                        model=effective_model,
+                        temperature=0.7,
+                    ):
+                        if cancel_event and cancel_event.is_set():
+                            final_content = chunk.accumulated
+                            token_usage = _normalize_usage(chunk.usage)
+                            interrupted = True
+                            break
+                        yield ChatTokenEvent(
+                            delta=chunk.delta,
+                            accumulated=chunk.accumulated,
+                        )
+                        if chunk.done:
+                            final_content = chunk.accumulated
+                            token_usage = _normalize_usage(chunk.usage)
+                finally:
+                    if tracker is not None:
+                        await tracker.release("llm")
+
+                if interrupted:
+                    _try_persist_audit(
+                        workflow_id=workflow_id,
+                        message_id=message_id,
                         user_message=message,
                         assistant_message=final_content,
+                        mode=mode,
+                        model=effective_model,
+                        audit_tool_records=[],
+                        prompt_messages=messages,
+                        surface=surface,
+                        error="interrupted",
+                        audit_metadata=prompt_metadata,
                     )
-                
-                cost = estimate_cost(effective_model, token_usage.get("prompt_tokens", 0), token_usage.get("completion_tokens", 0))
-                if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost is not None and cost > 0:
-                    final_content += f"\n\n[~${cost:.4f}]"
+                    yield ChatInterruptedEvent(
+                        message_id=message_id,
+                        content=final_content,
+                        token_usage=token_usage,
+                    )
+                else:
+                    if record_summary:
+                        self._record_conversation_summary(
+                            workflow_id=workflow_id,
+                            user_message=message,
+                            assistant_message=final_content,
+                        )
 
-                yield ChatCompleteEvent(
-                    message_id=message_id,
-                    content=final_content,
-                    token_usage=token_usage,
-                    estimated_cost=cost,
-                    context_window=_get_context_window(effective_model),
-                    graph_revision=summary.revision,
-                    revision_mismatch=revision_mismatch,
+                    cost = estimate_cost(
+                        effective_model,
+                        token_usage.get("prompt_tokens", 0),
+                        token_usage.get("completion_tokens", 0),
+                    )
+                    _try_persist_audit(
+                        workflow_id=workflow_id,
+                        message_id=message_id,
+                        user_message=message,
+                        assistant_message=final_content,
+                        mode=mode,
+                        model=effective_model,
+                        audit_tool_records=[],
+                        prompt_messages=messages,
+                        surface=surface,
+                        audit_metadata=prompt_metadata,
+                    )
+                    if os.environ.get("DAN_SHOW_COST", "1") == "1" and cost is not None and cost > 0:
+                        final_content += f"\n\n[~${cost:.4f}]"
+
+                    yield ChatCompleteEvent(
+                        message_id=message_id,
+                        content=final_content,
+                        token_usage=token_usage,
+                        estimated_cost=cost,
+                        context_window=_get_context_window(effective_model),
+                        graph_revision=summary.revision,
+                        revision_mismatch=revision_mismatch,
+                    )
+
+            except KeyError as exc:
+                logger.error("Provider resolution failed: %s", exc)
+                _try_persist_audit(
+                    workflow_id=workflow_id,
+                    message_id=locals().get("message_id", uuid.uuid4().hex[:12]),
+                    user_message=message,
+                    assistant_message="",
+                    mode=mode,
+                    model=locals().get("effective_model", self._chat_model),
+                    audit_tool_records=[],
+                    prompt_messages=locals().get("messages", []),
+                    surface=surface,
+                    error=f"LLM provider error: {exc}",
+                    audit_metadata=locals().get("prompt_metadata", {}),
                 )
-
-        except KeyError as exc:
-            logger.error("Provider resolution failed: %s", exc)
-            yield ChatErrorEvent(error=_friendly_chat_error(exc))
-        except Exception as exc:
-            logger.exception("Chat error for workflow %s", workflow_id)
-            yield ChatErrorEvent(error=_friendly_chat_error(exc))
+                yield ChatErrorEvent(error=_friendly_chat_error(exc))
+            except Exception as exc:
+                logger.exception("Chat error for workflow %s", workflow_id)
+                _try_persist_audit(
+                    workflow_id=workflow_id,
+                    message_id=locals().get("message_id", uuid.uuid4().hex[:12]),
+                    user_message=message,
+                    assistant_message="",
+                    mode=mode,
+                    model=locals().get("effective_model", self._chat_model),
+                    audit_tool_records=[],
+                    prompt_messages=locals().get("messages", []),
+                    surface=surface,
+                    error=str(exc),
+                    audit_metadata=locals().get("prompt_metadata", {}),
+                )
+                yield ChatErrorEvent(error=_friendly_chat_error(exc))
 
     # ------------------------------------------------------------------
     # Function-calling path (mutations via tool use)
@@ -1191,9 +1318,17 @@ class ChatManager:
         Falls back to the text-streaming path when the provider does not
         support the ``tools`` parameter.
         """
+        contract_override = _workflow_generation_contract_override_from_surface_context(
+            surface_context,
+        )
+        contract_override_ctx = workflow_generation_contract_override(
+            contract_override,
+        )
+        contract_override_ctx.__enter__()
         try:
             effective_model = model_override or self._chat_model
             required_action_hints = _dedupe_action_hints(required_action_hints)
+            audit_metadata = dict(audit_metadata or {})
             capability_mode = _capability_registry_mode(mode)
             grounding_required = should_require_web_grounding(
                 message,
@@ -1538,6 +1673,7 @@ class ChatManager:
                     logger.debug("Structural mutation dispatch failed, continuing to mutation path", exc_info=True)
 
             # -- Mutation path (extended with capability tools) -------------
+            prompt_metadata: dict[str, Any] = {}
             messages = await self._build_messages(
                 summary, message, history, mode=mode, debug_context=debug_context,
                 prompt_context=prompt_context,
@@ -1548,9 +1684,12 @@ class ChatManager:
                 memory_project_id=memory_project_id,
                 include_memory_kernel_context=include_memory_kernel_context,
                 allow_mutation_tool=allow_mutation_tool,
+                required_action_hints=required_action_hints,
+                prompt_metadata_sink=prompt_metadata,
                 model=effective_model,
                 autonomy_resolution=autonomy_resolution,
             )
+            audit_metadata.update(prompt_metadata)
             provider = self._resolve_provider(
                 pii_session_key=thread_id or workflow_id,
                 model=effective_model,
@@ -1704,10 +1843,21 @@ class ChatManager:
                 emit_progress_ack: bool = False,
             ) -> AsyncIterator[ChatStreamEvent | CompletionResult]:
                 complete_task: asyncio.Task[CompletionResult] | None = None
+
+                async def _run_complete_request() -> CompletionResult:
+                    tracker = getattr(self, "_resource_tracker", None)
+                    if tracker is not None:
+                        await tracker.wait_acquire("llm")
+                    try:
+                        return await provider.complete(**request_kwargs)
+                    finally:
+                        if tracker is not None:
+                            await tracker.release("llm")
+
                 try:
                     complete_task = asyncio.create_task(
                         asyncio.wait_for(
-                            provider.complete(**request_kwargs),
+                            _run_complete_request(),
                             timeout=_LLM_CALL_TIMEOUT_SECONDS,
                         )
                     )
@@ -1871,6 +2021,25 @@ class ChatManager:
                 current_plan_payload: dict[str, Any],
                 current_dry_result: MutationResult,
             ) -> list[dict[str, str]]:
+                def _build_mutation_repair_system_prompt() -> str:
+                    base = (
+                        "You repair DAN workflow mutation plans. Preserve the user's requested workflow "
+                        "behavior and only fix mechanical graph-compilation, schema, or validation issues "
+                        "in the plan. Do not broaden scope, do not ask the user for clarification, and "
+                        "do not change the requested outcome unless a minimal structural adjustment is "
+                        "strictly required for a valid graph."
+                    )
+                    if not workflow_generation_contract_enabled():
+                        return (
+                            f"{base} Return ONLY a `plan_graph_mutations` tool call or a JSON object "
+                            "matching that tool."
+                        )
+                    return (
+                        f"{base}\n\n"
+                        f"{render_workflow_generation_contract('repair', tools_available=False)}\n\n"
+                        "Return ONLY a `plan_graph_mutations` tool call or a JSON object matching that tool."
+                    )
+
                 error_payload = {
                     "errors": [
                         error.model_dump()
@@ -1886,20 +2055,7 @@ class ChatManager:
                 return [
                     {
                         "role": "system",
-                        "content": (
-                            "You repair DAN workflow mutation plans. Preserve the user's requested workflow "
-                            "behavior and only fix mechanical graph-compilation, schema, or validation issues "
-                            "in the plan. Do not broaden scope, do not ask the user for clarification, and "
-                            "do not change the requested outcome unless a minimal structural adjustment is "
-                            "strictly required for a valid graph. Use only schema-supported mutation ops "
-                            "(for example add_node, edit_node, add_edge, replace_body_graph). Never invent "
-                            "pseudo-ops such as dry_run, validate, inspect, repair, or connect. Inside "
-                            "replace_body_graph operations, edges may reference only nodes that exist inside "
-                            "that body graph; never reference the enclosing loop/composite node ID from "
-                            "inside the body. For for_each bodies, pass loop values through body-node input "
-                            "ports like item/index and return results through body exit nodes. Return ONLY "
-                            "a `plan_graph_mutations` tool call or a JSON object matching that tool."
-                        ),
+                        "content": _build_mutation_repair_system_prompt(),
                     },
                     {
                         "role": "user",
@@ -2010,6 +2166,9 @@ class ChatManager:
                         memory_project_id=memory_project_id,
                         include_memory_kernel_context=include_memory_kernel_context,
                         tools_available=False,
+                        allow_mutation_tool=allow_mutation_tool,
+                        required_action_hints=required_action_hints,
+                        prompt_metadata_sink=prompt_metadata,
                         model=effective_model,
                         autonomy_resolution=autonomy_resolution,
                     )
@@ -2652,6 +2811,7 @@ class ChatManager:
                                 memory_project_id=memory_project_id,
                                 include_memory_kernel_context=include_memory_kernel_context,
                                 allow_mutation_tool=True,
+                                required_action_hints=required_action_hints,
                                 model=effective_model,
                                 autonomy_resolution=autonomy_resolution,
                             )
@@ -3863,6 +4023,8 @@ class ChatManager:
                 audit_metadata=audit_metadata,
             )
             yield ChatErrorEvent(error=_friendly_chat_error(exc))
+        finally:
+            contract_override_ctx.__exit__(None, None, None)
 
     # ------------------------------------------------------------------
     # Fallback: stream text, then try to parse JSON as mutation plan
@@ -4231,6 +4393,8 @@ class ChatManager:
         include_memory_kernel_context: bool = True,
         tools_available: bool = True,
         allow_mutation_tool: bool = False,
+        required_action_hints: list[str] | None = None,
+        prompt_metadata_sink: dict[str, Any] | None = None,
         model: str | None = None,
         autonomy_resolution: Any | None = None,
     ) -> list[dict[str, str]]:
@@ -4277,6 +4441,9 @@ class ChatManager:
             workflow_id=workflow_id,
             autonomy_resolution=autonomy_resolution,
             tools_available=tools_available,
+            allow_mutation_tool=allow_mutation_tool,
+            required_action_hints=tuple(required_action_hints or ()),
+            graph_is_empty=summary.node_count == 0 and summary.edge_count == 0,
             project_metadata={
                 "memory_project_id": memory_project_id,
             },
@@ -4288,6 +4455,23 @@ class ChatManager:
         resolved_modules, _prompt_details = await DEFAULT_PROMPT_MODULE_RESOLVER.resolve(
             prompt_context_obj,
         )
+        workflow_guidance_surface = next(
+            (
+                str(module.metadata.get("workflow_guidance_surface") or "").strip()
+                for module in resolved_modules
+                if str(module.metadata.get("workflow_guidance_surface") or "").strip()
+            ),
+            "",
+        )
+        prompt_metadata = {
+            "prompt_module_ids": [module.module_id for module in resolved_modules],
+            "workflow_guidance_injected": bool(workflow_guidance_surface),
+            "workflow_guidance_surface": workflow_guidance_surface,
+        }
+        if workflow_id:
+            self.set_prompt_details(workflow_id, _prompt_details)
+        if prompt_metadata_sink is not None:
+            prompt_metadata_sink.update(prompt_metadata)
         module_hints = "\n\n".join(module.content.strip() for module in resolved_modules if module.content.strip())
         prompt_supports_load_prompt_detail = any(
             bool(module.detail_id)
@@ -4327,7 +4511,15 @@ class ChatManager:
                     and normalized_mode not in {"ask", "plan", "conversation"}
                 ),
             )
-        system_prompt = UNIFIED_SYSTEM_PROMPT.format(
+        system_prompt_key = "prompts/runtime.unified_system"
+        prompt_template, prompt_version = self._resolve_behavior_prompt(
+            system_prompt_key,
+            UNIFIED_SYSTEM_PROMPT,
+        )
+        prompt_metadata["active_prompt_key"] = system_prompt_key
+        if prompt_version is not None:
+            prompt_metadata["active_prompt_version"] = prompt_version
+        system_prompt = prompt_template.format(
             current_date=preflight_context,
             capability_reference=capability_reference,
             module_hints=module_hints,
@@ -4364,25 +4556,6 @@ class ChatManager:
             system_sections.append(memory_context)
         if extra_system_instructions:
             system_sections.append(extra_system_instructions.strip())
-        if (
-            tools_available
-            and allow_mutation_tool
-            and normalized_mode not in {"ask", "plan", "conversation"}
-        ):
-            system_sections.append(
-                "## Workflow mutation tool\n"
-                "`plan_graph_mutations` is the workflow-building/editing tool for the current workflow. "
-                "Use it to create a workflow from scratch, add/remove/rewire/configure nodes and edges, "
-                "or replace obsolete workflow structure. For control-flow nodes like `for_each` or "
-                "`composite`, add the node first and then use `replace_body_graph` to define its body "
-                "sub-graph. `for_each` uses top-level ports `items` and `results`; `item` belongs inside "
-                "the body sub-graph entry nodes. Inside a body graph, edges may only connect body-graph "
-                "nodes to other body-graph nodes; do not wire back to the enclosing `for_each`/`composite` "
-                "node ID from inside `replace_body_graph`. Use only schema-supported mutation operations "
-                "from the tool definition and never invent pseudo-operations like `dry_run`, `validate`, "
-                "`inspect`, `repair`, or `connect`. Do not claim you need primitive `create_node`, "
-                "`add_edge`, or similar workflow-edit tools."
-            )
         system_content = "\n\n".join(
             section.rstrip()
             for section in system_sections
@@ -4538,6 +4711,11 @@ class ChatManager:
             "3. What output or deliverable should the workflow produce?\n"
             "Be concise. Do not produce a mutation plan yet."
         )
+        if workflow_generation_contract_enabled():
+            clarify_prompt = (
+                f"{clarify_prompt}\n\n"
+                f"{render_workflow_clarification_guidance()}"
+            )
         messages: list[dict[str, str]] = [
             {"role": "system", "content": clarify_prompt},
         ]
@@ -4607,10 +4785,9 @@ class ChatManager:
         from dan.meta.diagnosis import GenerationError, GenerationErrorType, GenerationStage
         from dan.meta.intent_compiler import CoverageChecker, IntentCompiler
         from dan.meta.intent_extraction import (
-            INTENT_EXTRACTION_SYSTEM_PROMPT,
+            build_intent_extraction_system_prompt,
             build_intent_tool_schema,
         )
-        from dan.meta.tool_catalog import render_tool_id_list
         from dan.meta.intent_schema import WorkflowIntent
         from dan.meta.graph_quality import (
             compute_quality_report,
@@ -4787,13 +4964,7 @@ class ChatManager:
         intent: WorkflowIntent | None = None
         intent_tool = build_intent_tool_schema()
         intent_messages = [
-            {"role": "system", "content": (
-                INTENT_EXTRACTION_SYSTEM_PROMPT
-                + "\n\nAvailable tool_ids for tool_call stages (use these exact IDs): "
-                + render_tool_id_list()
-                + ". Do NOT invent tool_ids not in this list. If no tool matches, use "
-                + "code_execution with inline Python instead."
-            )},
+            {"role": "system", "content": build_intent_extraction_system_prompt()},
             {"role": "user", "content": user_message},
         ]
         for attempt in range(2):
