@@ -1,7 +1,7 @@
 # 29-1: Unified Memory Kernel
 
 **Parent:** [29-concierge-memory-evolvement](29-concierge-memory-evolvement.md)
-**Status:** completed
+**Status:** in-progress
 **Goal:** Replace the 6 siloed memory systems with a single concierge-owned memory kernel that stores typed memory items, organizes them by type/scope/lifecycle, and retrieves them through task-specific policies.
 
 ## Context
@@ -85,15 +85,24 @@ Problems: no unified retrieval API, different callers see different subsets, no 
 - [x] 8-5. Integration test: store items → retrieve with policy → verify ranking
 - [x] 8-6. Integration test: consolidation lifecycle (ACTIVE → DURABLE → ARCHIVE)
 
+### 9. Review follow-up: semantic retrieval and lower-latency persistence
+- [ ] 9-1. Upgrade `MemoryKernel.retrieve()` to read a real vector index for semantic candidate generation when embeddings are enabled, then hybrid-rerank with typed lexical and scope signals. Do not treat embeddings as passive JSON metadata.
+- [ ] 9-2. Define per-type hybrid scoring defaults so `WORKFLOW_PATTERN`, `WORKFLOW_ASSET`, `FAILURE_PATTERN`, and `PRINCIPLE` retrieval lean semantic-first over vector-index candidates, while `FACT` and `PREFERENCE` keep stronger exact-match and scope weighting.
+- [ ] 9-3. Add paraphrase, alias, and no-keyword-overlap retrieval evals so relevant memories are recovered when the query is semantically related but lexically different.
+- [ ] 9-4. Reduce write amplification in the hot path: stop rewriting `_index.json` on every store, update, or access bump; introduce an append-only journal or batched snapshotting path with background compaction.
+- [ ] 9-5. Add durability and concurrency coverage for the new persistence path: crash-safe replay, ordered flush, and multi-writer access-count updates.
+
 ## Decisions
 
+- 2026-03-21 review decision: the first semantic-retrieval tranche should read a real vector index rather than only scanning per-item stored embeddings. Hybrid retrieval here means semantic candidate generation from the index plus typed reranking.
 - (to be filled during execution)
 
 ## Notes
 
 - 2026-03-09 reconciliation: the core kernel, retrieval policies, adapters, CRUD APIs, and chat/concierge wiring are live. The remaining checklist items are mostly around dual-write compatibility, background consolidation scheduling, server-wide preference extraction, and direct test coverage.
-- 2026-03-09 final reconciliation: All 8 task groups complete. Dual-write adapter (§5-7), background consolidation (§6-5/6-6), preference extraction parity (§7-5) all shipped. Status → completed.
+- 2026-03-09 final reconciliation: All original 8 task groups complete. Dual-write adapter (§5-7), background consolidation (§6-5/6-6), preference extraction parity (§7-5) all shipped, and the initial tranche was marked completed.
 - 2026-03-09 (d): Implemented dual-write mode (§5-7). `DualWriteAdapter` maps MemoryType to legacy store writes: EPISODE→ConversationMemory.add(), PREFERENCE/FACT→UserProfile.set(), WORKFLOW_ASSET→ExperienceStore.record(). Enabled via `DAN_MEMORY_DUAL_WRITE=1` (default off). Best-effort with silent failure. 8 tests added.
+- 2026-03-21 review follow-up: reopened by [product review](../reviews/2026-03-21-product-review.md) for hybrid semantic retrieval and lower-latency persistence. The live kernel stores embeddings, but ranking still leans lexical and metadata scoring, and index writes are still too hot-path-heavy for tail-sensitive chat usage.
 - The memory kernel wraps existing stores via adapters rather than rewriting them. This preserves backward compatibility and allows incremental migration.
 - Vector embeddings are optional per item. Items without embeddings fall back to keyword/metadata matching.
 - The consolidation engine's LLM summarization can be disabled via config for environments without LLM access.

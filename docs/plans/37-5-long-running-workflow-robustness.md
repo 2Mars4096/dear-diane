@@ -1,7 +1,7 @@
 # 37-5: Long-Running Workflow Robustness
 
 **Parent:** [37-engine-runtime-parallelism](37-engine-runtime-parallelism.md)
-**Status:** completed
+**Status:** in-progress
 **Goal:** Add a per-run execution policy/profile layer for long-running workflows so the engine can apply stronger checkpoint cadence, enforce wall-clock and cost ceilings, stop safely with partial results, and expose resume-friendly progress summaries without regressing the default scheduler path.
 
 ## Context
@@ -58,6 +58,12 @@
 - [x] 7-3. Add checkpoint-policy tests for critical-node cadence without regressing the default profile's batching behavior.
 - [x] 7-4. Add progress-summary tests that verify stable counts, stop reasons, and ETA/progress payload shape under eager dispatch.
 
+### 8. Review follow-up: run-event tail latency and durability
+- [ ] 8-1. Move run-event persistence off the synchronous hot path behind an ordered writer or batcher so event-heavy runs do not pay per-event disk latency inline.
+- [ ] 8-2. Keep live subscriber and event emission ordering deterministic while persistence flushes asynchronously, with bounded backpressure and explicit overflow behavior.
+- [ ] 8-3. Add crash-safe replay and resume handling for buffered event writes so durability does not regress when batching is enabled.
+- [ ] 8-4. Benchmark and regress long event streams (large runs, tool-heavy workflows, high-frequency progress updates) to prove p95 and p99 tail improvements plus ordered recovery after restart.
+
 ## Primary Files
 
 - `src/dan/engine/executor.py`
@@ -87,6 +93,7 @@
 - [x] Run metadata/event streams expose structured progress data sufficient for server/UI layers to show completed work, active frontier, and coarse ETA.
 - [x] Critical-node / stronger-cadence checkpoints work through the non-blocking checkpoint path and do not regress eager-dispatch scheduler correctness.
 - [x] Regression tests cover policy precedence, ceiling handling, partial-result reporting, critical-node checkpointing, and resume equivalence.
+- [ ] Run-event durability no longer sits on the synchronous hot path, and long event streams preserve ordering and replayability without dominating tail latency.
 
 ## Decisions
 
@@ -109,6 +116,7 @@
   `default_model_policy` is only injected onto nodes that do not already author a `model_policy`, so tiered `ModelSelector` / `TierPolicy` behavior still runs through the effective node policy instead of overriding authored node intent.
 - Long-running policy composition:
   `max_cost` is the hard-ceiling form of the existing budget path; when unset, the engine continues to use `EngineConfig.run_budget`, and child/subgraph execution shares the same `CostTracker`.
+- 2026-03-21 review follow-up: reopened by [product review](../reviews/2026-03-21-product-review.md) for run-event write-path hardening. Chat and project snapshot persistence remains in 29-5, and memory-kernel index write amplification remains in 29-1; this plan owns the run-log tail-latency slice.
 
 ## Estimate
 

@@ -83,17 +83,25 @@ receive_message()
 - [x] 8-5. Integration test: autonomous mode runs to completion without user interaction
 - [x] 8-6. Integration test: memory candidates extracted and stored after interaction
 
+### 9. Review follow-up: structured task and deliverable state
+- [ ] 9-1. Replace regex-derived task state reconstruction from chat prose with a structured per-goal progress ledger stored on `ConciergeGoal`: current objective, completed steps, pending steps, blockers, deliverables, and artifact references.
+- [ ] 9-2. Emit progress-state updates during orchestration and build-session execution time, then project a compact derived summary onto project `Task` state instead of reconstructing state only at finalization time.
+- [ ] 9-3. Generate user-facing completion summaries from the structured ledger, keeping transcript parsing only as a bounded backward-compat fallback for legacy tasks that lack a ledger.
+- [ ] 9-4. Add regressions for paraphrased turns, reordered conversation snippets, and artifact-heavy goals so progress state does not drift when wording changes.
+
 ## Decisions
 
 - Planning decision uses same thresholds as `reuse_first_decision` (0.8 reuse, 0.4 adapt) but runs as a lightweight pre-check before MetaController; the heavier interactive REUSE/ADAPT prompt is in the outer process() loop.
 - Diagnosis delegates to `BuildSessionManager.diagnose_for_failure()` when a build session is active; falls back to direct `retrieve_by_task(task_type="workflow_repair")` otherwise.
 - Check-in is filtered at the final yield — INTERACTIVE includes plan/run/diagnosis detail, SUPERVISED shows only failure/completion, AUTONOMOUS is silent on success.
+- 2026-03-21 review decision: authoritative structured progress state should live on `ConciergeGoal`; project `Task` state is a derived projection for UI/search/resume surfaces, not a second source of truth.
 
 ## Notes
 
 - 2026-03-09 (b): Wired full plan→execute→diagnose→repair→check-in loop in `_execute_goal()`. Added `_decide_plan_action`, `_diagnose_goal_failure`, `_compose_check_in` helper methods. 12 integration tests in `tests/test_concierge/test_goal_orchestration.py`. Only remaining unchecked tasks: 5-1 (shared utility extraction).
-- 2026-03-09 (c): Extracted shared MetaController helpers into `src/dan/meta/utils.py` (task 5-1). `plan_from_dict()`, `topo_sort_workflows()`, `create_meta_session()`, `goal_to_session_fields()`, `validate_session_resumable()`, `session_is_terminal()`. MetaController delegates to shared module. All 29-2 tasks complete.
+- 2026-03-09 (c): Extracted shared MetaController helpers into `src/dan/meta/utils.py` (task 5-1). `plan_from_dict()`, `topo_sort_workflows()`, `create_meta_session()`, `goal_to_session_fields()`, `validate_session_resumable()`, `session_is_terminal()`. MetaController delegates to shared module. All original 29-2 tasks complete.
 - 2026-03-09 reconciliation: core stateful orchestration is live (goal/state models, memory-informed routing, autonomy levels, MetaController bridging, task-local request state, build-session continuation). The remaining checklist is mostly about deeper shared-utility extraction, autonomous end-to-end completion coverage, and richer repair-step wiring.
+- 2026-03-21 review follow-up: [product review](../reviews/2026-03-21-product-review.md) surfaced that some completion and task status is still inferred from conversation wording. Section 9 keeps this plan open until goal progress and deliverables are driven by structured state rather than transcript regexing.
 - Practical research/report acceptance and full chat-level provenance are tracked separately in [29-8](29-8-practical-research-quality-and-audit.md) so this plan can stay focused on orchestration mechanics.
 - The concierge stays as a thin layer above ChatManager. It does not replace ChatManager's LLM interaction — it orchestrates when and how ChatManager is called.
 - Goal state is intentionally lightweight. Heavy workflow state lives in the workflow engine; the concierge only tracks goal-level progress.

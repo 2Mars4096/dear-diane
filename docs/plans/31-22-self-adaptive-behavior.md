@@ -1,7 +1,7 @@
 # 31-22: Self-Adaptive Behavior
 
 **Parent:** [31-daily-use-qol](31-daily-use-qol.md)
-**Status:** completed
+**Status:** in-progress
 **Goal:** Make DAN's own prompts, thresholds, classifiers, domain ontology, and tool descriptions the subject of its learning loop — observable by default (tier 0), advisable at tier 1, self-tuning at tier 2 — with a declarative parameter taxonomy, evidence infrastructure, and full audit trail.
 
 ## Problem
@@ -232,6 +232,14 @@ Each category needs specific telemetry to become adaptable:
 - [x] 14-16. Updated `docs/architecture.md` with self-adaptive behavior section.
 - [x] 14-17. Changelog entry.
 
+### 15. Review follow-up: close the live runtime loop
+
+- [ ] 15-1. Instantiate the first closed self-adaptation loop on the live concierge/runtime path around prompt improvement: `CorrectionStore`, `AdaptationRegistry`, prompt outcome collectors, and their measurement scheduler. Leave broader calibrators passive until this loop is stable.
+- [ ] 15-2. Run correction detection against real chat turns after response delivery and attach active prompt, threshold, and model attribution so evidence comes from live behavior, not only offline stores.
+- [ ] 15-3. First promote live evidence into concrete prompt-focused `AdaptationCandidate`s on the runtime path; expand to thresholds, taxonomy, domain ontology, and retrieval weights only after the prompt loop is demonstrably closed.
+- [ ] 15-4. Wire approved or auto-applied changes back into the active runtime read path with version pinning, reload semantics, and rollback-safe propagation across restarts.
+- [ ] 15-5. Add end-to-end regressions for correction -> candidate -> apply -> outcome measurement -> auto-revert, including restart and reload scenarios plus health counters that prove the loop is actually closed.
+
 ## Incremental Delivery
 
 Three phases aligned with the tier progression:
@@ -317,3 +325,5 @@ Phase A (~3d): externalization + evidence collection. Phase B (~3d): proposal ge
 - Intent taxonomy extension (task 7) keeps the `IntentCategory` enum for the core 10 categories. Extended intents are string values validated against the registry, not enum members. This avoids breaking type annotations while allowing growth.
 - All adaptation sources registered in `AdaptationRegistry` (task 13) follow the same lifecycle: propose → measure for N interactions → auto-revert on >15% regression. The measurement window and regression threshold are innate safety parameters.
 - **New experience categories**: this plan doesn't add new `MemoryType` values. Instead, evidence is captured through three lightweight mechanisms: (1) optional fields on `TelemetryEvent` for parameter-outcome linking, (2) `PatternAccumulator` counters in `BehaviorStore` for emergence detection, (3) retrieval-outcome correlation counters in `BehaviorStore`. This avoids expanding the memory model while providing the evidence infrastructure each parameter category needs.
+- 2026-03-21 review follow-up: reopened by [product review](../reviews/2026-03-21-product-review.md). The adaptation infrastructure shipped, but the live concierge path still behaves more like an evidence store than a closed self-modifying loop until section 15 is implemented end-to-end.
+- 2026-03-21 review decision: the first live self-adaptation loop should be `correction -> prompt proposal -> approval/auto-apply policy -> measurement -> rollback`. Threshold, taxonomy, domain, and retrieval-weight adaptation stay follow-on until the prompt loop is proven in production.

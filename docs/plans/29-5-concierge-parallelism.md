@@ -113,6 +113,12 @@ All 22 tests in `tests/test_concierge/test_parallelism_integration.py`.
 - [ ] 12-2. Preserve the existing same-project serialization and backpressure rules while separating project/run concurrency from actual model-call concurrency, so unrelated tool-heavy chats do not starve each other between `provider.complete()` calls.
 - [ ] 12-3. Replace the current `child_execution="mixed"` serial fallback in `tier_executors.py` with real hybrid scheduling: preserve dependency order where required, but still fan out independent child groups.
 - [ ] 12-4. Add focused regressions or benchmarks covering (a) two simultaneous tool-heavy chats that should share LLM capacity fairly and (b) a mixed dependency tree that proves hybrid execution beats full serialization without breaking cancellation or event ordering.
+- [ ] 12-5. Give child and subagent sessions unique internal thread/session identities by default, with copy-on-write metadata, instead of inheriting parent thread identity or mutating shared thread-meta state.
+- [ ] 12-6. Replace implicit full-parent-context inheritance with an explicit child handoff packet: delegated goal slice, file refs, memory slice, constraints, and a summarized return channel. Parent context is read-only input, not shared mutable state.
+- [ ] 12-7. Extend same-project dispatch beyond narrow bypass commands so corrections, stop/status requests, clarifications, and superseding instructions can attach to or preempt stale queued work without breaking audit history.
+- [ ] 12-8. Add queue-collapsing and supersede rules for obsolete queued turns in the same project when a newer instruction makes earlier queued work irrelevant.
+- [ ] 12-9. Move chat and project persistence off the hot response path via ordered journal writes plus periodic snapshot and compaction, so tool-heavy turns do not wait on full JSON rewrites.
+- [ ] 12-10. Add focused regressions and benchmarks for child metadata isolation, hybrid child-tree scheduling, same-project supersede ordering, and fair sharing between simultaneous tool-heavy chats.
 
 ## Decisions
 
@@ -131,6 +137,8 @@ All 22 tests in `tests/test_concierge/test_parallelism_integration.py`.
 - Build-session validation now fans out `validate_draft()` and `generate_smoke_inputs()` before entering `TESTING`; validation still gates the smoke run, and smoke-input failures surface only if validation passes.
 - Post-build follow-up work is best-effort fan-out: memory extraction/storage, workflow linking, and adapted-workflow asset persistence run independently so one failing branch does not fail the completed turn.
 - 2026-03-20 follow-up decision: keep the remaining concierge-throughput work inside this existing `29-5` plan instead of creating a nested `29-5-*` follow-up plan. The unresolved items are implementation refinements, not a separate architecture track.
+- 2026-03-21 review follow-up: expanded section 12 after [product review](../reviews/2026-03-21-product-review.md) to absorb the remaining premium-subagent gaps: child-session isolation, same-project supersede and preemption, and chat/project snapshot write amplification. Run-event persistence is tracked in 37-5; memory-index persistence stays in 29-1.
+- 2026-03-21 review decision: child sessions should have their own IDs by default. Parent threads should receive explicit handoff inputs and summarized child outputs, not share thread identity or mutable thread metadata with children.
 
 ## Notes
 

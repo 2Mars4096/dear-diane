@@ -1,13 +1,26 @@
 # Phase 33 Eval Run Guide
 
-How to run the workflow generation quality evaluation harness. Requires a running DAN server (`dan-up`).
+How to run the workflow generation quality evaluation harness. Requires a running DAN server (`dan-up` or `dan-serve`) plus live provider credentials/network for real LLM-backed workflow generation.
 
 ## Prerequisites
 
 - Server running: `dan up` or `dan-serve`
 - Default base URL: `http://localhost:8000` (override with `--base-url`)
+- Live model access configured in `.env` / environment variables if you want real provider-backed results
 
 ## Commands
+
+### Workflow smoke battery (recommended first live check)
+
+```bash
+# Terminal 1
+PYTHONPATH=src python -m dan.server --no-reload
+
+# Terminal 2
+PYTHONPATH=src python -m tests.eval --smoke-workflows --execute --lane build --delay 0.5
+```
+
+This runs the small live workflow battery in [`tests/eval/workflow_smoke_prompts.json`](../tests/eval/workflow_smoke_prompts.json): add-two-numbers, slugify, conditional, loop, and `for_each`.
 
 ### Full battery (all prompts)
 
@@ -37,6 +50,18 @@ PYTHONPATH=src python -m tests.eval --complex --lane build
 
 ```bash
 PYTHONPATH=src python -m tests.eval --tier T4 --execute --lane build
+```
+
+### Single ad-hoc messy user prompt
+
+```bash
+PYTHONPATH=src python -m tests.eval --prompt "can you make a tiny workflow that adds 3 and 4 and run it" --execute --lane build
+```
+
+### Custom prompt file
+
+```bash
+PYTHONPATH=src python -m tests.eval --prompts-file tests/eval/workflow_smoke_prompts.json --execute --lane build
 ```
 
 ### With durability checks (D1–D4)
