@@ -7,9 +7,12 @@ managing lifecycle independently.
 
 from __future__ import annotations
 
+import json
 import logging
+import threading
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
@@ -68,12 +71,16 @@ class AdaptationRegistry:
         self,
         changelog: BehaviorChangeLog | None = None,
         param_registry: AdaptableParameterRegistry | None = None,
+        path: str | Path | None = None,
     ) -> None:
         self._candidates: dict[str, AdaptationCandidate] = {}
         self._changelog = changelog
         self._param_registry = param_registry
+        self._path = Path(path).expanduser() if path is not None else None
+        self._lock = threading.RLock()
         # (category, key) → active candidate id for scope enforcement
         self._active_scopes: dict[tuple[str, str], str] = {}
+        self._load()
 
     # -- internal helpers ---------------------------------------------------
 
@@ -118,6 +125,18 @@ class AdaptationRegistry:
         if scope_key is not None:
             self._active_scopes[scope_key] = candidate.id
 
+    def _rebuild_active_scopes(self) -> None:
+        self._active_scopes = {}
+        applied = sorted(
+            (
+                candidate for candidate in self._candidates.values()
+                if candidate.status == "applied"
+            ),
+            key=lambda candidate: candidate.applied_at or candidate.created_at,
+        )
+        for candidate in applied:
+            self._activate_scope(candidate)
+
     def _clear_scope_and_unqueue(self, candidate: AdaptationCandidate) -> None:
         scope_key = self._extract_scope_key(candidate)
         if scope_key is None:
@@ -131,20 +150,55 @@ class AdaptationRegistry:
                     logger.debug("Unqueued candidate %s for scope %s", c.id, scope_key)
                     break
 
+    def _load(self) -> None:
+        if self._path is None or not self._path.exists():
+            return
+        try:
+            payload = json.loads(self._path.read_text(encoding="utf-8"))
+            raw_candidates = payload.get("candidates") if isinstance(payload, dict) else []
+            candidates = [
+                AdaptationCandidate.model_validate(item)
+                for item in raw_candidates or []
+                if isinstance(item, dict)
+            ]
+            self._candidates = {candidate.id: candidate for candidate in candidates}
+            self._rebuild_active_scopes()
+        except Exception:
+            logger.warning("Failed to load adaptation registry from %s", self._path, exc_info=True)
+
+    def _persist(self) -> None:
+        if self._path is None:
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = self._path.with_suffix(".tmp")
+        payload = {
+            "candidates": [
+                candidate.model_dump(mode="json")
+                for candidate in self._candidates.values()
+            ],
+        }
+        tmp_path.write_text(
+            json.dumps(payload, indent=2, default=str),
+            encoding="utf-8",
+        )
+        tmp_path.replace(self._path)
+
     # -- public API ---------------------------------------------------------
 
     def add(self, candidate: AdaptationCandidate) -> None:
-        scope_key = self._extract_scope_key(candidate)
-        if scope_key is not None and scope_key in self._active_scopes:
-            active_id = self._active_scopes[scope_key]
-            active = self._candidates.get(active_id)
-            if active is not None and active.status == "applied":
-                candidate.queued = True
-                logger.debug(
-                    "Queuing candidate %s — active adaptation %s for scope %s",
-                    candidate.id, active_id, scope_key,
-                )
-        self._candidates[candidate.id] = candidate
+        with self._lock:
+            scope_key = self._extract_scope_key(candidate)
+            if scope_key is not None and scope_key in self._active_scopes:
+                active_id = self._active_scopes[scope_key]
+                active = self._candidates.get(active_id)
+                if active is not None and active.status == "applied":
+                    candidate.queued = True
+                    logger.debug(
+                        "Queuing candidate %s — active adaptation %s for scope %s",
+                        candidate.id, active_id, scope_key,
+                    )
+            self._candidates[candidate.id] = candidate
+            self._persist()
 
     def list_pending(self) -> list[AdaptationCandidate]:
         return [
@@ -160,54 +214,62 @@ class AdaptationRegistry:
 
     def approve(self, id: str, baseline_quality: float = 0.0) -> None:
         """Mark an adaptation as applied."""
-        c = self._candidates.get(id)
-        if c is None:
-            raise KeyError(f"Adaptation {id} not found")
-        if c.status != "pending":
-            raise ValueError(f"Cannot approve adaptation in state '{c.status}'")
-        c.status = "applied"
-        c.applied_at = datetime.now(timezone.utc)
-        c.baseline_quality = baseline_quality
-        c.queued = False
-        self._set_measurement_target(c)
-        self._activate_scope(c)
-        self._write_changelog(c, "approve")
+        with self._lock:
+            c = self._candidates.get(id)
+            if c is None:
+                raise KeyError(f"Adaptation {id} not found")
+            if c.status != "pending":
+                raise ValueError(f"Cannot approve adaptation in state '{c.status}'")
+            c.status = "applied"
+            c.applied_at = datetime.now(timezone.utc)
+            c.baseline_quality = baseline_quality
+            c.queued = False
+            self._set_measurement_target(c)
+            self._activate_scope(c)
+            self._write_changelog(c, "approve")
+            self._persist()
 
     def auto_apply_candidate(self, id: str, baseline_quality: float = 0.0) -> None:
         """Auto-apply a candidate and log the change."""
-        c = self._candidates.get(id)
-        if c is None:
-            raise KeyError(f"Adaptation {id} not found")
-        if c.status != "pending":
-            raise ValueError(f"Cannot auto-apply adaptation in state '{c.status}'")
-        c.status = "applied"
-        c.applied_at = datetime.now(timezone.utc)
-        c.baseline_quality = baseline_quality
-        c.queued = False
-        self._set_measurement_target(c)
-        self._activate_scope(c)
-        self._write_changelog(c, "auto_apply")
+        with self._lock:
+            c = self._candidates.get(id)
+            if c is None:
+                raise KeyError(f"Adaptation {id} not found")
+            if c.status != "pending":
+                raise ValueError(f"Cannot auto-apply adaptation in state '{c.status}'")
+            c.status = "applied"
+            c.applied_at = datetime.now(timezone.utc)
+            c.baseline_quality = baseline_quality
+            c.queued = False
+            self._set_measurement_target(c)
+            self._activate_scope(c)
+            self._write_changelog(c, "auto_apply")
+            self._persist()
 
     def reject(self, id: str) -> None:
         """Mark an adaptation as rejected."""
-        c = self._candidates.get(id)
-        if c is None:
-            raise KeyError(f"Adaptation {id} not found")
-        if c.status != "pending":
-            raise ValueError(f"Cannot reject adaptation in state '{c.status}'")
-        c.status = "rejected"
+        with self._lock:
+            c = self._candidates.get(id)
+            if c is None:
+                raise KeyError(f"Adaptation {id} not found")
+            if c.status != "pending":
+                raise ValueError(f"Cannot reject adaptation in state '{c.status}'")
+            c.status = "rejected"
+            self._persist()
 
     def rollback(self, id: str, reason: str) -> None:
         """Roll back a previously applied adaptation."""
-        c = self._candidates.get(id)
-        if c is None:
-            raise KeyError(f"Adaptation {id} not found")
-        if c.status != "applied":
-            raise ValueError(f"Cannot rollback adaptation in state '{c.status}'")
-        c.status = "rolled_back"
-        c.last_outcome = reason
-        self._clear_scope_and_unqueue(c)
-        self._write_changelog(c, "rollback")
+        with self._lock:
+            c = self._candidates.get(id)
+            if c is None:
+                raise KeyError(f"Adaptation {id} not found")
+            if c.status != "applied":
+                raise ValueError(f"Cannot rollback adaptation in state '{c.status}'")
+            c.status = "rolled_back"
+            c.last_outcome = reason
+            self._clear_scope_and_unqueue(c)
+            self._write_changelog(c, "rollback")
+            self._persist()
 
     def record_post_adaptation_outcome(
         self, id: str, quality_metric: float, interaction_count: int,
@@ -217,14 +279,16 @@ class AdaptationRegistry:
         Automatically triggers regression check when enough interactions
         have been observed (measurement_interactions >= measurement_target).
         """
-        c = self._candidates.get(id)
-        if c is None:
-            raise KeyError(f"Adaptation {id} not found")
-        c.post_adaptation_quality = quality_metric
-        c.measurement_interactions = interaction_count
-        if interaction_count >= c.measurement_target:
-            baseline = c.baseline_quality if c.baseline_quality is not None else 0.0
-            self.check_regression(id, quality_metric, baseline)
+        with self._lock:
+            c = self._candidates.get(id)
+            if c is None:
+                raise KeyError(f"Adaptation {id} not found")
+            c.post_adaptation_quality = quality_metric
+            c.measurement_interactions = interaction_count
+            if interaction_count >= c.measurement_target:
+                baseline = c.baseline_quality if c.baseline_quality is not None else 0.0
+                self.check_regression(id, quality_metric, baseline)
+            self._persist()
 
     def check_regression(
         self,
@@ -260,21 +324,23 @@ class AdaptationRegistry:
 
     def complete_measurement(self, id: str) -> None:
         """Finalize the measurement window — log the outcome and update last_outcome."""
-        c = self._candidates.get(id)
-        if c is None:
-            raise KeyError(f"Adaptation {id} not found")
-        baseline = c.baseline_quality if c.baseline_quality is not None else 0.0
-        post = c.post_adaptation_quality if c.post_adaptation_quality is not None else 0.0
-        if baseline > 0:
-            delta_pct = (post - baseline) / baseline
-            sign = "+" if delta_pct >= 0 else ""
-            c.last_outcome = (
-                f"Measurement complete: quality {baseline:.3f} → {post:.3f} "
-                f"({sign}{delta_pct:.1%})"
-            )
-        else:
-            c.last_outcome = f"Measurement complete: post-adaptation quality {post:.3f}"
-        logger.info("Measurement complete for %s: %s", id, c.last_outcome)
+        with self._lock:
+            c = self._candidates.get(id)
+            if c is None:
+                raise KeyError(f"Adaptation {id} not found")
+            baseline = c.baseline_quality if c.baseline_quality is not None else 0.0
+            post = c.post_adaptation_quality if c.post_adaptation_quality is not None else 0.0
+            if baseline > 0:
+                delta_pct = (post - baseline) / baseline
+                sign = "+" if delta_pct >= 0 else ""
+                c.last_outcome = (
+                    f"Measurement complete: quality {baseline:.3f} → {post:.3f} "
+                    f"({sign}{delta_pct:.1%})"
+                )
+            else:
+                c.last_outcome = f"Measurement complete: post-adaptation quality {post:.3f}"
+            logger.info("Measurement complete for %s: %s", id, c.last_outcome)
+            self._persist()
 
     def get(self, id: str) -> AdaptationCandidate | None:
         return self._candidates.get(id)

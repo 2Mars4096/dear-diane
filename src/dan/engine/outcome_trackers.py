@@ -53,6 +53,25 @@ def _is_enabled(env_var: str) -> bool:
     return os.environ.get(env_var, "0") == "1"
 
 
+def _is_prompt_tracking_enabled(scope: Literal["workflow", "system"] = "workflow") -> bool:
+    explicit = os.environ.get(_ENV_PROMPT_OPT)
+    if explicit == "1":
+        return True
+    if explicit == "0":
+        return False
+    try:
+        from dan.engine.learning_tiers import is_feature_enabled
+    except Exception:
+        return False
+    if scope == "system":
+        return (
+            is_feature_enabled("prompt_effectiveness_logging")
+            or is_feature_enabled("prompt_variant_proposal")
+            or is_feature_enabled("prompt_rewrite")
+        )
+    return _is_enabled(_ENV_PROMPT_OPT)
+
+
 # ---------------------------------------------------------------------------
 # Tier 0 evidence features (31-22 §4-7)
 # Documents which learning_tiers features are tier-0 (passive evidence
@@ -171,7 +190,7 @@ class PromptTracker:
         schema_valid_first_try: bool = True,
         scope: Literal["workflow", "system"] = "workflow",
     ) -> MemoryItem | None:
-        if not _is_enabled(_ENV_PROMPT_OPT):
+        if not _is_prompt_tracking_enabled(scope):
             return None
 
         if quality_score is None:
@@ -217,7 +236,7 @@ class PromptTracker:
         ))
 
     def get_history(self, node_id: str, limit: int = 20) -> list[dict[str, Any]]:
-        if not _is_enabled(_ENV_PROMPT_OPT):
+        if not _is_prompt_tracking_enabled("workflow"):
             return []
 
         items = self.memory_kernel.list_by_type(
@@ -241,7 +260,7 @@ class PromptTracker:
         quality_score: float = 1.0,
     ) -> MemoryItem | None:
         """Record outcome for a system prompt (not workflow node)."""
-        if not _is_enabled(_ENV_PROMPT_OPT):
+        if not _is_prompt_tracking_enabled("system"):
             return None
 
         content = (
@@ -271,7 +290,7 @@ class PromptTracker:
         limit: int = 50,
     ) -> list[dict[str, Any]]:
         """Retrieve system-scope prompt tracking records."""
-        if not _is_enabled(_ENV_PROMPT_OPT):
+        if not _is_prompt_tracking_enabled("system"):
             return []
 
         items = self.memory_kernel.list_by_type(

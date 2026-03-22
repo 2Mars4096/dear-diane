@@ -11,6 +11,7 @@ import asyncio
 import inspect
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -25,6 +26,15 @@ _CATEGORIES = ("prompts", "heuristics", "taxonomy", "domains", "models", "retrie
 _MAX_PREVIOUS_VERSIONS = 10
 _MAX_SUMMARY_CHARS = 200
 _MAX_STEP_PCT = 0.20
+
+
+def _default_behavior_base_path(base_path: Path | None = None) -> Path:
+    if base_path is not None:
+        return base_path
+    env_path = os.environ.get("DAN_BEHAVIOR_DIR", "").strip()
+    if env_path:
+        return Path(env_path).expanduser()
+    return Path.home() / ".dan" / "behavior"
 
 
 # ---------------------------------------------------------------------------
@@ -54,7 +64,7 @@ class BehaviorStore:
         base_path: Path | None = None,
         seed_defaults: dict[str, Any] | None = None,
     ) -> None:
-        self._base = base_path or (Path.home() / ".dan" / "behavior")
+        self._base = _default_behavior_base_path(base_path)
         self._seeds = seed_defaults or {}
         self._locks: dict[str, threading.RLock] = {cat: threading.RLock() for cat in _CATEGORIES}
         self._global_lock = threading.RLock()
@@ -69,6 +79,10 @@ class BehaviorStore:
             if category not in self._locks:
                 self._locks[category] = threading.RLock()
             return self._locks[category]
+
+    @property
+    def base_path(self) -> Path:
+        return self._base
 
     @staticmethod
     def _split_key(key: str) -> tuple[str, str]:
@@ -339,7 +353,7 @@ class BehaviorChangeLog:
     """Append-only JSONL log at ~/.dan/behavior/changelog.jsonl."""
 
     def __init__(self, base_path: Path | None = None) -> None:
-        base = base_path or (Path.home() / ".dan" / "behavior")
+        base = _default_behavior_base_path(base_path)
         self._path = base / "changelog.jsonl"
         self._lock = threading.RLock()
         self._cache: list[BehaviorChangeEntry] | None = None

@@ -32,6 +32,30 @@ _evolvement_level = os.environ.get("DAN_EVOLVEMENT_LOG_LEVEL", "INFO").upper()
 evolvement_logger.setLevel(getattr(logging, _evolvement_level, logging.INFO))
 
 
+def _run_async_compat(awaitable: Any) -> Any:
+    """Run async vector-store/embed calls from synchronous kernel code."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def _runner() -> None:
+        try:
+            result["value"] = asyncio.run(awaitable)
+        except BaseException as exc:  # pragma: no cover - passthrough path
+            error["value"] = exc
+
+    thread = threading.Thread(target=_runner, daemon=True)
+    thread.start()
+    thread.join()
+    if "value" in error:
+        raise error["value"]
+    return result.get("value")
+
+
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -274,6 +298,17 @@ _TYPE_RANKERS = {
     MemoryType.EPISODE: _rank_episode,
 }
 
+_TYPE_SEMANTIC_WEIGHTS: dict[MemoryType, float] = {
+    MemoryType.WORKING_STATE: 0.0,
+    MemoryType.PREFERENCE: 0.15,
+    MemoryType.FACT: 0.30,
+    MemoryType.WORKFLOW_PATTERN: 0.65,
+    MemoryType.WORKFLOW_ASSET: 0.65,
+    MemoryType.FAILURE_PATTERN: 0.55,
+    MemoryType.PRINCIPLE: 0.55,
+    MemoryType.EPISODE: 0.35,
+}
+
 
 def _recency_bonus(last_accessed: float, half_life_days: float) -> float:
     age_days = (time.time() - last_accessed) / 86400
@@ -465,15 +500,32 @@ class MemoryKernel:
         base_dir: str | None = None,
         dual_write_adapter: DualWriteAdapter | None = None,
         backend: Any | None = None,
+        embedding_provider: Any | None = None,
+        embedding_model: str | None = None,
+        vector_store: Any | None = None,
     ) -> None:
         self._base_dir = Path(base_dir or os.path.expanduser("~/.dan/memory_kernel"))
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._index: dict[str, MemoryItem] = {}
         self._type_index: dict[str, list[str]] = {}
-        self._dirty = False
-        self._save_counter = 0
         self._write_lock = threading.RLock()
+        self._dirty = False
         self._dual_write = dual_write_adapter if os.environ.get("DAN_MEMORY_DUAL_WRITE", "0") == "1" else None
+        self._journal_ops_since_snapshot = 0
+        self._journal_compact_every = max(
+            1,
+            int(os.environ.get("DAN_MEMORY_JOURNAL_COMPACT_EVERY", "100")),
+        )
+        self._embedding_model = (
+            str(embedding_model or "").strip()
+            or os.environ.get("DAN_MEMORY_EMBEDDING_MODEL", "").strip()
+            or os.environ.get("DAN_DEFAULT_EMBEDDING_MODEL", "").strip()
+            or "text-embedding-3-small"
+        )
+        self._embedding_provider = embedding_provider or self._resolve_embedding_provider()
+        self._vector_collection = "memory_items"
+        self._vector_dimensions: int | None = None
+        self._vector_store = vector_store or self._create_vector_store()
 
         if backend is not None:
             self._backend = backend
@@ -482,6 +534,7 @@ class MemoryKernel:
             self._backend = resolve_memory_backend(self._base_dir)
 
         self._load_index()
+        self._rebuild_vector_index()
 
     # -- Type index helpers -------------------------------------------------
 
@@ -506,26 +559,274 @@ class MemoryKernel:
         for item in self._index.values():
             self._type_index_add(item)
 
+    # -- Embedding / vector helpers ----------------------------------------
+
+    def _resolve_embedding_provider(self) -> Any | None:
+        try:
+            from types import SimpleNamespace
+            from dan.rag import build_embedding_registry
+
+            api_key = (
+                os.environ.get("DAN_LLM_API_KEY", "").strip()
+                or os.environ.get("OPENAI_API_KEY", "").strip()
+            )
+            base_url = (
+                os.environ.get("DAN_LLM_BASE_URL", "").strip()
+                or os.environ.get("OPENAI_BASE_URL", "").strip()
+            )
+            provider = os.environ.get("DAN_MEMORY_EMBEDDING_PROVIDER", "").strip().lower()
+            config = SimpleNamespace(
+                llm_api_key=api_key,
+                llm_base_url=base_url,
+                default_embedding_model=self._embedding_model,
+                embedding_providers={},
+                embedding_model_provider_map={},
+            )
+            if provider == "local":
+                config.embedding_providers = {
+                    "local": SimpleNamespace(default_model=self._embedding_model),
+                }
+                config.embedding_model_provider_map = {self._embedding_model: "local"}
+
+            registry = build_embedding_registry(config)
+            if provider == "local" and registry.has_provider("local"):
+                return registry.resolve(self._embedding_model)
+            if registry.has_provider("default"):
+                return registry.resolve(self._embedding_model)
+        except Exception:
+            logger.debug("Memory kernel embedding provider unavailable", exc_info=True)
+        return None
+
+    def _create_vector_store(self) -> Any | None:
+        try:
+            from dan.rag.stores import VectorStoreConfig, VectorStoreFactory
+
+            backend = os.environ.get("DAN_MEMORY_VECTOR_BACKEND", "memory").strip() or "memory"
+            persist_dir = self._base_dir / "vector_index"
+            return VectorStoreFactory.create(
+                VectorStoreConfig(
+                    backend=backend,
+                    persist_directory=str(persist_dir),
+                    collection_name=self._vector_collection,
+                )
+            )
+        except Exception:
+            logger.debug("Memory kernel vector store unavailable", exc_info=True)
+            return None
+
+    @staticmethod
+    def _semantic_score(raw_score: float) -> float:
+        bounded = max(min(raw_score, 1.0), -1.0)
+        return (bounded + 1.0) / 2.0
+
+    def _document_record_for_item(self, item: MemoryItem) -> Any | None:
+        if item.embedding is None or item.lifecycle == MemoryLifecycle.ARCHIVE:
+            return None
+        try:
+            from dan.rag.stores import DocumentRecord
+
+            return DocumentRecord(
+                id=item.id,
+                text=item.content,
+                embedding=list(item.embedding),
+                metadata={
+                    "memory_type": item.memory_type.value,
+                    "scope": item.scope.value,
+                    "lifecycle": item.lifecycle.value,
+                    "project_id": item.metadata.get("project_id"),
+                },
+            )
+        except Exception:
+            logger.debug("Failed to create vector document for %s", item.id, exc_info=True)
+            return None
+
+    def _ensure_vector_collection(self, dimensions: int) -> None:
+        if self._vector_store is None or dimensions <= 0:
+            return
+        if self._vector_dimensions == dimensions:
+            return
+        _run_async_compat(
+            self._vector_store.create_collection(self._vector_collection, dimensions),
+        )
+        self._vector_dimensions = dimensions
+
+    def _upsert_vector_item(self, item: MemoryItem) -> None:
+        if self._vector_store is None:
+            return
+        record = self._document_record_for_item(item)
+        try:
+            if record is None:
+                _run_async_compat(
+                    self._vector_store.delete_by_ids(self._vector_collection, [item.id]),
+                )
+                return
+            self._ensure_vector_collection(len(record.embedding or []))
+            _run_async_compat(self._vector_store.add(self._vector_collection, [record]))
+        except Exception:
+            logger.debug("Vector upsert failed for %s", item.id, exc_info=True)
+
+    def _delete_vector_item(self, item_id: str) -> None:
+        if self._vector_store is None:
+            return
+        try:
+            _run_async_compat(
+                self._vector_store.delete_by_ids(self._vector_collection, [item_id]),
+            )
+        except Exception:
+            logger.debug("Vector delete failed for %s", item_id, exc_info=True)
+
+    def _rebuild_vector_index(self) -> None:
+        if self._vector_store is None:
+            return
+        records: list[Any] = []
+        dimensions = 0
+        try:
+            for item in self._index.values():
+                record = self._document_record_for_item(item)
+                if record is None:
+                    continue
+                records.append(record)
+                if not dimensions and record.embedding:
+                    dimensions = len(record.embedding)
+            if dimensions:
+                _run_async_compat(
+                    self._vector_store.delete_collection(self._vector_collection),
+                )
+                _run_async_compat(
+                    self._vector_store.create_collection(self._vector_collection, dimensions),
+                )
+                _run_async_compat(self._vector_store.add(self._vector_collection, records))
+                self._vector_dimensions = dimensions
+        except Exception:
+            logger.debug("Failed to rebuild memory vector index", exc_info=True)
+
+    def _embed_query(self, query: str) -> list[float] | None:
+        if self._embedding_provider is None or not query.strip():
+            return None
+        try:
+            result = _run_async_compat(
+                self._embedding_provider.embed([query], self._embedding_model),
+            )
+            vectors = getattr(result, "vectors", None) or []
+            if vectors:
+                return list(vectors[0])
+        except Exception:
+            logger.debug("Memory query embedding failed", exc_info=True)
+        return None
+
+    def _semantic_hits(
+        self,
+        memory_type: MemoryType,
+        query: str,
+        *,
+        top_k: int,
+        query_vector: list[float] | None = None,
+    ) -> dict[str, float]:
+        if self._vector_store is None:
+            return {}
+        vector = query_vector or self._embed_query(query)
+        if not vector:
+            return {}
+        try:
+            result = _run_async_compat(
+                self._vector_store.query(
+                    self._vector_collection,
+                    vector,
+                    top_k=max(top_k, 1),
+                    filters={"memory_type": memory_type.value},
+                )
+            )
+        except Exception:
+            logger.debug("Memory vector query failed", exc_info=True)
+            return {}
+
+        hits: dict[str, float] = {}
+        for chunk in getattr(result, "chunks", []) or []:
+            item_id = str(chunk.get("id") or "").strip()
+            if item_id:
+                hits[item_id] = float(chunk.get("score", 0.0) or 0.0)
+        return hits
+
     # -- Persistence --------------------------------------------------------
 
     def _index_path(self) -> Path:
         return self._base_dir / "_index.json"
 
+    def _journal_path(self) -> Path:
+        return self._base_dir / "_index.journal.jsonl"
+
+    def _apply_loaded_item(self, item: MemoryItem) -> None:
+        existing = self._index.get(item.id)
+        if existing is not None and existing.memory_type != item.memory_type:
+            self._type_index_remove(existing)
+        self._index[item.id] = item
+        self._type_index_add(item)
+
+    def _append_journal_entry(self, entry: dict[str, Any]) -> None:
+        path = self._journal_path()
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, default=str) + "\n")
+        self._journal_ops_since_snapshot += 1
+        self._dirty = True
+
+    def _persist_item_change(self, item: MemoryItem) -> None:
+        self._append_journal_entry({
+            "op": "upsert",
+            "item": item.model_dump(mode="json"),
+        })
+        self._maybe_compact_journal()
+
+    def _persist_delete(self, item_id: str) -> None:
+        self._append_journal_entry({
+            "op": "delete",
+            "item_id": item_id,
+        })
+        self._maybe_compact_journal()
+
+    def _apply_journal_entry(self, entry: dict[str, Any]) -> None:
+        op = str(entry.get("op") or "").strip().lower()
+        if op == "delete":
+            removed = self._index.pop(str(entry.get("item_id") or ""), None)
+            if removed is not None:
+                self._type_index_remove(removed)
+            return
+        if op != "upsert":
+            return
+        item_data = entry.get("item")
+        if not isinstance(item_data, dict):
+            return
+        item = MemoryItem.model_validate(item_data)
+        self._apply_loaded_item(item)
+
+    def _maybe_compact_journal(self) -> None:
+        if self._journal_ops_since_snapshot >= self._journal_compact_every:
+            self._save_index()
+
     def _load_index(self) -> None:
         with self._write_lock:
-            path = self._index_path()
-            if path.exists():
+            self._index = {}
+            self._type_index = {}
+            snapshot_path = self._index_path()
+            if snapshot_path.exists():
                 try:
-                    data = json.loads(path.read_text())
+                    data = json.loads(snapshot_path.read_text(encoding="utf-8"))
                     for item_dict in data:
-                        item = MemoryItem.model_validate(item_dict)
-                        self._index[item.id] = item
-                    self._rebuild_type_index()
-                    logger.debug("Loaded %d memory items from index", len(self._index))
+                        self._apply_loaded_item(MemoryItem.model_validate(item_dict))
                 except Exception:
-                    logger.warning("Failed to load memory index, starting fresh", exc_info=True)
+                    logger.warning("Failed to load memory snapshot, starting fresh", exc_info=True)
                     self._index = {}
                     self._type_index = {}
+            journal_path = self._journal_path()
+            if journal_path.exists():
+                try:
+                    for line in journal_path.read_text(encoding="utf-8").splitlines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        self._apply_journal_entry(json.loads(line))
+                except Exception:
+                    logger.warning("Failed to replay memory journal", exc_info=True)
+            logger.debug("Loaded %d memory items from index/journal", len(self._index))
 
     def _save_index(self) -> None:
         with self._write_lock:
@@ -535,6 +836,9 @@ class MemoryKernel:
             try:
                 tmp.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
                 os.replace(tmp, path)
+                self._journal_path().unlink(missing_ok=True)
+                self._journal_ops_since_snapshot = 0
+                self._dirty = False
             finally:
                 try:
                     tmp.unlink()
@@ -546,9 +850,9 @@ class MemoryKernel:
     def store(self, item: MemoryItem) -> MemoryItem:
         with self._write_lock:
             item.updated_at = time.time()
-            self._index[item.id] = item
-            self._type_index_add(item)
-            self._save_index()
+            self._apply_loaded_item(item)
+            self._persist_item_change(item)
+            self._upsert_vector_item(item)
         evolvement_logger.debug(
             "Memory stored: type=%s scope=%s id=%s",
             item.memory_type.value, item.scope.value, item.id,
@@ -562,9 +866,13 @@ class MemoryKernel:
             now = time.time()
             for item in items:
                 item.updated_at = now
-                self._index[item.id] = item
-                self._type_index_add(item)
-            self._save_index()
+                self._apply_loaded_item(item)
+                self._append_journal_entry({
+                    "op": "upsert",
+                    "item": item.model_dump(mode="json"),
+                })
+                self._upsert_vector_item(item)
+            self._maybe_compact_journal()
         if self._dual_write:
             for item in items:
                 self._dual_write.write(item)
@@ -579,11 +887,21 @@ class MemoryKernel:
             item = self._index.get(item_id)
             if item is None:
                 return None
+            original_type = item.memory_type
             for k, v in changes.items():
                 if hasattr(item, k):
                     setattr(item, k, v)
             item.updated_at = time.time()
-            self._save_index()
+            if item.memory_type != original_type:
+                original_bucket = self._type_index.get(original_type.value)
+                if original_bucket is not None:
+                    try:
+                        original_bucket.remove(item.id)
+                    except ValueError:
+                        pass
+                self._type_index_add(item)
+            self._persist_item_change(item)
+            self._upsert_vector_item(item)
             return item
 
     def delete(self, item_id: str, hard: bool = False) -> bool:
@@ -592,6 +910,8 @@ class MemoryKernel:
                 removed = self._index.pop(item_id, None)
                 if removed is not None:
                     self._type_index_remove(removed)
+                    self._persist_delete(item_id)
+                    self._delete_vector_item(item_id)
             else:
                 item = self._index.get(item_id)
                 if item is None:
@@ -599,8 +919,8 @@ class MemoryKernel:
                 item.lifecycle = MemoryLifecycle.ARCHIVE
                 item.updated_at = time.time()
                 removed = item
-            if removed:
-                self._save_index()
+                self._persist_item_change(item)
+                self._delete_vector_item(item_id)
             return removed is not None
 
     def list_by_type(
@@ -645,6 +965,17 @@ class MemoryKernel:
         max_total = limit or policy.max_total_items
         all_scored: list[ScoredMemoryItem] = []
         n_sections = len(policy.sections) or 1
+        query_vector = self._embed_query(query)
+
+        semantic_hits_by_type = {
+            mem_type: self._semantic_hits(
+                mem_type,
+                query,
+                top_k=max_total * 4,
+                query_vector=query_vector,
+            )
+            for mem_type in policy.sections
+        }
 
         with self._write_lock:
             for mem_type in policy.sections:
@@ -668,8 +999,17 @@ class MemoryKernel:
 
                 scored = []
                 _PROJECT_MATCH_BONUS = 0.3
+                semantic_hits = semantic_hits_by_type.get(mem_type, {})
+                semantic_weight = _TYPE_SEMANTIC_WEIGHTS.get(mem_type, 0.0)
                 for item in candidates:
                     score = ranker(item, query)
+                    semantic_raw = semantic_hits.get(item.id)
+                    if semantic_raw is not None and semantic_weight > 0:
+                        semantic_score = self._semantic_score(semantic_raw)
+                        score = (
+                            score * (1.0 - semantic_weight)
+                            + semantic_score * semantic_weight
+                        )
                     if (
                         project_id
                         and item.scope == MemoryScope.PROJECT
@@ -679,7 +1019,11 @@ class MemoryKernel:
                     scored.append(ScoredMemoryItem(
                         item=item,
                         score=score,
-                        match_reason=mem_type.value,
+                        match_reason=(
+                            f"{mem_type.value}+semantic"
+                            if semantic_raw is not None and semantic_weight > 0
+                            else mem_type.value
+                        ),
                     ))
 
                 scored.sort(key=lambda x: x.score, reverse=True)
@@ -691,12 +1035,7 @@ class MemoryKernel:
             for si in all_scored[:max_total]:
                 si.item.last_accessed = now
                 si.item.access_count += 1
-
-            self._dirty = True
-            self._save_counter += 1
-            if self._save_counter % 5 == 0:
-                self._save_index()
-                self._dirty = False
+                self._persist_item_change(si.item)
             return all_scored[:max_total]
 
     def retrieve_by_task(
@@ -818,7 +1157,8 @@ class MemoryKernel:
                     item.metadata["success_rate"] = min(success_count / max(reuse_count, 1), 1.0)
                     item.last_accessed = time.time()
                     item.updated_at = time.time()
-                    self._save_index()
+                    self._persist_item_change(item)
+                    self._upsert_vector_item(item)
                     return True
             return False
 
@@ -851,12 +1191,16 @@ class MemoryKernel:
                     item.lifecycle = MemoryLifecycle.ARCHIVE
                     item.metadata["superseded_by"] = new_content
                     item.updated_at = time.time()
+                    self._persist_item_change(item)
+                    self._delete_vector_item(item.id)
                 elif item.provenance.confirmed_by_user:
                     return True
                 else:
                     item.importance = max(0.0, item.importance * 0.5)
                     item.metadata["conflict_demoted"] = True
                     item.updated_at = time.time()
+                    self._persist_item_change(item)
+                    self._upsert_vector_item(item)
             return False
 
     def maybe_surface_preferences(self, session_count: int | None = None) -> list[MemoryItem]:
@@ -890,7 +1234,8 @@ class MemoryKernel:
             item.importance = 1.0
             item.lifecycle = MemoryLifecycle.DURABLE
             item.updated_at = time.time()
-            self._save_index()
+            self._persist_item_change(item)
+            self._upsert_vector_item(item)
             return item
 
     def reject_preference(self, item_id: str) -> MemoryItem | None:
@@ -902,7 +1247,8 @@ class MemoryKernel:
             item.lifecycle = MemoryLifecycle.ARCHIVE
             item.metadata["rejected_by_user"] = True
             item.updated_at = time.time()
-            self._save_index()
+            self._persist_item_change(item)
+            self._delete_vector_item(item.id)
             return item
 
     # -- Utility ------------------------------------------------------------
@@ -985,6 +1331,7 @@ class MemoryKernel:
         archived = self._archive_stale_nosave(stale_days)
         if archived:
             self._save_index()
+            self._rebuild_vector_index()
         return archived
 
     def _consolidate_domain_templates(self) -> int:
@@ -1113,6 +1460,8 @@ class MemoryKernel:
 
         if promoted or archived or decayed:
             self._save_index()
+            if archived:
+                self._rebuild_vector_index()
 
         evolvement_logger.info(
             "Consolidation (async): promoted=%d archived=%d decayed=%d",

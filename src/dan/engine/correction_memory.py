@@ -6,10 +6,13 @@ and produces learning actions (preference, principle, negative evidence).
 
 from __future__ import annotations
 
-import re
-import uuid
+import json
 import logging
+import re
+import threading
+import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -239,16 +242,48 @@ def route_correction(signal: CorrectionSignal) -> list[dict]:
 
 
 class CorrectionStore:
-    """In-memory store for correction records."""
+    """Correction store with optional JSONL persistence."""
 
-    def __init__(self) -> None:
+    def __init__(self, path: str | Path | None = None) -> None:
         self._records: list[CorrectionRecord] = []
+        self._path = Path(path).expanduser() if path is not None else None
+        self._lock = threading.RLock()
+        self._load()
+
+    def _load(self) -> None:
+        if self._path is None or not self._path.exists():
+            return
+        try:
+            records: list[CorrectionRecord] = []
+            for line in self._path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(CorrectionRecord.model_validate(json.loads(line)))
+                except Exception:
+                    logger.debug("Skipping corrupt correction record", exc_info=True)
+            self._records = records
+        except Exception:
+            logger.warning("Failed to load correction history from %s", self._path, exc_info=True)
+
+    def _append(self, record: CorrectionRecord) -> None:
+        if self._path is None:
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        with self._path.open("a", encoding="utf-8") as handle:
+            handle.write(record.model_dump_json())
+            handle.write("\n")
 
     def add(self, record: CorrectionRecord) -> None:
-        self._records.append(record)
+        with self._lock:
+            self._records.append(record)
+            self._append(record)
 
     def list_recent(self, n: int = 20) -> list[CorrectionRecord]:
-        return self._records[-n:]
+        with self._lock:
+            return self._records[-n:]
 
     def count(self) -> int:
-        return len(self._records)
+        with self._lock:
+            return len(self._records)
